@@ -48,6 +48,10 @@ _Avoid_: proof, backup, reference, source (when meaning the quote itself)
 A claim produced by computing over Dependencies rather than by reading a document — a count, a percentage, a rollup. Carries the ruleset version and the records it covered instead of a quote, and drills through to their Evidence. No published number is ever bare: it is an Assertion or a Derivation.
 _Avoid_: aggregate, rollup, summary (when meaning the provenance class)
 
+**Document of Record**:
+When one document is published in several formats, the one Evidence cites. The structured original outranks anything printed from it: a spreadsheet states its values, a PDF of that spreadsheet only depicts them.
+_Avoid_: source of truth, master copy, canonical version, original
+
 ### States and signals
 
 **Ready**:
