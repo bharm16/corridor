@@ -5,8 +5,10 @@ description = "A cited system of record for external-party readiness on highway 
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.13",
+    "httpx>=0.28.1",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.2",
+    "pyyaml>=6.0.3",
     "sqlalchemy>=2.0",
 ]
 

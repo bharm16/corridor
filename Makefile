@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test
+.PHONY: boot up down psql test corpus
 
 # One command from a clean clone.
 boot:
@@ -17,3 +17,8 @@ psql:
 
 test:
 	uv run pytest
+
+# Resolve corpus/manifest.yaml to files on disk. Re-running is a no-op for
+# unchanged sources; a source whose bytes changed keeps both revisions.
+corpus:
+	uv run python -m corridor.corpus
