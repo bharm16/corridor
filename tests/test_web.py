@@ -124,14 +124,92 @@ def test_a_verified_candidate_is_labelled_verified(client, session, project, doc
     assert "Citation unverified" not in r.text
 
 
-def test_merge_is_shown_unavailable_rather_than_approximated(
+def test_merge_is_unavailable_when_there_is_nothing_to_merge_into(
     client, session, project, document
 ):
-    """Accepting a duplicate instead of merging corrupts the ledger."""
+    """No existing dependency for this party means no merge, not a bad one."""
     make_candidate(session, project, document)
     r = client.get(f"/queue/{project.slug}")
     assert "disabled" in r.text
-    assert "merge" in r.text
+    assert "Nothing to merge into" in r.text
+
+
+def test_merge_suggestions_appear_once_a_dependency_exists(
+    client, session, project, document
+):
+    first = make_candidate(session, project, document)
+    client.post(
+        f"/candidates/{first.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    make_candidate(session, project, document, uid="FOC1-2")
+
+    r = client.get(f"/queue/{project.slug}")
+    assert "DEP-00001" in r.text
+    # The reason is visible, not just the ranking.
+    assert "station" in r.text and "text" in r.text
+
+
+def test_merging_from_the_queue_adds_to_the_existing_dependency(
+    client, session, project, document
+):
+    first = make_candidate(session, project, document)
+    client.post(
+        f"/candidates/{first.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    target = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+
+    second = make_candidate(session, project, document, uid="FOC1-2")
+    r = client.post(
+        f"/candidates/{second.id}/merge",
+        data={"slug": project.slug, "dependency_id": target.id},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert second.state == "merged"
+    assert second.merged_into == target.id
+    # Still one dependency: merging must not create a second.
+    assert (
+        len(
+            session.scalars(
+                select(Dependency).where(Dependency.project_id == project.id)
+            ).all()
+        )
+        == 1
+    )
+
+
+def test_merging_into_another_projects_dependency_is_refused(
+    client, session, project, document
+):
+    """Two ledgers that were never the same thing must not be joined."""
+    other = Project(slug="web-other", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray = Dependency(
+        project_id=other.id,
+        ref_code="DEP-00001",
+        dep_type="utility_relocation",
+        title="unrelated",
+        status="identified",
+        criticality="normal",
+    )
+    session.add(stray)
+    session.flush()
+
+    candidate = make_candidate(session, project, document)
+    r = client.post(
+        f"/candidates/{candidate.id}/merge",
+        data={"slug": project.slug, "dependency_id": stray.id},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+    assert candidate.state == "pending"
 
 
 def test_accepting_creates_a_dependency_and_advances(

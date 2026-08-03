@@ -44,8 +44,10 @@ Opinionated defaults; swap freely, but don't spend week 1 on stack shopping.
 | PDF/text | PyMuPDF; `ocrmypdf` (Tesseract) fallback for scanned docs |
 | XLSX | openpyxl |
 | Email | Python `email` stdlib for EML; `extract-msg` for MSG |
-| LLM | Claude API, structured outputs (tool use / JSON schema) |
-| Models | Sonnet 5 default (matrix freeform cells, minutes, email); Opus 5 for agreements and permits. `model` recorded on every candidate and eval run. |
+| LLM | OpenAI API, strict `json_schema` structured outputs |
+| Models | `gpt-5.6-luna` for agreements. `model` recorded on every candidate and eval run. |
+
+The LLM provider changed from the Claude API during M2 — a deliberate call, not a drift. The `model` field on `candidates` and `eval_runs` exists precisely so a provider or tier change is visible in eval history rather than silently shifting the numbers. The client in `corridor/llm.py` is a thin structured-output wrapper with the model injected, so swapping back or running a comparison is a config change.
 | App/UI | FastAPI + Jinja2 + HTMX + Tailwind. No SPA. |
 | Report PDF | HTML template → WeasyPrint |
 | Eval | pytest + a metrics runner writing to an `eval_runs` table |
@@ -122,11 +124,15 @@ Per document type:
 
 | Type | Approach | Model |
 |---|---|---|
-| Conflict matrix (XLSX) | Deterministic column mapping first (one config per matrix layout; SHRP2 R15B is the layout to support first, since 17 state DOTs have adopted it). LLM only for freeform cells. Each row → dependency candidate. | Sonnet 5 |
-| Meeting minutes | LLM per document. Targets: action items, commitments with dates, status assertions, attendance (org → contact). Emit events against `dedupe_hint`, not new dependencies, unless clearly new. | Sonnet 5 |
-| Serial status reports | LLM per edition. Targets: status assertions and dates per named dependency. Consecutive editions are the primary source of `slip` events. | Sonnet 5 |
-| Agreements / permits | LLM per document. Targets: obligations, milestone dates, notice periods, responsible party. | Opus 5 |
-| Email (EML/MSG) | LLM per thread. Latest commitment wins; earlier ones become `slip` events if dates moved. Capture non-response (thread with outbound ask, no reply) as a signal. | Sonnet 5 |
+| Conflict matrix (PDF) | Deterministic table extraction and synonym-mapped headers — no LLM. TxDOT's layout family, not SHRP2; there is no single layout even within one project's own revisions. Each row → dependency candidate. | none |
+| Agreements / permits | LLM **per page**, so the page number is supplied by us and only the quote comes from the model. Targets: obligations, milestone dates, notice periods, responsible party. | `gpt-5.6-luna` |
+| Meeting minutes | LLM per document. Targets: action items, commitments with dates, status assertions, attendance (org → contact). Emit events against `dedupe_hint`, not new dependencies, unless clearly new. | *no corpus yet* |
+| Serial status reports | LLM per edition. Targets: status assertions and dates per named dependency. Consecutive editions are the primary source of `slip` events. | *no corpus yet* |
+| Email (EML/MSG) | LLM per thread. Latest commitment wins; earlier ones become `slip` events if dates moved. Capture non-response (thread with outbound ask, no reply) as a signal. | *no corpus yet* |
+
+**Extract per page, not per document.** The page number is then ours and the model's only contribution to a citation is the quote — which is mechanically verified against the exact text the model was shown. A hallucinated page number becomes impossible by construction rather than merely unlikely.
+
+**Quotes and field values are held to different standards**, and conflating them is a real bug rather than a nicety. A quote must be verbatim, OCR artifacts and all, or it cannot be verified. A field value must be the best *legible* reading, or null. Prompt v1 told the model not to clean up OCR and it applied that to field values too, yielding an external party named `CitoJ' (d Innoa. H&n1.a CD1I1lV, tau` — a name that can never match the same party elsewhere, silently splitting one organization into many and breaking merge blocking before M3 even starts.
 
 Prompt files live in the repo, versioned (`prompts/minutes_v3.md`); `prompt_version` and `model` are recorded on every candidate and eval run.
 

@@ -5,6 +5,7 @@ from corridor.adjudicate import AlreadyAdjudicated, accept_candidate
 from corridor.db import Session, engine
 from corridor.ledger import load_dependency
 from corridor.models import (
+    Dependency,
     Assertion,
     AuditLog,
     Candidate,
@@ -221,6 +222,90 @@ def test_a_candidate_cannot_be_accepted_twice(session, document):
     accept_candidate(session, candidate, actor="bryce")
     with pytest.raises(AlreadyAdjudicated):
         accept_candidate(session, candidate, actor="bryce")
+
+
+def test_merging_adds_assertions_without_creating_a_dependency(session, document):
+    """Accepting a duplicate instead of merging is the unrecoverable error."""
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    before = len(
+        session.scalars(select(Dependency).where(Dependency.project_id == document.project_id)).all()
+    )
+
+    second = make_candidate(
+        session, document, fields={**FIELDS, "station_from": "1160+00"}
+    )
+    merged = merge_candidate(session, second, target, actor="b")
+
+    after = session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all()
+    assert merged.id == target.id
+    assert len(after) == before
+    assert second.state == "merged"
+    assert second.merged_into == target.id
+
+
+def test_merging_never_overwrites_the_targets_values(session, document):
+    """ADR-0001: the ledger row is a conclusion, not the latest write."""
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    assert target.station_from == "1149+00"
+
+    merge_candidate(
+        session,
+        make_candidate(session, document, fields={**FIELDS, "station_from": "1160+00"}),
+        target,
+        actor="b",
+    )
+    session.flush()
+    assert target.station_from == "1149+00"
+
+
+def test_a_merged_disagreement_becomes_a_contradiction(session, document):
+    """The competing claim survives and is visible, rather than being lost."""
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    merge_candidate(
+        session,
+        make_candidate(session, document, fields={**FIELDS, "station_from": "1160+00"}),
+        target,
+        actor="b",
+    )
+
+    view = load_dependency(session, target.id)
+    station = next(f for f in view.fields if f.name == "station_from")
+    assert station.values == ["1149+00", "1160+00"]
+    assert station.contradicted is True
+
+
+def test_merging_is_audited(session, document):
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    second = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
+    merge_candidate(session, second, target, actor="reviewer")
+
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.action == "merge_candidate", AuditLog.entity_id == target.id
+        )
+    ).one()
+    assert entry.after_json["candidate_id"] == second.id
+    assert entry.after_json["merged_into"] == target.ref_code
+
+
+def test_a_candidate_cannot_be_merged_twice(session, document):
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    second = make_candidate(session, document)
+    merge_candidate(session, second, target, actor="b")
+    with pytest.raises(AlreadyAdjudicated):
+        merge_candidate(session, second, target, actor="b")
 
 
 def test_competing_sources_are_both_kept_and_flagged(session, document):

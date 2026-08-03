@@ -51,6 +51,9 @@
         border-bottom-width:2px; border-radius:3px; padding:0 .3rem; }
   .hint { color:var(--muted); font-size:.8rem; margin-top:.8rem; }
   form.inline { display:inline; }
+  .mergerow { display:flex; align-items:center; gap:.6rem; padding:.15rem 0; }
+  .mergerow .score { font-variant-numeric:tabular-nums; font-weight:600; min-width:3rem; }
+  .mergerow .sig { color:var(--muted); font-size:.78rem; }
 </style>
 
 <header>
@@ -102,7 +105,31 @@
       </form>
       <button form="candidate" id="edit"><kbd>e</kbd> edit &amp; accept</button>
       <button id="reject-toggle"><kbd>r</kbd> reject</button>
-      <button disabled title="Merge ranking lands in M3. Accepting a duplicate instead of merging corrupts the ledger, so this is unavailable rather than approximate."><kbd>m</kbd> merge</button>
+      <button id="merge-toggle" {% if not view.matches %}disabled
+        title="No existing dependency for this external party. Nothing to merge into."{% endif %}>
+        <kbd>m</kbd> merge{% if view.matches %} ({{ view.matches|length }}){% endif %}
+      </button>
+    </div>
+
+    <div id="merges" hidden>
+      <p class="hint" style="margin:.6rem 0 .3rem">
+        Same external party, ranked. Signals are shown so a wrong suggestion
+        can be diagnosed rather than just distrusted.
+      </p>
+      {% for m in view.matches %}
+        <form class="mergerow" method="post" action="/candidates/{{ view.candidate.id }}/merge">
+          <input type="hidden" name="slug" value="{{ project.slug }}">
+          <input type="hidden" name="dependency_id" value="{{ m.dependency.id }}">
+          <button><kbd>{{ loop.index }}</kbd>
+            {{ m.dependency.ref_code }}
+            {%- if m.dependency.source_ref %} · {{ m.dependency.source_ref }}{% endif %}
+          </button>
+          <span class="score">{{ (m.total * 100)|round|int }}%</span>
+          <span class="sig">
+            {%- for s in m.signals %}{{ s.name }} {{ (s.score * 100)|round|int }}%{% if not loop.last %} · {% endif %}{% endfor %}
+          </span>
+        </form>
+      {% endfor %}
     </div>
 
     <div class="actions" id="reasons" hidden>
@@ -139,20 +166,36 @@
   // Keyboard first: the target is 60+ candidates an hour, which is not
   // reachable with a mouse.
   const reasons = document.getElementById('reasons');
+  const merges = document.getElementById('merges');
+
+  // Only one panel open at a time, so a digit is never ambiguous. Picking
+  // the wrong merge target is the one unrecoverable mistake in this UI.
+  const open = (panel) => {
+    for (const p of [reasons, merges]) if (p) p.hidden = (p !== panel) || !p.hidden;
+  };
+  const closeAll = () => { for (const p of [reasons, merges]) if (p) p.hidden = true; };
+
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && e.key !== 'Escape') return;
     const k = e.key.toLowerCase();
     if (k === 'a') { e.preventDefault(); document.getElementById('accept').click(); }
     else if (k === 'e') { e.preventDefault(); document.getElementById('edit').click(); }
-    else if (k === 'r') { e.preventDefault(); reasons.hidden = !reasons.hidden; }
-    else if (k === 'escape') { reasons.hidden = true; document.activeElement.blur(); }
-    else if (!reasons.hidden && /^[1-4]$/.test(k)) {
-      e.preventDefault();
-      reasons.querySelectorAll('button')[Number(k) - 1].click();
+    else if (k === 'r') { e.preventDefault(); open(reasons); }
+    else if (k === 'm' && merges) { e.preventDefault(); open(merges); }
+    else if (k === 'escape') { closeAll(); document.activeElement.blur(); }
+    else if (/^[1-9]$/.test(k)) {
+      const panel = [merges, reasons].find((p) => p && !p.hidden);
+      if (!panel) return;
+      const button = panel.querySelectorAll('button')[Number(k) - 1];
+      if (button) { e.preventDefault(); button.click(); }
     }
   });
   document.getElementById('reject-toggle').addEventListener('click', (e) => {
-    e.preventDefault(); reasons.hidden = !reasons.hidden;
+    e.preventDefault(); open(reasons);
   });
+  const mergeToggle = document.getElementById('merge-toggle');
+  if (mergeToggle && !mergeToggle.disabled) {
+    mergeToggle.addEventListener('click', (e) => { e.preventDefault(); open(merges); });
+  }
 </script>

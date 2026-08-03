@@ -21,9 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from corridor.adjudicate import accept_candidate
+from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session as SessionFactory
-from corridor.models import AuditLog, Candidate, DocPage, Project
+from corridor.models import AuditLog, Candidate, Dependency, DocPage, Project
 from corridor.web.queue import build_view, next_candidate, pending_counts
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -133,6 +133,25 @@ async def edit_accept(
         candidate.payload_json = payload
 
     accept_candidate(session, candidate, actor="reviewer")
+    session.commit()
+    return RedirectResponse(f"/queue/{slug}", status_code=303)
+
+
+@app.post("/candidates/{candidate_id}/merge")
+def merge(
+    candidate_id: int,
+    slug: str = Form(...),
+    dependency_id: int = Form(...),
+    session: Session = Depends(get_session),
+):
+    candidate = _pending(session, candidate_id)
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None or dependency.project_id != candidate.project_id:
+        # Blocking is a hard filter, and so is this: merging across projects
+        # would join two ledgers that were never the same thing.
+        raise HTTPException(400, "no such dependency in this project")
+
+    merge_candidate(session, candidate, dependency, actor="reviewer")
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
 
