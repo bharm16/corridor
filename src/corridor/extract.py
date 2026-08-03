@@ -29,9 +29,11 @@ PROMPT_VERSION = "txdot_ucm_v1"
 
 # Longest matching prefix wins, so "START STA OFFSET" beats "START STA".
 HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "utility_id": ("UTILITY ID",),
-    "external_org": ("UTILITY OWNER", "OWNER"),
-    "utility_type": ("UTILITY TYPE", "FACILITY TYPE"),
+    # `CONFLICT NO` is FDOT's row key. Longer prefixes win, so it beats the
+    # bare `CONFLICT` column that sits further along the same layout.
+    "utility_id": ("UTILITY ID", "CONFLICT NO"),
+    "external_org": ("UTILITY OWNER", "UTILITY AGENCY OWNER", "UAO", "OWNER"),
+    "utility_type": ("UTILITY TYPE", "FACILITY TYPE", "FACILITY DESCRIPTION"),
     "size": ("SIZE & MATERIAL", "SIZE"),
     "material": ("MATERIAL",),
     "oh_ug": ("OH/ UG", "OH/UG", "UG/OH"),
@@ -40,15 +42,17 @@ HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
     "alignment": ("ALIGNMENT",),
     "location_start": ("LOCATION START",),
     "location_end": ("LOCATION END",),
-    "station_from": ("START STATION", "START STA"),
-    "station_to": ("END STATION", "END STA"),
+    # FDOT and CDOT carry stationing and offset in one column; the pair is
+    # separated after mapping, by `split_station_offset`.
+    "station_from": ("START STATION", "START STA", "STATION AND", "APPROX BEGIN STA"),
+    "station_to": ("END STATION", "END STA", "APPROX END STA"),
     "offset_from": ("START STA OFFSET", "START OFFSET"),
     "offset_to": ("END STA OFFSET", "END OFFSET"),
-    "offset_side": ("OFFSET L/R", "L/R"),
-    "potential_conflict": ("POTENTIAL",),
+    "offset_side": ("OFFSET L/R", "L/R", "LT/RT"),
+    "potential_conflict": ("POTENTIAL", "CONFLICT"),
     "sue_level": ("SUE LEVE",),
     "data_source": ("DATA SOURCE",),
-    "notes": ("NOTES",),
+    "notes": ("NOTES", "COMMENTS"),
 }
 
 # A table without both of these is not a utility matrix.
@@ -60,7 +64,20 @@ REQUIRED = ("utility_id", "external_org")
 # be looked at rather than silently repaired.
 AGREEMENT_FLOOR = 0.5
 
+# How far down a table to look for the header. CDOT prints a group-title
+# band above its real header row; anything deeper than this is a data row
+# that happens to look like one.
+MAX_HEADER_ROW = 3
+
 _WS = re.compile(r"\s+")
+
+# `135+58.68, 236.85' LT` — stationing, offset, side, in one cell.
+_STATION_OFFSET = re.compile(
+    r"^(?P<station>\d{1,5}\s*\+\s*\d{1,2}(?:\.\d+)?)"
+    r"(?:\s*,\s*(?P<offset>\d+(?:\.\d+)?)\s*'?)?"
+    r"\s*(?P<side>LT|RT|[LR])?\.?\s*$",
+    re.IGNORECASE,
+)
 
 
 class NoMatrixFound(Exception):
@@ -121,6 +138,32 @@ def row_to_fields(row: list[str | None], mapping: dict[int, str]) -> dict[str, s
         value = _WS.sub(" ", (row[index] or "").replace("\n", " ")).strip()
         if value:
             fields[field] = value
+    return split_station_offset(fields)
+
+
+def split_station_offset(fields: dict[str, str]) -> dict[str, str]:
+    """Separate `135+58.68, 236.85' LT` into stationing, offset and side.
+
+    FDOT and CDOT carry all three in one column where TxDOT uses four. A
+    header map moves a column, it cannot divide one, so the split happens
+    after mapping — and only when the value actually carries an offset, so
+    that a plain TxDOT `1149+00` passes through untouched.
+    """
+    for station_key, offset_key in (
+        ("station_from", "offset_from"),
+        ("station_to", "offset_to"),
+    ):
+        value = fields.get(station_key)
+        if not value:
+            continue
+        match = _STATION_OFFSET.match(value)
+        if not match or not match.group("offset"):
+            continue
+        fields[station_key] = match.group("station")
+        fields.setdefault(offset_key, match.group("offset"))
+        side = match.group("side")
+        if side:
+            fields.setdefault("offset_side", side.upper())
     return fields
 
 
@@ -258,6 +301,24 @@ def dedupe_hint(fields: dict[str, str]) -> str:
     )
 
 
+def find_header(data: list[list]) -> tuple[int, dict[int, str]]:
+    """`(row index, mapping)` for the first row that maps the required fields.
+
+    Row 0 is the header in every TxDOT layout, but CDOT prints a
+    `CONFLICT DATA AND RESOLUTION` band above its real header, and reading
+    row 0 there mapped nothing and raised `NoMatrixFound` on a matrix whose
+    columns are otherwise close to TxDOT's. Only the first few rows are
+    considered: a header further down than that is not a header, and
+    scanning the whole table would eventually match some data row by
+    coincidence.
+    """
+    for index, row in enumerate(data[:MAX_HEADER_ROW]):
+        mapping = map_headers(row)
+        if all(f in mapping.values() for f in REQUIRED):
+            return index, mapping
+    return 0, {}
+
+
 def extract_rows(path) -> list[MatrixRow]:
     """Every data row of every recognizable matrix table in the document.
 
@@ -283,11 +344,11 @@ def extract_rows(path) -> list[MatrixRow]:
                     continue
                 data = reread_table(data, table, words)
 
-                mapping = map_headers(data[0])
-                if all(f in mapping.values() for f in REQUIRED):
+                header_index, mapping = find_header(data)
+                if mapping:
                     recognized_tables += 1
                     carried, carried_width = mapping, len(data[0])
-                    body = data[1:]
+                    body = data[header_index + 1 :]
                 elif carried is not None and carried_width == len(data[0]):
                     # Continuation of the matrix: no header row, so nothing
                     # is skipped. Width must match, which excludes the

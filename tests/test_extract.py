@@ -1,4 +1,5 @@
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from corridor.extract import (
     map_headers,
     readings_agree,
     row_quote,
+    split_station_offset,
     row_to_fields,
     to_candidates,
 )
@@ -219,6 +221,29 @@ real_corpus = pytest.mark.skipif(
 )
 
 
+_PUNCT = re.compile(r"[,;]")
+
+
+def _tokens(text: str) -> set[str]:
+    """Page or field text as tokens, cut on punctuation as well as space.
+
+    Some layouts combine stationing and offset in one column, and the page's
+    own word boxes keep them together — `1112+90,713.40'` is a single box.
+    Splitting that cell into two real fields is correct, and both halves are
+    on the page, so the comma must not read as invented text.
+
+    Cutting on punctuation rather than matching substrings is what keeps
+    this able to catch #44: `othwell` is still not `rothwell`.
+    """
+    out = set()
+    for word in normalize(text).split():
+        for piece in _PUNCT.split(word):
+            piece = piece.strip(".,;:()[]'\"")
+            if piece:
+                out.add(piece)
+    return out
+
+
 def _matrix_paths():
     lock = json.loads(LOCK.read_text())
     return {
@@ -345,7 +370,7 @@ def test_every_stored_token_exists_on_its_page(member):
     rows = extract_rows(path)
     with pymupdf.open(path) as pdf:
         pages = {
-            i + 1: set(normalize(" ".join(w[4] for w in page.get_text("words"))).split())
+            i + 1: _tokens(" ".join(w[4] for w in page.get_text("words")))
             for i, page in enumerate(pdf)
         }
 
@@ -353,7 +378,7 @@ def test_every_stored_token_exists_on_its_page(member):
         (r.page_no, field, value, token)
         for r in rows
         for field, value in r.fields.items()
-        for token in normalize(value).split()
+        for token in _tokens(value)
         # Short tokens are enum-ish (`r`, `y`, `ug`) and match anywhere.
         if len(token) >= 4 and token not in pages[r.page_no]
     ]
@@ -394,6 +419,131 @@ def test_a_character_bleeding_from_the_next_cell_is_not_kept():
     values = {v for r in extract_rows(paths[member]) for v in r.fields.values()}
     assert "Canal Street o" not in values
     assert "Canal Street" in values
+
+
+# ---------------------------------------------------------------------------
+# Cross-agency layouts (#50). Neither of these is Project B — FDOT SR 789 is
+# the sealed holdout. These are §7.4's other two filled matrices.
+# ---------------------------------------------------------------------------
+
+CROSS = Path("corpus/cross-agency.lock.json")
+cross_agency = pytest.mark.skipif(
+    not CROSS.exists(), reason="cross-agency sources not fetched; run `make corpus`"
+)
+
+
+def _cross_paths():
+    lock = json.loads(CROSS.read_text())
+    return {
+        rec["title"].split()[0]: rec["local_path"]
+        for rec in lock["sources"].values()
+        if rec.get("local_path")
+    }
+
+
+def test_a_combined_station_and_offset_column_is_split():
+    """CDOT and FDOT put stationing and offset in one column.
+
+    `135+58.68, 236.85' LT` is one cell. TxDOT spreads the same information
+    across four, so a header map alone cannot reconcile them.
+    """
+    fields = split_station_offset(
+        {"station_from": "135+58.68, 236.85' LT", "station_to": "138+44.23, 199.94' RT"}
+    )
+    assert fields["station_from"] == "135+58.68"
+    assert fields["offset_from"] == "236.85"
+    assert fields["station_to"] == "138+44.23"
+    assert fields["offset_to"] == "199.94"
+    # One column cannot carry two sides; the first wins and is recorded.
+    assert fields["offset_side"] == "LT"
+
+
+def test_txdot_stationing_is_untouched_by_the_split():
+    """The split must be a no-op on the layout that already works."""
+    original = {
+        "station_from": "1149+00",
+        "station_to": "1153+17",
+        "offset_from": "303",
+        "offset_to": "309",
+        "offset_side": "R",
+    }
+    assert split_station_offset(dict(original)) == original
+
+
+def test_a_station_without_an_offset_is_left_as_stationing():
+    assert split_station_offset({"station_from": "1143+44.01"}) == {
+        "station_from": "1143+44.01"
+    }
+
+
+def test_a_value_that_does_not_parse_is_left_whole_rather_than_guessed():
+    """One CDOT row reads `169+83.31, 131+45' RT` — the offset is a station.
+
+    Splitting on the comma alone would record an offset of 131 feet from a
+    value that plainly does not mean that. Leaving it intact keeps the
+    anomaly visible to a reviewer instead of laundering it into a number.
+    """
+    odd = {"station_from": "169+83.31, 131+45' RT"}
+    assert split_station_offset(dict(odd)) == odd
+
+
+def test_a_trailing_period_does_not_defeat_the_split():
+    fields = split_station_offset({"station_from": "152+76.81, 160.66' LT."})
+    assert fields["station_from"] == "152+76.81"
+    assert fields["offset_from"] == "160.66"
+
+
+@cross_agency
+def test_the_fdot_layout_is_recognized():
+    """0 of 10 FDOT headers mapped before this."""
+    paths = _cross_paths()
+    if "FDOT" not in paths:
+        pytest.skip("FDOT I-75 not in the lockfile")
+
+    assert canonical_field("Conflict\nNo.") == "utility_id"
+    assert canonical_field("Utility Agency Owner (UAO)") == "external_org"
+    assert canonical_field("Station and\nOffset") == "station_from"
+    # `Conflict No.` must not lose to the bare `Conflict` column.
+    assert canonical_field("Conflict") == "potential_conflict"
+
+
+@cross_agency
+def test_a_matrix_with_no_conflicts_is_an_empty_result_not_an_error():
+    """`NO CONFLICTS FOUND` is a correct answer, and a distinct one.
+
+    An unhandled layout and a genuinely empty matrix look identical from
+    the outside — zero rows — which is why one raises and the other does
+    not. This document is the case that tells them apart.
+    """
+    paths = _cross_paths()
+    if "FDOT" not in paths:
+        pytest.skip("FDOT I-75 not in the lockfile")
+
+    assert extract_rows(paths["FDOT"]) == []
+
+
+@cross_agency
+def test_the_header_row_can_sit_below_a_group_title_band():
+    """CDOT puts `CONFLICT DATA AND RESOLUTION` above the real header.
+
+    Reading row 0 as the header found nothing and raised NoMatrixFound on a
+    matrix whose columns are otherwise close to TxDOT's.
+    """
+    paths = _cross_paths()
+    if "CDOT" not in paths:
+        pytest.skip("CDOT US 6 not in the lockfile")
+
+    rows = extract_rows(paths["CDOT"])
+    assert len(rows) > 40, f"only {len(rows)} rows"
+    assert all(r.fields.get("external_org") for r in rows)
+    assert any(r.fields.get("utility_id", "").startswith("C-") for r in rows)
+    # The combined column really did split.
+    with_offset = [r for r in rows if r.fields.get("offset_from")]
+    assert len(with_offset) > 40, f"only {len(with_offset)} rows split an offset out"
+    # One row reads `169+83.31, 131+45' RT`, where the offset is itself a
+    # station. That one stays whole rather than being guessed at.
+    unsplit = [r for r in rows if "," in (r.fields.get("station_from") or "")]
+    assert len(unsplit) == 1, [r.fields.get("station_from") for r in unsplit]
 
 
 def test_a_row_that_is_not_contiguous_falls_back_to_a_verifying_window():

@@ -1,0 +1,33 @@
+{
+  "agency": "various",
+  "name": "Cross-agency layout sources",
+  "project": "cross-agency",
+  "sources": {
+    "https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/procuement_marketingd1/documents/fy24-25/ad--25115/444008-4-utility-conflict-matrix-(no-conflicts).pdf": {
+      "bytes": 79143,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/50/50fc04af385c6a00d5b60ab5c483c29dc7ee1360e56da6595208aaa7fe5be112.pdf",
+      "retrieved_at": "2026-08-03T20:45:46.740231+00:00",
+      "role": "spine",
+      "sha256": "50fc04af385c6a00d5b60ab5c483c29dc7ee1360e56da6595208aaa7fe5be112",
+      "title": "FDOT I-75 Utility Conflict Matrix (FPID 444008-4, no conflicts)"
+    },
+    "https://web.archive.org/web/2id_/https://www.codot.gov/projects/US6Bridges/other-documents/rfp/addendum-2/reference-documents/bk-2-sec-7/utility-matrix-11-27-12-revisions-ii.pdf": {
+      "bytes": 113580,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/bc/bcf988a9faed70e0e2cd5beffb251502083b68a9c7a8f8ccb6bcf9fb3edf70a6.pdf",
+      "retrieved_at": "2026-08-03T20:45:49.389339+00:00",
+      "role": "spine",
+      "sha256": "bcf988a9faed70e0e2cd5beffb251502083b68a9c7a8f8ccb6bcf9fb3edf70a6",
+      "title": "CDOT US 6 Bridges utility matrix (11/27/2012, revisions II)"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+# Cross-agency layout sources for M6 (#50).
+#
+# Neither of these is Project B. FDOT SR 789 is the sealed holdout and
+# stays untouched; these are the two other filled matrices recorded in
+# corpus-acquisition-spec.md §7.4, and they carry the layouts M6 has to
+# handle without spending it.
+#
+# I-75 is FDOT's own Utility Conflict Matrix form, so it supplies the FDOT
+# header row. It is the deliberate "no conflicts" case and has no data
+# rows, which makes it the test for a correct empty result — the outcome a
+# parser keyed to one layout otherwise reports as success.
+#
+# CDOT US 6 supplies data rows, a third agency, and two shapes TxDOT never
+# shows: a group-title band above the real header row, and stationing and
+# offset combined in one column ("135+58.68, 236.85' LT").
+#
+# Not ingested as a project. These are layout evidence, not a corridor
+# anyone is tracking.
+project: cross-agency
+name: Cross-agency layout sources
+agency: various
+
+sources:
+  - url: "https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/procuement_marketingd1/documents/fy24-25/ad--25115/444008-4-utility-conflict-matrix-(no-conflicts).pdf"
+    doc_type: matrix
+    role: spine
+    title: "FDOT I-75 Utility Conflict Matrix (FPID 444008-4, no conflicts)"
+    notes: >-
+      FDOT's form. Headers: Conflict No. | Sheet No. | Utility Agency Owner
+      (UAO) | Facility Description (Material, Type, Number, Size) | Station
+      and Offset | LT/RT | Conflict | Vvh No. | Resolved? Yes/No |
+      Comments/Resolutions. Zero of those ten mapped before #50.
+
+  - url: "https://web.archive.org/web/2id_/https://www.codot.gov/projects/US6Bridges/other-documents/rfp/addendum-2/reference-documents/bk-2-sec-7/utility-matrix-11-27-12-revisions-ii.pdf"
+    doc_type: matrix
+    role: spine
+    title: "CDOT US 6 Bridges utility matrix (11/27/2012, revisions II)"
+    notes: >-
+      79 conflict IDs, richest schema found, with inter-utility sequencing
+      prose. Header sits on the second row beneath a CONFLICT DATA AND
+      RESOLUTION band. A Wayback id_ replay — verify the mime type, per
+      §7.5.
