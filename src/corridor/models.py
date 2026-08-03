@@ -20,6 +20,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -28,6 +29,7 @@ from sqlalchemy import (
     false,
     func,
 )
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 DOC_TYPES = (
@@ -53,6 +55,8 @@ DEP_TYPES = (
 )
 DEP_STATUSES = ("identified", "in_progress", "committed", "blocked", "closed")
 CRITICALITIES = ("critical", "high", "normal")
+CANDIDATE_KINDS = ("dependency", "event")
+CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")
 
 
 def _enum(*values: str, name: str) -> Enum:
@@ -205,6 +209,44 @@ class EvidenceLink(Base):
     satisfies_requirement: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Candidate(Base):
+    """An extractor's proposal, not yet part of the Ledger.
+
+    Extractors write only here. The single path into the ledger is a human
+    keystroke, which is what makes an LLM pipeline auditable.
+    """
+
+    __tablename__ = "candidates"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    kind: Mapped[str] = mapped_column(_enum(*CANDIDATE_KINDS, name="candidate_kind"))
+    payload_json: Mapped[dict] = mapped_column(JSONB)
+    source_document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    source_pages: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+    confidence: Mapped[float | None] = mapped_column(Float)
+    # Recorded on every candidate. Without both, eval history across runs is
+    # not comparable and you cannot tell which change moved the numbers.
+    prompt_version: Mapped[str | None] = mapped_column(String(64))
+    model: Mapped[str | None] = mapped_column(String(64))
+    # Mechanical: every citation's quote was found on its cited page. Kept
+    # separate from `state`, which is the human adjudication lifecycle. A
+    # candidate whose citations fail is sunk in the queue, never dropped.
+    citations_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    state: Mapped[str] = mapped_column(
+        _enum(*CANDIDATE_STATES, name="candidate_state"),
+        default="pending",
+        server_default="pending",
+    )
+    merged_into: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    adjudicated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
