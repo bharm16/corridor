@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Adjudication — {{ project.name }}</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; margin: 0; display:grid;
+         place-items:center; height:100vh; color:#111; }
+  div { text-align:center; }
+  p { color:#666; }
+</style>
+<div>
+  <h1>Queue empty</h1>
+  <p>Every candidate for <b>{{ project.name }}</b> has been adjudicated.</p>
+  <p><code>make demo</code> regenerates candidates from the matrix.</p>
+</div>

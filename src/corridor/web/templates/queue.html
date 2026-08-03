@@ -1,0 +1,158 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Adjudication — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; }
+  * { box-sizing: border-box; }
+  /* Explicit light canvas. Without a background the browser supplies a dark
+     one under prefers-color-scheme: dark, and #111 text disappears into it.
+     Evidence images are white-paper scans, so the page commits to light. */
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color: #111;
+         background: #fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line);
+           background:#fff; }
+  header b { font-size: 1rem; }
+  .counts { color: var(--muted); font-variant-numeric: tabular-nums; }
+  main { display:grid; grid-template-columns: minmax(340px, 2fr) 3fr; height: calc(100vh - 52px); }
+  .pane { overflow:auto; padding:1.2rem; }
+  .pane + .pane { border-left:1px solid var(--line); background:#fafafa; }
+  table.fields { width:100%; border-collapse:collapse; }
+  table.fields th { text-align:left; color:var(--muted); font-weight:500;
+                    width:11rem; padding:.3rem .5rem .3rem 0; vertical-align:top; }
+  table.fields td { padding:.15rem 0; }
+  table.fields input { width:100%; font:inherit; padding:.25rem .4rem;
+                       border:1px solid var(--line); border-radius:3px; background:#fff; }
+  .banner { padding:.5rem .7rem; border-radius:4px; margin-bottom:1rem; font-size:.9rem; }
+  .banner.bad { background:#fef3f2; color:var(--bad); border:1px solid #fecdca; }
+  .banner.ok  { background:#ecfdf3; color:var(--ok); border:1px solid #abefc6; }
+  .quote { font-family: ui-monospace, monospace; font-size:.82rem; background:#fff;
+           border:1px solid var(--line); border-radius:4px; padding:.5rem; margin:.6rem 0 1rem; }
+  .imgwrap { position:relative; display:inline-block; max-width:100%; }
+  .imgwrap img { max-width:100%; display:block; border:1px solid var(--line); }
+  .hl { position:absolute; background:rgba(255,214,0,.42); outline:1px solid rgba(180,140,0,.6);
+        pointer-events:none; }
+  /* The actions stay on screen. A candidate with twenty fields scrolls the
+     accept button out of view, and 60 candidates an hour is not reachable
+     if every one needs a scroll first. */
+  .pane.left { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+  .pane.left .scroll { flex:1; overflow:auto; padding:1.2rem 1.2rem 0; }
+  .sticky { border-top:1px solid var(--line); background:#fff; padding:.8rem 1.2rem; }
+  .actions { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+  .actions + .actions { margin-top:.5rem; }
+  /* `display:flex` beats the user-agent `[hidden] { display:none }`, so the
+     reject reasons would sit open permanently without this. */
+  [hidden] { display: none !important; }
+  button { font:inherit; padding:.35rem .8rem; border:1px solid var(--line);
+           background:#fff; border-radius:4px; cursor:pointer; }
+  button.primary { background:#111; color:#fff; border-color:#111; }
+  button[disabled] { opacity:.4; cursor:not-allowed; }
+  kbd { font:11px ui-monospace, monospace; background:#f0f0f0; border:1px solid #ddd;
+        border-bottom-width:2px; border-radius:3px; padding:0 .3rem; }
+  .hint { color:var(--muted); font-size:.8rem; margin-top:.8rem; }
+  form.inline { display:inline; }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span class="counts">
+    {{ view.remaining }} pending
+    {%- if view.remaining != view.verified_remaining %}
+      · {{ view.remaining - view.verified_remaining }} unverified
+    {%- endif %}
+  </span>
+</header>
+
+<main>
+  <section class="pane left">
+   <div class="scroll">
+    {% if view.citations_verified %}
+      <div class="banner ok">Citation verified — the quote appears on the cited page.</div>
+    {% else %}
+      <div class="banner bad">
+        <b>Citation unverified.</b> The quote could not be found on the cited page.
+        Not dropped, and sorted last — treat the extracted values as unsupported.
+      </div>
+    {% endif %}
+
+    <form method="post" action="/candidates/{{ view.candidate.id }}/edit-accept" id="candidate">
+      <input type="hidden" name="slug" value="{{ project.slug }}">
+      <table class="fields">
+        {% for name, value in view.fields %}
+          <tr>
+            <th>{{ name }}</th>
+            <td><input name="field_{{ name }}" value="{{ value }}"></td>
+          </tr>
+        {% endfor %}
+      </table>
+    </form>
+
+    <p class="hint">
+      candidate #{{ view.candidate.id }} ·
+      {{ view.candidate.prompt_version or 'n/a' }} ·
+      model {{ view.candidate.model or 'deterministic' }}
+    </p>
+   </div>
+
+   <div class="sticky">
+    <div class="actions">
+      <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/accept">
+        <input type="hidden" name="slug" value="{{ project.slug }}">
+        <button class="primary" id="accept"><kbd>a</kbd> accept</button>
+      </form>
+      <button form="candidate" id="edit"><kbd>e</kbd> edit &amp; accept</button>
+      <button id="reject-toggle"><kbd>r</kbd> reject</button>
+      <button disabled title="Merge ranking lands in M3. Accepting a duplicate instead of merging corrupts the ledger, so this is unavailable rather than approximate."><kbd>m</kbd> merge</button>
+    </div>
+
+    <div class="actions" id="reasons" hidden>
+      {% for reason in ["duplicate", "wrong", "irrelevant", "bad-citation"] %}
+        <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/reject">
+          <input type="hidden" name="slug" value="{{ project.slug }}">
+          <input type="hidden" name="reason" value="{{ reason }}">
+          <button><kbd>{{ loop.index }}</kbd> {{ reason }}</button>
+        </form>
+      {% endfor %}
+    </div>
+   </div>
+  </section>
+
+  <section class="pane">
+    <div><b>{{ view.document.filename }}</b> · page {{ view.page_no }}
+      {%- if view.page and view.page.text_source == 'ocr' %} · <span style="color:var(--bad)">OCR</span>{% endif %}</div>
+    <div class="quote">{{ view.quote }}</div>
+    <div class="imgwrap">
+      <img src="/page-image/{{ view.document.id }}/{{ view.page_no }}" alt="page {{ view.page_no }}">
+      {% for h in view.highlights %}
+        <div class="hl" style="left:{{ (h.left*100)|round(3) }}%;top:{{ (h.top*100)|round(3) }}%;
+                               width:{{ (h.width*100)|round(3) }}%;height:{{ (h.height*100)|round(3) }}%"></div>
+      {% endfor %}
+    </div>
+    {% if not view.highlights %}
+      <p class="hint">No highlight: the quote has no searchable span on this page
+        (OCR'd page, or a quote assembled from separate table cells).</p>
+    {% endif %}
+  </section>
+</main>
+
+<script>
+  // Keyboard first: the target is 60+ candidates an hour, which is not
+  // reachable with a mouse.
+  const reasons = document.getElementById('reasons');
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && e.key !== 'Escape') return;
+    const k = e.key.toLowerCase();
+    if (k === 'a') { e.preventDefault(); document.getElementById('accept').click(); }
+    else if (k === 'e') { e.preventDefault(); document.getElementById('edit').click(); }
+    else if (k === 'r') { e.preventDefault(); reasons.hidden = !reasons.hidden; }
+    else if (k === 'escape') { reasons.hidden = true; document.activeElement.blur(); }
+    else if (!reasons.hidden && /^[1-4]$/.test(k)) {
+      e.preventDefault();
+      reasons.querySelectorAll('button')[Number(k) - 1].click();
+    }
+  });
+  document.getElementById('reject-toggle').addEventListener('click', (e) => {
+    e.preventDefault(); reasons.hidden = !reasons.hidden;
+  });
+</script>
