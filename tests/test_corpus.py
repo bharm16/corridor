@@ -81,6 +81,46 @@ def test_manifest_rejects_an_unknown_doc_type(tmp_path):
         load_manifest(write_manifest(tmp_path, bad))
 
 
+def test_a_manifest_is_unsealed_unless_it_says_otherwise():
+    assert load_manifest("corpus/manifest.yaml").sealed is False
+    assert load_manifest("corpus/sh99-grand-parkway.yaml").sealed is False
+
+
+def test_the_eval_holdout_is_sealed_in_the_manifest_not_only_in_a_comment():
+    """`make corpus` globs every corpus/*.yaml.
+
+    So the manifest existing is by itself enough to fetch Project B by
+    accident — one glob, no prompt, and irreversible, because the holdout's
+    whole value is that nobody has looked at it. The seal has to be a field
+    the fetch loop reads, not a note to whoever runs it.
+    """
+    manifest = load_manifest("corpus/fdot-sr789.yaml")
+    assert manifest.project == "fdot-sr789"
+    assert manifest.sealed is True
+
+
+def test_a_sealed_manifest_is_never_fetched(tmp_path, monkeypatch):
+    """The seal is enforced where the fetching happens, not at the call site."""
+    from pathlib import Path
+
+    import corridor.corpus as corpus_module
+
+    sealed = "sealed: true\n" + MANIFEST
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "held-out.yaml").write_text(sealed)
+
+    def explode(*args, **kwargs):
+        raise AssertionError("fetch_all was called for a sealed manifest")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(corpus_module, "fetch_all", explode)
+
+    assert corpus_module.main() == 0
+    assert not list(corpus_dir.glob("*.lock.json"))
+    assert not Path(tmp_path / "corpus" / "files").exists()
+
+
 def test_fetch_stores_content_addressed_and_records_provenance(tmp_path):
     summary = run(tmp_path, dict(BODIES))
     assert len(summary.fetched) == 2
