@@ -19,10 +19,20 @@
 # irreversible. `sealed` is what actually stops it; the comment above is
 # only documentation. Fetching should be a decision someone makes, not a
 # side effect of this file existing.
+#
+# UNSEALED 2026-08-03 for the M7 cold run (#52). The precondition held: the
+# FDOT layout was developed entirely against I-75 and CDOT US 6 (#50, both
+# in corpus/cross-agency.yaml), and nothing in this repository had read
+# SR 789 when the run was made. That is what makes the number honest, and
+# it is also why it can only be claimed once.
+#
+# The seal is spent. Anything tuned from here on is tuned against a
+# measured document, so a later change wanting a fresh holdout needs a
+# different one — §7.2 records that FDOT publishes these systematically.
 project: fdot-sr789
 name: SR 789 @ Broadway Roundabout
 agency: FDOT
-sealed: true
+sealed: false
 
 sources:
   - url: https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/procuement_marketingd1/documents/fy26-27/ad--27114/45373015201-utility-conflict-matrix.pdf

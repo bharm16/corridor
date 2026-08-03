@@ -86,17 +86,18 @@ def test_a_manifest_is_unsealed_unless_it_says_otherwise():
     assert load_manifest("corpus/sh99-grand-parkway.yaml").sealed is False
 
 
-def test_the_eval_holdout_is_sealed_in_the_manifest_not_only_in_a_comment():
-    """`make corpus` globs every corpus/*.yaml.
+def test_the_spent_holdout_stays_unsealed():
+    """FDOT SR 789 was the eval holdout until the M7 cold run (#52).
 
-    So the manifest existing is by itself enough to fetch Project B by
-    accident — one glob, no prompt, and irreversible, because the holdout's
-    whole value is that nobody has looked at it. The seal has to be a field
-    the fetch loop reads, not a note to whoever runs it.
+    It asserted `sealed is True` while that mattered, and the pre-push hook
+    is what caught the unsealing rather than a reviewer — which is the
+    point of putting a seal in a field instead of a comment.
+
+    The seal is spent and cannot be un-spent, so re-sealing this document
+    would claim a holdout that no longer exists. The mechanism is still
+    exercised, on a fixture, for whatever gets sealed next.
     """
-    manifest = load_manifest("corpus/fdot-sr789.yaml")
-    assert manifest.project == "fdot-sr789"
-    assert manifest.sealed is True
+    assert load_manifest("corpus/fdot-sr789.yaml").sealed is False
 
 
 def test_a_sealed_manifest_is_never_fetched(tmp_path, monkeypatch):
