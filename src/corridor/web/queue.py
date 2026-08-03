@@ -106,7 +106,13 @@ def build_view(session: Session, candidate: Candidate) -> CandidateView:
         remaining=total,
         verified_remaining=verified,
         matches=rank_matches(
-            session, candidate.project_id, payload.get("fields") or {}, limit=5
+            session,
+            candidate.project_id,
+            payload.get("fields") or {},
+            limit=5,
+            # Without this the queue suggests merging a matrix row into its
+            # own siblings — 94 of 96 rows on the AT&T slice (#46).
+            source_document_id=candidate.source_document_id,
         ),
     )
 

@@ -137,6 +137,41 @@ def test_merge_is_unavailable_when_there_is_nothing_to_merge_into(
 def test_merge_suggestions_appear_once_a_dependency_exists(
     client, session, project, document
 ):
+    """The same facility, seen again in a later revision.
+
+    This staged both candidates on one document until #46. A matrix lists
+    each facility once, so that pair could only ever have been two
+    facilities — the merge case needs a second revision to be real.
+    """
+    first = make_candidate(session, project, document)
+    client.post(
+        f"/candidates/{first.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    later = Document(
+        project_id=project.id,
+        sha256="e" * 64,
+        filename="nhhip-seg3c2-utilities-inventory-4-30-2026.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=28,
+    )
+    session.add(later)
+    session.flush()
+    make_candidate(session, project, later, uid="FOC1-1")
+
+    r = client.get(f"/queue/{project.slug}")
+    assert "DEP-00001" in r.text
+    # The reason is visible, not just the ranking.
+    assert "station" in r.text and "text" in r.text
+
+
+def test_a_sibling_row_of_the_same_matrix_is_not_suggested(
+    client, session, project, document
+):
+    """#46: 94 of 96 AT&T rows drew a suggestion against their own siblings."""
     first = make_candidate(session, project, document)
     client.post(
         f"/candidates/{first.id}/accept",
@@ -146,9 +181,8 @@ def test_merge_suggestions_appear_once_a_dependency_exists(
     make_candidate(session, project, document, uid="FOC1-2")
 
     r = client.get(f"/queue/{project.slug}")
-    assert "DEP-00001" in r.text
-    # The reason is visible, not just the ranking.
-    assert "station" in r.text and "text" in r.text
+    assert "DEP-00001" not in r.text
+    assert "Nothing to merge into" in r.text
 
 
 def test_merging_from_the_queue_adds_to_the_existing_dependency(
