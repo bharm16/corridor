@@ -18,6 +18,23 @@ Do **not** return:
   that row's cell
 - a blank or ruled-off row
 
+## Facts the page states once
+
+Some layouts name the utility owner in the page header rather than in a
+column — `UTILITY AGENCY OWNER: Comcast` above a table whose every row
+belongs to Comcast. Put that in `page_attributes.external_org`, copied
+exactly as printed, and leave each row's own `external_org` null. Every
+row on the page inherits it.
+
+Use `page_attributes` **only** for a fact the page states for all of its
+rows. If the table has an owner column, leave `page_attributes` null and
+fill each row's own `external_org` — hoisting one row's value up here
+would apply it to every other row on the page.
+
+A group-title band *inside* the table (`FROM C/L CONST GULF OF MEXICO DR.`
+spanning the full width above a run of rows) is not a page attribute and
+is not a row. Skip it.
+
 ## Transcribe, never interpret
 
 Every value you return is mechanically checked against the page's own text.

@@ -68,17 +68,38 @@ ROW_FIELDS = (
     "notes",
 )
 
+# Facts a page states once for every row on it. FDOT SR 789 names its
+# External Party in the page header — `UTILITY AGENCY OWNER: Comcast`, one
+# utility per page — where TxDOT repeats the owner on every row. Both are
+# ordinary, and an extractor has to handle a document that scopes a field
+# to a region rather than to a record.
+#
+# Narrow on purpose. Returning the owner once is strictly better than
+# asking the model to repeat it on 29 rows, because it becomes one string
+# verified once with no per-row transcription surface — but that argument
+# only holds for a value the page really does state for all its rows. A
+# row-scoped value hoisted up here would be a fabrication applied 29 times.
+PAGE_FIELDS = ("external_org",)
+
 _ROW_PROPERTIES = {name: {"type": ["string", "null"]} for name in ROW_FIELDS}
 
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["is_utility_matrix", "rows"],
+    "required": ["is_utility_matrix", "page_attributes", "rows"],
     "properties": {
         # The only way to tell "this page is not a matrix" from "this matrix
         # has no conflicts" once a table reader is out of the picture. Those
         # two outcomes mean opposite things.
         "is_utility_matrix": {"type": "boolean"},
+        "page_attributes": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(PAGE_FIELDS),
+            "properties": {
+                name: {"type": ["string", "null"]} for name in PAGE_FIELDS
+            },
+        },
         "rows": {
             "type": "array",
             "items": {
@@ -148,8 +169,9 @@ def extract_document(
             continue
         if result.get("is_utility_matrix"):
             recognized += 1
+        inherited = _page_attributes(result)
         for item in result.get("rows") or []:
-            candidate = _to_candidate(document, page, item, model)
+            candidate = _to_candidate(document, page, item, model, inherited)
             if candidate is not None:
                 session.add(candidate)
                 candidates.append(candidate)
@@ -174,20 +196,38 @@ def _user(document: Document, page: DocPage) -> str:
     )
 
 
+def _page_attributes(result: dict) -> dict[str, str]:
+    attributes = result.get("page_attributes") or {}
+    return {
+        name: value.strip()
+        for name in PAGE_FIELDS
+        if (value := (attributes.get(name) or "").strip())
+    }
+
+
 def _to_candidate(
-    document: Document, page: DocPage, item: dict, model: str | None
+    document: Document,
+    page: DocPage,
+    item: dict,
+    model: str | None,
+    inherited: dict[str, str],
 ) -> Candidate | None:
     quote = (item.get("quote") or "").strip()
     if not quote:
         return None
 
-    fields = {
+    row = {
         name: value.strip()
         for name in ROW_FIELDS
         if (value := (item.get(name) or "").strip())
     }
-    if not fields:
+    if not row:
         return None
+
+    # The row wins. A document that states its External Party per row is
+    # unaffected by a page that also states one, which is what keeps this
+    # safe to run against every layout rather than only FDOT's.
+    fields = {**inherited, **row}
 
     page_text = page.text or ""
     quote_ok = quote_appears_on(quote, page_text)

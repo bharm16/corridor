@@ -72,9 +72,10 @@ def row(**over):
     return base
 
 
-def page(rows=None, *, is_matrix=True):
+def page(rows=None, *, is_matrix=True, attributes=None):
     return {
         "is_utility_matrix": is_matrix,
+        "page_attributes": attributes or {"external_org": None},
         "rows": [row()] if rows is None else rows,
     }
 
@@ -249,6 +250,138 @@ def test_every_page_of_the_document_is_read(session, document):
     extract_document(session, document, client=client)
 
     assert len(client.calls) == 2
+
+
+# --------------------------------------------------- page-scoped attributes
+
+
+PAGE_SCOPED_TEXT = (
+    "Project # 148800011  Description: SR 789 Gulf of Mexico Dr @ Broadway RAB\n"
+    "Phase #: IV  Plans Date: 11/20/2025\n"
+    "UTILITY AGENCY OWNER: Comcast\n"
+    "Conflict # Station Begin Station End Offset Facility Description\n"
+    "1 203+40.00 206+40.00 30.00' RT. BTV, Size UNK Prop. Storm Pipe (Possible)\n"
+    "2 206+93.00 206+93.00 54.00' RT. BTV Pedestal Pedestal\n"
+)
+
+
+def scoped_row(**over):
+    """An FDOT row: no owner column at all — the page states it once."""
+    base = {name: None for name in row()}
+    base.update(
+        utility_id="1",
+        station_from="203+40.00",
+        station_to="206+40.00",
+        offset_from="30.00'",
+        offset_side="RT.",
+        utility_type="BTV, Size UNK",
+        quote="1 203+40.00 206+40.00 30.00' RT. BTV, Size UNK",
+        confidence=0.95,
+    )
+    base.update(over)
+    return base
+
+
+@pytest.fixture
+def scoped_document(session, tmp_path):
+    project = Project(slug="fdot-test", name="Page-Scoped Test", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    doc = Document(
+        project_id=project.id,
+        sha256="b" * 64,
+        filename="45373015201-utility-conflict-matrix.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(doc)
+    session.flush()
+    image = tmp_path / "0001.png"
+    image.write_bytes(b"\x89PNG page image")
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=1,
+            text=PAGE_SCOPED_TEXT,
+            image_path=str(image),
+        )
+    )
+    session.flush()
+    return doc
+
+
+def test_every_row_on_a_page_inherits_that_pages_attributes(
+    session, scoped_document
+):
+    """FDOT names the External Party once in the page header.
+
+    Strictly better than asking the model to repeat the owner on 29 rows:
+    the owner becomes one string verified once against the page, with no
+    per-row transcription surface at all.
+    """
+    client = StubClient(
+        [
+            page(
+                rows=[scoped_row(), scoped_row(utility_id="2")],
+                attributes={"external_org": "Comcast"},
+            )
+        ]
+    )
+
+    candidates = extract_document(session, scoped_document, client=client)
+
+    assert len(candidates) == 2
+    assert all(
+        c.payload_json["fields"]["external_org"] == "Comcast" for c in candidates
+    )
+    assert all(c.citations_verified for c in candidates)
+
+
+def test_a_row_that_states_its_own_party_is_unaffected(session, document):
+    """TxDOT repeats the owner on every row. Both are ordinary."""
+    client = StubClient(
+        [
+            page(attributes={"external_org": "Comcast"}),
+            page(rows=[]),
+        ]
+    )
+
+    candidates = extract_document(session, document, client=client)
+
+    assert candidates[0].payload_json["fields"]["external_org"] == "AT&T Texas (SWBT)"
+
+
+def test_a_page_attribute_absent_from_the_page_marks_its_rows_unverified(
+    session, scoped_document
+):
+    """One bad inherited value is 29 suspect rows, and it has to look like it."""
+    client = StubClient(
+        [
+            page(
+                rows=[scoped_row(), scoped_row(utility_id="2")],
+                attributes={"external_org": "Verizon Florida"},
+            )
+        ]
+    )
+
+    candidates = extract_document(session, scoped_document, client=client)
+
+    assert len(candidates) == 2
+    assert not any(c.citations_verified for c in candidates)
+    assert all(
+        c.payload_json["unverified_fields"] == ["external_org"] for c in candidates
+    )
+
+
+def test_a_page_with_no_attributes_inherits_nothing(session, scoped_document):
+    client = StubClient([page(rows=[scoped_row()])])
+
+    fields = extract_document(session, scoped_document, client=client)[0].payload_json[
+        "fields"
+    ]
+
+    assert "external_org" not in fields
 
 
 def test_candidates_are_added_to_the_session(session, document):
