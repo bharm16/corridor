@@ -1,0 +1,37 @@
+# Project B — FDOT SR 789 @ Broadway Roundabout, Longboat Key (FPID 453730-1-52-01)
+#
+# SEALED until M7. Decided in #3, recorded in corpus-acquisition-spec.md
+# §7.1: this manifest may be written, and that is the whole of what may be
+# done here. No extraction, no header-synonym work, no prompt iteration
+# against this document.
+#
+# The seal is the entire value of the corpus. M7's recall number is honest
+# only if nothing was ever tuned against what it measures, and reading the
+# table even once spends that — you cannot un-see it. #52 is the single
+# cold run, and it is gated on an explicit human go-ahead.
+#
+# FDOT layout development belongs to #50, which uses FDOT I-75
+# (FPID 444008-4) and CDOT US 6 — both listed in §7.4, both unsealed, and
+# I-75 carries this same FDOT Utility Conflict Matrix form.
+#
+# `make corpus` globs every corpus/*.yaml, so this file existing was
+# already enough to fetch the document by accident — one glob, no prompt,
+# irreversible. `sealed` is what actually stops it; the comment above is
+# only documentation. Fetching should be a decision someone makes, not a
+# side effect of this file existing.
+project: fdot-sr789
+name: SR 789 @ Broadway Roundabout
+agency: FDOT
+sealed: true
+
+sources:
+  - url: https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/procuement_marketingd1/documents/fy26-27/ad--27114/45373015201-utility-conflict-matrix.pdf
+    doc_type: matrix
+    role: spine
+    title: "Utility Conflict Matrix (FPID 453730-1-52-01)"
+    notes: >-
+      The gold set. 66 rows, 9 owners, fully populated, per §7.4 — a count
+      taken during corpus verification, before the seal, and not re-checked
+      since. Different agency and different layout from Projects A and C,
+      which is what makes M6's cross-agency claim a real test rather than a
+      restatement.

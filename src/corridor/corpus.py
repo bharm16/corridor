@@ -72,6 +72,11 @@ class Manifest:
     sources: tuple[Source, ...]
     # Human-readable project name, used by ingest to create the Project row.
     name: str | None = None
+    # An eval holdout. `make corpus` skips it, because fetching is one
+    # command away from reading and reading it once spends the corpus for
+    # good (#3, corpus-acquisition-spec.md §7.1). A comment in the YAML
+    # cannot enforce that — this can.
+    sealed: bool = False
 
 
 @dataclass
@@ -116,6 +121,7 @@ def load_manifest(path: Path | str) -> Manifest:
         agency=raw.get("agency"),
         sources=tuple(sources),
         name=raw.get("name"),
+        sealed=bool(raw.get("sealed", False)),
     )
 
 
@@ -569,7 +575,13 @@ def _now() -> str:
 
 def main() -> int:
     """Fetch every manifest in corpus/. One project per manifest file;
-    each writes its own <stem>.lock.json."""
+    each writes its own <stem>.lock.json.
+
+    A sealed manifest is skipped and named in the output. Sealing exists
+    because the eval holdout's whole value is that nobody has looked at it,
+    and this loop is how it would get looked at by accident — one glob, no
+    prompt, irreversible.
+    """
     manifests = sorted(Path("corpus").glob("*.yaml"))
     if not manifests:
         print("no manifests in corpus/", file=sys.stderr)
@@ -578,6 +590,13 @@ def main() -> int:
     failed = 0
     for manifest_path in manifests:
         manifest = load_manifest(manifest_path)
+        if manifest.sealed:
+            print(
+                f"{manifest.project}: SEALED, not fetched "
+                f"({len(manifest.sources)} source(s) left untouched)",
+                flush=True,
+            )
+            continue
         summary = fetch_all(
             manifest,
             store=Path("corpus/files"),
