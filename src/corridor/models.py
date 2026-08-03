@@ -299,6 +299,30 @@ class EvidenceLink(Base):
     )
 
 
+class Milestone(Base):
+    """A dated event in the project schedule that Dependencies must be ready for.
+
+    A Dependency's need date is derived from the Milestone it serves — a
+    property of the *project*. That is a different thing from its committed
+    date, which is what an external party said it would do, and keeping the
+    two apart is most of the point of the ledger.
+    """
+
+    __tablename__ = "milestones"
+    __table_args__ = (UniqueConstraint("project_id", "code"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    code: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(Text)
+    need_date: Mapped[date | None] = mapped_column(Date)
+    # Where this came from — a CSV filename in v0, a P6 XER export in M9.
+    source: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Candidate(Base):
     """An extractor's proposal, not yet part of the Ledger.
 
