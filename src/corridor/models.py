@@ -57,6 +57,7 @@ DEP_STATUSES = ("identified", "in_progress", "committed", "blocked", "closed")
 CRITICALITIES = ("critical", "high", "normal")
 CANDIDATE_KINDS = ("dependency", "event")
 CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")
+ORG_TYPES = ("utility", "railroad", "agency", "consultant", "other")
 
 
 def _enum(*values: str, name: str) -> Enum:
@@ -129,6 +130,40 @@ class Document(Base):
     )
 
 
+class ExternalOrg(Base):
+    __tablename__ = "external_orgs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, unique=True)
+    org_type: Mapped[str] = mapped_column(
+        _enum(*ORG_TYPES, name="org_type"), default="utility", server_default="utility"
+    )
+    # One party is named many ways across documents — "AT&T", "AT&T Texas
+    # (SWBT)", "Southwestern Bell". Merge ranking blocks on the resolved
+    # party, so collapsing these is a precondition for everything else.
+    # Populated during adjudication; exact-name matching only in v0.
+    aliases: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default="{}"
+    )
+
+
+class AuditLog(Base):
+    """Append-only. Every ledger mutation writes here."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    actor: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(String(64))
+    entity_type: Mapped[str] = mapped_column(String(64))
+    entity_id: Mapped[int] = mapped_column(BigInteger)
+    before_json: Mapped[dict | None] = mapped_column(JSONB)
+    after_json: Mapped[dict | None] = mapped_column(JSONB)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DocPage(Base):
     __tablename__ = "doc_pages"
     __table_args__ = (UniqueConstraint("document_id", "page_no"),)
@@ -150,7 +185,14 @@ class Dependency(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    # Minted by us, unique per project. Deliberately not the source's own
+    # identifier: NHHIP's 2/13/2026 matrix carries two different conflicts
+    # both labelled FOC14-69 — same owner, different locations — so source
+    # IDs cannot identify a ledger record.
     ref_code: Mapped[str] = mapped_column(String(32))
+    # The identifier the source used, kept for display and merge matching.
+    # Not assumed unique.
+    source_ref: Mapped[str | None] = mapped_column(String(64))
     dep_type: Mapped[str] = mapped_column(_enum(*DEP_TYPES, name="dep_type"))
     title: Mapped[str] = mapped_column(Text)
     location_desc: Mapped[str | None] = mapped_column(Text)

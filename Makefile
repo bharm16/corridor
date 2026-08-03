@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus
+.PHONY: boot up down psql test corpus demo
 
 # One command from a clean clone.
 boot:
@@ -22,3 +22,8 @@ test:
 # unchanged sources; a source whose bytes changed keeps both revisions.
 corpus:
 	uv run python -m corridor.corpus
+
+# Raw files -> cited report. Pass N to accept only the first N candidates:
+#   make demo LIMIT=25
+demo:
+	uv run python -m corridor.demo $(LIMIT)
