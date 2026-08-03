@@ -74,6 +74,7 @@ sources:
 - **Nothing is ever deleted.**
 - **Polite.** Rate-limited, with a user agent that identifies the project and a contact address.
 - **Host quirks are not optional.** Box requires a browser user agent and `GET` rather than `HEAD`; Wayback requires status and MIME checks and a truncation check. See §7.5 — every one of these silently produces a wrong answer rather than an error, and a fetcher that ignores them will report live sources as dead.
+- **A source may be a member of an archive.** The documents that matter most on Project A are only reachable inside a 208 MB zip (§7.6), so a manifest entry needs an optional member path alongside its URL, and the fetcher needs to resolve it. Range-reading the archive directory avoids downloading the whole thing.
 
 `source_url` and `retrieved_at` flow into `documents` at ingest. A citation that bottoms out at *"a file on my laptop"* is not a citation — corpus provenance is part of the product's claim, not bookkeeping.
 
@@ -139,7 +140,19 @@ Assembled by a research sweep across six channels, then independently re-verifie
 
 **TxDOT design-build Reference Information Documents.** 21 of 30 alternative-delivery projects have live `/rid.html` pages. Parse the program index rather than constructing slugs — guessed slugs mostly fail.
 
-- **NHHIP 3C-2** — [RID index](https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/nhhip-3c2/rid.html). Ten dated index revisions all return 200; diffing them yields a document-level supersession ledger *before* downloading anything. UCM count accumulates 1→2→2→3→4→4→4→4→5→5 across them. Utilities package 208 MB; agreements 39 MB.
+- **NHHIP 3C-2** — [RID index](https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/nhhip-3c2/rid.html). **Opened and verified** (work item 3), no longer manifest-asserted. All five dated matrices extracted and read:
+
+  | Revision | Title | Rows | Data Source col | Conflict col | SUE col |
+  |---|---|---:|:---:|:---:|:---:|
+  | 6/20/2025 | Utility **Inventory** Matrix | 622 | — | — | — |
+  | 7/22/2025 | Utility **Conflict** Matrix | 522 | — | — | — |
+  | 10/24/2025 | Utility **Inventory** Matrix | 680 | ✓ | — | ✓ |
+  | 12/15/2025 | Utility **Conflict** Matrix | 561 | ✓ | ✓ | ✓ |
+  | 2/13/2026 | Utility **Conflict** Matrix | 707 | — | ✓ | ✓ |
+
+  Every row carries stationing (`1149+00` → `1153+17`), owner, type, size, material, OH/UG, baseline, parallel/crossing/perpendicular, alignment, start/end location, offsets, and L/R. Owners in the current revision: AT&T Texas (SWBT) 141, Comcast 60, Lumen 37, Verizon/MCI 36, Phonoscope 14, CenterPoint Energy 7, and 8 more.
+
+  **Utility IDs are stable across revisions**, which is what makes this a stream rather than five unrelated snapshots: 66–87% carry over between consecutive revisions, and **254 IDs appear in all five** — a trackable cohort spanning eight months.
 - **SH 99 Grand Parkway Seg B-1** — [RID](https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/sh99-grand-parkway-segb1/rid.html). Contains `Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip`, three dated UCMs, and two dated `RULIS_Utility_Permit_Applications_and_Status` zips — a literal permit-status time series.
 - **US 290 Design-Build** — [RID](https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/us290-db/rid.html). One filled UCM (8/19/2024), SUE from two vendors three years apart. Spine only, no stream.
 - **I-35 NEX South** — [RID](https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/i35-nex-south/rid.html). UCMs are **XLSX, not PDF** — structured rows. Two versions eleven days apart: one contradiction test case, not a series.
@@ -189,7 +202,15 @@ Verified the hard way; each of these silently produces wrong results.
 
 ### 7.6 Two findings that affect the build
 
-**Document series change schema mid-stream.** The Rockwall reports use per-owner narrative lines under *"Status of utilities in conflict"* in October 2024 and a four-bucket form by February 2026. Same series, same publisher, different shape. The extractor cannot assume one layout per source — treat the narrative and bucket forms as two variants of one record type, and expect the same of TxDOT proposals (three confirmed variants) and matrix layouts across agencies.
+**Document series change schema mid-stream — including within a single project's own matrix.** This is now confirmed at the sharpest possible altitude. Across NHHIP 3C-2's five revisions of *the same document*: the title alternates between "Utility **Inventory** Matrix" and "Utility **Conflict** Matrix"; a `Data Source` column appears in revisions 3 and 4 and is absent in 1, 2, and 5; `Potential Conflict` appears only from revision 4; `SUE Level` only from revision 3; and `Size (inches, strands)` becomes `Size (in)`. At least three distinct column schemas in eight months, from one author, on one project.
+
+The Rockwall reports do the same thing — per-owner narrative lines under *"Status of utilities in conflict"* in October 2024, a four-bucket form by February 2026 — as do TxDOT bid proposals (three confirmed variants, one lacking stationing entirely).
+
+The extractor is written against a *record type* with layout variants, never against one observed layout. A parser keyed to one revision's shape returns zero rows on the others **without erroring** — which is exactly how this was nearly mis-reported during verification: a first-pass regex tuned to the 2/13/2026 layout found 345 rows there and 0 in two other revisions that in fact hold 622 and 561.
+
+**Individual documents are not addressable; only the archive is.** The five matrices exist solely inside the 208 MB Box package. Their filenames on the TxDOT CDN return **HTTP 404 with a 145 KB HTML error page** — a well-formed body and a status code you must actually check. The manifest therefore cannot point at a document; it points at an archive plus a member path. Work item 5's fetcher and work item 4's manifest schema both have to account for that.
+
+Reading the archive does not require downloading it: `zipfile.ZipFile` accepts any seekable file object, so an HTTP-range-backed reader lists a 208 MB zip and extracts single members over a few hundred KB of transfer.
 
 **FDOT Utility Work Schedules encode dependency-to-dependency edges.** The `Dependent Activity` column states that one owner's work activity depends on another's. The v0 data model has no Dependency→Dependency relation — dependencies link to milestones, not to each other. This is a real gap in the model, not merely an unsupported source, and it may be the more natural spine shape for the domain. **Deliberately deferred:** v0 ingests these as ordinary Dependencies and drops the edge. Revisit before M8; it likely warrants an ADR.
 
@@ -199,7 +220,7 @@ Verified the hard way; each of these silently produces wrong results.
 |---|---|---|
 | 1 | ~~Shortlist candidate projects~~ | **Done** — §7, 54 verified leads across six channels |
 | 2 | Confirm Project A and Project B | §7.1 pairing accepted or the SH 99 alternative chosen, with the M6 trade-off recorded |
-| 3 | **Open the NHHIP zips** | The 208 MB utilities package and 39 MB agreements package downloaded and their contents listed. The five dated UCMs are currently *manifest-asserted, not observed* — nobody has opened them. Everything downstream assumes they contain what the index says. Do this first. |
+| 3 | ~~Open the NHHIP utilities package~~ | **Done** — all 21 members listed and all five dated matrices extracted and read. Findings in §7.2 and §7.6. The 39 MB agreements package is still unopened; lower risk, since nothing downstream depends on it yet. |
 | 4 | Write `corpus/manifest.yaml` for Project A | Every §2 minimum-viable row satisfied |
 | 5 | Build the manifest fetcher | `make corpus` resolves the manifest to files on disk; re-run is a no-op; drift is flagged; Box and Wayback quirks in §7.5 covered by tests |
 | 6 | File records requests | Scoped to **email correspondence** (§5), the one artifact class no public source yielded. Tracking numbers recorded. |
@@ -211,7 +232,8 @@ Verified the hard way; each of these silently produces wrong results.
 
 The §7 sweep retired most of the original risks here — filled matrices, dated revisions, and coordination minutes all turned out to be public. What remains:
 
-- **The NHHIP zips don't contain what the index says.** The five dated UCMs are asserted by a manifest nobody has opened (work item 3). If they turn out to be thin, Project A falls back to SH 99 Grand Parkway, which has three dated UCMs plus meeting notes. Low probability, high blast radius — which is why it's the first work item.
+- ~~The NHHIP zips don't contain what the index says.~~ **Retired.** Opened and verified: 622–707 rows per revision, full stationing, 254 utility IDs trackable across all five. Project A is confirmed on observed evidence.
+- **Cross-revision tracking is harder than the row counts suggest.** Utility IDs are stable, but the schema is not: columns that carry conflict status and SUE level exist in only some revisions, so a field can appear to "change" between revisions when it was simply absent from one of them. Distinguishing *absent* from *changed* matters directly to `CONTRADICTION`, which must not fire on a column that did not exist.
 - **All records requests refused or priced out.** Everything except the email extractor proceeds unaffected. That extractor gets built and stays unexercised on real correspondence; record it as a known gap rather than letting it look tested. No public source in six channels yielded DOT-to-utility email.
 - **Denton's utility-bucket schema turns out to be a short window.** The verified transitions are real but concentrated in late 2025 onward. If the window is too thin, Rockwall's FM 552 five-year slip chain is the stronger stream anyway.
 - **Project B never materializes.** M6's config-only generalization claim cannot be made. Do not substitute a second document set from Project A and call it generalization.
