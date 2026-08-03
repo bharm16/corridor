@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: corridor
+      POSTGRES_PASSWORD: corridor
+      POSTGRES_DB: corridor
+    # 5433 on the host: this machine also has a Homebrew Postgres 14 that
+    # takes 5432 when it runs, and the resulting version mismatch is a
+    # confusing failure to debug.
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U corridor -d corridor"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:
