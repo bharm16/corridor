@@ -125,6 +125,21 @@ class Document(Base):
     )
 
 
+class DocPage(Base):
+    __tablename__ = "doc_pages"
+    __table_args__ = (UniqueConstraint("document_id", "page_no"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    # 1-based, because citations are written for humans: [D12 p.4] must mean
+    # the page a reader sees, not an array index.
+    page_no: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    # Evidence display needs the rendered page as well as its text: a quote
+    # is checked against the text and shown against the image.
+    image_path: Mapped[str | None] = mapped_column(Text)
+
+
 class Dependency(Base):
     __tablename__ = "dependencies"
     __table_args__ = (UniqueConstraint("project_id", "ref_code"),)
