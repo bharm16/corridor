@@ -49,6 +49,14 @@ milestones:
 	uv run python -m corridor.milestones $(ARGS)
 
 # Current exception list: make exceptions ARGS="nhhip-3c2"
+# Recall and precision against an independent enumeration. Without a gold
+# CSV the enumeration is read off the stored page text, which is a
+# different code path from the table parser under test:
+#   make eval ARGS="nhhip-3c2"
+#   make eval ARGS="nhhip-3c2 gold/nhhip.csv"
+eval:
+	uv run python -m corridor.eval $(ARGS)
+
 exceptions:
 	uv run python -m corridor.exceptions $(ARGS)
 
