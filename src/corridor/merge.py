@@ -43,6 +43,7 @@ WEIGHTS = {"station": 3.0, "type": 1.0, "text": 1.5}
 MIN_MATCH_SCORE = 0.5
 
 _STATION = re.compile(r"(\d{1,5})\s*\+\s*(\d{1,2}(?:\.\d+)?)")
+_SPLIT = re.compile(r"\d\s*$")
 _WS = re.compile(r"\s+")
 
 
@@ -72,8 +73,15 @@ def parse_station(value: str | None) -> float | None:
     """
     if not value:
         return None
-    match = _STATION.search(str(value))
+    text = str(value)
+    match = _STATION.search(text)
     if not match:
+        return None
+    # A digit immediately before the match means the station number itself
+    # was broken and this is only its tail: `1 109+59` would read as
+    # `109+59`, placing the record 100,000 feet away — a plausible station,
+    # so wrong silently. A `STA ` prefix is not that, hence digit not text.
+    if _SPLIT.search(text[: match.start()]):
         return None
     return float(match.group(1)) * 100 + float(match.group(2))
 

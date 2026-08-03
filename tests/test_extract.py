@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -9,11 +10,12 @@ from corridor.extract import (
     dedupe_hint,
     extract_rows,
     map_headers,
+    restore_separator,
     row_quote,
     row_to_fields,
     to_candidates,
 )
-from corridor.verify import quote_appears_on
+from corridor.verify import normalize, quote_appears_on
 
 # The two real layouts on Project A, eight months apart.
 CONFLICT_HEADERS = [
@@ -99,6 +101,31 @@ def test_empty_cells_are_omitted_not_stored_as_blanks():
 def test_the_quote_is_the_whole_row():
     row = ["FOC1-1", "AT&T Texas (SWBT)", "Telecom", "", "FOC", "UG"]
     assert row_quote(row) == "FOC1-1 AT&T Texas (SWBT) Telecom FOC UG"
+
+
+def test_a_dropped_separator_is_restored_from_the_word_boxes():
+    """`City` + `of Houston` arrives from PyMuPDF as `Cityof Houston`."""
+    assert restore_separator("Cityof Houston", "City of Houston") == "City of Houston"
+    assert restore_separator("PrivateWater Line", "Private Water Line") == (
+        "Private Water Line"
+    )
+    # And the opposite slip: a space that is not in the document.
+    assert restore_separator("1 109+59", "1109+59") == "1109+59"
+
+
+def test_a_cell_is_left_alone_unless_only_the_spacing_differs():
+    """The guard, which is what makes this safe on rotated pages.
+
+    There the word boxes and the table bboxes are in different coordinate
+    spaces, so the rebuild is unrelated text rather than a respaced cell.
+    """
+    assert restore_separator("Utility ID", "No) Conflict Y") == "Utility ID"
+    assert restore_separator("Start Offset", "") == "Start Offset"
+    assert restore_separator("CenterPoint Energy", "CenterPoint Enerqy") == (
+        "CenterPoint Energy"
+    )
+    assert restore_separator("", "anything") == ""
+    assert restore_separator(None, "anything") is None
 
 
 def test_dedupe_hint_is_org_type_and_station_range():
@@ -235,6 +262,71 @@ def test_every_candidate_citation_verifies(member):
     candidates = to_candidates(rows, document_id=1, page_text=text)
     failed = [c for c in candidates if not c["citations"][0]["verified"]]
     assert not failed, f"{len(failed)} of {len(candidates)} citations unverified"
+
+
+@real_corpus
+def test_the_city_of_houston_split_is_repaired():
+    """One owner, not two.
+
+    Pages 15 and 20 of this revision split `City of Houston` across text
+    spans, minting a second `external_orgs` row and splitting the owner's
+    rows 111/43 across it.
+    """
+    paths = _matrix_paths()
+    member = "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
+    if member not in paths:
+        pytest.skip(f"{member} not in the lockfile")
+
+    orgs = Counter(r.fields.get("external_org") for r in extract_rows(paths[member]))
+    assert "Cityof Houston" not in orgs
+    assert "PrivateWater Line" not in orgs
+    assert orgs["City of Houston"] == 154
+    assert orgs["Private Water Line"] == 2
+
+
+@real_corpus
+def test_every_stored_token_exists_on_its_page():
+    """The invariant the citation check cannot enforce.
+
+    Citation verification is row-level and fuzzy at 0.9, so a cell whose
+    separator PyMuPDF dropped still verifies at ~0.99 inside a ~90-char row
+    quote. This asserts the thing that actually matters: every token we
+    store was read off the page rather than assembled into existence.
+    `Cityof` is not a word on page 15 — no fuzzy row match can hide that.
+
+    Compared against the page's *word boxes*, not `get_text()`. The text
+    stream has the same span-concatenation problem being fixed here
+    (`freeway1148+60`) and wrapped cells come back out of order in it, so
+    it is the wrong yardstick for this on both counts.
+
+    Scoped to this revision, where the count is zero. The other four still
+    carry clipped cells from PyMuPDF (`Rothwell Street` -> `othwell Street
+    (south`) — a separate defect, tracked in #44, not this bug class.
+    """
+    import pymupdf
+
+    paths = _matrix_paths()
+    member = "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
+    if member not in paths:
+        pytest.skip(f"{member} not in the lockfile")
+    path = paths[member]
+
+    rows = extract_rows(path)
+    with pymupdf.open(path) as pdf:
+        pages = {
+            i + 1: set(normalize(" ".join(w[4] for w in page.get_text("words"))).split())
+            for i, page in enumerate(pdf)
+        }
+
+    unknown = [
+        (r.page_no, field, value, token)
+        for r in rows
+        for field, value in r.fields.items()
+        for token in normalize(value).split()
+        # Short tokens are enum-ish (`r`, `y`, `ug`) and match anywhere.
+        if len(token) >= 4 and token not in pages[r.page_no]
+    ]
+    assert not unknown, f"{len(unknown)} invented tokens, e.g. {unknown[:5]}"
 
 
 def test_a_row_that_is_not_contiguous_falls_back_to_a_verifying_window():

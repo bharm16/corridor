@@ -128,6 +128,71 @@ def row_quote(row: list[str | None]) -> str:
     return " ".join(c for c in cells if c)
 
 
+def cell_from_words(bbox, words) -> str:
+    """Cell text rebuilt from the page's word boxes.
+
+    PyMuPDF builds a cell by concatenating text spans, and where a span
+    boundary falls mid-value it emits no separator — `City` + `of Houston`
+    arrives as `Cityof Houston`. Word boxes are cut on glyph gaps instead,
+    so joining them puts the space back.
+    """
+    if bbox is None:
+        return ""
+    x0, y0, x1, y1 = bbox
+    inside = [
+        w
+        for w in words
+        if x0 <= (w[0] + w[2]) / 2 <= x1 and y0 <= (w[1] + w[3]) / 2 <= y1
+    ]
+    # Line-major, then left to right. The y bucket keeps a slightly ragged
+    # line from scattering into per-word "lines".
+    inside.sort(key=lambda w: (round(w[1] / 3), w[0]))
+    return " ".join(w[4] for w in inside)
+
+
+def restore_separator(extracted: str | None, rebuilt: str) -> str | None:
+    """`extracted` respaced from `rebuilt`, but only if nothing else differs.
+
+    Deliberately narrow: the rebuild is trusted for whitespace alone, and
+    only where the two agree on every other character.
+
+    The guard is load-bearing, not defensive. Two of Project A's five
+    revisions are rotated 90 degrees, and there `find_tables()` bboxes and
+    `get_text("words")` coordinates are in different spaces — 98% of cells
+    disagree and the rebuild is unrelated text (`Utility ID` rebuilds as
+    `No) Conflict Y`). Requiring character equality makes those pages fall
+    through untouched instead of being overwritten with a confident-looking
+    wrong value, which would be this bug again in a worse form.
+    """
+    if not extracted or not rebuilt:
+        return extracted
+    if _WS.sub("", extracted) != _WS.sub("", rebuilt):
+        return extracted
+    return rebuilt
+
+
+def respace_table(data: list[list], table, words) -> list[list]:
+    """`table.extract()` with dropped separators restored, cell by cell."""
+    repaired = []
+    for row_index, raw in enumerate(data):
+        if row_index >= len(table.rows):
+            repaired.append(list(raw))
+            continue
+        row = table.rows[row_index]
+        # Narrow to this row's band first: every cell would otherwise scan
+        # every word on the page, which is ~800 for these matrices.
+        band = [w for w in words if row.bbox[1] <= (w[1] + w[3]) / 2 <= row.bbox[3]]
+        repaired.append(
+            [
+                restore_separator(cell, cell_from_words(row.cells[i], band))
+                if i < len(row.cells)
+                else cell
+                for i, cell in enumerate(raw)
+            ]
+        )
+    return repaired
+
+
 def dedupe_hint(fields: dict[str, str]) -> str:
     return "|".join(
         [
@@ -156,10 +221,12 @@ def extract_rows(path) -> list[MatrixRow]:
     with pymupdf.open(path) as pdf:
         for index, page in enumerate(pdf):
             page_no = index + 1
+            words = page.get_text("words")
             for table in page.find_tables().tables:
                 data = table.extract()
                 if not data:
                     continue
+                data = respace_table(data, table, words)
 
                 mapping = map_headers(data[0])
                 if all(f in mapping.values() for f in REQUIRED):

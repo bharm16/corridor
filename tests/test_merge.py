@@ -31,6 +31,21 @@ def test_unparseable_stations_are_none_not_zero():
         assert parse_station(junk) is None
 
 
+def test_a_station_split_by_a_stray_space_does_not_parse():
+    """`1 109+59` must not read as `109+59`.
+
+    The document says `1109+59`. Matching the tail leaves the record 100,000
+    feet down the alignment, which is a plausible station and therefore
+    silent — the failure mode this function exists to avoid. The prefix in
+    `STA 1149+00` is still fine: it is the leading *digit* that means the
+    number was broken, not any leading text.
+    """
+    assert parse_station("1 109+59") is None
+    assert parse_station("11 09+59") is None
+    assert parse_station(" STA 1149+00 ") == 114900.0
+    assert parse_station("STA1149+00") == 114900.0
+
+
 def test_overlapping_ranges_score_high():
     assert station_score("1149+00", "1153+17", "1149+00", "1153+17") == 1.0
     assert station_score("1149+00", "1153+17", "1150+00", "1152+00") > 0.9
