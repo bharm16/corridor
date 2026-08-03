@@ -138,8 +138,9 @@ There was never a tradeoff about which projects to *have*; the only real decisio
 | | Project | Role |
 |---|---|---|
 | **A** | **TxDOT NHHIP Segment 3C-2**, Harris County (CCSJ 0500-08-001) | Develop freely. Five dated UCM revisions (supersession stream), SUE A/C, 11 executed agreements to 1963. In the ledger. |
-| **B** | **FDOT SR 789 @ Broadway Roundabout**, Longboat Key (FPID 453730-1-52-01) | **Sealed until M7.** Manifest may be written (URLs only); no extraction or prompt iteration against it. Different agency and layout make M6's config-only claim a real test; 66 fully-populated rows are the gold set. It drew the short straw because it is the corpus development needs least — static, spine-only, and five TxDOT matrices already cover matrix development. |
+| **B** | **FDOT SR 789 @ Broadway Roundabout**, Longboat Key (FPID 453730-1-52-01) | **Seal spent** by the M7 cold run (#52), which is the one thing a seal can be used for. Now an ordinary development document, and the only one in the corpus that states its External Party once per page rather than per row. |
 | **C** | **TxDOT SH 99 Grand Parkway Segment B-1** | Develop freely. Its `Utility Owner Meeting Notes` are the only coordination minutes anywhere in the public corpus — sealing it would have sterilized the one document set the minutes extractor needs. **145 dated per-owner notes, 16 owners, biweekly, Apr 2024–May 2025**, plus three dated UCMs and two dated permit-status exports (deferred). |
+| **D** | **WSDOT contract 9540**, SR 167 Completion Stage 1b | **Sealed** (#64), and it succeeds B. Six Appendix U3 utility listings, partitioned per utility type. Nothing here has been read — not even a row count, which B's manifest did record — so the filenames in `corpus/wsdot-9540.yaml` come from the FTP directory listing and nothing else. Sibling contract **9424** (SR 509 Completion Stage 1B) carries the same Appendix U on the same corridor, is unsealed, and is what WSDOT layout work is developed against. |
 
 ### 7.2 Spine — confirmed
 

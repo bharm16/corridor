@@ -1,0 +1,46 @@
+{
+  "agency": "WSDOT",
+  "name": "SR 509 Completion Stage 1B (WSDOT 9424)",
+  "project": "wsdot-9424",
+  "sources": {
+    "https://ftp.wsdot.wa.gov/contracts/9424-SR509CompletionStage1B/RFP/Appendices/U/U2/U2-Existing%20Utility%20Listing.pdf": {
+      "bytes": 233706,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/e6/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a.pdf",
+      "retrieved_at": "2026-08-03T22:42:01.741126+00:00",
+      "role": "spine",
+      "sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "title": "Appendix U2 existing utility listing"
+    },
+    "https://ftp.wsdot.wa.gov/contracts/9424-SR509CompletionStage1B/RFP/Appendices/U/U3/U3-Utility-Owner-Contact-List.pdf": {
+      "bytes": 29589,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "other",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/c1/c15f7ed8671ebfc99c8243afe3b86c2bf579bfd4095a6c30978106a617eae334.pdf",
+      "retrieved_at": "2026-08-03T22:42:02.850724+00:00",
+      "role": "evidence",
+      "sha256": "c15f7ed8671ebfc99c8243afe3b86c2bf579bfd4095a6c30978106a617eae334",
+      "title": "Appendix U3 utility owner contact list"
+    },
+    "https://ftp.wsdot.wa.gov/contracts/9424-SR509CompletionStage1B/RFP/Appendices/U/U8/U8-Conceptual-Utility-Relocations.pdf": {
+      "bytes": 4419336,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "plan",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/58/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac.pdf",
+      "retrieved_at": "2026-08-03T22:42:04.865344+00:00",
+      "role": "evidence",
+      "sha256": "5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac",
+      "title": "Appendix U8 conceptual utility relocations"
+    }
+  }
+}

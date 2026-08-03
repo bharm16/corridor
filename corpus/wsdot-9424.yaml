@@ -1,0 +1,39 @@
+# WSDOT contract 9424 — SR 509 Completion Stage 1B, Appendix U
+#
+# The unsealed half of the pair. Contract 9540 next door is M7's holdout
+# (corpus/wsdot-9540.yaml, sealed); this is the same agency's Appendix U on
+# the same Puget Sound Gateway corridor, and it is what WSDOT layout work
+# is developed against.
+#
+# The pairing is the point. A seal only holds while there is somewhere
+# else to do the work — SR 789 was spent partly because it was the only
+# FDOT matrix in the corpus for a while. Everything learned here is
+# transferable and none of it costs the holdout.
+#
+# Not a corridor anyone is tracking. Layout evidence, like
+# corpus/cross-agency.yaml.
+project: wsdot-9424
+name: SR 509 Completion Stage 1B (WSDOT 9424)
+agency: WSDOT
+
+sources:
+  - url: "https://ftp.wsdot.wa.gov/contracts/9424-SR509CompletionStage1B/RFP/Appendices/U/U2/U2-Existing%20Utility%20Listing.pdf"
+    doc_type: matrix
+    role: spine
+    title: "Appendix U2 existing utility listing"
+    notes: >-
+      WSDOT's equivalent of a Utility Conflict Matrix, and the document
+      whose layout 9540's sealed listings share.
+
+  - url: https://ftp.wsdot.wa.gov/contracts/9424-SR509CompletionStage1B/RFP/Appendices/U/U3/U3-Utility-Owner-Contact-List.pdf
+    doc_type: other
+    role: evidence
+    title: "Appendix U3 utility owner contact list"
+    notes: >-
+      External Party contact details, which no PDF matrix in the corpus
+      carries and the Ledger has nowhere to get otherwise (#59, story 21).
+
+  - url: https://ftp.wsdot.wa.gov/contracts/9424-SR509CompletionStage1B/RFP/Appendices/U/U8/U8-Conceptual-Utility-Relocations.pdf
+    doc_type: plan
+    role: evidence
+    title: "Appendix U8 conceptual utility relocations"

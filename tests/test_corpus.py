@@ -122,6 +122,54 @@ def test_a_sealed_manifest_is_never_fetched(tmp_path, monkeypatch):
     assert not Path(tmp_path / "corpus" / "files").exists()
 
 
+def test_the_current_holdout_is_sealed():
+    """WSDOT 9540 is M7's holdout (#64), and nothing has read it.
+
+    Asserted against the real manifest rather than a fixture, because a
+    fixture proves the mechanism works and this proves it is switched on
+    for the document whose value depends on it.
+    """
+    manifest = load_manifest("corpus/wsdot-9540.yaml")
+    assert manifest.sealed is True
+    assert manifest.sources
+
+
+def test_the_holdouts_development_sibling_is_open():
+    """9424 carries the same WSDOT Appendix U and is fetched normally.
+
+    A seal with no unsealed sibling is a seal somebody eventually breaks:
+    the layout still has to be developed against something.
+    """
+    assert load_manifest("corpus/wsdot-9424.yaml").sealed is False
+
+
+def test_a_real_corpus_run_skips_the_holdout_and_names_it(capsys, monkeypatch):
+    """The whole seal, exercised over the real corpus/ directory.
+
+    `main()` globs every manifest, so this is the loop that would spend the
+    holdout — and the assertion that matters is not just that it was
+    skipped but that it was *named*. A corpus step that quietly does
+    nothing is indistinguishable from one that worked.
+    """
+    from pathlib import Path
+
+    import corridor.corpus as corpus_module
+
+    reached = []
+
+    def record(manifest, **kwargs):
+        reached.append(manifest.project)
+        return corpus_module.Summary()
+
+    monkeypatch.setattr(corpus_module, "fetch_all", record)
+    assert corpus_module.main() == 0
+
+    assert "wsdot-9540" not in reached
+    assert "wsdot-9424" in reached
+    assert "wsdot-9540: SEALED" in capsys.readouterr().out
+    assert not Path("corpus/wsdot-9540.lock.json").exists()
+
+
 def test_fetch_stores_content_addressed_and_records_provenance(tmp_path):
     summary = run(tmp_path, dict(BODIES))
     assert len(summary.fetched) == 2

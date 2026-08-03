@@ -1,0 +1,68 @@
+# WSDOT contract 9540 — SR 167 Completion Stage 1b, Appendix U utility listings
+#
+# SEALED. This is M7's eval holdout, and it replaces FDOT SR 789, whose
+# seal was spent by the cold run in #52.
+#
+# What spending this would mean: M7's recall number is honest only if
+# nothing in this repository was ever tuned against the document it
+# measures. Reading the table even once ends that, permanently and
+# unrecoverably — you cannot un-see a layout. There is no second attempt
+# at a first cold run.
+#
+# So the whole of what may be done here is writing this file. No fetch, no
+# ingest, no extraction, no prompt iteration, no opening it to "just
+# check the headers". The contents below were never read: the filenames
+# come from the FTP directory listing and nothing else. That is deliberate
+# — SR 789's manifest recorded "66 rows, 9 owners, fully populated" from a
+# pre-seal verification pass, and even that much is a leak this one does
+# not have.
+#
+# `make corpus` globs every corpus/*.yaml, so this file existing is by
+# itself enough to fetch the document by accident — one glob, no prompt,
+# irreversible. `sealed: true` is what actually stops it; the comment you
+# are reading is only documentation, and a comment is what failed last
+# time. A sealed manifest is skipped *and named in the output*, so a
+# corpus step that quietly does nothing is not mistaken for one that
+# worked.
+#
+# Development against the WSDOT layout belongs to contract 9424 (SR 509
+# Completion Stage 1B) in corpus/wsdot-9424.yaml — the same Appendix U on
+# the same corridor, unsealed, and the reason this seal can hold.
+#
+# corpus-acquisition-spec.md §7.2 records that WSDOT publishes 392
+# contracts this way, so a successor holdout exists when this one is spent.
+project: wsdot-9540
+name: SR 167 Completion Stage 1b (WSDOT 9540)
+agency: WSDOT
+sealed: true
+
+sources:
+  - url: https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-02-05-167-1b-PE-UTL-UtilityListing-Gas.pdf
+    doc_type: matrix
+    role: spine
+    title: "Appendix U3 utility listing — gas"
+
+  - url: https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-OPL.pdf
+    doc_type: matrix
+    role: spine
+    title: "Appendix U3 utility listing — Olympic Pipeline"
+
+  - url: https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Power.pdf
+    doc_type: matrix
+    role: spine
+    title: "Appendix U3 utility listing — power"
+
+  - url: https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Sewer.pdf
+    doc_type: matrix
+    role: spine
+    title: "Appendix U3 utility listing — sewer"
+
+  - url: https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Water.pdf
+    doc_type: matrix
+    role: spine
+    title: "Appendix U3 utility listing — water"
+
+  - url: https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-09-167-1b-PE-UTL-UtilityListing-Comm.pdf
+    doc_type: matrix
+    role: spine
+    title: "Appendix U3 utility listing — communications"
