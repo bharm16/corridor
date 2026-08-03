@@ -11,7 +11,7 @@ from corridor.merge import (
     score_match,
     station_score,
 )
-from corridor.models import Dependency, ExternalOrg, Project
+from corridor.models import Dependency, Document, EvidenceLink, ExternalOrg, Project
 
 
 # --------------------------------------------------------------------- units
@@ -122,6 +122,33 @@ def make_dep(session, project, org, ref, **kw):
     return dep
 
 
+def make_doc(session, project, sha):
+    doc = Document(
+        project_id=project.id,
+        sha256=sha * 64,
+        filename=f"matrix-{sha}.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=28,
+    )
+    session.add(doc)
+    session.flush()
+    return doc
+
+
+def evidence(session, dependency, document, quote="FOC1-1 MT AT&T Telecom"):
+    link = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote=quote,
+        verified=True,
+    )
+    session.add(link)
+    session.flush()
+    return link
+
+
 # ------------------------------------------------------------------ blocking
 
 
@@ -159,7 +186,143 @@ def test_ranking_blocks_on_the_resolved_party(session, project):
     assert [m.dependency.ref_code for m in matches] == ["DEP-1"]
 
 
+# --------------------------------------------------------------- provenance
+
+
+def test_two_rows_of_one_matrix_are_two_facilities(session, project):
+    """A matrix lists each facility once, so its rows cannot merge together.
+
+    This is the whole of #46: 94 of 96 AT&T candidates drew a merge
+    suggestion because every parallel fiber run along one corridor shares a
+    party, shares a type, and overlaps in stationing. Nothing in the scores
+    could separate them, because they are genuinely alike — what separates
+    them is that they are different rows of the same document.
+    """
+    org = make_org(session, "MT AT&T Texas (SWBT)")
+    doc = make_doc(session, project, "b")
+    dep = make_dep(
+        session, project, org, "DEP-1",
+        station_from="1099+61", station_to="1101+86", source_ref="FOC1-17",
+    )
+    evidence(session, dep, doc)
+
+    fields = {
+        "external_org": "MT AT&T Texas (SWBT)",
+        "utility_type": "Telecom",
+        "station_from": "1100+65",
+        "station_to": "1101+23",
+        "utility_id": "FOC1-191",
+    }
+    # Without provenance this scores ~0.89 and ranks first.
+    assert score_match(fields, dep).total > MIN_MATCH_SCORE
+    assert not rank_matches(session, project.id, fields, source_document_id=doc.id)
+
+
+def test_a_later_revision_of_the_same_facility_still_merges(session, project):
+    """The case merge ranking exists for must survive the fix."""
+    org = make_org(session, "MT AT&T Texas (SWBT)")
+    first = make_doc(session, project, "c")
+    second = make_doc(session, project, "d")
+    dep = make_dep(
+        session, project, org, "DEP-1",
+        station_from="1099+61", station_to="1101+86", source_ref="FOC1-17",
+    )
+    evidence(session, dep, first)
+
+    fields = {
+        "external_org": "MT AT&T Texas (SWBT)",
+        "utility_type": "Telecom",
+        "station_from": "1099+61",
+        "station_to": "1101+86",
+        "utility_id": "FOC1-17",
+    }
+    matches = rank_matches(session, project.id, fields, source_document_id=second.id)
+    assert [m.dependency.ref_code for m in matches] == ["DEP-1"]
+
+
+def test_a_renumbered_facility_is_still_suggested(session, project):
+    """TxDOT renumbers between revisions: FOC1-104 becomes FOC1-120.
+
+    54 of the 73 ids that vanish between the last two revisions reappear as
+    the same party at the same station under a new id. A differing
+    source_ref therefore ranks a match down; it must never exclude one, or
+    every renumbering becomes a silent duplicate in the ledger.
+    """
+    org = make_org(session, "MT CenterPoint Energy")
+    first = make_doc(session, project, "e")
+    second = make_doc(session, project, "f")
+    dep = make_dep(
+        session, project, org, "DEP-1", title="Electric — MT CenterPoint Energy",
+        station_from="1100+34", station_to="1101+00", source_ref="E102",
+    )
+    evidence(session, dep, first)
+
+    renumbered = {
+        "external_org": "MT CenterPoint Energy",
+        "utility_type": "Electric",
+        "station_from": "1100+34",
+        "station_to": "1101+00",
+        "utility_id": "E103",
+    }
+    matches = rank_matches(session, project.id, renumbered, source_document_id=second.id)
+    assert [m.dependency.ref_code for m in matches] == ["DEP-1"]
+
+
+def test_a_matching_source_ref_outranks_a_renumbered_one(session, project):
+    org = make_org(session, "MT AT&T Texas (SWBT)")
+    kept = make_dep(
+        session, project, org, "DEP-kept",
+        station_from="1149+00", station_to="1153+17", source_ref="FOC1-17",
+    )
+    renamed = make_dep(
+        session, project, org, "DEP-renamed",
+        station_from="1149+00", station_to="1153+17", source_ref="FOC1-999",
+    )
+    fields = {
+        "external_org": "MT AT&T Texas (SWBT)",
+        "utility_type": "Telecom",
+        "station_from": "1149+00",
+        "station_to": "1153+17",
+        "utility_id": "FOC1-17",
+    }
+    assert score_match(fields, kept).total > score_match(fields, renamed).total
+
+
 # ------------------------------------------------------------------- scoring
+
+
+def test_the_text_signal_reads_fields_the_extractor_emits(session, project):
+    """It read `title` and `location_desc`, which no matrix row carries.
+
+    The candidate side collapsed to `"telecom at&t texas (swbt)"` for every
+    row of a party, so the signal was a constant dressed as a comparison.
+    """
+    org = make_org(session, "MT AT&T Texas (SWBT)")
+    near = make_dep(
+        session, project, org, "DEP-near",
+        station_from="1149+00", station_to="1153+17",
+        location_desc="Schwartz Street to Eastex Freeway FR SB",
+    )
+    far = make_dep(
+        session, project, org, "DEP-far",
+        station_from="1149+00", station_to="1153+17",
+        location_desc="Nance Street to Buck Street",
+    )
+    fields = {
+        "external_org": "MT AT&T Texas (SWBT)",
+        "utility_type": "Telecom",
+        "station_from": "1149+00",
+        "station_to": "1153+17",
+        "location_start": "Schwartz Street",
+        "location_end": "Eastex Freeway FR SB",
+    }
+    by_name = {
+        m.dependency.ref_code: m
+        for m in (score_match(fields, near), score_match(fields, far))
+    }
+    text = {k: next(s.score for s in v.signals if s.name == "text")
+            for k, v in by_name.items()}
+    assert text["DEP-near"] > text["DEP-far"], text
 
 
 def test_the_true_match_ranks_first(session, project):
