@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements
 
 # One command from a clean clone.
 boot:
@@ -39,3 +39,7 @@ docs:
 # Adjudication queue at http://localhost:8412
 queue:
 	uv run uvicorn corridor.web.app:app --port 8412 --reload
+
+# LLM extraction over the executed agreements. Needs OPENAI_API_KEY in .env.
+agreements:
+	uv run python -m corridor.extract_agreement $(ARGS)
