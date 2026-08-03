@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.merge import (
+    MIN_MATCH_SCORE,
     STATION_TOLERANCE_FT,
     parse_station,
     rank_matches,
@@ -148,12 +149,18 @@ def test_ranking_blocks_on_the_resolved_party(session, project):
 
 def test_the_true_match_ranks_first(session, project):
     org = make_org(session, "MT AT&T Texas (SWBT)")
-    make_dep(session, project, org, "DEP-far", station_from="1900+00", station_to="1905+00")
+    # Both overlap the candidate, so both survive exclusion and the ordering
+    # between them is what is under test.
     right = make_dep(
         session, project, org, "DEP-right",
         station_from="1149+00", station_to="1153+17", title="Telecom — MT AT&T Texas (SWBT)",
     )
-    make_dep(session, project, org, "DEP-other", station_from="1600+00", station_to="1610+00")
+    make_dep(
+        session, project, org, "DEP-partial",
+        station_from="1150+00", station_to="1155+00", title="Telecom — MT AT&T Texas (SWBT)",
+    )
+    # Far away: excluded outright rather than ranked last.
+    make_dep(session, project, org, "DEP-far", station_from="1900+00", station_to="1905+00")
 
     matches = rank_matches(
         session,
@@ -217,8 +224,10 @@ def test_stationing_outweighs_text_similarity(session, project):
             "utility_type": "Gas",
         },
     )
-    assert matches[0].dependency.id == near.id
-    assert matches[0].total > next(m for m in matches if m.dependency.id == far.id).total
+    # The far record is not merely outranked; stationing rules it out, so it
+    # is never offered at all.
+    assert [m.dependency.id for m in matches] == [near.id]
+    assert far.id not in [m.dependency.id for m in matches]
 
 
 def test_text_alone_still_ranks_when_stationing_is_absent(session, project):
@@ -237,3 +246,64 @@ def test_text_alone_still_ranks_when_stationing_is_absent(session, project):
 
 def test_station_tolerance_is_the_documented_one():
     assert STATION_TOLERANCE_FT == 500.0
+
+
+def test_stationing_apart_excludes_rather_than_merely_scoring_low(session, project):
+    """Two records for one utility, far apart, are two different facilities.
+
+    That is affirmative evidence they are not the same, not weak evidence
+    that they are — so no amount of matching text should surface it.
+    """
+    org = make_org(session, "MT Lumen")
+    make_dep(
+        session, project, org, "DEP-far",
+        station_from="445+00", station_to="446+00", title="Telecom — MT Lumen",
+    )
+    matches = rank_matches(
+        session,
+        project.id,
+        {
+            "external_org": "MT Lumen",
+            "station_from": "245+00",
+            "station_to": "246+00",
+            "utility_type": "Telecom",
+        },
+    )
+    assert matches == []
+
+
+def test_weak_matches_are_not_offered_at_all(session, project):
+    """Five weak suggestions invite a reviewer to pick one.
+
+    Merging a non-duplicate corrupts the ledger exactly as badly as
+    accepting a duplicate does.
+    """
+    org = make_org(session, "MT Phonoscope")
+    make_dep(session, project, org, "DEP-1", title="Telecom — MT Phonoscope")
+    matches = rank_matches(
+        session,
+        project.id,
+        {"external_org": "MT Phonoscope", "title": "completely unrelated obligation"},
+    )
+    assert all(m.total >= MIN_MATCH_SCORE for m in matches)
+
+
+def test_a_genuine_duplicate_still_surfaces(session, project):
+    """The floor must not suppress the case merge exists for."""
+    org = make_org(session, "MT Verizon")
+    dep = make_dep(
+        session, project, org, "DEP-1",
+        station_from="1149+00", station_to="1153+17", title="Telecom — MT Verizon",
+    )
+    matches = rank_matches(
+        session,
+        project.id,
+        {
+            "external_org": "MT Verizon",
+            "station_from": "1149+00",
+            "station_to": "1153+17",
+            "utility_type": "Telecom",
+        },
+    )
+    assert [m.dependency.id for m in matches] == [dep.id]
+    assert matches[0].total > 0.8

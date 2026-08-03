@@ -139,6 +139,66 @@ def _evidence_link(session: Session, dependency: Dependency, citation: dict):
     return link
 
 
+def merge_candidate(
+    session: Session,
+    candidate: Candidate,
+    dependency: Dependency,
+    *,
+    actor: str,
+) -> Dependency:
+    """Fold a candidate into an existing Dependency.
+
+    Merging **adds assertions**; it never overwrites the target's field
+    values (ADR-0001). The ledger row is an adjudicated conclusion, and a
+    second source claiming a different date does not silently replace the
+    first — it becomes a competing assertion, which is what makes
+    CONTRADICTION computable and what stops the tool doing the very thing it
+    exists to prevent.
+    """
+    if candidate.state != "pending":
+        raise AlreadyAdjudicated(
+            f"candidate {candidate.id} is already {candidate.state}"
+        )
+
+    fields = candidate.payload_json.get("fields", {})
+    citations = candidate.payload_json.get("citations", [])
+
+    links = [_evidence_link(session, dependency, citation) for citation in citations]
+    primary = links[0] if links else None
+
+    for name, value in fields.items():
+        session.add(
+            Assertion(
+                dependency_id=dependency.id,
+                field_name=name,
+                asserted_value=value,
+                evidence_link_id=primary.id if primary else None,
+                doc_date=None,
+            )
+        )
+
+    candidate.state = "merged"
+    candidate.merged_into = dependency.id
+    candidate.adjudicated_at = datetime.now(timezone.utc)
+
+    session.add(
+        AuditLog(
+            actor=actor,
+            action="merge_candidate",
+            entity_type="dependency",
+            entity_id=dependency.id,
+            before_json=None,
+            after_json={
+                "candidate_id": candidate.id,
+                "merged_into": dependency.ref_code,
+                "fields": fields,
+            },
+        )
+    )
+    session.flush()
+    return dependency
+
+
 def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
     if not name:
         return None

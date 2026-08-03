@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.config import settings
+from corridor.merge import rank_matches
 from corridor.models import Candidate, DocPage, Document
 
 
@@ -41,6 +42,10 @@ class CandidateView:
     highlights: list[Highlight] = field(default_factory=list)
     remaining: int = 0
     verified_remaining: int = 0
+    # Pre-ranked, because the spec is explicit that this search must be good
+    # before anything else gets polish: accepting a duplicate instead of
+    # merging corrupts the ledger, and a reviewer will not go hunting.
+    matches: list = field(default_factory=list)
 
 
 def pending_counts(session: Session, project_id: int) -> tuple[int, int]:
@@ -100,6 +105,9 @@ def build_view(session: Session, candidate: Candidate) -> CandidateView:
         highlights=locate_quote(document, page_no, quote),
         remaining=total,
         verified_remaining=verified,
+        matches=rank_matches(
+            session, candidate.project_id, payload.get("fields") or {}, limit=5
+        ),
     )
 
 

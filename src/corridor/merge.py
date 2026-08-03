@@ -37,6 +37,11 @@ STATION_TOLERANCE_FT = 500.0
 # not, which is the common case for minutes and email.
 WEIGHTS = {"station": 3.0, "type": 1.0, "text": 1.5}
 
+# Below this, a suggestion is noise. Offering five weak matches invites a
+# reviewer under time pressure to pick one, and merging a non-duplicate
+# corrupts the ledger exactly as badly as accepting a duplicate.
+MIN_MATCH_SCORE = 0.5
+
 _STATION = re.compile(r"(\d{1,5})\s*\+\s*(\d{1,2}(?:\.\d+)?)")
 _WS = re.compile(r"\s+")
 
@@ -54,6 +59,9 @@ class Match:
     dependency: Dependency
     total: float
     signals: list[Signal] = field(default_factory=list)
+    # Set when stationing positively rules the pair out, as opposed to
+    # merely failing to support it.
+    excluded_by: str | None = None
 
 
 def parse_station(value: str | None) -> float | None:
@@ -167,7 +175,19 @@ def score_match(fields: dict, dependency: Dependency) -> Match:
 
     weight = sum(s.weight for s in signals) or 1.0
     total = sum(s.score * s.weight for s in signals) / weight
-    return Match(dependency=dependency, total=total, signals=signals)
+
+    # Stationing is a discriminator, not just a positive signal. Two records
+    # for the same utility more than the tolerance apart are two different
+    # facilities — that is affirmative evidence they are not the same, and no
+    # amount of matching text should outweigh it.
+    excluded = (
+        "stationing places these apart"
+        if station == 0.0
+        else None
+    )
+    return Match(
+        dependency=dependency, total=total, signals=signals, excluded_by=excluded
+    )
 
 
 def rank_matches(
@@ -190,5 +210,8 @@ def rank_matches(
     ).all()
 
     matches = [score_match(fields, d) for d in dependencies]
+    matches = [
+        m for m in matches if m.excluded_by is None and m.total >= MIN_MATCH_SCORE
+    ]
     matches.sort(key=lambda m: m.total, reverse=True)
     return matches[:limit]
