@@ -132,17 +132,102 @@ def test_summary_figures_are_derivations_carrying_their_records(
     assert "over 2 records" in total.provenance.marker
 
 
+def section(report, title):
+    return next(s for s in report.sections if s.title.startswith(title))
+
+
 def test_row_figures_are_assertions_carrying_a_page_and_quote(
     session, project_with_two_dependencies
 ):
+    """Per-record facts cite a document, page and quote."""
     report = build_report(session, project_with_two_dependencies.id)
-    ref = report.rows[0][0]
+    ref = section(report, "Critical items").rows[0][0]
 
     assert isinstance(ref.provenance, Assertion)
     assert ref.provenance.page_no == 1
     assert ref.provenance.quote
     assert ref.provenance.marker.startswith("[D")
     assert "p.1]" in ref.provenance.marker
+
+
+def test_the_report_has_the_six_documented_sections(
+    session, project_with_two_dependencies
+):
+    report = build_report(session, project_with_two_dependencies.id)
+    titles = [s.title for s in report.sections]
+    assert titles == [
+        "Milestone readiness",
+        "Critical items",
+        "Exceptions",
+        "Changes since last report",
+        "Aging",
+        "Appendix — full ledger",
+    ]
+
+
+def test_an_empty_section_says_why_rather_than_showing_nothing(
+    session, project_with_two_dependencies
+):
+    """"No milestones imported" and "nothing is overdue" are different
+    facts, and a blank table conveys neither."""
+    report = build_report(session, project_with_two_dependencies.id)
+    milestones = section(report, "Milestone readiness")
+    assert milestones.rows or "No milestones imported" in milestones.empty_message
+    assert "overdue" in section(report, "Aging").empty_message
+
+
+def test_the_first_report_says_so_instead_of_claiming_nothing_changed(
+    session, project_with_two_dependencies
+):
+    report = build_report(session, project_with_two_dependencies.id)
+    changes = section(report, "Changes since last report")
+    assert "nothing to compare" in changes.empty_message.lower()
+
+
+def test_the_report_states_what_it_does_not_cover(
+    session, project_with_two_dependencies
+):
+    """A report over 6 of 1,340 extracted records is a report about almost
+    nothing, and it must say so."""
+    from corridor.models import Candidate, Document
+
+    doc = session.scalars(
+        select(Document).where(
+            Document.project_id == project_with_two_dependencies.id
+        )
+    ).first()
+    session.add(
+        Candidate(
+            project_id=project_with_two_dependencies.id,
+            kind="dependency",
+            payload_json={"kind": "dependency", "fields": {}, "citations": []},
+            source_document_id=doc.id,
+            source_pages=[1],
+            confidence=1.0,
+            prompt_version="x",
+            state="pending",
+        )
+    )
+    session.flush()
+
+    report = build_report(session, project_with_two_dependencies.id)
+    assert "awaiting adjudication" in report.coverage_note
+    assert "awaiting adjudication" in render(report)
+
+
+def test_the_exceptions_section_counts_by_rule(
+    session, project_with_two_dependencies
+):
+    report = build_report(session, project_with_two_dependencies.id)
+    rules = {row[0].value for row in section(report, "Exceptions").rows}
+    assert "ORPHAN" in rules
+
+
+def test_the_appendix_lists_every_ledger_record(
+    session, project_with_two_dependencies
+):
+    report = build_report(session, project_with_two_dependencies.id)
+    assert len(section(report, "Appendix").rows) == 2
 
 
 def test_readiness_in_the_report_is_computed_not_stored(

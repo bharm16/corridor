@@ -28,6 +28,8 @@ from corridor.models import (
     EvidenceLink,
     Project,
 )
+from corridor.changes import record_run
+from corridor.export import to_pdf, to_xlsx
 from corridor.pipeline import ingest_and_extract, parse_doc_date
 from corridor.report import build_report, render
 
@@ -35,6 +37,8 @@ SLUG = "nhhip-3c2"
 MEMBER = "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
 LOCK = Path("corpus/manifest.lock.json")
 OUT = Path("out/report.html")
+PDF = Path("out/report.pdf")
+XLSX = Path("out/ledger.xlsx")
 IMAGES = Path("out/page-images")
 
 
@@ -111,10 +115,20 @@ def main(limit: int | None = None) -> int:
         report = build_report(session, project.id)
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(render(report))
+        to_xlsx(session, project.id, XLSX)
+        try:
+            to_pdf(OUT.read_text(), PDF)
+            pdf_note = f" · {PDF}"
+        except Exception as exc:  # WeasyPrint needs native libs
+            pdf_note = f" · PDF skipped ({type(exc).__name__})"
+
+        # Snapshot last, so the next report can say what changed.
+        record_run(session, project.id, output_path=str(OUT))
         session.commit()
 
     print(
-        f"report     {OUT}  {len(report.cells)} cells, every one cited  "
+        f"report     {OUT}{pdf_note} · {XLSX}\n"
+        f"           {len(report.cells)} cells, every one cited  "
         f"({time.time() - started:.1f}s)"
     )
     return 0

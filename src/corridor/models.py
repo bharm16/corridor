@@ -156,6 +156,29 @@ class ExternalOrg(Base):
     )
 
 
+class ReportRun(Base):
+    """A published report, kept so the next one can say what changed.
+
+    `ruleset_version` is stored per run for a specific reason: a figure that
+    moved between two weekly reports must be attributable to a *rule* change
+    or a *data* change, and those call for opposite responses. Tightening
+    STALE from 14 days to 10 looks identical to a project falling behind
+    unless the report remembers which ruleset produced each number.
+    """
+
+    __tablename__ = "report_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    ruleset_version: Mapped[str] = mapped_column(String(32))
+    # One entry per dependency: the state the report was published against.
+    snapshot_json: Mapped[dict] = mapped_column(JSONB)
+    output_path: Mapped[str | None] = mapped_column(Text)
+
+
 class AuditLog(Base):
     """Append-only. Every ledger mutation writes here."""
 
