@@ -1,0 +1,20 @@
+{
+  "agency": "FDOT",
+  "name": "SR 789 @ Broadway Roundabout",
+  "project": "fdot-sr789",
+  "sources": {
+    "https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/procuement_marketingd1/documents/fy26-27/ad--27114/45373015201-utility-conflict-matrix.pdf": {
+      "bytes": 335526,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/5b/5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be.pdf",
+      "retrieved_at": "2026-08-03T21:07:40.075453+00:00",
+      "role": "spine",
+      "sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+      "title": "Utility Conflict Matrix (FPID 453730-1-52-01)"
+    }
+  }
+}
