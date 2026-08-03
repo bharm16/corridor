@@ -128,6 +128,39 @@ def test_provenance_survives_the_ingest_boundary(
     assert matrix.source_url == "https://example.gov/utilities.zip"
 
 
+def test_a_nested_member_records_only_its_leaf_path(
+    session, project, tmp_path
+):
+    """The inner zip's own name is noise in a citation."""
+    import json as _json
+
+    pdf = make_pdf(
+        tmp_path / "note.pdf",
+        ["Air Liquide coordination meeting notes, biweekly cadence check-in"],
+    )
+    lock = {
+        "project": "docs-test",
+        "sources": {
+            "https://example.gov/u.zip::Coordination/Notes.zip::Meeting Notes/Air Liquide/2024.07.30 notes.pdf": {
+                "sha256": "9" * 64,
+                "local_path": str(pdf),
+                "member": "Coordination/Notes.zip::Meeting Notes/Air Liquide/2024.07.30 notes.pdf",
+                "archive_url": "https://example.gov/u.zip",
+                "doc_type": "minutes",
+                "doc_date": "2024-07-30",
+                "retrieved_at": "2026-08-03T16:00:00+00:00",
+            },
+        },
+    }
+    path = tmp_path / "nested.lock.json"
+    path.write_text(_json.dumps(lock))
+
+    [doc] = ingest_manifest(
+        session, project_id=project.id, lock_path=path, images_dir=tmp_path / "i"
+    )
+    assert doc.filename == "Meeting Notes/Air Liquide/2024.07.30 notes.pdf"
+
+
 def test_reingesting_a_manifest_is_a_noop(session, project, lockfile, tmp_path):
     first = ingest_manifest(
         session, project_id=project.id, lock_path=lockfile, images_dir=tmp_path / "i"

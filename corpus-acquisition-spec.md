@@ -131,14 +131,15 @@ Assembled by a research sweep across six channels, then independently re-verifie
 
 **The headline result overturns this spec's original premise.** Utility coordination meeting notes, dated conflict-matrix revisions, and permit-status time series *are* published without a records request. Public procurement libraries are far richer than portal search suggests, because the artifacts sit inside project document libraries rather than being individually indexed.
 
-### 7.1 Recommended pairing
+### 7.1 Project roles — decided (#3)
 
-| | Project | Why |
+There was never a tradeoff about which projects to *have*; the only real decision was which single project gets **sealed as the eval holdout**, since M7's recall number is honest only if measured on documents never used for prompt development. The right question turned out to be *which corpus can we afford to lock away* — and the answer is the one we'd miss least.
+
+| | Project | Role |
 |---|---|---|
-| **A (develop)** | **TxDOT NHHIP Segment 3C-2**, Harris County (CCSJ 0500-08-001) | Five dated Utility Conflict Matrix versions with explicit `Replaced on` supersession — spine *and* stream in one project. Plus SUE Quality Level A/C, per-owner sheets, railroad crossing inventory in two dated versions, and seven executed agreements dating to 1963. |
-| **B (holdout)** | **FDOT SR 789 @ Broadway Roundabout**, Longboat Key (FPID 453730-1-52-01) | Different agency, different matrix layout, different document conventions — makes M6's config-only claim a real test. 66 conflict rows, 9 owners, every column populated, with blank Resolved Status rows as a clean negative case. |
-
-**The alternative** is TxDOT SH 99 Grand Parkway Segment B-1 as Project B — richer (three dated UCMs, *utility owner meeting notes*, two dated permit-status series), but same agency, which weakens the generalization claim to "works on two TxDOT projects." Take SH 99 if corpus depth matters more than the M6 claim; take FDOT if the claim does.
+| **A** | **TxDOT NHHIP Segment 3C-2**, Harris County (CCSJ 0500-08-001) | Develop freely. Five dated UCM revisions (supersession stream), SUE A/C, 11 executed agreements to 1963. In the ledger. |
+| **B** | **FDOT SR 789 @ Broadway Roundabout**, Longboat Key (FPID 453730-1-52-01) | **Sealed until M7.** Manifest may be written (URLs only); no extraction or prompt iteration against it. Different agency and layout make M6's config-only claim a real test; 66 fully-populated rows are the gold set. It drew the short straw because it is the corpus development needs least — static, spine-only, and five TxDOT matrices already cover matrix development. |
+| **C** | **TxDOT SH 99 Grand Parkway Segment B-1** | Develop freely. Its `Utility Owner Meeting Notes` are the only coordination minutes anywhere in the public corpus — sealing it would have sterilized the one document set the minutes extractor needs. **145 dated per-owner notes, 16 owners, biweekly, Apr 2024–May 2025**, plus three dated UCMs and two dated permit-status exports (deferred). |
 
 ### 7.2 Spine — confirmed
 

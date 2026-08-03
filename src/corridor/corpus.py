@@ -19,6 +19,7 @@ Two behaviors are load-bearing rather than incidental:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sys
 import time
@@ -58,7 +59,9 @@ class Source:
     doc_date: date | None = None
     notes: str | None = None
     # When set, `url` names an archive and this names the document inside it.
-    # Project A's matrices are reachable no other way.
+    # Project A's matrices are reachable no other way. A `::` separator
+    # reaches one level deeper — SH 99's meeting notes are a zip inside the
+    # zip: "Utility Owner Coordination/Notes.zip::Meeting Notes/x.pdf".
     member: str | None = None
 
 
@@ -67,6 +70,8 @@ class Manifest:
     project: str
     agency: str | None
     sources: tuple[Source, ...]
+    # Human-readable project name, used by ingest to create the Project row.
+    name: str | None = None
 
 
 @dataclass
@@ -110,6 +115,7 @@ def load_manifest(path: Path | str) -> Manifest:
         project=raw["project"],
         agency=raw.get("agency"),
         sources=tuple(sources),
+        name=raw.get("name"),
     )
 
 
@@ -197,6 +203,10 @@ def _fetch_member(source, store, lock, summary, client, archives) -> None:
     key = f"{source.url}::{source.member}"
     prior = lock["sources"].get(key)
 
+    if "::" in source.member:
+        _fetch_nested_member(source, key, prior, store, lock, summary, client, archives)
+        return
+
     if source.url in archives:
         archive, probe = archives[source.url]
     else:
@@ -263,6 +273,105 @@ def _fetch_member(source, store, lock, summary, client, archives) -> None:
             "archive_url": source.url,
         },
     )
+
+
+def _fetch_nested_member(
+    source, key, prior, store, lock, summary, client, archives
+) -> None:
+    """A member of an archive that is itself a member of an archive.
+
+    Idempotency diverges from top-level members on purpose. A top-level
+    member re-checks its CRC against the outer directory, which costs a few
+    hundred KB of ranges; the same check here would cost the entire inner
+    zip (88 MB for SH 99's meeting notes). So a lock record whose file is
+    still on disk is trusted. The outer zips are dated snapshots — TxDOT
+    revises by publishing new ones, not by mutating old ones — and a forced
+    refetch is `rm` on the lock entry.
+    """
+    if prior and prior.get("sha256") and prior.get("local_path"):
+        if Path(prior["local_path"]).exists():
+            summary.skipped.append(key)
+            return
+
+    inner_path, _, leaf = source.member.partition("::")
+    cache_key = (source.url, inner_path)
+
+    if cache_key in archives:
+        inner_zip = archives[cache_key]
+    else:
+        outer = _outer_archive(source, key, prior, lock, summary, client, archives)
+        if outer is None:
+            return
+        try:
+            inner_bytes = outer.read(inner_path)
+        except KeyError:
+            lock["sources"][key] = _failure(
+                prior, status=200, error=f"inner archive {inner_path!r} not found"
+            )
+            summary.failed.append(key)
+            return
+        try:
+            inner_zip = zipfile.ZipFile(io.BytesIO(inner_bytes))
+        except zipfile.BadZipFile as exc:
+            lock["sources"][key] = _failure(
+                prior, status=200, error=f"{inner_path!r} is not a zip: {exc}"
+            )
+            summary.failed.append(key)
+            return
+        archives[cache_key] = inner_zip
+
+    try:
+        info = inner_zip.getinfo(leaf)
+    except KeyError:
+        lock["sources"][key] = _failure(
+            prior, status=200, error=f"member {leaf!r} not found in {inner_path!r}"
+        )
+        summary.failed.append(key)
+        return
+
+    _store_and_record(
+        source,
+        key,
+        prior,
+        inner_zip.read(leaf),
+        store,
+        lock,
+        summary,
+        status=200,
+        content_type=None,
+        name=leaf,
+        extra={
+            "member": source.member,
+            "member_crc32": info.CRC,
+            "archive_url": source.url,
+        },
+    )
+
+
+def _outer_archive(source, key, prior, lock, summary, client, archives):
+    """The opened outer zip, shared across every member that names it."""
+    if source.url in archives:
+        return archives[source.url][0]
+    try:
+        handle, probe = _open_archive(client, source.url)
+    except httpx.HTTPError as exc:
+        lock["sources"][key] = _failure(prior, status=None, error=str(exc))
+        summary.failed.append(key)
+        return None
+    if handle is None:
+        lock["sources"][key] = _failure(prior, status=probe.status_code)
+        summary.failed.append(key)
+        return None
+    try:
+        archive = zipfile.ZipFile(handle)
+    except zipfile.BadZipFile as exc:
+        lock["sources"][key] = _failure(
+            prior, status=200, error=f"not a zip archive: {exc}"
+        )
+        summary.failed.append(key)
+        return None
+    archives[source.url] = (archive, probe)
+    return archive
 
 
 def _store_and_record(
@@ -440,8 +549,13 @@ def _read_lock(path: Path, manifest: Manifest) -> dict:
     if path.exists():
         lock = json.loads(path.read_text())
         lock.setdefault("sources", {})
-        return lock
-    return {"project": manifest.project, "sources": {}}
+    else:
+        lock = {"sources": {}}
+    # Header travels with every write so ingest can create the Project row.
+    lock["project"] = manifest.project
+    lock["name"] = manifest.name
+    lock["agency"] = manifest.agency
+    return lock
 
 
 def _write_lock(path: Path, lock: dict) -> None:
@@ -454,25 +568,33 @@ def _now() -> str:
 
 
 def main() -> int:
-    manifest_path = Path("corpus/manifest.yaml")
-    if not manifest_path.exists():
-        print(f"no manifest at {manifest_path}", file=sys.stderr)
+    """Fetch every manifest in corpus/. One project per manifest file;
+    each writes its own <stem>.lock.json."""
+    manifests = sorted(Path("corpus").glob("*.yaml"))
+    if not manifests:
+        print("no manifests in corpus/", file=sys.stderr)
         return 1
 
-    summary = fetch_all(
-        load_manifest(manifest_path),
-        store=Path("corpus/files"),
-        lock_path=Path("corpus/manifest.lock.json"),
-    )
-    print(
-        f"fetched {len(summary.fetched)}  skipped {len(summary.skipped)}  "
-        f"drifted {len(summary.drifted)}  failed {len(summary.failed)}"
-    )
-    for url in summary.drifted:
-        print(f"  drift: {url} (previous revision retained)")
-    for url in summary.failed:
-        print(f"  FAILED: {url}")
-    return 1 if summary.failed else 0
+    failed = 0
+    for manifest_path in manifests:
+        manifest = load_manifest(manifest_path)
+        summary = fetch_all(
+            manifest,
+            store=Path("corpus/files"),
+            lock_path=manifest_path.with_suffix(".lock.json"),
+        )
+        print(
+            f"{manifest.project}: fetched {len(summary.fetched)}  "
+            f"skipped {len(summary.skipped)}  drifted {len(summary.drifted)}  "
+            f"failed {len(summary.failed)}",
+            flush=True,
+        )
+        for url in summary.drifted:
+            print(f"  drift: {url} (previous revision retained)")
+        for url in summary.failed:
+            print(f"  FAILED: {url}")
+        failed += len(summary.failed)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
