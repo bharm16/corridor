@@ -21,8 +21,8 @@ from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
 
-PROMPT_VERSION = "agreement_v2"
-PROMPT_PATH = Path("prompts/agreement_v2.md")
+PROMPT_VERSION = "agreement_v3"
+PROMPT_PATH = Path("prompts/agreement_v3.md")
 
 # Below this there is nothing to read — a mostly-blank scan or a page of
 # furniture. Calling the model on it spends tokens to be told "no".
@@ -190,19 +190,27 @@ def main(argv: list[str]) -> int:
 
         client = OpenAIClient()
         total = verified = 0
+        # flush on every line: this run takes ~40 minutes over 269 pages, and
+        # Python buffers stdout when it is not a TTY. Without this the whole
+        # job looks identical to a hung one until it finishes.
+        print(f"{len(documents)} agreements, model {client.model}", flush=True)
         for document in documents:
             candidates = extract_document(session, document, client=client)
             ok = sum(1 for c in candidates if c.citations_verified)
             total += len(candidates)
             verified += ok
-            print(f"  {ok:>3}/{len(candidates):<3} verified  {document.filename[:56]}")
+            print(
+                f"  {ok:>3}/{len(candidates):<3} verified  {document.filename[:56]}",
+                flush=True,
+            )
             session.commit()
 
         pct = 100 * verified / total if total else 0.0
-        print(f"{total} obligations, {verified} verified ({pct:.1f}%)")
+        print(f"{total} obligations, {verified} verified ({pct:.1f}%)", flush=True)
         print(
             f"tokens: {client.usage.prompt_tokens:,} in / "
-            f"{client.usage.completion_tokens:,} out"
+            f"{client.usage.completion_tokens:,} out",
+            flush=True,
         )
     return 0
 
