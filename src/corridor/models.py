@@ -366,9 +366,11 @@ class Candidate(Base):
     # not comparable and you cannot tell which change moved the numbers.
     prompt_version: Mapped[str | None] = mapped_column(String(64))
     model: Mapped[str | None] = mapped_column(String(64))
-    # Mechanical: every citation's quote was found on its cited page. Kept
-    # separate from `state`, which is the human adjudication lifecycle. A
-    # candidate whose citations fail is sunk in the queue, never dropped.
+    # Mechanical: every citation's quote was found on its cited page, and —
+    # where the extractor transcribes rather than parses — every field value
+    # is text on that page too. Kept separate from `state`, which is the
+    # human adjudication lifecycle. A candidate that fails either check is
+    # sunk in the queue, never dropped.
     citations_verified: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )

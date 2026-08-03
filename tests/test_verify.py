@@ -1,6 +1,12 @@
 import pytest
 
-from corridor.verify import THRESHOLD, match_ratio, quote_appears_on
+from corridor.verify import (
+    THRESHOLD,
+    match_ratio,
+    quote_appears_on,
+    unverified_fields,
+    value_appears_on,
+)
 
 PAGE = """NHHIP Segment 3C-2 Utility Conflict Matrix
 
@@ -69,3 +75,67 @@ def test_threshold_is_the_documented_one():
     """v0-build-spec.md 7 fixes this at 0.9; drifting it silently changes
     every recall and citation-validity number ever recorded."""
     assert THRESHOLD == 0.9
+
+
+# ------------------------------------------------------- field-token checking
+
+
+def test_a_field_value_that_is_on_the_page_passes():
+    assert value_appears_on("AT&T Texas (SWBT)", PAGE)
+    assert value_appears_on("Schwartz Street", PAGE)
+    assert value_appears_on("1149+00", PAGE)
+
+
+def test_a_value_with_an_invented_token_fails():
+    """The defect a fuzzy row-level quote match can never catch.
+
+    A transcribed `1140+00` sits inside a perfectly valid row quote and
+    clears 0.9 comfortably, so citation verification passes it. This is
+    the only mechanical check on field *values*.
+    """
+    assert not value_appears_on("1140+00", PAGE)
+    assert not value_appears_on("Comcast of Houston", PAGE)
+
+
+def test_a_clipped_value_fails():
+    """`Rothwell Street` arrived from PyMuPDF as `othwell Street` (#44).
+
+    Cutting on punctuation rather than matching substrings is what keeps
+    this catchable: `othwell` is still not `schwartz`, and it is still not
+    a token of anything on the page.
+    """
+    assert not value_appears_on("chwartz Street", PAGE)
+
+
+def test_a_combined_station_and_offset_cell_passes_both_halves():
+    """Some layouts carry stationing and offset in one column, and the
+    page's own tokenization keeps them together. Splitting the cell into
+    two real fields is correct, and both halves are on the page, so the
+    comma must not read as invented text."""
+    page = "135+58.68, 236.85' LT  CENTURY LINK  Buried fiber"
+    assert value_appears_on("135+58.68", page)
+    assert value_appears_on("236.85", page)
+    assert value_appears_on("135+58.68, 236.85'", page)
+
+
+def test_short_tokens_are_not_checked():
+    """`R`, `Y`, `UG` are enum-ish and match anywhere, so requiring them
+    proves nothing and rejecting them would fail every row."""
+    assert value_appears_on("UG", PAGE)
+    assert value_appears_on("R", PAGE)
+
+
+def test_an_empty_value_is_not_a_claim():
+    assert value_appears_on("", PAGE)
+    assert value_appears_on(None, PAGE)
+
+
+def test_unverified_fields_names_every_field_that_failed():
+    """The caller needs to know *which* value is suspect, not just that one is."""
+    fields = {
+        "external_org": "AT&T Texas (SWBT)",
+        "station_from": "1140+00",
+        "location_start": "Nowhere Boulevard",
+    }
+    assert unverified_fields(fields, PAGE) == {"station_from", "location_start"}
+    assert unverified_fields({"external_org": "AT&T Texas (SWBT)"}, PAGE) == set()

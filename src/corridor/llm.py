@@ -13,12 +13,15 @@ them returns, so this is a latency change and not a quality one.
 
 from __future__ import annotations
 
+import base64
 import json
 import random
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -36,7 +39,14 @@ MAX_ATTEMPTS = 4
 
 
 class StructuredClient(Protocol):
-    def complete(self, *, system: str, user: str, schema: dict) -> dict: ...
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict,
+        images: Sequence[Path | str] = (),
+    ) -> dict: ...
 
 
 @dataclass
@@ -85,12 +95,19 @@ class OpenAIClient:
     def __exit__(self, *exc):
         self.close()
 
-    def complete(self, *, system: str, user: str, schema: dict) -> dict:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict,
+        images: Sequence[Path | str] = (),
+    ) -> dict:
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": _user_content(user, images)},
             ],
             "response_format": {
                 "type": "json_schema",
@@ -150,18 +167,45 @@ class OpenAIClient:
         time.sleep(min(2**attempt, 16) * (0.5 + random.random()))
 
 
+def _user_content(user: str, images: Sequence[Path | str]) -> str | list[dict]:
+    """A plain string without images, multipart content with them.
+
+    Text-only callers and their stubs then see exactly the request they saw
+    before. A named image that is not on disk raises rather than degrading
+    to a text-only call, which would run the vision extractor blind.
+    """
+    if not images:
+        return user
+
+    content: list[dict] = [{"type": "text", "text": user}]
+    for image in images:
+        encoded = base64.b64encode(Path(image).read_bytes()).decode()
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{encoded}"},
+            }
+        )
+    return content
+
+
 def complete_many(
     client: StructuredClient,
     *,
     system: str,
     schema: dict,
     users: list[str],
+    images: list[Sequence[Path | str]] | None = None,
     max_workers: int | None = None,
 ) -> list[dict]:
     """Run many completions concurrently, results in input order.
 
     One failure does not kill the batch — it comes back as `{"_error": ...}`
     in its slot, so a single bad page costs that page and nothing else.
+
+    `images` is one image set per user, or None. Omitted rather than passed
+    empty when there are none, so text-only stubs that take no `images`
+    keyword keep working.
     """
     if not users:
         return []
@@ -171,7 +215,13 @@ def complete_many(
 
     with ThreadPoolExecutor(max_workers=min(workers, len(users))) as pool:
         futures = {
-            pool.submit(client.complete, system=system, user=user, schema=schema): i
+            pool.submit(
+                client.complete,
+                system=system,
+                user=user,
+                schema=schema,
+                **({"images": images[i]} if images else {}),
+            ): i
             for i, user in enumerate(users)
         }
         for future in futures:

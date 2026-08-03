@@ -225,29 +225,63 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
 
 
 def main(argv: list[str]) -> int:
-    """`make extract ARGS="<slug> [--redo]"`"""
+    """`make extract ARGS="<slug> [--vision] [--redo]"`"""
     from corridor.db import Session as SessionFactory
 
     args = [a for a in argv if not a.startswith("-")]
     flags = {a for a in argv if a.startswith("-")}
-    unknown = flags - {"--redo"}
+    unknown = flags - {"--redo", "--vision"}
     if not args or unknown:
         print(
-            "usage: extract <project-slug> [--redo]"
+            "usage: extract <project-slug> [--vision] [--redo]"
             + (f"\nunknown flag(s): {', '.join(sorted(unknown))}" if unknown else ""),
             file=sys.stderr,
         )
         return 2
 
     slug = args[0]
+    client = None
     with SessionFactory() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
-        outcomes = extract_project(session, project, redo="--redo" in flags)
-        print(render(project, DETERMINISTIC_VERSION, outcomes))
+        if "--vision" in flags:
+            from corridor.extract_matrix import PROMPT_VERSION as VISION_VERSION
+            from corridor.extract_matrix import extract_document
+            from corridor.llm import OpenAIClient
+
+            # One client for the run, so retry, backoff and usage accounting
+            # are shared rather than reset per document.
+            client = OpenAIClient()
+            prompt_version = VISION_VERSION
+
+            def extract(session, document):
+                return extract_document(session, document, client=client)
+
+            print(f"vision extraction, model {client.model}", flush=True)
+        else:
+            extract, prompt_version = deterministic, DETERMINISTIC_VERSION
+
+        try:
+            outcomes = extract_project(
+                session,
+                project,
+                extract=extract,
+                prompt_version=prompt_version,
+                redo="--redo" in flags,
+            )
+        finally:
+            if client is not None:
+                client.close()
+
+        print(render(project, prompt_version, outcomes))
+        if client is not None:
+            print(
+                f"tokens: {client.usage.prompt_tokens:,} in / "
+                f"{client.usage.completion_tokens:,} out"
+            )
 
     return 1 if any(o.status == "unreadable" for o in outcomes) else 0
 

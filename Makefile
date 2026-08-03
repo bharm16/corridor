@@ -46,8 +46,10 @@ agreements:
 
 # Extract every matrix in a project. Skips documents already extracted at
 # this prompt version; --redo replaces their pending candidates and leaves
-# adjudicated ones alone:
+# adjudicated ones alone. --vision reads the page images with a model and
+# needs OPENAI_API_KEY:
 #   make extract ARGS="nhhip-3c2"
+#   make extract ARGS="nhhip-3c2 --vision"
 #   make extract ARGS="nhhip-3c2 --redo"
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
