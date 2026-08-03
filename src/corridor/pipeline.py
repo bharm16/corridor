@@ -49,7 +49,10 @@ def ingest_manifest(
                 path=record["local_path"],
                 doc_type=record.get("doc_type", "other"),
                 images_dir=images_dir,
-                filename=record.get("member") or _basename(key),
+                # The leaf path only: a nested member's full path drags the
+                # inner zip's name into every citation. "Meeting Notes/Air
+                # Liquide/2024.07.30 notes.pdf" is what a reader needs.
+                filename=(record.get("member") or _basename(key)).split("::")[-1],
                 source_url=record.get("archive_url") or key,
                 retrieved_at=record.get("retrieved_at"),
                 doc_date=parse_doc_date(record.get("doc_date")),
