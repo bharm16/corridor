@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements milestones exceptions minutes
 
 # One command from a clean clone.
 boot:
@@ -43,3 +43,15 @@ queue:
 # LLM extraction over the executed agreements. Needs OPENAI_API_KEY in .env.
 agreements:
 	uv run python -m corridor.extract_agreement $(ARGS)
+
+# Import a milestone CSV: make milestones ARGS="sh99-grand-parkway corpus/sh99-milestones.csv RELO-CONSTR"
+milestones:
+	uv run python -m corridor.milestones $(ARGS)
+
+# Current exception list: make exceptions ARGS="nhhip-3c2"
+exceptions:
+	uv run python -m corridor.exceptions $(ARGS)
+
+# LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
+minutes:
+	uv run python -m corridor.extract_minutes $(ARGS)

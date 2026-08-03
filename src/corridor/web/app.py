@@ -23,6 +23,7 @@ from starlette.requests import Request
 
 from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session as SessionFactory
+from corridor.exceptions import RULES
 from corridor.ledger import browse, load_dependency
 from corridor.models import (
     CRITICALITIES,
@@ -86,6 +87,7 @@ def ledger(
     org_id: int | None = None,
     criticality: str | None = None,
     ready: str | None = None,
+    rule: str | None = None,
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -96,6 +98,7 @@ def ledger(
         org_id=org_id,
         criticality=criticality or None,
         ready={"yes": True, "no": False}.get(ready or ""),
+        rule=rule or None,
     )
     orgs = session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
     return TEMPLATES.TemplateResponse(
@@ -110,7 +113,9 @@ def ledger(
                 "org_id": org_id or "",
                 "criticality": criticality or "",
                 "ready": ready or "",
+                "rule": rule or "",
             },
+            "rules": sorted(RULES),
             "statuses": DEP_STATUSES,
             "criticalities": CRITICALITIES,
         },

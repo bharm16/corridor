@@ -25,6 +25,9 @@
   .notready { color:var(--muted); }
   .contra { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
   .count { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .exc { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
+  .exc.sev-high { color:var(--bad); border-color:#fecdca; background:#fef3f2; }
+  .excs { display:flex; gap:.25rem; flex-wrap:wrap; }
 </style>
 
 <header>
@@ -51,6 +54,12 @@
       <option value="{{ o.id }}" {% if filters.org_id == o.id %}selected{% endif %}>{{ o.name }}</option>
     {% endfor %}
   </select>
+  <select name="rule">
+    <option value="">any exception</option>
+    {% for r in rules %}
+      <option value="{{ r }}" {% if filters.rule == r %}selected{% endif %}>{{ r }}</option>
+    {% endfor %}
+  </select>
   <select name="ready">
     <option value="">ready or not</option>
     <option value="yes" {% if filters.ready == 'yes' %}selected{% endif %}>ready</option>
@@ -67,6 +76,7 @@
         <th>Ref</th><th>Source ID</th><th>External party</th><th>Station</th>
         <th>Status</th><th>Crit</th><th>Ready</th>
         <th title="Assertions / evidence links behind this record">Backing</th>
+        <th>Exceptions</th>
       </tr>
     </thead>
     <tbody>
@@ -84,9 +94,17 @@
             {% else %}<span class="pill notready">no</span>{% endif %}
           </td>
           <td class="num">{{ r.assertion_count }}a / {{ r.evidence_count }}e</td>
+          <td>
+            <span class="excs">
+            {%- for e in r.exceptions|sort(attribute='severity', reverse=true) %}
+              <span class="pill exc {% if e.severity >= 6 %}sev-high{% endif %}"
+                    title="{{ e.detail }}">{{ e.rule }}</span>
+            {%- else %}<span class="muted">—</span>{% endfor %}
+            </span>
+          </td>
         </tr>
       {% else %}
-        <tr><td colspan="8" style="color:var(--muted);padding:1.5rem 0">
+        <tr><td colspan="9" style="color:var(--muted);padding:1.5rem 0">
           Nothing matches these filters.</td></tr>
       {% endfor %}
     </tbody>

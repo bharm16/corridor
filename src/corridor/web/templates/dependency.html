@@ -58,6 +58,24 @@
     {{ view.dependency.evidence_required or 'no closure bar recorded' }}
   </p>
 
+  <h2>Exceptions</h2>
+  {% if view.exceptions %}
+    <table>
+      <thead><tr><th>Rule</th><th>Severity</th><th>Why</th></tr></thead>
+      <tbody>
+        {% for e in view.exceptions|sort(attribute='severity', reverse=true) %}
+          <tr>
+            <td><span class="pill contra">{{ e.rule }}</span></td>
+            <td class="muted">{{ '%.1f'|format(e.severity) }}</td>
+            <td>{{ e.detail }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No exceptions. Computed at read time, never stored.</p>
+  {% endif %}
+
   <h2>Fields and what each source claimed</h2>
   {% for f in view.fields %}
     <div class="field">

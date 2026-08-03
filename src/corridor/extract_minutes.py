@@ -1,13 +1,14 @@
-"""LLM extraction of obligations from executed agreements.
+"""LLM extraction of events from utility coordination meeting notes.
 
-Extraction runs **per page**, which is the whole design. The page number is
-supplied by us and never by the model, so a citation cannot point at a page
-the model invented — the only thing the model contributes to a citation is
-the quote, and that quote is then mechanically verified against the page it
-was drawn from. A hallucinated page number is impossible by construction;
-a hallucinated quote is caught.
+These notes discuss conflicts that already exist in the matrix, so this
+extractor emits **event candidates**, not new dependencies. A note saying
+"PL41 — protect-in-place" is a fact about a dependency the ledger should
+already hold; creating a second record for it is the duplicate-corruption
+the merge search exists to prevent.
 
-Nothing here writes to the Ledger. Extractors produce Candidates only.
+Per page, like the agreement extractor: the page number is ours, only the
+quote comes from the model, and the quote is checked against the exact text
+the model saw.
 """
 
 from __future__ import annotations
@@ -18,43 +19,45 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.llm import OpenAIClient, StructuredClient
-from corridor.models import Candidate, DocPage, Document
+from corridor.models import EVENT_TYPES, Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
 
-PROMPT_VERSION = "agreement_v3"
-PROMPT_PATH = Path("prompts/agreement_v3.md")
+PROMPT_VERSION = "minutes_v1"
+PROMPT_PATH = Path("prompts/minutes_v1.md")
 
-# Below this there is nothing to read — a mostly-blank scan or a page of
-# furniture. Calling the model on it spends tokens to be told "no".
 MIN_PAGE_CHARS = 200
 
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["obligations"],
+    "required": ["events"],
     "properties": {
-        "obligations": {
+        "events": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
                 "required": [
-                    "title",
+                    "event_type",
+                    "description",
+                    "event_date",
                     "external_org",
-                    "obligation",
-                    "notice_period",
+                    "conflict_ref",
+                    "station_from",
+                    "station_to",
                     "committed_date",
-                    "evidence_required",
                     "quote",
                     "confidence",
                 ],
                 "properties": {
-                    "title": {"type": "string"},
+                    "event_type": {"type": "string", "enum": list(EVENT_TYPES)},
+                    "description": {"type": "string"},
+                    "event_date": {"type": ["string", "null"]},
                     "external_org": {"type": ["string", "null"]},
-                    "obligation": {"type": "string"},
-                    "notice_period": {"type": ["string", "null"]},
+                    "conflict_ref": {"type": ["string", "null"]},
+                    "station_from": {"type": ["string", "null"]},
+                    "station_to": {"type": ["string", "null"]},
                     "committed_date": {"type": ["string", "null"]},
-                    "evidence_required": {"type": ["string", "null"]},
                     "quote": {"type": "string"},
                     "confidence": {"type": "number"},
                 },
@@ -93,8 +96,10 @@ def extract_document(
             user=f"Page {page.page_no} of {document.filename}:\n\n{text}",
             schema=SCHEMA,
         )
-        for item in result.get("obligations") or []:
-            candidate = _to_candidate(document, page, item, getattr(client, "model", None))
+        for item in result.get("events") or []:
+            candidate = _to_candidate(
+                document, page, item, getattr(client, "model", None)
+            )
             if candidate is not None:
                 session.add(candidate)
                 candidates.append(candidate)
@@ -107,33 +112,37 @@ def _to_candidate(
     document: Document, page: DocPage, item: dict, model: str | None
 ) -> Candidate | None:
     quote = (item.get("quote") or "").strip()
-    if not quote:
+    event_type = item.get("event_type")
+    if not quote or event_type not in EVENT_TYPES:
         return None
 
-    # The page is ours; only the quote came from the model, and it is checked
-    # against the exact text the model was shown.
     verified = quote_appears_on(quote, page.text or "")
 
     fields = {
         key: value
         for key, value in (
-            ("title", item.get("title")),
+            ("event_type", event_type),
+            ("description", item.get("description")),
+            ("event_date", item.get("event_date")),
             ("external_org", item.get("external_org")),
-            ("obligation", item.get("obligation")),
-            ("notice_period", item.get("notice_period")),
+            ("conflict_ref", item.get("conflict_ref")),
+            ("station_from", item.get("station_from")),
+            ("station_to", item.get("station_to")),
             ("committed_date", item.get("committed_date")),
-            ("evidence_required", item.get("evidence_required")),
         )
         if value
     }
-    if not fields.get("title"):
+    if not fields.get("description"):
         return None
 
     return Candidate(
         project_id=document.project_id,
-        kind="dependency",
+        # An event, not a dependency: these notes discuss conflicts that
+        # already exist, and the adjudicator's job is to attach this to the
+        # right one rather than create another.
+        kind="event",
         payload_json={
-            "kind": "dependency",
+            "kind": "event",
             "fields": fields,
             "citations": [
                 {
@@ -145,11 +154,15 @@ def _to_candidate(
                 }
             ],
             "confidence": item.get("confidence"),
+            # The merge search blocks on the resolved party, then scores on
+            # stationing — both of which these notes carry.
             "dedupe_hint": "|".join(
-                [fields.get("external_org", ""), "agreement", fields.get("title", "")]
+                [
+                    fields.get("external_org", ""),
+                    fields.get("conflict_ref", ""),
+                    f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
+                ]
             ),
-            # OCR text is materially noisier, and a citation resting on it
-            # deserves to be visibly different when a reviewer weighs it.
             "text_source": page.text_source,
         },
         source_document_id=document.id,
@@ -162,7 +175,7 @@ def _to_candidate(
 
 
 def main(argv: list[str]) -> int:
-    """`make agreements ARGS="<slug> [limit]"`"""
+    """`make minutes ARGS="<slug> [limit]"`"""
     import sys
     import time
 
@@ -170,7 +183,7 @@ def main(argv: list[str]) -> int:
     from corridor.extract_batch import already_extracted, extract_documents
     from corridor.models import Project
 
-    slug = argv[0] if argv else "nhhip-3c2"
+    slug = argv[0] if argv else "sh99-grand-parkway"
     limit = int(argv[1]) if len(argv) > 1 else None
 
     with SessionFactory() as session:
@@ -183,7 +196,7 @@ def main(argv: list[str]) -> int:
 
         documents = session.scalars(
             select(Document)
-            .where(Document.project_id == project.id, Document.doc_type == "agreement")
+            .where(Document.project_id == project.id, Document.doc_type == "minutes")
             .order_by(Document.doc_date)
         ).all()
 
@@ -202,7 +215,7 @@ def main(argv: list[str]) -> int:
         client = OpenAIClient()
         started = time.time()
         print(
-            f"{len(documents)} agreements at {client.max_workers}-way concurrency, "
+            f"{len(documents)} notes at {client.max_workers}-way concurrency, "
             f"model {client.model}"
             + (f" ({len(skipped)} already done)" if skipped else ""),
             flush=True,
@@ -231,7 +244,7 @@ def main(argv: list[str]) -> int:
                 schema=SCHEMA,
                 min_page_chars=MIN_PAGE_CHARS,
                 to_candidate=_to_candidate,
-                items_key="obligations",
+                items_key="events",
                 on_document=report,
             )
         finally:
@@ -241,7 +254,7 @@ def main(argv: list[str]) -> int:
         pct = 100 * ok / n if n else 0.0
         elapsed = time.time() - started
         print(
-            f"{n} obligations, {ok} verified ({pct:.1f}%) in {elapsed:.0f}s"
+            f"{n} events, {ok} verified ({pct:.1f}%) in {elapsed:.0f}s"
             + (f", {totals['err']} pages failed" if totals["err"] else ""),
             flush=True,
         )
