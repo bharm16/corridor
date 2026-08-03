@@ -18,6 +18,7 @@ a recognizable table with no data rows is a legitimate empty result.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 
 import pymupdf
@@ -52,6 +53,12 @@ HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
 
 # A table without both of these is not a utility matrix.
 REQUIRED = ("utility_id", "external_org")
+
+# Share of a table's cells whose two readings must match before the word-box
+# reading is trusted for any of them. Aligned tables sit at ~99.5%; a table
+# read in the wrong coordinate space sat at ~2%. Anywhere in between should
+# be looked at rather than silently repaired.
+AGREEMENT_FLOOR = 0.5
 
 _WS = re.compile(r"\s+")
 
@@ -128,13 +135,27 @@ def row_quote(row: list[str | None]) -> str:
     return " ".join(c for c in cells if c)
 
 
+def page_words(page) -> list[tuple[float, float, float, float, str]]:
+    """Word boxes in the coordinate space `find_tables()` reports bboxes in.
+
+    `get_text("words")` measures against the mediabox; `find_tables()`
+    measures against the displayed, rotated page. On the two 90-degree
+    revisions those are different spaces, which is why word boxes and table
+    cells appeared to describe unrelated content until this transform.
+    """
+    rotation = page.rotation_matrix
+    words = []
+    for word in page.get_text("words"):
+        box = pymupdf.Rect(word[:4]) * rotation
+        words.append((box.x0, box.y0, box.x1, box.y1, word[4]))
+    return words
+
+
 def cell_from_words(bbox, words) -> str:
     """Cell text rebuilt from the page's word boxes.
 
-    PyMuPDF builds a cell by concatenating text spans, and where a span
-    boundary falls mid-value it emits no separator — `City` + `of Houston`
-    arrives as `Cityof Houston`. Word boxes are cut on glyph gaps instead,
-    so joining them puts the space back.
+    A word belongs to the cell its centre falls in, so it lands in exactly
+    one — which is what `table.extract()` gets wrong in both directions.
     """
     if bbox is None:
         return ""
@@ -150,47 +171,81 @@ def cell_from_words(bbox, words) -> str:
     return " ".join(w[4] for w in inside)
 
 
-def restore_separator(extracted: str | None, rebuilt: str) -> str | None:
-    """`extracted` respaced from `rebuilt`, but only if nothing else differs.
+def cell_text(extracted: str | None, rebuilt: str) -> str | None:
+    """The word-box reading, falling back to the span reading.
 
-    Deliberately narrow: the rebuild is trusted for whitespace alone, and
-    only where the two agree on every other character.
+    `table.extract()` concatenates text spans and is sloppy at cell
+    boundaries in both directions: it drops a leading character (`Rothwell
+    Street` -> `othwell Street`) and absorbs the first character of the
+    next cell (`Canal Street` -> `Canal Street o`). It also omits the
+    separator where a span boundary falls mid-value (`City` + `of Houston`
+    -> `Cityof Houston`).
 
-    The guard is load-bearing, not defensive. Two of Project A's five
-    revisions are rotated 90 degrees, and there `find_tables()` bboxes and
-    `get_text("words")` coordinates are in different spaces — 98% of cells
-    disagree and the rebuild is unrelated text (`Utility ID` rebuilds as
-    `No) Conflict Y`). Requiring character equality makes those pages fall
-    through untouched instead of being overwritten with a confident-looking
-    wrong value, which would be this bug again in a worse form.
+    Word boxes are cut on glyph gaps and assigned to exactly one cell, so
+    they can do none of those. Across the eight real matrices the two
+    readings differ on 393 of 79,588 cells, and the word-box reading is
+    right in every one.
+
+    An empty rebuild is no evidence, not contrary evidence — a cell whose
+    words could not be located keeps whatever the span reader found rather
+    than being blanked.
     """
-    if not extracted or not rebuilt:
-        return extracted
-    if _WS.sub("", extracted) != _WS.sub("", rebuilt):
-        return extracted
-    return rebuilt
+    return rebuilt or extracted
 
 
-def respace_table(data: list[list], table, words) -> list[list]:
-    """`table.extract()` with dropped separators restored, cell by cell."""
-    repaired = []
+def readings_agree(pairs: Collection[tuple[str | None, str]]) -> bool:
+    """Do the two readings describe the same table?
+
+    Trusting word boxes per cell is only safe while both readings agree
+    about what the table says. When the coordinate spaces do not line up
+    they disagree wholesale — 98% of cells, with `Utility ID` reading as
+    `No) Conflict Y` — and repairing cell by cell would confidently
+    overwrite every one. So agreement is established once per table and a
+    table that fails is left entirely alone.
+
+    Compared ignoring whitespace, because a missing separator is the most
+    common real difference and is not disagreement about content.
+    """
+    agree = total = 0
+    for extracted, rebuilt in pairs:
+        if not extracted and not rebuilt:
+            continue
+        total += 1
+        if _WS.sub("", extracted or "") == _WS.sub("", rebuilt):
+            agree += 1
+    return total == 0 or agree / total >= AGREEMENT_FLOOR
+
+
+def reread_table(data: list[list], table, words) -> list[list]:
+    """`table.extract()` re-read from word boxes, when the two agree."""
+    rebuilt: list[list[str]] = []
     for row_index, raw in enumerate(data):
         if row_index >= len(table.rows):
-            repaired.append(list(raw))
+            rebuilt.append(["" for _ in raw])
             continue
         row = table.rows[row_index]
         # Narrow to this row's band first: every cell would otherwise scan
         # every word on the page, which is ~800 for these matrices.
         band = [w for w in words if row.bbox[1] <= (w[1] + w[3]) / 2 <= row.bbox[3]]
-        repaired.append(
+        rebuilt.append(
             [
-                restore_separator(cell, cell_from_words(row.cells[i], band))
-                if i < len(row.cells)
-                else cell
-                for i, cell in enumerate(raw)
+                cell_from_words(row.cells[i], band) if i < len(row.cells) else ""
+                for i, _ in enumerate(raw)
             ]
         )
-    return repaired
+
+    pairs = [
+        (cell, rebuilt[r][c])
+        for r, raw in enumerate(data)
+        for c, cell in enumerate(raw)
+    ]
+    if not readings_agree(pairs):
+        return data
+
+    return [
+        [cell_text(cell, rebuilt[r][c]) for c, cell in enumerate(raw)]
+        for r, raw in enumerate(data)
+    ]
 
 
 def dedupe_hint(fields: dict[str, str]) -> str:
@@ -221,12 +276,12 @@ def extract_rows(path) -> list[MatrixRow]:
     with pymupdf.open(path) as pdf:
         for index, page in enumerate(pdf):
             page_no = index + 1
-            words = page.get_text("words")
+            words = page_words(page)
             for table in page.find_tables().tables:
                 data = table.extract()
                 if not data:
                     continue
-                data = respace_table(data, table, words)
+                data = reread_table(data, table, words)
 
                 mapping = map_headers(data[0])
                 if all(f in mapping.values() for f in REQUIRED):
