@@ -57,6 +57,91 @@ sources:
     doc_date: 2026-02-13
     notes: "707 rows, 14 owners. Current revision. Data Source column dropped again."
 
+  # Executed agreements with the external parties. These are what
+  # `evidence_required` will eventually point at: the documents that close
+  # an obligation rather than describe one.
+  - url: &agreements https://app.box.com/index.php?rm=box_download_shared_file&shared_name=eyvevaldtmolpmq8y9ndmqvms1ja8c1x&file_id=f_2214767039429
+    member: city-of-houston-municipal-maintenance-agreement-1-3-1969.pdf
+    doc_type: agreement
+    role: spine
+    title: "City of Houston Municipal Maintenance Agreement"
+    doc_date: 1969-01-03
+
+  - url: *agreements
+    member: city-of-houston-signal-agreement-1-31-1996-executed.pdf
+    doc_type: agreement
+    role: spine
+    title: "City of Houston Signal Agreement (executed)"
+    doc_date: 1996-01-31
+
+  - url: *agreements
+    member: city-of-houston-illumination-maintenance-agreement-6-5-1963.pdf
+    doc_type: agreement
+    role: spine
+    title: "City of Houston Illumination Maintenance Agreement"
+    doc_date: 1963-06-05
+
+  - url: *agreements
+    member: city-of-houston-parking-agreement-1-22-1974.pdf
+    doc_type: agreement
+    role: spine
+    title: "City of Houston Parking Agreement"
+    doc_date: 1974-01-22
+
+  - url: *agreements
+    member: city-of-houston-parking-agreement-amendment-ruiz-runnels-10-12-2012.pdf.pdf
+    doc_type: agreement
+    role: spine
+    title: "City of Houston Parking Agreement amendment (Ruiz/Runnels)"
+    doc_date: 2012-10-12
+    notes: "Amends the 1974 parking agreement. Double .pdf suffix is the real filename."
+
+  - url: *agreements
+    member: city-of-houston-parking-agreement-amendment14-ruiz-runnels-3-19-2015.PDF
+    doc_type: agreement
+    role: spine
+    title: "City of Houston Parking Agreement amendment 14 (Ruiz/Runnels)"
+    doc_date: 2015-03-19
+
+  - url: *agreements
+    member: metro-master-agreement-for-transitways-7-20-1988.pdf.pdf
+    doc_type: agreement
+    role: spine
+    title: "METRO Master Agreement for Transitways"
+    doc_date: 1988-07-20
+    notes: >-
+      Filename says 1988; the RID index Document Date column says 7/20/1998.
+      A contradiction between two TxDOT-published sources about the same
+      document — exactly the shape the ledger is meant to surface.
+
+  - url: *agreements
+    member: metro-transitway-at-us59-eastex-freeway-9-7-1993.pdf.pdf
+    doc_type: agreement
+    role: spine
+    title: "METRO Transitway at US 59 Eastex Freeway"
+    doc_date: 1993-09-07
+
+  - url: *agreements
+    member: metro-hot-agreement-5-13-2011.pdf.pdf
+    doc_type: agreement
+    role: spine
+    title: "METRO HOT Lane Agreement"
+    doc_date: 2011-05-13
+
+  - url: *agreements
+    member: harris-county-mou-12-22-2022.pdf
+    doc_type: agreement
+    role: spine
+    title: "Harris County MOU"
+    doc_date: 2022-12-22
+
+  - url: *agreements
+    member: city-of-houston-mou-12-19-2022.pdf
+    doc_type: agreement
+    role: spine
+    title: "City of Houston MOU"
+    doc_date: 2022-12-19
+
   # Subsurface Utility Engineering — the evidence behind location claims.
   - url: *utilities
     member: nhhip-3c2-subsurface-utility-engineering-quality-level-a-test-hole-data.pdf
