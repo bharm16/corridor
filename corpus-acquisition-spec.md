@@ -22,6 +22,10 @@ The data model needs two structurally different things, and no single public sou
 
 A bid package is all spine and no stream: nothing in it ever changes state, so a readiness ledger built from it can never demonstrate readiness *changing*. A status-report archive is the reverse. **Both roles, same project** is the requirement.
 
+**Stream is a property of a document set, not of a document.** A single status report is not a stream; three consecutive editions are. This is why Project A's five dated matrix revisions are each tagged `role: spine` — every one of them is a register of dependency records — while the *series* supplies the stream. A manifest entry's `role` describes what a document contains; the stream emerges from having several of them across time.
+
+The corollary bites: a stream source covering a *different* project cannot be borrowed. The Denton and Rockwall reports are genuine streams, but they track Denton- and Rockwall-area projects, not NHHIP Segment 3C-2, so they belong to their own project rather than to Project A's manifest. Documents that cannot merge into one ledger are not a stream for that ledger.
+
 ### Minimum viable corpus, per project
 
 | | |
