@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs
+.PHONY: boot up down psql test corpus demo ingest docs queue
 
 # One command from a clean clone.
 boot:
@@ -35,3 +35,7 @@ ingest:
 # Browse the evidence store: `make docs` or `make docs ARGS="page 167 1"`.
 docs:
 	uv run python -m corridor.docs $(ARGS)
+
+# Adjudication queue at http://localhost:8412
+queue:
+	uv run uvicorn corridor.web.app:app --port 8412 --reload
