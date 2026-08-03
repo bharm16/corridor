@@ -44,6 +44,7 @@ DOC_TYPES = (
     "other",
 )
 PARSE_STATUSES = ("pending", "parsed", "failed")
+TEXT_SOURCES = ("text_layer", "ocr")
 DEP_TYPES = (
     "utility_relocation",
     "agreement",
@@ -177,6 +178,14 @@ class DocPage(Base):
     # Evidence display needs the rendered page as well as its text: a quote
     # is checked against the text and shown against the image.
     image_path: Mapped[str | None] = mapped_column(Text)
+    # OCR output is materially less reliable than a real text layer, so a
+    # citation resting on it deserves to be visibly different rather than
+    # indistinguishable from one read straight out of the PDF.
+    text_source: Mapped[str] = mapped_column(
+        _enum(*TEXT_SOURCES, name="text_source"),
+        default="text_layer",
+        server_default="text_layer",
+    )
 
 
 class Dependency(Base):

@@ -24,6 +24,12 @@ from corridor.models import DocPage, Document
 # 700-row matrix does not turn into a gigabyte of PNGs.
 RENDER_DPI = 150
 
+# Below this, the page has no usable text layer and is almost certainly a
+# scan. Scanner-output PDFs return roughly 30 characters per page, which
+# reads as an empty page rather than as a scan — a first-pass extraction
+# returning little means "scan", not "blank".
+MIN_TEXT_CHARS = 50
+
 
 def ingest_document(
     session: Session,
@@ -51,6 +57,19 @@ def ingest_document(
         )
     ).first()
     if existing is not None:
+        # Re-ingest never re-parses — the bytes are identical by definition.
+        # But provenance describes where the file came from, not the file,
+        # and a document first ingested without a date would otherwise carry
+        # that gap forever. Backfill nulls only; never overwrite.
+        for attribute, value in (
+            ("source_url", source_url),
+            ("retrieved_at", _as_datetime(retrieved_at)),
+            ("doc_date", doc_date),
+            ("filename", filename),
+        ):
+            if value and getattr(existing, attribute) in (None, ""):
+                setattr(existing, attribute, value)
+        session.flush()
         return existing
 
     document = Document(
@@ -78,13 +97,14 @@ def ingest_document(
         session.flush()
         return document
 
-    for page_no, text, image_path in pages:
+    for page_no, text, image_path, text_source in pages:
         session.add(
             DocPage(
                 document_id=document.id,
                 page_no=page_no,
                 text=text,
                 image_path=str(image_path),
+                text_source=text_source,
             )
         )
 
@@ -94,9 +114,9 @@ def ingest_document(
     return document
 
 
-def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path]]:
+def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path, str]]:
     images_dir.mkdir(parents=True, exist_ok=True)
-    out: list[tuple[int, str, Path]] = []
+    out: list[tuple[int, str, Path, str]] = []
 
     with pymupdf.open(path) as pdf:
         if pdf.page_count == 0:
@@ -107,9 +127,37 @@ def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path]]:
             page_no = index + 1
             image_path = images_dir / f"{page_no:04d}.png"
             page.get_pixmap(dpi=RENDER_DPI).save(image_path)
-            out.append((page_no, page.get_text(), image_path))
+
+            text = page.get_text()
+            source = "text_layer"
+            if len(text.strip()) < MIN_TEXT_CHARS:
+                ocr = _ocr(image_path)
+                if len(ocr.strip()) > len(text.strip()):
+                    text, source = ocr, "ocr"
+
+            out.append((page_no, text, image_path, source))
 
     return out
+
+
+def _ocr(image_path: Path) -> str:
+    """OCR the page image we already rendered.
+
+    The spec names `ocrmypdf`, whose value is producing a searchable PDF.
+    v0 stores page text and never mutates originals, so that second PDF
+    pipeline (and its ghostscript dependency chain) buys nothing here —
+    the 150 dpi PNG is already on disk.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            return pytesseract.image_to_string(image)
+    except Exception:
+        # A missing tesseract binary must not fail the whole ingest. The
+        # page keeps its thin text layer and is visibly not OCR'd.
+        return ""
 
 
 def _as_datetime(value: str | datetime | None) -> datetime | None:

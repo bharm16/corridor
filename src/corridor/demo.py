@@ -28,7 +28,7 @@ from corridor.models import (
     EvidenceLink,
     Project,
 )
-from corridor.pipeline import ingest_and_extract
+from corridor.pipeline import ingest_and_extract, parse_doc_date
 from corridor.report import build_report, render
 
 SLUG = "nhhip-3c2"
@@ -39,9 +39,14 @@ IMAGES = Path("out/page-images")
 
 
 def _reset(session, project: Project) -> None:
-    """Make the demo repeatable. Scoped to this project only."""
+    """Make the demo repeatable by clearing the ledger, not the evidence.
+
+    Documents and pages are deliberately left alone: ingest is idempotent,
+    so re-running costs nothing, and a demo that wipes the evidence store
+    would destroy whatever `make ingest` loaded. Originals are never
+    deleted anywhere in this system.
+    """
     dep_ids = select(Dependency.id).where(Dependency.project_id == project.id)
-    doc_ids = select(Document.id).where(Document.project_id == project.id)
     session.execute(delete(Assertion).where(Assertion.dependency_id.in_(dep_ids)))
     session.execute(
         delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dep_ids))
@@ -49,8 +54,6 @@ def _reset(session, project: Project) -> None:
     session.execute(delete(AuditLog).where(AuditLog.entity_id.in_(dep_ids)))
     session.execute(delete(Candidate).where(Candidate.project_id == project.id))
     session.execute(delete(Dependency).where(Dependency.project_id == project.id))
-    session.execute(delete(DocPage).where(DocPage.document_id.in_(doc_ids)))
-    session.execute(delete(Document).where(Document.project_id == project.id))
 
 
 def main(limit: int | None = None) -> int:
@@ -90,6 +93,7 @@ def main(limit: int | None = None) -> int:
             filename=MEMBER,
             source_url=record.get("archive_url") or record.get("url"),
             retrieved_at=record.get("retrieved_at"),
+            doc_date=parse_doc_date(record.get("doc_date")),
         )
         print(f"ingested   {document.filename}  {document.pages} pages")
 
