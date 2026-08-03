@@ -13,12 +13,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.models import (
     Assertion,
+    AuditLog,
     Dependency,
+    DependencyEvent,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -64,10 +66,119 @@ class DependencyView:
     evidence: list[tuple[EvidenceLink, Document]]
     is_ready: bool
     last_evidenced_at: date | None
+    events: list[DependencyEvent] = field(default_factory=list)
+    audit: list[AuditLog] = field(default_factory=list)
 
     @property
     def contradictions(self) -> list[FieldView]:
         return [f for f in self.fields if f.contradicted]
+
+
+@dataclass
+class LedgerRow:
+    dependency: Dependency
+    org_name: str | None
+    is_ready: bool
+    evidence_count: int
+    assertion_count: int
+    contradicted: bool
+
+
+def browse(
+    session: Session,
+    project_id: int,
+    *,
+    status: str | None = None,
+    org_id: int | None = None,
+    criticality: str | None = None,
+    ready: bool | None = None,
+    limit: int = 200,
+) -> list[LedgerRow]:
+    """The ledger, filterable.
+
+    Readiness is computed per row rather than stored, so filtering on it
+    happens here rather than in SQL (ADR-0002).
+    """
+    query = select(Dependency).where(Dependency.project_id == project_id)
+    if status:
+        query = query.where(Dependency.status == status)
+    if org_id:
+        query = query.where(Dependency.external_org_id == org_id)
+    if criticality:
+        query = query.where(Dependency.criticality == criticality)
+
+    dependencies = session.scalars(query.order_by(Dependency.ref_code)).all()
+    ids = [d.id for d in dependencies] or [0]
+
+    orgs = {
+        o.id: o.name
+        for o in session.scalars(select(ExternalOrg))
+    }
+    evidence_counts = dict(
+        session.execute(
+            select(EvidenceLink.dependency_id, func.count())
+            .where(EvidenceLink.dependency_id.in_(ids))
+            .group_by(EvidenceLink.dependency_id)
+        ).all()
+    )
+    assertion_counts = dict(
+        session.execute(
+            select(Assertion.dependency_id, func.count())
+            .where(Assertion.dependency_id.in_(ids))
+            .group_by(Assertion.dependency_id)
+        ).all()
+    )
+    contradicted = _contradicted_ids(session, ids)
+    ready_ids = _ready_ids(session, ids)
+
+    rows = [
+        LedgerRow(
+            dependency=d,
+            org_name=orgs.get(d.external_org_id),
+            is_ready=d.id in ready_ids,
+            evidence_count=evidence_counts.get(d.id, 0),
+            assertion_count=assertion_counts.get(d.id, 0),
+            contradicted=d.id in contradicted,
+        )
+        for d in dependencies
+    ]
+    if ready is not None:
+        rows = [r for r in rows if r.is_ready is ready]
+    return rows[:limit]
+
+
+def _ready_ids(session: Session, ids: list[int]) -> set[int]:
+    return set(
+        session.scalars(
+            select(EvidenceLink.dependency_id)
+            .where(
+                EvidenceLink.dependency_id.in_(ids),
+                EvidenceLink.verified.is_(True),
+                EvidenceLink.satisfies_requirement.is_(True),
+            )
+            .distinct()
+        ).all()
+    )
+
+
+def _contradicted_ids(session: Session, ids: list[int]) -> set[int]:
+    """Fields with two or more distinct verified values.
+
+    Only verified assertions count: an unverified claim is a bad citation,
+    not evidence that sources disagree.
+    """
+    rows = session.execute(
+        select(Assertion.dependency_id, Assertion.field_name)
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
+            Assertion.dependency_id.in_(ids),
+            EvidenceLink.verified.is_(True),
+            Assertion.asserted_value.is_not(None),
+        )
+        .group_by(Assertion.dependency_id, Assertion.field_name)
+        .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
+    ).all()
+    return {dependency_id for dependency_id, _ in rows}
 
 
 def load_dependency(session: Session, dependency_id: int) -> DependencyView:
@@ -119,6 +230,19 @@ def load_dependency(session: Session, dependency_id: int) -> DependencyView:
         evidence=[(link, doc) for link, doc in evidence],
         is_ready=is_ready(session, dependency_id),
         last_evidenced_at=last_evidenced_at(session, dependency_id),
+        events=session.scalars(
+            select(DependencyEvent)
+            .where(DependencyEvent.dependency_id == dependency_id)
+            .order_by(DependencyEvent.event_date, DependencyEvent.id)
+        ).all(),
+        audit=session.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == "dependency",
+                AuditLog.entity_id == dependency_id,
+            )
+            .order_by(AuditLog.ts)
+        ).all(),
     )
 
 

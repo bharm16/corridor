@@ -4,7 +4,14 @@
     {
       "name": "queue",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "uvicorn", "corridor.web.app:app", "--port", "8412"],
+      "runtimeArgs": [
+        "run",
+        "uvicorn",
+        "corridor.web.app:app",
+        "--port",
+        "8412",
+        "--reload"
+      ],
       "port": 8412
     }
   ]

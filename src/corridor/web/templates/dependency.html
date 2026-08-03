@@ -1,0 +1,147 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>{{ view.dependency.ref_code }} — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; --warn:#b54708; }
+  * { box-sizing:border-box; }
+  body { font:14px/1.5 system-ui, sans-serif; margin:0; color:#111; background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#06c; text-decoration:none; font-size:.9rem; }
+  main { padding:1.2rem; max-width:70rem; }
+  h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.04em;
+       color:var(--muted); margin:1.8rem 0 .5rem; font-weight:600; }
+  h2:first-of-type { margin-top:.5rem; }
+  .pill { font-size:.72rem; padding:.05rem .4rem; border-radius:10px; border:1px solid var(--line); }
+  .ready { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
+  .notready { color:var(--muted); }
+  .contra { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
+  .unver { color:var(--bad); border-color:#fecdca; background:#fef3f2; }
+  .field { border:1px solid var(--line); border-radius:5px; margin-bottom:.6rem; }
+  .field > .head { display:flex; gap:.6rem; align-items:baseline; padding:.4rem .6rem;
+                   background:#fafafa; border-bottom:1px solid var(--line); }
+  .field .name { font-weight:600; min-width:10rem; }
+  .field .value { font-variant-numeric:tabular-nums; }
+  .claim { display:flex; gap:.6rem; padding:.35rem .6rem; border-top:1px solid #f2f2f2;
+           font-size:.85rem; align-items:baseline; }
+  .claim .src { color:var(--muted); min-width:19rem; font-size:.78rem; }
+  .claim .q { font-family:ui-monospace, monospace; font-size:.76rem; color:#333; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; color:var(--muted); font-weight:500; font-size:.8rem;
+       border-bottom:1px solid var(--line); padding:.3rem .5rem; }
+  td { border-bottom:1px solid #f4f4f4; padding:.3rem .5rem; vertical-align:top; font-size:.85rem; }
+  .muted { color:var(--muted); }
+  form.inline { display:inline; }
+  button { font:inherit; font-size:.78rem; padding:.15rem .5rem; border:1px solid var(--line);
+           border-radius:3px; background:#fff; cursor:pointer; }
+  button[disabled] { opacity:.4; cursor:not-allowed; }
+</style>
+
+<header>
+  <b>{{ view.dependency.ref_code }}
+    {%- if view.dependency.source_ref %} · {{ view.dependency.source_ref }}{% endif %}</b>
+  <span><a href="/ledger/{{ project.slug }}">← ledger</a></span>
+</header>
+
+<main>
+  <p>
+    <b>{{ view.dependency.title }}</b><br>
+    {{ view.org_name or 'no external party' }} ·
+    {{ view.dependency.station_from or '—' }}{% if view.dependency.station_to %} → {{ view.dependency.station_to }}{% endif %} ·
+    {{ view.dependency.status }} · {{ view.dependency.criticality }}
+    {% if view.is_ready %}<span class="pill ready">ready</span>
+    {% else %}<span class="pill notready">not ready</span>{% endif %}
+    {% if view.contradictions %}<span class="pill contra">{{ view.contradictions|length }} field(s) contradicted</span>{% endif %}
+  </p>
+  <p class="muted" style="font-size:.85rem">
+    Last evidenced {{ view.last_evidenced_at or 'never' }} ·
+    {{ view.dependency.evidence_required or 'no closure bar recorded' }}
+  </p>
+
+  <h2>Fields and what each source claimed</h2>
+  {% for f in view.fields %}
+    <div class="field">
+      <div class="head">
+        <span class="name">{{ f.name }}</span>
+        <span class="value">{{ f.values|join('  ·  ') or '—' }}</span>
+        {% if f.contradicted %}<span class="pill contra">sources disagree</span>{% endif %}
+      </div>
+      {% for a in f.assertions %}
+        <div class="claim">
+          <span class="src">
+            {{ a.filename or 'unknown document' }}{% if a.page_no %} p.{{ a.page_no }}{% endif %}
+            {% if not a.verified %}<span class="pill unver">unverified</span>{% endif %}
+          </span>
+          <span class="value">{{ a.value or '—' }}</span>
+          <span class="q">{{ (a.quote or '')[:90] }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">No assertions recorded.</p>
+  {% endfor %}
+
+  <h2>Events</h2>
+  {% if view.events %}
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>Description</th><th>By</th></tr></thead>
+      <tbody>
+        {% for e in view.events %}
+          <tr>
+            <td>{{ e.event_date or '—' }}</td>
+            <td>{{ e.event_type }}</td>
+            <td>{{ e.description }}</td>
+            <td class="muted">{{ e.created_by }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No events yet. Slips and commitments are appended here, never edited.</p>
+  {% endif %}
+
+  <h2>Evidence</h2>
+  <table>
+    <thead><tr><th>Document</th><th>Page</th><th>Quote</th><th>Verified</th><th>Closes this?</th></tr></thead>
+    <tbody>
+      {% for link, doc in view.evidence %}
+        <tr>
+          <td>{{ doc.filename }}</td>
+          <td class="muted">{{ link.page_no }}</td>
+          <td class="q" style="font-family:ui-monospace,monospace;font-size:.76rem">{{ link.quote[:110] }}</td>
+          <td>{% if link.verified %}<span class="pill ready">yes</span>
+              {% else %}<span class="pill unver">no</span>{% endif %}</td>
+          <td>
+            <form class="inline" method="post"
+                  action="/dependencies/{{ view.dependency.id }}/evidence/{{ link.id }}/satisfies">
+              <input type="hidden" name="slug" value="{{ project.slug }}">
+              <button {% if not link.verified %}disabled
+                title="Readiness cannot rest on a quote that is not on the page."{% endif %}>
+                {% if link.satisfies_requirement %}✓ closes it{% else %}mark as closing{% endif %}
+              </button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">No evidence linked.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Audit</h2>
+  <table>
+    <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for a in view.audit %}
+        <tr>
+          <td class="muted">{{ a.ts.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td>{{ a.actor }}</td>
+          <td>{{ a.action }}</td>
+          <td class="muted">{{ (a.after_json or {})|string|truncate(110) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">No audit entries.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</main>
