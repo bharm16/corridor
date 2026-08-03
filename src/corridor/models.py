@@ -59,6 +59,14 @@ CRITICALITIES = ("critical", "high", "normal")
 CANDIDATE_KINDS = ("dependency", "event")
 CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")
 ORG_TYPES = ("utility", "railroad", "agency", "consultant", "other")
+EVENT_TYPES = (
+    "commitment",
+    "response",
+    "slip",
+    "escalation",
+    "status_change",
+    "closure",
+)
 
 
 def _enum(*values: str, name: str) -> Enum:
@@ -239,13 +247,39 @@ class Dependency(Base):
     )
 
 
+class DependencyEvent(Base):
+    """Something that happened to a Dependency, in order.
+
+    Events are appended, never edited. A `slip` does not update the earlier
+    commitment — both stay, because the fact that a date moved is itself the
+    thing worth recording.
+    """
+
+    __tablename__ = "dependency_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    event_type: Mapped[str] = mapped_column(_enum(*EVENT_TYPES, name="event_type"))
+    # The date the event happened, which is not the date it was recorded.
+    event_date: Mapped[date | None] = mapped_column(Date)
+    description: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class EvidenceLink(Base):
     __tablename__ = "evidence_links"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    # Events also carry evidence, but dependency_events is not in the
-    # skeleton; that migration widens this.
+    # Always set, even when the evidence is really about an event: an
+    # event's evidence is also its dependency's evidence, and keeping this
+    # required means `is_ready` and `last_evidenced_at` stay simple queries
+    # over one column rather than a union.
     dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    # Set when this quote specifically supports an event rather than a field.
+    event_id: Mapped[int | None] = mapped_column(ForeignKey("dependency_events.id"))
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
     page_no: Mapped[int] = mapped_column(Integer)
     quote: Mapped[str] = mapped_column(Text)

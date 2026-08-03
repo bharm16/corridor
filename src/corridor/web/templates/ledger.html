@@ -1,0 +1,94 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ledger — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; --warn:#b54708; }
+  * { box-sizing:border-box; }
+  body { font:14px/1.5 system-ui, sans-serif; margin:0; color:#111; background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#06c; text-decoration:none; font-size:.9rem; }
+  .filters { padding:.7rem 1.2rem; border-bottom:1px solid var(--line); background:#fafafa;
+             display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }
+  select, button { font:inherit; padding:.25rem .4rem; border:1px solid var(--line);
+                   border-radius:3px; background:#fff; }
+  button { cursor:pointer; }
+  main { padding:0 1.2rem 2rem; }
+  table { border-collapse:collapse; width:100%; margin-top:.8rem; }
+  th { text-align:left; color:var(--muted); font-weight:500; font-size:.82rem;
+       border-bottom:1px solid var(--line); padding:.35rem .5rem; }
+  td { border-bottom:1px solid #f0f0f0; padding:.35rem .5rem; vertical-align:top; }
+  td a { color:#06c; text-decoration:none; font-variant-numeric:tabular-nums; }
+  .num { font-variant-numeric:tabular-nums; color:var(--muted); }
+  .pill { font-size:.72rem; padding:.05rem .4rem; border-radius:10px; border:1px solid var(--line); }
+  .ready { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
+  .notready { color:var(--muted); }
+  .contra { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
+  .count { color:var(--muted); font-variant-numeric:tabular-nums; }
+</style>
+
+<header>
+  <b>Ledger — {{ project.name }}</b>
+  <span><a href="/queue/{{ project.slug }}">adjudication queue →</a></span>
+</header>
+
+<form class="filters" method="get">
+  <select name="status">
+    <option value="">any status</option>
+    {% for s in statuses %}
+      <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
+    {% endfor %}
+  </select>
+  <select name="criticality">
+    <option value="">any criticality</option>
+    {% for c in criticalities %}
+      <option value="{{ c }}" {% if filters.criticality == c %}selected{% endif %}>{{ c }}</option>
+    {% endfor %}
+  </select>
+  <select name="org_id">
+    <option value="">any external party</option>
+    {% for o in orgs %}
+      <option value="{{ o.id }}" {% if filters.org_id == o.id %}selected{% endif %}>{{ o.name }}</option>
+    {% endfor %}
+  </select>
+  <select name="ready">
+    <option value="">ready or not</option>
+    <option value="yes" {% if filters.ready == 'yes' %}selected{% endif %}>ready</option>
+    <option value="no" {% if filters.ready == 'no' %}selected{% endif %}>not ready</option>
+  </select>
+  <button>filter</button>
+  <span class="count">{{ rows|length }} shown</span>
+</form>
+
+<main>
+  <table>
+    <thead>
+      <tr>
+        <th>Ref</th><th>Source ID</th><th>External party</th><th>Station</th>
+        <th>Status</th><th>Crit</th><th>Ready</th>
+        <th title="Assertions / evidence links behind this record">Backing</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        <tr>
+          <td><a href="/ledger/{{ project.slug }}/{{ r.dependency.id }}">{{ r.dependency.ref_code }}</a></td>
+          <td class="num">{{ r.dependency.source_ref or '—' }}</td>
+          <td>{{ r.org_name or '—' }}
+            {%- if r.contradicted %} <span class="pill contra">sources disagree</span>{% endif %}</td>
+          <td class="num">{{ r.dependency.station_from or '—' }}{% if r.dependency.station_to %} → {{ r.dependency.station_to }}{% endif %}</td>
+          <td>{{ r.dependency.status }}</td>
+          <td>{{ r.dependency.criticality }}</td>
+          <td>
+            {% if r.is_ready %}<span class="pill ready">ready</span>
+            {% else %}<span class="pill notready">no</span>{% endif %}
+          </td>
+          <td class="num">{{ r.assertion_count }}a / {{ r.evidence_count }}e</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8" style="color:var(--muted);padding:1.5rem 0">
+          Nothing matches these filters.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</main>

@@ -23,7 +23,18 @@ from starlette.requests import Request
 
 from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session as SessionFactory
-from corridor.models import AuditLog, Candidate, Dependency, DocPage, Project
+from corridor.ledger import browse, load_dependency
+from corridor.models import (
+    CRITICALITIES,
+    DEP_STATUSES,
+    AuditLog,
+    Candidate,
+    Dependency,
+    DocPage,
+    EvidenceLink,
+    ExternalOrg,
+    Project,
+)
 from corridor.web.queue import build_view, next_candidate, pending_counts
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -65,6 +76,98 @@ def queue(request: Request, slug: str, session: Session = Depends(get_session)):
         "queue.html",
         {"project": project, "view": build_view(session, candidate)},
     )
+
+
+@app.get("/ledger/{slug}", response_class=HTMLResponse)
+def ledger(
+    request: Request,
+    slug: str,
+    status: str | None = None,
+    org_id: int | None = None,
+    criticality: str | None = None,
+    ready: str | None = None,
+    session: Session = Depends(get_session),
+):
+    project = _project(session, slug)
+    rows = browse(
+        session,
+        project.id,
+        status=status or None,
+        org_id=org_id,
+        criticality=criticality or None,
+        ready={"yes": True, "no": False}.get(ready or ""),
+    )
+    orgs = session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
+    return TEMPLATES.TemplateResponse(
+        request,
+        "ledger.html",
+        {
+            "project": project,
+            "rows": rows,
+            "orgs": orgs,
+            "filters": {
+                "status": status or "",
+                "org_id": org_id or "",
+                "criticality": criticality or "",
+                "ready": ready or "",
+            },
+            "statuses": DEP_STATUSES,
+            "criticalities": CRITICALITIES,
+        },
+    )
+
+
+@app.get("/ledger/{slug}/{dependency_id}", response_class=HTMLResponse)
+def dependency_detail(
+    request: Request,
+    slug: str,
+    dependency_id: int,
+    session: Session = Depends(get_session),
+):
+    project = _project(session, slug)
+    try:
+        view = load_dependency(session, dependency_id)
+    except LookupError:
+        raise HTTPException(404, "no such dependency")
+    if view.dependency.project_id != project.id:
+        raise HTTPException(404, "no such dependency in this project")
+    return TEMPLATES.TemplateResponse(
+        request, "dependency.html", {"project": project, "view": view}
+    )
+
+
+@app.post("/dependencies/{dependency_id}/evidence/{link_id}/satisfies")
+def mark_satisfies(
+    dependency_id: int,
+    link_id: int,
+    slug: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Mark evidence as meeting the dependency's `evidence_required` bar.
+
+    This is the only way a Dependency becomes ready (ADR-0002), so it is a
+    deliberate act on a named piece of evidence rather than a status change.
+    """
+    link = session.get(EvidenceLink, link_id)
+    if link is None or link.dependency_id != dependency_id:
+        raise HTTPException(404, "no such evidence on this dependency")
+    if not link.verified:
+        # Readiness cannot rest on a quote that is not on the page.
+        raise HTTPException(400, "evidence is unverified")
+
+    link.satisfies_requirement = not link.satisfies_requirement
+    session.add(
+        AuditLog(
+            actor="reviewer",
+            action="mark_satisfies_requirement",
+            entity_type="dependency",
+            entity_id=dependency_id,
+            before_json={"evidence_link_id": link_id, "satisfies": not link.satisfies_requirement},
+            after_json={"evidence_link_id": link_id, "satisfies": link.satisfies_requirement},
+        )
+    )
+    session.commit()
+    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
 
 @app.get("/page-image/{document_id}/{page_no}")
