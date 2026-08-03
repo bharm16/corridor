@@ -16,6 +16,7 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.exceptions import evaluate, exceptions_for
 from corridor.models import (
     Assertion,
     AuditLog,
@@ -68,6 +69,7 @@ class DependencyView:
     last_evidenced_at: date | None
     events: list[DependencyEvent] = field(default_factory=list)
     audit: list[AuditLog] = field(default_factory=list)
+    exceptions: list = field(default_factory=list)
 
     @property
     def contradictions(self) -> list[FieldView]:
@@ -82,6 +84,11 @@ class LedgerRow:
     evidence_count: int
     assertion_count: int
     contradicted: bool
+    exceptions: list = field(default_factory=list)
+
+    @property
+    def worst_severity(self) -> float:
+        return max((e.severity for e in self.exceptions), default=0.0)
 
 
 def browse(
@@ -92,6 +99,7 @@ def browse(
     org_id: int | None = None,
     criticality: str | None = None,
     ready: bool | None = None,
+    rule: str | None = None,
     limit: int = 200,
 ) -> list[LedgerRow]:
     """The ledger, filterable.
@@ -131,6 +139,12 @@ def browse(
     contradicted = _contradicted_ids(session, ids)
     ready_ids = _ready_ids(session, ids)
 
+    # Exceptions are computed, never stored (ADR-0002's reasoning), so they
+    # are evaluated here rather than joined.
+    by_dependency: dict[int, list] = {}
+    for exception in evaluate(session, project_id):
+        by_dependency.setdefault(exception.dependency_id, []).append(exception)
+
     rows = [
         LedgerRow(
             dependency=d,
@@ -139,11 +153,14 @@ def browse(
             evidence_count=evidence_counts.get(d.id, 0),
             assertion_count=assertion_counts.get(d.id, 0),
             contradicted=d.id in contradicted,
+            exceptions=by_dependency.get(d.id, []),
         )
         for d in dependencies
     ]
     if ready is not None:
         rows = [r for r in rows if r.is_ready is ready]
+    if rule:
+        rows = [r for r in rows if any(e.rule == rule for e in r.exceptions)]
     return rows[:limit]
 
 
@@ -235,6 +252,7 @@ def load_dependency(session: Session, dependency_id: int) -> DependencyView:
             .where(DependencyEvent.dependency_id == dependency_id)
             .order_by(DependencyEvent.event_date, DependencyEvent.id)
         ).all(),
+        exceptions=exceptions_for(session, dependency_id),
         audit=session.scalars(
             select(AuditLog)
             .where(

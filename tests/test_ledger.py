@@ -247,6 +247,31 @@ def test_unverified_evidence_cannot_be_marked_as_closing(
     assert load_dependency(session, dep.id).is_ready is False
 
 
+def test_ledger_rows_carry_their_exceptions(session, project, dependency):
+    [row] = browse(session, project.id)
+    rules = {e.rule for e in row.exceptions}
+    # No milestone linked and no committed date on a fresh matrix record.
+    assert "ORPHAN" in rules
+    assert "MISSING_DATE" in rules
+    assert row.worst_severity > 0
+
+
+def test_the_ledger_can_be_filtered_to_one_rule(session, project, dependency):
+    assert len(browse(session, project.id, rule="ORPHAN")) == 1
+    assert browse(session, project.id, rule="OVERDUE") == []
+
+
+def test_the_ledger_page_shows_exception_pills(client, project, dependency):
+    r = client.get(f"/ledger/{project.slug}")
+    assert "ORPHAN" in r.text
+    assert "any exception" in r.text
+
+
+def test_the_detail_page_explains_each_exception(client, project, dependency):
+    r = client.get(f"/ledger/{project.slug}/{dependency.id}")
+    assert "not linked to any milestone" in r.text
+
+
 def test_a_dependency_from_another_project_is_not_reachable(
     client, session, project, dependency
 ):
