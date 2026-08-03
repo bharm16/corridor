@@ -1,6 +1,8 @@
 # v0 Build Spec — Cited Readiness Ledger (build this first)
 
-Covers milestones M0-M5 of `phase-1-roadmap.md`. Target: ~6 focused solo weeks.
+Covers milestones M0-M5 of `phase-1-roadmap.md`. Target: ~7 focused solo weeks.
+
+Corpus assembly is specified separately in `corpus-acquisition-spec.md` and runs in parallel from week 0. Domain vocabulary is defined in `CONTEXT.md`; use those terms. Decisions with lasting consequences are recorded in `docs/adr/`.
 
 ## 1. Objective
 
@@ -17,15 +19,18 @@ No auth, no multi-user, no integrations, no write-back, no external-party access
 ## 3. Pipeline overview
 
 ```
-raw files → ingest (hash, register, extract text/OCR, render pages)
-          → extract (type-specific LLM extractors → cited candidates)
-          → verify citations (quote must match cited page)
-          → adjudicate (review queue: accept/edit/merge/reject)
-          → ledger (canonical records + event history + audit log)
-          → link (milestones/need dates) → exceptions engine
-          → outputs (weekly report HTML/PDF, XLSX export)
-          → eval (gold set, recall/precision/citation metrics)
+manifest → fetch (download, hash, stamp provenance)
+         → ingest (register, extract text/OCR, render pages)
+         → extract (type-specific LLM extractors → cited candidates)
+         → verify citations (quote must match cited page)
+         → adjudicate (review queue: accept/edit/merge/reject)
+         → ledger (canonical records + assertions + event history + audit log)
+         → link (milestones/need dates) → exceptions engine
+         → outputs (weekly report HTML/PDF, XLSX export)
+         → eval (gold set, recall/precision/citation metrics)
 ```
+
+The ledger stores **conclusions**; assertions store **what each document claimed**. Extractors never write to the ledger — the only path in is a human keystroke.
 
 ## 4. Stack
 
@@ -33,47 +38,62 @@ Opinionated defaults; swap freely, but don't spend week 1 on stack shopping.
 
 | Layer | Choice |
 |---|---|
-| Language | Python 3.12 |
+| Language | Python 3.12, pinned and installed via `uv` |
 | DB | Postgres 16 in Docker; SQLAlchemy + Alembic |
 | File store | Local dir, content-addressed by SHA-256; originals immutable |
 | PDF/text | PyMuPDF; `ocrmypdf` (Tesseract) fallback for scanned docs |
 | XLSX | openpyxl |
 | Email | Python `email` stdlib for EML; `extract-msg` for MSG |
 | LLM | Claude API, structured outputs (tool use / JSON schema) |
+| Models | Sonnet 5 default (matrix freeform cells, minutes, email); Opus 5 for agreements and permits. `model` recorded on every candidate and eval run. |
 | App/UI | FastAPI + Jinja2 + HTMX + Tailwind. No SPA. |
 | Report PDF | HTML template → WeasyPrint |
 | Eval | pytest + a metrics runner writing to an `eval_runs` table |
+
+Python 3.13 is what's installed on the machine; 3.12 is pinned deliberately because PyMuPDF, `ocrmypdf`, and WeasyPrint all carry native dependencies where N-1 is the safer bet. `uv` installs the interpreter, so this costs nothing.
 
 ## 5. Data model
 
 Schema is keyed by `project_id` from day one even though v0 runs one project.
 
-**documents** — id, project_id, sha256, filename, doc_type (`matrix | minutes | agreement | email | plan | schedule | spec | other`), source, doc_date, pages, parse_status, superseded_by (null in v0)
+**documents** — id, project_id, sha256, filename, doc_type (`matrix | minutes | agreement | email | plan | schedule | spec | status_report | other`), source_url, retrieved_at, doc_date, pages, parse_status, superseded_by (null in v0)
 
 **doc_pages** — document_id, page_no, text, image_path
 
 **external_orgs** — id, name, org_type (`utility | railroad | agency | consultant | other`), aliases[]
 
-**dependencies** — id, project_id, ref_code (human-readable, e.g. `UTL-014`), dep_type (`utility_relocation | agreement | permit | row | railroad | access | other`), title, location_desc, station_from, station_to, external_org_id, external_contact, internal_owner, status (`identified | in_progress | committed | ready | closed | blocked`), criticality (`critical | high | normal`), committed_date, need_date, milestone_id, evidence_required (text: what closes this), last_verified_at, notes
+**dependencies** — id, project_id, ref_code (human-readable, e.g. `DEP-014`), dep_type (`utility_relocation | agreement | permit | row | railroad | access | other`), title, location_desc, station_from, station_to, external_org_id, external_contact, internal_owner, status (`identified | in_progress | committed | blocked | closed`), criticality (`critical | high | normal`), committed_date, need_date, milestone_id, evidence_required (text: what closes this), notes
+
+**assertions** — id, dependency_id, field_name, asserted_value, evidence_link_id, doc_date, created_at. One row per claim by one document about one field. See ADR-0001.
 
 **dependency_events** — id, dependency_id, event_type (`commitment | response | slip | escalation | status_change | closure`), event_date, description, created_by
 
-**evidence_links** — id, parent (dependency_id or event_id), document_id, page_no, quote, verified (bool)
+**evidence_links** — id, parent (dependency_id or event_id), document_id, page_no, quote, verified (bool), satisfies_requirement (bool, default false)
 
-**candidates** — id, project_id, kind (`dependency | event`), payload_json, source_document_id, source_pages[], confidence, state (`pending | accepted | merged | rejected`), merged_into, adjudicated_at
+**candidates** — id, project_id, kind (`dependency | event`), payload_json, source_document_id, source_pages[], confidence, prompt_version, model, state (`pending | accepted | merged | rejected`), merged_into, adjudicated_at
 
 **milestones** — id, project_id, code, name, need_date, source
 
+**report_runs** — id, project_id, ts, ruleset_version, snapshot_json, output_path. The "changes since last report" diff reads the previous run's snapshot.
+
 **audit_log** — id, actor, action, entity_type, entity_id, before_json, after_json, ts. Append-only. Every ledger mutation writes here.
 
-**eval_runs** — id, ts, corpus, prompt_version, metrics_json
+**eval_runs** — id, ts, corpus, prompt_version, model, ruleset_version, metrics_json
+
+### Derived, not stored
+
+- **Ready** — a Dependency is ready when it has an `evidence_links` row with `verified = true` and `satisfies_requirement = true`. Not a status value. See ADR-0002.
+- **`last_evidenced_at`** — the max `doc_date` across verified evidence on the Dependency or its events, falling back to `retrieved_at` when a document carries no date. Drives `STALE`.
+
+Two distinct senses of "verified" were previously sharing a word. `evidence_links.verified` now means one thing only: *the quote actually appears on the cited page*.
 
 ## 6. Ingestion rules
 
 - Dedupe by sha256; re-ingest is a no-op.
+- Every document records `source_url` and `retrieved_at` from the corpus manifest. A citation that bottoms out at "a file on my laptop" is not a citation.
 - Every page gets text and a rendered image (evidence display needs both).
 - If a page's extracted text is under ~50 chars, OCR it.
-- doc_type set by folder convention on import, correctable in UI.
+- doc_type set by the manifest on import, correctable in UI.
 - No file is ever mutated or deleted; supersession comes in M8.
 
 ## 7. Extraction contracts
@@ -95,27 +115,42 @@ Rules that are not negotiable:
 - Every asserted field value must be supported by at least one citation.
 - The verifier checks each quote against the cited page text (normalized fuzzy match, ≥0.9 similarity). Failed citations mark the candidate `unverified` and sink it in the queue — they are never silently dropped.
 - Extractors never write to the ledger. They only create candidates.
+- Every candidate records `prompt_version` and `model`. Without both, eval history across runs is not comparable and you cannot tell which change moved the numbers.
+- **One source does not mean one layout.** A document series changes shape over time and across agencies: the Rockwall county reports switch from per-owner narrative to a four-bucket form mid-series; TxDOT bid proposals have at least three confirmed column schemas, one lacking stationing entirely. Extractors are written against a *record type* with multiple layout variants, never against one observed layout. An extractor that assumes its first sample's shape fails silently on the rest of the same series.
 
 Per document type:
 
-| Type | Approach |
-|---|---|
-| Conflict matrix (XLSX) | Deterministic column mapping first (one config per matrix layout); LLM only for freeform cells. Each row → dependency candidate. |
-| Meeting minutes | LLM per document. Targets: action items, commitments with dates, status assertions, attendance (org → contact). Emit events against `dedupe_hint`, not new dependencies, unless clearly new. |
-| Agreements / permits | LLM per document. Targets: obligations, milestone dates, notice periods, responsible party. |
-| Email (EML/MSG) | LLM per thread. Latest commitment wins; earlier ones become `slip` events if dates moved. Capture non-response (thread with outbound ask, no reply) as a signal. |
+| Type | Approach | Model |
+|---|---|---|
+| Conflict matrix (XLSX) | Deterministic column mapping first (one config per matrix layout; SHRP2 R15B is the layout to support first, since 17 state DOTs have adopted it). LLM only for freeform cells. Each row → dependency candidate. | Sonnet 5 |
+| Meeting minutes | LLM per document. Targets: action items, commitments with dates, status assertions, attendance (org → contact). Emit events against `dedupe_hint`, not new dependencies, unless clearly new. | Sonnet 5 |
+| Serial status reports | LLM per edition. Targets: status assertions and dates per named dependency. Consecutive editions are the primary source of `slip` events. | Sonnet 5 |
+| Agreements / permits | LLM per document. Targets: obligations, milestone dates, notice periods, responsible party. | Opus 5 |
+| Email (EML/MSG) | LLM per thread. Latest commitment wins; earlier ones become `slip` events if dates moved. Capture non-response (thread with outbound ask, no reply) as a signal. | Sonnet 5 |
 
-Prompt files live in the repo, versioned (`prompts/minutes_v3.md`); `prompt_version` is recorded on every candidate and eval run.
+Prompt files live in the repo, versioned (`prompts/minutes_v3.md`); `prompt_version` and `model` are recorded on every candidate and eval run.
 
 ## 8. Adjudication UI
 
 Three screens. Keyboard-driven; you will adjudicate hundreds of candidates.
 
-1. **Queue** — one candidate at a time: extracted fields left, cited page image with quote highlighted right. Actions: `a` accept, `e` edit-then-accept, `m` merge into existing (search by dedupe_hint similarity, pre-ranked), `r` reject (reason: duplicate / wrong / irrelevant / bad-citation). Target throughput: ≥60 candidates/hour.
-2. **Ledger** — table of dependencies; filter by status, org, criticality, milestone, exception type. Row → detail: fields, event timeline, evidence gallery, audit history.
+1. **Queue** — one candidate at a time: extracted fields left, cited page image with quote highlighted right. Actions: `a` accept, `e` edit-then-accept, `m` merge into existing (pre-ranked, see below), `r` reject (reason: duplicate / wrong / irrelevant / bad-citation). Target throughput: ≥60 candidates/hour.
+2. **Ledger** — table of dependencies; filter by status, org, criticality, milestone, exception type. Row → detail: fields, **the assertions behind each field with their sources**, event timeline, evidence gallery, audit history. A field value shown without its competing assertions reproduces the silent-overwrite behavior this tool exists to replace.
 3. **Run report** — button + preview (section 10).
 
-Merging is the core interaction: the same dependency will arrive from the matrix, minutes, and email. Accepting a duplicate instead of merging corrupts the ledger — the pre-ranked merge search must be good before anything else gets polish.
+Merging is the core interaction: the same dependency will arrive from the matrix, minutes, status reports, and email. Accepting a duplicate instead of merging corrupts the ledger — the pre-ranked merge search must be good before anything else gets polish.
+
+### Merge ranking
+
+Deterministic and explainable, not embeddings:
+
+1. **Block** on resolved `external_org`, via `aliases[]` — "AT&T", "AT and T", and "Southwestern Bell" must collapse to one party before anything else runs.
+2. **Score** within the block on: station-range overlap, `dep_type` match, and text similarity of title/location.
+3. **Show the per-signal contribution** in the UI next to each suggestion.
+
+Stationing carries most of the discriminating power because it is *numeric*. `245+00` and `445+00` are near-identical as strings and two thousand feet apart on the ground — which is exactly the distinction embedding similarity destroys. Fall back to text-only scoring when stationing is absent, which is common in minutes and email.
+
+When a candidate is merged, its claims become **assertions** against the target Dependency. Merging never silently overwrites a field.
 
 ## 9. Exception engine
 
@@ -123,65 +158,107 @@ Computed as queries, not stored state. Severity = rule severity × criticality.
 
 | Rule | Logic |
 |---|---|
-| MISSING_OWNER | internal_owner is null and status not `closed` |
+| MISSING_OWNER | internal_owner is null, not Ready, status not `closed` |
 | MISSING_DATE | committed_date is null and status in (`identified`,`in_progress`,`committed`) |
 | MISSING_EVIDENCE | no verified evidence_link on the record or its latest commitment event |
-| STALE | last_verified_at > 14 days ago and status not (`ready`,`closed`) |
-| DUE_SOON | need_date within 30 days and status not (`ready`,`closed`) |
+| STALE | last_evidenced_at > 14 days ago, not Ready, status not `closed` |
+| DUE_SOON | need_date within 30 days, not Ready, status not `closed` |
 | OVERDUE | committed_date < today and no closure event |
-| CONTRADICTION | ≥2 verified citations asserting different committed_date or status |
+| CONTRADICTION | ≥2 assertions on the same (dependency, field) with distinct asserted_value, each backed by verified evidence |
 | ORPHAN | milestone_id is null |
 
-Thresholds (14 d, 30 d) are per-project config.
+Thresholds (14 d, 30 d) are per-project config. The ruleset carries a version, recorded on every report run and eval run.
+
+`MISSING_EVIDENCE` cannot fire on a Ready dependency by construction — readiness requires verified evidence. That is the point.
+
+`STALE` measures **document silence**, not reviewer attention: nothing has said anything about this dependency in 14 days. On an archived corpus everything eventually goes stale, which is correct — a closed-out project genuinely has no fresh evidence.
 
 ## 10. Weekly readiness report
 
-HTML → PDF. Every factual cell carries a citation marker (`[D12 p.4]`) linking to evidence. Zero uncited assertions — enforced by the same verifier, not by convention.
+HTML → PDF. **No cell is bare.** Every published cell carries one of two provenance classes (ADR-0003):
+
+- an **Assertion** — citation marker `[D12 p.4]` linking to the verified quote
+- a **Derivation** — ruleset version plus the record IDs aggregated, drilling through to those records' evidence
+
+Enforced by the verifier, not by convention.
 
 1. **Milestone readiness rollup** — per milestone: total dependencies, ready, at-risk, blocked, % with verified evidence.
 2. **Critical items** — top N by (need-date proximity × criticality): owner, next action, committed date, status, citation.
 3. **Exceptions summary** — counts by rule, worst offenders.
-4. **Changes since last report** — new, closed, slipped, escalated (from event log; diff against prior report snapshot).
+4. **Changes since last report** — new, closed, slipped, escalated. Diffed against the previous `report_runs.snapshot_json`.
 5. **Aging** — overdue items by days overdue.
 6. **Appendix** — full ledger export.
 
-## 11. Eval harness
+Because the ruleset version is stored per run, a number that moved between two weekly reports can be attributed to a rule change rather than a data change.
 
-- Gold set: hand-label 60-100 dependencies and ~100 events from a held-out project (not the one used to develop prompts).
+## 11. Testing
+
+The codebase splits into two halves with opposite testability. Do not let the untestable half set the discipline for the whole repo.
+
+**Strict TDD** — the deterministic half, where bugs are silent and corrupting:
+
+- content hashing and re-ingest idempotency
+- the citation verifier (fuzzy match threshold behavior, normalization, failure marking)
+- exception queries, every rule, including the boundary days
+- merge blocking and scoring
+- the Ready predicate
+- report provenance enforcement — a bare cell must fail the build
+
+**Recorded fixtures** — the extractors. LLM responses are captured once and replayed, so tests are deterministic, fast, and free in CI. These assert *shape and wiring*, never quality.
+
+**`make eval`** — the only measure of extraction quality. A unit test cannot assert a statistical property; mocking the model only tests the mock. Prompt or model changes without an eval run don't merge.
+
+## 12. Corpus
+
+Specified in full in `corpus-acquisition-spec.md`. Summary of what this spec depends on:
+
+- **Project A** (develop): TxDOT NHHIP Segment 3C-2 — five dated Utility Conflict Matrix versions with explicit supersession, plus SUE, railroad inventory, and executed agreements. Spine and stream in one project.
+- **Project B** (held out for eval): FDOT SR 789 @ Broadway Roundabout — different agency, different matrix layout, 66 fully populated conflict rows. Chosen over the richer TxDOT SH 99 Grand Parkway specifically so M6's config-only claim is tested across agencies rather than across two projects at one agency.
+- Each project needs a **spine** (dependency records: filled conflict matrix, utility agreements, special provisions) and a **stream** (dated assertions that change over time: serial status reports, meeting minutes, board packets). Neither role alone exercises the data model.
+- **Project B must have a filled Utility Conflict Matrix** — it is the eval gold set (§13).
+- Records requests are an upgrade path, not a prerequisite. Public sources yielded matrices, dated revisions, and coordination minutes; they did not yield DOT-to-utility **email**, which is the one thing requests are still filed for.
+- Synthetic fixtures may exercise code paths. No synthetic document may ever contribute to an `eval_run`, a quality number, or a demo — enforced by an `is_synthetic` project flag that `make eval` refuses.
+
+## 13. Eval harness
+
+- **Primary gold set:** Project B's filled Utility Conflict Matrix — an independent, professionally authored enumeration of that project's utility conflicts. Recall against it answers a sharp question: did the tool find everything the coordinator found? It is more credible than self-authored labels precisely because you didn't write it.
+- **Supplement:** one bounded slice of Project B (a fixed set of documents spanning all types) labeled exhaustively by hand, covering permits, ROW, railroad, and events — the categories a UCM doesn't reach.
+- **Stated limits:** a matrix cannot be ground truth for its own omissions, so this measures parity with the coordinator, not the tool's ability to find what the coordinator missed. Say so out loud in any demo; it is a more honest claim than the alternative.
 - Metrics per run: critical-dependency recall (target ≥95%), overall dependency recall (≥85%), candidate precision (track for cost/junk, no hard gate), citation validity (100%, enforced), correction rate (% of accepted candidates that needed edits).
-- One command: `make eval`. Results append to `eval_runs`. Prompt changes without an eval run don't merge.
+- One command: `make eval`. Results append to `eval_runs` with `prompt_version`, `model`, and `ruleset_version`.
 
-## 12. Corpus assembly (M0)
+## 14. Build order
 
-Minimum viable corpus, one project: a conflict-matrix-like artifact, meeting minutes (≥3 meetings), ≥2 utility agreements or permits, a milestone list, and the utility special provisions. Sources:
+Week 0 runs in parallel with everything and is specified in `corpus-acquisition-spec.md`.
 
-- State DOT letting/bid portals (e.g. TxDOT letting documents, Caltrans, FDOT) publish plan sets, proposals, special provisions, and addenda.
-- Utility agreements and coordination artifacts often ride in the bid package; if no matrix is public, seed one from the utility special provisions and plan general notes.
-- Meeting minutes: many DOT/MPO project pages publish them; public-records request is the fallback.
-- If you have access to any live project's real coordination files, use them — real inbox mess beats clean public documents.
+**Week 0 — corpus, in parallel.** Candidate project selection, records requests filed, manifest-driven fetcher, spine and stream documents downloaded for Project A. Exit: manifest resolves to files on disk with provenance.
 
-Two projects minimum by end of v0: develop on A, hold out B for eval.
+**Week 1 — walking skeleton.** One end-to-end slice on ~3 documents: fetch → ingest → minimal schema (`documents`, `dependencies`, `assertions`, `evidence_links`) → one hardcoded matrix extractor → accept via CLI → one ledger row → a one-page HTML report exercising both provenance classes. Exit: `make demo` produces a cited one-row report from raw files.
 
-## 13. Build order
+The skeleton is not throwaway. Its purpose is to surface schema gaps while migrations are still free — two were already found by reading the report spec against the data model, and the third is cheaper to find in week 1 than in week 5.
 
-**Week 1 — M0 + M1.** Repo, Docker Postgres, schema migration 1, corpus downloaded and cataloged, content-addressed store, ingest CLI, text + OCR + page images. Exit: every document browsable page-by-page.
+**Week 2 — M1.** Ingest proper: OCR fallback, page images, idempotent re-ingest, document browser. Matrix extractor with SHRP2 R15B column mapping. Exit: every document browsable page-by-page; matrix candidates generated.
 
-**Week 2 — M2 (easy half).** Matrix (deterministic) and minutes (LLM) extractors, shared candidate schema, citation verifier. Exit: candidate queue populated for Project A with verified quotes.
+**Week 3 — M2 (easy half).** Minutes extractor, status-report extractor, citation verifier, shared candidate schema. Adjudication queue UI. Exit: candidate queue populated for Project A with verified quotes, adjudicable by keyboard.
 
-**Week 3 — M3.** Adjudication queue UI, merge search, ledger tables + detail view, event history, audit log. Exit: 100% of Project A candidates adjudicated; you can run a review session from the ledger screen.
+**Week 4 — M3.** Merge search and ranking, ledger table + detail view with assertions surfaced, event history, audit log. Exit: 100% of Project A candidates adjudicated; you can run a review session from the ledger screen.
 
-**Week 4 — M2 (hard half) + M4.** Agreement and email extractors, slip/non-response events, milestone CSV import, need-date linkage, exception engine. Exit: exception list matches your hand-check of Project A.
+**Week 5 — M2 (hard half) + M4.** Agreement and email extractors, slip/non-response events, milestone CSV import, need-date linkage, exception engine. Exit: exception list matches your hand-check of Project A.
 
-**Week 5 — M5.** Report template, snapshot + changes-since-last diff, PDF render, XLSX export, demo path scripted end-to-end. Exit: zero-uncited-assertion report generated in one command.
+**Week 6 — M5.** Report template, both provenance classes enforced, snapshot + changes-since-last diff, PDF render, XLSX export, demo path scripted end-to-end. Exit: report generates with no bare cells, in one command.
 
-**Week 6 — hardening + eval seed.** Ingest Project B, fix everything that breaks, label the gold set, first `make eval` run, iterate prompts once. Exit: definition of done below.
+**Week 7 — hardening + eval seed.** Ingest Project B, fix everything that breaks, assemble the gold set, first `make eval` run, iterate prompts once. Exit: definition of done below.
 
-## 14. Definition of done (v0)
+Nights-and-weekends pace roughly doubles the calendar.
 
-- [ ] One command: raw files → verified candidates for a new project.
+## 15. Definition of done (v0)
+
+- [ ] One command: manifest → verified candidates for a new project.
 - [ ] All candidates adjudicated through the UI at ≥60/hour.
+- [ ] Merge suggestions rank the correct existing dependency first, with the reason visible.
 - [ ] Exception list matches a manual check on Project A.
-- [ ] Weekly report generates with zero uncited assertions.
+- [ ] Weekly report generates with no bare cells — every figure an Assertion or a Derivation.
+- [ ] Ready is reachable only by marking verified evidence; no status field can be set to it.
 - [ ] Entire pipeline runs on Project B with config-only changes.
 - [ ] First eval run recorded; critical recall measured (gate to hit in M7: ≥95%).
 - [ ] Live demo, raw docs to report, in under 15 minutes.
