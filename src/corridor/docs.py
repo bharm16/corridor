@@ -92,18 +92,41 @@ def main(argv: list[str]) -> int:
 
     with SessionFactory() as session:
         if command == "ingest":
-            slug = argv[1] if len(argv) > 1 else "nhhip-3c2"
-            project = _project(session, slug)
-            documents = ingest_manifest(
-                session,
-                project_id=project.id,
-                lock_path=LOCK,
-                images_dir=IMAGES,
-            )
-            session.commit()
-            for d in documents:
-                print(f"  {d.parse_status:<7} {d.pages:>4}p  {d.filename}")
-            print(f"{len(documents)} documents from {LOCK}")
+            # Every lockfile in corpus/, one project each. The Project row is
+            # created from the lock header when it does not exist yet.
+            only = argv[1] if len(argv) > 1 else None
+            total = 0
+            for lock_path in sorted(Path("corpus").glob("*.lock.json")):
+                header = __import__("json").loads(lock_path.read_text())
+                slug = header.get("project")
+                if not slug or (only and slug != only):
+                    continue
+                project = session.scalars(
+                    select(Project).where(Project.slug == slug)
+                ).first()
+                if project is None:
+                    project = Project(
+                        slug=slug,
+                        name=header.get("name") or slug,
+                        agency=header.get("agency"),
+                        is_synthetic=False,
+                    )
+                    session.add(project)
+                    session.flush()
+                documents = ingest_manifest(
+                    session,
+                    project_id=project.id,
+                    lock_path=lock_path,
+                    images_dir=IMAGES,
+                )
+                session.commit()
+                parsed = sum(1 for d in documents if d.parse_status == "parsed")
+                print(
+                    f"{slug}: {parsed}/{len(documents)} parsed from {lock_path.name}",
+                    flush=True,
+                )
+                total += len(documents)
+            print(f"{total} documents total")
             return 0
 
         if command == "list":

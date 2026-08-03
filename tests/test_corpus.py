@@ -339,6 +339,157 @@ def test_one_archive_is_opened_once_for_many_members(tmp_path):
     assert len(probes) == 1
 
 
+NESTED_MANIFEST = """
+project: sh99-grand-parkway
+name: SH 99 Grand Parkway Segment B-1
+agency: TxDOT
+sources:
+  - url: https://example.gov/utilities.zip
+    member: "Utility Owner Coordination/Notes.zip::Meeting Notes/Air Liquide/2024.07.30 notes.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 7/30/2024"
+    doc_date: 2024-07-30
+  - url: https://example.gov/utilities.zip
+    member: "Utility Owner Coordination/Notes.zip::Meeting Notes/Chevron/2024.08.13 notes.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 8/13/2024"
+    doc_date: 2024-08-13
+"""
+
+# Incompressible and large enough that the one inner-zip read is
+# unmistakably bigger than any zip-directory tail read (~64 KB max).
+import random as _random
+
+NOTE_A = b"%PDF-1.7 Air Liquide " + _random.Random(1).randbytes(300_000)
+NOTE_B = b"%PDF-1.7 Chevron " + _random.Random(2).randbytes(300_000)
+
+
+def make_nested_zip():
+    inner = make_zip(
+        {
+            "Meeting Notes/Air Liquide/2024.07.30 notes.pdf": NOTE_A,
+            "Meeting Notes/Chevron/2024.08.13 notes.pdf": NOTE_B,
+        }
+    )
+    return make_zip(
+        {
+            "Utility Owner Coordination/Notes.zip": inner,
+            "sh99-draft-ucm.pdf": b"%PDF-1.7 draft ucm",
+        }
+    )
+
+
+def test_a_nested_member_is_extracted_and_hashed(tmp_path):
+    """SH 99's meeting notes live in a zip inside the zip."""
+    archive = make_nested_zip()
+    summary = run_with(
+        tmp_path,
+        NESTED_MANIFEST,
+        ranged_transport({"https://example.gov/utilities.zip": archive}),
+    )
+    assert len(summary.fetched) == 2
+
+    lock = json.loads((tmp_path / "manifest.lock.json").read_text())
+    key = (
+        "https://example.gov/utilities.zip::Utility Owner Coordination/Notes.zip"
+        "::Meeting Notes/Air Liquide/2024.07.30 notes.pdf"
+    )
+    rec = lock["sources"][key]
+    assert rec["sha256"] == hashlib.sha256(NOTE_A).hexdigest()
+    from pathlib import Path
+
+    assert Path(rec["local_path"]).read_bytes() == NOTE_A
+
+
+def test_the_inner_archive_is_read_once_for_many_members(tmp_path):
+    """145 notes share one 88 MB inner zip; reading it per member is 12 GB."""
+    archive = make_nested_zip()
+    inner_reads = []
+
+    inner = ranged_transport({"https://example.gov/utilities.zip": archive})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        rng = request.headers.get("range", "")
+        inner_reads.append(rng)
+        return inner.handler(request)
+
+    summary = run_with(tmp_path, NESTED_MANIFEST, httpx.MockTransport(handler))
+    assert len(summary.fetched) == 2
+    # The inner zip member is one contiguous span of the outer archive; it
+    # must be ranged out of it exactly once, however many nested members
+    # the manifest names.
+    # (Probe requests are bytes=0-0; the directory reads are small tail
+    # ranges; the inner-zip read is the only large one.)
+    large = [r for r in inner_reads if r and _range_span(r) > 200_000]
+    assert len(large) == 1, f"inner zip read {len(large)} times: {large}"
+
+
+def _range_span(header: str) -> int:
+    start, _, end = header.removeprefix("bytes=").partition("-")
+    try:
+        return int(end) - int(start) + 1
+    except ValueError:
+        return 0
+
+
+def test_an_already_fetched_nested_member_skips_without_any_network(tmp_path):
+    """Re-running `make corpus` must not re-download 88 MB to learn nothing.
+
+    Top-level members re-check their CRC against the outer directory, which
+    is a few hundred KB of ranges. For nested members that check would cost
+    the whole inner zip, so a lock record whose file is still on disk is
+    trusted instead. The outer zips are dated snapshots; TxDOT revises by
+    publishing new ones, not by mutating old ones.
+    """
+    archive = make_nested_zip()
+    run_with(
+        tmp_path,
+        NESTED_MANIFEST,
+        ranged_transport({"https://example.gov/utilities.zip": archive}),
+    )
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(500)
+
+    summary = run_with(tmp_path, NESTED_MANIFEST, httpx.MockTransport(handler))
+    assert len(summary.skipped) == 2
+    assert calls == []
+
+
+def test_a_missing_nested_member_is_recorded_not_raised(tmp_path):
+    manifest = NESTED_MANIFEST.replace("Chevron/2024.08.13 notes.pdf", "Nobody/nope.pdf")
+    archive = make_nested_zip()
+    summary = run_with(
+        tmp_path,
+        manifest,
+        ranged_transport({"https://example.gov/utilities.zip": archive}),
+    )
+    assert len(summary.fetched) == 1
+    assert len(summary.failed) == 1
+
+
+def test_manifest_carries_project_name_for_ingest(tmp_path):
+    m = load_manifest(write_manifest(tmp_path, NESTED_MANIFEST))
+    assert m.project == "sh99-grand-parkway"
+    assert m.name == "SH 99 Grand Parkway Segment B-1"
+    assert m.agency == "TxDOT"
+    lock_path = tmp_path / "manifest.lock.json"
+    run_with(
+        tmp_path,
+        NESTED_MANIFEST,
+        ranged_transport({"https://example.gov/utilities.zip": make_nested_zip()}),
+    )
+    lock = json.loads(lock_path.read_text())
+    assert lock["project"] == "sh99-grand-parkway"
+    assert lock["name"] == "SH 99 Grand Parkway Segment B-1"
+    assert lock["agency"] == "TxDOT"
+
+
 def test_polite_user_agent_is_used_first(tmp_path):
     seen = []
 

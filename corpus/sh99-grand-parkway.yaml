@@ -1,0 +1,971 @@
+# Project C — TxDOT SH 99 Grand Parkway Segment B-1 (development corpus)
+#
+# Decision on #3: this project is developed against freely; FDOT SR 789 is
+# the sealed eval holdout. The meeting notes here are the only utility
+# coordination minutes anywhere in the public corpus — 145 dated, per-owner
+# notes on a biweekly cadence, Apr 2024 to May 2025.
+#
+# Entries below the marker are generated from the archive listing itself
+# (145 files is not hand-typing territory); regenerate rather than editing
+# them one by one. Deferred, deliberately: the two RULIS permit-status zips
+# (342 MB + 375 MB nested; permit status is M4+ material) and
+# "Utility Owner Information.zip" (23 MB).
+project: sh99-grand-parkway
+name: SH 99 Grand Parkway Segment B-1
+agency: TxDOT
+
+sources:
+  # --- Utility Conflict Matrix, three dated revisions ------------------
+  - url: &utilities "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449"
+    member: "sh99-draft-ucm.pdf"
+    doc_type: matrix
+    role: spine
+    title: "Utility Conflict Matrix (draft, 10/21/2024)"
+    doc_date: 2024-10-21
+    notes: "Superseded per the RID index."
+
+  - url: *utilities
+    member: "SH 99 Seg B_UCM_to_RIDs_2.23.25.pdf"
+    doc_type: matrix
+    role: spine
+    title: "Utility Conflict Matrix (2/23/2025)"
+    doc_date: 2025-02-23
+    notes: "Superseded by the 5/5/2025 revision."
+
+  - url: *utilities
+    member: "SH 99 Seg B_UCM_to_RIDs_5.5.25.pdf"
+    doc_type: matrix
+    role: spine
+    title: "Utility Conflict Matrix (5/5/2025)"
+    doc_date: 2025-05-05
+    notes: "Current revision."
+
+  # --- Conflict exhibits and SUE --------------------------------------
+  - url: *utilities
+    member: "Utility Strip Map/sh99-utility-conflict-exhibit-draft.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Utility conflict exhibit (draft)"
+
+  - url: *utilities
+    member: "Utility Strip Map/sh99-utility-conflict-exhibit-final.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Utility conflict exhibit (final)"
+
+  - url: *utilities
+    member: "Utility Strip Map/SUE Level A - Test Hole Data/2024-11-18_SH 99_THDS.pdf"
+    doc_type: plan
+    role: evidence
+    title: "SUE Level A test hole data sheets"
+    doc_date: 2024-11-18
+
+  - url: *utilities
+    member: "Utility Strip Map/SUE Level A - Test Hole Data/sue-level-a-oct2024.pdf"
+    doc_type: plan
+    role: evidence
+    title: "SUE Level A (October 2024)"
+
+  # --- Generated from the archive listing below this line -------------
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/CenterPoint Elec Transmission/2024-06-20 - CNPE Max Sag Steele Road.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Exhibit \u2014 CenterPoint Elec Transmission"
+    doc_date: 2024-06-20
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/CenterPoint Elec Transmission/P1673 -1 -Relocation - TxDOT Plan View.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Exhibit \u2014 CenterPoint Elec Transmission"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/CenterPoint Elec Transmission/P1673 -2 -Relocation - TxDOT Plan View.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Exhibit \u2014 CenterPoint Elec Transmission"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/Kinder Morgan/SH99 Meeting Preliminary plan 1.3.25.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Exhibit \u2014 Kinder Morgan"
+    doc_date: 2025-01-03
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/League City/Grand Bargain Water and Sanitary_AFC (20200626).pdf"
+    doc_type: plan
+    role: evidence
+    title: "Exhibit \u2014 League City"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/TNMP/Notice of Proposed Construction (NOPC) and 75 Schematic Download - TNMP.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Exhibit \u2014 TNMP"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/TNMP/UClearance_TNMP Executed.pdf"
+    doc_type: plan
+    role: evidence
+    title: "Exhibit \u2014 TNMP"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/2025-02-11 - SH99 - Joint Pipeline Maintenance Discussion notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Joint coordination notes, 2025-02-11"
+    doc_date: 2025-02-11
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2024.07.30 GPB1 Air Liquide notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2024-07-30"
+    doc_date: 2024-07-30
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2024.08.12 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2024-08-12"
+    doc_date: 2024-08-12
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2024.08.26 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2024-08-26"
+    doc_date: 2024-08-26
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2024.09.09 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2024-09-09"
+    doc_date: 2024-09-09
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2024.09.23 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2024-09-23"
+    doc_date: 2024-09-23
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2024.10.07 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2024-10-07"
+    doc_date: 2024-10-07
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2024.12.02 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2024-12-02"
+    doc_date: 2024-12-02
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2025.01.13 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2025-01-13"
+    doc_date: 2025-01-13
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Liquide/2025.01.27 GPB1 Air Liquide notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Liquide coordination notes, 2025-01-27"
+    doc_date: 2025-01-27
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.07.30 GPB1 Air Products notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-07-30"
+    doc_date: 2024-07-30
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.08.13 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-08-13"
+    doc_date: 2024-08-13
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.08.27 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-08-27"
+    doc_date: 2024-08-27
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.09.10 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-09-10"
+    doc_date: 2024-09-10
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.09.24 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-09-24"
+    doc_date: 2024-09-24
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.10.08 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-10-08"
+    doc_date: 2024-10-08
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.10.22 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-10-22"
+    doc_date: 2024-10-22
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.11.19 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-11-19"
+    doc_date: 2024-11-19
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2024.12.03 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2024-12-03"
+    doc_date: 2024-12-03
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Air Products/2025.04.14 GPB1 Air Products notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Air Products coordination notes, 2025-04-14"
+    doc_date: 2025-04-14
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.07.30 GPB1 Buckeye notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-07-30"
+    doc_date: 2024-07-30
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.08.13 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-08-13"
+    doc_date: 2024-08-13
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.08.27 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-08-27"
+    doc_date: 2024-08-27
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.09.10 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-09-10"
+    doc_date: 2024-09-10
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.09.24 GPB1 Buckeye Notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-09-24"
+    doc_date: 2024-09-24
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.10.08 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-10-08"
+    doc_date: 2024-10-08
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.10.22 GPB1 Buckeye note final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-10-22"
+    doc_date: 2024-10-22
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.11.19 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-11-19"
+    doc_date: 2024-11-19
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2024.12.17 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2024-12-17"
+    doc_date: 2024-12-17
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2025.01.14 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2025-01-14"
+    doc_date: 2025-01-14
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2025.02.11 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2025-02-11"
+    doc_date: 2025-02-11
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Buckeye/2025.03.25 GPB1 Buckeye notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Buckeye coordination notes, 2025-03-25"
+    doc_date: 2025-03-25
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2024.08.06 GPB1 CNP Elec Trans notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2024-08-06"
+    doc_date: 2024-08-06
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2024.08.27 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2024-08-27"
+    doc_date: 2024-08-27
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2024.09.24 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2024-09-24"
+    doc_date: 2024-09-24
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2024.10.29 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2024-10-29"
+    doc_date: 2024-10-29
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2024.12.17 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2024-12-17"
+    doc_date: 2024-12-17
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2025.01.14 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2025-01-14"
+    doc_date: 2025-01-14
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2025.02.11 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2025-02-11"
+    doc_date: 2025-02-11
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2025.03.11 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2025-03-11"
+    doc_date: 2025-03-11
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Centerpoint Electric Transmission/2025.04.08 GPB1 CNP Elec Trans notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Centerpoint Electric Transmission coordination notes, 2025-04-08"
+    doc_date: 2025-04-08
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.08.07 GPB1 Chevron Notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-08-07"
+    doc_date: 2024-08-07
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.08.21 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-08-21"
+    doc_date: 2024-08-21
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.09.04 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-09-04"
+    doc_date: 2024-09-04
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.09.18 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-09-18"
+    doc_date: 2024-09-18
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.10.02 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-10-02"
+    doc_date: 2024-10-02
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.10.16 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-10-16"
+    doc_date: 2024-10-16
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.10.30 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-10-30"
+    doc_date: 2024-10-30
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.10.31 GPB1 Chevron Land and ROW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-10-31"
+    doc_date: 2024-10-31
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.11.13 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-11-13"
+    doc_date: 2024-11-13
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.11.26 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-11-26"
+    doc_date: 2024-11-26
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2024.12.11 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2024-12-11"
+    doc_date: 2024-12-11
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2025.01.08 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2025-01-08"
+    doc_date: 2025-01-08
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2025.02.05 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2025-02-05"
+    doc_date: 2025-02-05
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2025.02.19 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2025-02-19"
+    doc_date: 2025-02-19
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2025.03.05 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2025-03-05"
+    doc_date: 2025-03-05
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/2025.03.19 GPB1 Chevron notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes, 2025-03-19"
+    doc_date: 2025-03-19
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Chevron/SH99 B-1 - Kickoff Meeting Notes - Chevron.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Chevron coordination notes"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2024.08.08 GPB1 DOW notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2024-08-08"
+    doc_date: 2024-08-08
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2024.09.05 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2024-09-05"
+    doc_date: 2024-09-05
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2024.10.03 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2024-10-03"
+    doc_date: 2024-10-03
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2024.10.17 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2024-10-17"
+    doc_date: 2024-10-17
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2024.11.14 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2024-11-14"
+    doc_date: 2024-11-14
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2025.01.09 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2025-01-09"
+    doc_date: 2025-01-09
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2025.01.23 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2025-01-23"
+    doc_date: 2025-01-23
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2025.02.06 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2025-02-06"
+    doc_date: 2025-02-06
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2025.02.20 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2025-02-20"
+    doc_date: 2025-02-20
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2025.03.06 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2025-03-06"
+    doc_date: 2025-03-06
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/2025.03.20 GPB1 DOW notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes, 2025-03-20"
+    doc_date: 2025-03-20
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/DOW/SH99 B-1 - Kickoff Meeting Notes - DOW.pdf"
+    doc_type: minutes
+    role: stream
+    title: "DOW coordination notes"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.08.07 GPB1 Denbury notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-08-07"
+    doc_date: 2024-08-07
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.08.21 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-08-21"
+    doc_date: 2024-08-21
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.09.04 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-09-04"
+    doc_date: 2024-09-04
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.09.18 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-09-18"
+    doc_date: 2024-09-18
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.10.02 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-10-02"
+    doc_date: 2024-10-02
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.10.16 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-10-16"
+    doc_date: 2024-10-16
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.10.30 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-10-30"
+    doc_date: 2024-10-30
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2024.11.13 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2024-11-13"
+    doc_date: 2024-11-13
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2025.02.12 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2025-02-12"
+    doc_date: 2025-02-12
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/2025.03.19 GPB1 Denbury notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes, 2025-03-19"
+    doc_date: 2025-03-19
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Denbury/SH99 B-1 - Kickoff Meeting Notes - Denbury.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Denbury coordination notes"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.08.12 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-08-12"
+    doc_date: 2024-08-12
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.08.26 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-08-26"
+    doc_date: 2024-08-26
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.09.09 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-09-09"
+    doc_date: 2024-09-09
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.09.23 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-09-23"
+    doc_date: 2024-09-23
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.10.07 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-10-07"
+    doc_date: 2024-10-07
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.10.21 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-10-21"
+    doc_date: 2024-10-21
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.11.04 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-11-04"
+    doc_date: 2024-11-04
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.11.18 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-11-18"
+    doc_date: 2024-11-18
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.12.02 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-12-02"
+    doc_date: 2024-12-02
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2024.12.16 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2024-12-16"
+    doc_date: 2024-12-16
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2025.01.13 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2025-01-13"
+    doc_date: 2025-01-13
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2025.02.24 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2025-02-24"
+    doc_date: 2025-02-24
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/2025.03.24 GPB1 Energy Transfer notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes, 2025-03-24"
+    doc_date: 2025-03-24
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Energy Transfer/SH99 B-1 - Kickoff Meeting Notes - Energy Transfer.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Energy Transfer coordination notes"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.08.08 GPB1 Enterprise notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-08-08"
+    doc_date: 2024-08-08
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.08.22 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-08-22"
+    doc_date: 2024-08-22
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.09.05 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-09-05"
+    doc_date: 2024-09-05
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.10.03 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-10-03"
+    doc_date: 2024-10-03
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.10.17 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-10-17"
+    doc_date: 2024-10-17
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.10.31 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-10-31"
+    doc_date: 2024-10-31
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.11.14 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-11-14"
+    doc_date: 2024-11-14
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2024.12.12 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2024-12-12"
+    doc_date: 2024-12-12
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2025.01.09 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2025-01-09"
+    doc_date: 2025-01-09
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2025.02.06 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2025-02-06"
+    doc_date: 2025-02-06
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2025.03.06 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2025-03-06"
+    doc_date: 2025-03-06
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2025.04.03 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2025-04-03"
+    doc_date: 2025-04-03
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/2025.05.01 GPB1 Enterprise notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes, 2025-05-01"
+    doc_date: 2025-05-01
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Enterprise/SH99 B-1 - Kickoff Meeting Notes - Enterprise.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Enterprise coordination notes"
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.07.31 GPB1 Equistar notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-07-31"
+    doc_date: 2024-07-31
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.08.14 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-08-14"
+    doc_date: 2024-08-14
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.09.03 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-09-03"
+    doc_date: 2024-09-03
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.09.11 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-09-11"
+    doc_date: 2024-09-11
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.09.25 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-09-25"
+    doc_date: 2024-09-25
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.10.09 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-10-09"
+    doc_date: 2024-10-09
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.11.20 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-11-20"
+    doc_date: 2024-11-20
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2024.12.04 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2024-12-04"
+    doc_date: 2024-12-04
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2025.01.15 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2025-01-15"
+    doc_date: 2025-01-15
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2025.01.29 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2025-01-29"
+    doc_date: 2025-01-29
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2025.02.12 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2025-02-12"
+    doc_date: 2025-02-12
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Equistar/2025.03.26 GPB1 Equistar notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Equistar coordination notes, 2025-03-26"
+    doc_date: 2025-03-26
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/ExxonMobil/2024.07.31 GPB1 ExxonMobil notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "ExxonMobil coordination notes, 2024-07-31"
+    doc_date: 2024-07-31
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/ExxonMobil/2024.08.14 GPB1 ExxonMobil notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "ExxonMobil coordination notes, 2024-08-14"
+    doc_date: 2024-08-14
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/ExxonMobil/2024.09.25 GPB1 ExxonMobil notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "ExxonMobil coordination notes, 2024-09-25"
+    doc_date: 2024-09-25
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.08.02 GPB1 Kinder Morgan notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-08-02"
+    doc_date: 2024-08-02
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.08.15 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-08-15"
+    doc_date: 2024-08-15
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.08.29 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-08-29"
+    doc_date: 2024-08-29
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.09.12 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-09-12"
+    doc_date: 2024-09-12
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.09.26 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-09-26"
+    doc_date: 2024-09-26
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.10.10 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-10-10"
+    doc_date: 2024-10-10
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.10.24 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-10-24"
+    doc_date: 2024-10-24
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.11.07 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-11-07"
+    doc_date: 2024-11-07
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2024.12.04 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2024-12-04"
+    doc_date: 2024-12-04
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2025.01.02 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2025-01-02"
+    doc_date: 2025-01-02
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2025.01.16 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2025-01-16"
+    doc_date: 2025-01-16
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Kinder Morgan/2025.04.10 GPB1 Kinder Morgan notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Kinder Morgan coordination notes, 2025-04-10"
+    doc_date: 2025-04-10
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Philips 66/2024.08.01 GPB1 Phillips 66 notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Philips 66 coordination notes, 2024-08-01"
+    doc_date: 2024-08-01
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Samara Surface Site/Meeting Notes_2024-04-18.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Samara Surface Site coordination notes, 2024-04-18"
+    doc_date: 2024-04-18
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Shell/2024.08.01 GPB1 Shell notes_final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Shell coordination notes, 2024-08-01"
+    doc_date: 2024-08-01
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Shell/2024.08.15 GPB1 Shell notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Shell coordination notes, 2024-08-15"
+    doc_date: 2024-08-15
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Shell/2024.08.29 GPB1 Shell notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Shell coordination notes, 2024-08-29"
+    doc_date: 2024-08-29
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Shell/2024.09.12 GPB1 Shell notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Shell coordination notes, 2024-09-12"
+    doc_date: 2024-09-12
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Shell/2024.10.10 GPB1 Shell notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Shell coordination notes, 2024-10-10"
+    doc_date: 2024-10-10
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Shell/2024.10.24 GPB1 Shell notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Shell coordination notes, 2024-10-24"
+    doc_date: 2024-10-24
+  - url: *utilities
+    member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Meeting Notes/Shell/2024.11.07 GPB1 Shell notes final.pdf"
+    doc_type: minutes
+    role: stream
+    title: "Shell coordination notes, 2024-11-07"
+    doc_date: 2024-11-07
