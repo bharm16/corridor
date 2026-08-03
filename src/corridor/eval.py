@@ -140,6 +140,29 @@ def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
     return records
 
 
+def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
+    """The enumeration over several documents, read one document at a time.
+
+    Page numbers restart at 1 in every document, so a single page-keyed
+    dictionary spanning five revisions of the same matrix keeps only the
+    last text written for each page number and silently discards the rest.
+    That reads as a precision collapse — every row of the overwritten
+    documents becomes spurious — and it stayed invisible while only one
+    Project A matrix had ever been extracted.
+    """
+    from corridor.models import DocPage
+
+    records: list[GoldRecord] = []
+    for document_id in sorted(document_ids):
+        pages = session.execute(
+            select(DocPage.page_no, DocPage.text).where(
+                DocPage.document_id == document_id
+            )
+        ).all()
+        records.extend(gold_from_page_text({p: t for p, t in pages}))
+    return records
+
+
 def _followed_by_a_party(text: str, start: int) -> bool:
     for line in text[start:].splitlines():
         line = line.strip()
@@ -235,8 +258,6 @@ def main(argv: list[str]) -> int:
             gold = load_gold(argv[1])
             source = argv[1]
         else:
-            from corridor.models import DocPage
-
             project = session.scalars(
                 select(Project).where(Project.slug == slug)
             ).first()
@@ -267,12 +288,7 @@ def main(argv: list[str]) -> int:
                 print(f"{slug}: nothing extracted yet", file=sys.stderr)
                 return 1
 
-            pages = session.execute(
-                select(DocPage.page_no, DocPage.text).where(
-                    DocPage.document_id.in_(extracted_docs)
-                )
-            ).all()
-            gold = gold_from_page_text({p: t for p, t in pages})
+            gold = gold_for_documents(session, extracted_docs)
             source = "page text (independent of the table parser)"
             if skipped:
                 source += f"; {len(skipped)} ingested matrix/matrices not extracted"

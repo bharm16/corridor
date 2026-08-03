@@ -6,11 +6,12 @@ from corridor.eval import (
     GoldRecord,
     MalformedGoldSet,
     evaluate,
+    gold_for_documents,
     gold_from_page_text,
     load_gold,
     render,
 )
-from corridor.models import Candidate, Document, Project
+from corridor.models import Candidate, DocPage, Document, Project
 
 GOLD = """source_ref,page
 FOC1-1,1
@@ -51,6 +52,13 @@ def document(session, project):
     session.add(d)
     session.flush()
     return d
+
+
+def add_page(session, document, page_no, text):
+    page = DocPage(document_id=document.id, page_no=page_no, text=text)
+    session.add(page)
+    session.flush()
+    return page
 
 
 def make_candidate(session, project, document, uid, page=1):
@@ -144,6 +152,33 @@ def test_an_inline_mention_is_not_counted_as_a_row():
         {1: "appears to be part of FOC1-105 \nFOC1-102 \nAT&T Texas (SWBT) \n"}
     )
     assert [g.source_ref for g in gold] == ["FOC1-102"]
+
+
+def test_the_enumeration_covers_every_document_not_just_one(session, project, document):
+    """Five revisions of the same matrix all number their pages from 1.
+
+    Keyed by page number alone they collapse onto each other and the
+    enumeration silently shrinks to one document's worth — which reads as
+    a precision collapse, because every row of the four documents that
+    were overwritten becomes spurious. Recall against a gold set that is
+    missing three quarters of its rows is not a number.
+    """
+    revision = Document(
+        project_id=project.id,
+        sha256="a" * 64,
+        filename="matrix-earlier.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(revision)
+    session.flush()
+    add_page(session, document, 1, "E92 \nCenterPoint Energy \n")
+    add_page(session, revision, 1, "W139 \nCity of Houston \n")
+
+    gold = gold_for_documents(session, [document.id, revision.id])
+
+    assert sorted(g.source_ref for g in gold) == ["E92", "W139"]
 
 
 # ------------------------------------------------------------------- scoring

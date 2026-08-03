@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements milestones exceptions minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract milestones exceptions minutes report
 
 # One command from a clean clone.
 boot:
@@ -43,6 +43,14 @@ queue:
 # LLM extraction over the executed agreements. Needs OPENAI_API_KEY in .env.
 agreements:
 	uv run python -m corridor.extract_agreement $(ARGS)
+
+# Extract every matrix in a project. Skips documents already extracted at
+# this prompt version; --redo replaces their pending candidates and leaves
+# adjudicated ones alone:
+#   make extract ARGS="nhhip-3c2"
+#   make extract ARGS="nhhip-3c2 --redo"
+extract:
+	uv run python -m corridor.extract_project $(ARGS)
 
 # Import a milestone CSV: make milestones ARGS="sh99-grand-parkway corpus/sh99-milestones.csv RELO-CONSTR"
 milestones:

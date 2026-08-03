@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.config import settings
 from corridor.db import Session as SessionFactory
 from corridor.models import DocPage, Document, Project
 from corridor.pipeline import ingest_manifest
@@ -78,6 +79,16 @@ def get_page(session: Session, document_id: int, page_no: int) -> DocPage:
     if page is None:
         raise LookupError(f"no page {page_no} of document {document_id}")
     return page
+
+
+def stored_pdf(document: Document) -> Path | None:
+    """Resolve a Document back to the file in the content-addressed store."""
+    if not document or not document.sha256:
+        return None
+    path = (
+        Path(settings.corpus_store) / document.sha256[:2] / f"{document.sha256}.pdf"
+    )
+    return path if path.exists() else None
 
 
 def _project(session: Session, slug: str) -> Project:
