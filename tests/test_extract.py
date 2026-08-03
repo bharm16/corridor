@@ -8,9 +8,10 @@ from corridor.extract import (
     NoMatrixFound,
     canonical_field,
     dedupe_hint,
+    cell_text,
     extract_rows,
     map_headers,
-    restore_separator,
+    readings_agree,
     row_quote,
     row_to_fields,
     to_candidates,
@@ -103,29 +104,52 @@ def test_the_quote_is_the_whole_row():
     assert row_quote(row) == "FOC1-1 AT&T Texas (SWBT) Telecom FOC UG"
 
 
-def test_a_dropped_separator_is_restored_from_the_word_boxes():
-    """`City` + `of Houston` arrives from PyMuPDF as `Cityof Houston`."""
-    assert restore_separator("Cityof Houston", "City of Houston") == "City of Houston"
-    assert restore_separator("PrivateWater Line", "Private Water Line") == (
-        "Private Water Line"
-    )
-    # And the opposite slip: a space that is not in the document.
-    assert restore_separator("1 109+59", "1109+59") == "1109+59"
+def test_the_word_box_reading_wins_when_the_two_disagree():
+    """Word boxes are the page's own tokenization; spans are not.
 
-
-def test_a_cell_is_left_alone_unless_only_the_spacing_differs():
-    """The guard, which is what makes this safe on rotated pages.
-
-    There the word boxes and the table bboxes are in different coordinate
-    spaces, so the rebuild is unrelated text rather than a respaced cell.
+    `table.extract()` is sloppy at cell boundaries in both directions — it
+    drops a leading character (`Rothwell` -> `othwell`) and absorbs the
+    first character of the next cell (`Canal Street` -> `Canal Street o`).
+    Word boxes are cut on glyph gaps and assigned to exactly one cell, so
+    they cannot do either.
     """
-    assert restore_separator("Utility ID", "No) Conflict Y") == "Utility ID"
-    assert restore_separator("Start Offset", "") == "Start Offset"
-    assert restore_separator("CenterPoint Energy", "CenterPoint Enerqy") == (
-        "CenterPoint Energy"
+    assert cell_text("Cityof Houston", "City of Houston") == "City of Houston"
+    assert cell_text("1 109+59", "1109+59") == "1109+59"
+    assert cell_text("othwell Street (south", "Rothwell Street (south") == (
+        "Rothwell Street (south"
     )
-    assert restore_separator("", "anything") == ""
-    assert restore_separator(None, "anything") is None
+    assert cell_text("Canal Street o", "Canal Street") == "Canal Street"
+
+
+def test_a_cell_with_no_word_boxes_keeps_what_the_span_reader_found():
+    """Absence of words is no evidence, so it must not blank the cell."""
+    assert cell_text("Start Offset", "") == "Start Offset"
+    assert cell_text("", "anything") == "anything"
+    assert cell_text(None, "") is None
+
+
+def test_a_table_whose_readings_broadly_disagree_is_left_alone():
+    """The guard that replaces the per-cell one, and why it moved.
+
+    Trusting word boxes cell-by-cell is only safe while both readings
+    describe the same table. When they do not — the coordinate-space
+    mismatch that made rotated pages disagree on 98% of cells before the
+    rotation matrix was applied — every cell would be confidently
+    overwritten with unrelated text. Agreement is therefore checked once
+    per table, and a table that fails is not touched at all.
+    """
+    aligned = [("Utility ID", "Utility ID"), ("AT&T", "AT&T"), ("Telecom", "Telecom")]
+    assert readings_agree(aligned)
+
+    misaligned = [
+        ("Utility ID", "No) Conflict Y"),
+        ("Utility Owner", "Y Y"),
+        ("Utility Type", "Y Y"),
+    ]
+    assert not readings_agree(misaligned)
+
+    # Spacing-only differences are still agreement: that is the common case.
+    assert readings_agree([("Cityof Houston", "City of Houston")] * 3)
 
 
 def test_dedupe_hint_is_org_type_and_station_range():
@@ -285,28 +309,35 @@ def test_the_city_of_houston_split_is_repaired():
 
 
 @real_corpus
-def test_every_stored_token_exists_on_its_page():
+@pytest.mark.parametrize(
+    "member",
+    [
+        "nhhip-seg3c2-utilities-inventory.pdf",
+        "nhhip-seg3c2-utilities-inventory-7-22-2025.pdf",
+        "nhhip-seg3c2-utilities-inventory-10-24-2025.pdf",
+        "nhhip-seg3c2-utilities-inventory-12-15-2025.pdf",
+        "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf",
+    ],
+)
+def test_every_stored_token_exists_on_its_page(member):
     """The invariant the citation check cannot enforce.
 
-    Citation verification is row-level and fuzzy at 0.9, so a cell whose
-    separator PyMuPDF dropped still verifies at ~0.99 inside a ~90-char row
-    quote. This asserts the thing that actually matters: every token we
-    store was read off the page rather than assembled into existence.
-    `Cityof` is not a word on page 15 — no fuzzy row match can hide that.
+    Citation verification is row-level and fuzzy at 0.9, so a cell PyMuPDF
+    mangled still verifies at ~0.99 inside a ~90-char row quote. This
+    asserts the thing that actually matters: every token we store was read
+    off the page rather than assembled into existence. `Cityof` is not a
+    word on page 15 — no fuzzy row match can hide that.
 
     Compared against the page's *word boxes*, not `get_text()`. The text
-    stream has the same span-concatenation problem being fixed here
-    (`freeway1148+60`) and wrapped cells come back out of order in it, so
-    it is the wrong yardstick for this on both counts.
+    stream has the same span-concatenation problem (`freeway1148+60`) and
+    returns wrapped cells out of order, so it is the wrong yardstick twice.
 
-    Scoped to this revision, where the count is zero. The other four still
-    carry clipped cells from PyMuPDF (`Rothwell Street` -> `othwell Street
-    (south`) — a separate defect, tracked in #44, not this bug class.
+    All five revisions, including the two rotated 90 degrees. This covered
+    one revision until #44, because the others carried clipped cells.
     """
     import pymupdf
 
     paths = _matrix_paths()
-    member = "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
     if member not in paths:
         pytest.skip(f"{member} not in the lockfile")
     path = paths[member]
@@ -327,6 +358,42 @@ def test_every_stored_token_exists_on_its_page():
         if len(token) >= 4 and token not in pages[r.page_no]
     ]
     assert not unknown, f"{len(unknown)} invented tokens, e.g. {unknown[:5]}"
+
+
+@real_corpus
+def test_a_clipped_cell_is_read_whole():
+    """`Rothwell Street (south...` arrived from PyMuPDF as `othwell Street`.
+
+    The leading character is dropped on a rotated page, and the value still
+    verified as a citation because a one-character slip inside a ~90-char
+    row quote clears the 0.9 threshold.
+    """
+    paths = _matrix_paths()
+    member = "nhhip-seg3c2-utilities-inventory-10-24-2025.pdf"
+    if member not in paths:
+        pytest.skip(f"{member} not in the lockfile")
+
+    values = {v for r in extract_rows(paths[member]) for v in r.fields.values()}
+    clipped = [v for v in values if v.startswith("othwell") or v.startswith("ovidence")]
+    assert not clipped, f"still clipped: {clipped}"
+    assert any(v.startswith("Rothwell Street") for v in values)
+
+
+@real_corpus
+def test_a_character_bleeding_from_the_next_cell_is_not_kept():
+    """`Canal Street` arrived as `Canal Street o`.
+
+    The `o` is the first letter of the next cell (`on Belt and Terminal
+    RR`). Word boxes belong to exactly one cell, so they cannot bleed.
+    """
+    paths = _matrix_paths()
+    member = "nhhip-seg3c2-utilities-inventory-10-24-2025.pdf"
+    if member not in paths:
+        pytest.skip(f"{member} not in the lockfile")
+
+    values = {v for r in extract_rows(paths[member]) for v in r.fields.values()}
+    assert "Canal Street o" not in values
+    assert "Canal Street" in values
 
 
 def test_a_row_that_is_not_contiguous_falls_back_to_a_verifying_window():
