@@ -181,3 +181,102 @@ def test_the_schema_restricts_event_type_to_the_ledgers_own_enum(session, docume
 
 def test_an_empty_response_is_not_a_crash(session, document):
     assert extract_document(session, document, client=StubClient([{}])) == []
+
+
+# --------------------------------------------------------------- concurrency
+
+
+def test_complete_many_preserves_input_order():
+    """Results are zipped back onto (document, page) pairs by position."""
+    from corridor.llm import complete_many
+
+    class Echo:
+        max_workers = 4
+
+        def complete(self, *, system, user, schema):
+            return {"events": [], "echo": user}
+
+    users = [f"page {i}" for i in range(20)]
+    results = complete_many(Echo(), system="s", schema={}, users=users, max_workers=4)
+    assert [r["echo"] for r in results] == users
+
+
+def test_one_failing_call_does_not_kill_the_batch():
+    """A single bad page costs that page, not the run."""
+    from corridor.llm import complete_many
+
+    class Flaky:
+        max_workers = 4
+
+        def complete(self, *, system, user, schema):
+            if user == "page 3":
+                raise RuntimeError("429 forever")
+            return {"events": []}
+
+    results = complete_many(
+        Flaky(), system="s", schema={}, users=[f"page {i}" for i in range(6)],
+        max_workers=4,
+    )
+    assert "_error" in results[3]
+    assert sum(1 for r in results if "_error" in r) == 1
+
+
+def test_batched_extraction_pools_pages_across_documents(session, document):
+    """A meeting note is often one page, so a per-document pool would have
+    nothing to parallelise."""
+    from corridor.extract_batch import extract_documents
+    from corridor.extract_minutes import _to_candidate
+    from corridor.models import Document, DocPage
+
+    second = Document(
+        project_id=document.project_id,
+        sha256="n" * 64,
+        filename="Meeting Notes/Chevron/2024.08.13 notes final.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(second)
+    session.flush()
+    session.add(
+        DocPage(document_id=second.id, page_no=1, text=PAGE_TEXT, text_source="text_layer")
+    )
+    session.flush()
+
+    client = StubClient([{"events": [event()]}, {"events": [event()]}])
+    created = extract_documents(
+        session,
+        [document, second],
+        client=client,
+        system="s",
+        schema=SCHEMA_STUB,
+        min_page_chars=200,
+        to_candidate=_to_candidate,
+        items_key="events",
+        max_workers=4,
+        commit=False,
+    )
+    # Both documents' pages went out in one pooled batch.
+    assert len(client.calls) == 2
+    assert len(created) == 2
+    assert {c.source_document_id for c in created} == {document.id, second.id}
+
+
+def test_already_extracted_lets_a_killed_run_resume(session, document):
+    """Without this a restart duplicates every document already finished."""
+    from corridor.extract_batch import already_extracted
+    from corridor.extract_minutes import PROMPT_VERSION
+
+    assert already_extracted(session, document.project_id, PROMPT_VERSION) == set()
+
+    client = StubClient([{"events": [event()]}])
+    extract_document(session, document, client=client)
+
+    assert already_extracted(session, document.project_id, PROMPT_VERSION) == {
+        document.id
+    }
+    # A different prompt version is a different run and is not skipped.
+    assert already_extracted(session, document.project_id, "minutes_v99") == set()
+
+
+SCHEMA_STUB = {"type": "object"}
