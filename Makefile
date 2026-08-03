@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements milestones exceptions
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements milestones exceptions minutes
 
 # One command from a clean clone.
 boot:
@@ -51,3 +51,7 @@ milestones:
 # Current exception list: make exceptions ARGS="nhhip-3c2"
 exceptions:
 	uv run python -m corridor.exceptions $(ARGS)
+
+# LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
+minutes:
+	uv run python -m corridor.extract_minutes $(ARGS)
