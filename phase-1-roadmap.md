@@ -2,7 +2,7 @@
 
 **Goal of Phase 1:** a working, demoable system of record for utility and external-party readiness, running on 2-3 real highway projects, operable by one person, no external accounts required.
 
-**Companion doc:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. Build nothing past M5 until M5 is done.
+**Companion docs:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec.md` covers document assembly, which runs in parallel from week 0. `CONTEXT.md` defines the domain vocabulary; `docs/adr/` records decisions with lasting consequences. Build nothing past M5 until M5 is done.
 
 ---
 
@@ -14,12 +14,15 @@ Phase 1 never includes: CAD/GIS, scheduling engine, document-management or PMIS 
 
 ## Milestones
 
-### M0 — Corpus and environment (0.5 wk)
+### M0 — Corpus and environment (from week 0, in parallel)
 
-- Assemble document sets for 2-3 real projects from public DOT sources (plan sets, proposal/special provisions, utility agreements, conflict matrix if available, meeting minutes, addenda). Construct a milestone list per project.
+No documents are in hand. Corpus assembly is the schedule's critical path rather than its warm-up, and is specified in `corpus-acquisition-spec.md`.
+
+- Assemble document sets for 2-3 real projects from public sources. Each project needs a **spine** (dependency records — filled conflict matrix, utility agreements, special provisions) and a **stream** (dated assertions that change over time — serial status reports, meeting minutes, board packets). Neither role alone exercises the data model. Construct a milestone list per project.
+- File public-records requests in week 0, scoped to the same project as the spine so returns merge into one ledger.
 - Repo, Postgres, object storage dirs, one-command boot.
 
-**Done when:** documents cataloged by project and type; stack boots with one command.
+**Done when:** the manifest resolves to files on disk with source provenance, cataloged by project and type; stack boots with one command.
 
 ### M1 — Evidence store and ingestion (1 wk)
 
@@ -31,7 +34,7 @@ Phase 1 never includes: CAD/GIS, scheduling engine, document-management or PMIS 
 
 ### M2 — Extraction pipeline (1.5-2 wk)
 
-- Type-specific LLM extractors: conflict matrix, meeting minutes, agreements, email. Output = candidate dependency records and events, every field cited to doc/page/quote.
+- Type-specific LLM extractors: conflict matrix, meeting minutes, serial status reports, agreements, email. Output = candidate dependency records and events, every field cited to doc/page/quote.
 - Automatic citation verifier (quote must match cited page).
 
 **Done when:** candidates generated for Project A with verified citations; candidate junk rate under ~30%.
@@ -40,9 +43,9 @@ Phase 1 never includes: CAD/GIS, scheduling engine, document-management or PMIS 
 
 - Review queue: accept / edit / merge / reject, keyboard-driven.
 - Entity resolution assist (same dependency across matrix, minutes, email → merge).
-- Canonical dependency ledger with event history and append-only audit log.
+- Canonical dependency ledger with event history and append-only audit log. Every merged claim is retained as an assertion against the record, so competing source values survive rather than overwriting each other.
 
-**Done when:** all Project A candidates adjudicated; ledger browsable by location, organization, status, criticality.
+**Done when:** all Project A candidates adjudicated; ledger browsable by location, organization, status, criticality; a record with conflicting source values shows both.
 
 ### M4 — Schedule link and exceptions (1 wk)
 
@@ -67,7 +70,7 @@ Phase 1 never includes: CAD/GIS, scheduling engine, document-management or PMIS 
 
 ### M7 — Quality gate and eval (1 wk)
 
-- Hand-labeled gold set on a held-out project (dependencies + events).
+- Gold set on a held-out project: that project's own filled Utility Conflict Matrix as the primary independent enumeration, plus one bounded hand-labeled slice covering permits, ROW, railroad, and events. A matrix cannot be ground truth for its own omissions — state that limit rather than papering over it.
 - Metrics per run: critical-dependency recall, overall recall/precision, citation validity, human correction rate.
 
 **Done when:** ≥95% recall on labeled critical dependencies; 100% citation validity; metrics recorded automatically every run.
@@ -91,12 +94,12 @@ Phase 1 never includes: CAD/GIS, scheduling engine, document-management or PMIS 
 
 ## Total effort
 
-~10-13 focused solo weeks. Nights-and-weekends pace: roughly double the calendar time.
+~11-14 focused solo weeks. Nights-and-weekends pace: roughly double the calendar time.
 
 ## Sequencing rules
 
 1. Nothing gets built ahead of M5 — no auth, no integrations, no polish beyond the demo path.
-2. Every milestone is exercised on real project documents, never synthetic samples.
+2. Synthetic fixtures may exercise code paths. No synthetic document may ever contribute to an `eval_run`, a quality number, or a demo — every quality claim is made against real project documents.
 3. No integration work (M9's XER import included) before two projects run clean.
 4. M7's eval gate is not skippable; it is the only objective measure that the core works.
 
