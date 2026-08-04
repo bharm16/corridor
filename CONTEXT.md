@@ -32,7 +32,7 @@ _Avoid_: disposition, treatment, remedy, action, fix
 
 **Criticality**:
 Whether a Dependency commits its External Party to substantial work on the facility — **a reading of the Resolution Strategy, never a stored scale**. Relocation, removal and abandonment are critical; a vertical adjustment to grade, protection in place, a design change or a policy exception are not. The line is the one FDOT draws in colour on its plans, and it is about the **kind of work**, not a date: some critical relocations cannot happen before construction begins, because they wait on the highway element they attach to. Federal regulation defines relocation far more broadly, to include adjustment and protective measures; that definition is used for both cost and scheduling but does not discriminate, and is not the one meant here.
-_Avoid_: priority, severity, importance, urgency (severity is a property of an Exception, not of a Dependency); high (a middle value nothing can assert)
+_Avoid_: priority, severity, importance, urgency (severity is retired everywhere, ADR-0010 — Criticality filters Exceptions, it never multiplies them); high (a middle value nothing can assert)
 
 **Need Date**:
 The date by which a Dependency must be Ready, derived from the Milestone it serves. A property of the project.
@@ -79,8 +79,12 @@ An event in which an External Party's Committed Date moves later than a date it 
 _Avoid_: delay, pushback, reschedule
 
 **Exception**:
-A condition computed over the Ledger indicating a Dependency is not on track — missing an owner, a date, or Evidence; stale, due soon, overdue, contradicted, or unlinked to a Milestone. Exceptions are always queries, never stored flags.
-_Avoid_: alert, flag, issue, risk, warning
+A condition computed over the Ledger indicating a Dependency is not on track — missing an owner, a date, or Evidence; stale, due soon, overdue, contradicted, or unlinked to a Milestone. Exceptions are always queries, never stored flags. An Exception is a fact carrying its category and its quantities (days overdue, days of silence); it has no score — Exceptions are grouped, sorted by their quantities, and filtered by Criticality, never ranked by weights nobody can defend (ADR-0010).
+_Avoid_: alert, flag, issue, risk, warning, severity (retired with the Exception score, ADR-0010)
+
+**Briefing**:
+A model-drafted narrative view of the record — one Dependency or one project, read across its Evidence, Assertions and Exceptions and rendered as prose. Cited sentence by sentence to the same bar as a report cell; floored by the computed Exceptions, which it may explain but never omit; stamped with the prompt version and model that drafted it and the evaluation time and ruleset version of the Exceptions it cites; regenerable and never itself the record. Anything it surfaces that should become record enters as a Candidate through Adjudication (ADR-0011).
+_Avoid_: summary, analysis, assessment, AI insights
 
 ### The review pipeline
 

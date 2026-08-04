@@ -160,7 +160,7 @@ When a candidate is merged, its claims become **assertions** against the target 
 
 ## 9. Exception engine
 
-Computed as queries, not stored state. Severity = rule severity × 3 where the document's resolution strategy is relocation, removal or abandonment (ADR-0009); × 1 otherwise, including where it asserts none.
+Computed as queries, not stored state. Exceptions carry no severity (ADR-0010, which superseded this section's `rule severity × criticality` arithmetic): each carries its rule, its detail, and its quantities — days overdue, days of silence, days to need date — and views group by rule, sort within a rule by its own quantity, and filter by Criticality. Implementation lands with #112.
 
 | Rule | Logic |
 |---|---|
@@ -189,8 +189,8 @@ HTML → PDF. **No cell is bare.** Every published cell carries one of two prove
 Enforced by the verifier, not by convention.
 
 1. **Milestone readiness rollup** — per milestone: total dependencies, ready, at-risk, blocked, % with verified evidence.
-2. **Critical items** — top N by (need-date proximity × criticality, read from the resolution strategy): owner, next action, committed date, status, citation.
-3. **Exceptions summary** — counts by rule, worst offenders.
+2. **Critical items** — the critical records (criticality read from the resolution strategy, as a filter — ADR-0010), ordered by need-date proximity as declared presentation; where no dates exist the section says so rather than faking an order: owner, next action, committed date, status, citation.
+3. **Exceptions summary** — counts by rule; within a rule, the largest quantity (most days overdue, longest silence), not a severity-ranked "worst" (ADR-0010).
 4. **Changes since last report** — new, closed, slipped, escalated. Diffed against the previous `report_runs.snapshot_json`.
 5. **Aging** — overdue items by days overdue.
 6. **Appendix** — full ledger export.
