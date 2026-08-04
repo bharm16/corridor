@@ -21,9 +21,11 @@ Two restraints make that real, and both are pinned by tests:
 - **Nothing here decides.** A row carrying a retirement phrase is
   *flagged*, never dropped — whether `Not Used` retires a row number or
   describes an out-of-service facility is #128, and it is open. On WSDOT
-  9424 that phrase appears on 98 rows; a tool that quietly excluded them
-  would be settling the question by omission, at a scale no ≥95% bar
-  absorbs.
+  9424 the phrase appears on 102 rows; a tool that quietly excluded them
+  would be settling the question by omission — and it is the *labeller*
+  the stake falls on, because the extractor already skips the 101 blank
+  ones. A gold set that counted them reads recall as 162/263, failing the
+  gate on bookkeeping rather than on extraction.
 
 **The independence is partial, and the report says so.** Rows are matched
 by quote containment, which borrows no column mapping from the extractor —
@@ -57,9 +59,14 @@ from corridor.verify import normalize
 WORKSHEET_COLUMNS = (*REQUIRED_COLUMNS, "page", "critical")
 
 # Phrases a document uses to retire a row. Enumerated from the corpus
-# rather than imagined: WSDOT 9424 prints `Not Used` on 97 blank rows and
-# `Not used` on one populated one, and nothing else in this corpus retires
-# a row at all.
+# rather than imagined: WSDOT 9424 prints the phrase 102 times and nothing
+# else in this corpus retires a row at all.
+#
+# Matched case-insensitively because spelling carries no signal — 9424
+# prints `Not Used` 79 times and `Not used` 23 times, both on blank rows.
+# What does discriminate is content: 101 of the 102 sit on rows holding
+# nothing but an identifier, and exactly one sits on a fully populated
+# conflict row (#128).
 #
 # Under-matching is the safe direction and the reason this list stays
 # short. A retirement phrase this does not know still surfaces its row —
