@@ -26,6 +26,10 @@ _Avoid_: chainage, location (when a station range is meant), milepost
 A dated event in the project schedule that Dependencies must be ready for.
 _Avoid_: deadline, gate, phase
 
+**Criticality**:
+How much a Dependency matters, claimed by the source document rather than judged by a reader: a Dependency is **critical** when its document states the facility must move before construction can proceed. Each agency writes that differently — a conflict flag, a relocation-needed column, a recommended resolution — and each layout's signal is identified once before that document is measured. A reviewer may override the claim; nobody may invent it where the document is silent.
+_Avoid_: priority, severity, importance, urgency (severity is a property of an Exception, not of a Dependency)
+
 **Need Date**:
 The date by which a Dependency must be Ready, derived from the Milestone it serves. A property of the project.
 _Avoid_: required date, due date, deadline
