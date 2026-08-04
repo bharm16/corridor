@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import delete, select
@@ -52,6 +52,10 @@ class Outcome:
     rows: int = 0
     unverified: int = 0
     detail: str = ""
+    # Pages per extraction tier, where the extractor reports it. A document
+    # that fell back to transcription says so here rather than looking like
+    # one that read cleanly.
+    tiers: dict[str, int] = field(default_factory=dict)
 
 
 def deterministic(
@@ -171,6 +175,7 @@ def extract_project(
                 "extracted",
                 rows=len(candidates),
                 unverified=sum(1 for c in candidates if not c.citations_verified),
+                tiers=dict(getattr(document, "extraction_tiers", {}) or {}),
             )
         )
 
@@ -220,6 +225,17 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
         lines.append(
             "  An unreadable document is an unhandled layout, not an empty "
             "matrix. Do not read it as a project with no conflicts."
+        )
+
+    # Named even when it is zero, because "no fallback" is the claim worth
+    # making. A fallback nobody counts is a fallback nobody notices.
+    fell_back = sum(o.tiers.get("transcribe", 0) for o in outcomes)
+    read_cleanly = sum(o.tiers.get("structure", 0) for o in outcomes)
+    if fell_back or read_cleanly:
+        share = 100 * fell_back / (fell_back + read_cleanly)
+        lines.append(
+            f"  pages: {read_cleanly} read from the text layer, "
+            f"{fell_back} transcribed ({share:.1f}% fell back)"
         )
     return "\n".join(lines)
 

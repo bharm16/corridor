@@ -116,6 +116,18 @@ MIN_ROW_FIELDS = 2
 # header is. Deeper than this is a data row that happens to look like one.
 HEADER_CANDIDATES = 3
 
+# A transcribed numeric token below this log-probability is treated as a
+# guess and sinks its row.
+#
+# The gate (#68) established that the model's own confidence cannot do this
+# job: of 164 rows carrying a value that was not on the page, 96 were
+# reported at 0.98 and 62 at 0.99. Token probabilities are a measurement
+# rather than a self-report, and asking for them is free. -3.0 is roughly
+# a 5% token probability — deliberately loose, because this only sinks a
+# row in the queue and a false flag costs a second look while a missed one
+# costs a wrong number in the Ledger.
+MIN_TOKEN_LOGPROB = -3.0
+
 _PAGE_ATTRIBUTES = {
     "type": "object",
     "additionalProperties": False,
@@ -250,6 +262,9 @@ def extract_document(
             schema=TRANSCRIBE_SCHEMA,
             users=[_transcribe_user(document, p) for p in transcribe_pages],
             images=[[p.image_path] for p in transcribe_pages],
+            # Only this tier writes values, so only this tier needs a
+            # measured signal about how sure the model was of each digit.
+            logprobs=True,
         )
         for page, result in zip(transcribe_pages, results):
             if "_error" in result:
@@ -257,13 +272,25 @@ def extract_document(
             if result.get("is_utility_matrix"):
                 recognized += 1
             inherited = _page_attributes(result)
+            unsure = _low_confidence_tokens(result)
             for item in result.get("rows") or []:
                 candidate = _transcribed_candidate(
-                    document, page, item, model, inherited
+                    document, page, item, model, inherited, unsure
                 )
                 if candidate is not None:
                     session.add(candidate)
                     candidates.append(candidate)
+
+    # A run has to be able to say how much of a document it could read
+    # properly. A fallback nobody counts is a fallback nobody notices.
+    document.extraction_tiers = {
+        tier: count
+        for tier, count in (
+            (TIER_STRUCTURE, len(structure_pages)),
+            (TIER_TRANSCRIBE, len(transcribe_pages)),
+        )
+        if count
+    }
 
     if recognized == 0:
         raise NoMatrixFound(
@@ -412,12 +439,32 @@ def _page_attributes(result: dict) -> dict[str, str]:
     }
 
 
+def _low_confidence_tokens(result: dict) -> list[str]:
+    """Numeric tokens the model was not sure of, from its own logprobs.
+
+    Numeric only: prose wanders harmlessly and a low-probability word says
+    little, but a hesitant digit is exactly the failure the gate measured
+    and the one nothing else catches. `_meta` is the client's reserved key
+    and never reaches a Candidate.
+    """
+    entries = ((result.get("_meta") or {}).get("logprobs")) or []
+    unsure = []
+    for entry in entries:
+        token = (entry.get("token") or "").strip()
+        if not any(character.isdigit() for character in token):
+            continue
+        if entry.get("logprob", 0.0) < MIN_TOKEN_LOGPROB:
+            unsure.append(token)
+    return unsure
+
+
 def _transcribed_candidate(
     document: Document,
     page: DocPage,
     item: dict,
     model: str | None,
     inherited: dict[str, str],
+    unsure: list[str],
 ) -> Candidate | None:
     quote = (item.get("quote") or "").strip()
     if not quote:
@@ -431,16 +478,22 @@ def _transcribed_candidate(
     if not row:
         return None
 
+    fields = {**inherited, **row}
+    # Only tokens this row actually used: one shaky digit on a page must
+    # not sink every other row on it.
+    mine = sorted({t for t in unsure if any(t in value for value in fields.values())})
+
     return _candidate(
         document,
         page,
-        {**inherited, **row},
+        fields,
         quote=quote,
         whole_row=True,
         confidence=item.get("confidence"),
         model=model,
         tier=TIER_TRANSCRIBE,
         unmapped=[],
+        low_confidence=mine,
     )
 
 
@@ -455,10 +508,12 @@ def _candidate(
     model: str | None,
     tier: str,
     unmapped: list[str],
+    low_confidence: list[str] | None = None,
 ) -> Candidate:
     page_text = page.text or ""
     quote_ok = quote_appears_on(quote, page_text)
     suspect = sorted(unverified_fields(fields, page_text))
+    unsure = low_confidence or []
 
     return Candidate(
         project_id=document.project_id,
@@ -483,6 +538,9 @@ def _candidate(
             # trigger for a deliberate vocabulary extension, not something
             # an extractor may decide for itself.
             "unmapped_columns": unmapped,
+            # Transcribed digits the model hesitated on. Empty on the
+            # structure tier, which transcribes nothing.
+            "low_confidence_tokens": unsure,
             "tier": tier,
             "dedupe_hint": dedupe_hint(fields),
             # OCR text is materially noisier, and a citation resting on it
@@ -494,5 +552,5 @@ def _candidate(
         confidence=confidence,
         prompt_version=PROMPT_VERSION,
         model=model,
-        citations_verified=quote_ok and not suspect,
+        citations_verified=quote_ok and not suspect and not unsure,
     )

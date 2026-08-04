@@ -457,6 +457,164 @@ def test_a_page_without_a_text_layer_takes_the_transcription_tier(
     assert candidates[0].payload_json["fields"]["station_from"] == "1092+92"
 
 
+def transcribed(rows=None, *, owner=None, is_matrix=True, meta=None):
+    if rows is None:
+        rows = [
+            {
+                "utility_id": "FOC1-133",
+                "external_org": "AT&T Texas (SWBT)",
+                "station_from": "1092+92",
+                "quote": "FOC1-133 AT&T Texas (SWBT)",
+                "confidence": 0.9,
+            }
+        ]
+    result = {
+        "is_utility_matrix": is_matrix,
+        "page_attributes": {"external_org": owner},
+        "rows": rows,
+    }
+    if meta:
+        result["_meta"] = meta
+    return result
+
+
+def blind(session, document, page_no=1):
+    """Strip a page's text layer so it has no word boxes to read."""
+    page = session.scalars(
+        select(DocPage).where(
+            DocPage.document_id == document.id, DocPage.page_no == page_no
+        )
+    ).one()
+    page.text_source = "ocr"
+    session.flush()
+    return page
+
+
+def test_a_transcribed_value_absent_from_the_ocr_text_is_kept_and_flagged(
+    session, project, tmp_path
+):
+    """The tier where the model still writes values is the tier that needs
+    the field check most."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    blind(session, doc)
+
+    candidates = extract_document(
+        session, doc,
+        client=StubClient([transcribed([{
+            "utility_id": "FOC1-133",
+            "external_org": "AT&T Texas (SWBT)",
+            "station_from": "1140+00",
+            "quote": "FOC1-133 AT&T Texas (SWBT)",
+            "confidence": 0.99,
+        }])]),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].citations_verified is False
+    assert candidates[0].payload_json["unverified_fields"] == ["station_from"]
+    assert candidates[0].payload_json["fields"]["station_from"] == "1140+00"
+
+
+def test_a_low_logprob_numeric_token_sinks_its_row(session, project, tmp_path):
+    """The gate proved self-reported confidence is blind to misreads: 96 of
+    164 failures sat at 0.98. Token probabilities are the measured
+    replacement, and they cost nothing to ask for."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    blind(session, doc)
+    meta = {
+        "logprobs": [
+            {"token": "FOC1", "logprob": -0.001},
+            {"token": "1092", "logprob": -4.2},
+            {"token": "+92", "logprob": -0.002},
+        ]
+    }
+
+    candidates = extract_document(
+        session, doc, client=StubClient([transcribed(meta=meta)])
+    )
+
+    assert candidates[0].citations_verified is False
+    assert candidates[0].payload_json["low_confidence_tokens"] == ["1092"]
+
+
+def test_a_confident_numeric_token_does_not_sink_its_row(
+    session, project, tmp_path
+):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    blind(session, doc)
+    meta = {"logprobs": [{"token": "1092", "logprob": -0.001}]}
+
+    candidates = extract_document(
+        session, doc, client=StubClient([transcribed(meta=meta)])
+    )
+
+    assert candidates[0].citations_verified is True
+    assert candidates[0].payload_json["low_confidence_tokens"] == []
+
+
+def test_a_low_logprob_word_token_is_not_flagged(session, project, tmp_path):
+    """Prose wanders; digits do not. Only numeric tokens are load-bearing."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    blind(session, doc)
+    meta = {"logprobs": [{"token": " Telecom", "logprob": -5.0}]}
+
+    candidates = extract_document(
+        session, doc, client=StubClient([transcribed(meta=meta)])
+    )
+
+    assert candidates[0].payload_json["low_confidence_tokens"] == []
+    assert candidates[0].citations_verified is True
+
+
+def test_logprobs_are_requested_only_for_the_transcription_tier(
+    session, project, tmp_path
+):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    client = StubClient([structure()])
+    extract_document(session, doc, client=client)
+    assert client.calls[0]["logprobs"] is False
+
+    blind(session, doc)
+    client = StubClient([transcribed()])
+    extract_document(session, doc, client=client)
+    assert client.calls[0]["logprobs"] is True
+
+
+def test_the_reserved_meta_key_never_reaches_a_candidate(
+    session, project, tmp_path
+):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    blind(session, doc)
+
+    candidate = extract_document(
+        session, doc,
+        client=StubClient([transcribed(meta={"logprobs": []})]),
+    )[0]
+
+    assert "_meta" not in candidate.payload_json
+    assert "_meta" not in candidate.payload_json["fields"]
+
+
+def test_a_document_reports_how_many_pages_fell_back(session, project, tmp_path):
+    """How often we fall back is a number to watch, not a surprise."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    blind(session, doc)
+
+    extract_document(session, doc, client=StubClient([transcribed()]))
+
+    assert doc.extraction_tiers == {TIER_TRANSCRIBE: 1}
+
+
+def test_a_fully_readable_document_reports_no_fallback(
+    session, project, tmp_path
+):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    extract_document(session, doc, client=StubClient([structure()]))
+
+    assert doc.extraction_tiers == {TIER_STRUCTURE: 1}
+
+
 def test_candidates_are_added_to_the_session(session, project, tmp_path):
     doc = make_document(session, project, tmp_path, TXDOT_ROWS)
 
