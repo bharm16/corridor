@@ -64,10 +64,10 @@
     <table>
       <thead><tr><th>Rule</th><th>Severity</th><th>Why</th></tr></thead>
       <tbody>
-        {% for e in view.exceptions|sort(attribute='severity', reverse=true) %}
+        {% for e in view.exceptions|sort(attribute='rule') %}
           <tr>
             <td><span class="pill contra">{{ e.rule }}</span></td>
-            <td class="muted">{{ '%.1f'|format(e.severity) }}</td>
+            <td class="muted">{{ e.quantity_days ~ 'd' if e.quantity_days is not none else '—' }}</td>
             <td>{{ e.detail }}</td>
           </tr>
         {% endfor %}

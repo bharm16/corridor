@@ -94,10 +94,6 @@ class LedgerRow:
     contradicted: bool
     exceptions: list = field(default_factory=list)
 
-    @property
-    def worst_severity(self) -> float:
-        return max((e.severity for e in self.exceptions), default=0.0)
-
 
 def browse(
     session: Session,

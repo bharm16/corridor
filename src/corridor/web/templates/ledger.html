@@ -97,8 +97,8 @@
           <td class="num">{{ r.assertion_count }}a / {{ r.evidence_count }}e</td>
           <td>
             <span class="excs">
-            {%- for e in r.exceptions|sort(attribute='severity', reverse=true) %}
-              <span class="pill exc {% if e.severity >= 6 %}sev-high{% endif %}"
+            {%- for e in r.exceptions|sort(attribute='rule') %}
+              <span class="pill exc"
                     title="{{ e.detail }}">{{ e.rule }}</span>
             {%- else %}<span class="muted">—</span>{% endfor %}
             </span>
