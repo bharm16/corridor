@@ -1,18 +1,31 @@
-"""Deterministic extractor for the TxDOT Utility Conflict Matrix family.
+"""Reading a page's table geometry — cells, not meanings.
 
-There is no single TxDOT UCM layout. Across five revisions of *the same
-document* on Project A the title alternates between "Utility Inventory
-Matrix" and "Utility Conflict Matrix", a `Data Source` column comes and
-goes, `Potential Conflict` and `SUE Level` appear partway through, and
-`Size (inches, strands)` becomes `Size (in)`. So headers are mapped by
-synonym rather than by position, and a column that is absent is absent —
-not empty.
+What survives of the deterministic matrix extractor after #63. It answers
+"what characters are in this cell", and deliberately not "what does this
+column mean". The half that answered the second question mapped column
+headings by synonym, and it went because that is what could not
+generalise: two FDOT documents in this corpus do not share a header row,
+and on SR 789 it found the table and mapped none of its columns. ADR-0006
+gives that question to a model.
 
-The critical failure mode is silence. A parser keyed to one layout returns
-zero rows on the others *without erroring*, and a zero-row extraction is
-indistinguishable from a document that genuinely has no conflicts. So the
-two cases are distinguished explicitly: no recognizable table is an error,
-a recognizable table with no data rows is a legitimate empty result.
+The half that stayed is the half that was measured right. Reading values
+off word boxes got 3 of 3,235 rows wrong on Project A where a model
+transcribing the same pages got 164 of 3,240, and Tier 1 depends on it for
+every value it stores — so this is load-bearing now in a way it never was
+when a parser sat on top of it.
+
+Two behaviours here were bought with real defects and must not be lost:
+
+- **Cells are rebuilt from word boxes, not text spans** (#43, #44).
+  `table.extract()` drops a leading character (`Rothwell Street` ->
+  `othwell Street`), absorbs the first character of the next cell, and
+  omits separators mid-value (`City` + `of Houston` -> `Cityof Houston`).
+  Word boxes are cut on glyph gaps and assigned to exactly one cell.
+- **Word boxes are transformed into the table's coordinate space.**
+  `get_text("words")` measures against the mediabox and `find_tables()`
+  against the displayed, rotated page. On the two 90-degree revisions
+  those are different spaces, and the two readings described unrelated
+  content until the transform.
 """
 
 from __future__ import annotations
@@ -25,49 +38,11 @@ import pymupdf
 
 from corridor.verify import quote_appears_on
 
-PROMPT_VERSION = "txdot_ucm_v1"
-
-# Longest matching prefix wins, so "START STA OFFSET" beats "START STA".
-HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
-    # `CONFLICT NO` is FDOT's row key. Longer prefixes win, so it beats the
-    # bare `CONFLICT` column that sits further along the same layout.
-    "utility_id": ("UTILITY ID", "CONFLICT NO"),
-    "external_org": ("UTILITY OWNER", "UTILITY AGENCY OWNER", "UAO", "OWNER"),
-    "utility_type": ("UTILITY TYPE", "FACILITY TYPE", "FACILITY DESCRIPTION"),
-    "size": ("SIZE & MATERIAL", "SIZE"),
-    "material": ("MATERIAL",),
-    "oh_ug": ("OH/ UG", "OH/UG", "UG/OH"),
-    "baseline": ("BASELINE",),
-    "orientation": ("PARALLEL, CROSSING", "LONGITUDINAL"),
-    "alignment": ("ALIGNMENT",),
-    "location_start": ("LOCATION START",),
-    "location_end": ("LOCATION END",),
-    # FDOT and CDOT carry stationing and offset in one column; the pair is
-    # separated after mapping, by `split_station_offset`.
-    "station_from": ("START STATION", "START STA", "STATION AND", "APPROX BEGIN STA"),
-    "station_to": ("END STATION", "END STA", "APPROX END STA"),
-    "offset_from": ("START STA OFFSET", "START OFFSET"),
-    "offset_to": ("END STA OFFSET", "END OFFSET"),
-    "offset_side": ("OFFSET L/R", "L/R", "LT/RT"),
-    "potential_conflict": ("POTENTIAL", "CONFLICT"),
-    "sue_level": ("SUE LEVE",),
-    "data_source": ("DATA SOURCE",),
-    "notes": ("NOTES", "COMMENTS"),
-}
-
-# A table without both of these is not a utility matrix.
-REQUIRED = ("utility_id", "external_org")
-
 # Share of a table's cells whose two readings must match before the word-box
 # reading is trusted for any of them. Aligned tables sit at ~99.5%; a table
 # read in the wrong coordinate space sat at ~2%. Anywhere in between should
 # be looked at rather than silently repaired.
 AGREEMENT_FLOOR = 0.5
-
-# How far down a table to look for the header. CDOT prints a group-title
-# band above its real header row; anything deeper than this is a data row
-# that happens to look like one.
-MAX_HEADER_ROW = 3
 
 _WS = re.compile(r"\s+")
 
@@ -105,29 +80,6 @@ MAX_QUOTE_START = 4
 
 def normalize_header(header: str | None) -> str:
     return _WS.sub(" ", (header or "").replace("\n", " ")).strip().upper()
-
-
-def canonical_field(header: str | None) -> str | None:
-    normalized = normalize_header(header)
-    if not normalized:
-        return None
-    best: tuple[str, int] | None = None
-    for field, patterns in HEADER_SYNONYMS.items():
-        for pattern in patterns:
-            if normalized.startswith(pattern):
-                if best is None or len(pattern) > best[1]:
-                    best = (field, len(pattern))
-    return best[0] if best else None
-
-
-def map_headers(header_row: list[str | None]) -> dict[int, str]:
-    """Column index -> canonical field, for the columns we recognize."""
-    mapping: dict[int, str] = {}
-    for index, header in enumerate(header_row):
-        field = canonical_field(header)
-        if field and field not in mapping.values():
-            mapping[index] = field
-    return mapping
 
 
 def row_to_fields(row: list[str | None], mapping: dict[int, str]) -> dict[str, str]:
@@ -291,41 +243,12 @@ def reread_table(data: list[list], table, words) -> list[list]:
     ]
 
 
-def dedupe_hint(fields: dict[str, str]) -> str:
-    return "|".join(
-        [
-            fields.get("external_org", ""),
-            fields.get("utility_type", ""),
-            f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
-        ]
-    )
-
-
-def find_header(data: list[list]) -> tuple[int, dict[int, str]]:
-    """`(row index, mapping)` for the first row that maps the required fields.
-
-    Row 0 is the header in every TxDOT layout, but CDOT prints a
-    `CONFLICT DATA AND RESOLUTION` band above its real header, and reading
-    row 0 there mapped nothing and raised `NoMatrixFound` on a matrix whose
-    columns are otherwise close to TxDOT's. Only the first few rows are
-    considered: a header further down than that is not a header, and
-    scanning the whole table would eventually match some data row by
-    coincidence.
-    """
-    for index, row in enumerate(data[:MAX_HEADER_ROW]):
-        mapping = map_headers(row)
-        if all(f in mapping.values() for f in REQUIRED):
-            return index, mapping
-    return 0, {}
-
-
 def page_tables(page) -> list[list[list[str]]]:
     """Every table on one page, cells read from the page's word boxes.
 
-    The reading half of this module without the mapping half. The tiered
-    extractor (ADR-0006) supplies its own column mapping from a model and
-    needs only the cells — which is the part measured at 3 errors in 40,417
-    tokens, against 164 rows in 3,240 for a model transcribing them.
+    The whole public point of this module. A caller supplies the column
+    mapping — Tier 1 gets it from a model, which is the part no synonym
+    table could generalise — and these are the values it maps.
     """
     words = page_words(page)
     grids = []
@@ -336,64 +259,14 @@ def page_tables(page) -> list[list[list[str]]]:
     return grids
 
 
-def extract_rows(path) -> list[MatrixRow]:
-    """Every data row of every recognizable matrix table in the document.
-
-    A matrix spans many pages and the header is printed only on the first.
-    The mapping is therefore carried forward to same-width tables on later
-    pages, where the first row is data rather than a header. Without this
-    the extractor reads page 1 and silently drops the rest — 75 rows
-    instead of 622 on Project A's first revision, with no error, because
-    page 1 *was* recognized.
-    """
-    rows: list[MatrixRow] = []
-    recognized_tables = 0
-    carried: dict[int, str] | None = None
-    carried_width: int | None = None
-
-    with pymupdf.open(path) as pdf:
-        for index, page in enumerate(pdf):
-            page_no = index + 1
-            words = page_words(page)
-            for table in page.find_tables().tables:
-                data = table.extract()
-                if not data:
-                    continue
-                data = reread_table(data, table, words)
-
-                header_index, mapping = find_header(data)
-                if mapping:
-                    recognized_tables += 1
-                    carried, carried_width = mapping, len(data[0])
-                    body = data[header_index + 1 :]
-                elif carried is not None and carried_width == len(data[0]):
-                    # Continuation of the matrix: no header row, so nothing
-                    # is skipped. Width must match, which excludes the
-                    # unrelated legend tables that share these pages.
-                    mapping, body = carried, data
-                else:
-                    continue
-
-                for raw in body:
-                    fields = row_to_fields(raw, mapping)
-                    # Guards the carried mapping: a same-width table that is
-                    # not the matrix will not produce these two fields.
-                    if not all(fields.get(f) for f in REQUIRED):
-                        continue
-                    cells = tuple(
-                        _WS.sub(" ", (c or "").replace("\n", " ")).strip()
-                        for c in raw
-                    )
-                    rows.append(
-                        MatrixRow(fields, page_no, row_quote(raw), cells)
-                    )
-
-    if recognized_tables == 0:
-        raise NoMatrixFound(
-            f"no table with utility-matrix headers in {path}. "
-            "A layout variant is unhandled — do not treat this as an empty matrix."
-        )
-    return rows
+def dedupe_hint(fields: dict[str, str]) -> str:
+    return "|".join(
+        [
+            fields.get("external_org", ""),
+            fields.get("utility_type", ""),
+            f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
+        ]
+    )
 
 
 def best_verifiable_quote(row: MatrixRow, page_text: str) -> tuple[str, bool]:
@@ -426,39 +299,3 @@ def best_verifiable_quote(row: MatrixRow, page_text: str) -> tuple[str, bool]:
                     best = candidate
                 break
     return (best or row.quote), False
-
-
-def to_candidates(
-    rows: list[MatrixRow], *, document_id: int, page_text: dict[int, str]
-) -> list[dict]:
-    """Candidate payloads in the shared extractor schema.
-
-    Citations are verified here rather than downstream, so a candidate
-    carrying an unfindable quote is visibly unverified in the queue instead
-    of looking like every other row. Nothing is ever dropped.
-    """
-    candidates = []
-    for row in rows:
-        text = page_text.get(row.page_no, "")
-        quote, whole_row = best_verifiable_quote(row, text)
-        candidates.append(
-            {
-                "kind": "dependency",
-                "fields": row.fields,
-                "citations": [
-                    {
-                        "document_id": document_id,
-                        "page": row.page_no,
-                        "quote": quote,
-                        "verified": quote_appears_on(quote, text),
-                        # False means the citation covers part of the row.
-                        # Surfaced so a reviewer can see that some asserted
-                        # fields sit outside the quoted span.
-                        "whole_row": whole_row,
-                    }
-                ],
-                "confidence": 1.0,
-                "dedupe_hint": dedupe_hint(row.fields),
-            }
-        )
-    return candidates

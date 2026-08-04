@@ -20,7 +20,7 @@ What a new document costs is the point. A new header spelling, an owner in a pag
 
 **Corrected transcription** — keep the model writing values under a repaired call shape (Responses API, `reasoning.effort: none` instead of the silent `medium` default, `detail: original`, the page's text layer injected as ground truth, `pattern`-constrained station fields, logprob flagging). Every one of those levers is documented and real, and this is retained as Tier 2, where there is no text layer to read values from. Rejected as the default because it shrinks the transcription error by an unknown amount where Tier 1 eliminates it by construction — measuring our way toward what the other design simply is.
 
-**The deterministic parser as the sole path** — rejected by the same evidence as ADR-0004, now sharpened: its failure mode was never cell reading (0.1%) but structure recognition, and its synonym table is maintenance per document, not per agency — two FDOT documents in this corpus do not share a header row.
+**The deterministic parser as the sole path** — rejected by the same evidence as ADR-0004, now sharpened: its failure mode was never cell reading (0.1%) but structure recognition, and its synonym table is maintenance per document, not per agency — two FDOT documents in this corpus do not share a header row. It has since been deleted (#63): the synonym half went, and the half that reads cells off word boxes survives as `corridor.geometry`, which is where Tier 1 gets every value.
 
 **Predicted outputs** seeded from the text layer — unavailable: documented for gpt-4o/4.1 only, absent from gpt-5.6-luna's feature list. **Vision fine-tuning** — unavailable: gpt-4o-only, platform winding down. Both recorded so nobody proposes them again.
 

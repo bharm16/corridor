@@ -73,12 +73,21 @@ def ingest_and_extract(
     project_id: int,
     path: Path | str,
     images_dir: Path | str,
+    client=None,
     filename: str | None = None,
     source_url: str | None = None,
     retrieved_at: str | None = None,
     doc_date: date | None = None,
     doc_type: str = "matrix",
 ) -> tuple[Document, list[Candidate]]:
+    """Ingest one file and extract it, in that order.
+
+    Extraction needs a model since #63 removed the deterministic parser, so
+    a caller either injects a client or one is constructed — which means
+    this path needs an API key where it used to need none. That is the
+    price of having a single extraction path rather than a second one kept
+    alive to avoid it.
+    """
     document = ingest_document(
         session,
         project_id=project_id,
@@ -93,8 +102,7 @@ def ingest_and_extract(
     if document.parse_status != "parsed":
         return document, []
 
-    # The same deterministic extractor `make extract` runs, pointed at the
-    # file we just ingested rather than resolving it back out of the store.
-    from corridor.extract_project import deterministic
+    # The same extractor `make extract` runs.
+    from corridor.extract_matrix import extract_document
 
-    return document, deterministic(session, document, path=path)
+    return document, extract_document(session, document, client=client)

@@ -22,7 +22,7 @@ import pymupdf
 import pytest
 from sqlalchemy import select
 
-from corridor.extract import NoMatrixFound
+from corridor.geometry import NoMatrixFound
 from corridor.db import Session, engine
 from corridor.extract_matrix import (
     PROMPT_VERSION,
@@ -783,14 +783,17 @@ def test_sr789_pages_state_their_external_party_in_the_text_layer():
 
 
 @real_corpus
-def test_sr789_geometry_finds_a_table_the_synonym_parser_cannot_map():
+def test_sr789_geometry_reads_the_table_a_synonym_table_could_not_name():
     """Tier 1's division of labour, on the document that motivated it.
 
-    `find_tables()` locates the table and the word boxes read it cleanly.
-    What the parser cannot do is say what the columns *mean*: none of
-    SR 789's printed headers match a synonym, so it maps zero of them.
+    `find_tables()` locates the table and the word boxes read it cleanly —
+    every value Tier 1 stores is already here. What geometry cannot do is
+    say what the columns *mean*, and none of these printed headings match
+    a TxDOT synonym, which is why the deterministic parser read zero rows
+    from this document and why #63 deleted it rather than teaching it more
+    synonyms.
     """
-    from corridor.extract import find_header, page_tables
+    from corridor.geometry import page_tables
 
     path = _sr789_path()
     if path is None:
@@ -803,7 +806,6 @@ def test_sr789_geometry_finds_a_table_the_synonym_parser_cannot_map():
     grid = grids[0]
     header = [(cell or "").strip() for cell in grid[1]]
     assert "Conflict #" in header
-    # Every value Tier 1 would store is already here, read from the page.
+    # Not one of these is a TxDOT heading, and every value is here anyway.
+    assert "Station Begin (From C/L Const)" in header
     assert any("203+40.00" in (cell or "") for row in grid for cell in row)
-    # And the parser maps none of it.
-    assert find_header(grid) == (0, {})
