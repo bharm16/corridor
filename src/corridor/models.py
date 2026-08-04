@@ -83,6 +83,20 @@ RESOLUTION_STRATEGIES = (
 # against another and the number means nothing.
 CRITICAL_STRATEGIES = frozenset({"relocate", "remove", "abandon_in_place"})
 
+# What separates two answers inside one asserted resolution value.
+#
+# A layout that records its strategy as marked columns can mark more than
+# one: 12 of WSDOT 9424's rows do, and one of them marks answers from
+# opposite sides of the line above (#105). The extractor stores both
+# headings and the vocabulary decides what they mean together, so the two
+# sides need one agreed separator.
+#
+# `;` rather than `/`, because `/` is inside a heading this corpus prints —
+# `Abandon / Deactivate`. It is also already one of `verify._FIELD_SEPARATORS`,
+# so a joined value tokenises into the words the page really carries and
+# never reads as invented text.
+ANSWER_SEPARATOR = "; "
+
 CANDIDATE_KINDS = ("dependency", "event")
 CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")
 ORG_TYPES = ("utility", "railroad", "agency", "consultant", "other")

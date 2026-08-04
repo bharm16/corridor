@@ -32,6 +32,7 @@ Ledger — extractors produce Candidates only.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf
@@ -50,18 +51,21 @@ from corridor.geometry import (
     row_to_fields,
 )
 from corridor.llm import OpenAIClient, StructuredClient, complete_many
-from corridor.models import Candidate, DocPage, Document
+from corridor.models import ANSWER_SEPARATOR, Candidate, DocPage, Document
 from corridor.verify import quote_appears_on, unverified_fields
 
 # v2 widens the canonical vocabulary to TxDOT's published template (#97).
-# A version bump rather than an edit in place: the field a value lands in
-# changes, so v1 and v2 candidates are different readings of the same page
-# and pooling them would make every eval number meaningless.
-PROMPT_VERSION = "matrix_tiered_v2"
-# v1 is kept beside v2 rather than edited: `matrix_tiered_v1` Candidates are
-# still in the database, and a prompt that has been overwritten cannot say
-# what produced them (ADR-0003).
-STRUCTURE_PROMPT = Path("prompts/matrix_structure_v2.md")
+# v3 lets a resolution strategy recorded as marked columns be read as one
+# (#105). A version bump rather than an edit in place, for the same reason
+# both times: the field a value lands in changes — three of WSDOT's four
+# resolution columns move out of `unmapped_columns` and the fourth stops
+# being a bare `X` — so v2 and v3 candidates are different readings of the
+# same page and pooling them would make every eval number meaningless.
+PROMPT_VERSION = "matrix_tiered_v3"
+# Superseded prompts are kept beside the current one rather than edited:
+# their Candidates are still in the database, and a prompt that has been
+# overwritten cannot say what produced them (ADR-0003).
+STRUCTURE_PROMPT = Path("prompts/matrix_structure_v3.md")
 TRANSCRIBE_PROMPT = Path("prompts/matrix_v1.md")
 
 TIER_STRUCTURE = "structure"
@@ -207,6 +211,56 @@ DECLINED_COLUMNS = {
 # the set is treated as unmapped rather than stored, because a new field is
 # a deliberate change and not an extractor's improvisation.
 ROW_FIELDS = (*TEMPLATE_FIELDS, *LOCAL_FIELDS)
+
+# The one canonical field several columns may claim at once, because it is
+# the one this corpus records as marked columns: WSDOT prints four of them
+# beneath a spanning `RECOMMENDED RESOLUTION` group cell, each marked `X`
+# (#105, ADR-0009).
+#
+# Every other field keeps one column. A model naming two `external_org`
+# columns is making a mistake rather than describing a group, and the
+# second silently overwriting the first is how a wrong owner reaches every
+# row on a page.
+MARKED_COLUMN_FIELD = "resolution_strategy"
+
+# A cell holding this and nothing else is a mark, and a mark says nothing
+# without the heading above it. Stored alone under a canonical field it is
+# a claim the document never made — which is what 9424 did on 71 rows,
+# where `resolution_strategy` read `X`.
+#
+# Enumerated from the only marked-column document in the corpus rather than
+# guessed at: across its 11 pages the resolution cells hold `X` 171 times
+# and `x` twice, and nothing else. A new glyph is a one-line change with a
+# real document behind it.
+MARK_CELLS = frozenset({"x"})
+
+
+@dataclass(frozen=True)
+class ColumnMapping:
+    """What each column of one printed header holds.
+
+    `marks` is empty for every layout that prints its resolution strategy
+    as a value — which is every project in the corpus but WSDOT. When it is
+    not, the mapping cannot say what the column *contains*, only which
+    heading a mark under it would mean, so the heading travels beside the
+    index instead of being discarded (#105).
+    """
+
+    fields: dict[int, str]
+    unmapped: list[str]
+    marks: dict[int, str]
+
+    def signature(self) -> tuple:
+        """What two readings of one header must match on to be one reading.
+
+        Both halves, because two pages that agree on the value columns and
+        disagree on which are marked have not agreed on the header (#101).
+        """
+        return (
+            tuple(sorted(self.fields.items())),
+            tuple(sorted(self.marks.items())),
+        )
+
 
 # Facts a page states once for every row on it. Narrow on purpose: the
 # argument for hoisting only holds for a value the page really does state
@@ -547,13 +601,12 @@ def _resolve_headers(pages, grids, results):
         key = _header_key(grid, result.get("header_row"))
         if key is None:
             continue
-        mapping, unmapped = _column_mapping(grid, result)
-        votes.setdefault(key, []).append((mapping, unmapped))
+        votes.setdefault(key, []).append(_column_mapping(grid, result))
 
-    resolved: dict[tuple[str, ...], tuple[dict[int, str], list[str]]] = {}
+    resolved: dict[tuple[str, ...], ColumnMapping] = {}
     disagreements = 0
     for key, cast in votes.items():
-        signatures = [tuple(sorted(mapping.items())) for mapping, _ in cast]
+        signatures = [mapping.signature() for mapping in cast]
         if len(set(signatures)) > 1:
             disagreements += 1
         best = max(
@@ -571,9 +624,9 @@ def _structure_candidates(
     result: dict,
     model: str | None,
     session: Session,
-    carried: tuple[dict[int, str], list[str], int] | None = None,
+    carried: tuple[ColumnMapping, int] | None = None,
     resolved: dict | None = None,
-) -> tuple[list[Candidate], tuple[dict[int, str], list[str], int] | None]:
+) -> tuple[list[Candidate], tuple[ColumnMapping, int] | None]:
     table_index = result.get("matrix_table")
     if table_index is None or not (0 <= table_index < len(grids)):
         return [], carried
@@ -582,7 +635,7 @@ def _structure_candidates(
         return [], carried
 
     header_row = result.get("header_row")
-    mapping, unmapped = _column_mapping(grid, result)
+    mapping = _column_mapping(grid, result)
     confidence = result.get("mapping_confidence")
 
     if isinstance(header_row, int):
@@ -590,16 +643,16 @@ def _structure_candidates(
         # page's own reading of it (#101).
         key = _header_key(grid, header_row)
         if resolved and key in resolved:
-            mapping, unmapped = resolved[key]
-        carried = (mapping, unmapped, len(grid[0]))
-    elif carried is not None and carried[2] == len(grid[0]):
+            mapping = resolved[key]
+        carried = (mapping, len(grid[0]))
+    elif carried is not None and carried[1] == len(grid[0]):
         # A continuation page: the matrix runs on but its headings were
         # printed once, pages ago. A printed header outranks a mapping
         # inferred from data, and the difference is not academic — on the
         # last page of Project A's oldest revision every owner cell reads
         # `NA`, which the model reasonably took for a size. That mapped the
         # owner column to the wrong field and dropped all 44 rows.
-        mapping, unmapped, _ = carried
+        mapping, _ = carried
 
     body = grid[header_row + 1 :] if isinstance(header_row, int) else grid
     inherited = _page_attributes(result)
@@ -607,7 +660,8 @@ def _structure_candidates(
 
     candidates = []
     for raw in body:
-        own = row_to_fields(raw, mapping)
+        own = row_to_fields(raw, mapping.fields)
+        _read_strategy(own, raw, mapping)
         if len(own) < MIN_ROW_FIELDS:
             continue
         fields = {**inherited, **own}
@@ -624,38 +678,96 @@ def _structure_candidates(
             confidence=confidence,
             model=model,
             tier=TIER_STRUCTURE,
-            unmapped=unmapped,
+            unmapped=mapping.unmapped,
         )
         session.add(candidate)
         candidates.append(candidate)
     return candidates, carried
 
 
-def _column_mapping(grid, result: dict) -> tuple[dict[int, str], list[str]]:
-    """Column index to canonical field, plus the headers we could not use.
+def _read_strategy(own: dict[str, str], raw, mapping: ColumnMapping) -> None:
+    """Settle this row's resolution strategy, in place.
+
+    Two layouts and one rule: whatever is stored has to be something the
+    document said. A marked group answers with the heading the row is
+    marked under; a value column answers with its cell, unless that cell is
+    a bare mark — one column of a marked group with its siblings left
+    unmapped, which is precisely how 9424 extracted before this. `X` under
+    a heading nobody kept is not a strategy, and storing it would put a
+    mark in the Ledger and in an Assertion as though the document had
+    claimed it.
+    """
+    if mapping.marks:
+        if strategy := _marked_strategy(raw, mapping.marks):
+            own[MARKED_COLUMN_FIELD] = strategy
+    elif (own.get(MARKED_COLUMN_FIELD) or "").strip().casefold() in MARK_CELLS:
+        del own[MARKED_COLUMN_FIELD]
+
+
+def _column_mapping(grid, result: dict) -> ColumnMapping:
+    """What each column of this page's header holds.
 
     A field the model named that is not in the canonical vocabulary is
     treated exactly like one it declined to map: recorded by its printed
     name for a human to judge, never stored under a guessed heading. A
     wrong mapping is silent and applies to every row on the page.
+
+    The resolution strategy is held back until every column has been read,
+    because whether it is one column of prose or one of several marked
+    columns is not knowable from any single column (#105).
     """
     header_row = result.get("header_row")
     headers = grid[header_row] if isinstance(header_row, int) and header_row < len(grid) else []
 
-    mapping: dict[int, str] = {}
+    fields: dict[int, str] = {}
     unmapped: list[str] = []
+    strategy: dict[int, str] = {}
     for column in result.get("columns") or []:
         index = column.get("index")
         if not isinstance(index, int) or index < 0:
             continue
         field = column.get("canonical_field")
-        if field in ROW_FIELDS and field not in mapping.values():
-            mapping[index] = field
+        printed = headers[index].strip() if index < len(headers) else ""
+        if field == MARKED_COLUMN_FIELD:
+            strategy[index] = printed
             continue
-        printed = normalize_header(headers[index]) if index < len(headers) else ""
-        if printed:
-            unmapped.append(headers[index].strip())
-    return mapping, unmapped
+        if field in ROW_FIELDS and field not in fields.values():
+            fields[index] = field
+            continue
+        if normalize_header(printed):
+            unmapped.append(printed)
+
+    if len(strategy) > 1:
+        # A marked group. The cells hold marks, so the answer is which
+        # heading a row is marked under and the heading has to travel with
+        # the index — which is exactly what a column-to-field map discards.
+        return ColumnMapping(fields, unmapped, strategy)
+
+    # One column: the prose layout every other project in the corpus uses,
+    # read exactly as before.
+    fields.update({index: MARKED_COLUMN_FIELD for index in strategy})
+    return ColumnMapping(fields, unmapped, {})
+
+
+def _marked_strategy(row, marks: dict[int, str]) -> str | None:
+    """Which of the marked columns this row is marked under.
+
+    A non-empty cell is a mark rather than a literal `X`: 9424 prints both
+    `X` and `x`, and what makes a cell an answer is that the row was marked
+    under that heading at all, not which glyph the typist reached for.
+
+    Every marked heading is kept, in printed order. Twelve of 9424's rows
+    carry two marks and one of those two disagree — `ST Relocation Needed`
+    beside `Retain and Protect`, opposite sides of ADR-0009's line — so
+    choosing between them here would assert a strategy the document does
+    not. What they mean together is the vocabulary's question.
+    """
+    marked = [
+        heading
+        for index, heading in sorted(marks.items())
+        if heading and index < len(row) and (row[index] or "").strip()
+    ]
+    return ANSWER_SEPARATOR.join(marked) or None
 
 
 def _page_attributes(result: dict) -> dict[str, str]:

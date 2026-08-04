@@ -233,3 +233,111 @@ def _count(session, document) -> int:
             select(Candidate).where(Candidate.source_document_id == document.id)
         ).all()
     )
+
+
+# --------------------------- retiring a superseded reading (#105)
+
+
+def test_a_prompt_bump_retires_the_old_versions_pending_candidates(
+    session, project
+):
+    """The trap this repo has cleared by hand twice.
+
+    Nothing pruned superseded pending Candidates, because the clear was
+    scoped to the version being run: bump the version and no document
+    counts as already extracted, so the clear never fired and the old
+    version's rows stayed in the queue beside the new. It doubled the
+    review queue on `txdot_ucm`, and again when #97 merged, where 4,702
+    rows had to be deleted by hand.
+
+    Re-reading a document supersedes every earlier *pending* reading of it,
+    whichever prompt produced them. A reviewer has one queue, not one per
+    prompt version.
+    """
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    superseded = candidate(doc)  # written at PROMPT_VERSION
+    session.add(superseded)
+    session.flush()
+    superseded_id = superseded.id
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"a.pdf": [True]}),
+        prompt_version="test_v2",
+        commit=False,
+    )
+
+    assert outcomes[0].status == "extracted"
+    # One reading of the document, and it is the new one. Identity rather
+    # than `prompt_version`, because the stub extractor stamps its own.
+    remaining = session.scalars(
+        select(Candidate).where(Candidate.source_document_id == doc.id)
+    ).all()
+    assert len(remaining) == 1
+    assert remaining[0].id != superseded_id
+
+
+def test_a_prompt_bump_never_disturbs_an_adjudicated_candidate(session, project):
+    """Accepted and rejected are decisions, and a re-read does not undo one.
+
+    Same rule as `redo`, and it has to survive the widening: an accepted
+    Candidate backs a Ledger record its Assertions cite, and a rejected one
+    is a human's answer that an extractor re-running has no business
+    reversing.
+    """
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    for state in ("accepted", "rejected", "pending"):
+        session.add(candidate(doc, state=state))
+    session.flush()
+    superseded = {
+        c.id
+        for c in session.scalars(
+            select(Candidate).where(Candidate.source_document_id == doc.id)
+        )
+        if c.state == "pending"
+    }
+
+    extract_project(
+        session,
+        project,
+        extract=extractor(**{"a.pdf": [True]}),
+        prompt_version="test_v2",
+        commit=False,
+    )
+
+    surviving = session.scalars(
+        select(Candidate).where(Candidate.source_document_id == doc.id)
+    ).all()
+    assert sorted(c.state for c in surviving) == [
+        "accepted",
+        "pending",
+        "rejected",
+    ]
+    # The decisions kept their rows; only the un-adjudicated one was replaced.
+    assert not superseded & {c.id for c in surviving}
+
+
+def test_an_unreadable_document_keeps_the_reading_it_already_had(session, project):
+    """Nothing is retired when nothing replaces it.
+
+    A document that fails its parse check produces no Candidates, so
+    clearing its queue rows would delete a reading and put nothing in its
+    place — leaving the project quieter than before the run rather than
+    more current.
+    """
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    doc.parse_status = "failed"
+    session.add(candidate(doc))
+    session.flush()
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"a.pdf": [True]}),
+        prompt_version="test_v2",
+        commit=False,
+    )
+
+    assert outcomes[0].status == "unreadable"
+    assert _count(session, doc) == 1
