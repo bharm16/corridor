@@ -25,23 +25,46 @@ So criticality is not a property the documents assert. **The resolution strategy
 
 Only two record a strategy, and Project A is not one of them. It is an inventory with a conflict flag — it identifies conflicts and never says how they resolve. ADR-0007 built the whole model on the one layout that cannot answer the question.
 
-## Where the line falls, and why not the federal one
+## Where the line falls
 
-[23 CFR § 645.105](https://www.law.cornell.edu/cfr/text/23/645.105) defines the term:
+[23 CFR § 645.105](https://www.law.cornell.edu/cfr/text/23/645.105) defines the term, and [WSDOT's Utilities Manual](https://www.wsdot.wa.gov/publications/manuals/fulltext/m22-87/Utilities.pdf) glossary adopts it verbatim:
 
 > "Relocation is the **adjustment** of utility facilities required by the highway project. It includes removing and reinstalling the facility … moving, rearranging or changing the type of existing facilities **and taking any necessary safety and protective measures**."
 
-Federally, adjustment *is* relocation, and protective measures are inside it too. Adopt that line and 64 of SR 789's 66 rows are critical, `Retain and Protect` is a relocation, and the metric separates nothing.
+Federally, adjustment *is* relocation and protective measures are inside it too. Adopt that line and 64 of SR 789's 66 rows are critical, `Retain and Protect` is a relocation, and the metric separates nothing.
 
-That definition is scoped to **reimbursement** — it bounds what federal-aid dollars may pay for. It is not answering the schedule question, which is the only one a readiness ledger asks.
+**It would be wrong to dismiss that as a cost-only definition.** FDOT's [Utility Relocation Schedule Manual](https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/construction/schedulingeng/fdot-utility-production-rate-manual.pdf) — a manual about *scheduling* — carries `WA03 Adjust one water valve box to grade` and `SA08 Adjust ring and cover to grade` as relocation activities with durations, crews and permitting factors. Adjustment is scheduled relocation work in the agency's own scheduling practice. The federal definition is not merely a reimbursement artifact.
 
-So the line is SHRP2's, and WSDOT prints it as column headings: **does the facility move, or does it stay?** `Relocation Needed` is critical. `Retain and Protect` and `Abandon / Deactivate` are not.
+Two things separate them anyway, and both are published rather than inferred.
+
+**FDOT distinguishes them on the plans, in colour.** Its Utility Accommodation Manual §4.9 codes existing utilities as:
+
+> **Red:** to be removed or relocated **horizontally**, or to be placed out-of-service (deactivated) but left in place
+> **Brown:** to be adjusted **vertically** but to remain in the same horizontal alignment
+> **Green:** to remain in place with no adjustment
+
+**And the magnitudes are not comparable.** From FDOT's own duration table: adjusting a valve box to grade averages **0.5 days** — the shortest of the manual's 22 activities, by a factor of four — against 8 days to encase a high-pressure gas line and **28 days** (up to 40) to remove and replace fifty feet of force main. Whatever the reimbursement rules call them, a half-day casting adjustment and a six-week main replacement are not the same schedule risk, and a readiness ledger exists to track the second.
+
+So the line follows FDOT's Red/Brown boundary, which is also SHRP2's and which WSDOT prints as column headings. Note that **deactivation is on the Red side**: an abandoned facility is scheduled utility-owner work, not a facility that stays. Project A agrees, giving `Abandoned` its own answer rather than folding it into `No`.
+
+| strategy | critical | basis |
+|---|---|---|
+| relocate · remove · abandon/deactivate | **yes** | FDOT Red · WSDOT `Relocation Needed` |
+| adjust vertically | no | FDOT Brown · a 0.5–1 day activity |
+| protect in place | no | FDOT Green · WSDOT `Retain and Protect` |
+| change highway design · exception to policy | no | no utility-owner work at all |
+
+This decomposes R15B's single `Relocation before construction` alternative along FDOT's published Red/Brown split. It is an extension of the four, not a departure from them.
+
+**A caveat on "before construction".** WSDOT's manual is explicit that the timing is a goal rather than a guarantee: *"The primary goal of any project utility conflict should be to relocate the utility before construction begins. However, this is often not possible when utility relocation is dependent upon the acquisition of right of way or the construction of a highway element such as a utility conduit on a bridge."* Criticality is therefore about the **kind of work the document commits the utility owner to**, not about a date. Some critical relocations provably happen mid-construction.
+
+**And a contradiction that is only apparent.** WSDOT's glossary defines relocation broadly while its own Appendix U prints `Relocation Needed` as distinct from `Retain and Protect` — and `retain and protect` appears **zero times** in the manual's 283 pages. The glossary is the legal and cost term; the matrix columns are the operational one. Corridor reads documents, not manuals, so the document's narrower line governs.
 
 ## Considered options
 
 **Keep criticality and widen the signal table.** What ADR-0007 shipped, extended to cover WSDOT's four columns. Rejected because it preserves a three-value severity scale (`critical | high | normal`) that no document in the corpus fills in and no published method defines. `high` has never had a source and never will — a scale nothing can assert is a reviewer's opinion wearing a document's clothes, which is the exact failure ADR-0007 was written to prevent.
 
-**Adopt the federal definition.** Legally exact, defensible to an auditor, and it makes almost every row critical. ADR-0007 already named this failure — *"a gate whose critical set is most of the set may not catch the failure it was written for"* — and then accepted a 71% critical set anyway. Taking the federal line would make it worse, not better.
+**Adopt the federal definition.** Legally exact, defensible to an auditor, adopted verbatim by WSDOT, and — as FDOT's scheduling manual shows — genuinely used for scheduling rather than only for cost. It is the strongest of the rejected options and was rejected on consequence rather than on principle: it makes 64 of SR 789's 66 rows critical and turns `Retain and Protect` into a relocation. ADR-0007 already named this failure — *"a gate whose critical set is most of the set may not catch the failure it was written for"* — and then accepted a 71% critical set anyway. Taking the federal line would make it worse, not better.
 
 **Derive criticality and store nothing.** Rejected by ADR-0007 on the grounds that a reviewer overriding the document is legitimate, unlike readiness. That argument survives and is why `resolution_strategy` is stored and adjudicated: the reviewer overrides *the strategy* — the matrix may say `Retain and Protect` about a duct bank under the only haul road — and criticality follows from the conclusion. The override moved fields; it did not disappear.
 

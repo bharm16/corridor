@@ -27,11 +27,11 @@ A dated event in the project schedule that Dependencies must be ready for.
 _Avoid_: deadline, gate, phase
 
 **Resolution Strategy**:
-How a utility conflict is to be resolved, asserted by the source document: the facility is **relocated**, **protected in place**, resolved by **changing the highway design**, or granted an **exception to policy**. The industry's four published alternatives, not Corridor's invention. A reviewer may override the document's claim — a matrix may say protect-in-place about a duct bank under the only haul road — but nobody may invent one where the document is silent, and many documents are: an inventory records conflicts without ever saying how they resolve.
+How a utility conflict is to be resolved, asserted by the source document: the facility is **relocated**, **removed**, **abandoned in place**, **adjusted vertically** to a new grade, **protected in place**, resolved by **changing the highway design**, or granted an **exception to policy**. The industry's published alternatives, not Corridor's invention. A reviewer may override the document's claim — a matrix may say protect-in-place about a duct bank under the only haul road — but nobody may invent one where the document is silent, and many documents are: an inventory records conflicts without ever saying how they resolve.
 _Avoid_: disposition, treatment, remedy, action, fix
 
 **Criticality**:
-Whether a Dependency must move before construction can proceed — **a reading of the Resolution Strategy, never a stored scale**: critical means the strategy is relocation. A facility that stays where it is, however much work it needs, is not critical. Federal regulation defines relocation far more broadly, to include adjustment and protective measures; that definition bounds reimbursement, not schedule, and is not the one meant here.
+Whether a Dependency commits its External Party to substantial work on the facility — **a reading of the Resolution Strategy, never a stored scale**. Relocation, removal and abandonment are critical; a vertical adjustment to grade, protection in place, a design change or a policy exception are not. The line is the one FDOT draws in colour on its plans, and it is about the **kind of work**, not a date: some critical relocations cannot happen before construction begins, because they wait on the highway element they attach to. Federal regulation defines relocation far more broadly, to include adjustment and protective measures; that definition is used for both cost and scheduling but does not discriminate, and is not the one meant here.
 _Avoid_: priority, severity, importance, urgency (severity is a property of an Exception, not of a Dependency); high (a middle value nothing can assert)
 
 **Need Date**:
