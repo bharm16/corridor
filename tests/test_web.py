@@ -613,3 +613,26 @@ def test_the_dependency_view_states_days_beside_each_rule(
 
     assert "OVERDUE" in body
     assert "40d" in body
+
+
+def test_a_zero_day_quantity_still_renders(client, session, project):
+    """"Needed in 0 days" is due today, and 0 is not None: a truthiness
+    check would have swallowed exactly the row a reviewer most needs."""
+    from datetime import date
+
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="DEP-TODAY",
+        dep_type="utility_relocation",
+        title="Telecom — DEP-TODAY",
+        status="committed",
+        need_date=date.today(),
+        committed_date=date.today(),
+        internal_owner="Bryce",
+    )
+    session.add(dep)
+    session.flush()
+
+    body = client.get(f"/ledger/{project.slug}").text
+
+    assert "DUE_SOON 0d" in body
