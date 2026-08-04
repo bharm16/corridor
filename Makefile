@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract milestones exceptions minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract milestones exceptions gold minutes report
 
 # One command from a clean clone.
 boot:
@@ -68,6 +68,13 @@ eval:
 
 exceptions:
 	uv run python -m corridor.exceptions $(ARGS)
+
+# Labelling preparation for a gate run: a second reading of the matrix,
+# diffed against the extractor's, plus a BLANK worksheet. Never a gold
+# set — the denominator is the reviewer's own count (#88).
+#   make gold ARGS="wsdot-9424"
+gold:
+	uv run python -m corridor.gold $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 minutes:
