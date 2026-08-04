@@ -74,7 +74,9 @@ This decomposes R15B's single `Relocation before construction` alternative along
 
 **M7's gate is unaffected and better founded.** The gate scores WSDOT 9540, which carries the four resolution columns. It was never going to be scored on Project A.
 
-**A gold set's `critical` column now has a definition.** Mark a row critical when its document says the facility is to be moved, removed or relocated. Not when it is to be adjusted in place, monitored, protected, or abandoned. The eval code (#87) is unaffected — it scores whatever the labels say — but the labeller now has a rule instead of an instinct.
+**A gold set's `critical` column now has a definition, and it is the table above.** Mark a row critical when its document says the facility is to be relocated, removed, or abandoned in place. Not when it is to be adjusted vertically to grade, monitored, protected in place, resolved by a design change, or excepted from policy. The eval code (#87) is unaffected — it scores whatever the labels say — but the labeller now has a rule instead of an instinct.
+
+The labelling rule and the Ledger's derivation are the same sentence deliberately. If they diverge, the gate scores one definition against another and the number means nothing — which is this ADR's own subject matter, and a footgun it very nearly stepped in: an earlier draft of this paragraph excluded abandonment while the table above included it.
 
 **`severity = rule severity × criticality` needs restating.** A derived binary cannot be a three-point multiplier.
 
