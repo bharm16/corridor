@@ -242,10 +242,17 @@ def _critical_items(
     dated = sum(1 for r in ranked if r.dependency.need_date)
 
     note = (
-        f"The not-ready records whose document's resolution strategy is "
-        "relocation, removal or abandonment (ADR-0009), ordered by "
-        "need-date proximity. The order is presentation, not a measurement."
+        "The not-ready records whose document's resolution strategy is "
+        "relocation, removal or abandonment (ADR-0009), earliest need "
+        "first; undated records follow the dated. The order is "
+        "presentation, not a measurement."
     )
+    if len(critical_rows) > len(ranked):
+        # A cap nobody states is a selection wearing completeness — the
+        # device this section exists to abolish.
+        note += (
+            f" Showing the first {len(ranked)} of {len(critical_rows)}."
+        )
     if ranked and not dated:
         note += " No dates known: nothing here carries a need date to order by."
 
@@ -318,10 +325,17 @@ def _exceptions_summary(session: Session, project_id: int) -> Section:
         else:
             # An absence has no exemplar: every row is the same finding,
             # and electing one would be an arbitrary pick wearing a
-            # superlative. The count is the whole story, and the detail is
-            # uniform across the bucket by construction.
+            # superlative. The Why is shown only where the bucket really
+            # shares one — CONTRADICTION's detail names each record's own
+            # disagreeing fields, and attributing one record's fields to
+            # the whole bucket would be a lie with a citation on it.
+            details = {e.detail for e in facet.exceptions}
             most = _derived("Most days", "—", ids)
-            why = _derived("Why", facet.exceptions[0].detail, ids)
+            why = _derived(
+                "Why",
+                details.pop() if len(details) == 1 else "varies by record",
+                ids,
+            )
         section.rows.append(
             [
                 _derived("Rule", facet.rule, ids),
