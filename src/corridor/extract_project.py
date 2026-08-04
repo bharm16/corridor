@@ -33,9 +33,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
-from corridor.extract_matrix import PROMPT_VERSION, extract_document
+from corridor.extract_matrix import PROMPT_VERSION
 from corridor.geometry import NoMatrixFound
 from corridor.models import Candidate, Document, Project
+from corridor.pipeline import extract_any
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
@@ -253,7 +254,11 @@ def main(argv: list[str]) -> int:
             outcomes = extract_project(
                 session,
                 project,
-                extract=lambda s, d: extract_document(s, d, client=client),
+                # Routed per document: a project may publish its matrix as
+                # a spreadsheet, as a printout of one, or as both, and
+                # which reader runs is the document's property rather than
+                # this command's (ADR-0005).
+                extract=lambda s, d: extract_any(s, d, client=client),
                 redo="--redo" in flags,
             )
         finally:

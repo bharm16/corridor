@@ -248,3 +248,45 @@ def test_the_corpus_is_internally_consistent(corpus):
         page = set(corpus["pages"][entry["page"]])
         for token in entry["absent_tokens"]:
             assert token not in page, f"{entry['value']!r}: {token!r}"
+
+
+# ---------------- a source with no print damage (ADR-0005, #60)
+
+
+def test_a_citation_against_cells_must_match_exactly():
+    """The 0.9 threshold exists for damage that cannot happen here.
+
+    It is there because a printout loses separators between text spans and
+    clips cells at their boundaries, so a true quote can come back slightly
+    wrong. A spreadsheet's page text is generated from the same cells the
+    values came from — nothing is recovered, so nothing is approximate, and
+    a near-miss is a real disagreement rather than print damage.
+    """
+    from corridor.verify import threshold_for
+
+    assert threshold_for("cells") == 1.0
+    assert threshold_for("text_layer") == THRESHOLD
+    assert threshold_for("ocr") == THRESHOLD
+
+
+def test_a_near_miss_passes_on_a_printout_and_fails_on_a_sheet():
+    """The threshold difference, as the behaviour it buys."""
+    from corridor.verify import quote_appears_on, threshold_for
+
+    page = "UC-1 CenterPoint Energy Electric 1149+00"
+    # One digit out, and not a prefix of the page — a clipped cell on a
+    # printout, a wrong number anywhere else.
+    nearly = "UC-1 CenterPoint Energy Electric 1149+01"
+
+    assert quote_appears_on(nearly, page, threshold_for("text_layer")) is True
+    assert quote_appears_on(nearly, page, threshold_for("cells")) is False
+
+
+def test_an_exact_quote_still_passes_against_cells():
+    """The strict threshold must not make a true citation fail — every
+    quote this reader writes is a row of the text it is checked against."""
+    from corridor.verify import quote_appears_on, threshold_for
+
+    page = "UC-1 CenterPoint Energy Electric 1149+00"
+
+    assert quote_appears_on(page, page, threshold_for("cells")) is True

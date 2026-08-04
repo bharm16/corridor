@@ -261,3 +261,115 @@ def test_an_unreadable_file_is_recorded_as_failed(session, project, tmp_path):
     # Registered so it is visible, not silently skipped, and clearly not parsed.
     assert doc.parse_status == "failed"
     assert doc.pages == 0
+
+
+# ------------------------- a source that is not a printout (ADR-0005, #60)
+
+
+@pytest.fixture
+def workbook(tmp_path):
+    """A real .xlsx, so the sheet reader does its actual work."""
+    from openpyxl import Workbook
+
+    book = Workbook()
+    book.remove(book.active)
+    conflicts = book.create_sheet("Utility Conflicts")
+    for row in (
+        ["Utility Conflict Management (UCM) - Utility Conflicts"],
+        ["Utility Conflict ID", "Utility Owner", "Start Station"],
+        ["UC-1", "CenterPoint Energy", "1149+00"],
+    ):
+        conflicts.append(row)
+    book.create_sheet("Drop-Down Lists").append(["District", "Utility Type"])
+    path = tmp_path / "ucm.xlsx"
+    book.save(path)
+    return path
+
+
+def test_a_workbook_ingests_a_page_per_sheet(session, project, workbook, tmp_path):
+    """Ingestion stops being PDF-only, which ADR-0005 names as a
+    consequence: the structured original is the Document of Record and a
+    workbook is not a thing you render at 150 dpi."""
+    document = ingest_document(
+        session,
+        project_id=project.id,
+        path=workbook,
+        doc_type="matrix",
+        images_dir=tmp_path / "images",
+    )
+
+    assert document.parse_status == "parsed"
+    assert document.pages == 2
+    pages = session.scalars(
+        select(DocPage).where(DocPage.document_id == document.id).order_by(DocPage.page_no)
+    ).all()
+    assert [p.page_no for p in pages] == [1, 2]
+
+
+def test_a_sheets_text_is_generated_from_its_cells(session, project, workbook, tmp_path):
+    """The text is the rendering, so every cell has to reach it.
+
+    A sheet has no page image to show a reviewer beside a quote, so this
+    text is what stands in for one — and a value stored from a cell that
+    never reached it would be unverifiable by construction.
+    """
+    document = ingest_document(
+        session, project_id=project.id, path=workbook,
+        doc_type="matrix", images_dir=tmp_path / "images",
+    )
+
+    first = session.scalars(
+        select(DocPage).where(DocPage.document_id == document.id, DocPage.page_no == 1)
+    ).one()
+    for value in ("Utility Conflict ID", "UC-1", "CenterPoint Energy", "1149+00"):
+        assert value in first.text
+
+
+def test_a_sheet_is_marked_as_read_from_cells(session, project, workbook, tmp_path):
+    """Not `text_layer`. A spreadsheet borrowing that label would be
+    indistinguishable from a PDF's, and the label is what lets a citation
+    against cells verify exactly rather than at the print-damage
+    threshold."""
+    document = ingest_document(
+        session, project_id=project.id, path=workbook,
+        doc_type="matrix", images_dir=tmp_path / "images",
+    )
+
+    sources = {
+        p.text_source
+        for p in session.scalars(
+            select(DocPage).where(DocPage.document_id == document.id)
+        )
+    }
+    assert sources == {"cells"}
+
+
+def test_a_sheet_has_no_page_image(session, project, workbook, tmp_path):
+    """There is nothing to render, and inventing one would be a picture of
+    a spreadsheet rather than evidence. `image_path` is already nullable."""
+    document = ingest_document(
+        session, project_id=project.id, path=workbook,
+        doc_type="matrix", images_dir=tmp_path / "images",
+    )
+
+    assert all(
+        p.image_path is None
+        for p in session.scalars(
+            select(DocPage).where(DocPage.document_id == document.id)
+        )
+    )
+
+
+def test_a_workbook_that_cannot_be_read_fails_visibly(session, project, tmp_path):
+    """Registered and visibly failed, never silently absent — the same
+    bargain a broken PDF gets."""
+    path = tmp_path / "broken.xlsx"
+    path.write_bytes(b"not a workbook")
+
+    document = ingest_document(
+        session, project_id=project.id, path=path,
+        doc_type="matrix", images_dir=tmp_path / "images",
+    )
+
+    assert document.parse_status == "failed"
+    assert document.pages == 0

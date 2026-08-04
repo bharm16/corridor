@@ -44,7 +44,12 @@ DOC_TYPES = (
     "other",
 )
 PARSE_STATUSES = ("pending", "parsed", "failed")
-TEXT_SOURCES = ("text_layer", "ocr")
+# Where a page's text came from, most reliable first. `cells` is a
+# spreadsheet source read natively (ADR-0005): its text was generated from
+# the cells rather than recovered from a layout, which is what lets a
+# citation against it verify exactly instead of at the 0.9 threshold print
+# damage requires.
+TEXT_SOURCES = ("cells", "text_layer", "ocr")
 DEP_TYPES = (
     "utility_relocation",
     "agreement",

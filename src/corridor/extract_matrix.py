@@ -84,10 +84,24 @@ TIER_TRANSCRIBE = "transcribe"
 # template, or a documented local exception. A field belonging to neither is
 # a field nobody can defend.
 
-# canonical field -> the column it holds in TxDOT's Utility Conflict
-# Analysis Template (ADR-0009). Names are kept as they were; the
+# canonical field -> what TxDOT's published Utility Conflict Analysis
+# Template calls it (ADR-0009). Field names are kept as they were; the
 # template supplies the meaning, not the spelling, and renaming them would
 # rewrite three projects' stored payloads to no purpose.
+#
+# The template names all but one of these as a **column**. `sue_level` is
+# the exception and is named as a controlled vocabulary — the template's
+# `Drop-Down Lists` sheet heads a `Utility Investigation Quality Level`
+# list, and no sheet heads a column with that name. That is deliberate and
+# is argued at the field below; it is recorded here because "the column it
+# holds" was the claim this comment used to make, and for that one field it
+# was not true.
+#
+# Every name is checked against the fetched form by
+# `test_every_canonical_field_names_a_column_the_template_really_has`.
+# Before the template was in `corpus/` nothing could check any of them, and
+# the first run of that test found this dictionary naming a heading the
+# form does not print (#60).
 TEMPLATE_FIELDS = {
     "utility_id": "Utility Conflict ID",
     "external_org": "Utility Owner",
@@ -116,7 +130,12 @@ TEMPLATE_FIELDS = {
     # reproduced in a new field.
     "sue_level": "Utility Investigation Quality Level",
     "conflict_description": "Utility Conflict Description",
-    "resolution_strategy": "Resolution Strategy Selected",
+    # The heading the form actually prints. Its data dictionary defines the
+    # same column under the shorter `Resolution Strategy Selected`, which
+    # is what this said until the form could be read — and a spreadsheet
+    # reader matching on the short name finds no resolution column at all.
+    # ADR-0009 quotes the printed form in full.
+    "resolution_strategy": "Resolution Strategy Selected (from Resolution Alternatives)",
     "notes": "Comment",
 }
 

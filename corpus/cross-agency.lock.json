@@ -28,6 +28,19 @@
       "role": "spine",
       "sha256": "bcf988a9faed70e0e2cd5beffb251502083b68a9c7a8f8ccb6bcf9fb3edf70a6",
       "title": "CDOT US 6 Bridges utility matrix (11/27/2012, revisions II)"
+    },
+    "https://www.txdot.gov/content/dam/docs/division/row/utl/utility-conflict-analysis-template.xlsx": {
+      "bytes": 72538,
+      "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "doc_date": null,
+      "doc_type": "other",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/7b/7b8eb2b7e101816ec5473f24c6802d31533ef10e92be663d3197db754442c1f1.xlsx",
+      "retrieved_at": "2026-08-04T18:51:42.607652+00:00",
+      "role": "evidence",
+      "sha256": "7b8eb2b7e101816ec5473f24c6802d31533ef10e92be663d3197db754442c1f1",
+      "title": "TxDOT Utility Conflict Analysis Template (published form)"
     }
   }
 }

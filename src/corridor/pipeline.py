@@ -13,7 +13,8 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from corridor.ingest import ingest_document
+from corridor.docs import stored_file
+from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.models import Candidate, Document
 
 
@@ -57,6 +58,30 @@ def ingest_manifest(
             )
         )
     return documents
+
+
+def extract_any(session: Session, document: Document, *, client=None) -> list[Candidate]:
+    """Read one matrix, whichever form it was published in (ADR-0005).
+
+    Which reader runs is a property of the document rather than something a
+    caller has to know: `make extract` reads a project, and a project may
+    publish its matrix as a spreadsheet, as a printout of one, or as both.
+
+    The two readers have deliberately different signatures and that is not
+    an inconsistency to smooth over. The page path needs a model and takes
+    a client; the native path needs neither, and giving it a parameter it
+    would ignore would suggest a model is involved somewhere in reading a
+    spreadsheet. It is not.
+    """
+    path = stored_file(document)
+    if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
+        from corridor.extract_sheet import extract_document as extract_sheet
+
+        return extract_sheet(session, document)
+
+    from corridor.extract_matrix import extract_document as extract_matrix
+
+    return extract_matrix(session, document, client=client)
 
 
 def _basename(url: str) -> str:

@@ -883,6 +883,13 @@ def test_the_standard_columns_sh99_dropped_now_have_homes():
     `Utility Subtype`'s values on SH 99 include `Highly Volatile Liquid`
     and `Crude Oil` beside `Sanitary Sewer`. Dropping that is not a
     cosmetic gap.
+
+    Matched as a prefix, because the form prints a heading its own data
+    dictionary shortens: the resolution column is headed `Resolution
+    Strategy Selected (from Resolution Alternatives)` and defined as
+    `Resolution Strategy Selected`. Which of the two `TEMPLATE_FIELDS`
+    carries is settled against the fetched form in `test_sheets.py`; what
+    this test is about is that the column has a home at all.
     """
     for column in (
         "Utility Subtype",
@@ -892,7 +899,9 @@ def test_the_standard_columns_sh99_dropped_now_have_homes():
         "Utility Conflict Description",
         "Resolution Strategy Selected",
     ):
-        assert column in TEMPLATE_FIELDS.values(), column
+        assert any(
+            named.startswith(column) for named in TEMPLATE_FIELDS.values()
+        ), column
 
 
 def test_quality_levels_have_one_home_whatever_the_column_is_headed():

@@ -1,0 +1,331 @@
+"""Extracting conflicts from a spreadsheet source (ADR-0005, #60).
+
+No model, no client, no stub for one — which is the point. The structure is
+explicit in the file, so the mapping is a name lookup rather than a
+judgement, and the values are cells rather than a reading of a layout.
+"""
+
+from pathlib import Path
+
+import pytest
+from openpyxl import Workbook
+from sqlalchemy import select
+
+from corridor.db import Session, engine
+from corridor.extract_sheet import PROMPT_VERSION, TIER_NATIVE, extract_document
+from corridor.geometry import NoMatrixFound
+from corridor.ingest import ingest_document
+from corridor.models import Candidate, Document, Project
+
+HEADINGS = [
+    "Utility Conflict ID",
+    "Utility Owner",
+    "Utility Type",
+    "Start Station",
+    "End Station",
+    "Utility Conflict Description",
+    "Parcel U-Number",
+]
+
+
+@pytest.fixture
+def session():
+    connection = engine.connect()
+    trans = connection.begin()
+    s = Session(bind=connection)
+    yield s
+    s.close()
+    trans.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def project(session):
+    p = Project(slug="sheet-test", name="Sheet Extraction Test", is_synthetic=True)
+    session.add(p)
+    session.flush()
+    return p
+
+
+def make_workbook(tmp_path, rows, *, name="Utility Conflicts", extra_sheets=None):
+    book = Workbook()
+    book.remove(book.active)
+    sheet = book.create_sheet(name)
+    sheet.append(["Utility Conflict Management (UCM) - Utility Conflicts"])
+    for row in rows:
+        sheet.append(row)
+    for other, other_rows in (extra_sheets or {}).items():
+        made = book.create_sheet(other)
+        for row in other_rows:
+            made.append(row)
+    path = tmp_path / "ucm.xlsx"
+    book.save(path)
+    return path
+
+
+def ingest(session, project, tmp_path, rows, **kwargs):
+    path = make_workbook(tmp_path, rows, **kwargs)
+    document = ingest_document(
+        session,
+        project_id=project.id,
+        path=path,
+        doc_type="matrix",
+        images_dir=tmp_path / "images",
+    )
+    document._stored_path = str(path)
+    return document
+
+
+@pytest.fixture(autouse=True)
+def stored_file_points_at_the_fixture(monkeypatch):
+    """The content-addressed store is not populated in tests."""
+    import corridor.extract_sheet as module
+
+    monkeypatch.setattr(
+        module, "stored_file", lambda d: getattr(d, "_stored_path", None)
+    )
+
+
+ROWS = [
+    HEADINGS,
+    ["UC-1", "CenterPoint Energy", "Electric", "1149+00", "1150+00", "Pole in ROW", "U-4"],
+    ["UC-2", "AT&T Texas", "Communications", "1151+00", "1152+00", "Duct bank", "U-9"],
+]
+
+
+# ------------------------------------------------------- values from cells
+
+
+def test_every_row_becomes_a_candidate(session, project, tmp_path):
+    document = ingest(session, project, tmp_path, ROWS)
+
+    candidates = extract_document(session, document)
+
+    assert len(candidates) == 2
+    assert {c.payload_json["fields"]["utility_id"] for c in candidates} == {
+        "UC-1",
+        "UC-2",
+    }
+
+
+def test_values_are_the_cells_themselves(session, project, tmp_path):
+    """The claim ADR-0005 rests on: no layout was interpreted, so nothing
+    was recovered — stationing stays in its own column and the owner is
+    never pushed into a page header."""
+    document = ingest(session, project, tmp_path, ROWS)
+
+    fields = extract_document(session, document)[0].payload_json["fields"]
+
+    assert fields == {
+        "utility_id": "UC-1",
+        "external_org": "CenterPoint Energy",
+        "utility_type": "Electric",
+        "station_from": "1149+00",
+        "station_to": "1150+00",
+        "conflict_description": "Pole in ROW",
+    }
+
+
+def test_a_column_with_no_canonical_field_is_reported_not_stored(
+    session, project, tmp_path
+):
+    """`Parcel U-Number` is a real template column with no canonical home.
+    The trigger for a deliberate vocabulary extension, exactly as on the
+    page path — never something the reader decides for itself."""
+    document = ingest(session, project, tmp_path, ROWS)
+
+    payload = extract_document(session, document)[0].payload_json
+
+    assert payload["unmapped_columns"] == ["Parcel U-Number"]
+    assert "U-4" not in payload["fields"].values()
+
+
+def test_the_reading_is_marked_native(session, project, tmp_path):
+    """A run has to be able to say how each row was read. This one used no
+    model at all, which is a different claim from either model tier."""
+    document = ingest(session, project, tmp_path, ROWS)
+
+    candidate = extract_document(session, document)[0]
+
+    assert candidate.payload_json["tier"] == TIER_NATIVE
+    assert candidate.payload_json["text_source"] == "cells"
+    assert candidate.prompt_version == PROMPT_VERSION
+    assert candidate.model is None
+
+
+# ------------------------------------------------------------- citations
+
+
+def test_a_citation_quotes_the_row_and_verifies(session, project, tmp_path):
+    document = ingest(session, project, tmp_path, ROWS)
+
+    citation = extract_document(session, document)[0].payload_json["citations"][0]
+
+    assert citation["quote"].startswith("UC-1 CenterPoint Energy")
+    assert citation["verified"] is True
+    assert citation["page"] == 1
+
+
+def test_every_stored_value_is_on_the_page(session, project, tmp_path):
+    """Nothing can be unverified here by construction — the text was
+    generated from the same cells the values came from. Asserted anyway,
+    because that is the property the exact threshold rests on."""
+    document = ingest(session, project, tmp_path, ROWS)
+
+    for candidate in extract_document(session, document):
+        assert candidate.payload_json["unverified_fields"] == []
+        assert candidate.citations_verified is True
+
+
+# ------------------------------------------------------------- edge cases
+
+
+def test_a_repeated_conflict_id_is_two_candidates(session, project, tmp_path):
+    """The trap named on the ticket and in ADR-0005.
+
+    The form's data dictionary says `Utility Conflict ID` is "unique within
+    the transportation project". Real documents disagree — one Project A
+    revision reuses 47 ids, and two distinct Comcast conflicts share
+    `FOC14-69` — so the intent is worth recording precisely because the
+    data does not honour it. Collapsing them would silently merge two
+    conflicts into one.
+    """
+    rows = [
+        HEADINGS,
+        ["UC-1", "CenterPoint Energy", "Electric", "1149+00", "1150+00", "Pole", "U-4"],
+        ["UC-1", "Comcast", "Communications", "1400+00", "1401+00", "Vault", "U-7"],
+    ]
+    document = ingest(session, project, tmp_path, rows)
+
+    candidates = extract_document(session, document)
+
+    assert len(candidates) == 2
+    assert {c.payload_json["fields"]["external_org"] for c in candidates} == {
+        "CenterPoint Energy",
+        "Comcast",
+    }
+
+
+def test_a_blank_form_extracts_no_rows_and_does_not_raise(session, project, tmp_path):
+    """A form with a schema and no conflicts is a real answer.
+
+    The published template ships exactly this way, and the distinction is
+    #59 story 2's: a document with no conflicts must not read the same as
+    one nobody could parse.
+    """
+    document = ingest(session, project, tmp_path, [HEADINGS])
+
+    assert extract_document(session, document) == []
+
+
+def test_a_row_missing_an_owner_is_not_a_dependency(session, project, tmp_path):
+    """Same bar as the page path: a row needs an identifier to be tracked
+    by and an External Party to be owed by."""
+    rows = [
+        HEADINGS,
+        ["UC-1", "", "Electric", "1149+00", "1150+00", "Pole", "U-4"],
+        ["UC-2", "AT&T Texas", "Communications", "1151+00", "1152+00", "Duct", "U-9"],
+    ]
+    document = ingest(session, project, tmp_path, rows)
+
+    candidates = extract_document(session, document)
+
+    assert [c.payload_json["fields"]["utility_id"] for c in candidates] == ["UC-2"]
+
+
+def test_a_workbook_with_no_conflict_sheet_is_unreadable_not_empty(
+    session, project, tmp_path
+):
+    """`NoMatrixFound`, so `extract_project` reports it as unreadable
+    through the path it already has — a layout variant nobody handled, not
+    a project with no conflicts."""
+    document = ingest(
+        session, project, tmp_path, [["Category", "Item", "Information"]],
+        name="Project Information",
+    )
+
+    with pytest.raises(NoMatrixFound):
+        extract_document(session, document)
+
+
+def test_the_conflict_sheet_is_chosen_over_an_inventory(session, project, tmp_path):
+    """A workbook holds several tables and only one is the conflict matrix.
+
+    ADR-0009's whole subject: an inventory records what is out there and
+    never how it resolves, and reading one as a matrix is the error that
+    ADR superseded ADR-0007 to correct.
+    """
+    document = ingest(
+        session, project, tmp_path, ROWS,
+        extra_sheets={"Utility Inventory": [
+            ["Utility Feature ID", "Utility Owner", "Utility Type", "Size"],
+            ["UF-1", "CenterPoint Energy", "Electric", '12"'],
+        ]},
+    )
+
+    candidates = extract_document(session, document)
+
+    assert len(candidates) == 2
+    assert all(
+        c.payload_json["fields"]["utility_id"].startswith("UC-")
+        for c in candidates
+    )
+
+
+def test_candidates_are_persisted(session, project, tmp_path):
+    document = ingest(session, project, tmp_path, ROWS)
+
+    extract_document(session, document)
+
+    stored = session.scalars(
+        select(Candidate).where(Candidate.source_document_id == document.id)
+    ).all()
+    assert len(stored) == 2
+
+
+# ------------------------------- one command reads both forms (#60)
+
+
+def test_the_router_sends_a_workbook_to_the_native_reader(
+    session, project, tmp_path, monkeypatch
+):
+    """`make extract` reads a project, not a file format.
+
+    ADR-0005 makes both forms first-class, so which reader runs is a
+    property of the document rather than something a caller has to know.
+    Handing a workbook to the page extractor fails in a way that reads as
+    "no page image" — a document nobody could collect — rather than as the
+    wrong reader.
+    """
+    from corridor import pipeline
+
+    document = ingest(session, project, tmp_path, ROWS)
+    monkeypatch.setattr(pipeline, "stored_file", lambda d: getattr(d, "_stored_path", None))
+
+    candidates = pipeline.extract_any(session, document, client=object())
+
+    assert len(candidates) == 2
+    assert all(c.payload_json["tier"] == TIER_NATIVE for c in candidates)
+
+
+def test_the_router_sends_a_pdf_to_the_page_extractor(session, project, monkeypatch):
+    """And the page path is untouched — it still gets its client."""
+    from corridor import pipeline
+
+    document = Document(
+        project_id=project.id, sha256="c" * 64, filename="ucm.pdf",
+        doc_type="matrix", parse_status="parsed", pages=1,
+    )
+    session.add(document)
+    session.flush()
+
+    seen = {}
+    monkeypatch.setattr(pipeline, "stored_file", lambda d: Path("x.pdf"))
+    monkeypatch.setattr(
+        "corridor.extract_matrix.extract_document",
+        lambda s, d, client=None: seen.setdefault("client", client) or [],
+    )
+
+    pipeline.extract_any(session, document, client="the-client")
+
+    assert seen["client"] == "the-client"

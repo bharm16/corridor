@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 import pymupdf
 import pytest
@@ -203,3 +204,93 @@ def test_asking_for_a_page_that_does_not_exist_raises(
     )
     with pytest.raises(LookupError):
         get_page(session, documents[0].id, 999)
+
+
+# ------------------ which form of a document is cited (ADR-0005, #60)
+
+
+def test_the_spreadsheet_outranks_its_own_printout(session, project):
+    """ADR-0005's rule: the structured original is the Document of Record.
+
+    The PDF is a printout of the spreadsheet, and every defect ADR-0004
+    catalogues is damage done in the printing. Where both render the same
+    document, Evidence cites the one the damage did not happen to.
+    """
+    from corridor.docs import document_of_record
+
+    printout = _doc(session, project, "ucm.pdf", "a", date(2026, 2, 13))
+    original = _doc(session, project, "ucm.xlsx", "b", date(2026, 2, 13))
+
+    assert document_of_record([printout, original]) is original
+
+
+def test_a_newer_printout_outranks_a_stale_spreadsheet():
+    """The ordering ADR-0005 is explicit about, and the reason it matters.
+
+    "A stale spreadsheet must not outrank a newer PDF. Precedence is by
+    format only where both render the same document; supersession by date
+    still wins, and the two rules have to be applied in that order."
+
+    Applied the other way round, a February PDF loses to a spreadsheet from
+    the previous June — which is the ledger citing a revision the project
+    has already replaced.
+    """
+    from corridor.docs import document_of_record
+
+    stale = _fake("ucm.xlsx", date(2025, 6, 20))
+    current = _fake("ucm.pdf", date(2026, 2, 13))
+
+    assert document_of_record([stale, current]) is current
+
+
+def test_format_breaks_a_tie_only_within_one_date():
+    from corridor.docs import document_of_record
+
+    old_sheet = _fake("old.xlsx", date(2025, 6, 20))
+    new_sheet = _fake("new.xlsx", date(2026, 2, 13))
+    new_pdf = _fake("new.pdf", date(2026, 2, 13))
+
+    assert document_of_record([old_sheet, new_pdf, new_sheet]) is new_sheet
+
+
+def test_a_document_with_no_date_never_outranks_a_dated_one():
+    """An undated document is not a current one. Sorting it as though its
+    date were today would let a file nobody dated supersede the revision
+    the project actually issued."""
+    from corridor.docs import document_of_record
+
+    undated = _fake("ucm.xlsx", None)
+    dated = _fake("ucm.pdf", date(2025, 6, 20))
+
+    assert document_of_record([undated, dated]) is dated
+
+
+def test_no_documents_is_no_record():
+    from corridor.docs import document_of_record
+
+    assert document_of_record([]) is None
+
+
+class _fake:
+    """A Document-shaped stand-in: the rule reads two attributes."""
+
+    def __init__(self, filename, doc_date):
+        self.filename = filename
+        self.doc_date = doc_date
+
+
+def _doc(session, project, filename, sha, doc_date):
+    from corridor.models import Document
+
+    document = Document(
+        project_id=project.id,
+        sha256=sha * 64,
+        filename=filename,
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+        doc_date=doc_date,
+    )
+    session.add(document)
+    session.flush()
+    return document
