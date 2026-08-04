@@ -252,7 +252,10 @@ def _critical_items(
     )
     for row in ranked:
         cited = _primary_evidence(session, row.dependency.id)
-        # By the rule's own quantity — most days first — never a weight.
+        # Interim: the row's largest day-count across its mixed rules — a
+        # cross-rule comparison ADR-0010 forbids as a ranking, tolerated
+        # only as this column's placeholder until #116 restates the
+        # section from the facet view.
         worst = max(
             row.exceptions,
             key=lambda e: (e.quantity_days is not None, e.quantity_days or 0),
