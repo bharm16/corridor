@@ -1,29 +1,66 @@
-"""Vision extraction of a matrix page.
+"""Tiered matrix extraction (ADR-0006).
+
+Tier 1 is the point: the model says what the columns *mean* and the page's
+own word boxes say what they *contain*. The model never writes a digit, so
+the transcription error class the validation gate measured at 5.1% cannot
+occur — these tests assert that the values come from the page rather than
+from the model, which is the whole claim.
 
 Shape and wiring only. Quality is measured by a real run against real
-documents (#68), never by a unit test — a stub client returns whatever it
-was handed, so asserting on it would only prove the fixture.
+documents (#76), never by a unit test. CI never calls a model.
 
-CI never calls a model.
+Geometry is real here rather than faked: the fixtures are PDFs generated
+at test time, so `find_tables()` and the word-box reader do their actual
+work without depending on a fetched corpus.
 """
 
+import pymupdf
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.extract import NoMatrixFound
-from corridor.extract_matrix import PROMPT_VERSION, extract_document
+from corridor.db import Session, engine
+from corridor.extract_matrix import (
+    PROMPT_VERSION,
+    TIER_STRUCTURE,
+    TIER_TRANSCRIBE,
+    extract_document,
+)
 from corridor.models import Candidate, DocPage, Document, Project
 
-PAGE_TEXT = (
-    "NHHIP Segment 3C-2 Utility Conflict Matrix\n"
-    "Utility ID Utility Owner Utility Type Material OH/ UG Baseline "
-    "Alignment Location Start Location End Start Station End Station\n"
-    "FOC1-133 AT&T Texas (SWBT) Telecom FOC UG IH 10 Providence Street "
-    "Hardy Street West of Elysian 1092+92 1093+74\n"
-    "FOC1-134 AT&T Texas (SWBT) Telecom FOC UG IH 10 Rothwell Street "
-    "Hardy Street Semmes Street 1093+25 1102+04\n"
-)
+# A TxDOT-shaped page: the owner is a column, every row states its own.
+TXDOT_ROWS = [
+    ["Utility ID", "Utility Owner", "Utility Type", "Start Station", "End Station", "Sheet No."],
+    ["FOC1-133", "AT&T Texas (SWBT)", "Telecom", "1092+92", "1093+74", "12"],
+    ["FOC1-134", "AT&T Texas (SWBT)", "Telecom", "1093+25", "1102+04", "13"],
+]
+
+# An FDOT-shaped page: no owner column at all — the page header states it.
+FDOT_ROWS = [
+    ["Conflict #", "Station Begin", "Station End", "Facility Description"],
+    ["1", "203+40.00", "206+40.00", "BTV, Size UNK"],
+    ["2", "206+93.00", "206+93.00", "BTV Pedestal"],
+]
+
+
+def write_pdf(path, rows, banner=None):
+    """A real PDF with a real ruled table, so geometry does its actual work."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=792, height=612)
+    x0, y0, width, height = 40, 70, 118, 24
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            rect = pymupdf.Rect(
+                x0 + c * width, y0 + r * height,
+                x0 + (c + 1) * width, y0 + (r + 1) * height,
+            )
+            page.draw_rect(rect, color=(0, 0, 0), width=0.6)
+            page.insert_textbox(rect + (3, 5, -3, -3), cell, fontsize=7)
+    if banner:
+        page.insert_text((40, 50), banner, fontsize=9)
+    doc.save(path)
+    doc.close()
+    return path
 
 
 class StubClient:
@@ -35,49 +72,39 @@ class StubClient:
         self.max_workers = 2
         self.calls = []
 
-    def complete(self, *, system, user, schema, images=()):
+    def complete(self, *, system, user, schema, images=(), logprobs=False):
         self.calls.append(
-            {"system": system, "user": user, "schema": schema, "images": list(images)}
+            {"system": system, "user": user, "schema": schema,
+             "images": [str(i) for i in images], "logprobs": logprobs}
         )
-        return self.responses.pop(0) if self.responses else page()
+        return self.responses.pop(0) if self.responses else structure()
 
 
-def row(**over):
-    base = {
-        "utility_id": "FOC1-133",
-        "external_org": "AT&T Texas (SWBT)",
-        "utility_type": "Telecom",
-        "size": None,
-        "material": "FOC",
-        "oh_ug": "UG",
-        "baseline": "IH 10",
-        "orientation": None,
-        "alignment": "Providence Street",
-        "location_start": "Hardy Street",
-        "location_end": "West of Elysian",
-        "station_from": "1092+92",
-        "station_to": "1093+74",
-        "offset_from": None,
-        "offset_to": None,
-        "offset_side": None,
-        "potential_conflict": None,
-        "sue_level": None,
-        "external_org_contact": None,
-        "committed_date": None,
-        "notes": None,
-        "quote": "FOC1-133 AT&T Texas (SWBT) Telecom FOC UG IH 10",
-        "confidence": 0.92,
-    }
-    base.update(over)
-    return base
-
-
-def page(rows=None, *, is_matrix=True, attributes=None):
+def structure(*, matrix_table=0, header_row=0, columns=None, owner=None, is_matrix=True):
+    if columns is None:
+        columns = [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "external_org"},
+            {"index": 2, "canonical_field": "utility_type"},
+            {"index": 3, "canonical_field": "station_from"},
+            {"index": 4, "canonical_field": "station_to"},
+            {"index": 5, "canonical_field": None},
+        ]
     return {
         "is_utility_matrix": is_matrix,
-        "page_attributes": attributes or {"external_org": None},
-        "rows": [row()] if rows is None else rows,
+        "page_attributes": {"external_org": owner},
+        "matrix_table": matrix_table,
+        "header_row": header_row,
+        "columns": columns,
     }
+
+
+FDOT_COLUMNS = [
+    {"index": 0, "canonical_field": "utility_id"},
+    {"index": 1, "canonical_field": "station_from"},
+    {"index": 2, "canonical_field": "station_to"},
+    {"index": 3, "canonical_field": "utility_type"},
+]
 
 
 @pytest.fixture
@@ -92,280 +119,195 @@ def session():
 
 
 @pytest.fixture
-def document(session, tmp_path):
-    project = Project(slug="mx-test", name="Matrix Test", is_synthetic=True)
-    session.add(project)
+def project(session):
+    p = Project(slug="tier-test", name="Tiered Extraction Test", is_synthetic=True)
+    session.add(p)
     session.flush()
+    return p
+
+
+def make_document(session, project, tmp_path, rows, *, banner=None, sha="a", pages=1):
+    """A Document whose stored PDF and page text are both real."""
+    pdf = write_pdf(tmp_path / f"{sha}.pdf", rows, banner=banner)
     doc = Document(
         project_id=project.id,
-        sha256="a" * 64,
-        filename="nhhip-seg3c2-utilities-inventory-2-13-2026.pdf",
+        sha256=sha * 64,
+        filename=f"{sha}-matrix.pdf",
         doc_type="matrix",
         parse_status="parsed",
-        pages=2,
+        pages=pages,
     )
     session.add(doc)
     session.flush()
-    for page_no in (1, 2):
-        image = tmp_path / f"{page_no:04d}.png"
-        image.write_bytes(b"\x89PNG page image")
-        session.add(
-            DocPage(
-                document_id=doc.id,
-                page_no=page_no,
-                text=PAGE_TEXT,
-                image_path=str(image),
-            )
-        )
-    session.flush()
-    return doc
-
-
-def test_a_matrix_page_produces_candidates_with_a_model_and_a_confidence(
-    session, document
-):
-    """Both were absent under the deterministic parser: `None` and 1.0."""
-    client = StubClient([page(), page(rows=[])])
-
-    candidates = extract_document(session, document, client=client)
-
-    assert len(candidates) == 1
-    candidate = candidates[0]
-    assert candidate.model == "gpt-5.6-luna"
-    assert candidate.confidence == 0.92
-    assert candidate.prompt_version == PROMPT_VERSION
-    assert candidate.payload_json["fields"]["utility_id"] == "FOC1-133"
-    assert candidate.citations_verified is True
-
-
-def test_the_page_number_comes_from_our_code(session, document):
-    """A hallucinated page must be impossible, not merely unlikely.
-
-    The model is never asked for a page number and never given the chance
-    to supply one, so nothing it returns can change where a citation
-    points.
-    """
-    client = StubClient([page(), page()])
-
-    candidates = extract_document(session, document, client=client)
-
-    assert sorted(c.payload_json["citations"][0]["page"] for c in candidates) == [1, 2]
-    assert sorted(c.source_pages[0] for c in candidates) == [1, 2]
-
-
-def test_the_page_image_and_the_stored_page_text_are_both_sent(session, document):
-    """The model reads the image; verification reads the text layer."""
-    client = StubClient([page(), page()])
-
-    extract_document(session, document, client=client)
-
-    call = client.calls[0]
-    assert len(call["images"]) == 1
-    assert str(call["images"][0]).endswith("0001.png")
-    assert "Page 1 of" in call["user"]
-
-
-def test_a_fabricated_quote_is_kept_and_marked_unverified(session, document):
-    client = StubClient(
-        [page(rows=[row(quote="FOC9-999 Comcast of Houston Gas 2414+50")]), page(rows=[])]
-    )
-
-    candidates = extract_document(session, document, client=client)
-
-    assert len(candidates) == 1
-    assert candidates[0].citations_verified is False
-    assert candidates[0].payload_json["citations"][0]["verified"] is False
-
-
-def test_a_field_value_absent_from_the_page_is_kept_and_marked_unverified(
-    session, document
-):
-    """The defect this whole extractor exists to make impossible.
-
-    Citation verification is row-level and fuzzy, so a transcribed
-    `1140+00` where the document says `1092+92` sits inside a valid row
-    quote and passes. The queue sorts verified Candidates to the top, so
-    without a field check that wrong value reaches a reviewer wearing a
-    green check.
-    """
-    client = StubClient([page(rows=[row(station_from="1140+00")]), page(rows=[])])
-
-    candidates = extract_document(session, document, client=client)
-
-    candidate = candidates[0]
-    assert candidate.citations_verified is False
-    # The quote itself is fine — only the field is wrong, and the payload
-    # has to say which one.
-    assert candidate.payload_json["citations"][0]["verified"] is True
-    assert candidate.payload_json["unverified_fields"] == ["station_from"]
-    assert candidate.payload_json["fields"]["station_from"] == "1140+00"
-
-
-def test_a_page_with_no_rows_yields_nothing_and_does_not_raise(session, document):
-    """A matrix with no conflicts is a correct answer."""
-    client = StubClient([page(rows=[]), page(rows=[])])
-
-    assert extract_document(session, document, client=client) == []
-
-
-def test_a_document_with_no_matrix_page_raises(session, document):
-    """`NoMatrixFound` keeps its meaning: unreadable is not the same as empty."""
-    client = StubClient([page(rows=[], is_matrix=False)] * 2)
-
-    with pytest.raises(NoMatrixFound):
-        extract_document(session, document, client=client)
-
-
-def test_a_document_with_no_page_images_raises(session, document):
-    """Nothing to read is unreadable, not a project with no conflicts."""
-    for page_row in session.scalars(
-        select(DocPage).where(DocPage.document_id == document.id)
-    ):
-        page_row.image_path = None
-    session.flush()
-
-    with pytest.raises(NoMatrixFound, match="page image"):
-        extract_document(session, document, client=StubClient([]))
-
-
-def test_a_row_with_no_quote_is_not_a_candidate(session, document):
-    """A citation with no quote asserts nothing and cannot be checked."""
-    client = StubClient([page(rows=[row(quote="")]), page(rows=[])])
-
-    assert extract_document(session, document, client=client) == []
-
-
-def test_empty_cells_do_not_become_fields(session, document):
-    client = StubClient([page(), page(rows=[])])
-
-    fields = extract_document(session, document, client=client)[0].payload_json["fields"]
-
-    assert "size" not in fields and "notes" not in fields
-    assert fields["material"] == "FOC"
-
-
-def test_every_page_of_the_document_is_read(session, document):
-    client = StubClient([page(), page()])
-
-    extract_document(session, document, client=client)
-
-    assert len(client.calls) == 2
-
-
-# --------------------------------------------------- page-scoped attributes
-
-
-PAGE_SCOPED_TEXT = (
-    "Project # 148800011  Description: SR 789 Gulf of Mexico Dr @ Broadway RAB\n"
-    "Phase #: IV  Plans Date: 11/20/2025\n"
-    "UTILITY AGENCY OWNER: Comcast\n"
-    "Conflict # Station Begin Station End Offset Facility Description\n"
-    "1 203+40.00 206+40.00 30.00' RT. BTV, Size UNK Prop. Storm Pipe (Possible)\n"
-    "2 206+93.00 206+93.00 54.00' RT. BTV Pedestal Pedestal\n"
-)
-
-
-def scoped_row(**over):
-    """An FDOT row: no owner column at all — the page states it once."""
-    base = {name: None for name in row()}
-    base.update(
-        utility_id="1",
-        station_from="203+40.00",
-        station_to="206+40.00",
-        offset_from="30.00'",
-        offset_side="RT.",
-        utility_type="BTV, Size UNK",
-        quote="1 203+40.00 206+40.00 30.00' RT. BTV, Size UNK",
-        confidence=0.95,
-    )
-    base.update(over)
-    return base
-
-
-@pytest.fixture
-def scoped_document(session, tmp_path):
-    project = Project(slug="fdot-test", name="Page-Scoped Test", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    doc = Document(
-        project_id=project.id,
-        sha256="b" * 64,
-        filename="45373015201-utility-conflict-matrix.pdf",
-        doc_type="matrix",
-        parse_status="parsed",
-        pages=1,
-    )
-    session.add(doc)
-    session.flush()
-    image = tmp_path / "0001.png"
+    image = tmp_path / f"{sha}-0001.png"
     image.write_bytes(b"\x89PNG page image")
+    with pymupdf.open(pdf) as opened:
+        text = opened[0].get_text()
     session.add(
         DocPage(
-            document_id=doc.id,
-            page_no=1,
-            text=PAGE_SCOPED_TEXT,
-            image_path=str(image),
+            document_id=doc.id, page_no=1, text=text,
+            image_path=str(image), text_source="text_layer",
         )
     )
     session.flush()
+    doc._pdf_path = str(pdf)
     return doc
 
 
-def test_every_row_on_a_page_inherits_that_pages_attributes(
-    session, scoped_document
-):
-    """FDOT names the External Party once in the page header.
+@pytest.fixture(autouse=True)
+def stored_pdf_points_at_the_fixture(monkeypatch):
+    """The content-addressed store is not populated in tests."""
+    import corridor.extract_matrix as module
 
-    Strictly better than asking the model to repeat the owner on 29 rows:
-    the owner becomes one string verified once against the page, with no
-    per-row transcription surface at all.
-    """
-    client = StubClient(
-        [
-            page(
-                rows=[scoped_row(), scoped_row(utility_id="2")],
-                attributes={"external_org": "Comcast"},
-            )
-        ]
+    monkeypatch.setattr(
+        module, "stored_pdf", lambda document: getattr(document, "_pdf_path", None)
     )
 
-    candidates = extract_document(session, scoped_document, client=client)
+
+# ------------------------------------------------- Tier 1: values from the page
+
+
+def test_values_come_from_the_page_not_from_the_model(session, project, tmp_path):
+    """The claim ADR-0006 rests on.
+
+    The stub returns a mapping and nothing else — it has no opportunity to
+    supply a station number. Every value below was read off the PDF.
+    """
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    candidates = extract_document(session, doc, client=StubClient([structure()]))
+
+    fields = [c.payload_json["fields"] for c in candidates]
+    assert len(candidates) == 2
+    assert fields[0]["utility_id"] == "FOC1-133"
+    assert fields[0]["external_org"] == "AT&T Texas (SWBT)"
+    assert fields[0]["station_from"] == "1092+92"
+    assert fields[1]["station_to"] == "1102+04"
+
+
+def test_the_header_row_is_not_a_candidate(session, project, tmp_path):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    candidates = extract_document(session, doc, client=StubClient([structure()]))
+
+    assert all(
+        c.payload_json["fields"]["utility_id"] != "Utility ID" for c in candidates
+    )
+
+
+def test_an_unmapped_column_is_recorded_by_its_printed_name(
+    session, project, tmp_path
+):
+    """The document says something the Ledger has no field for.
+
+    Reported to a human rather than guessed at, because a wrong mapping
+    files a value under the wrong heading for every row on the page.
+    """
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    candidates = extract_document(session, doc, client=StubClient([structure()]))
+
+    assert candidates[0].payload_json["unmapped_columns"] == ["Sheet No."]
+    assert "Sheet No." not in str(candidates[0].payload_json["fields"])
+
+
+def test_a_canonical_field_the_extractor_does_not_know_is_treated_as_unmapped(
+    session, project, tmp_path
+):
+    """The extractor never invents a field; the vocabulary is versioned."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    columns = [
+        {"index": 0, "canonical_field": "utility_id"},
+        {"index": 1, "canonical_field": "external_org"},
+        {"index": 2, "canonical_field": "invented_field"},
+        {"index": 3, "canonical_field": "station_from"},
+        {"index": 4, "canonical_field": "station_to"},
+        {"index": 5, "canonical_field": None},
+    ]
+
+    candidates = extract_document(
+        session, doc, client=StubClient([structure(columns=columns)])
+    )
+
+    assert "invented_field" not in candidates[0].payload_json["fields"]
+    assert "Utility Type" in candidates[0].payload_json["unmapped_columns"]
+
+
+def test_the_page_number_comes_from_our_code(session, project, tmp_path):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    candidates = extract_document(session, doc, client=StubClient([structure()]))
+
+    assert all(c.payload_json["citations"][0]["page"] == 1 for c in candidates)
+    assert all(c.source_pages == [1] for c in candidates)
+
+
+def test_candidates_record_model_prompt_version_and_tier(session, project, tmp_path):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    candidate = extract_document(session, doc, client=StubClient([structure()]))[0]
+
+    assert candidate.model == "gpt-5.6-luna"
+    assert candidate.prompt_version == PROMPT_VERSION
+    assert candidate.payload_json["tier"] == TIER_STRUCTURE
+
+
+def test_rows_read_from_the_page_verify(session, project, tmp_path):
+    """Values read off the page are on the page, by construction."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    candidates = extract_document(session, doc, client=StubClient([structure()]))
+
+    assert all(c.citations_verified for c in candidates)
+    assert all(c.payload_json["unverified_fields"] == [] for c in candidates)
+
+
+# -------------------------------------------------- Tier 1: page attributes
+
+
+def test_every_row_inherits_the_pages_external_party(session, project, tmp_path):
+    """FDOT names the owner once in the page header and never in a column."""
+    doc = make_document(
+        session, project, tmp_path, FDOT_ROWS,
+        banner="UTILITY AGENCY OWNER: AT&T TCA",
+    )
+
+    candidates = extract_document(
+        session, doc,
+        client=StubClient([structure(columns=FDOT_COLUMNS, owner="AT&T TCA")]),
+    )
 
     assert len(candidates) == 2
     assert all(
-        c.payload_json["fields"]["external_org"] == "Comcast" for c in candidates
+        c.payload_json["fields"]["external_org"] == "AT&T TCA" for c in candidates
     )
     assert all(c.citations_verified for c in candidates)
 
 
-def test_a_row_that_states_its_own_party_is_unaffected(session, document):
-    """TxDOT repeats the owner on every row. Both are ordinary."""
-    client = StubClient(
-        [
-            page(attributes={"external_org": "Comcast"}),
-            page(rows=[]),
-        ]
-    )
+def test_a_row_that_states_its_own_party_wins(session, project, tmp_path):
+    """TxDOT repeats the owner per row. Both layouts are ordinary."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
 
-    candidates = extract_document(session, document, client=client)
+    candidates = extract_document(
+        session, doc, client=StubClient([structure(owner="Comcast")])
+    )
 
     assert candidates[0].payload_json["fields"]["external_org"] == "AT&T Texas (SWBT)"
 
 
 def test_a_page_attribute_absent_from_the_page_marks_its_rows_unverified(
-    session, scoped_document
+    session, project, tmp_path
 ):
-    """One bad inherited value is 29 suspect rows, and it has to look like it."""
-    client = StubClient(
-        [
-            page(
-                rows=[scoped_row(), scoped_row(utility_id="2")],
-                attributes={"external_org": "Verizon Florida"},
-            )
-        ]
+    """One bad inherited value is every row on the page, and it must look like it."""
+    doc = make_document(
+        session, project, tmp_path, FDOT_ROWS,
+        banner="UTILITY AGENCY OWNER: AT&T TCA",
     )
 
-    candidates = extract_document(session, scoped_document, client=client)
+    candidates = extract_document(
+        session, doc,
+        client=StubClient([structure(columns=FDOT_COLUMNS, owner="Verizon Florida")]),
+    )
 
     assert len(candidates) == 2
     assert not any(c.citations_verified for c in candidates)
@@ -374,20 +316,153 @@ def test_a_page_attribute_absent_from_the_page_marks_its_rows_unverified(
     )
 
 
-def test_a_page_with_no_attributes_inherits_nothing(session, scoped_document):
-    client = StubClient([page(rows=[scoped_row()])])
+# ------------------------------------------------------------ Tier 1: outcomes
 
-    fields = extract_document(session, scoped_document, client=client)[0].payload_json[
-        "fields"
+
+def test_a_matrix_with_no_conflict_rows_returns_empty(session, project, tmp_path):
+    doc = make_document(session, project, tmp_path, [TXDOT_ROWS[0]])
+
+    assert extract_document(session, doc, client=StubClient([structure()])) == []
+
+
+def test_a_document_with_no_matrix_page_raises(session, project, tmp_path):
+    """`NoMatrixFound` keeps its meaning: unreadable is not the same as empty."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    with pytest.raises(NoMatrixFound):
+        extract_document(
+            session, doc,
+            client=StubClient([structure(matrix_table=None, is_matrix=False)]),
+        )
+
+
+def test_a_document_with_no_page_images_raises(session, project, tmp_path):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    for page in session.scalars(
+        select(DocPage).where(DocPage.document_id == doc.id)
+    ):
+        page.image_path = None
+    session.flush()
+
+    with pytest.raises(NoMatrixFound, match="page image"):
+        extract_document(session, doc, client=StubClient([]))
+
+
+def test_a_group_title_band_is_not_a_row(session, project, tmp_path):
+    """FDOT prints a full-width band mid-table, above a run of rows.
+
+    Inheriting the page's External Party, a band satisfies both required
+    fields off its single cell — nine phantom rows on SR 789, one per page.
+    A band contributes one of its own fields; a conflict row contributes
+    several.
+    """
+    banded = [
+        FDOT_ROWS[0],
+        ["FROM C/L CONST GULF OF MEXICO DR.", "", "", ""],
+        *FDOT_ROWS[1:],
     ]
+    doc = make_document(
+        session, project, tmp_path, banded,
+        banner="UTILITY AGENCY OWNER: AT&T TCA",
+    )
 
-    assert "external_org" not in fields
+    candidates = extract_document(
+        session, doc,
+        client=StubClient([structure(columns=FDOT_COLUMNS, owner="AT&T TCA")]),
+    )
+
+    ids = [c.payload_json["fields"]["utility_id"] for c in candidates]
+    assert ids == ["1", "2"]
 
 
-def test_candidates_are_added_to_the_session(session, document):
-    extract_document(session, document, client=StubClient([page(), page(rows=[])]))
+def test_a_mapping_without_the_required_fields_yields_nothing(
+    session, project, tmp_path
+):
+    """Guards a legend table the model mistook for the matrix."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    columns = [{"index": i, "canonical_field": None} for i in range(6)]
+
+    assert extract_document(
+        session, doc, client=StubClient([structure(columns=columns)])
+    ) == []
+
+
+# ---------------------------------------------------------- what the model sees
+
+
+def test_the_model_is_shown_the_page_image_and_the_cells_geometry_read(
+    session, project, tmp_path
+):
+    """The image gives context; the numbered cells give an exact join key,
+    so a mapping never depends on the model counting columns."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    client = StubClient([structure()])
+
+    extract_document(session, doc, client=client)
+
+    call = client.calls[0]
+    assert len(call["images"]) == 1
+    assert call["images"][0].endswith(".png")
+    assert "Page 1 of" in call["user"]
+    assert "Utility ID" in call["user"] and "[0]" in call["user"]
+
+
+def test_the_model_is_never_asked_for_a_value(session, project, tmp_path):
+    """The schema has no place to put one. That is the design."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    client = StubClient([structure()])
+
+    extract_document(session, doc, client=client)
+
+    properties = client.calls[0]["schema"]["properties"]
+    assert set(properties) == {
+        "is_utility_matrix", "page_attributes", "matrix_table",
+        "header_row", "columns",
+    }
+    assert "rows" not in properties
+
+
+# -------------------------------------------------------- tier selection
+
+
+def test_a_page_without_a_text_layer_takes_the_transcription_tier(
+    session, project, tmp_path
+):
+    """No word boxes means no values to read; the model has to write them."""
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    page = session.scalars(select(DocPage).where(DocPage.document_id == doc.id)).one()
+    page.text_source = "ocr"
+    session.flush()
+
+    transcribed = {
+        "is_utility_matrix": True,
+        "page_attributes": {"external_org": None},
+        "rows": [
+            {
+                "utility_id": "FOC1-133",
+                "external_org": "AT&T Texas (SWBT)",
+                "station_from": "1092+92",
+                "quote": "FOC1-133 AT&T Texas (SWBT)",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+    candidates = extract_document(
+        session, doc, client=StubClient([transcribed])
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].payload_json["tier"] == TIER_TRANSCRIBE
+    assert candidates[0].payload_json["fields"]["station_from"] == "1092+92"
+
+
+def test_candidates_are_added_to_the_session(session, project, tmp_path):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    extract_document(session, doc, client=StubClient([structure()]))
 
     stored = session.scalars(
-        select(Candidate).where(Candidate.source_document_id == document.id)
+        select(Candidate).where(Candidate.source_document_id == doc.id)
     ).all()
-    assert len(stored) == 1
+    assert len(stored) == 2

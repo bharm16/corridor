@@ -319,6 +319,23 @@ def find_header(data: list[list]) -> tuple[int, dict[int, str]]:
     return 0, {}
 
 
+def page_tables(page) -> list[list[list[str]]]:
+    """Every table on one page, cells read from the page's word boxes.
+
+    The reading half of this module without the mapping half. The tiered
+    extractor (ADR-0006) supplies its own column mapping from a model and
+    needs only the cells — which is the part measured at 3 errors in 40,417
+    tokens, against 164 rows in 3,240 for a model transcribing them.
+    """
+    words = page_words(page)
+    grids = []
+    for table in page.find_tables().tables:
+        data = table.extract()
+        if data:
+            grids.append(reread_table(data, table, words))
+    return grids
+
+
 def extract_rows(path) -> list[MatrixRow]:
     """Every data row of every recognizable matrix table in the document.
 
