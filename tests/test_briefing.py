@@ -376,3 +376,117 @@ def test_the_checker_is_direct_over_constructed_citables():
 
     assert [s.text for s in kept] == ["Good.", "Backed."]
     assert withheld == {"empty": 1, "uncited": 1, "unknown citation": 1}
+
+
+# ---------------------------------------- one narrative per project (#119)
+
+
+@pytest.fixture
+def second_dependency(session, project, dependency):
+    """A second record, so the project floor spans records."""
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="DEP-00002",
+        dep_type="utility_relocation",
+        title="Gas — Atmos",
+        status="identified",
+        resolution_strategy=None,
+        internal_owner="Bryce",
+    )
+    session.add(dep)
+    session.flush()
+    return dep
+
+
+def project_floor(session, project):
+    """Every fired Exception across the project, in the refs the component
+    assigns — read off the same engine, like the single-record helper."""
+    from corridor.exceptions import evaluate
+
+    return [f"X{i + 1}" for i in range(len(evaluate(session, project.id, today=TODAY)))]
+
+
+def test_a_project_briefing_floors_every_records_exceptions(
+    session, project, dependency, second_dependency
+):
+    """The floor widens to the whole project: a draft covering one
+    record's Exceptions while burying another record's is refused whole,
+    exactly as on the single path."""
+    from corridor.briefing import brief_project
+
+    refs = project_floor(session, project)
+    assert len(refs) > len(floor_refs(session, dependency)), (
+        "the second record must add fired Exceptions, or this test "
+        "proves nothing about widening"
+    )
+
+    covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
+    briefing = brief_project(
+        session, project.id, client=StubClient([drafted(*covering)]), today=TODAY
+    )
+    assert not briefing.refused
+    assert len(briefing.sentences) == len(refs)
+
+    partial = covering[:-1]
+    refused = brief_project(
+        session, project.id, client=StubClient([drafted(*partial)]), today=TODAY
+    )
+    assert refused.refused
+    assert "floor" in refused.refusal_reason
+
+
+def test_project_citables_attribute_their_record(
+    session, project, dependency, second_dependency
+):
+    """Refs are unique across the project and each citable names the
+    record it belongs to — the model cannot attribute one record's fact
+    to another without the reader seeing the ref resolve elsewhere."""
+    from corridor.briefing import brief_project
+
+    refs = project_floor(session, project)
+    covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
+    client = StubClient([drafted(*covering)])
+
+    briefing = brief_project(session, project.id, client=client, today=TODAY)
+
+    user = client.calls[0]["user"]
+    assert "DEP-00001" in user
+    assert "DEP-00002" in user
+    assert len({c.ref for c in briefing.citables}) == len(briefing.citables)
+    by_ref = {c.ref: c for c in briefing.citables}
+    assert any("DEP-00002" in c.text for c in briefing.citables if c.kind == "exception")
+    assert briefing.floor == tuple(refs)
+
+
+def test_a_project_briefing_carries_the_same_stamps(
+    session, project, dependency, second_dependency
+):
+    from corridor.briefing import brief_project
+
+    refs = project_floor(session, project)
+    covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
+
+    briefing = brief_project(
+        session, project.id, client=StubClient([drafted(*covering)]), today=TODAY
+    )
+
+    assert briefing.prompt_version == PROMPT_VERSION
+    assert briefing.evaluated_at == TODAY
+    assert briefing.ruleset_version == RULESET_VERSION
+    assert project.slug in briefing.ref_code
+
+
+def test_a_project_briefing_is_one_model_call(
+    session, project, dependency, second_dependency
+):
+    """Cost stays one read of one project's record per invocation — no
+    per-record fan-out, no batch path."""
+    from corridor.briefing import brief_project
+
+    refs = project_floor(session, project)
+    covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
+    client = StubClient([drafted(*covering)])
+
+    brief_project(session, project.id, client=client, today=TODAY)
+
+    assert len(client.calls) == 1

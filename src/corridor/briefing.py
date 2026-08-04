@@ -128,13 +128,65 @@ def brief(
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise LookupError(f"no dependency {dependency_id}")
-    today = today or date.today()
+    return _brief(
+        session,
+        [dependency],
+        ref_code=dependency.ref_code,
+        client=client,
+        today=today or date.today(),
+    )
 
-    citables, floor = _citables(session, dependency, today)
+
+def brief_project(
+    session: Session,
+    project_id: int,
+    *,
+    client,
+    today: date | None = None,
+) -> Briefing:
+    """One narrative over every record in the project (#119).
+
+    The floor widens with the scope: every fired Exception across every
+    record must be cited by a surviving sentence, or the draft is refused
+    whole — a briefing that covers one record's problems while burying
+    another's is the partially honest briefing ADR-0011 rules out. Cost
+    stays one read and one model call per invocation; there is no
+    per-record fan-out and no batch path.
+    """
+    from corridor.models import Project
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise LookupError(f"no project {project_id}")
+    dependencies = list(
+        session.scalars(
+            select(Dependency)
+            .where(Dependency.project_id == project_id)
+            .order_by(Dependency.ref_code)
+        )
+    )
+    return _brief(
+        session,
+        dependencies,
+        ref_code=f"{project.slug} — {len(dependencies)} records",
+        client=client,
+        today=today or date.today(),
+    )
+
+
+def _brief(
+    session: Session,
+    dependencies: list[Dependency],
+    *,
+    ref_code: str,
+    client,
+    today: date,
+) -> Briefing:
+    citables, floor = _assemble(session, dependencies, today)
 
     result = client.complete(
         system=PROMPT.read_text(),
-        user=_user_message(dependency, citables),
+        user=_user_message(dependencies, citables),
         schema=SENTENCE_SCHEMA,
     )
     drafted = [
@@ -145,7 +197,7 @@ def brief(
     kept, withheld = _check(drafted, {c.ref: c for c in citables})
 
     stamps = dict(
-        ref_code=dependency.ref_code,
+        ref_code=ref_code,
         floor=floor,
         citables=tuple(citables),
         prompt_version=PROMPT_VERSION,
@@ -174,84 +226,105 @@ def brief(
     return Briefing(sentences=tuple(kept), withheld=withheld, **stamps)
 
 
-def _citables(
-    session: Session, dependency: Dependency, today: date
+def _assemble(
+    session: Session, dependencies: list[Dependency], today: date
 ) -> tuple[list[Citable], tuple[str, ...]]:
     """Everything a sentence may stand on, and which refs are the floor.
+
+    One numbering across however many records the briefing spans, so a
+    ref is unique project-wide and each citable names its record — the
+    model cannot attribute one record's fact to another without the
+    reader seeing the ref resolve elsewhere.
 
     The Exceptions come from the same engine every other view reads —
     never a private re-computation, so the Briefing and the exception
     views cannot disagree about what fired.
     """
     citables: list[Citable] = []
+    floor: list[str] = []
+    counters = {"E": 0, "A": 0, "X": 0}
 
-    links = session.execute(
-        select(EvidenceLink, DocPage)
-        .outerjoin(
-            DocPage,
-            (DocPage.document_id == EvidenceLink.document_id)
-            & (DocPage.page_no == EvidenceLink.page_no),
-        )
-        .where(EvidenceLink.dependency_id == dependency.id)
-        .order_by(EvidenceLink.id)
-    ).all()
-    for index, (link, page) in enumerate(links, start=1):
-        citables.append(
-            Citable(
-                ref=f"E{index}",
-                kind="evidence",
-                text=f"document {link.document_id} p.{link.page_no}: “{link.quote}”",
-                quote=link.quote,
-                page_text=(page.text if page else "") or "",
-                text_source=page.text_source if page else None,
-            )
-        )
+    def ref(prefix: str) -> str:
+        counters[prefix] += 1
+        return f"{prefix}{counters[prefix]}"
 
-    assertions = session.scalars(
-        select(Assertion)
-        .where(Assertion.dependency_id == dependency.id)
-        .order_by(Assertion.field_name, Assertion.id)
-    ).all()
-    for index, assertion in enumerate(assertions, start=1):
-        citables.append(
-            Citable(
-                ref=f"A{index}",
-                kind="assertion",
-                text=f"{assertion.field_name} = {assertion.asserted_value!r}",
+    for dependency in dependencies:
+        links = session.execute(
+            select(EvidenceLink, DocPage)
+            .outerjoin(
+                DocPage,
+                (DocPage.document_id == EvidenceLink.document_id)
+                & (DocPage.page_no == EvidenceLink.page_no),
             )
-        )
+            .where(EvidenceLink.dependency_id == dependency.id)
+            .order_by(EvidenceLink.id)
+        ).all()
+        for link, page in links:
+            citables.append(
+                Citable(
+                    ref=ref("E"),
+                    kind="evidence",
+                    text=(
+                        f"{dependency.ref_code}, document {link.document_id} "
+                        f"p.{link.page_no}: “{link.quote}”"
+                    ),
+                    quote=link.quote,
+                    page_text=(page.text if page else "") or "",
+                    text_source=page.text_source if page else None,
+                )
+            )
 
-    fired = exceptions_for(session, dependency.id, today=today)
-    floor = []
-    for index, exception in enumerate(fired, start=1):
-        ref = f"X{index}"
-        floor.append(ref)
-        days = (
-            f" ({exception.quantity_days}d)"
-            if exception.quantity_days is not None
-            else ""
-        )
-        citables.append(
-            Citable(
-                ref=ref,
-                kind="exception",
-                text=f"{exception.rule}{days}: {exception.detail}",
+        assertions = session.scalars(
+            select(Assertion)
+            .where(Assertion.dependency_id == dependency.id)
+            .order_by(Assertion.field_name, Assertion.id)
+        ).all()
+        for assertion in assertions:
+            citables.append(
+                Citable(
+                    ref=ref("A"),
+                    kind="assertion",
+                    text=(
+                        f"{dependency.ref_code}: {assertion.field_name} = "
+                        f"{assertion.asserted_value!r}"
+                    ),
+                )
             )
-        )
+
+        for exception in exceptions_for(session, dependency.id, today=today):
+            x = ref("X")
+            floor.append(x)
+            days = (
+                f" ({exception.quantity_days}d)"
+                if exception.quantity_days is not None
+                else ""
+            )
+            citables.append(
+                Citable(
+                    ref=x,
+                    kind="exception",
+                    text=(
+                        f"{dependency.ref_code}: {exception.rule}{days}: "
+                        f"{exception.detail}"
+                    ),
+                )
+            )
 
     return citables, tuple(floor)
 
 
-def _user_message(dependency: Dependency, citables: list[Citable]) -> str:
-    lines = [
-        f"Record {dependency.ref_code}: {dependency.title}.",
-        f"Status {dependency.status};"
-        f" resolution strategy {dependency.resolution_strategy or 'none asserted'};"
-        f" committed {dependency.committed_date or '—'};"
-        f" needed {dependency.need_date or '—'}.",
-        "",
-        "You may cite ONLY these, by ref:",
-    ]
+def _user_message(dependencies: list[Dependency], citables: list[Citable]) -> str:
+    lines = []
+    for dependency in dependencies:
+        lines.append(f"Record {dependency.ref_code}: {dependency.title}.")
+        lines.append(
+            f"  Status {dependency.status};"
+            f" resolution strategy {dependency.resolution_strategy or 'none asserted'};"
+            f" committed {dependency.committed_date or '—'};"
+            f" needed {dependency.need_date or '—'}."
+        )
+    lines.append("")
+    lines.append("You may cite ONLY these, by ref:")
     for citable in citables:
         lines.append(f"  [{citable.ref}] {citable.text}")
     floor = ", ".join(c.ref for c in citables if c.kind == "exception")
@@ -347,18 +420,25 @@ def render(briefing: Briefing) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """`uv run python -m corridor.briefing <slug> <ref_code>`"""
+    """One record or the whole project, by the same command.
+
+    `uv run python -m corridor.briefing <slug> <ref_code>` briefs one
+    record; `<slug>` alone briefs the project — one model call either way.
+    """
     import sys
 
     from corridor.db import Session as SessionFactory
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 
-    if len(argv) < 2:
-        print("usage: python -m corridor.briefing <slug> <ref_code>", file=sys.stderr)
+    if not argv:
+        print(
+            "usage: python -m corridor.briefing <slug> [<ref_code>]",
+            file=sys.stderr,
+        )
         return 2
 
-    slug, ref_code = argv[0], argv[1]
+    slug, ref_code = argv[0], argv[1] if len(argv) > 1 else None
     with SessionFactory() as session:
         project = session.scalars(
             select(Project).where(Project.slug == slug)
@@ -366,19 +446,22 @@ def main(argv: list[str]) -> int:
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
-        dependency = session.scalars(
-            select(Dependency).where(
-                Dependency.project_id == project.id,
-                Dependency.ref_code == ref_code,
-            )
-        ).first()
-        if dependency is None:
-            print(f"no record {ref_code!r} in {slug}", file=sys.stderr)
-            return 1
 
         client = OpenAIClient()
         try:
-            print(render(brief(session, dependency.id, client=client)))
+            if ref_code is None:
+                print(render(brief_project(session, project.id, client=client)))
+            else:
+                dependency = session.scalars(
+                    select(Dependency).where(
+                        Dependency.project_id == project.id,
+                        Dependency.ref_code == ref_code,
+                    )
+                ).first()
+                if dependency is None:
+                    print(f"no record {ref_code!r} in {slug}", file=sys.stderr)
+                    return 1
+                print(render(brief(session, dependency.id, client=client)))
         finally:
             client.close()
     return 0
