@@ -106,3 +106,49 @@ evidence for the first:
    described and this document proves. Filed separately.
 2. **#101**, so the mapping is one recorded decision rather than eleven.
 3. **A WSDOT vocabulary entry**, written from 9424 and never from 9540.
+
+## Finding 4, resolved: there was no gap, and the count that suggested one
+
+Re-run 2026-08-04, after #105 landed. Finding 4 stands above as it was
+written; this is what checking it produced.
+
+**Under Finding 4's own stated filter there is no discrepancy.** Counting
+body rows that carry both an owner and a conflict id gives **162** —
+exactly what the extractor produced. The "roughly 173" is not reproducible
+by the method the sentence describes, and the gap it reported was an
+artifact of the count rather than a property of the extractor.
+
+What a looser filter shows, and why it is not a recall figure:
+
+```
+body rows with an owner OR a conflict id      261
+  extracted                                   162
+  blank, notes read "Not Used"                 97   retired row numbers
+  a conflict id and nothing else                2   ids 163 (p9), 256 (p11)
+```
+
+The 97 are the form's own retired numbering — printed row numbers with
+every cell blank but `Notes: Not Used`. Excluding them is correct, and the
+`MIN_ROW_FIELDS` guard does it for the right reason: a row with one
+populated cell is not a conflict. Verified against the page image for
+page 5, where ids 72, 73, 75, 76, 77 and 80 are visibly blank between
+populated rows 71, 74, 79 and 81.
+
+**One row contradicts the pattern, and it is a judgement nobody has made.**
+Page 9, conflict id 210: PSE, UG Power, Military Road and Veterans Dr
+intersection, marked `X` under `Retain and Protect`, phase 3 stage 2 — a
+fully populated conflict row whose notes read `Not used` (lower case, where
+the retired rows read `Not Used`). The extractor produced it, correctly by
+its own rules. Whether the phrase retires the row or describes a facility
+that is out of service is not something the extractor can decide and not
+something this document settles. Filed separately; it matters to the M7
+gate, because a gold set that reads those two words differently from the
+extractor scores the disagreement as a miss.
+
+**What this exercise does and does not license.** The classification above
+was produced by diffing an independent enumeration against the extractor's
+output and attaching the document's own words to each disagreement — a
+reviewer confirms it by looking at a page, not by trusting a count. It
+found a real ambiguity the first run missed. It also shares PyMuPDF's table
+detection with the extractor, so a region that library drops is invisible
+to both, and the page-image check is the only thing that closes that hole.
