@@ -1,7 +1,12 @@
 import pytest
 from sqlalchemy import select
 
-from corridor.adjudicate import AlreadyAdjudicated, accept_candidate
+from corridor.adjudicate import (
+    CRITICALITY_SIGNALS,
+    AlreadyAdjudicated,
+    accept_candidate,
+    set_criticality,
+)
 from corridor.db import Session, engine
 from corridor.ledger import load_dependency
 from corridor.models import (
@@ -388,3 +393,190 @@ def test_the_view_carries_the_full_provenance_chain(session, document):
     assert claim.page_no == 1
     assert claim.filename == "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
     assert claim.verified is True
+
+
+# ------------------------------------------- criticality (#86, ADR-0007)
+
+
+@pytest.fixture
+def signalled(monkeypatch, session, document):
+    """A project whose layout has an identified criticality signal.
+
+    Patched rather than fixtured on the real slug because `projects.slug`
+    is unique and `nhhip-3c2` is a real row. This exercises the mechanism;
+    `test_the_shipped_signal_table_reads_project_a` covers the table.
+    """
+    project = session.get(Project, document.project_id)
+    monkeypatch.setitem(
+        CRITICALITY_SIGNALS, project.slug, CRITICALITY_SIGNALS["nhhip-3c2"]
+    )
+    return document
+
+
+def criticality_assertions(session, dep):
+    return session.scalars(
+        select(Assertion).where(
+            Assertion.dependency_id == dep.id, Assertion.field_name == "criticality"
+        )
+    ).all()
+
+
+def test_a_document_saying_the_facility_must_move_produces_a_critical_dependency(
+    session, signalled
+):
+    candidate = make_candidate(
+        session, signalled, fields={**FIELDS, "potential_conflict": "Y"}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.criticality == "critical"
+
+
+def test_the_criticality_cites_the_same_evidence_as_the_other_fields(
+    session, signalled
+):
+    """An ordinary adjudicated field: the document said this, on this page."""
+    candidate = make_candidate(
+        session, signalled, fields={**FIELDS, "potential_conflict": "Y"}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    claim = criticality_assertions(session, dep)
+    owner = session.scalars(
+        select(Assertion).where(
+            Assertion.dependency_id == dep.id, Assertion.field_name == "external_org"
+        )
+    ).one()
+    assert len(claim) == 1
+    assert claim[0].asserted_value == "critical"
+    assert claim[0].evidence_link_id == owner.evidence_link_id
+
+
+def test_a_document_saying_otherwise_produces_a_dependency_that_is_not_critical(
+    session, signalled
+):
+    candidate = make_candidate(
+        session, signalled, fields={**FIELDS, "potential_conflict": "N"}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.criticality == "normal"
+    assert criticality_assertions(session, dep)[0].asserted_value == "normal"
+
+
+def test_a_document_that_says_nothing_asserts_no_criticality(session, signalled):
+    """Silence is not `normal`.
+
+    `potential_conflict` is absent from 1,249 of Project A's rows — the
+    column appears in only three of five revisions. Recording those as
+    `normal` collapses "the document did not say" into "the document said
+    it does not matter", and makes the M7 gate's denominator a lie.
+    """
+    candidate = make_candidate(session, signalled)
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.criticality is None
+    assert criticality_assertions(session, dep) == []
+
+
+def test_a_layout_with_no_identified_signal_does_not_guess(session, document):
+    """`document`'s project is deliberately absent from the signal table.
+
+    The row carries a `potential_conflict` the extractor happened to
+    capture, and it is still not read: SH 99 fills that same canonical
+    field from a column meaning something else entirely (#85).
+    """
+    candidate = make_candidate(
+        session, document, fields={**FIELDS, "potential_conflict": "Y"}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.criticality is None
+    assert criticality_assertions(session, dep) == []
+
+
+def test_an_unrecognised_value_asserts_nothing_rather_than_normal(
+    session, signalled
+):
+    """The column being present is not the document making a claim."""
+    candidate = make_candidate(
+        session, signalled, fields={**FIELDS, "potential_conflict": "TBD"}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.criticality is None
+    assert criticality_assertions(session, dep) == []
+
+
+def test_a_reviewer_override_wins_and_stays_distinguishable(session, signalled):
+    """The matrix may say `N` about a duct bank under the only haul road.
+
+    The document's claim survives as an Assertion; the stored value is the
+    reviewer's conclusion. The two disagreeing is what makes the override
+    visible rather than silent.
+    """
+    candidate = make_candidate(
+        session, signalled, fields={**FIELDS, "potential_conflict": "N"}
+    )
+    dep = accept_candidate(session, candidate, actor="extractor")
+
+    set_criticality(session, dep, "critical", actor="reviewer")
+
+    assert dep.criticality == "critical"
+    assert criticality_assertions(session, dep)[0].asserted_value == "normal"
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_id == dep.id, AuditLog.action == "set_criticality"
+        )
+    ).one()
+    assert entry.actor == "reviewer"
+    assert (entry.before_json, entry.after_json) == (
+        {"criticality": "normal"},
+        {"criticality": "critical"},
+    )
+
+
+def test_a_reviewer_cannot_invent_a_criticality_outside_the_enum(session, signalled):
+    dep = accept_candidate(session, make_candidate(session, signalled), actor="x")
+
+    with pytest.raises(ValueError, match="urgent"):
+        set_criticality(session, dep, "urgent", actor="reviewer")
+
+
+def test_the_hardcode_is_gone_not_defaulted_differently(session, document):
+    """The column has no default at any level.
+
+    A server-side default would reinstate the hardcode silently: every
+    insert omitting the column would land on `normal` again, and nothing
+    in the code would say so.
+    """
+    dep = accept_candidate(session, make_candidate(session, document), actor="x")
+    session.flush()
+    session.refresh(dep)
+
+    assert dep.criticality is None
+    assert Dependency.__table__.c.criticality.server_default is None
+    assert Dependency.__table__.c.criticality.nullable is True
+
+
+def test_the_shipped_signal_table_reads_project_a(session):
+    """The table is the thing a human edits, so its contents are the test.
+
+    Project A only. FDOT's and SH 99's signals are not identified in
+    writing yet, and an unidentified layout asserts nothing.
+    """
+    signal = CRITICALITY_SIGNALS["nhhip-3c2"]
+
+    assert signal.field == "potential_conflict"
+    assert signal.read("Y") == "critical"
+    assert signal.read("N") == "normal"
+    assert signal.read("A") == "normal"
+    assert signal.read("") is None
+    assert "fdot-sr789" not in CRITICALITY_SIGNALS
+    assert "sh99-grand-parkway" not in CRITICALITY_SIGNALS

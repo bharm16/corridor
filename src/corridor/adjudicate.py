@@ -9,18 +9,21 @@ sources instead of silently keeping whichever was written last.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.models import (
+    CRITICALITIES,
     Assertion,
     AuditLog,
     Candidate,
     Dependency,
     EvidenceLink,
     ExternalOrg,
+    Project,
 )
 
 # Fields the extractor emits that map onto Dependency columns directly.
@@ -28,6 +31,60 @@ from corridor.models import (
 # has no column for `sue_level`, but a source did claim one, and dropping
 # that is a loss of evidence rather than a simplification.
 DIRECT_COLUMNS = {"station_from", "station_to"}
+
+
+@dataclass(frozen=True)
+class CriticalitySignal:
+    """How one layout says a facility must move before construction."""
+
+    field: str
+    critical: frozenset[str]
+    not_critical: frozenset[str]
+
+    def read(self, value: str) -> str | None:
+        """`critical`, `normal`, or None when the layout does not say.
+
+        A value the signal does not recognise reads as None rather than as
+        `normal`. The column being present is not the document making a
+        claim, and guessing at an unfamiliar value is the heuristic
+        ADR-0007 rules out.
+        """
+        cleaned = (value or "").strip().casefold()
+        if cleaned in self.critical:
+            return "critical"
+        if cleaned in self.not_critical:
+            return "normal"
+        return None
+
+
+# Each layout's criticality signal, identified in writing before that
+# layout is measured (ADR-0007). Keyed by project, because the canonical
+# field name alone is not enough to identify a signal: SH 99 is also TxDOT
+# and fills `potential_conflict` from `Early TxDOT Utility Activity`, a
+# column that means something else entirely (#85).
+#
+# A project that is absent produces **no criticality Assertion at all**.
+# That is the designed outcome for an unidentified layout, not a gap:
+#
+# - `fdot-sr789` — ADR-0007 names `Recommended Conflict Resolution`, but
+#   what the extractor captured under `potential_conflict` is a
+#   proposed-feature column ("Prop. Storm pipe (Possible)"). The signal
+#   needs a human reading before it can be listed.
+# - `sh99-grand-parkway` — carries two layouts and no `Potential Conflict`
+#   column on either. Candidates a reader would have to rule on are
+#   `Early TxDOT Utility Activity`, `Abandoned`, and `AURL or DBA`.
+#   Listing it would also need a finer key than the project slug.
+# - WSDOT — must be read off 9424, never the sealed 9540 (ADR-0008).
+CRITICALITY_SIGNALS = {
+    # TxDOT NHHIP 3C-2. `Potential Conflict` is Y / N / A, where A is an
+    # abandoned facility. Absent from two of the five revisions, whose
+    # rows therefore assert nothing rather than asserting `normal`.
+    "nhhip-3c2": CriticalitySignal(
+        field="potential_conflict",
+        critical=frozenset({"y", "yes"}),
+        not_critical=frozenset({"n", "no", "a"}),
+    ),
+}
 
 
 class AlreadyAdjudicated(Exception):
@@ -46,6 +103,7 @@ def accept_candidate(
     citations = candidate.payload_json.get("citations", [])
 
     org = _resolve_org(session, fields.get("external_org"))
+    criticality = _asserted_criticality(session, candidate, fields)
 
     dependency = Dependency(
         project_id=candidate.project_id,
@@ -61,7 +119,8 @@ def accept_candidate(
         station_to=fields.get("station_to"),
         external_org_id=org.id if org else None,
         status="identified",
-        criticality="normal",
+        # None when no signal was read. Not `normal` — see ADR-0007.
+        criticality=criticality,
     )
     session.add(dependency)
     session.flush()
@@ -77,6 +136,22 @@ def accept_candidate(
                 dependency_id=dependency.id,
                 field_name=name,
                 asserted_value=value,
+                evidence_link_id=primary.id if primary else None,
+                doc_date=None,
+            )
+        )
+
+    # Criticality is an ordinary adjudicated field, so it earns an
+    # Assertion citing the same Evidence as every other one — the document
+    # said this, on this page. Absent when the document did not say, which
+    # is what makes "unlabelled" countable rather than inferred from a
+    # Dependency that merely looks unremarkable.
+    if criticality is not None:
+        session.add(
+            Assertion(
+                dependency_id=dependency.id,
+                field_name="criticality",
+                asserted_value=criticality,
                 evidence_link_id=primary.id if primary else None,
                 doc_date=None,
             )
@@ -99,6 +174,65 @@ def accept_candidate(
                 "source_ref": dependency.source_ref,
                 "fields": fields,
             },
+        )
+    )
+    session.flush()
+    return dependency
+
+
+def _asserted_criticality(
+    session: Session, candidate: Candidate, fields: dict
+) -> str | None:
+    """What this row's document says about how much it matters.
+
+    None on every path that is not a document making the claim: a layout
+    whose signal nobody has identified, a revision that does not print the
+    column, a blank cell, an unrecognised value. All four are "the document
+    did not say", and the enum cannot hold that — which is exactly why the
+    column is nullable and nothing defaults it.
+    """
+    project = session.get(Project, candidate.project_id)
+    signal = CRITICALITY_SIGNALS.get(project.slug if project else None)
+    if signal is None:
+        return None
+    return signal.read(fields.get(signal.field) or "")
+
+
+def set_criticality(
+    session: Session,
+    dependency: Dependency,
+    criticality: str | None,
+    *,
+    actor: str,
+) -> Dependency:
+    """A reviewer's judgement, which outranks the document's claim.
+
+    The Assertions are untouched: the document still says what it said, and
+    the Dependency's value is the adjudicated conclusion (ADR-0001). That
+    is what keeps the two distinguishable — an override is visible as a
+    stored value that disagrees with the criticality Assertion beneath it,
+    and the audit log names who did it.
+
+    Overriding is legitimate here in a way it is not for readiness: the
+    matrix may say `N` about a duct bank that sits under the only haul
+    road. ADR-0007 turns on that difference.
+    """
+    if criticality is not None and criticality not in CRITICALITIES:
+        raise ValueError(
+            f"{criticality!r} is not a criticality; expected one of "
+            f"{', '.join(CRITICALITIES)} or None for 'no judgement'"
+        )
+
+    before = dependency.criticality
+    dependency.criticality = criticality
+    session.add(
+        AuditLog(
+            actor=actor,
+            action="set_criticality",
+            entity_type="dependency",
+            entity_id=dependency.id,
+            before_json={"criticality": before},
+            after_json={"criticality": criticality},
         )
     )
     session.flush()
