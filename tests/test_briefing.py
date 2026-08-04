@@ -259,20 +259,25 @@ def test_a_sentence_lost_to_withholding_can_uncover_the_floor(
 
 def test_nothing_is_persisted(session, dependency):
     """The Briefing is a view. Deleting every briefing loses no fact —
-    and generating one writes none."""
-    before = {
-        table: session.scalar(select(__import__("sqlalchemy").func.count()).select_from(table))
-        for table in (Candidate, Dependency, Assertion, EvidenceLink, AuditLog)
-    }
+    and generating one writes none, to any table at all."""
+    from sqlalchemy import func
+
+    from corridor.models import Base
+
+    def counts():
+        return {
+            table.name: session.scalar(
+                select(func.count()).select_from(table)
+            )
+            for table in Base.metadata.sorted_tables
+        }
+
+    before = counts()
     client = StubClient([drafted(*covering_sentences(session, dependency))])
 
     brief(session, dependency.id, client=client, today=TODAY)
 
-    after = {
-        table: session.scalar(select(__import__("sqlalchemy").func.count()).select_from(table))
-        for table in (Candidate, Dependency, Assertion, EvidenceLink, AuditLog)
-    }
-    assert after == before
+    assert counts() == before
 
 
 def test_the_prompt_supplies_the_citables_by_reference(session, dependency):
@@ -325,3 +330,49 @@ def test_a_refused_briefing_renders_as_a_refusal(session, dependency):
 
     assert "REFUSED" in out
     assert "floor" in out
+
+
+def test_withheld_counts_show_even_on_a_refusal(session, dependency):
+    """A refusal explains itself fully: what was buried AND what was
+    withheld on the way. The reader diagnosing a refused draft needs
+    both."""
+    refs = floor_refs(session, dependency)
+    client = StubClient([
+        drafted(
+            ("Cites nothing.", []),
+            (f"Fact {refs[0]} holds.", [refs[0]]),
+        )
+    ])
+
+    out = render(brief(session, dependency.id, client=client, today=TODAY))
+
+    assert "REFUSED" in out
+    assert "1 sentence withheld: uncited" in out
+
+
+def test_the_checker_is_direct_over_constructed_citables():
+    """The checker alone, no database: pure function, constructed record.
+    An empty sentence counts too — "never silently dropped" includes a
+    sentence with no words."""
+    from corridor.briefing import Citable, Sentence, _check
+
+    by_ref = {
+        "E1": Citable(
+            ref="E1", kind="evidence", text="q", quote="on the page",
+            page_text="exactly on the page", text_source="text_layer",
+        ),
+        "X1": Citable(ref="X1", kind="exception", text="OVERDUE"),
+    }
+    kept, withheld = _check(
+        [
+            Sentence(text="Good.", cites=("X1",)),
+            Sentence(text="Backed.", cites=("E1",)),
+            Sentence(text="", cites=("X1",)),
+            Sentence(text="Uncited.", cites=()),
+            Sentence(text="Invented.", cites=("E9",)),
+        ],
+        by_ref,
+    )
+
+    assert [s.text for s in kept] == ["Good.", "Backed."]
+    assert withheld == {"empty": 1, "uncited": 1, "unknown citation": 1}

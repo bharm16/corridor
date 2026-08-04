@@ -140,7 +140,6 @@ def brief(
     drafted = [
         Sentence(text=(item.get("text") or "").strip(), cites=tuple(item.get("cites") or []))
         for item in (result.get("sentences") or [])
-        if (item.get("text") or "").strip()
     ]
 
     kept, withheld = _check(drafted, {c.ref: c for c in citables})
@@ -284,6 +283,11 @@ def _check(
         withheld[reason] = withheld.get(reason, 0) + 1
 
     for sentence in drafted:
+        if not sentence.text:
+            # "Never silently dropped" includes a sentence with no words:
+            # the model emitted an item, and the count says so.
+            withhold("empty")
+            continue
         if not sentence.cites:
             withhold("uncited")
             continue
