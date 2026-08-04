@@ -46,9 +46,9 @@ DUE_SOON_DAYS = 30
 
 # The eight rules. Names only — the weights that used to sit beside them
 # (5.0, 4.0, ×3 for criticality) had no source a reader could check, which
-# is ADR-0009's finding one layer up, and ADR-0010 abolished them. Order is
-# the display order: the absences first, then the clocks, then the
-# disagreements — but nothing reads meaning into it.
+# is ADR-0009's finding one layer up, and ADR-0010 abolished them. Tuple
+# order carries no meaning and nothing renders it — the facet view orders
+# by count and the web filter sorts alphabetically.
 RULES: tuple[str, ...] = (
     "MISSING_EVIDENCE",
     "MISSING_DATE",
@@ -164,9 +164,9 @@ def evaluate(
 def facets(found: list[Exception_]) -> list[RuleFacet]:
     """The one grouped view every consumer renders (ADR-0010, #115).
 
-    Computed here, beside the engine, so the CLI, the report and the web
-    views share a single structure and none re-derives grouping or invents
-    an order. Buckets come out largest first — a count is a fact — with the
+    Computed here, beside the engine, so every consumer renders one
+    structure and none re-derives grouping or invents an order — the CLI
+    today; #116 and #117 move the report and the web views onto it. Buckets come out largest first — a count is a fact — with the
     rule name breaking ties; within a bucket, the rule's own quantity
     orders, most days first, absent rows after, ref-code last for
     stability.

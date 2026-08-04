@@ -475,7 +475,7 @@ def test_reading_a_strategy_does_not_make_the_row_contradict_itself(
     second, canonical-token Assertion beside it would put `To be removed`
     and `remove` under one `field_name` behind the same verified
     EvidenceLink — which is exactly how a CONTRADICTION is computed, so
-    every mapped SR 789 row would contradict itself at severity 5.0.
+    every mapped SR 789 row would contradict itself at a MISSING_EVIDENCE exception.
     """
     candidate = make_candidate(
         session, with_vocabulary, fields={**FIELDS, "resolution_strategy": "To be removed"}

@@ -62,7 +62,7 @@
   <h2>Exceptions</h2>
   {% if view.exceptions %}
     <table>
-      <thead><tr><th>Rule</th><th>Severity</th><th>Why</th></tr></thead>
+      <thead><tr><th>Rule</th><th>Days</th><th>Why</th></tr></thead>
       <tbody>
         {% for e in view.exceptions|sort(attribute='rule') %}
           <tr>
