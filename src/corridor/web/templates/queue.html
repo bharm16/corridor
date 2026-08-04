@@ -90,10 +90,35 @@
       </table>
     </form>
 
+    {% if view.unverified_fields or view.low_confidence_tokens %}
+      <div class="banner bad" style="margin-top:1rem">
+        <b>Values not found on the cited page:</b>
+        {{ view.unverified_fields|join(', ') or '—' }}
+        {%- if view.low_confidence_tokens %}
+          · digits the model hesitated on: {{ view.low_confidence_tokens|join(', ') }}
+        {%- endif %}
+        <br><span style="font-weight:400">Named rather than counted, so the
+        suspect value is the one to check rather than all of them.</span>
+      </div>
+    {% endif %}
+
+    {% if view.unmapped_columns %}
+      <div class="banner" style="margin-top:1rem;background:#fffaeb;
+           border:1px solid #fedf89;color:#b54708">
+        <b>Printed columns with no canonical field:</b>
+        {{ view.unmapped_columns|join(' · ') }}
+        <br><span style="font-weight:400">The document says something the
+        Ledger has no field for. Extending the vocabulary is a deliberate
+        change, not an extractor's to make.</span>
+      </div>
+    {% endif %}
+
     <p class="hint">
       candidate #{{ view.candidate.id }} ·
       {{ view.candidate.prompt_version or 'n/a' }} ·
       model {{ view.candidate.model or 'deterministic' }}
+      {%- if view.tier %} · read by <b>{{ view.tier }}</b>{% endif %}
+      {%- if view.text_source %} · text from {{ view.text_source }}{% endif %}
     </p>
    </div>
 
