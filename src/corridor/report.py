@@ -22,9 +22,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.exceptions import RULESET_VERSION, evaluate
+from corridor.exceptions import CRITICAL_WEIGHT, RULESET_VERSION, evaluate
 from corridor.ledger import LedgerRow, browse
-from corridor.models import Dependency, Document, EvidenceLink, Milestone, Project
+from corridor.models import (
+    Dependency,
+    Document,
+    EvidenceLink,
+    Milestone,
+    Project,
+    is_critical,
+)
 
 # Enough to act on in a weekly meeting. More than this and nobody reads it.
 CRITICAL_ITEM_COUNT = 15
@@ -209,11 +216,25 @@ def _milestone_rollup(
 def _critical_items(
     session: Session, rows: list[LedgerRow], today: date
 ) -> Section:
-    """Top items by need-date proximity times criticality."""
-    weight = {"critical": 3.0, "high": 2.0, "normal": 1.0}
+    """Top items by need-date proximity and criticality.
+
+    The weighting is applied twice: `base` weights the record, and
+    `worst_severity` already carries the same multiplier from
+    `exceptions.evaluate`. The terms are **summed**, so this is not a
+    monotone rescale and it does change the order. A critical record eleven
+    months out with one severity-5 rule scores `3×0.1 + 15/10 = 1.8`; an
+    overdue non-critical record with only an ORPHAN scores `1.0 + 0.1 =
+    1.1`. Applied once, the first would score 0.8 and rank below.
+
+    Left as it is rather than corrected, because changing how the weekly
+    report ranks is a decision about the report and not about this schema
+    change, and #96 asked only that the ranking still work and say what it
+    means. It is named here so the next reader finds it stated rather than
+    having to derive it.
+    """
 
     def urgency(row: LedgerRow) -> float:
-        base = weight.get(row.dependency.criticality, 1.0)
+        base = CRITICAL_WEIGHT if is_critical(row.dependency.resolution_strategy) else 1.0
         if row.dependency.need_date:
             days = (row.dependency.need_date - today).days
             proximity = 1.0 if days <= 0 else max(0.1, 1.0 - min(days, 365) / 365)
@@ -227,7 +248,13 @@ def _critical_items(
 
     section = Section(
         "Critical items",
-        note=f"Top {CRITICAL_ITEM_COUNT} not-ready records by need-date proximity and criticality.",
+        note=(
+            f"Top {CRITICAL_ITEM_COUNT} not-ready records by need-date proximity, "
+            f"weighted \u00d7{CRITICAL_WEIGHT:.0f} where the document's resolution strategy "
+            "is relocation, removal or abandonment (ADR-0009). A record whose "
+            "document records no strategy ranks unweighted \u2014 that is silence, "
+            "not a judgement that it does not matter."
+        ),
         columns=["Ref", "External party", "Committed", "Need", "Status", "Worst exception"],
         empty_message="Every record is ready.",
     )

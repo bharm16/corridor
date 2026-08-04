@@ -64,7 +64,7 @@ Schema is keyed by `project_id` from day one even though v0 runs one project.
 
 **external_orgs** — id, name, org_type (`utility | railroad | agency | consultant | other`), aliases[]
 
-**dependencies** — id, project_id, ref_code (human-readable, e.g. `DEP-014`), dep_type (`utility_relocation | agreement | permit | row | railroad | access | other`), title, location_desc, station_from, station_to, external_org_id, external_contact, internal_owner, status (`identified | in_progress | committed | blocked | closed`), criticality (`critical | high | normal`), committed_date, need_date, milestone_id, evidence_required (text: what closes this), notes
+**dependencies** — id, project_id, ref_code (human-readable, e.g. `DEP-014`), dep_type (`utility_relocation | agreement | permit | row | railroad | access | other`), title, location_desc, station_from, station_to, external_org_id, external_contact, internal_owner, status (`identified | in_progress | committed | blocked | closed`), resolution_strategy (`relocate | remove | abandon_deactivate | adjust_vertical | protect_in_place | change_design | exception`, nullable — most documents assert none), committed_date, need_date, milestone_id, evidence_required (text: what closes this), notes
 
 **assertions** — id, dependency_id, field_name, asserted_value, evidence_link_id, doc_date, created_at. One row per claim by one document about one field. See ADR-0001.
 
@@ -141,7 +141,7 @@ Prompt files live in the repo, versioned (`prompts/minutes_v3.md`); `prompt_vers
 Three screens. Keyboard-driven; you will adjudicate hundreds of candidates.
 
 1. **Queue** — one candidate at a time: extracted fields left, cited page image with quote highlighted right. Actions: `a` accept, `e` edit-then-accept, `m` merge into existing (pre-ranked, see below), `r` reject (reason: duplicate / wrong / irrelevant / bad-citation). Target throughput: ≥60 candidates/hour.
-2. **Ledger** — table of dependencies; filter by status, org, criticality, milestone, exception type. Row → detail: fields, **the assertions behind each field with their sources**, event timeline, evidence gallery, audit history. A field value shown without its competing assertions reproduces the silent-overwrite behavior this tool exists to replace.
+2. **Ledger** — table of dependencies; filter by status, org, resolution strategy (including `critical`, the reading of it), milestone, exception type. Row → detail: fields, **the assertions behind each field with their sources**, event timeline, evidence gallery, audit history. A field value shown without its competing assertions reproduces the silent-overwrite behavior this tool exists to replace.
 3. **Run report** — button + preview (section 10).
 
 Merging is the core interaction: the same dependency will arrive from the matrix, minutes, status reports, and email. Accepting a duplicate instead of merging corrupts the ledger — the pre-ranked merge search must be good before anything else gets polish.
@@ -160,7 +160,7 @@ When a candidate is merged, its claims become **assertions** against the target 
 
 ## 9. Exception engine
 
-Computed as queries, not stored state. Severity = rule severity × criticality.
+Computed as queries, not stored state. Severity = rule severity × 3 where the document's resolution strategy is relocation, removal or abandonment (ADR-0009); × 1 otherwise, including where it asserts none.
 
 | Rule | Logic |
 |---|---|
@@ -189,7 +189,7 @@ HTML → PDF. **No cell is bare.** Every published cell carries one of two prove
 Enforced by the verifier, not by convention.
 
 1. **Milestone readiness rollup** — per milestone: total dependencies, ready, at-risk, blocked, % with verified evidence.
-2. **Critical items** — top N by (need-date proximity × criticality): owner, next action, committed date, status, citation.
+2. **Critical items** — top N by (need-date proximity × criticality, read from the resolution strategy): owner, next action, committed date, status, citation.
 3. **Exceptions summary** — counts by rule, worst offenders.
 4. **Changes since last report** — new, closed, slipped, escalated. Diffed against the previous `report_runs.snapshot_json`.
 5. **Aging** — overdue items by days overdue.

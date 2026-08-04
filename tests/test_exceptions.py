@@ -71,7 +71,7 @@ def make_dep(session, project, ref="DEP-1", **kw):
         title="Telecom — Example Utility",
         internal_owner=kw.pop("internal_owner", "Bryce"),
         status=kw.pop("status", "identified"),
-        criticality=kw.pop("criticality", "normal"),
+        resolution_strategy=kw.pop("resolution_strategy", None),
         **kw,
     )
     session.add(dep)
@@ -365,10 +365,15 @@ def test_orphan_clears_once_linked(session, project, document):
 # ------------------------------------------------------------------ severity
 
 
-def test_severity_scales_with_criticality(session, project, document):
+def test_severity_scales_with_the_resolution_strategy(session, project, document):
+    """A relocation weighs more than a record whose document says nothing."""
     normal = make_dep(session, project, ref="DEP-n", internal_owner=None)
     critical = make_dep(
-        session, project, ref="DEP-c", internal_owner=None, criticality="critical"
+        session,
+        project,
+        ref="DEP-c",
+        internal_owner=None,
+        resolution_strategy="relocate",
     )
     for dep in (normal, critical):
         add_evidence(session, dep, document)
@@ -400,7 +405,7 @@ def test_evaluate_sorts_worst_first(session, project, document):
         project,
         ref="DEP-high",
         internal_owner=None,
-        criticality="critical",
+        resolution_strategy="relocate",
         committed_date=TODAY - timedelta(days=5),
     )
     for dep in (low, high):

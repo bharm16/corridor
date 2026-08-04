@@ -231,7 +231,6 @@ def test_merging_into_another_projects_dependency_is_refused(
         dep_type="utility_relocation",
         title="unrelated",
         status="identified",
-        criticality="normal",
     )
     session.add(stray)
     session.flush()

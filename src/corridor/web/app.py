@@ -26,7 +26,7 @@ from corridor.db import Session as SessionFactory
 from corridor.exceptions import RULES
 from corridor.ledger import browse, load_dependency
 from corridor.models import (
-    CRITICALITIES,
+    RESOLUTION_STRATEGIES,
     DEP_STATUSES,
     AuditLog,
     Candidate,
@@ -85,7 +85,7 @@ def ledger(
     slug: str,
     status: str | None = None,
     org_id: int | None = None,
-    criticality: str | None = None,
+    resolution_strategy: str | None = None,
     ready: str | None = None,
     rule: str | None = None,
     session: Session = Depends(get_session),
@@ -96,7 +96,7 @@ def ledger(
         project.id,
         status=status or None,
         org_id=org_id,
-        criticality=criticality or None,
+        resolution_strategy=resolution_strategy or None,
         ready={"yes": True, "no": False}.get(ready or ""),
         rule=rule or None,
     )
@@ -111,13 +111,13 @@ def ledger(
             "filters": {
                 "status": status or "",
                 "org_id": org_id or "",
-                "criticality": criticality or "",
+                "resolution_strategy": resolution_strategy or "",
                 "ready": ready or "",
                 "rule": rule or "",
             },
             "rules": sorted(RULES),
             "statuses": DEP_STATUSES,
-            "criticalities": CRITICALITIES,
+            "strategies": RESOLUTION_STRATEGIES,
         },
     )
 

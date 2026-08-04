@@ -26,6 +26,7 @@ from corridor.models import (
     DependencyEvent,
     Document,
     EvidenceLink,
+    is_critical,
 )
 
 RULESET_VERSION = "v0.1"
@@ -35,7 +36,7 @@ RULESET_VERSION = "v0.1"
 STALE_DAYS = 14
 DUE_SOON_DAYS = 30
 
-# Rule severity before criticality is applied.
+# Rule severity before the criticality weighting is applied.
 RULES: dict[str, float] = {
     "MISSING_EVIDENCE": 5.0,
     "CONTRADICTION": 5.0,
@@ -47,7 +48,14 @@ RULES: dict[str, float] = {
     "ORPHAN": 1.0,
 }
 
-CRITICALITY_WEIGHT = {"critical": 3.0, "high": 2.0, "normal": 1.0}
+# Severity is rule severity times this, when the document's resolution
+# strategy commits the External Party to substantial work — relocation,
+# removal or abandonment (ADR-0009). Everything else weighs 1.0.
+#
+# 3.0 rather than a fresh number because it is the top of the scale this
+# replaces, so no already-published severity moves: all 141 live records
+# weighed 1.0 as `normal` and weigh 1.0 as NULL.
+CRITICAL_WEIGHT = 3.0
 
 # Neither of these is "on track", so time-based rules stay quiet on them.
 SETTLED_STATUSES = ("closed",)
@@ -235,7 +243,12 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
     if dependency.milestone_id is None and not settled:
         found.append(("ORPHAN", "not linked to any milestone"))
 
-    weight = CRITICALITY_WEIGHT.get(dependency.criticality, 1.0)
+    # A record whose document asserts no strategy weighs 1.0 — not
+    # because it does not matter, but because weighting silence up would
+    # triple all 3,235 of Project A's rows and reproduce the criticism
+    # ADR-0007 levelled at itself: a critical set that is most of the set
+    # catches nothing.
+    weight = CRITICAL_WEIGHT if is_critical(dependency.resolution_strategy) else 1.0
     return [
         Exception_(
             dependency_id=dependency.id,

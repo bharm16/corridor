@@ -42,10 +42,11 @@
       <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
     {% endfor %}
   </select>
-  <select name="criticality">
-    <option value="">any criticality</option>
-    {% for c in criticalities %}
-      <option value="{{ c }}" {% if filters.criticality == c %}selected{% endif %}>{{ c }}</option>
+  <select name="resolution_strategy">
+    <option value="">any resolution</option>
+    <option value="critical" {% if filters.resolution_strategy == 'critical' %}selected{% endif %}>critical (the facility moves)</option>
+    {% for s in strategies %}
+      <option value="{{ s }}" {% if filters.resolution_strategy == s %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
     {% endfor %}
   </select>
   <select name="org_id">
@@ -74,7 +75,7 @@
     <thead>
       <tr>
         <th>Ref</th><th>Source ID</th><th>External party</th><th>Station</th>
-        <th>Status</th><th>Crit</th><th>Ready</th>
+        <th>Status</th><th>Resolution</th><th>Ready</th>
         <th title="Assertions / evidence links behind this record">Backing</th>
         <th>Exceptions</th>
       </tr>
@@ -88,7 +89,7 @@
             {%- if r.contradicted %} <span class="pill contra">sources disagree</span>{% endif %}</td>
           <td class="num">{{ r.dependency.station_from or '—' }}{% if r.dependency.station_to %} → {{ r.dependency.station_to }}{% endif %}</td>
           <td>{{ r.dependency.status }}</td>
-          <td>{{ r.dependency.criticality or '—' }}</td>
+          <td>{{ r.dependency.resolution_strategy.replace('_', ' ') if r.dependency.resolution_strategy else '—' }}</td>
           <td>
             {% if r.is_ready %}<span class="pill ready">ready</span>
             {% else %}<span class="pill notready">no</span>{% endif %}

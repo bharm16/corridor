@@ -13,11 +13,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
 from corridor.exceptions import evaluate, exceptions_for
 from corridor.models import (
+    CRITICAL_STRATEGIES,
+    is_critical,
+    RESOLUTION_STRATEGIES,
     Assertion,
     AuditLog,
     Dependency,
@@ -75,6 +78,11 @@ class DependencyView:
     def contradictions(self) -> list[FieldView]:
         return [f for f in self.fields if f.contradicted]
 
+    @property
+    def is_critical(self) -> bool:
+        """Read from the strategy, never stored beside it (ADR-0009)."""
+        return is_critical(self.dependency.resolution_strategy)
+
 
 @dataclass
 class LedgerRow:
@@ -97,7 +105,7 @@ def browse(
     *,
     status: str | None = None,
     org_id: int | None = None,
-    criticality: str | None = None,
+    resolution_strategy: str | None = None,
     ready: bool | None = None,
     rule: str | None = None,
     limit: int = 200,
@@ -112,8 +120,26 @@ def browse(
         query = query.where(Dependency.status == status)
     if org_id:
         query = query.where(Dependency.external_org_id == org_id)
-    if criticality:
-        query = query.where(Dependency.criticality == criticality)
+    if resolution_strategy:
+        # `critical` is not a strategy — it is the reading of one, and it
+        # stays filterable because that is the question a reviewer actually
+        # asks. `v0-build-spec.md` names the ledger as browsable by
+        # criticality; without this it would take three separate queries.
+        #
+        # An unknown value matches nothing rather than raising. The column's
+        # Enum sets `validate_strings=True`, so comparing it against a
+        # string outside the vocabulary raises LookupError at bind time and
+        # a hand-edited query string would 500 the page.
+        if resolution_strategy == "critical":
+            query = query.where(
+                Dependency.resolution_strategy.in_(sorted(CRITICAL_STRATEGIES))
+            )
+        elif resolution_strategy in RESOLUTION_STRATEGIES:
+            query = query.where(
+                Dependency.resolution_strategy == resolution_strategy
+            )
+        else:
+            query = query.where(sa_false())
 
     dependencies = session.scalars(query.order_by(Dependency.ref_code)).all()
     ids = [d.id for d in dependencies] or [0]

@@ -51,7 +51,6 @@ def make_dep(session, project, ref, **kw):
         dep_type=kw.pop("dep_type", "utility_relocation"),
         title="x",
         status="identified",
-        criticality="normal",
         **kw,
     )
     session.add(d)

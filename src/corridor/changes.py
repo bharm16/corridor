@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from corridor.exceptions import RULESET_VERSION, evaluate
 from corridor.ledger import browse
-from corridor.models import ReportRun
+from corridor.models import ReportRun, is_critical
 
 
 @dataclass
@@ -62,7 +62,7 @@ def snapshot(session: Session, project_id: int) -> dict:
         "dependencies": {
             row.dependency.ref_code: {
                 "status": row.dependency.status,
-                "criticality": row.dependency.criticality,
+                "resolution_strategy": row.dependency.resolution_strategy,
                 "committed_date": (
                     row.dependency.committed_date.isoformat()
                     if row.dependency.committed_date
@@ -140,14 +140,21 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
                 Change(ref, "new", f"first committed date: {now['committed_date']}")
             )
 
-        if _criticality_rank(now["criticality"]) > _criticality_rank(
-            was["criticality"]
-        ):
+        # A snapshot written before #96 has no `resolution_strategy` key at
+        # all, and that is not the same as one recording no strategy. Four
+        # such runs are stored. Treating absence as "was not critical" would
+        # report an escalation for every record that merely became readable,
+        # on the first report after the migration — a change in the schema
+        # announced as a change in the world.
+        if "resolution_strategy" in was and is_critical(
+            now["resolution_strategy"]
+        ) and not is_critical(was["resolution_strategy"]):
             diff.changes.append(
                 Change(
                     ref,
                     "escalated",
-                    f"criticality raised {was['criticality']} → {now['criticality']}",
+                    "resolution strategy became "
+                    f"{now['resolution_strategy']}, which is critical",
                 )
             )
 
@@ -183,7 +190,3 @@ def record_run(
     session.add(run)
     session.flush()
     return run
-
-
-def _criticality_rank(value: str | None) -> int:
-    return {"normal": 0, "high": 1, "critical": 2}.get(value or "normal", 0)

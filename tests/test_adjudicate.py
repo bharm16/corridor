@@ -2,15 +2,17 @@ import pytest
 from sqlalchemy import select
 
 from corridor.adjudicate import (
-    CRITICALITY_SIGNALS,
+    RESOLUTION_VOCABULARIES,
     AlreadyAdjudicated,
-    CriticalitySignal,
+    ResolutionVocabulary,
     accept_candidate,
-    set_criticality,
+    set_resolution_strategy,
 )
 from corridor.db import Session, engine
 from corridor.ledger import load_dependency
 from corridor.models import (
+    CRITICAL_STRATEGIES,
+    RESOLUTION_STRATEGIES,
     Dependency,
     Assertion,
     AuditLog,
@@ -396,194 +398,285 @@ def test_the_view_carries_the_full_provenance_chain(session, document):
     assert claim.verified is True
 
 
-# ------------------------------------------- criticality (#86, ADR-0007)
+
+# --------------------------------- resolution strategy (#96, ADR-0009)
 
 
 @pytest.fixture
-def signalled(monkeypatch, session, document):
-    """A project whose layout has an identified signal.
+def with_vocabulary(monkeypatch, session, document):
+    """A project whose layout has an identified resolution vocabulary.
 
-    The signal is built here rather than borrowed from the shipped table,
-    which is empty by design (ADR-0009) — these tests cover the mechanism
-    that reads a signal, and `test_the_shipped_signal_table_is_empty`
-    covers what is actually shipped.
+    Built here rather than borrowed from the shipped table: `projects.slug`
+    is unique and `fdot-sr789` is a real row, so the mechanism is exercised
+    with a local vocabulary and the shipped one is covered separately by
+    `test_the_shipped_vocabulary_covers_sr789_and_nothing_else`.
     """
     project = session.get(Project, document.project_id)
     monkeypatch.setitem(
-        CRITICALITY_SIGNALS,
+        RESOLUTION_VOCABULARIES,
         project.slug,
-        CriticalitySignal(
-            field="potential_conflict",
-            critical=frozenset({"y", "yes"}),
-            not_critical=frozenset({"n", "no", "a"}),
+        ResolutionVocabulary(
+            phrases={
+                "to be removed": "remove",
+                "to be relocated": "relocate",
+                "to be adjusted to proposed grade": "adjust_vertical",
+                "retain and protect": "protect_in_place",
+            }
         ),
     )
     return document
 
 
-def criticality_assertions(session, dep):
+def strategy_assertions(session, dep):
     return session.scalars(
         select(Assertion).where(
-            Assertion.dependency_id == dep.id, Assertion.field_name == "criticality"
+            Assertion.dependency_id == dep.id,
+            Assertion.field_name == "resolution_strategy",
         )
     ).all()
 
 
-def test_a_document_saying_the_facility_must_move_produces_a_critical_dependency(
-    session, signalled
+def test_a_document_saying_the_facility_moves_produces_a_critical_dependency(
+    session, with_vocabulary
 ):
     candidate = make_candidate(
-        session, signalled, fields={**FIELDS, "potential_conflict": "Y"}
+        session, with_vocabulary, fields={**FIELDS, "resolution_strategy": "To be removed"}
     )
 
     dep = accept_candidate(session, candidate, actor="reviewer")
 
-    assert dep.criticality == "critical"
+    assert dep.resolution_strategy == "remove"
+    assert load_dependency(session, dep.id).is_critical is True
 
 
-def test_the_criticality_cites_the_same_evidence_as_the_other_fields(
-    session, signalled
+def test_a_document_saying_the_facility_stays_is_not_critical(
+    session, with_vocabulary
 ):
-    """An ordinary adjudicated field: the document said this, on this page."""
     candidate = make_candidate(
-        session, signalled, fields={**FIELDS, "potential_conflict": "Y"}
+        session,
+        with_vocabulary,
+        fields={**FIELDS, "resolution_strategy": "To be adjusted to proposed grade"},
     )
 
     dep = accept_candidate(session, candidate, actor="reviewer")
 
-    claim = criticality_assertions(session, dep)
-    owner = session.scalars(
-        select(Assertion).where(
-            Assertion.dependency_id == dep.id, Assertion.field_name == "external_org"
-        )
-    ).one()
-    assert len(claim) == 1
-    assert claim[0].asserted_value == "critical"
-    assert claim[0].evidence_link_id == owner.evidence_link_id
+    assert dep.resolution_strategy == "adjust_vertical"
+    assert load_dependency(session, dep.id).is_critical is False
 
 
-def test_a_document_saying_otherwise_produces_a_dependency_that_is_not_critical(
-    session, signalled
+def test_reading_a_strategy_does_not_make_the_row_contradict_itself(
+    session, with_vocabulary
 ):
-    candidate = make_candidate(
-        session, signalled, fields={**FIELDS, "potential_conflict": "N"}
-    )
+    """The single sharpest trap in this change.
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
-
-    assert dep.criticality == "normal"
-    assert criticality_assertions(session, dep)[0].asserted_value == "normal"
-
-
-def test_a_document_that_says_nothing_asserts_no_criticality(session, signalled):
-    """Silence is not `normal`.
-
-    `potential_conflict` is absent from 1,249 of Project A's rows — the
-    column appears in only three of five revisions. Recording those as
-    `normal` collapses "the document did not say" into "the document said
-    it does not matter", and makes the M7 gate's denominator a lie.
-    """
-    candidate = make_candidate(session, signalled)
-
-    dep = accept_candidate(session, candidate, actor="reviewer")
-
-    assert dep.criticality is None
-    assert criticality_assertions(session, dep) == []
-
-
-def test_a_layout_with_no_identified_signal_does_not_guess(session, document):
-    """`document`'s project is deliberately absent from the signal table.
-
-    The row carries a `potential_conflict` the extractor happened to
-    capture, and it is still not read: SH 99 fills that same canonical
-    field from a column meaning something else entirely (#85).
+    `criticality` was never a field the extractor emitted, so adjudication
+    wrote it an Assertion by hand. `resolution_strategy` **is** one, and the
+    ordinary per-field loop already records what the document printed. A
+    second, canonical-token Assertion beside it would put `To be removed`
+    and `remove` under one `field_name` behind the same verified
+    EvidenceLink — which is exactly how a CONTRADICTION is computed, so
+    every mapped SR 789 row would contradict itself at severity 5.0.
     """
     candidate = make_candidate(
-        session, document, fields={**FIELDS, "potential_conflict": "Y"}
+        session, with_vocabulary, fields={**FIELDS, "resolution_strategy": "To be removed"}
     )
 
     dep = accept_candidate(session, candidate, actor="reviewer")
 
-    assert dep.criticality is None
-    assert criticality_assertions(session, dep) == []
+    claims = strategy_assertions(session, dep)
+    assert len(claims) == 1
+    # The Assertion preserves what the source said; the column holds the
+    # conclusion drawn from it (ADR-0001).
+    assert claims[0].asserted_value == "To be removed"
+    assert dep.resolution_strategy == "remove"
+
+    view = load_dependency(session, dep.id)
+    assert [f.name for f in view.contradictions] == []
 
 
-def test_an_unrecognised_value_asserts_nothing_rather_than_normal(
-    session, signalled
-):
-    """The column being present is not the document making a claim."""
-    candidate = make_candidate(
-        session, signalled, fields={**FIELDS, "potential_conflict": "TBD"}
-    )
+def test_a_document_that_records_no_strategy_asserts_none(session, with_vocabulary):
+    """Most of the corpus. An inventory says conflicts exist, never how they
+    resolve — Project A's 3,235 rows and SH 99's 1,401 assert nothing."""
+    candidate = make_candidate(session, with_vocabulary)
 
     dep = accept_candidate(session, candidate, actor="reviewer")
 
-    assert dep.criticality is None
-    assert criticality_assertions(session, dep) == []
+    assert dep.resolution_strategy is None
+    assert strategy_assertions(session, dep) == []
+    assert load_dependency(session, dep.id).is_critical is False
 
 
-def test_a_reviewer_override_wins_and_stays_distinguishable(session, signalled):
-    """The matrix may say `N` about a duct bank under the only haul road.
+def test_a_layout_with_no_identified_vocabulary_does_not_guess(session, document):
+    """`document`'s project is deliberately absent from the table.
 
-    The document's claim survives as an Assertion; the stored value is the
-    reviewer's conclusion. The two disagreeing is what makes the override
-    visible rather than silent.
+    The row carries a resolution phrase the extractor captured, and it is
+    still not read: prose that means one thing on one form means another
+    elsewhere, which is what #85 paid for.
     """
     candidate = make_candidate(
-        session, signalled, fields={**FIELDS, "potential_conflict": "N"}
+        session, document, fields={**FIELDS, "resolution_strategy": "To be removed"}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.resolution_strategy is None
+    assert load_dependency(session, dep.id).is_critical is False
+
+
+def test_a_phrase_the_vocabulary_does_not_carry_asserts_nothing(
+    session, with_vocabulary
+):
+    """SR 789 prints `To be adjusted or relocated` — two answers on opposite
+    sides of the line. The document has not settled it, so neither does the
+    Ledger."""
+    candidate = make_candidate(
+        session,
+        with_vocabulary,
+        fields={**FIELDS, "resolution_strategy": "To be adjusted or relocated"},
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.resolution_strategy is None
+    # The document's prose survives as evidence even though no conclusion
+    # was drawn from it.
+    assert strategy_assertions(session, dep)[0].asserted_value == (
+        "To be adjusted or relocated"
+    )
+
+
+def test_whitespace_in_a_printed_cell_does_not_defeat_the_vocabulary(
+    session, with_vocabulary
+):
+    """Internal runs of whitespace are an artifact of reading the cell, not
+    something the document said."""
+    candidate = make_candidate(
+        session, with_vocabulary, fields={**FIELDS, "resolution_strategy": "To  be\nremoved "}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.resolution_strategy == "remove"
+
+
+def test_a_reviewer_override_wins_and_is_audited(session, with_vocabulary):
+    """The matrix may say `Retain and Protect` about a duct bank under the
+    only haul road."""
+    candidate = make_candidate(
+        session,
+        with_vocabulary,
+        fields={**FIELDS, "resolution_strategy": "Retain and protect"},
     )
     dep = accept_candidate(session, candidate, actor="extractor")
+    assert dep.resolution_strategy == "protect_in_place"
 
-    set_criticality(session, dep, "critical", actor="reviewer")
+    set_resolution_strategy(session, dep, "relocate", actor="reviewer")
 
-    assert dep.criticality == "critical"
-    assert criticality_assertions(session, dep)[0].asserted_value == "normal"
+    assert dep.resolution_strategy == "relocate"
+    assert load_dependency(session, dep.id).is_critical is True
+    # The document still says what it said.
+    assert strategy_assertions(session, dep)[0].asserted_value == "Retain and protect"
     entry = session.scalars(
         select(AuditLog).where(
-            AuditLog.entity_id == dep.id, AuditLog.action == "set_criticality"
+            AuditLog.entity_id == dep.id,
+            AuditLog.action == "set_resolution_strategy",
         )
     ).one()
     assert entry.actor == "reviewer"
     assert (entry.before_json, entry.after_json) == (
-        {"criticality": "normal"},
-        {"criticality": "critical"},
+        {"resolution_strategy": "protect_in_place"},
+        {"resolution_strategy": "relocate"},
     )
 
 
-def test_a_reviewer_cannot_invent_a_criticality_outside_the_enum(session, signalled):
-    dep = accept_candidate(session, make_candidate(session, signalled), actor="x")
+def test_a_reviewer_cannot_invent_a_strategy_outside_the_vocabulary(
+    session, with_vocabulary
+):
+    dep = accept_candidate(session, make_candidate(session, with_vocabulary), actor="x")
 
-    with pytest.raises(ValueError, match="urgent"):
-        set_criticality(session, dep, "urgent", actor="reviewer")
+    with pytest.raises(ValueError, match="bulldoze"):
+        set_resolution_strategy(session, dep, "bulldoze", actor="reviewer")
 
 
-def test_the_hardcode_is_gone_not_defaulted_differently(session, document):
-    """The column has no default at any level.
-
-    A server-side default would reinstate the hardcode silently: every
-    insert omitting the column would land on `normal` again, and nothing
-    in the code would say so.
-    """
+def test_the_column_has_no_default_at_any_level(session, document):
+    """A default would be the column claiming something no document said —
+    the failure ADR-0007 named and then committed."""
     dep = accept_candidate(session, make_candidate(session, document), actor="x")
     session.flush()
     session.refresh(dep)
 
-    assert dep.criticality is None
-    assert Dependency.__table__.c.criticality.server_default is None
-    assert Dependency.__table__.c.criticality.nullable is True
+    assert dep.resolution_strategy is None
+    assert Dependency.__table__.c.resolution_strategy.server_default is None
+    assert Dependency.__table__.c.resolution_strategy.nullable is True
+    assert "criticality" not in Dependency.__table__.c
 
 
-def test_the_shipped_signal_table_is_empty(session):
-    """Nothing in this corpus asserts a criticality (ADR-0009).
+def test_criticality_is_derived_from_the_strategy_and_never_stored():
+    """The set and the gold set's labelling rule are one sentence (ADR-0009).
 
-    `nhhip-3c2` was listed here until the research in ADR-0009: its
-    `Potential Conflict (Yes, No, Abandoned)` column says a conflict
-    exists, never how it resolves, and reading `Y` as critical marked 71%
-    of Project A on a claim the document does not make. The layouts that
-    do record a resolution strategy — FDOT and WSDOT — need the schema
-    change, not an entry here.
-
-    Asserted as a whole rather than key by key: a new entry should have to
-    argue with this test and the ADR behind it.
+    If they diverge the M7 gate scores one definition against another. This
+    pins the Ledger side; `eval._critical` is the label side.
     """
-    assert CRITICALITY_SIGNALS == {}
+    from corridor.models import is_critical
+
+    assert CRITICAL_STRATEGIES == {"relocate", "remove", "abandon_in_place"}
+    for strategy in CRITICAL_STRATEGIES:
+        assert is_critical(strategy) is True
+    for strategy in set(RESOLUTION_STRATEGIES) - CRITICAL_STRATEGIES:
+        assert is_critical(strategy) is False
+    assert is_critical(None) is False
+
+
+def test_the_shipped_vocabulary_covers_sr789_and_nothing_else(session):
+    """The table is what a human edits, so its contents are the test.
+
+    Asserted as a whole: a new project entry should have to argue with this
+    test and ADR-0009 behind it. SR 789 is the only layout in the corpus
+    that prints a resolution column and has been ingested — WSDOT records
+    one as four marked columns and 9424 has never been ingested (#98).
+    """
+    assert set(RESOLUTION_VOCABULARIES) == {"fdot-sr789"}
+
+    vocabulary = RESOLUTION_VOCABULARIES["fdot-sr789"]
+    assert vocabulary.read("To be removed") == "remove"
+    assert vocabulary.read("To be relocated") == "relocate"
+    assert vocabulary.read("To be adjusted to proposed grade") == "adjust_vertical"
+    # Declined on purpose — the document offers two answers, a condition,
+    # or an adjustment it does not say is vertical. ADR-0009's Brown is
+    # specifically "adjusted **vertically** … same horizontal alignment",
+    # and this layout prints the specific sibling separately.
+    for undecided in (
+        "To be adjusted or relocated",
+        "To be monitored and adjusted as needed",
+        "To be monitored and adjusted",
+        'To be replaced with 24"X36" handhole and adjusted to proposed grade',
+        "To be adjusted",
+    ):
+        assert vocabulary.read(undecided) is None
+
+
+def test_the_ledger_and_the_gold_labels_agree_on_what_critical_means():
+    """The one divergence that would be invisible in the gate's number.
+
+    `is_critical` decides the Ledger side; `eval._critical` reads the gold
+    set's `critical` column, which is the label side, and the M7 gate
+    scores one against the other. ADR-0009 says outright that the two are
+    one sentence — so a token of the deleted `critical | high | normal`
+    scale surviving in the eval's accepted labels would let a gold set be
+    written in a vocabulary the Ledger no longer has.
+    """
+    from corridor.eval import CRITICAL_FALSE, CRITICAL_TRUE
+
+    # The labelling rule is a boolean about a row, not a strategy name:
+    # gold sets say yes/no, and the mapping from strategy to yes/no lives
+    # in `CRITICAL_STRATEGIES` alone.
+    assert CRITICAL_TRUE & CRITICAL_FALSE == frozenset()
+    assert not (CRITICAL_TRUE | CRITICAL_FALSE) & set(RESOLUTION_STRATEGIES), (
+        "a gold label must not be spelled as a strategy name — the two "
+        "vocabularies are different questions and sharing a token invites "
+        "a gold set that reads as neither"
+    )
+    # `normal` was a value of the scale ADR-0009 deleted. It survives here
+    # only as a falsy gold label, which is fine, but it must never be
+    # readable as a strategy.
+    assert "normal" not in RESOLUTION_STRATEGIES

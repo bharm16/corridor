@@ -55,7 +55,34 @@ DEP_TYPES = (
     "other",
 )
 DEP_STATUSES = ("identified", "in_progress", "committed", "blocked", "closed")
-CRITICALITIES = ("critical", "high", "normal")
+
+# How a utility conflict is to be resolved, as the document says it
+# (ADR-0009). SHRP2 R15B publishes four alternatives; the first is
+# decomposed along the Red/Brown split FDOT prints on its plans, which is
+# where the line between "the facility moves" and "the facility stays"
+# actually falls.
+RESOLUTION_STRATEGIES = (
+    "relocate",
+    "remove",
+    "abandon_in_place",
+    "adjust_vertical",
+    "protect_in_place",
+    "change_design",
+    "policy_exception",
+)
+
+# Criticality is a reading of the strategy, never a stored scale. The three
+# here are FDOT's Red: the facility is moved, taken out, or deactivated —
+# all of them scheduled work the utility owner must perform. Brown (a
+# vertical adjustment to grade, 0.5 days by FDOT's own duration table) and
+# Green (it stays) are not, and neither is a resolution that asks nothing
+# of the owner at all.
+#
+# This set and the gold set's `critical` labelling rule are one sentence on
+# purpose (ADR-0009). If they diverge, the M7 gate scores one definition
+# against another and the number means nothing.
+CRITICAL_STRATEGIES = frozenset({"relocate", "remove", "abandon_in_place"})
+
 CANDIDATE_KINDS = ("dependency", "event")
 CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")
 ORG_TYPES = ("utility", "railroad", "agency", "consultant", "other")
@@ -67,6 +94,22 @@ EVENT_TYPES = (
     "status_change",
     "closure",
 )
+
+
+def is_critical(strategy: str | None) -> bool:
+    """Does this resolution commit the External Party to substantial work?
+
+    Takes the value rather than a Dependency: `changes.py` reads it off a
+    stored report snapshot, which is a dict and not an ORM row, and a
+    Dependency-shaped signature would force that caller to fake an object.
+
+    `None` is not critical, and that is a reading of silence rather than a
+    claim about the record. An inventory records conflicts without ever
+    saying how they resolve — Project A's 3,235 rows assert no strategy at
+    all — and treating that as critical would mark most of the corpus,
+    which is the weakness ADR-0007 diagnosed in itself.
+    """
+    return strategy in CRITICAL_STRATEGIES
 
 
 def _enum(*values: str, name: str) -> Enum:
@@ -252,14 +295,19 @@ class Dependency(Base):
         default="identified",
         server_default="identified",
     )
-    # Null means no source document asserted a criticality — not `normal`.
-    # The enum has no value for "the document did not say", and recording
-    # silence as `normal` collapses two different facts into one and makes
-    # the M7 gate's denominator a lie (ADR-0007). Nothing defaults it:
-    # a value here is a conclusion drawn from Assertions, like every other
-    # adjudicated field.
-    criticality: Mapped[str | None] = mapped_column(
-        _enum(*CRITICALITIES, name="criticality")
+    # What the document says is to be done about the conflict, as an
+    # adjudicated conclusion drawn from its Assertions. Criticality is read
+    # off this rather than stored beside it (ADR-0009).
+    #
+    # Null means no document asserted a strategy, and most of the corpus is
+    # null on purpose: an inventory records that conflicts exist without
+    # ever saying how they resolve, so Project A's 3,235 rows and SH 99's
+    # 1,401 assert nothing here. Only SR 789 prints a
+    # `Recommended Conflict Resolution` column. Nothing defaults it,
+    # because a default would be this field claiming something no document
+    # said — the failure ADR-0007 was written about and then committed.
+    resolution_strategy: Mapped[str | None] = mapped_column(
+        _enum(*RESOLUTION_STRATEGIES, name="resolution_strategy")
     )
     committed_date: Mapped[date | None] = mapped_column(Date)
     need_date: Mapped[date | None] = mapped_column(Date)

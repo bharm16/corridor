@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.models import (
-    CRITICALITIES,
+    RESOLUTION_STRATEGIES,
     Assertion,
     AuditLog,
     Candidate,
@@ -34,53 +34,86 @@ DIRECT_COLUMNS = {"station_from", "station_to"}
 
 
 @dataclass(frozen=True)
-class CriticalitySignal:
-    """How one layout says a facility must move before construction."""
+class ResolutionVocabulary:
+    """How one layout writes each of the canonical resolution strategies.
 
-    field: str
-    critical: frozenset[str]
-    not_critical: frozenset[str]
+    The canonical *field* no longer varies: since #97 the extractor puts a
+    layout's resolution column under `resolution_strategy` whatever it is
+    printed as. Only the **values** differ, because every agency writes
+    its alternatives in its own prose — `To be removed` on SR 789, an `X`
+    under `509 Relocation Needed` on WSDOT.
+    """
+
+    phrases: dict[str, str]
 
     def read(self, value: str) -> str | None:
-        """`critical`, `normal`, or None when the layout does not say.
+        """The canonical strategy, or None when this layout does not say.
 
-        A value the signal does not recognise reads as None rather than as
-        `normal`. The column being present is not the document making a
-        claim, and guessing at an unfamiliar value is the heuristic
-        ADR-0007 rules out.
+        A phrase the vocabulary does not carry reads as None rather than
+        being guessed at. The column being present is not the document
+        making a claim — SR 789 prints nine distinct phrasings and five
+        map; the rest are genuinely other answers, not synonyms nobody has
+        got round to listing.
+
+        Whitespace is collapsed before lookup because internal runs of it
+        are a transcription artifact of the printed cell, not something the
+        document said.
         """
-        cleaned = (value or "").strip().casefold()
-        if cleaned in self.critical:
-            return "critical"
-        if cleaned in self.not_critical:
-            return "normal"
-        return None
+        cleaned = " ".join((value or "").split()).casefold()
+        return self.phrases.get(cleaned)
 
 
-# Deliberately empty. **Nothing in this corpus asserts a criticality**, and
-# ADR-0009 explains why: no document records one. SHRP2 R15B and TxDOT's own
-# published template both record a *resolution strategy* — relocate, protect
-# in place, change the highway design, except from policy — and criticality
-# is a reading of that, not a field of its own.
+# Each layout's resolution vocabulary, identified in writing before that
+# layout is adjudicated (ADR-0009). Keyed by project rather than applied
+# corpus-wide, because prose that means one thing on one form means another
+# elsewhere and a canonical field name is not a safe carrier for meaning —
+# the lesson #85 paid for when SH 99 filled `potential_conflict` from
+# `Early TxDOT Utility Activity`.
 #
-# `nhhip-3c2` was listed here and has been removed. Its `Potential Conflict
-# (Yes, No, Abandoned)` column says a conflict **exists**; it never says how
-# the conflict resolves. Project A's document is a Utility Inventory, not a
-# Utility Conflict Matrix — its filename says so — and reading `Y` as
-# critical marked 71% of its rows on a claim the document does not make.
+# A project absent here asserts **no strategy at all**, which is the right
+# answer rather than a gap:
 #
-# The two layouts that do record a strategy cannot be read through this
-# table's shape, which matches one field against a value set:
-#
-# - `fdot-sr789` — `Recommended Conflict Resolution`, now captured under the
-#   canonical `resolution_strategy` field on all 66 rows (#97).
-# - WSDOT 9424 / 9540 — four columns marked `X` beneath a spanning
-#   `RECOMMENDED RESOLUTION` header, which is a different shape entirely.
-#
-# Replacing this with an asserted `resolution_strategy` is the schema work
-# ADR-0009 sets out. Until then nothing is asserted, which is correct: the
-# alternative is a number that measures our guess.
-CRITICALITY_SIGNALS: dict[str, CriticalitySignal] = {}
+# - `nhhip-3c2` and `sh99-grand-parkway` print no resolution column. The
+#   first is a Utility Inventory (its filename says so) and the second is
+#   TxDOT's template without the `Resolution Strategy Selected` field. They
+#   record that conflicts exist and never how they resolve.
+# - WSDOT 9424 / 9540 record theirs as four columns marked `X` beneath a
+#   spanning `RECOMMENDED RESOLUTION` header — a shape this table cannot
+#   express, and 9424 has never been ingested (#98). 9540 is the sealed
+#   holdout and must never be read to build this (ADR-0008).
+RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
+    # FDOT SR 789's `Recommended Conflict Resolution`, all nine printed
+    # phrasings across its 66 rows. Four map; five are declined, and the
+    # declines are the point rather than an omission:
+    #
+    #   "To be adjusted or relocated"   — the document offers two answers
+    #                                     on opposite sides of the line
+    #   "To be monitored and adjusted"  — conditional; nothing is committed
+    #   "…as needed"                      to yet
+    #   "To be replaced with 24\"X36\"    — a replacement that stays in the
+    #    handhole and adjusted…"          same horizontal alignment reads
+    #                                     as both Red and Brown
+    #   "To be adjusted"                — ADR-0009's Brown is specifically
+    #                                     "adjusted **vertically** but to
+    #                                     remain in the same horizontal
+    #                                     alignment". A bare "adjusted"
+    #                                     does not say which, and this form
+    #                                     prints the specific sibling too
+    #                                     ("…to proposed grade", 18 rows),
+    #                                     which is evidence they are not
+    #                                     the same claim.
+    #
+    # Each is a strategy the document genuinely has not settled, so the
+    # Ledger records none. A reviewer can override; nobody may invent.
+    "fdot-sr789": ResolutionVocabulary(
+        phrases={
+            "to be removed": "remove",
+            'to be removed. new 2" hdpe conduit to be installed': "remove",
+            "to be relocated": "relocate",
+            "to be adjusted to proposed grade": "adjust_vertical",
+        }
+    ),
+}
 
 
 class AlreadyAdjudicated(Exception):
@@ -99,7 +132,7 @@ def accept_candidate(
     citations = candidate.payload_json.get("citations", [])
 
     org = _resolve_org(session, fields.get("external_org"))
-    criticality = _asserted_criticality(session, candidate, fields)
+    strategy = _asserted_strategy(session, candidate, fields)
 
     dependency = Dependency(
         project_id=candidate.project_id,
@@ -115,8 +148,9 @@ def accept_candidate(
         station_to=fields.get("station_to"),
         external_org_id=org.id if org else None,
         status="identified",
-        # None when no signal was read. Not `normal` — see ADR-0007.
-        criticality=criticality,
+        # None when the document asserted no strategy this layout's
+        # vocabulary recognises (ADR-0009).
+        resolution_strategy=strategy,
     )
     session.add(dependency)
     session.flush()
@@ -137,21 +171,17 @@ def accept_candidate(
             )
         )
 
-    # Criticality is an ordinary adjudicated field, so it earns an
-    # Assertion citing the same Evidence as every other one — the document
-    # said this, on this page. Absent when the document did not say, which
-    # is what makes "unlabelled" countable rather than inferred from a
-    # Dependency that merely looks unremarkable.
-    if criticality is not None:
-        session.add(
-            Assertion(
-                dependency_id=dependency.id,
-                field_name="criticality",
-                asserted_value=criticality,
-                evidence_link_id=primary.id if primary else None,
-                doc_date=None,
-            )
-        )
+    # No second Assertion for the strategy, deliberately. `criticality` was
+    # never a field the extractor emitted, so it needed one written by
+    # hand; `resolution_strategy` *is* one, and the loop above has already
+    # recorded what the document printed. Adding a canonical-token
+    # Assertion beside it would give one `field_name` two `asserted_value`s
+    # behind the same EvidenceLink — `To be removed` and `remove` — which
+    # is precisely how a CONTRADICTION is computed, so every mapped SR 789
+    # row would contradict itself. 52 of 66 on the shipped vocabulary.
+    #
+    # The division is ADR-0001's: the Assertion preserves what the source
+    # said, the column holds the conclusion drawn from it.
 
     candidate.state = "accepted"
     candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -176,59 +206,67 @@ def accept_candidate(
     return dependency
 
 
-def _asserted_criticality(
+def _asserted_strategy(
     session: Session, candidate: Candidate, fields: dict
 ) -> str | None:
-    """What this row's document says about how much it matters.
+    """What this row's document says is to be done about the conflict.
 
     None on every path that is not a document making the claim: a layout
-    whose signal nobody has identified, a revision that does not print the
-    column, a blank cell, an unrecognised value. All four are "the document
-    did not say", and the enum cannot hold that — which is exactly why the
-    column is nullable and nothing defaults it.
+    whose vocabulary nobody has identified, a revision that does not print
+    a resolution column, a blank cell, a phrase the vocabulary does not
+    carry. All four are "the document did not say", and the enum cannot
+    hold that — which is why the column is nullable and nothing defaults
+    it.
     """
     project = session.get(Project, candidate.project_id)
-    signal = CRITICALITY_SIGNALS.get(project.slug if project else None)
-    if signal is None:
+    vocabulary = RESOLUTION_VOCABULARIES.get(project.slug if project else None)
+    if vocabulary is None:
         return None
-    return signal.read(fields.get(signal.field) or "")
+    return vocabulary.read(fields.get("resolution_strategy") or "")
 
 
-def set_criticality(
+def set_resolution_strategy(
     session: Session,
     dependency: Dependency,
-    criticality: str | None,
+    strategy: str | None,
     *,
     actor: str,
 ) -> Dependency:
     """A reviewer's judgement, which outranks the document's claim.
 
     The Assertions are untouched: the document still says what it said, and
-    the Dependency's value is the adjudicated conclusion (ADR-0001). That
-    is what keeps the two distinguishable — an override is visible as a
-    stored value that disagrees with the criticality Assertion beneath it,
-    and the audit log names who did it.
+    the Dependency's value is the adjudicated conclusion (ADR-0001). The
+    audit log names who overrode it and what it held before, which is what
+    makes an override recoverable.
+
+    Note the two are no longer directly comparable the way they were under
+    `criticality`, where both sides held the same token. The Assertion now
+    holds the document's prose (`To be removed`) and the column holds the
+    canonical conclusion (`remove`), so "does the stored value disagree
+    with its Assertion" is a question about this project's vocabulary
+    rather than a string comparison. The audit trail is the reliable
+    record of an override, not the diff.
 
     Overriding is legitimate here in a way it is not for readiness: the
-    matrix may say `N` about a duct bank that sits under the only haul
-    road. ADR-0007 turns on that difference.
+    matrix may say `Retain and Protect` about a duct bank that sits under
+    the only haul road. ADR-0009 turns on that difference.
     """
-    if criticality is not None and criticality not in CRITICALITIES:
+    if strategy is not None and strategy not in RESOLUTION_STRATEGIES:
         raise ValueError(
-            f"{criticality!r} is not a criticality; expected one of "
-            f"{', '.join(CRITICALITIES)} or None for 'no judgement'"
+            f"{strategy!r} is not a resolution strategy; expected one of "
+            f"{', '.join(RESOLUTION_STRATEGIES)} or None for 'no judgement'"
         )
 
-    before = dependency.criticality
-    dependency.criticality = criticality
+    before = dependency.resolution_strategy
+    dependency.resolution_strategy = strategy
     session.add(
         AuditLog(
             actor=actor,
-            action="set_criticality",
+            action="set_resolution_strategy",
             entity_type="dependency",
             entity_id=dependency.id,
-            before_json={"criticality": before},
-            after_json={"criticality": criticality},
+            before_json={"resolution_strategy": before},
+            after_json={"resolution_strategy": strategy},
         )
     )
     session.flush()

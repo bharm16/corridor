@@ -45,7 +45,7 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 - Entity resolution assist (same dependency across matrix, minutes, email → merge).
 - Canonical dependency ledger with event history and append-only audit log. Every merged claim is retained as an assertion against the record, so competing source values survive rather than overwriting each other.
 
-**Done when:** all Project A candidates adjudicated; ledger browsable by location, organization, status, criticality; a record with conflicting source values shows both.
+**Done when:** all Project A candidates adjudicated; ledger browsable by location, organization, status, resolution strategy; a record with conflicting source values shows both.
 
 ### M4 — Schedule link and exceptions (1 wk)
 
