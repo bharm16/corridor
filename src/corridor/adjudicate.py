@@ -72,8 +72,8 @@ class CriticalitySignal:
 # The two layouts that do record a strategy cannot be read through this
 # table's shape, which matches one field against a value set:
 #
-# - `fdot-sr789` — `Recommended Conflict Resolution`, captured today under
-#   `notes` because no canonical field exists for it.
+# - `fdot-sr789` — `Recommended Conflict Resolution`, now captured under the
+#   canonical `resolution_strategy` field on all 66 rows (#97).
 # - WSDOT 9424 / 9540 — four columns marked `X` beneath a spanning
 #   `RECOMMENDED RESOLUTION` header, which is a different shape entirely.
 #

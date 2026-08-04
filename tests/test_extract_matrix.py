@@ -25,7 +25,12 @@ from sqlalchemy import select
 from corridor.geometry import NoMatrixFound
 from corridor.db import Session, engine
 from corridor.extract_matrix import (
+    DECLINED_COLUMNS,
+    LOCAL_FIELDS,
     PROMPT_VERSION,
+    ROW_FIELDS,
+    STRUCTURE_PROMPT,
+    TEMPLATE_FIELDS,
     TIER_STRUCTURE,
     TIER_TRANSCRIBE,
     extract_document,
@@ -809,3 +814,108 @@ def test_sr789_geometry_reads_the_table_a_synonym_table_could_not_name():
     # Not one of these is a TxDOT heading, and every value is here anyway.
     assert "Station Begin (From C/L Const)" in header
     assert any("203+40.00" in (cell or "") for row in grid for cell in row)
+
+
+# ------------------------------------ the canonical vocabulary (#97)
+
+
+def test_every_canonical_field_is_traceable():
+    """ADR-0009: the vocabulary answers to a published template.
+
+    `ROW_FIELDS` was derived from Project A, whose document is a Utility
+    Inventory rather than a Utility Conflict Matrix. Every field now has
+    to say where it comes from — a column of TxDOT's published template,
+    or a documented local exception. A field belonging to neither is a
+    field nobody can defend.
+    """
+    assert set(ROW_FIELDS) == set(TEMPLATE_FIELDS) | set(LOCAL_FIELDS)
+    assert not (set(TEMPLATE_FIELDS) & set(LOCAL_FIELDS))
+    assert all(column.strip() for column in TEMPLATE_FIELDS.values())
+    assert all(len(reason) > 30 for reason in LOCAL_FIELDS.values())
+
+
+def test_the_standard_columns_sh99_dropped_now_have_homes():
+    """SH 99 prints TxDOT's template verbatim and lost six fields to it.
+
+    `Utility Subtype`'s values on SH 99 include `Highly Volatile Liquid`
+    and `Crude Oil` beside `Sanitary Sewer`. Dropping that is not a
+    cosmetic gap.
+    """
+    for column in (
+        "Utility Subtype",
+        "Utility Function",
+        "Placement Relative to Existing ROW",
+        "Operational Status",
+        "Utility Conflict Description",
+        "Resolution Strategy Selected",
+    ):
+        assert column in TEMPLATE_FIELDS.values(), column
+
+
+def test_quality_levels_have_one_home_whatever_the_column_is_headed():
+    """`Utility Investigation Completed` is a template field and is refused.
+
+    The only column in this corpus carrying that heading is SH 99's, and
+    its cells read `QLB`/`QLC`/`QLD` — quality levels. Offering both fields
+    split the same data by project: 1,937 of Project A's rows under
+    `sue_level` and 460 of SH 99's under the other, so a corpus-wide read
+    of either silently missed a project. That is ADR-0009's divergence
+    reproduced in a new field, and one home is the fix.
+    """
+    assert "Utility Investigation Completed" not in TEMPLATE_FIELDS.values()
+    assert TEMPLATE_FIELDS["sue_level"] == "Utility Investigation Quality Level"
+    assert "investigation_completed" not in ROW_FIELDS
+
+
+def test_a_column_the_template_does_not_define_is_declined_with_a_reason():
+    """Declining is a decision, so it carries an argument.
+
+    `Early TxDOT Utility Activity` and `AURL or DBA` are real SH 99
+    columns and deliberately have no canonical home: they say who
+    relocates and when, not what the facility is or what happens to it.
+    """
+    assert DECLINED_COLUMNS
+    for column, reason in DECLINED_COLUMNS.items():
+        assert column.strip()
+        assert len(reason) > 30, column
+    for column in ("Early TxDOT Utility Activity", "AURL or DBA"):
+        assert column in DECLINED_COLUMNS
+
+
+def test_the_prompt_names_every_declined_column():
+    """A decision the model never sees is not a decision.
+
+    Declining a column in code alone leaves the model free to map it, and
+    a Y/N checkbox looks exactly like a flag: `VVH (Y/N)` on SR 789 and
+    `Verified (Y/N)` on Project A both landed in `potential_conflict` on
+    some pages and nowhere on others. That is not the model being
+    inconsistent — it is being asked a question with no stated answer, and
+    it cost a stable one-mapping document three extra mappings.
+    """
+    prompt = STRUCTURE_PROMPT.read_text()
+    for column in DECLINED_COLUMNS:
+        assert column in prompt, column
+
+
+def test_the_prompt_and_the_code_name_the_same_fields():
+    """The model is told the vocabulary; the code enforces it.
+
+    Drift between them is silent and one-directional: a field the prompt
+    offers but `ROW_FIELDS` omits is mapped by the model and then thrown
+    away by `_column_mapping` as unknown, so the column reads as unmapped
+    for reasons no reviewer can see on the page.
+
+    Scoped to the canonical-fields section rather than every bulleted line
+    in the file: the declined-columns list is bullets too, and reading both
+    would only work for as long as no declined column is a single word.
+    """
+    body = STRUCTURE_PROMPT.read_text().split("## The canonical fields", 1)[1]
+    section = body.split("\n## ", 1)[0]
+    named = {
+        field
+        for line in section.splitlines()
+        if line.startswith("- `")
+        for field in re.findall(r"`(\w+)`", line.split("—")[0])
+    }
+
+    assert named == set(ROW_FIELDS)
