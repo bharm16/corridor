@@ -6,6 +6,7 @@ from corridor.eval import (
     GoldRecord,
     MalformedGoldSet,
     evaluate,
+    extracted_documents,
     gold_for_documents,
     gold_from_page_text,
     load_gold,
@@ -61,7 +62,7 @@ def add_page(session, document, page_no, text):
     return page
 
 
-def make_candidate(session, project, document, uid, page=1):
+def make_candidate(session, project, document, uid, page=1, prompt_version="txdot_ucm_v1"):
     c = Candidate(
         project_id=project.id,
         kind="dependency",
@@ -75,7 +76,7 @@ def make_candidate(session, project, document, uid, page=1):
         source_document_id=document.id,
         source_pages=[page],
         confidence=1.0,
-        prompt_version="txdot_ucm_v1",
+        prompt_version=prompt_version,
         citations_verified=True,
     )
     session.add(c)
@@ -252,3 +253,60 @@ def test_an_empty_ledger_scores_zero_not_one(session, project, document):
     assert result.recall == 0.0
     assert result.precision == 0.0
     assert result.missing == ["FOC1-1"]
+
+
+# ------------------------------------------- one extractor at a time (#68)
+
+
+def test_two_extractors_on_one_project_are_scored_separately(
+    session, project, document
+):
+    """Both paths' Candidates coexist while the migration is undecided.
+
+    Pooled they are meaningless — every row appears twice, so recall reads
+    100% and precision reads 50% no matter how either extractor did.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "FOC1-1", prompt_version="matrix_vision_v1")
+    make_candidate(session, project, document, "GHOST", prompt_version="matrix_vision_v1")
+
+    old = evaluate(
+        session, slug=project.slug, gold=[GoldRecord("FOC1-1")],
+        prompt_version="txdot_ucm_v1",
+    )
+    new = evaluate(
+        session, slug=project.slug, gold=[GoldRecord("FOC1-1")],
+        prompt_version="matrix_vision_v1",
+    )
+
+    assert (old.extracted_total, old.precision) == (1, 1.0)
+    assert (new.extracted_total, new.precision) == (2, 0.5)
+    assert new.spurious == ["GHOST"]
+
+
+def test_the_documents_scored_are_the_ones_that_extractor_read(
+    session, project, document
+):
+    """Otherwise the comparison is not "on the same documents".
+
+    A revision the new path has not run over yet would count every one of
+    its rows as missed, and report the backlog as a recall failure.
+    """
+    other = Document(
+        project_id=project.id,
+        sha256="c" * 64,
+        filename="matrix-other.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(other)
+    session.flush()
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, other, "E92")
+    make_candidate(session, project, document, "FOC1-1", prompt_version="matrix_vision_v1")
+
+    assert extracted_documents(session, project.id) == {document.id, other.id}
+    assert extracted_documents(
+        session, project.id, prompt_version="matrix_vision_v1"
+    ) == {document.id}

@@ -1,5 +1,7 @@
 # Matrix extraction reads the page image, not the table structure
 
+Amended by ADR-0006: the validation gate this ADR called for was run, and what the model is trusted to produce narrowed from transcribed values to page structure. The reasoning below stands.
+
 `v0-build-spec.md` §"Per document type" specified deterministic table extraction with synonym-mapped headers for conflict matrices — the only extractor in the system without a model — and justified it by layout variance: *"there is no single layout even within one project's own revisions."* That premise argues for the opposite conclusion. A synonym-mapped header table is precisely what breaks on layout variance; the spec's own governing rule six lines earlier warns that *"an extractor that assumes its first sample's shape fails silently on the rest of the same series."*
 
 It did, four times, and every one was silent:

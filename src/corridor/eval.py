@@ -172,18 +172,48 @@ def _followed_by_a_party(text: str, start: int) -> bool:
     return False
 
 
+def extracted_documents(
+    session: Session, project_id: int, *, prompt_version: str | None = None
+) -> set[int]:
+    """Documents this extractor actually read.
+
+    Only these belong in the enumeration. A matrix that was ingested but
+    never run through the extractor would otherwise count every one of its
+    rows as missed, and report the backlog as a recall failure.
+    """
+    query = select(Candidate.source_document_id).where(
+        Candidate.project_id == project_id
+    )
+    if prompt_version:
+        query = query.where(Candidate.prompt_version == prompt_version)
+    return set(session.scalars(query.distinct()).all())
+
+
 def evaluate(
-    session: Session, *, slug: str, gold: list[GoldRecord], kind: str = "dependency"
+    session: Session,
+    *,
+    slug: str,
+    gold: list[GoldRecord],
+    kind: str = "dependency",
+    prompt_version: str | None = None,
 ) -> EvalResult:
+    """Score one extractor's output.
+
+    `prompt_version` scopes the run to a single extraction path. Two paths'
+    Candidates coexist on a project while a migration is undecided, and
+    pooled they are meaningless: every row appears twice, so recall reads
+    100% and precision reads 50% no matter how either extractor did.
+    """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
         raise MalformedGoldSet(f"no project {slug!r}")
 
-    candidates = session.scalars(
-        select(Candidate).where(
-            Candidate.project_id == project.id, Candidate.kind == kind
-        )
-    ).all()
+    query = select(Candidate).where(
+        Candidate.project_id == project.id, Candidate.kind == kind
+    )
+    if prompt_version:
+        query = query.where(Candidate.prompt_version == prompt_version)
+    candidates = session.scalars(query).all()
 
     extracted = Counter()
     versions: Counter = Counter()
@@ -242,21 +272,33 @@ def render(result: EvalResult) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """`eval <project-slug> [gold.csv]`.
+    """`eval <project-slug> [gold.csv] [--prompt-version=X]`.
 
     Without a CSV the enumeration is built from the stored page text of the
     project's matrices, which is independent of the table parser under test.
+
+    `--prompt-version` scopes both the enumeration and the scoring to one
+    extraction path, which is what makes two paths on the same project
+    comparable rather than pooled.
     """
-    if not argv:
-        print("usage: eval <project-slug> [gold.csv]", file=sys.stderr)
+    flags = [a for a in argv if a.startswith("--")]
+    args = [a for a in argv if not a.startswith("--")]
+    prompt_version = next(
+        (f.split("=", 1)[1] for f in flags if f.startswith("--prompt-version=")), None
+    )
+    if not args or any(not f.startswith("--prompt-version=") for f in flags):
+        print(
+            "usage: eval <project-slug> [gold.csv] [--prompt-version=X]",
+            file=sys.stderr,
+        )
         return 2
 
-    slug = argv[0]
+    slug = args[0]
     skipped: set[int] = set()
     with SessionFactory() as session:
-        if len(argv) > 1:
-            gold = load_gold(argv[1])
-            source = argv[1]
+        if len(args) > 1:
+            gold = load_gold(args[1])
+            source = args[1]
         else:
             project = session.scalars(
                 select(Project).where(Project.slug == slug)
@@ -264,16 +306,8 @@ def main(argv: list[str]) -> int:
             if project is None:
                 print(f"no project {slug!r}", file=sys.stderr)
                 return 1
-            # Only documents something was actually extracted from. A
-            # matrix that was ingested but never run through the extractor
-            # would otherwise count every one of its rows as missed, and
-            # report the backlog as a recall failure.
-            extracted_docs = set(
-                session.scalars(
-                    select(Candidate.source_document_id).where(
-                        Candidate.project_id == project.id
-                    )
-                ).all()
+            extracted_docs = extracted_documents(
+                session, project.id, prompt_version=prompt_version
             )
             matrices = set(
                 session.scalars(
@@ -285,18 +319,26 @@ def main(argv: list[str]) -> int:
             )
             skipped = matrices - extracted_docs
             if not extracted_docs:
-                print(f"{slug}: nothing extracted yet", file=sys.stderr)
+                print(
+                    f"{slug}: nothing extracted yet"
+                    + (f" at {prompt_version}" if prompt_version else ""),
+                    file=sys.stderr,
+                )
                 return 1
 
             gold = gold_for_documents(session, extracted_docs)
             source = "page text (independent of the table parser)"
+            if prompt_version:
+                source += f"; scoped to {prompt_version}"
             if skipped:
                 source += f"; {len(skipped)} ingested matrix/matrices not extracted"
 
-        result = evaluate(session, slug=slug, gold=gold)
+        result = evaluate(
+            session, slug=slug, gold=gold, prompt_version=prompt_version
+        )
 
     print(render(result))
-    if len(argv) == 1 and skipped:
+    if len(args) == 1 and skipped:
         print(
             f"  {len(skipped)} ingested matrix/matrices contributed no candidates "
             "and are excluded from the enumeration, not counted as misses."
@@ -304,7 +346,10 @@ def main(argv: list[str]) -> int:
 
     out = Path("out")
     out.mkdir(exist_ok=True)
-    path = out / f"eval-{slug}.json"
+    # One file per extraction path, so measuring the new one does not
+    # overwrite the baseline it is being compared against.
+    stem = f"eval-{slug}" + (f"-{prompt_version}" if prompt_version else "")
+    path = out / f"{stem}.json"
     path.write_text(
         json.dumps(
             {
