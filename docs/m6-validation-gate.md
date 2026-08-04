@@ -268,12 +268,32 @@ one path that costs no engineering.
 
 ---
 
-## Note, after #63
+## Note, after #63 and #84
 
-The deterministic parser has since been deleted. Its baseline above cannot
-be regenerated from the code — what survives is these recorded numbers and
-the `txdot_ucm_v1` Candidates in the database, which is why both are
-written down here in full rather than left to be re-derived.
+The deterministic parser has since been deleted, and so have the
+`txdot_ucm_v1` Candidates it produced. An earlier version of this note said
+those Candidates were what preserved the baseline; that was true when it was
+written and is not true now.
+
+What preserves it is the finding itself. The two paths were compared as a
+multiset of complete rows and came out **identical, 3,235 of 3,235**, so the
+`matrix_tiered_v1` Candidates in the database *are* the parser's output —
+they differ only in the `prompt_version` stamped on them. Keeping a second,
+byte-identical copy in the review queue was costing a reviewer three passes
+over every conflict and preserving nothing.
+
+The vision generation was deleted in the same change, but its rows were not
+redundant. The 164 rows counted above as carrying a value that is not on the
+cited page carried **188 such values between them** — some rows got more than
+one field wrong — and re-extracting cannot recover them, because it produces
+different wrong rows. All 188 are recorded in
+`tests/fixtures/vision-misreads.json` with the page each was cited to, and
+the field-token checker is tested against every one.
+
+The file deliberately does not say how many are the model's fault. 29 of the
+188 have a page token that contains the absent one as a substring, which is
+the shape of both failure modes at once — the page gluing a correct value to
+its neighbour, and the model splitting a word — and no rule separates them.
 
 The half of that module which reads cells off word boxes was not deleted.
 It is `corridor.geometry`, and Tier 1 depends on it for every value it

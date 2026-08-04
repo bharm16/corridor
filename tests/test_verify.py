@@ -1,9 +1,14 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from corridor.verify import (
+    MIN_TOKEN_CHARS,
     THRESHOLD,
     match_ratio,
     quote_appears_on,
+    tokens,
     unverified_fields,
     value_appears_on,
 )
@@ -139,3 +144,107 @@ def test_unverified_fields_names_every_field_that_failed():
     }
     assert unverified_fields(fields, PAGE) == {"station_from", "location_start"}
     assert unverified_fields({"external_org": "AT&T Texas (SWBT)"}, PAGE) == set()
+
+
+# ------------------------------------------- the recorded misread corpus
+
+
+MISREADS = Path(__file__).parent / "fixtures" / "vision-misreads.json"
+
+
+@pytest.fixture(scope="module")
+def corpus():
+    return json.loads(MISREADS.read_text())
+
+
+def _page(corpus, entry):
+    return " ".join(corpus["pages"][entry["page"]])
+
+
+def _survivors(corpus, check):
+    return [m for m in corpus["misreads"] if check(m["value"], _page(corpus, m))]
+
+
+def test_every_recorded_misread_is_still_caught(corpus):
+    """188 real transcription failures, from a real model, on real pages.
+
+    Recorded before the Candidates carrying them were deleted, and not
+    reproducible: re-extracting produces different wrong rows. They are the
+    empirical basis of ADR-0006, and this is what makes them useful
+    afterwards.
+    """
+    survived = _survivors(corpus, value_appears_on)
+
+    assert not survived, (
+        f"{len(survived)} recorded misreads are no longer flagged, "
+        f"e.g. {[(s['field'], s['value']) for s in survived[:5]]}"
+    )
+
+
+def test_the_corpus_notices_a_loosened_checker(corpus):
+    """The test above only proves today's checker flags them. This proves
+    the corpus can still tell when a change stops it.
+
+    The loosening modelled here is the tempting one — count a token as
+    present if any page token contains it, which would "fix" the 29
+    span-concatenation entries and silently swallow every misread the
+    model produced by splitting a word.
+
+    Not hypothetical. An earlier version of this fixture stored only each
+    value's own present tokens, which stripped out the glued page tokens
+    a loosened checker matches on. Every assertion still passed and the
+    corpus detected nothing.
+    """
+
+    def loosened(value, page_text):
+        page = tokens(page_text)
+        return all(
+            any(token in page_token for page_token in page)
+            for token in tokens(value)
+            if len(token) >= MIN_TOKEN_CHARS
+        )
+
+    assert _survivors(corpus, loosened), (
+        "a substring-matching checker flags every recorded misread, so this "
+        "corpus can no longer detect that loosening"
+    )
+
+
+def test_the_corpus_records_what_it_cannot_decide(corpus):
+    """Not all 188 are the model's fault, and the fixture must not pretend.
+
+    Where the page's own text stream glued a correct value to its
+    neighbour, the checker cannot see the value and flags a row that is
+    right. Telling that apart from the model splitting a word was
+    attempted and does not work — `1148+60` inside `freeway1148+60` and
+    `phonosc` inside `phonoscope` are the same shape to a substring test.
+    So the evidence is recorded and the verdict is not.
+    """
+    assert "what_is_not_claimed" in corpus
+    ambiguous = [
+        m for m in corpus["misreads"] if m["page_tokens_containing_an_absent_one"]
+    ]
+    assert len(ambiguous) == corpus["counts"]["with_a_containing_page_token"]
+    assert 0 < len(ambiguous) < len(corpus["misreads"])
+    # No count may read as a number of model errors, which is the claim the
+    # separation above cannot support.
+    assert not any("error" in key for key in corpus["counts"])
+
+
+def test_the_corpus_is_internally_consistent(corpus):
+    """A fixture that drifted from its own counts would fail silently."""
+    counts = corpus["counts"]
+    assert counts["flagged_field_values"] == len(corpus["misreads"])
+    assert counts["distinct_page_field_value"] == len(
+        {(m["page"], m["field"], m["value"]) for m in corpus["misreads"]}
+    )
+    assert counts["distinct_wrong_values"] == len(
+        {m["value"] for m in corpus["misreads"]}
+    )
+    assert counts["pages"] == len(corpus["pages"])
+
+    for entry in corpus["misreads"]:
+        assert entry["absent_tokens"], f"{entry['value']!r} flags nothing"
+        page = set(corpus["pages"][entry["page"]])
+        for token in entry["absent_tokens"]:
+            assert token not in page, f"{entry['value']!r}: {token!r}"
