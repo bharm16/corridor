@@ -1,8 +1,16 @@
 """Register a document and extract its pages.
 
-Every page gets both text and a rendered image, because evidence display
-needs both: a quote is *verified* against the page text and *shown* against
-the page image. A citation you cannot see is not much of a citation.
+Every page of a PDF gets both text and a rendered image, because evidence
+display needs both: a quote is *verified* against the page text and *shown*
+against the page image. A citation you cannot see is not much of a citation.
+
+A spreadsheet has neither pages nor a layout (ADR-0005). Each worksheet
+becomes a page, its text is generated from its cells, and there is no image
+— rendering one would produce a picture of a spreadsheet rather than
+evidence, and the generated text already is the rendering a reviewer checks
+a quote against. `text_source` says which of the two a page came from,
+because a citation against cells verifies exactly and one against a
+printout cannot.
 
 Originals are never modified. The file on disk is read and hashed; nothing
 is written back to it.
@@ -29,6 +37,13 @@ RENDER_DPI = 150
 # reads as an empty page rather than as a scan — a first-pass extraction
 # returning little means "scan", not "blank".
 MIN_TEXT_CHARS = 50
+
+# Suffixes read as a workbook rather than a page image. `.xlsm` alongside
+# `.xlsx` because TxDOT's own form ships macros in some revisions and the
+# cells are identical either way; `.xls` is deliberately absent, since
+# openpyxl cannot read the old binary format and a file that silently
+# failed would look like a document nobody collected.
+SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
 
 
 def ingest_document(
@@ -103,7 +118,8 @@ def ingest_document(
                 document_id=document.id,
                 page_no=page_no,
                 text=text,
-                image_path=str(image_path),
+                # None for a worksheet, which has no rendering to point at.
+                image_path=str(image_path) if image_path else None,
                 text_source=text_source,
             )
         )
@@ -114,7 +130,33 @@ def ingest_document(
     return document
 
 
-def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path, str]]:
+def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path | None, str]]:
+    if path.suffix.lower() in SPREADSHEET_SUFFIXES:
+        return _extract_sheets(path)
+    return _extract_pages(path, images_dir)
+
+
+def _extract_sheets(path: Path) -> list[tuple[int, str, None, str]]:
+    """One page per worksheet, its text generated from its cells.
+
+    Sheet order is the file's own, and the page number is its position —
+    1-based like a PDF's, so `[D12 p.2]` still names something a reader can
+    find. A sheet name would be a better citation and cannot be one: the
+    citation columns hold a page number, and widening them is a schema
+    change this ticket does not need.
+    """
+    from corridor.sheets import read_workbook, sheet_text
+
+    sheets = read_workbook(path)
+    if not sheets:
+        raise ValueError(f"{path.name}: no worksheets")
+    return [
+        (index, sheet_text(sheet), None, "cells")
+        for index, sheet in enumerate(sheets, start=1)
+    ]
+
+
+def _extract_pages(path: Path, images_dir: Path) -> list[tuple[int, str, Path, str]]:
     images_dir.mkdir(parents=True, exist_ok=True)
     out: list[tuple[int, str, Path, str]] = []
 

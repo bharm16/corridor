@@ -75,6 +75,22 @@ def quote_appears_on(quote: str, page_text: str, threshold: float = THRESHOLD) -
     return match_ratio(quote, page_text) >= threshold
 
 
+def threshold_for(text_source: str | None) -> float:
+    """How closely a quote must match, given where the page text came from.
+
+    `THRESHOLD` is a concession to print damage: a printout loses
+    separators between text spans and clips cells at their boundaries, so a
+    quote that really is on the page can come back slightly wrong, and
+    demanding an exact match would fail true citations.
+
+    None of that can happen to text generated from a spreadsheet's own
+    cells (ADR-0005). The value was never recovered from a layout, so a
+    near-miss there is a real disagreement rather than damage, and
+    accepting one would spend the tolerance on nothing.
+    """
+    return 1.0 if text_source == "cells" else THRESHOLD
+
+
 # --------------------------------------------------------------- field values
 
 # Some layouts combine stationing and offset in one column, and the page's

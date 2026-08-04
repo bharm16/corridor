@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -17,10 +18,16 @@ from sqlalchemy.orm import Session
 from corridor.config import settings
 from corridor.db import Session as SessionFactory
 from corridor.models import DocPage, Document, Project
-from corridor.pipeline import ingest_manifest
 
 LOCK = Path("corpus/manifest.lock.json")
 IMAGES = Path("out/page-images")
+
+# Suffixes that make a document the structured original rather than a
+# rendering of one (ADR-0005). Kept beside the precedence rule rather than
+# imported from `ingest`, because the two lists answer different questions:
+# that one is "can this be read as sheets", this one is "is this the form
+# the printout was made from".
+STRUCTURED_SUFFIXES = {".xlsx", ".xlsm"}
 
 
 @dataclass
@@ -81,14 +88,67 @@ def get_page(session: Session, document_id: int, page_no: int) -> DocPage:
     return page
 
 
-def stored_pdf(document: Document) -> Path | None:
-    """Resolve a Document back to the file in the content-addressed store."""
+def document_of_record(documents) -> Document | None:
+    """Which of these forms of one document Evidence should cite (ADR-0005).
+
+    Two rules, and the order is the substance rather than a detail:
+
+    1. **Supersession by date.** A February printout beats a spreadsheet
+       from the previous June, because the project replaced that revision.
+    2. **Then format.** Among documents of the same date, the structured
+       original outranks its printed rendering — every defect ADR-0004
+       catalogues is damage done in the printing, and the spreadsheet is
+       the thing it was done to.
+
+    Applied the other way round, a stale spreadsheet outranks a current
+    PDF and the Ledger cites a revision the project has already replaced.
+    ADR-0005 says so outright, and this function is that sentence.
+
+    An undated document sorts below every dated one. Treating a missing
+    date as today's would let a file nobody dated supersede the revision
+    the project actually issued.
+
+    **What this does not do is decide which documents are forms of one
+    document.** That is supersession, it needs the RID index's "Replaced
+    on" chain, and it is M8's — `documents.superseded_by` exists and
+    nothing populates it yet. Callers pass a set they already know renders
+    the same thing; this only ranks it.
+    """
+    return max(documents, key=_precedence, default=None)
+
+
+def _precedence(document) -> tuple:
+    return (
+        # `date.min` rather than None, so an undated document is comparable
+        # and always loses.
+        document.doc_date or date.min,
+        Path(document.filename or "").suffix.lower() in STRUCTURED_SUFFIXES,
+    )
+
+
+def stored_file(document: Document) -> Path | None:
+    """Resolve a Document back to the file in the content-addressed store.
+
+    Found by hash rather than by extension: the store preserves whatever
+    suffix the source had so it stays browsable, and since ADR-0005 that is
+    no longer always `.pdf`. One hash, one file — the name is the hash, so
+    a glob cannot match two different documents.
+    """
     if not document or not document.sha256:
         return None
-    path = (
-        Path(settings.corpus_store) / document.sha256[:2] / f"{document.sha256}.pdf"
-    )
-    return path if path.exists() else None
+    shard = Path(settings.corpus_store) / document.sha256[:2]
+    return next(iter(sorted(shard.glob(f"{document.sha256}.*"))), None)
+
+
+def stored_pdf(document: Document) -> Path | None:
+    """The stored file, when it really is a PDF.
+
+    Callers that render pages or read word boxes need this rather than
+    `stored_file`: handing a workbook to PyMuPDF raises somewhere deep
+    instead of saying the document is the wrong kind.
+    """
+    path = stored_file(document)
+    return path if path and path.suffix.lower() == ".pdf" else None
 
 
 def _project(session: Session, slug: str) -> Project:
@@ -99,6 +159,11 @@ def _project(session: Session, slug: str) -> Project:
 
 
 def main(argv: list[str]) -> int:
+    # Imported here rather than at module scope: `pipeline` routes a
+    # document to its reader and needs `stored_file` from this module, so
+    # a top-level import is a cycle. Only the CLI wants it anyway.
+    from corridor.pipeline import ingest_manifest
+
     command = argv[0] if argv else "list"
 
     with SessionFactory() as session:

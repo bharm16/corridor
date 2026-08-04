@@ -8,6 +8,7 @@ from corridor.models import (
     AuditLog,
     Candidate,
     Dependency,
+    DocPage,
     Document,
     Project,
 )
@@ -460,3 +461,83 @@ def test_the_queue_page_renders_what_it_surfaces(client, session, project, docum
     assert "transcribe" in body
     assert "Retain and Protect" in body
     assert "station_from" in body
+
+
+# ------------- evidence for a source with no page image (ADR-0005, #60)
+
+
+def sheet_document(session, project):
+    """A workbook: sheets instead of pages, cells instead of a layout."""
+    d = Document(
+        project_id=project.id,
+        sha256="e" * 64,
+        filename="I-35-NEX-South-UCM.xlsx",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(d)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=d.id,
+            page_no=1,
+            text=(
+                "Utility Conflict ID Utility Owner Start Station\n"
+                "UC-1 CenterPoint Energy 1149+00\n"
+                "UC-2 AT&T Texas 1151+00"
+            ),
+            image_path=None,
+            text_source="cells",
+        )
+    )
+    session.flush()
+    return d
+
+
+def test_a_sheet_candidate_shows_its_cells_instead_of_a_page_image(
+    client, session, project
+):
+    """#60's third scope item: a sheet has no page and still needs a
+    rendering a reviewer can check a quote against.
+
+    The generated text *is* that rendering — it was made from the same
+    cells the values came from — and it is already stored. Showing an
+    `<img>` that 404s and nothing else leaves the reviewer with a quote and
+    no way to check it, which is the one thing the evidence pane exists
+    for.
+    """
+    document = sheet_document(session, project)
+    make_candidate(session, project, document, uid="UC-1")
+
+    body = client.get(f"/queue/{project.slug}").text
+
+    assert "UC-1 CenterPoint Energy 1149+00" in body
+    assert f'/page-image/{document.id}/1' not in body
+
+
+def test_a_pdf_candidate_still_shows_its_page_image(
+    client, session, project, document
+):
+    """The common case is untouched — a printout has a rendering and the
+    quote is shown against it."""
+    make_candidate(session, project, document)
+
+    body = client.get(f"/queue/{project.slug}").text
+
+    assert f'/page-image/{document.id}/1' in body
+
+
+def test_a_sheet_candidate_is_labelled_as_read_from_cells(client, session, project):
+    """`OCR` already earns a label because it is materially less reliable.
+    Cells are materially *more* so, and a reviewer weighing a citation
+    should see which they are looking at."""
+    document = sheet_document(session, project)
+    make_candidate(session, project, document, uid="UC-1")
+
+    body = client.get(f"/queue/{project.slug}").text
+
+    # The label beside the filename, where `OCR` already appears — not the
+    # word "cells" anywhere on the page, which the highlight hint has said
+    # since long before spreadsheets were readable.
+    assert "· <span" in body and "read from cells" in body

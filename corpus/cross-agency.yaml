@@ -1,7 +1,8 @@
-# Cross-agency layout sources for M6 (#50).
+# Cross-agency layout sources for M6 (#50), and the published form the
+# canonical vocabulary is derived from (#60).
 #
-# Neither of these is Project B. FDOT SR 789 is the sealed holdout and
-# stays untouched; these are the two other filled matrices recorded in
+# Neither of the first two is Project B. FDOT SR 789 is the sealed holdout
+# and stays untouched; these are the two other filled matrices recorded in
 # corpus-acquisition-spec.md §7.4, and they carry the layouts M6 has to
 # handle without spending it.
 #
@@ -40,3 +41,24 @@ sources:
       prose. Header sits on the second row beneath a CONFLICT DATA AND
       RESOLUTION band. A Wayback id_ replay — verify the mime type, per
       §7.5.
+
+  # TxDOT's published Utility Conflict Analysis Template — the form the
+  # PDFs elsewhere in this corpus are printouts of, and the source
+  # `extract_matrix.TEMPLATE_FIELDS` names for all 21 of its canonical
+  # fields (#97). Until now nothing in the repo could check those names:
+  # the traceability ran one way and was uncitable, so a reader could not
+  # verify a claimed column exists nor see which template columns the
+  # vocabulary drops.
+  #
+  # It is also the structured source ADR-0005 describes, fetched so #60 has
+  # something real to read. Empty of conflicts by construction — it is a
+  # blank form — so it proves the schema and the vocabularies, never a row.
+  - url: "https://www.txdot.gov/content/dam/docs/division/row/utl/utility-conflict-analysis-template.xlsx"
+    doc_type: other
+    role: evidence
+    title: "TxDOT Utility Conflict Analysis Template (published form)"
+    notes: >-
+      Seven sheets. `Utility Conflicts` carries the 40-column conflict
+      schema with its header on row 2 beneath a title band; `Data
+      Dictionary` defines 113 columns; `Drop-Down Lists` enumerates the
+      controlled vocabularies. Zero data rows — a blank form.

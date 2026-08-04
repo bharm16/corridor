@@ -1,0 +1,173 @@
+"""Extracting conflicts from a spreadsheet source (ADR-0005).
+
+The structured original is the Document of Record, and this is what reading
+one costs: a name lookup and a loop. There is no model here, no prompt, no
+confidence and no tier chosen per page, because none of those answer a
+question this file poses. A worksheet states its columns by name and its
+values one per cell; ADR-0006's whole apparatus exists to recover exactly
+that from a printout of it.
+
+What stays the same is everything after the read. A row still becomes a
+Candidate and nothing else, the Ledger is still reached only by a human
+keystroke in `corridor.adjudicate`, and a column with no canonical field is
+still reported rather than filed under a guessed heading.
+
+Two properties are stronger here than on the page path, and both follow
+from the source rather than from effort:
+
+- **Every value is on the page by construction.** The page text was
+  generated from the same cells the values came from, so a citation
+  verifies exactly. The 0.9 threshold exists for print damage — separators
+  lost between spans, a cell clipped at its boundary — and none of it can
+  happen to a value read out of a cell.
+- **The mapping is not a judgement.** A heading either is a template column
+  or is not.
+"""
+
+from __future__ import annotations
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from corridor.docs import stored_file
+from corridor.geometry import dedupe_hint
+from corridor.models import Candidate, DocPage, Document
+from corridor.sheets import (
+    NoConflictSheet,
+    column_mapping,
+    conflict_sheet,
+    header_row,
+    read_workbook,
+    row_text,
+)
+from corridor.vocabulary import MIN_ROW_FIELDS, REQUIRED
+from corridor.verify import quote_appears_on, threshold_for, unverified_fields
+
+# What produced this reading. The column is named `prompt_version` because
+# every other extractor has one; a native read has no prompt, and what it
+# has instead is a reader whose behaviour can change — which is the same
+# reason the column exists (ADR-0003). A version bump here means the same
+# thing it means there: rows read before and after are different readings
+# of one document and must not be pooled.
+PROMPT_VERSION = "sheet_native_v1"
+
+# Not a tier in ADR-0006's sense — those name how the model was used, and
+# this used no model. Recorded beside them so a run can say how each row
+# was read without a reader having to infer it from the absence of a model.
+TIER_NATIVE = "native"
+
+
+def extract_document(session: Session, document: Document) -> list[Candidate]:
+    """Every conflict row of one workbook.
+
+    Raises `NoMatrixFound` — via `NoConflictSheet` — when no sheet is a
+    conflict matrix. Returns an empty list for a form with no conflicts,
+    which is a different answer and the one the published template gives.
+    """
+    path = stored_file(document)
+    if path is None:
+        raise NoConflictSheet(
+            f"no stored file for {document.filename}; there is nothing to "
+            "read. Re-ingest before treating this as an empty workbook."
+        )
+
+    sheets = read_workbook(path)
+    sheet = conflict_sheet(sheets)
+    page_no = next(
+        index for index, other in enumerate(sheets, start=1) if other.name == sheet.name
+    )
+    page = session.scalars(
+        select(DocPage).where(
+            DocPage.document_id == document.id, DocPage.page_no == page_no
+        )
+    ).first()
+    page_text = (page.text if page else "") or ""
+    # Read off the stored page rather than asserted here, so the strictness
+    # follows the record. A page this reader wrote is `cells`; if one ever
+    # is not, the citation is checked against what it actually is.
+    threshold = threshold_for(page.text_source if page else None)
+
+    index = header_row(sheet)
+    headings = sheet.rows[index]
+    mapping = column_mapping(headings)
+    unmapped = [
+        heading.strip()
+        for position, heading in enumerate(headings)
+        if heading.strip() and position not in mapping
+    ]
+
+    candidates = []
+    for raw in sheet.rows[index + 1 :]:
+        fields = {
+            field: raw[position].strip()
+            for position, field in sorted(mapping.items())
+            if position < len(raw) and raw[position].strip()
+        }
+        if len(fields) < MIN_ROW_FIELDS:
+            continue
+        if not all(fields.get(name) for name in REQUIRED):
+            continue
+
+        candidate = _candidate(
+            document, page_no, fields, raw, page_text, unmapped, threshold
+        )
+        session.add(candidate)
+        candidates.append(candidate)
+
+    document.extraction_tiers = {TIER_NATIVE: 1}
+    session.flush()
+    return candidates
+
+
+def _candidate(
+    document: Document,
+    page_no: int,
+    fields: dict[str, str],
+    raw,
+    page_text: str,
+    unmapped: list[str],
+    threshold: float,
+) -> Candidate:
+    # Rendered by the same function that wrote the page text, so the quote
+    # is the line a reviewer reads rather than a reconstruction of one.
+    quote = row_text(raw)
+    # Exactly, not at 0.9 — this text was generated from the same cells the
+    # values came from, so there is no print damage to make room for.
+    quote_ok = quote_appears_on(quote, page_text, threshold)
+    suspect = sorted(unverified_fields(fields, page_text))
+
+    return Candidate(
+        project_id=document.project_id,
+        kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": fields,
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": page_no,
+                    "quote": quote,
+                    "verified": quote_ok,
+                    "whole_row": True,
+                }
+            ],
+            # No number, deliberately. Confidence on the page path is the
+            # model's judgement about what the columns mean; here there is
+            # no judgement to be more or less sure of, and a hardcoded 1.0
+            # would be this reader asserting certainty it was never asked
+            # for.
+            "confidence": None,
+            "unverified_fields": suspect,
+            "unmapped_columns": unmapped,
+            "low_confidence_tokens": [],
+            "tier": TIER_NATIVE,
+            "dedupe_hint": dedupe_hint(fields),
+            "text_source": "cells",
+        },
+        source_document_id=document.id,
+        source_pages=[page_no],
+        confidence=None,
+        prompt_version=PROMPT_VERSION,
+        model=None,
+        citations_verified=quote_ok and not suspect,
+    )
