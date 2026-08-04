@@ -152,3 +152,11 @@ reviewer confirms it by looking at a page, not by trusting a count. It
 found a real ambiguity the first run missed. It also shares PyMuPDF's table
 detection with the extractor, so a region that library drops is invisible
 to both, and the page-image check is the only thing that closes that hole.
+
+*Correction, later the same day:* the guard doing that work is `REQUIRED`,
+not `MIN_ROW_FIELDS` — a numbered retired row maps an id plus a note,
+exactly two fields, which `MIN_ROW_FIELDS` passes. The exclusion held only
+because this layout prints an owner column the retired rows leave empty,
+which is luck, not a rule. The question "filed separately" above was
+settled by ADR-0012, which also made the exclusion a stated rule in every
+reader.

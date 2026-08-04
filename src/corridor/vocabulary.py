@@ -192,3 +192,50 @@ REQUIRED = ("utility_id", "external_org")
 # one per page. A band has one non-empty cell of ten; a conflict row has
 # eight.
 MIN_ROW_FIELDS = 2
+
+
+# Phrases a form prints to retire a row of its numbering. Enumerated from
+# the corpus, not imagined: WSDOT 9424 prints the phrase 102 times — as
+# `Not Used` 79 times and `Not used` 23 — and nothing else in this corpus
+# retires a row at all. Case-insensitive because the spelling split falls
+# across blank rows either way and carries no signal (#128).
+RETIREMENT_PHRASES = ("not used",)
+
+# Fields that identify a row rather than describe a facility. A retired
+# row keeps its printed number; what it never has is content.
+_IDENTIFIER_FIELDS = frozenset({"utility_id"})
+
+
+def is_retired_row(fields: dict[str, str]) -> bool:
+    """Does this row's own content amount to "this number is not in use"?
+
+    True when every mapped value outside the identifier is a retirement
+    phrase — the shape of 101 rows on WSDOT 9424, where a printed conflict
+    number carries `Not Used` and nothing else. Those are the form's
+    bookkeeping, not conflicts, and they enter neither the Ledger nor a
+    gold denominator (ADR-0012).
+
+    False the moment any real content appears beside the phrase. 9424's
+    row 210 prints an owner, a facility, a location and a selected
+    resolution next to `Not used` — somebody analysed that row, and a dead
+    facility is still a Dependency (ADR-0009 puts abandonment on the
+    critical side for exactly this reason). The phrase reaches the record
+    verbatim in `notes`, and Adjudication judges what it means.
+
+    A stated rule rather than a side effect, because the side effect was
+    layout luck: on 9424 the blank rows died on the REQUIRED guard only
+    because that form has an owner column. On a layout whose owner arrives
+    from the page header, the same rows inherit it and sail through both
+    guards as phantoms (#128).
+    """
+    values = [
+        value.strip()
+        for field, value in fields.items()
+        if field not in _IDENTIFIER_FIELDS and value and value.strip()
+    ]
+    if not values:
+        return False
+    return all(
+        any(phrase == value.casefold() for phrase in RETIREMENT_PHRASES)
+        for value in values
+    )

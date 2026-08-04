@@ -329,3 +329,24 @@ def test_the_router_sends_a_pdf_to_the_page_extractor(session, project, monkeypa
     pipeline.extract_any(session, document, client="the-client")
 
     assert seen["client"] == "the-client"
+
+
+def test_a_retired_row_is_excluded_by_rule_not_luck(session, project, tmp_path):
+    """ADR-0012 on the spreadsheet path: a row whose only content is an
+    identifier plus a retirement phrase is the form's bookkeeping, and a
+    populated row carrying the phrase is a conflict."""
+    rows = [
+        HEADINGS[:2] + ["Utility Type", "Start Station", "End Station",
+                        "Utility Conflict Description", "Comment"],
+        ["UC-1", "CenterPoint Energy", "Electric", "1149+00", "1150+00", "Pole", ""],
+        ["UC-2", "", "", "", "", "", "Not Used"],
+        ["UC-3", "PSE", "Electric", "1151+00", "1152+00", "Vault", "Not used"],
+    ]
+    document = ingest(session, project, tmp_path, rows)
+
+    ids = {
+        c.payload_json["fields"]["utility_id"]
+        for c in extract_document(session, document)
+    }
+
+    assert ids == {"UC-1", "UC-3"}

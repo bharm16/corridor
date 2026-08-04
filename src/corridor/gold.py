@@ -20,12 +20,13 @@ Two restraints make that real, and both are pinned by tests:
   agrees. That is the anchoring #81 rules out.
 - **Nothing here decides.** A row carrying a retirement phrase is
   *flagged*, never dropped — whether `Not Used` retires a row number or
-  describes an out-of-service facility is #128, and it is open. On WSDOT
-  9424 the phrase appears on 102 rows; a tool that quietly excluded them
-  would be settling the question by omission — and it is the *labeller*
-  the stake falls on, because the extractor already skips the 101 blank
-  ones. A gold set that counted them reads recall as 162/263, failing the
-  gate on bookkeeping rather than on extraction.
+  describes an out-of-service facility was #128, decided by ADR-0012: a
+  blank row carrying the phrase is retired numbering, a populated one is
+  a conflict whose facility is out of service. This report still shows
+  the retired rows rather than hiding them — the labeller must count the
+  same set the rule names, because a gold set that counted retired
+  numbering as conflicts reads recall as 162/263, failing the gate on
+  bookkeeping rather than on extraction.
 
 **The independence is partial, and the report says so.** Rows are matched
 by quote containment, which borrows no column mapping from the extractor —
@@ -58,22 +59,20 @@ from corridor.verify import normalize
 # labelling pass that cannot produce the gate's number.
 WORKSHEET_COLUMNS = (*REQUIRED_COLUMNS, "page", "critical")
 
-# Phrases a document uses to retire a row. Enumerated from the corpus
-# rather than imagined: WSDOT 9424 prints the phrase 102 times and nothing
-# else in this corpus retires a row at all.
+# One phrase list, imported from its single home so this report and the
+# Ledger cannot drift apart the day it grows (ADR-0012); a test pins the
+# sharing by identity. Spelling carries no signal — both spellings appear
+# on retired rows — but content discriminates perfectly: 101 of the 102
+# occurrences sit on Retired Rows, one on the fully populated row 210.
 #
-# Matched case-insensitively because spelling carries no signal — 9424
-# prints `Not Used` 79 times and `Not used` 23 times, both on blank rows.
-# What does discriminate is content: 101 of the 102 sit on rows holding
-# nothing but an identifier, and exactly one sits on a fully populated
-# conflict row (#128).
-#
-# Under-matching is the safe direction and the reason this list stays
-# short. A retirement phrase this does not know still surfaces its row —
-# as `identifier only` or `populated`, with its cells shown — so the
-# reviewer reads the words themselves. Over-matching would hide a row
-# behind a classification nobody checked.
-RETIREMENT_PHRASES = ("not used",)
+# The *matcher* here is deliberately looser than the extractor's: this
+# report flags any cell containing a phrase, where `is_retired_row`
+# retires only on whole-cell equality. Over-reporting is the safe
+# direction for a document a human is about to read — a note like
+# `Not used for potable supply` should reach the reviewer's eyes without
+# retiring anything, and an unknown phrase still surfaces its row with
+# its cells shown.
+from corridor.vocabulary import RETIREMENT_PHRASES  # noqa: E402
 
 # Below this many populated cells, a row is an identifier and little else.
 # Matches `extract_matrix.MIN_ROW_FIELDS`'s reasoning without importing
@@ -385,12 +384,16 @@ def render(prep: Preparation) -> str:
         "",
         "## Then label",
         "",
-        "Write the worksheet from the **document**, not from this file:",
-        "one row per conflict, `critical` by ADR-0009's rule — yes when the",
-        "document says the facility is relocated, removed or abandoned; no",
-        "for retain-and-protect or a vertical adjustment; blank when the",
-        "document has not settled. Use this file afterwards to check what",
-        "you and the extractor disagreed about.",
+        "Write the worksheet from the **document**, not from this file.",
+        "Count a row when it names a facility, not when it merely bears a",
+        "number: a blank row with a retirement phrase is retired numbering",
+        "and is not counted; a populated row is counted whatever its notes",
+        "say (ADR-0012). One row per conflict, `critical` by ADR-0009's",
+        "rule — yes when the document says the facility is relocated,",
+        "removed or abandoned; no for retain-and-protect or a vertical",
+        "adjustment; blank when the document has not settled. Use this",
+        "file afterwards to check what you and the extractor disagreed",
+        "about.",
         "",
     ]
     return "\n".join(lines)

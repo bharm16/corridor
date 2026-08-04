@@ -1379,3 +1379,71 @@ def test_a_transcribed_mark_is_not_stored_as_a_strategy(session, project, tmp_pa
 
     assert len(candidates) == 1
     assert "resolution_strategy" not in candidates[0].payload_json["fields"]
+
+
+# ------------------- a retired row is not a conflict (#128, ADR-0012)
+
+
+def test_a_blank_retired_row_is_skipped_even_when_the_page_supplies_an_owner(
+    session, project, tmp_path
+):
+    """The rule exists because layout luck is not a rule.
+
+    On WSDOT 9424 the 101 blank `Not Used` rows were excluded only because
+    that layout has an owner column: the retired rows had no owner, so
+    REQUIRED dropped them. On a layout where the owner arrives from the
+    page header — FDOT's shape — a retired row inherits it, passes both
+    guards, and becomes a phantom Candidate. ADR-0012 makes the exclusion
+    a stated rule instead of a side effect of which column a form prints.
+    """
+    rows = [
+        ["Conflict #", "Station Begin", "Station End", "Facility Description", "Notes"],
+        ["1", "203+40.00", "206+40.00", "BTV, Size UNK", ""],
+        ["2", "", "", "", "Not Used"],
+    ]
+    columns = [
+        {"index": 0, "canonical_field": "utility_id"},
+        {"index": 1, "canonical_field": "station_from"},
+        {"index": 2, "canonical_field": "station_to"},
+        {"index": 3, "canonical_field": "utility_type"},
+        {"index": 4, "canonical_field": "notes"},
+    ]
+    document = make_document(
+        session, project, tmp_path, rows, banner="UTILITY AGENCY OWNER: Comcast", sha="r"
+    )
+    client = StubClient([structure(columns=columns, header_row=0, owner="Comcast")])
+
+    candidates = extract_document(session, document, client=client)
+
+    ids = {c.payload_json["fields"]["utility_id"] for c in candidates}
+    assert ids == {"1"}
+
+
+def test_a_populated_row_carrying_the_phrase_is_kept(session, project, tmp_path):
+    """9424 page 9, id 210 — the row that decided ADR-0012.
+
+    An owner, a facility, a location and a selected resolution beside the
+    phrase: the phrase describes the facility, not the row, and a dead
+    facility is still a Dependency (ADR-0009 made abandonment critical for
+    exactly this reason). Adjudication sees the note verbatim and judges.
+    """
+    rows = [
+        ["Owner", "Conflict ID", "Facility Type", "Location", "Notes"],
+        ["PSE", "210", "UG Power", "Military Road", "Not used"],
+    ]
+    columns = [
+        {"index": 0, "canonical_field": "external_org"},
+        {"index": 1, "canonical_field": "utility_id"},
+        {"index": 2, "canonical_field": "utility_type"},
+        {"index": 3, "canonical_field": "location_start"},
+        {"index": 4, "canonical_field": "notes"},
+    ]
+    document = make_document(session, project, tmp_path, rows, sha="s")
+    client = StubClient([structure(columns=columns, header_row=0)])
+
+    candidates = extract_document(session, document, client=client)
+
+    assert len(candidates) == 1
+    fields = candidates[0].payload_json["fields"]
+    assert fields["utility_id"] == "210"
+    assert fields["notes"] == "Not used"

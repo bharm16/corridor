@@ -64,6 +64,10 @@ _Avoid_: source of truth, master copy, canonical version, original
 A document that lists utility conflicts *and* how each is to be resolved. The industry form, and the only kind that can assert a Resolution Strategy.
 _Avoid_: UCM (acceptable in filenames and UI copy, never in code), conflict list, utility matrix
 
+**Retired Row**:
+A row of a Utility Conflict Matrix whose only content is an identifier plus a retirement phrase (`Not Used`) — the form's bookkeeping for a number taken out of service, not a conflict. Excluded from the Ledger and from any gold denominator by stated rule, never by a guard's side effect. A **populated** row carrying the same phrase is a conflict whose facility may be out of service: the phrase describes the facility, reaches `notes` verbatim, and Adjudication judges it (ADR-0012).
+_Avoid_: blank row (it has content: the id and the phrase), skipped row, empty slot
+
 **Utility Inventory**:
 A document that lists utility features, and may flag which are in conflict, but never says how a conflict resolves. Distinguishing this from a Utility Conflict Matrix matters because an inventory looks like one and cannot answer what one answers — a conflict flag says a problem exists, not that the facility moves.
 _Avoid_: matrix, inventory matrix (the phrase agencies print on the cover of both)
