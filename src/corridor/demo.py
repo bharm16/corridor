@@ -1,8 +1,7 @@
 """Raw files to a cited report, in one command.
 
 The walking skeleton's exit criterion. Deliberately thin at every stage —
-one document, a deterministic extractor, accept-everything instead of a
-review queue — but it exercises the whole spine, including both provenance
+one document, accept-everything instead of a review queue — but it exercises the whole spine, including both provenance
 classes in the output. Its purpose is to surface schema gaps while
 migrations are still cheap.
 """
@@ -30,6 +29,7 @@ from corridor.models import (
 )
 from corridor.changes import record_run
 from corridor.export import to_pdf, to_xlsx
+from corridor.llm import OpenAIClient
 from corridor.pipeline import ingest_and_extract, parse_doc_date
 from corridor.report import build_report, render
 
@@ -89,11 +89,15 @@ def main(limit: int | None = None) -> int:
             session.flush()
         _reset(session, project)
 
+        # Needs OPENAI_API_KEY since #63: there is one extraction path now
+        # and it reads the page with a model.
+        client = OpenAIClient()
         document, candidates = ingest_and_extract(
             session,
             project_id=project.id,
             path=record["local_path"],
             images_dir=IMAGES,
+            client=client,
             filename=MEMBER,
             source_url=record.get("archive_url") or record.get("url"),
             retrieved_at=record.get("retrieved_at"),

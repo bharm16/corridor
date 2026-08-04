@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
-from corridor.extract import NoMatrixFound
+from corridor.geometry import NoMatrixFound
 from corridor.extract_project import extract_project
 from corridor.models import Candidate, Document, Project
 

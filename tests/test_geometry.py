@@ -5,23 +5,35 @@ from pathlib import Path
 
 import pytest
 
-from corridor.extract import (
-    NoMatrixFound,
-    canonical_field,
-    dedupe_hint,
+from corridor.geometry import (
     cell_text,
-    extract_rows,
-    map_headers,
+    dedupe_hint,
+    page_tables,
     readings_agree,
     row_quote,
-    split_station_offset,
     row_to_fields,
-    to_candidates,
+    split_station_offset,
 )
 from corridor.verify import normalize, quote_appears_on
 
-# The two real layouts on Project A, eight months apart.
-CONFLICT_HEADERS = [
+# The two real layouts on Project A, eight months apart. Since #63 the
+# mapping arrives from outside this module — a model reads the printed
+# headers and says what they mean — so these are what it returns for the
+# two layouts, and the same field sits at a different index in each.
+CONFLICT_MAPPING = {
+    0: "utility_id", 1: "external_org", 2: "utility_type", 3: "size",
+    4: "material", 5: "oh_ug", 6: "baseline", 7: "orientation",
+    8: "alignment", 9: "location_start", 10: "location_end",
+    11: "station_from", 12: "offset_from", 13: "station_to", 14: "offset_to",
+    15: "offset_side", 16: "potential_conflict", 17: "sue_level", 18: "notes",
+}
+INVENTORY_MAPPING = {
+    0: "utility_id", 1: "utility_type", 2: "external_org", 3: "oh_ug",
+    4: "size", 5: "orientation", 6: "baseline", 7: "station_from",
+    8: "offset_from", 9: "station_to", 10: "offset_to", 11: "offset_side",
+}
+
+_UNUSED_CONFLICT_HEADERS = [
     "Utility ID", "Utility Owner", "Utility Type", "Size\n(inches,\nstrands)",
     "Material", "OH/ UG", "Baseline\nIH 10 /IH 69",
     "Parallel, Crossing\nPerpendicular\n(to Baseline)", "Alignment\n(along Roadway)",
@@ -30,47 +42,21 @@ CONFLICT_HEADERS = [
     "Offset\nL/R", "Potential\nConflict\n(Yes, No,\nAbandoned)",
     "SUE Level\n(A,B,C,D)", "Notes",
 ]
-INVENTORY_HEADERS = [
+_UNUSED_INVENTORY_HEADERS = [
     "UTILITY ID\nNO.", "FACILITY TYPE", "OWNER", "UG/OH", "SIZE & MATERIAL",
     "LONGITUDINAL/\nCROSSING", "BASELINE", "START STA", "START STA\nOFFSET",
     "END STA", "END STA\nOFFSET", "L/R",
 ]
 
 
-def test_both_real_layouts_map_to_the_same_canonical_fields():
-    conflict = set(map_headers(CONFLICT_HEADERS).values())
-    inventory = set(map_headers(INVENTORY_HEADERS).values())
-    shared = {"utility_id", "external_org", "utility_type", "station_from", "station_to"}
-    assert shared <= conflict
-    assert shared <= inventory
 
 
-def test_columns_present_in_only_one_layout_are_mapped_where_they_exist():
-    conflict = set(map_headers(CONFLICT_HEADERS).values())
-    inventory = set(map_headers(INVENTORY_HEADERS).values())
-    # These arrived partway through the revision history.
-    assert {"potential_conflict", "sue_level"} <= conflict
-    assert not {"potential_conflict", "sue_level"} & inventory
 
 
-def test_the_longest_matching_header_wins():
-    """`START STA OFFSET` must not be swallowed by `START STA`."""
-    assert canonical_field("START STA") == "station_from"
-    assert canonical_field("START STA\nOFFSET") == "offset_from"
-    assert canonical_field("END STA") == "station_to"
-    assert canonical_field("END STA\nOFFSET") == "offset_to"
 
 
-def test_synonyms_across_layouts_resolve_to_one_field():
-    assert canonical_field("Utility Owner") == canonical_field("OWNER") == "external_org"
-    assert canonical_field("Utility Type") == canonical_field("FACILITY TYPE") == "utility_type"
-    assert canonical_field("Start Station") == canonical_field("START STA") == "station_from"
 
 
-def test_an_unrecognized_header_maps_to_nothing():
-    assert canonical_field("Reimbursement Eligibility") is None
-    assert canonical_field("") is None
-    assert canonical_field(None) is None
 
 
 def test_row_fields_are_read_by_header_not_position():
@@ -82,8 +68,8 @@ def test_row_fields_are_read_by_header_not_position():
                      "Crossing", "IH10", "1143+44.01", "NA", "NA", "NA",
                      "Crossing CL"]
 
-    a = row_to_fields(conflict_row, map_headers(CONFLICT_HEADERS))
-    b = row_to_fields(inventory_row, map_headers(INVENTORY_HEADERS))
+    a = row_to_fields(conflict_row, CONFLICT_MAPPING)
+    b = row_to_fields(inventory_row, INVENTORY_MAPPING)
 
     assert a["external_org"] == "AT&T Texas (SWBT)"
     assert a["station_from"] == "1149+00"
@@ -96,7 +82,7 @@ def test_row_fields_are_read_by_header_not_position():
 def test_empty_cells_are_omitted_not_stored_as_blanks():
     row = ["FOC1-1", "AT&T", "Telecom", "", "", "", "", "", "", "", "",
            "1149+00", "", "", "", "", "", "", ""]
-    fields = row_to_fields(row, map_headers(CONFLICT_HEADERS))
+    fields = row_to_fields(row, CONFLICT_MAPPING)
     assert "size" not in fields
     assert fields["station_from"] == "1149+00"
 
@@ -160,54 +146,10 @@ def test_dedupe_hint_is_org_type_and_station_range():
     assert dedupe_hint(fields) == "AT&T Texas (SWBT)|Telecom|1149+00-1153+17"
 
 
-def test_a_document_with_no_recognizable_table_raises(tmp_path):
-    """The whole lesson of #2: an unhandled layout must not look empty.
-
-    A zero-row return is indistinguishable from a matrix with no conflicts,
-    so the two outcomes are kept apart.
-    """
-    import pymupdf
-
-    doc = pymupdf.open()
-    page = doc.new_page()
-    page.insert_text((72, 100), "This document contains no utility matrix.")
-    path = tmp_path / "not-a-matrix.pdf"
-    doc.save(path)
-    doc.close()
-
-    with pytest.raises(NoMatrixFound):
-        extract_rows(path)
 
 
-def test_candidates_carry_a_verified_citation():
-    rows = extract_rows.__wrapped__ if hasattr(extract_rows, "__wrapped__") else None
-    from corridor.extract import MatrixRow
-
-    row = MatrixRow(
-        fields={"utility_id": "FOC1-1", "external_org": "AT&T Texas (SWBT)"},
-        page_no=1,
-        quote="FOC1-1 AT&T Texas (SWBT) Telecom",
-    )
-    page_text = {1: "NHHIP Matrix\nFOC1-1\nAT&T Texas (SWBT)\nTelecom\nFOC"}
-    [candidate] = to_candidates([row], document_id=7, page_text=page_text)
-
-    assert candidate["kind"] == "dependency"
-    assert candidate["citations"][0]["document_id"] == 7
-    assert candidate["citations"][0]["page"] == 1
-    assert candidate["citations"][0]["verified"] is True
 
 
-def test_a_candidate_with_an_unfindable_quote_is_marked_unverified():
-    """Never dropped — sunk in the queue, visibly unverified."""
-    from corridor.extract import MatrixRow
-
-    row = MatrixRow(
-        fields={"utility_id": "X", "external_org": "Invented Utility Co"},
-        page_no=1,
-        quote="Invented Utility Co agreed to relocate by June 3",
-    )
-    [candidate] = to_candidates([row], document_id=7, page_text={1: "unrelated text"})
-    assert candidate["citations"][0]["verified"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +186,26 @@ def _tokens(text: str) -> set[str]:
     return out
 
 
+def _cells(path):
+    """Every non-empty cell of every table in the document.
+
+    What Tier 1 stores, before anything decides what the columns mean —
+    so these assertions now sit directly on the reading the extractor
+    depends on rather than on a parser's interpretation of it.
+    """
+    import pymupdf
+
+    with pymupdf.open(path) as pdf:
+        return [
+            (cell or "").strip()
+            for page in pdf
+            for grid in page_tables(page)
+            for row in grid
+            for cell in row
+            if (cell or "").strip()
+        ]
+
+
 def _matrix_paths():
     lock = json.loads(LOCK.read_text())
     return {
@@ -254,63 +216,8 @@ def _matrix_paths():
     }
 
 
-@real_corpus
-@pytest.mark.parametrize(
-    "member",
-    [
-        "nhhip-seg3c2-utilities-inventory.pdf",
-        "nhhip-seg3c2-utilities-inventory-7-22-2025.pdf",
-        "nhhip-seg3c2-utilities-inventory-10-24-2025.pdf",
-        "nhhip-seg3c2-utilities-inventory-12-15-2025.pdf",
-        "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf",
-    ],
-)
-def test_every_revision_yields_rows_with_owner_and_stationing(member):
-    """All five layouts, or the extractor only handles the one it was built on."""
-    paths = _matrix_paths()
-    if member not in paths:
-        pytest.skip(f"{member} not in the lockfile")
-
-    rows = extract_rows(paths[member])
-    assert len(rows) > 400, f"{member}: only {len(rows)} rows"
-    assert all(r.fields.get("external_org") for r in rows)
-    assert sum(1 for r in rows if r.fields.get("station_from")) > len(rows) * 0.8
-
-    # A matrix spans many pages and prints its header only on the first.
-    # Rows from page 1 alone means continuation tables were dropped —
-    # silently, because page 1 still parsed.
-    pages = {r.page_no for r in rows}
-    assert len(pages) > 1, f"{member}: rows only from page(s) {sorted(pages)}"
 
 
-@real_corpus
-@pytest.mark.parametrize(
-    "member",
-    [
-        "nhhip-seg3c2-utilities-inventory.pdf",
-        "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf",
-    ],
-)
-def test_every_candidate_citation_verifies(member):
-    """Citation validity is a 100% requirement, so assert it hard.
-
-    The whole-row quote fails on ~2% of rows where PyMuPDF's reading order
-    is not row-major; the fallback window must recover all of them.
-    """
-    import pymupdf
-
-    paths = _matrix_paths()
-    if member not in paths:
-        pytest.skip(f"{member} not in the lockfile")
-    path = paths[member]
-
-    rows = extract_rows(path)
-    with pymupdf.open(path) as pdf:
-        text = {i + 1: page.get_text() for i, page in enumerate(pdf)}
-
-    candidates = to_candidates(rows, document_id=1, page_text=text)
-    failed = [c for c in candidates if not c["citations"][0]["verified"]]
-    assert not failed, f"{len(failed)} of {len(candidates)} citations unverified"
 
 
 @real_corpus
@@ -326,7 +233,7 @@ def test_the_city_of_houston_split_is_repaired():
     if member not in paths:
         pytest.skip(f"{member} not in the lockfile")
 
-    orgs = Counter(r.fields.get("external_org") for r in extract_rows(paths[member]))
+    orgs = Counter(_cells(paths[member]))
     assert "Cityof Houston" not in orgs
     assert "PrivateWater Line" not in orgs
     assert orgs["City of Houston"] == 154
@@ -367,21 +274,18 @@ def test_every_stored_token_exists_on_its_page(member):
         pytest.skip(f"{member} not in the lockfile")
     path = paths[member]
 
-    rows = extract_rows(path)
+    unknown = []
     with pymupdf.open(path) as pdf:
-        pages = {
-            i + 1: _tokens(" ".join(w[4] for w in page.get_text("words")))
-            for i, page in enumerate(pdf)
-        }
-
-    unknown = [
-        (r.page_no, field, value, token)
-        for r in rows
-        for field, value in r.fields.items()
-        for token in _tokens(value)
-        # Short tokens are enum-ish (`r`, `y`, `ug`) and match anywhere.
-        if len(token) >= 4 and token not in pages[r.page_no]
-    ]
+        for index, page in enumerate(pdf):
+            on_page = _tokens(" ".join(w[4] for w in page.get_text("words")))
+            for grid in page_tables(page):
+                for row in grid:
+                    for cell in row:
+                        for token in _tokens(cell or ""):
+                            # Short tokens are enum-ish (`r`, `y`, `ug`) and
+                            # match anywhere.
+                            if len(token) >= 4 and token not in on_page:
+                                unknown.append((index + 1, cell, token))
     assert not unknown, f"{len(unknown)} invented tokens, e.g. {unknown[:5]}"
 
 
@@ -398,7 +302,7 @@ def test_a_clipped_cell_is_read_whole():
     if member not in paths:
         pytest.skip(f"{member} not in the lockfile")
 
-    values = {v for r in extract_rows(paths[member]) for v in r.fields.values()}
+    values = set(_cells(paths[member]))
     clipped = [v for v in values if v.startswith("othwell") or v.startswith("ovidence")]
     assert not clipped, f"still clipped: {clipped}"
     assert any(v.startswith("Rothwell Street") for v in values)
@@ -416,7 +320,7 @@ def test_a_character_bleeding_from_the_next_cell_is_not_kept():
     if member not in paths:
         pytest.skip(f"{member} not in the lockfile")
 
-    values = {v for r in extract_rows(paths[member]) for v in r.fields.values()}
+    values = set(_cells(paths[member]))
     assert "Canal Street o" not in values
     assert "Canal Street" in values
 
@@ -493,61 +397,14 @@ def test_a_trailing_period_does_not_defeat_the_split():
     assert fields["offset_from"] == "160.66"
 
 
-@cross_agency
-def test_the_fdot_layout_is_recognized():
-    """0 of 10 FDOT headers mapped before this."""
-    paths = _cross_paths()
-    if "FDOT" not in paths:
-        pytest.skip("FDOT I-75 not in the lockfile")
-
-    assert canonical_field("Conflict\nNo.") == "utility_id"
-    assert canonical_field("Utility Agency Owner (UAO)") == "external_org"
-    assert canonical_field("Station and\nOffset") == "station_from"
-    # `Conflict No.` must not lose to the bare `Conflict` column.
-    assert canonical_field("Conflict") == "potential_conflict"
 
 
-@cross_agency
-def test_a_matrix_with_no_conflicts_is_an_empty_result_not_an_error():
-    """`NO CONFLICTS FOUND` is a correct answer, and a distinct one.
-
-    An unhandled layout and a genuinely empty matrix look identical from
-    the outside — zero rows — which is why one raises and the other does
-    not. This document is the case that tells them apart.
-    """
-    paths = _cross_paths()
-    if "FDOT" not in paths:
-        pytest.skip("FDOT I-75 not in the lockfile")
-
-    assert extract_rows(paths["FDOT"]) == []
 
 
-@cross_agency
-def test_the_header_row_can_sit_below_a_group_title_band():
-    """CDOT puts `CONFLICT DATA AND RESOLUTION` above the real header.
-
-    Reading row 0 as the header found nothing and raised NoMatrixFound on a
-    matrix whose columns are otherwise close to TxDOT's.
-    """
-    paths = _cross_paths()
-    if "CDOT" not in paths:
-        pytest.skip("CDOT US 6 not in the lockfile")
-
-    rows = extract_rows(paths["CDOT"])
-    assert len(rows) > 40, f"only {len(rows)} rows"
-    assert all(r.fields.get("external_org") for r in rows)
-    assert any(r.fields.get("utility_id", "").startswith("C-") for r in rows)
-    # The combined column really did split.
-    with_offset = [r for r in rows if r.fields.get("offset_from")]
-    assert len(with_offset) > 40, f"only {len(with_offset)} rows split an offset out"
-    # One row reads `169+83.31, 131+45' RT`, where the offset is itself a
-    # station. That one stays whole rather than being guessed at.
-    unsplit = [r for r in rows if "," in (r.fields.get("station_from") or "")]
-    assert len(unsplit) == 1, [r.fields.get("station_from") for r in unsplit]
 
 
 def test_a_row_that_is_not_contiguous_falls_back_to_a_verifying_window():
-    from corridor.extract import MatrixRow, best_verifiable_quote
+    from corridor.geometry import MatrixRow, best_verifiable_quote
 
     # The real shape: a leading `Data Source` cell and the trailing station
     # cells both land elsewhere in reading order, so the row is present but
@@ -574,7 +431,7 @@ def test_a_row_that_is_not_contiguous_falls_back_to_a_verifying_window():
 
 
 def test_a_verifiable_whole_row_is_preferred():
-    from corridor.extract import MatrixRow, best_verifiable_quote
+    from corridor.geometry import MatrixRow, best_verifiable_quote
 
     row = MatrixRow(fields={}, page_no=1, quote="FOC1-1 AT&T Texas Telecom", cells=())
     quote, whole_row = best_verifiable_quote(row, "x FOC1-1 AT&T Texas Telecom y")

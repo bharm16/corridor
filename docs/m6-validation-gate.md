@@ -253,3 +253,18 @@ What has changed is the argument for the *future*: there is no longer a
 quality reason to keep the deterministic parser on any document. It stays
 only to generate baselines (#63 tracks its removal), and new projects have
 one path that costs no engineering.
+
+
+---
+
+## Note, after #63
+
+The deterministic parser has since been deleted. Its baseline above cannot
+be regenerated from the code — what survives is these recorded numbers and
+the `txdot_ucm_v1` Candidates in the database, which is why both are
+written down here in full rather than left to be re-derived.
+
+The half of that module which reads cells off word boxes was not deleted.
+It is `corridor.geometry`, and Tier 1 depends on it for every value it
+stores, so the 3-in-3,235 figure above is now a property of the live path
+rather than of a retired one.

@@ -18,8 +18,8 @@ Three outcomes, deliberately distinct:
   inserts unconditionally, so without this a second run doubles every
   Candidate a reviewer then has to clear by hand.
 
-The extractor is injected. The deterministic table parser is the default
-today; the tiered extractor (ADR-0006) swaps in at the same seam.
+The extractor is injected so tests can drive this without a model. There
+is one in production: the tiered extractor (ADR-0006).
 """
 
 from __future__ import annotations
@@ -32,11 +32,10 @@ from pathlib import Path
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from corridor.docs import stored_pdf
-from corridor.extract import PROMPT_VERSION as DETERMINISTIC_VERSION
-from corridor.extract import NoMatrixFound, extract_rows, to_candidates
 from corridor.extract_batch import already_extracted
-from corridor.models import Candidate, DocPage, Document, Project
+from corridor.extract_matrix import PROMPT_VERSION, extract_document
+from corridor.geometry import NoMatrixFound
+from corridor.models import Candidate, Document, Project
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
@@ -58,58 +57,12 @@ class Outcome:
     tiers: dict[str, int] = field(default_factory=dict)
 
 
-def deterministic(
-    session: Session, document: Document, *, path: Path | str | None = None
-) -> list[Candidate]:
-    """The table parser (`corridor.extract`) as a project extractor."""
-    path = path or stored_pdf(document)
-    if path is None:
-        raise NoMatrixFound(
-            f"{document.filename} is not in the corpus store; "
-            "run `make corpus` before extracting."
-        )
-
-    # Verify against the *stored* page text, which is what evidence display
-    # will show. Verifying against a freshly re-extracted copy could pass
-    # here and fail in the UI.
-    page_text = {
-        page.page_no: page.text
-        for page in session.scalars(
-            select(DocPage).where(DocPage.document_id == document.id)
-        )
-    }
-
-    candidates = []
-    for payload in to_candidates(
-        extract_rows(path), document_id=document.id, page_text=page_text
-    ):
-        citations = payload["citations"]
-        candidate = Candidate(
-            project_id=document.project_id,
-            kind=payload["kind"],
-            payload_json=payload,
-            source_document_id=document.id,
-            source_pages=sorted({c["page"] for c in citations}),
-            confidence=payload["confidence"],
-            prompt_version=DETERMINISTIC_VERSION,
-            # No model involved, and recording that honestly matters when
-            # eval compares runs.
-            model=None,
-            citations_verified=all(c["verified"] for c in citations),
-        )
-        session.add(candidate)
-        candidates.append(candidate)
-
-    session.flush()
-    return candidates
-
-
 def extract_project(
     session: Session,
     project: Project,
     *,
-    extract: Extractor = deterministic,
-    prompt_version: str = DETERMINISTIC_VERSION,
+    extract: Extractor,
+    prompt_version: str = PROMPT_VERSION,
     redo: bool = False,
     commit: bool = True,
 ) -> list[Outcome]:
@@ -241,71 +194,56 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
 
 
 def main(argv: list[str]) -> int:
-    """`make extract ARGS="<slug> [--tiered] [--redo]"`"""
+    """`make extract ARGS="<slug> [--redo]"`"""
     from corridor.db import Session as SessionFactory
+    from corridor.llm import OpenAIClient
 
     args = [a for a in argv if not a.startswith("-")]
     flags = {a for a in argv if a.startswith("-")}
-    unknown = flags - {"--redo", "--tiered"}
+    unknown = flags - {"--redo"}
     if not args or unknown:
         print(
-            "usage: extract <project-slug> [--tiered] [--redo]"
+            "usage: extract <project-slug> [--redo]"
             + (f"\nunknown flag(s): {', '.join(sorted(unknown))}" if unknown else ""),
             file=sys.stderr,
         )
         return 2
 
     slug = args[0]
-    client = None
     with SessionFactory() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
-        if "--tiered" in flags:
-            from corridor.extract_matrix import PROMPT_VERSION as TIERED_VERSION
-            from corridor.extract_matrix import extract_document
-            from corridor.llm import OpenAIClient
-
-            # One client for the run, so retry, backoff and usage accounting
-            # are shared rather than reset per document.
-            client = OpenAIClient()
-            prompt_version = TIERED_VERSION
-
-            def extract(session, document):
-                return extract_document(session, document, client=client)
-
-            print(f"tiered extraction, model {client.model}", flush=True)
-        else:
-            extract, prompt_version = deterministic, DETERMINISTIC_VERSION
+        # One client for the run, so retry, backoff and usage accounting are
+        # shared rather than reset per document.
+        client = OpenAIClient()
+        print(f"model {client.model}", flush=True)
 
         try:
             outcomes = extract_project(
                 session,
                 project,
-                extract=extract,
-                prompt_version=prompt_version,
+                extract=lambda s, d: extract_document(s, d, client=client),
                 redo="--redo" in flags,
             )
         finally:
-            if client is not None:
-                client.close()
+            client.close()
 
-        print(render(project, prompt_version, outcomes))
-        if client is not None:
-            usage = client.usage
-            # Cached and reasoning are broken out because neither is
-            # recoverable from the totals afterwards, and both move the
-            # bill: cached input bills at a tenth, reasoning bills as
-            # output. A run that quietly reasoned is a run whose cost
-            # nobody can explain.
-            print(
-                f"tokens: {usage.prompt_tokens:,} in "
-                f"({usage.cached_tokens:,} cached) / "
-                f"{usage.completion_tokens:,} out "
-                f"({usage.reasoning_tokens:,} reasoning)"
-            )
+        print(render(project, PROMPT_VERSION, outcomes))
+
+        # Cached and reasoning are broken out because neither is recoverable
+        # from the totals afterwards, and both move the bill: cached input
+        # bills at a tenth, reasoning bills as output. A run that quietly
+        # reasoned is a run whose cost nobody can explain.
+        usage = client.usage
+        print(
+            f"tokens: {usage.prompt_tokens:,} in "
+            f"({usage.cached_tokens:,} cached) / "
+            f"{usage.completion_tokens:,} out "
+            f"({usage.reasoning_tokens:,} reasoning)"
+        )
 
     return 1 if any(o.status == "unreadable" for o in outcomes) else 0
 

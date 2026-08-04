@@ -39,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.docs import stored_pdf
-from corridor.extract import (
+from corridor.geometry import (
     MatrixRow,
     NoMatrixFound,
     best_verifiable_quote,

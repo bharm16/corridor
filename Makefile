@@ -46,10 +46,9 @@ agreements:
 
 # Extract every matrix in a project. Skips documents already extracted at
 # this prompt version; --redo replaces their pending candidates and leaves
-# adjudicated ones alone. --tiered reads the page images with a model and
+# adjudicated ones alone. Reads the page images with a model, so it
 # needs OPENAI_API_KEY:
 #   make extract ARGS="nhhip-3c2"
-#   make extract ARGS="nhhip-3c2 --tiered"
 #   make extract ARGS="nhhip-3c2 --redo"
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
