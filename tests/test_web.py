@@ -541,3 +541,98 @@ def test_a_sheet_candidate_is_labelled_as_read_from_cells(client, session, proje
     # word "cells" anywhere on the page, which the highlight hint has said
     # since long before spreadsheets were readable.
     assert "· <span" in body and "read from cells" in body
+
+
+# ----------------- exception pills read as facts (#117, ADR-0010)
+
+
+def two_overdue(session, project):
+    """Two overdue records; one critical, one whose document said nothing."""
+    from datetime import date, timedelta
+
+    deps = []
+    for ref, strategy in (("DEP-CRIT", "relocate"), ("DEP-PLAIN", None)):
+        dep = Dependency(
+            project_id=project.id,
+            ref_code=ref,
+            dep_type="utility_relocation",
+            title=f"Telecom — {ref}",
+            status="committed",
+            resolution_strategy=strategy,
+            committed_date=date.today() - timedelta(days=40),
+            internal_owner="Bryce",
+        )
+        session.add(dep)
+        deps.append(dep)
+    session.flush()
+    return deps
+
+
+def test_ledger_pills_carry_the_rules_own_days(client, session, project):
+    """"OVERDUE 40d" is a fact a reviewer can check against the record;
+    the score it replaces was not."""
+    two_overdue(session, project)
+
+    body = client.get(f"/ledger/{project.slug}").text
+
+    assert "OVERDUE 40d" in body
+
+
+def test_no_severity_markup_survives_anywhere(client, session, project):
+    """The colour that fired at an arbitrary constant died with the
+    constant (ADR-0010)."""
+    deps = two_overdue(session, project)
+
+    ledger = client.get(f"/ledger/{project.slug}").text
+    detail = client.get(f"/ledger/{project.slug}/{deps[0].id}").text
+
+    for body in (ledger, detail):
+        assert "sev-high" not in body
+        assert "severity" not in body.lower()
+
+
+def test_overdue_criticals_is_one_query(client, session, project):
+    """The slice ADR-0010 promised: criticality filters, the rule filters,
+    and together they answer "show me the overdue relocations"."""
+    two_overdue(session, project)
+
+    body = client.get(
+        f"/ledger/{project.slug}?resolution_strategy=critical&rule=OVERDUE"
+    ).text
+
+    assert "DEP-CRIT" in body
+    assert "DEP-PLAIN" not in body
+
+
+def test_the_dependency_view_states_days_beside_each_rule(
+    client, session, project
+):
+    deps = two_overdue(session, project)
+
+    body = client.get(f"/ledger/{project.slug}/{deps[0].id}").text
+
+    assert "OVERDUE" in body
+    assert "40d" in body
+
+
+def test_a_zero_day_quantity_still_renders(client, session, project):
+    """"Needed in 0 days" is due today, and 0 is not None: a truthiness
+    check would have swallowed exactly the row a reviewer most needs."""
+    from datetime import date
+
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="DEP-TODAY",
+        dep_type="utility_relocation",
+        title="Telecom — DEP-TODAY",
+        status="committed",
+        need_date=date.today(),
+        committed_date=date.today(),
+        internal_owner="Bryce",
+    )
+    session.add(dep)
+    session.flush()
+
+    body = client.get(f"/ledger/{project.slug}").text
+
+    assert "DUE_SOON 0d" in body
