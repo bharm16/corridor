@@ -252,10 +252,14 @@ class Dependency(Base):
         default="identified",
         server_default="identified",
     )
-    criticality: Mapped[str] = mapped_column(
-        _enum(*CRITICALITIES, name="criticality"),
-        default="normal",
-        server_default="normal",
+    # Null means no source document asserted a criticality — not `normal`.
+    # The enum has no value for "the document did not say", and recording
+    # silence as `normal` collapses two different facts into one and makes
+    # the M7 gate's denominator a lie (ADR-0007). Nothing defaults it:
+    # a value here is a conclusion drawn from Assertions, like every other
+    # adjudicated field.
+    criticality: Mapped[str | None] = mapped_column(
+        _enum(*CRITICALITIES, name="criticality")
     )
     committed_date: Mapped[date | None] = mapped_column(Date)
     need_date: Mapped[date | None] = mapped_column(Date)

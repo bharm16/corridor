@@ -88,7 +88,7 @@
             {%- if r.contradicted %} <span class="pill contra">sources disagree</span>{% endif %}</td>
           <td class="num">{{ r.dependency.station_from or '—' }}{% if r.dependency.station_to %} → {{ r.dependency.station_to }}{% endif %}</td>
           <td>{{ r.dependency.status }}</td>
-          <td>{{ r.dependency.criticality }}</td>
+          <td>{{ r.dependency.criticality or '—' }}</td>
           <td>
             {% if r.is_ready %}<span class="pill ready">ready</span>
             {% else %}<span class="pill notready">no</span>{% endif %}

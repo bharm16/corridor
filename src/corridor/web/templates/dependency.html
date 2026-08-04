@@ -48,7 +48,8 @@
     <b>{{ view.dependency.title }}</b><br>
     {{ view.org_name or 'no external party' }} ·
     {{ view.dependency.station_from or '—' }}{% if view.dependency.station_to %} → {{ view.dependency.station_to }}{% endif %} ·
-    {{ view.dependency.status }} · {{ view.dependency.criticality }}
+    {{ view.dependency.status }} ·
+    {{ view.dependency.criticality or 'criticality not asserted' }}
     {% if view.is_ready %}<span class="pill ready">ready</span>
     {% else %}<span class="pill notready">not ready</span>{% endif %}
     {% if view.contradictions %}<span class="pill contra">{{ view.contradictions|length }} field(s) contradicted</span>{% endif %}
