@@ -12,7 +12,7 @@ from corridor.models import (
     Project,
 )
 from corridor.web.app import app, get_session
-from corridor.web.queue import next_candidate
+from corridor.web.queue import build_view, next_candidate
 
 
 @pytest.fixture
@@ -373,3 +373,90 @@ def test_an_empty_queue_says_so(client, session, project):
 def test_a_missing_page_image_is_a_404_not_a_crash(client, session, document):
     r = client.get(f"/page-image/{document.id}/1")
     assert r.status_code == 404
+
+
+# ------------------------------ what the queue surfaces about a row (#71)
+
+
+def rich_candidate(session, project, document, **payload):
+    c = make_candidate(session, project, document)
+    c.payload_json = {**c.payload_json, **payload}
+    session.flush()
+    return c
+
+
+def test_the_queue_shows_which_tier_read_the_row(session, project, document):
+    """A transcribed row deserves different weight from one read off the
+    text layer, the same way `text_source: ocr` already does — and today a
+    reviewer cannot tell without opening the payload."""
+    rich_candidate(session, project, document, tier="transcribe",
+                   text_source="ocr")
+
+    view = build_view(session, next_candidate(session, project.id))
+
+    assert view.tier == "transcribe"
+    assert view.text_source == "ocr"
+
+
+def test_the_queue_lists_headers_the_vocabulary_could_not_place(
+    session, project, document
+):
+    """The queue telling a human "the document says something the Ledger
+    has no field for" — the trigger for a deliberate vocabulary extension,
+    which is not an extractor's decision to make. Reconstructing these from
+    the payload by hand is how #85 and #97 were investigated."""
+    rich_candidate(
+        session, project, document,
+        unmapped_columns=["Retain and Protect", "Abandon / Deactivate"],
+    )
+
+    view = build_view(session, next_candidate(session, project.id))
+
+    assert view.unmapped_columns == ["Retain and Protect", "Abandon / Deactivate"]
+
+
+def test_an_unverified_row_names_the_field_that_failed(
+    session, project, document
+):
+    """"Unverified" that names the suspect value instead of only sinking
+    the row. A reviewer who cannot see *which* field is unsupported has to
+    re-verify all of them."""
+    rich_candidate(
+        session, project, document,
+        unverified_fields=["station_from"],
+        low_confidence_tokens=["1149"],
+    )
+
+    view = build_view(session, next_candidate(session, project.id))
+
+    assert view.unverified_fields == ["station_from"]
+    assert view.low_confidence_tokens == ["1149"]
+
+
+def test_a_clean_row_surfaces_nothing_extra(session, project, document):
+    """The common case stays quiet. A queue that flags every row flags
+    nothing."""
+    make_candidate(session, project, document)
+
+    view = build_view(session, next_candidate(session, project.id))
+
+    assert view.unmapped_columns == []
+    assert view.unverified_fields == []
+    assert view.low_confidence_tokens == []
+    assert view.tier is None
+
+
+def test_the_queue_page_renders_what_it_surfaces(client, session, project, document):
+    rich_candidate(
+        session, project, document,
+        tier="transcribe",
+        unmapped_columns=["Retain and Protect"],
+        unverified_fields=["station_from"],
+    )
+    session.commit()
+
+    body = client.get(f"/queue/{project.slug}").text
+
+    assert "transcribe" in body
+    assert "Retain and Protect" in body
+    assert "station_from" in body

@@ -45,6 +45,22 @@ class CandidateView:
     # before anything else gets polish: accepting a duplicate instead of
     # merging corrupts the ledger, and a reviewer will not go hunting.
     matches: list = field(default_factory=list)
+    # What the extractor recorded about *how* it read this row. All of it
+    # already sat in the payload; none of it was visible where adjudication
+    # happens, so investigating it meant SQL against `payload_json` — which
+    # is how #85 and #97 were actually investigated.
+    tier: str | None = None
+    text_source: str | None = None
+    # Printed headers the model saw and the canonical vocabulary could not
+    # place. The queue telling a human "the document says something the
+    # Ledger has no field for", which is the trigger for a deliberate
+    # vocabulary extension rather than an extractor's improvisation.
+    unmapped_columns: list[str] = field(default_factory=list)
+    # Named, so "unverified" points at the suspect value instead of only
+    # sinking the row. A reviewer who cannot see which field is unsupported
+    # has to re-verify all of them.
+    unverified_fields: list[str] = field(default_factory=list)
+    low_confidence_tokens: list[str] = field(default_factory=list)
 
 
 def pending_counts(session: Session, project_id: int) -> tuple[int, int]:
@@ -101,6 +117,11 @@ def build_view(session: Session, candidate: Candidate) -> CandidateView:
         page_no=page_no,
         citations_verified=bool(candidate.citations_verified),
         fields=sorted((payload.get("fields") or {}).items()),
+        tier=payload.get("tier"),
+        text_source=payload.get("text_source"),
+        unmapped_columns=list(payload.get("unmapped_columns") or []),
+        unverified_fields=list(payload.get("unverified_fields") or []),
+        low_confidence_tokens=list(payload.get("low_confidence_tokens") or []),
         highlights=locate_quote(document, page_no, quote),
         remaining=total,
         verified_remaining=verified,
