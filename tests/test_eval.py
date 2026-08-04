@@ -385,3 +385,166 @@ def test_a_real_enumeration_is_measurable_even_when_recall_is_zero(
     assert result.unmeasurable is False
     assert result.recall == 0.0
     assert "0.0%" in render(result)
+
+
+# ------------------------------------------------- critical recall (#87)
+
+
+CRITICAL_GOLD = """source_ref,page,critical
+FOC1-1,1,yes
+FOC1-2,1,no
+E92,2,
+"""
+
+
+def test_a_gold_set_can_declare_which_rows_are_critical(tmp_path):
+    path = tmp_path / "gold.csv"
+    path.write_text(CRITICAL_GOLD)
+
+    gold = load_gold(path)
+
+    assert [g.critical for g in gold] == [True, False, False]
+
+
+def test_a_gold_set_without_the_column_loads_exactly_as_before(tmp_path):
+    """The loader's existing contract is unchanged; `critical` is optional.
+
+    `None` rather than `False`: a gold set that never mentions criticality
+    has not judged these rows non-critical, and the difference is what
+    separates NOT MEASURED from a recall of zero.
+    """
+    path = tmp_path / "gold.csv"
+    path.write_text(GOLD)
+
+    gold = load_gold(path)
+
+    assert [g.source_ref for g in gold] == ["FOC1-1", "FOC1-2", "E92"]
+    assert [g.critical for g in gold] == [None, None, None]
+
+
+def test_an_unreadable_criticality_label_is_refused(tmp_path):
+    """A typo must not quietly mean "not critical".
+
+    Recall's denominator is the labeled critical set. A label the loader
+    does not understand, silently read as false, shrinks that denominator —
+    which reports high recall precisely because a row went missing from the
+    measurement. Same failure ADR-0007 rejects reviewer-assigned
+    criticality for.
+    """
+    path = tmp_path / "gold.csv"
+    path.write_text("source_ref,critical\nFOC1-1,ture\n")
+
+    with pytest.raises(MalformedGoldSet, match="ture"):
+        load_gold(path)
+
+
+def test_critical_recall_is_scored_from_the_gold_labels(session, project, document):
+    """Of the rows the gold set calls critical, how many were found.
+
+    The extractor classifies nothing — this is answered by the labels
+    alone, which is why it does not wait on the Ledger-side work (#86).
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "E92")
+
+    gold = [
+        GoldRecord("FOC1-1", critical=True),
+        GoldRecord("FOC1-2", critical=True),
+        GoldRecord("E92"),
+    ]
+    result = evaluate(session, slug=project.slug, gold=gold)
+
+    assert result.critical_gold_total == 2
+    assert result.critical_matched == 1
+    assert result.critical_recall == 0.5
+    assert result.critical_missing == ["FOC1-2"]
+    # The overall numbers are untouched by the labels.
+    assert result.recall == pytest.approx(2 / 3)
+
+
+def test_a_gold_set_labeling_nothing_critical_is_not_a_recall_of_zero(
+    session, project, document
+):
+    """#82's precedent, one metric further in.
+
+    A gate reporting 0% because nobody labeled anything reads as total
+    extraction failure — and on a holdout ADR-0008 spends once, that is
+    unrecoverable.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+
+    result = evaluate(
+        session, slug=project.slug, gold=[GoldRecord("FOC1-1", critical=False)]
+    )
+
+    assert result.critical_unmeasurable is True
+    assert "critical recall  NOT MEASURED" in render(result)
+
+
+def test_a_gold_set_with_no_critical_column_says_so_rather_than_erroring(
+    session, project, document
+):
+    """Everything else scores unchanged, and the absence is stated."""
+    make_candidate(session, project, document, "FOC1-1")
+
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    rendered = render(result)
+
+    assert result.unmeasurable is False
+    assert result.recall == 1.0
+    assert result.critical_unmeasurable is True
+    assert "does not label criticality" in rendered
+
+
+def test_a_genuine_critical_recall_of_zero_is_reported_as_zero(
+    session, project, document
+):
+    """The labeled set is not empty; the extractor simply missed it."""
+    make_candidate(session, project, document, "E92")
+
+    result = evaluate(
+        session, slug=project.slug, gold=[GoldRecord("FOC1-1", critical=True)]
+    )
+
+    assert result.critical_unmeasurable is False
+    assert result.critical_recall == 0.0
+    assert "critical recall 0.0%" in render(result)
+
+
+def test_critical_recall_is_scoped_to_one_extractor(session, project, document):
+    """The gate's per-prompt-version scoping applies here too, or the two
+    extraction paths stop being comparable on the metric that gates M7."""
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(
+        session, project, document, "FOC1-2", prompt_version="matrix_tiered_v1"
+    )
+
+    gold = [GoldRecord("FOC1-1", critical=True), GoldRecord("FOC1-2", critical=True)]
+
+    old = evaluate(
+        session, slug=project.slug, gold=gold, prompt_version="txdot_ucm_v1"
+    )
+    new = evaluate(
+        session, slug=project.slug, gold=gold, prompt_version="matrix_tiered_v1"
+    )
+
+    assert (old.critical_matched, old.critical_recall) == (1, 0.5)
+    assert (new.critical_matched, new.critical_recall) == (1, 0.5)
+    assert old.critical_missing == ["FOC1-2"]
+    assert new.critical_missing == ["FOC1-1"]
+
+
+def test_the_page_text_enumeration_labels_nothing_critical(session, project, document):
+    """Criticality is asserted by the document's own signal column, and
+    `gold_from_page_text` reads ids off the text stream. It cannot know, so
+    it must not claim — the default run reports critical recall as
+    unmeasurable rather than as zero."""
+    add_page(session, document, 1, "FOC1-1 \nAT&T Texas (SWBT) \nTelecom \n")
+    make_candidate(session, project, document, "FOC1-1")
+
+    gold = gold_for_documents(session, {document.id})
+    result = evaluate(session, slug=project.slug, gold=gold)
+
+    assert [g.source_ref for g in gold] == ["FOC1-1"]
+    assert result.recall == 1.0
+    assert result.critical_unmeasurable is True
