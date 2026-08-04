@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from corridor.verify import (
@@ -139,3 +142,117 @@ def test_unverified_fields_names_every_field_that_failed():
     }
     assert unverified_fields(fields, PAGE) == {"station_from", "location_start"}
     assert unverified_fields({"external_org": "AT&T Texas (SWBT)"}, PAGE) == set()
+
+
+# ------------------------------------------- the recorded misread corpus
+
+
+MISREADS = Path("tests/fixtures/vision-misreads.json")
+
+
+def recorded():
+    return json.loads(MISREADS.read_text())
+
+
+def test_every_recorded_misread_is_still_caught():
+    """188 real transcription failures, from a real model, on real pages.
+
+    Recorded before the Candidates carrying them were deleted, and not
+    reproducible: re-extracting produces different wrong rows. They are
+    the empirical basis of ADR-0006 and this is what makes them useful
+    afterwards — if a change to the checker stops flagging one of these,
+    that is a loosening somebody should have to justify out loud.
+
+    Each entry carries the page's tokens *of that value*, which is
+    provably enough: the checker only ever asks whether each of a value's
+    own tokens is present, so a page reduced to exactly those returns an
+    identical verdict.
+    """
+    survived = [
+        entry
+        for entry in recorded()["misreads"]
+        if value_appears_on(entry["value"], " ".join(entry["page_tokens_of_value"]))
+    ]
+
+    assert not survived, (
+        f"{len(survived)} recorded misreads are no longer flagged, "
+        f"e.g. {[(s['field'], s['value']) for s in survived[:5]]}"
+    )
+
+
+def test_the_corpus_records_what_it_cannot_decide():
+    """Not all 188 are the model's fault, and the fixture must not pretend.
+
+    Where the page's own text stream glued a correct value to its
+    neighbour, the checker cannot see the value and flags a row that is
+    right. Telling that apart from the model splitting a word was
+    attempted and does not work — `1148+60` inside `freeway1148+60` and
+    `phonosc` inside `phonoscope` are the same shape to a substring test.
+    So the evidence is recorded and the verdict is not.
+    """
+    data = recorded()
+
+    assert "what_is_not_claimed" in data
+    ambiguous = [
+        m for m in data["misreads"] if m["page_tokens_containing_an_absent_one"]
+    ]
+    assert len(ambiguous) == data["counts"]["ambiguous"]
+    # Named so a maintainer can find them, rather than folded into a total
+    # that would overstate how much of this is the model.
+    assert 0 < len(ambiguous) < len(data["misreads"])
+
+
+def test_the_corpus_is_internally_consistent():
+    """A fixture that drifted from its own claims would fail silently."""
+    for entry in recorded()["misreads"]:
+        present = set(entry["page_tokens_of_value"])
+        for token in entry["absent_tokens"]:
+            assert token not in present, f"{entry['value']!r}: {token!r}"
+        assert entry["absent_tokens"], f"{entry['value']!r} flags nothing"
+
+
+@pytest.mark.skipif(
+    not Path("corpus/manifest.lock.json").exists(),
+    reason="corpus not fetched; run `make corpus`",
+)
+def test_the_recorded_misreads_hold_against_the_real_pages():
+    """The reduced pages in the fixture are an equivalence, not a shortcut.
+
+    The Candidates were deleted; the Documents and their page text were
+    not. So the same verdicts are re-checkable against the pages the model
+    actually read, and this is what proves the fixture did not quietly
+    become synthetic.
+    """
+    from sqlalchemy import select
+
+    from corridor.db import Session
+    from corridor.models import DocPage, Document
+
+    data = recorded()
+    with Session() as session:
+        pages = {}
+        for label in {m["page"] for m in data["misreads"]}:
+            filename, page_no = label.rsplit(":", 1)
+            document = session.scalars(
+                select(Document).where(Document.filename == filename)
+            ).first()
+            if document is None:
+                pytest.skip(f"{filename} not ingested")
+            page = session.scalars(
+                select(DocPage).where(
+                    DocPage.document_id == document.id,
+                    DocPage.page_no == int(page_no),
+                )
+            ).first()
+            pages[label] = page.text or ""
+
+        survived = [
+            m
+            for m in data["misreads"]
+            if value_appears_on(m["value"], pages[m["page"]])
+        ]
+
+    assert not survived, (
+        f"{len(survived)} disagree with the real page text, "
+        f"e.g. {[(s['field'], s['value']) for s in survived[:5]]}"
+    )
