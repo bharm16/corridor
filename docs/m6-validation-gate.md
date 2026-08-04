@@ -283,10 +283,17 @@ byte-identical copy in the review queue was costing a reviewer three passes
 over every conflict and preserving nothing.
 
 The vision generation was deleted in the same change, but its rows were not
-redundant: 188 of them carried a value that is not on the cited page, and
-re-extracting produces *different* wrong rows. Those are recorded in
-`tests/fixtures/vision-misreads.json` and the field-token checker is tested
-against them.
+redundant. The 164 rows counted above as carrying a value that is not on the
+cited page carried **188 such values between them** — some rows got more than
+one field wrong — and re-extracting cannot recover them, because it produces
+different wrong rows. All 188 are recorded in
+`tests/fixtures/vision-misreads.json` with the page each was cited to, and
+the field-token checker is tested against every one.
+
+The file deliberately does not say how many are the model's fault. 29 of the
+188 have a page token that contains the absent one as a substring, which is
+the shape of both failure modes at once — the page gluing a correct value to
+its neighbour, and the model splitting a word — and no rule separates them.
 
 The half of that module which reads cells off word boxes was not deleted.
 It is `corridor.geometry`, and Tier 1 depends on it for every value it
