@@ -2,6 +2,8 @@
 
 **Supersedes [ADR-0007](0007-criticality-is-asserted-by-the-document.md).**
 
+Amended by [ADR-0010](0010-an-exception-is-a-fact-to-filter-not-a-score-to-rank.md): the consequence below that `severity = rule severity × criticality` "needs restating" was first answered by restating the multiplier as ×3, and later abolished — severity is retired entirely, and Criticality filters Exceptions rather than weighting them. Everything else stands.
+
 ADR-0007 held that a Dependency is critical when its document says the facility must move, and that each agency spells that differently — *"TxDOT spells this `Potential Conflict = Y`"*. That sentence is wrong, and the way it is wrong changes the model rather than a value in it.
 
 TxDOT's own [Utility Conflict Analysis Template](https://www.txdot.gov/content/dam/docs/division/row/utl/utility-conflict-analysis-template.xlsx), published by its ROW division, has no `Potential Conflict` column. It has `Resolution Strategy Selected (from Resolution Alternatives)`, described in the template's own data dictionary as *"strategy that was selected to resolve the utility conflict"*. Project A's form is a local variant, and its filename says what it is: `nhhip-seg3c2-utilities-**inventory**`.
