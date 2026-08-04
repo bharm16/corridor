@@ -362,11 +362,29 @@ def test_orphan_clears_once_linked(session, project, document):
     assert "ORPHAN" not in codes(session, dep)
 
 
-# ------------------------------------------------------------------ severity
+# --------------------------------------- facts, not scores (#115, ADR-0010)
 
 
-def test_severity_scales_with_the_resolution_strategy(session, project, document):
-    """A relocation weighs more than a record whose document says nothing."""
+def test_an_exception_carries_no_score(session, project, document):
+    """The weights were ADR-0009's finding one layer up — a scale nothing
+    can assert — and ADR-0010 abolishes them. Not renamed, not derived
+    differently: gone."""
+    dep = make_dep(session, project, internal_owner=None)
+    add_evidence(session, dep, document)
+
+    exception = exceptions_for(session, dep.id, today=TODAY)[0]
+
+    assert not hasattr(exception, "severity")
+
+
+def test_criticality_is_a_flag_to_filter_never_a_multiplier(
+    session, project, document
+):
+    """The moves/stays reading rides along so a view can slice on it.
+
+    Same rule, same detail, whatever the strategy — the reading changes
+    which bucket a reader files the row in, never how loud the row is.
+    """
     normal = make_dep(session, project, ref="DEP-n", internal_owner=None)
     critical = make_dep(
         session,
@@ -380,7 +398,139 @@ def test_severity_scales_with_the_resolution_strategy(session, project, document
 
     n = next(e for e in exceptions_for(session, normal.id, today=TODAY) if e.rule == "MISSING_OWNER")
     c = next(e for e in exceptions_for(session, critical.id, today=TODAY) if e.rule == "MISSING_OWNER")
-    assert c.severity > n.severity
+
+    assert (n.critical, c.critical) == (False, True)
+    assert n.detail == c.detail
+
+
+def test_a_rule_with_a_quantity_states_it_in_days(session, project, document):
+    """OVERDUE by how much is the fact a reader can check; a weight was
+    not. The quantity is the rule's own: days past the committed date,
+    days until the need date, days of document silence."""
+    dep = make_dep(
+        session,
+        project,
+        committed_date=TODAY - timedelta(days=44),
+        need_date=TODAY + timedelta(days=12),
+    )
+    add_evidence(session, dep, document, doc_date=TODAY - timedelta(days=21))
+
+    by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
+
+    assert by_rule["OVERDUE"].quantity_days == 44
+    assert by_rule["DUE_SOON"].quantity_days == 12
+    assert by_rule["STALE"].quantity_days == 21
+
+
+def test_a_rule_whose_fact_is_an_absence_carries_no_quantity(
+    session, project, document
+):
+    """MISSING_DATE has no number: the finding is that there is nothing to
+    count. Inventing 0 or infinity here would be the scalar sneaking back."""
+    dep = make_dep(session, project, internal_owner=None)
+    add_evidence(session, dep, document)
+
+    by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
+
+    assert by_rule["MISSING_OWNER"].quantity_days is None
+    assert by_rule["MISSING_DATE"].quantity_days is None
+    assert by_rule["ORPHAN"].quantity_days is None
+
+
+def test_stale_with_no_dated_evidence_at_all_has_no_quantity(
+    session, project, document
+):
+    """"No document has ever spoken" is an absence, not an age. An age
+    would have to be measured from an invented origin."""
+    dep = make_dep(session, project)
+    add_evidence(session, dep, document)
+    document.doc_date = None
+    document.retrieved_at = None
+    session.flush()
+
+    by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
+
+    assert "STALE" in by_rule
+    assert by_rule["STALE"].quantity_days is None
+
+
+# ----------------------------------------------- the facet view (#115)
+
+
+def test_facets_group_by_rule_and_order_within_by_quantity(
+    session, project, document
+):
+    """One facet function feeds every consumer, so no view invents an
+    order. Within a rule, most days first — an ordering a reader can
+    check against the record."""
+    from corridor.exceptions import facets
+
+    slightly = make_dep(
+        session, project, ref="DEP-a", committed_date=TODAY - timedelta(days=3)
+    )
+    badly = make_dep(
+        session, project, ref="DEP-b", committed_date=TODAY - timedelta(days=40)
+    )
+    for dep in (slightly, badly):
+        add_evidence(session, dep, document)
+
+    view = facets(evaluate(session, project.id, today=TODAY))
+    overdue = next(f for f in view if f.rule == "OVERDUE")
+
+    assert overdue.count == 2
+    assert [e.ref_code for e in overdue.exceptions] == ["DEP-b", "DEP-a"]
+    assert overdue.has_quantities is True
+
+
+def test_a_bucket_with_nothing_to_order_by_says_so(session, project, document):
+    """The live corpus's case, and the common one: every date absent. The
+    marker is what lets a view print "no dates known" instead of ref-code
+    order dressed as a ranking — the pathology ADR-0010's own exhibit
+    ridicules."""
+    from corridor.exceptions import facets
+
+    for ref in ("DEP-a", "DEP-b"):
+        dep = make_dep(session, project, ref=ref, internal_owner=None)
+        add_evidence(session, dep, document)
+
+    view = facets(evaluate(session, project.id, today=TODAY))
+    missing = next(f for f in view if f.rule == "MISSING_OWNER")
+
+    assert missing.count == 2
+    assert missing.has_quantities is False
+
+
+def test_absent_quantities_sort_after_present_ones_stably(
+    session, project, document
+):
+    """A row nobody can order still appears — after the ones that can be,
+    in ref-code order, so two runs render identically."""
+    from corridor.exceptions import facets
+
+    dated = make_dep(session, project, ref="DEP-dated")
+    add_evidence(session, dated, document, doc_date=TODAY - timedelta(days=30))
+    undated = make_dep(session, project, ref="DEP-undated")
+    add_evidence(session, undated, document)
+    # The shared fixture document goes undated, so DEP-undated's only
+    # evidence carries no date at all.
+    document.doc_date = None
+    document.retrieved_at = None
+    session.flush()
+
+    view = facets(evaluate(session, project.id, today=TODAY))
+    stale = next(f for f in view if f.rule == "STALE")
+
+    assert [e.ref_code for e in stale.exceptions] == ["DEP-dated", "DEP-undated"]
+    assert stale.exceptions[0].quantity_days == 30
+    assert stale.exceptions[1].quantity_days is None
+
+
+def test_the_ruleset_version_is_pinned(session):
+    """The contract changed when the score died, and the version is how a
+    published list that reads differently is attributable to the ruleset
+    rather than mistaken for a data change. Bump this test only with
+    another contract change."""
+    assert RULESET_VERSION == "v0.2"
 
 
 # ------------------------------------------------------------------ project
@@ -398,7 +548,13 @@ def test_evaluate_returns_every_records_exceptions(session, project, document):
     assert any(e.rule == "MISSING_OWNER" and e.dependency_id == a.id for e in result)
 
 
-def test_evaluate_sorts_worst_first(session, project, document):
+def test_evaluate_is_deterministic_and_claims_no_ranking(
+    session, project, document
+):
+    """Flat output is stable — two runs, one answer — and ordered by
+    nothing but (ref_code, rule): a filing order, not a verdict. Anything
+    that looks like "worst first" belongs to the facet view, where the
+    ordering fact is named."""
     low = make_dep(session, project, ref="DEP-low")
     high = make_dep(
         session,
@@ -411,8 +567,13 @@ def test_evaluate_sorts_worst_first(session, project, document):
     for dep in (low, high):
         add_evidence(session, dep, document)
 
-    result = evaluate(session, project.id, today=TODAY)
-    assert result[0].severity >= result[-1].severity
+    first = evaluate(session, project.id, today=TODAY)
+    second = evaluate(session, project.id, today=TODAY)
+
+    assert first == second
+    assert [(e.ref_code, e.rule) for e in first] == sorted(
+        (e.ref_code, e.rule) for e in first
+    )
 
 
 def test_thresholds_are_configurable_per_project(session, project, document):

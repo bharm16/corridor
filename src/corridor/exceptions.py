@@ -29,33 +29,41 @@ from corridor.models import (
     is_critical,
 )
 
-RULESET_VERSION = "v0.1"
+# v0.2: the score died (ADR-0010, #115). Exceptions carry quantities and a
+# criticality flag instead of a severity, so every ordering published under
+# v0.1 changed meaning — which is exactly what this version exists to make
+# attributable.
+RULESET_VERSION = "v0.2"
 
 # Fixed by v0-build-spec.md §9. Overridable per project, but the defaults are
 # documented and a drift changes every count ever recorded.
+#
+# Thresholds survive the score they used to feed: each defines a predicate
+# whose fired fact carries a unit ("no document in 14 days"), where a weight
+# defined nothing but a position (ADR-0010).
 STALE_DAYS = 14
 DUE_SOON_DAYS = 30
 
-# Rule severity before the criticality weighting is applied.
-RULES: dict[str, float] = {
-    "MISSING_EVIDENCE": 5.0,
-    "CONTRADICTION": 5.0,
-    "OVERDUE": 4.0,
-    "DUE_SOON": 3.0,
-    "MISSING_DATE": 3.0,
-    "STALE": 2.0,
-    "MISSING_OWNER": 2.0,
-    "ORPHAN": 1.0,
-}
+# The eight rules. Names only — the weights that used to sit beside them
+# (5.0, 4.0, ×3 for criticality) had no source a reader could check, which
+# is ADR-0009's finding one layer up, and ADR-0010 abolished them. Order is
+# the display order: the absences first, then the clocks, then the
+# disagreements — but nothing reads meaning into it.
+RULES: tuple[str, ...] = (
+    "MISSING_EVIDENCE",
+    "MISSING_DATE",
+    "MISSING_OWNER",
+    "OVERDUE",
+    "DUE_SOON",
+    "STALE",
+    "CONTRADICTION",
+    "ORPHAN",
+)
 
-# Severity is rule severity times this, when the document's resolution
-# strategy commits the External Party to substantial work — relocation,
-# removal or abandonment (ADR-0009). Everything else weighs 1.0.
-#
-# 3.0 rather than a fresh number because it is the top of the scale this
-# replaces, so no already-published severity moves: all 141 live records
-# weighed 1.0 as `normal` and weigh 1.0 as NULL.
-CRITICAL_WEIGHT = 3.0
+# The rules whose fact carries a number of days. The rest state absences,
+# and an absence has no quantity — inventing 0 or infinity for one would be
+# the scalar sneaking back in.
+QUANTITY_RULES = frozenset({"OVERDUE", "DUE_SOON", "STALE"})
 
 # Neither of these is "on track", so time-based rules stay quiet on them.
 SETTLED_STATUSES = ("closed",)
@@ -69,11 +77,38 @@ class Thresholds:
 
 @dataclass(frozen=True)
 class Exception_:
+    """One fact about one Dependency, carrying only what a reader can check.
+
+    `quantity_days` is the rule's own number — days past the Committed
+    Date, days until the Need Date, days of document silence — and None
+    where the fact is an absence. `critical` is the Criticality reading
+    (ADR-0009), carried so a view can filter without re-deriving it; it
+    never orders and never multiplies (ADR-0010).
+    """
+
     dependency_id: int
     ref_code: str
     rule: str
-    severity: float
     detail: str
+    quantity_days: int | None
+    critical: bool
+
+
+@dataclass(frozen=True)
+class RuleFacet:
+    """One rule's bucket of the facet view: the finding, counted.
+
+    `exceptions` are ordered by the rule's own quantity, most days first,
+    absent-quantity rows after, ref-code as the stable final key.
+    `has_quantities` is the honest-empty marker: False means there is
+    nothing to order by, and a view prints "no dates known" instead of
+    ref-code order dressed as a ranking.
+    """
+
+    rule: str
+    exceptions: tuple[Exception_, ...]
+    count: int
+    has_quantities: bool
 
 
 @dataclass
@@ -119,8 +154,46 @@ def evaluate(
     found: list[Exception_] = []
     for dependency in dependencies:
         found.extend(_apply(_gather(session, dependency), today, thresholds))
-    found.sort(key=lambda e: (-e.severity, e.ref_code, e.rule))
+    # A filing order, not a verdict: stable so two runs render identically,
+    # and claiming nothing — "worst first" belongs to the facet view, where
+    # the ordering fact is named (ADR-0010).
+    found.sort(key=lambda e: (e.ref_code, e.rule))
     return found
+
+
+def facets(found: list[Exception_]) -> list[RuleFacet]:
+    """The one grouped view every consumer renders (ADR-0010, #115).
+
+    Computed here, beside the engine, so the CLI, the report and the web
+    views share a single structure and none re-derives grouping or invents
+    an order. Buckets come out largest first — a count is a fact — with the
+    rule name breaking ties; within a bucket, the rule's own quantity
+    orders, most days first, absent rows after, ref-code last for
+    stability.
+    """
+    by_rule: dict[str, list[Exception_]] = {}
+    for exception in found:
+        by_rule.setdefault(exception.rule, []).append(exception)
+
+    view = []
+    for rule, bucket in by_rule.items():
+        bucket.sort(
+            key=lambda e: (
+                e.quantity_days is None,
+                -(e.quantity_days or 0),
+                e.ref_code,
+            )
+        )
+        view.append(
+            RuleFacet(
+                rule=rule,
+                exceptions=tuple(bucket),
+                count=len(bucket),
+                has_quantities=any(e.quantity_days is not None for e in bucket),
+            )
+        )
+    view.sort(key=lambda f: (-f.count, f.rule))
+    return view
 
 
 def _gather(session: Session, dependency: Dependency) -> _Facts:
@@ -187,24 +260,30 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
     # "On track" for time-based rules means neither proven done nor closed.
     live = not facts.is_ready and not settled
 
-    found: list[tuple[str, str]] = []
+    # (rule, detail, quantity_days) — the quantity is the rule's own
+    # number, and None where the fact is an absence.
+    found: list[tuple[str, str, int | None]] = []
 
     if not dependency.internal_owner and live:
-        found.append(("MISSING_OWNER", "no internal owner assigned"))
+        found.append(("MISSING_OWNER", "no internal owner assigned", None))
 
     if not dependency.committed_date and dependency.status in (
         "identified",
         "in_progress",
         "committed",
     ):
-        found.append(("MISSING_DATE", "no committed date from the external party"))
+        found.append(
+            ("MISSING_DATE", "no committed date from the external party", None)
+        )
 
     if not facts.has_verified_evidence and not settled:
-        found.append(("MISSING_EVIDENCE", "no verified evidence on this record"))
+        found.append(("MISSING_EVIDENCE", "no verified evidence on this record", None))
 
     if live:
         if facts.last_evidenced_at is None:
-            found.append(("STALE", "no dated evidence at all"))
+            # An absence, not an age: an age would be measured from an
+            # invented origin, which is how a scalar sneaks back in.
+            found.append(("STALE", "no dated evidence at all", None))
         else:
             age = (today - facts.last_evidenced_at).days
             if age > thresholds.stale_days:
@@ -213,13 +292,16 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
                         "STALE",
                         f"no document has spoken to this in {age} days "
                         f"(last {facts.last_evidenced_at})",
+                        age,
                     )
                 )
 
     if live and dependency.need_date:
         days = (dependency.need_date - today).days
         if 0 <= days <= thresholds.due_soon_days:
-            found.append(("DUE_SOON", f"needed in {days} days ({dependency.need_date})"))
+            found.append(
+                ("DUE_SOON", f"needed in {days} days ({dependency.need_date})", days)
+            )
 
     if dependency.committed_date and dependency.committed_date < today:
         if not facts.has_closure:
@@ -229,6 +311,7 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
                     "OVERDUE",
                     f"committed {dependency.committed_date}, {days} days ago, "
                     "with no closure event",
+                    days,
                 )
             )
 
@@ -237,33 +320,34 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
             (
                 "CONTRADICTION",
                 "sources disagree on " + ", ".join(sorted(facts.contradicted_fields)),
+                None,
             )
         )
 
     if dependency.milestone_id is None and not settled:
-        found.append(("ORPHAN", "not linked to any milestone"))
+        found.append(("ORPHAN", "not linked to any milestone", None))
 
-    # A record whose document asserts no strategy weighs 1.0 — not
-    # because it does not matter, but because weighting silence up would
-    # triple all 3,235 of Project A's rows and reproduce the criticism
-    # ADR-0007 levelled at itself: a critical set that is most of the set
-    # catches nothing.
-    weight = CRITICAL_WEIGHT if is_critical(dependency.resolution_strategy) else 1.0
+    # The Criticality reading rides along for filtering — a view slices on
+    # it, nothing multiplies by it (ADR-0010). A record whose document
+    # asserts no strategy reads not-critical, which keeps Project A's
+    # 3,235 silent rows out of the critical slice rather than tripling
+    # them into it.
+    critical = is_critical(dependency.resolution_strategy)
     return [
         Exception_(
             dependency_id=dependency.id,
             ref_code=dependency.ref_code,
             rule=rule,
-            severity=RULES[rule] * weight,
             detail=detail,
+            quantity_days=quantity,
+            critical=critical,
         )
-        for rule, detail in found
+        for rule, detail, quantity in found
     ]
 
 
 def main(argv: list[str]) -> int:
     """`make exceptions ARGS="<slug>"`"""
-    import collections
     import sys
 
     from corridor.db import Session as SessionFactory
@@ -279,18 +363,35 @@ def main(argv: list[str]) -> int:
             return 1
 
         found = evaluate(session, project.id)
-        counts = collections.Counter(e.rule for e in found)
         affected = len({e.dependency_id for e in found})
+        critical = len({e.dependency_id for e in found if e.critical})
         print(
             f"{project.name} — ruleset {RULESET_VERSION}: "
-            f"{len(found)} exceptions across {affected} dependencies",
+            f"{len(found)} exceptions across {affected} dependencies "
+            f"({critical} critical)",
             flush=True,
         )
-        for rule, n in counts.most_common():
-            print(f"  {n:>4}  {rule}")
-        print("\nworst 10:")
-        for e in found[:10]:
-            print(f"  sev {e.severity:>5.1f}  {e.ref_code:<12} {e.rule:<16} {e.detail[:60]}")
+        # The facet view, not a "worst 10": under v0.1 that list was ten
+        # identical sev-3.0 rows whose order was ref-code alphabetical
+        # dressed as a ranking (ADR-0010's exhibit). What is wrong and how
+        # much of it is the counts; within a rule, the rule's own quantity
+        # orders; a bucket with nothing to order by says so.
+        for facet in facets(found):
+            if not facet.has_quantities:
+                note = (
+                    "no dates known"
+                    if facet.rule in QUANTITY_RULES
+                    else "no quantity — the fact is the absence"
+                )
+                print(f"  {facet.count:>4}  {facet.rule:<16} {note}")
+                continue
+            print(f"  {facet.count:>4}  {facet.rule}, by days:")
+            for e in facet.exceptions[:5]:
+                days = f"{e.quantity_days}d" if e.quantity_days is not None else "—"
+                mark = " critical" if e.critical else ""
+                print(f"        {days:>5}  {e.ref_code:<12}{mark}  {e.detail[:56]}")
+            if facet.count > 5:
+                print(f"        … and {facet.count - 5} more")
     return 0
 
 

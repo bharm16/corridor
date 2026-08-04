@@ -253,7 +253,6 @@ def test_ledger_rows_carry_their_exceptions(session, project, dependency):
     # No milestone linked and no committed date on a fresh matrix record.
     assert "ORPHAN" in rules
     assert "MISSING_DATE" in rules
-    assert row.worst_severity > 0
 
 
 def test_the_ledger_can_be_filtered_to_one_rule(session, project, dependency):
