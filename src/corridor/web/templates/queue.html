@@ -28,6 +28,12 @@
   .banner.ok  { background:#ecfdf3; color:var(--ok); border:1px solid #abefc6; }
   .quote { font-family: ui-monospace, monospace; font-size:.82rem; background:#fff;
            border:1px solid var(--line); border-radius:4px; padding:.5rem; margin:.6rem 0 1rem; }
+  /* A worksheet's evidence is its text — there is no page to render. Rows
+     stay on their own lines and scroll rather than wrap, because a wrapped
+     row reads as two conflicts. */
+  .sheet { font-family: ui-monospace, monospace; font-size:.78rem; background:#fff;
+           border:1px solid var(--line); border-radius:4px; padding:.5rem;
+           max-height:60vh; overflow:auto; white-space:pre; margin:0; }
   .imgwrap { position:relative; display:inline-block; max-width:100%; }
   .imgwrap img { max-width:100%; display:block; border:1px solid var(--line); }
   .hl { position:absolute; background:rgba(255,214,0,.42); outline:1px solid rgba(180,140,0,.6);
@@ -170,19 +176,32 @@
   </section>
 
   <section class="pane">
-    <div><b>{{ view.document.filename }}</b> · page {{ view.page_no }}
-      {%- if view.page and view.page.text_source == 'ocr' %} · <span style="color:var(--bad)">OCR</span>{% endif %}</div>
+    <div><b>{{ view.document.filename }}</b> ·
+      {%- if view.page and view.page.text_source == 'cells' %} sheet {{ view.page_no }}
+      {%- else %} page {{ view.page_no }}{% endif %}
+      {%- if view.page and view.page.text_source == 'ocr' %} · <span style="color:var(--bad)">OCR</span>{% endif %}
+      {%- if view.page and view.page.text_source == 'cells' %} · <span style="color:var(--ok)">read from cells</span>{% endif %}</div>
     <div class="quote">{{ view.quote }}</div>
-    <div class="imgwrap">
-      <img src="/page-image/{{ view.document.id }}/{{ view.page_no }}" alt="page {{ view.page_no }}">
-      {% for h in view.highlights %}
-        <div class="hl" style="left:{{ (h.left*100)|round(3) }}%;top:{{ (h.top*100)|round(3) }}%;
-                               width:{{ (h.width*100)|round(3) }}%;height:{{ (h.height*100)|round(3) }}%"></div>
-      {% endfor %}
-    </div>
-    {% if not view.highlights %}
-      <p class="hint">No highlight: the quote has no searchable span on this page
-        (OCR'd page, or a quote assembled from separate table cells).</p>
+    {#
+      A spreadsheet has no page to render, so the text generated from its
+      cells is the evidence (ADR-0005). Showing an image that 404s and
+      nothing else would leave a reviewer holding a quote with no way to
+      check it, which is the one thing this pane exists for.
+    #}
+    {% if view.page and not view.page.image_path %}
+      <pre class="sheet">{{ view.page.text }}</pre>
+    {% else %}
+      <div class="imgwrap">
+        <img src="/page-image/{{ view.document.id }}/{{ view.page_no }}" alt="page {{ view.page_no }}">
+        {% for h in view.highlights %}
+          <div class="hl" style="left:{{ (h.left*100)|round(3) }}%;top:{{ (h.top*100)|round(3) }}%;
+                                 width:{{ (h.width*100)|round(3) }}%;height:{{ (h.height*100)|round(3) }}%"></div>
+        {% endfor %}
+      </div>
+      {% if not view.highlights %}
+        <p class="hint">No highlight: the quote has no searchable span on this page
+          (OCR'd page, or a quote assembled from separate table cells).</p>
+      {% endif %}
     {% endif %}
   </section>
 </main>

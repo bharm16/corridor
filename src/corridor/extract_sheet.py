@@ -30,7 +30,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.docs import stored_file
-from corridor.extract_matrix import MIN_ROW_FIELDS, REQUIRED
 from corridor.geometry import dedupe_hint
 from corridor.models import Candidate, DocPage, Document
 from corridor.sheets import (
@@ -39,7 +38,9 @@ from corridor.sheets import (
     conflict_sheet,
     header_row,
     read_workbook,
+    row_text,
 )
+from corridor.vocabulary import MIN_ROW_FIELDS, REQUIRED
 from corridor.verify import quote_appears_on, threshold_for, unverified_fields
 
 # What produced this reading. The column is named `prompt_version` because
@@ -81,6 +82,10 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
         )
     ).first()
     page_text = (page.text if page else "") or ""
+    # Read off the stored page rather than asserted here, so the strictness
+    # follows the record. A page this reader wrote is `cells`; if one ever
+    # is not, the citation is checked against what it actually is.
+    threshold = threshold_for(page.text_source if page else None)
 
     index = header_row(sheet)
     headings = sheet.rows[index]
@@ -103,7 +108,9 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
         if not all(fields.get(name) for name in REQUIRED):
             continue
 
-        candidate = _candidate(document, page_no, fields, raw, page_text, unmapped)
+        candidate = _candidate(
+            document, page_no, fields, raw, page_text, unmapped, threshold
+        )
         session.add(candidate)
         candidates.append(candidate)
 
@@ -119,13 +126,14 @@ def _candidate(
     raw,
     page_text: str,
     unmapped: list[str],
+    threshold: float,
 ) -> Candidate:
-    # The whole row, which is how `sheet_text` wrote it — so the quote is
-    # the line a reviewer reads, not a reconstruction of one.
-    quote = " ".join(cell for cell in raw if cell)
+    # Rendered by the same function that wrote the page text, so the quote
+    # is the line a reviewer reads rather than a reconstruction of one.
+    quote = row_text(raw)
     # Exactly, not at 0.9 — this text was generated from the same cells the
     # values came from, so there is no print damage to make room for.
-    quote_ok = quote_appears_on(quote, page_text, threshold_for("cells"))
+    quote_ok = quote_appears_on(quote, page_text, threshold)
     suspect = sorted(unverified_fields(fields, page_text))
 
     return Candidate(

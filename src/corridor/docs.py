@@ -27,7 +27,7 @@ IMAGES = Path("out/page-images")
 # imported from `ingest`, because the two lists answer different questions:
 # that one is "can this be read as sheets", this one is "is this the form
 # the printout was made from".
-STRUCTURED_SUFFIXES = {".xlsx", ".xlsm", ".csv"}
+STRUCTURED_SUFFIXES = {".xlsx", ".xlsm"}
 
 
 @dataclass

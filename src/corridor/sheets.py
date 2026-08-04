@@ -30,8 +30,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from corridor.extract_matrix import REQUIRED, TEMPLATE_FIELDS
 from corridor.geometry import NoMatrixFound
+from corridor.vocabulary import REQUIRED, TEMPLATE_FIELDS
 
 # How deep a header can sit. The published template puts a merged title
 # band on row 1 and the real headings on row 2; nothing in this corpus goes
@@ -172,6 +172,17 @@ def conflict_sheet(sheets: list[Sheet]) -> Sheet:
     return best[1]
 
 
+def row_text(row) -> str:
+    """One row as the line it becomes in `sheet_text`.
+
+    Shared with the extractor's citation quote deliberately. A quote
+    against cells is checked at 1.0 (`verify.threshold_for`), so the two
+    have to render a row identically — written twice, they could drift and
+    every citation on every spreadsheet would fail at once.
+    """
+    return " ".join(cell for cell in row if cell)
+
+
 def sheet_text(sheet: Sheet) -> str:
     """The sheet as the text a citation is checked against.
 
@@ -180,9 +191,7 @@ def sheet_text(sheet: Sheet) -> str:
     from. Rows stay on their own lines: flattening them would let a quote
     match across two conflicts that never appeared on one row together.
     """
-    return "\n".join(
-        " ".join(cell for cell in row if cell) for row in sheet.rows
-    ).strip()
+    return "\n".join(row_text(row) for row in sheet.rows).strip()
 
 
 def _cell(value) -> str:

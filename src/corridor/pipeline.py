@@ -127,7 +127,6 @@ def ingest_and_extract(
     if document.parse_status != "parsed":
         return document, []
 
-    # The same extractor `make extract` runs.
-    from corridor.extract_matrix import extract_document
-
-    return document, extract_document(session, document, client=client)
+    # The same routing `make extract` uses, so a workbook here reads as a
+    # workbook rather than failing as a PDF with no page image.
+    return document, extract_any(session, document, client=client)
