@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.exceptions import RULESET_VERSION, evaluate
+from corridor.exceptions import RULESET_VERSION, evaluate, facets
 from corridor.ledger import LedgerRow, browse
 from corridor.models import (
     Dependency,
@@ -216,50 +216,55 @@ def _milestone_rollup(
 def _critical_items(
     session: Session, rows: list[LedgerRow], today: date
 ) -> Section:
-    """Top items by need-date proximity and criticality.
+    """The critical records, nearest need first (ADR-0010, #116).
 
-    Interim shape: the severity term died with the score (ADR-0010, #115),
-    so the ranking is criticality-weighted proximity alone. #116 restates
-    this section properly — criticality as the filter that scopes it,
-    proximity as declared presentation, "no dates known" when the section
-    has no dates — and retires the weighting below with it.
+    Criticality is the filter that scopes the section, never a weight: a
+    non-critical record cannot outrank a critical one by piling on
+    exceptions, because it is not this section's subject at all. The
+    ordering is declared presentation — need-date proximity, a fact with a
+    unit — and a section whose records carry no dates says so instead of
+    presenting ref-code order as a ranking. On the live corpus that is
+    the common case, not the edge.
     """
+    critical_rows = sorted(
+        (
+            r
+            for r in rows
+            if not r.is_ready and is_critical(r.dependency.resolution_strategy)
+        ),
+        key=lambda r: (
+            r.dependency.need_date is None,
+            r.dependency.need_date or today,
+            r.dependency.ref_code,
+        ),
+    )
+    ranked = critical_rows[:CRITICAL_ITEM_COUNT]
+    dated = sum(1 for r in ranked if r.dependency.need_date)
 
-    def urgency(row: LedgerRow) -> float:
-        base = 3.0 if is_critical(row.dependency.resolution_strategy) else 1.0
-        if row.dependency.need_date:
-            days = (row.dependency.need_date - today).days
-            proximity = 1.0 if days <= 0 else max(0.1, 1.0 - min(days, 365) / 365)
-        else:
-            proximity = 0.3
-        return base * proximity
-
-    ranked = sorted(
-        (r for r in rows if not r.is_ready), key=urgency, reverse=True
-    )[:CRITICAL_ITEM_COUNT]
+    note = (
+        f"The not-ready records whose document's resolution strategy is "
+        "relocation, removal or abandonment (ADR-0009), ordered by "
+        "need-date proximity. The order is presentation, not a measurement."
+    )
+    if ranked and not dated:
+        note += " No dates known: nothing here carries a need date to order by."
 
     section = Section(
         "Critical items",
-        note=(
-            f"Top {CRITICAL_ITEM_COUNT} not-ready records by need-date proximity, "
-            "weighted \u00d73 where the document's resolution strategy "
-            "is relocation, removal or abandonment (ADR-0009). A record whose "
-            "document records no strategy ranks unweighted \u2014 that is silence, "
-            "not a judgement that it does not matter."
+        note=note,
+        columns=["Ref", "External party", "Committed", "Need", "Status", "Exceptions"],
+        empty_message=(
+            "No not-ready record's document asserts a critical resolution "
+            "strategy."
         ),
-        columns=["Ref", "External party", "Committed", "Need", "Status", "Worst exception"],
-        empty_message="Every record is ready.",
     )
     for row in ranked:
         cited = _primary_evidence(session, row.dependency.id)
-        # Interim: the row's largest day-count across its mixed rules — a
-        # cross-rule comparison ADR-0010 forbids as a ranking, tolerated
-        # only as this column's placeholder until #116 restates the
-        # section from the facet view.
-        worst = max(
-            row.exceptions,
-            key=lambda e: (e.quantity_days is not None, e.quantity_days or 0),
-            default=None,
+        # The row's exceptions as facts, each with its own quantity — no
+        # cross-rule "worst" pick, which is the device ADR-0010 forbids.
+        listed = ", ".join(
+            e.rule + (f" {e.quantity_days}d" if e.quantity_days is not None else "")
+            for e in sorted(row.exceptions, key=lambda e: e.rule)
         )
         section.rows.append(
             [
@@ -281,8 +286,8 @@ def _critical_items(
                 ),
                 Cell("Status", row.dependency.status, cited),
                 _derived(
-                    "Worst exception",
-                    worst.rule if worst else "—",
+                    "Exceptions",
+                    listed or "—",
                     (row.dependency.id,),
                 ),
             ]
@@ -292,29 +297,37 @@ def _critical_items(
 
 def _exceptions_summary(session: Session, project_id: int) -> Section:
     found = evaluate(session, project_id)
-    by_rule: dict[str, list] = {}
-    for exception in found:
-        by_rule.setdefault(exception.rule, []).append(exception)
-
     section = Section(
         "Exceptions",
-        columns=["Rule", "Count", "Worst offender", "Why"],
+        columns=["Rule", "Count", "Most days", "Why"],
         empty_message="No exceptions.",
     )
-    for rule, items in sorted(by_rule.items(), key=lambda kv: -len(kv[1])):
-        ids = [e.dependency_id for e in items]
-        # The exemplar with a checkable meaning: the largest quantity in
-        # the bucket, or (for absence rules) the first by ref-code.
-        worst = max(
-            items,
-            key=lambda e: (e.quantity_days is not None, e.quantity_days or 0),
-        )
+    # The engine's facet view, not a private regrouping (ADR-0010, #116):
+    # buckets largest first, and within a bucket the rule's own quantity
+    # orders — so the exemplar below is simply the bucket's first row.
+    for facet in facets(found):
+        ids = [e.dependency_id for e in facet.exceptions]
+        if facet.has_quantities:
+            top = facet.exceptions[0]
+            most = _derived(
+                "Most days",
+                f"{top.ref_code} {top.quantity_days}d",
+                (top.dependency_id,),
+            )
+            why = _derived("Why", top.detail, (top.dependency_id,))
+        else:
+            # An absence has no exemplar: every row is the same finding,
+            # and electing one would be an arbitrary pick wearing a
+            # superlative. The count is the whole story, and the detail is
+            # uniform across the bucket by construction.
+            most = _derived("Most days", "—", ids)
+            why = _derived("Why", facet.exceptions[0].detail, ids)
         section.rows.append(
             [
-                _derived("Rule", rule, ids),
-                _derived("Count", str(len(items)), ids),
-                _derived("Worst offender", worst.ref_code, (worst.dependency_id,)),
-                _derived("Why", worst.detail, (worst.dependency_id,)),
+                _derived("Rule", facet.rule, ids),
+                _derived("Count", str(facet.count), ids),
+                most,
+                why,
             ]
         )
     return section

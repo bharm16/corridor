@@ -140,6 +140,7 @@ def test_row_figures_are_assertions_carrying_a_page_and_quote(
     session, project_with_two_dependencies
 ):
     """Per-record facts cite a document, page and quote."""
+    make_critical(session, project_with_two_dependencies)
     report = build_report(session, project_with_two_dependencies.id)
     ref = section(report, "Critical items").rows[0][0]
 
@@ -270,6 +271,7 @@ def test_rendered_html_shows_a_marker_for_every_value(
 
 def test_quotes_are_escaped_into_the_markup(session, project_with_two_dependencies):
     """Document text is untrusted input; it lands in a title attribute."""
+    make_critical(session, project_with_two_dependencies)
     link = _a_link_of(session, project_with_two_dependencies.id)
     link.quote = '<script>alert("x")</script>'
     session.flush()
@@ -277,3 +279,139 @@ def test_quotes_are_escaped_into_the_markup(session, project_with_two_dependenci
     out = render(build_report(session, project_with_two_dependencies.id))
     assert "<script>" not in out
     assert "&lt;script&gt;" in out
+
+
+# ------------------- Critical items and Exceptions restated (#116, ADR-0010)
+
+
+def make_critical(session, project, *, need_days_out=None):
+    """Mark the first fixture record critical, optionally with a need date.
+
+    Criticality is a reading of the stored strategy (ADR-0009), so the
+    fixture asserts one the reading maps — never a flag.
+    """
+    from datetime import date, timedelta
+
+    from corridor.models import Dependency
+
+    dep = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project.id)
+        .order_by(Dependency.ref_code)
+    ).first()
+    dep.resolution_strategy = "relocate"
+    if need_days_out is not None:
+        dep.need_date = date.today() + timedelta(days=need_days_out)
+    session.flush()
+    return dep
+
+
+def test_critical_items_is_a_filter_not_a_weighting(
+    session, project_with_two_dependencies
+):
+    """The section means what it says: the critical records. A weight let
+    a non-critical record outrank a critical one by piling on exceptions;
+    a filter cannot — the non-critical record is simply not this section's
+    subject."""
+    project = project_with_two_dependencies
+    critical = make_critical(session, project)
+
+    report = build_report(session, project.id)
+    refs = {row[0].value for row in section(report, "Critical items").rows}
+
+    assert refs == {critical.ref_code}
+
+
+def test_critical_items_orders_by_need_date_proximity(
+    session, project_with_two_dependencies
+):
+    """Nearest need first — a fact with a unit, declared in the note."""
+    from datetime import date, timedelta
+
+    from corridor.models import Dependency
+
+    project = project_with_two_dependencies
+    deps = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project.id)
+        .order_by(Dependency.ref_code)
+    ).all()
+    for dep, days in zip(deps, (200, 10)):
+        dep.resolution_strategy = "relocate"
+        dep.need_date = date.today() + timedelta(days=days)
+    session.flush()
+
+    report = build_report(session, project.id)
+    rows = section(report, "Critical items").rows
+
+    assert [row[0].value for row in rows] == [deps[1].ref_code, deps[0].ref_code]
+
+
+def test_critical_items_with_no_dates_says_so(
+    session, project_with_two_dependencies
+):
+    """The live corpus's case: critical records, no dates anywhere. The
+    section shows them and says there is nothing to order by, instead of
+    ref-code order dressed as a ranking — ADR-0010's own exhibit."""
+    project = project_with_two_dependencies
+    make_critical(session, project, need_days_out=None)
+
+    report = build_report(session, project.id)
+    found = section(report, "Critical items")
+
+    assert len(found.rows) == 1
+    assert "No dates known" in found.note
+
+
+def test_the_critical_items_note_declares_the_ordering_and_never_a_weight(
+    session, project_with_two_dependencies
+):
+    """"Declared presentation": the note names the one quantity the list
+    is ordered by. Nothing multiplies, so nothing says ×."""
+    project = project_with_two_dependencies
+    make_critical(session, project, need_days_out=30)
+
+    report = build_report(session, project.id)
+    note = section(report, "Critical items").note
+
+    assert "need-date proximity" in note
+    assert "×" not in note
+    assert "weighted" not in note
+
+
+def test_a_critical_row_lists_its_exceptions_as_facts(
+    session, project_with_two_dependencies
+):
+    """No cross-rule "worst" pick — the device ADR-0010 forbids. The row
+    shows its exceptions with their quantities, and the reader judges."""
+    project = project_with_two_dependencies
+    make_critical(session, project)
+
+    report = build_report(session, project.id)
+    found = section(report, "Critical items")
+    exceptions_cell = found.rows[0][found.columns.index("Exceptions")]
+
+    assert "ORPHAN" in exceptions_cell.value
+    assert "MISSING_DATE" in exceptions_cell.value
+
+
+def test_the_exceptions_summary_exemplar_is_the_largest_quantity_or_nothing(
+    session, project_with_two_dependencies
+):
+    """"Worst" regains a meaning: the most days, checkable against the
+    record. A rule whose fact is an absence has no exemplar — every row
+    is the same finding, and electing one would be an arbitrary pick
+    wearing a superlative."""
+    report = build_report(
+        session, project_with_two_dependencies.id
+    )
+    found = section(report, "Exceptions")
+    by_rule = {row[0].value: row for row in found.rows}
+
+    most_days = found.columns.index("Most days")
+    assert by_rule["ORPHAN"][most_days].value == "—"
+    # The fixture's document is undated, so STALE is the absence case —
+    # "no dated evidence at all" has no age, and no exemplar either. The
+    # largest-quantity path is pinned at the engine seam and in the
+    # critical row's exception listing.
+    assert by_rule["STALE"][most_days].value == "—"
