@@ -204,11 +204,15 @@ def test_recall_and_precision_against_the_enumeration(session, project, document
 def test_an_extracted_row_that_is_not_in_the_enumeration_is_spurious(
     session, project, document
 ):
+    """`FOC9-9` rather than an arbitrary string: spurious now means the
+    enumeration *could* have found this id and did not, which is a real
+    disagreement. An id of a shape it cannot look for is unrecognised
+    instead (#90), and conflating the two is the defect."""
     make_candidate(session, project, document, "FOC1-1")
-    make_candidate(session, project, document, "GHOST-1")
+    make_candidate(session, project, document, "FOC9-9")
 
     result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
-    assert result.spurious == ["GHOST-1"]
+    assert result.spurious == ["FOC9-9"]
     assert result.precision == 0.5
 
 
@@ -268,7 +272,7 @@ def test_two_extractors_on_one_project_are_scored_separately(
     """
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, document, "FOC1-1", prompt_version="matrix_vision_v1")
-    make_candidate(session, project, document, "GHOST", prompt_version="matrix_vision_v1")
+    make_candidate(session, project, document, "FOC9-9", prompt_version="matrix_vision_v1")
 
     old = evaluate(
         session, slug=project.slug, gold=[GoldRecord("FOC1-1")],
@@ -281,7 +285,7 @@ def test_two_extractors_on_one_project_are_scored_separately(
 
     assert (old.extracted_total, old.precision) == (1, 1.0)
     assert (new.extracted_total, new.precision) == (2, 0.5)
-    assert new.spurious == ["GHOST"]
+    assert new.spurious == ["FOC9-9"]
 
 
 def test_the_documents_scored_are_the_ones_that_extractor_read(
@@ -548,3 +552,157 @@ def test_the_page_text_enumeration_labels_nothing_critical(session, project, doc
     assert [g.source_ref for g in gold] == ["FOC1-1"]
     assert result.recall == 1.0
     assert result.critical_unmeasurable is True
+
+
+# ------------------------------- what the enumeration could not read (#90)
+
+
+def test_an_id_shape_the_enumeration_cannot_read_is_not_spurious(
+    session, project, document
+):
+    """The defect this ticket exists for.
+
+    SH 99 numbers its conflicts `C1`, `PL4`, `OH C45`, `CP2`, `ET1` — none
+    of which `_UTILITY_ID` carries. The enumeration recognised 504 of its
+    1,401 rows and reported the other 897 as spurious extractions, which
+    printed as `precision 36.0%`. That reads as "the extractor invented two
+    thirds of these rows". It invented none of them; the enumeration could
+    not see them.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "C448")
+    make_candidate(session, project, document, "OH C45")
+
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+
+    assert result.spurious == []
+    assert result.unrecognized == ["C448", "OH C45"]
+    assert result.recognized_total == 1
+
+
+def test_a_recognisable_id_the_gold_set_lacks_is_still_spurious(
+    session, project, document
+):
+    """Recognition is about the id's *shape*, not whether it matched.
+
+    An id the enumeration knows how to look for and did not find is a real
+    disagreement, and this change must not launder those away — that is the
+    detection capability the whole metric exists for.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "FOC9-9")
+
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+
+    assert result.spurious == ["FOC9-9"]
+    assert result.unrecognized == []
+
+
+def test_coverage_is_the_share_of_extracted_rows_the_enumeration_can_read(
+    session, project, document
+):
+    for uid in ("FOC1-1", "FOC1-2", "C1", "C2"):
+        make_candidate(session, project, document, uid)
+
+    result = evaluate(
+        session,
+        slug=project.slug,
+        gold=[GoldRecord("FOC1-1"), GoldRecord("FOC1-2")],
+    )
+
+    assert result.recognized_total == 2
+    assert result.extracted_total == 4
+    assert result.coverage == 0.5
+    assert result.partial_coverage is True
+
+
+def test_precision_is_scoped_to_the_rows_the_enumeration_could_adjudicate(
+    session, project, document
+):
+    """Over the recognised rows, and never presented as a whole-document
+    figure. The bare number is what was misread."""
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "C448")
+
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    rendered = render(result)
+
+    assert result.precision_over_recognized == 1.0
+    assert "NOT MEASURED as a whole-document figure" in rendered
+    assert "over the 1 recognised rows" in rendered
+    assert "unrecognised, not spurious" in rendered
+
+
+def test_full_coverage_reports_precision_exactly_as_before(
+    session, project, document
+):
+    """Project B recognises all 66 of its rows, and its published numbers
+    must not move because of this change."""
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "FOC9-9")
+
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    rendered = render(result)
+
+    assert result.coverage == 1.0
+    assert result.partial_coverage is False
+    assert result.precision == 0.5
+    assert "precision 50.0%" in rendered
+    assert "NOT MEASURED as a whole-document figure" not in rendered
+
+
+def test_recall_is_untouched_by_what_the_enumeration_cannot_read(
+    session, project, document
+):
+    """The claim this change rests on: only precision's accounting moves."""
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "C448")
+
+    gold = [GoldRecord("FOC1-1"), GoldRecord("E92")]
+    result = evaluate(session, slug=project.slug, gold=gold)
+
+    assert result.gold_total == 2
+    assert result.matched == 1
+    assert result.missing == ["E92"]
+    assert result.recall == 0.5
+
+
+def test_a_repeated_unreadable_id_is_counted_every_time(
+    session, project, document
+):
+    """No multiplicity ceiling, deliberately.
+
+    An extractor emitting one unknown-shape id five times from a page
+    printing it once should show five unrecognised rows, not one. Keying
+    this on a set would excuse exactly the duplication the count exists to
+    surface.
+    """
+    for _ in range(3):
+        make_candidate(session, project, document, "C448")
+
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+
+    assert result.unrecognized == ["C448", "C448", "C448"]
+    assert result.recognized_total == 0
+
+
+def test_nothing_recognisable_is_still_not_a_precision_of_zero(
+    session, project, document
+):
+    """#82's rule, reached by the other road: an enumeration that can read
+    none of a document reports no precision rather than 0%."""
+    make_candidate(session, project, document, "C448")
+
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    rendered = render(result)
+
+    assert result.recognized_total == 0
+    assert result.coverage == 0.0
+    assert result.precision_over_recognized is None
+    # Coverage genuinely is 0.0% and says so. What must not appear is a
+    # precision of zero — the extractor is not being told it invented this
+    # row, only that nothing here could check it.
+    assert "coverage 0.0%" in rendered
+    assert "precision  NOT MEASURED" in rendered
+    assert "nothing to score" in rendered
+    assert "precision 0.0%" not in rendered

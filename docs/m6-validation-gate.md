@@ -22,6 +22,16 @@ Recall and precision are against the enumeration read off the page-text
 stream, the same independent path used for the baseline, scoped to the same
 five documents. Within 0.3 points on both, which is a wash.
 
+> **The precision figures above are superseded by #90 (2026-08-04).** They
+> charged the extractor for 75 Project A rows the enumeration cannot read
+> at all — `OFOC14-1`, `UNKNOWN`, `No ID` — as though it had invented them.
+> The eval now reports coverage separately and scopes precision to the rows
+> it could adjudicate: Project A reads **coverage 97.7%, precision 100.0%
+> over 3,160 recognised rows**. Recall is unchanged at 99.2%, because only
+> precision's accounting moved. The comparison between the two paths still
+> holds — both were measured the same way — but neither number is a
+> whole-document precision, and the eval no longer prints one.
+
 That is not the finding.
 
 ## The finding: the same rows, less accurately transcribed

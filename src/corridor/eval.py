@@ -86,6 +86,23 @@ _SEQUENTIAL_ID = re.compile(r"^[ \t]*(\d{1,3})[ \t]*$", re.MULTILINE)
 _STATION = re.compile(r"^[ \t]*\d{1,5}\+\d{2}(?:\.\d+)?\b")
 
 
+def _a_known_row_shape(ref: str | None) -> bool:
+    """Could this enumeration have produced this id at all?
+
+    Shape only — deliberately not "is it printed on its cited page". The
+    obvious page test is whole-line equality against the stored text, and
+    five live Project A rows defeat it: `OFOC14-1`, `OFOC14-2`, `OFOC25-1`,
+    `OFOC27-1` and `OFOC27-2` share their line with the owner. A fixture
+    where every id stands alone passes while the corpus does not.
+    """
+    cleaned = (ref or "").strip()
+    if not cleaned:
+        return False
+    return bool(
+        _UTILITY_ID.fullmatch(cleaned) or _SEQUENTIAL_ID.fullmatch(cleaned)
+    )
+
+
 class MalformedGoldSet(Exception):
     """The gold set is unusable, and guessing at it would fake a number."""
 
@@ -131,6 +148,39 @@ class EvalResult:
     # Whether the gold set labels criticality at all. False makes critical
     # recall unmeasurable for the same reason an empty enumeration does.
     critical_labeled: bool = False
+    # Extracted rows this enumeration structurally could not adjudicate,
+    # one entry per occurrence. On SH 99 that is 897 of 1,401: the layout
+    # numbers its conflicts `C1`, `PL4`, `OH C45`, and no shape here can
+    # look for them. They were reported as spurious extractions, which
+    # printed `precision 36.0%` and read as an extractor that invented two
+    # thirds of a document.
+    unrecognized: list[str] = field(default_factory=list)
+
+    @property
+    def recognized_total(self) -> int:
+        return self.extracted_total - len(self.unrecognized)
+
+    @property
+    def coverage(self) -> float:
+        """Share of extracted rows the enumeration could adjudicate."""
+        if not self.extracted_total:
+            return 1.0
+        return self.recognized_total / self.extracted_total
+
+    @property
+    def partial_coverage(self) -> bool:
+        return bool(self.extracted_total) and self.recognized_total < self.extracted_total
+
+    @property
+    def precision_over_recognized(self) -> float | None:
+        """Precision over the rows the enumeration could adjudicate.
+
+        None when it could adjudicate none of them — #82's rule reached by
+        the other road. A figure over an empty subset is not a score.
+        """
+        if not self.recognized_total:
+            return None
+        return self.matched / self.recognized_total
 
     @property
     def recall(self) -> float:
@@ -374,13 +424,29 @@ def evaluate(
     critical_wanted = Counter(r.source_ref for r in gold if r.critical)
     critical_matched = sum((critical_wanted & extracted).values())
 
+    # An extracted row is adjudicable if this enumeration could have
+    # produced its id — by shape, or because a hand-authored gold set names
+    # it. Everything else is unrecognized rather than spurious: the
+    # enumeration cannot say whether it is real, and charging it to the
+    # extractor is the defect (#90).
+    #
+    # Counted per occurrence, not per distinct id. An extractor emitting
+    # one unknown-shape id five times from a page printing it once should
+    # show five unrecognized rows; a set would excuse exactly the
+    # duplication this count exists to surface.
+    surplus = extracted - wanted
+    spurious, unrecognized = [], []
+    for ref in surplus.elements():
+        (spurious if (_a_known_row_shape(ref) or ref in wanted) else unrecognized).append(ref)
+
     result = EvalResult(
         project=slug,
         gold_total=sum(wanted.values()),
         extracted_total=sum(extracted.values()),
         matched=matched,
         missing=sorted((wanted - extracted).elements()),
-        spurious=sorted((extracted - wanted).elements()),
+        spurious=sorted(spurious),
+        unrecognized=sorted(unrecognized),
         prompt_versions=dict(versions),
         models=dict(models),
         field_failures=field_failures,
@@ -413,12 +479,22 @@ def render(result: EvalResult) -> str:
             ]
         )
 
-    lines = [
-        f"{result.project} — recall {result.recall:.1%}  "
-        f"precision {result.precision:.1%}",
+    # The headline never carries a bare precision under partial coverage.
+    # `precision 36.0%` is what was misread as an extractor that invented
+    # two thirds of SH 99, and a figure that needs a caveat printed three
+    # lines below it will be quoted without one.
+    if result.partial_coverage:
+        lines = [f"{result.project} — recall {result.recall:.1%}"]
+    else:
+        lines = [
+            f"{result.project} — recall {result.recall:.1%}  "
+            f"precision {result.precision:.1%}"
+        ]
+    lines.append(
         f"  gold {result.gold_total}   extracted {result.extracted_total}   "
-        f"matched {result.matched}",
-    ]
+        f"matched {result.matched}"
+    )
+    lines.extend(_coverage_lines(result))
     if result.missing:
         shown = ", ".join(result.missing[:12])
         more = "" if len(result.missing) <= 12 else f" (+{len(result.missing) - 12})"
@@ -443,6 +519,51 @@ def render(result: EvalResult) -> str:
     lines.append(f"  model: {models or '—'}")
     lines.append(f"  note: {result.coverage_note}")
     return "\n".join(lines)
+
+
+def _coverage_lines(result: EvalResult) -> list[str]:
+    """What share of the document this enumeration could adjudicate.
+
+    Named even at 100%, because "it read everything" is the claim worth
+    making. Under partial coverage the precision figure is reported only
+    over the rows it could read, and only ever with that scope attached —
+    the whole-document number does not exist and must not be inferable.
+    """
+    if not result.partial_coverage:
+        return [
+            f"  coverage {result.coverage:.1%}  "
+            f"(every one of {result.extracted_total} extracted rows is an id "
+            "shape this enumeration can read)"
+        ]
+
+    shown = ", ".join(sorted(set(result.unrecognized))[:8])
+    more = (
+        ""
+        if len(set(result.unrecognized)) <= 8
+        else f" (+{len(set(result.unrecognized)) - 8} more shapes)"
+    )
+    lines = [
+        f"  coverage {result.coverage:.1%}  "
+        f"({result.recognized_total} of {result.extracted_total} extracted "
+        "rows recognised)",
+        "  precision  NOT MEASURED as a whole-document figure",
+    ]
+    if result.precision_over_recognized is None:
+        lines.append(
+            "    no extracted row carries an id shape this enumeration can "
+            "read, so there is nothing to score."
+        )
+    else:
+        lines.append(
+            f"    over the {result.recognized_total} recognised rows: "
+            f"{result.precision_over_recognized:.1%}"
+        )
+    lines.append(
+        f"    {len(result.unrecognized)} rows use an id shape this "
+        "enumeration cannot read; they are"
+    )
+    lines.append(f"    unrecognised, not spurious: {shown}{more}")
+    return lines
 
 
 def _critical_lines(result: EvalResult) -> list[str]:
@@ -568,13 +689,24 @@ def main(argv: list[str]) -> int:
                 "gold_source": source,
                 "ran_at": datetime.now(timezone.utc).isoformat(),
                 "recall": result.recall,
-                "precision": result.precision,
                 "gold_total": result.gold_total,
                 "extracted_total": result.extracted_total,
                 "matched": result.matched,
                 "missing": result.missing,
                 "spurious": result.spurious,
                 "field_failures": result.field_failures,
+                # Null under partial coverage. A whole-document precision
+                # does not exist when the enumeration could not read the
+                # whole document, and a gate script reading this key must
+                # not receive a subset figure by accident — the same rule
+                # `critical_recall` follows for an unlabelled gold set.
+                "precision": (
+                    None if result.partial_coverage else result.precision
+                ),
+                "precision_over_recognized": result.precision_over_recognized,
+                "coverage": result.coverage,
+                "recognized_total": result.recognized_total,
+                "unrecognized": result.unrecognized,
                 # Null rather than 0.0 when unmeasurable, so a script
                 # reading this artifact cannot mistake "nobody labeled it"
                 # for "the extractor found none of them".
