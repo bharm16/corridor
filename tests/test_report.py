@@ -374,7 +374,8 @@ def test_the_critical_items_note_declares_the_ordering_and_never_a_weight(
     report = build_report(session, project.id)
     note = section(report, "Critical items").note
 
-    assert "need-date proximity" in note
+    assert "earliest need first" in note
+    assert "undated records follow" in note
     assert "×" not in note
     assert "weighted" not in note
 
