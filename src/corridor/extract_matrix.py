@@ -374,6 +374,15 @@ def extract_document(
             users=[_structure_user(document, p, grids[p.page_no]) for p in structure_pages],
             images=[[p.image_path] for p in structure_pages],
         )
+        # One header, one mapping. The model is asked per page, so pages
+        # reprinting an identical header were each answered independently —
+        # and disagreed: SH 99's `UCM_to_RIDs` gave three readings of one
+        # 16-column header across 17 pages, WSDOT 9424 three across 11.
+        # That is not unreliability, it is the same question asked eleven
+        # times. Resolved by majority before any row is read (#101).
+        resolved, disagreements = _resolve_headers(structure_pages, grids, results)
+        document.header_disagreements = disagreements
+
         # Pages in order, so a header printed on page 1 can carry to the
         # continuation pages that follow it.
         carried: tuple[dict[int, str], list[str], int] | None = None
@@ -384,7 +393,8 @@ def extract_document(
             if result.get("is_utility_matrix"):
                 recognized += 1
             made, carried = _structure_candidates(
-                document, page, grids[page.page_no], result, model, session, carried
+                document, page, grids[page.page_no], result, model, session,
+                carried, resolved=resolved,
             )
             candidates.extend(made)
 
@@ -502,6 +512,58 @@ def _transcribe_user(document: Document, page: DocPage) -> str:
     )
 
 
+def _header_key(grid, header_row) -> tuple[str, ...] | None:
+    """The printed header, normalised, as the thing a mapping belongs to.
+
+    None when this page states no header of its own — a continuation page,
+    or a table that starts straight into data. Those keep the existing
+    carry-forward path; they have no header to agree with.
+    """
+    if not isinstance(header_row, int) or header_row >= len(grid):
+        return None
+    return tuple(normalize_header(cell or "") for cell in grid[header_row])
+
+
+def _resolve_headers(pages, grids, results):
+    """One mapping per printed header, by majority across the pages sharing it.
+
+    Returns the resolved mapping per header key, and how many keys were
+    read more than one way. The count is not decoration: a resolved mapping
+    now governs every page under that header, so on SH 99 it carries 457
+    rows rather than 28, and a majority a reviewer cannot see is a guess.
+
+    Ties break toward the first page's reading — earliest wins — because
+    the alternative is an ordering nobody can predict from the document.
+    """
+    votes: dict[tuple[str, ...], list] = {}
+    for page, result in zip(pages, results):
+        if "_error" in result:
+            continue
+        grid_list = grids.get(page.page_no) or []
+        table_index = result.get("matrix_table")
+        if table_index is None or not (0 <= table_index < len(grid_list)):
+            continue
+        grid = grid_list[table_index]
+        key = _header_key(grid, result.get("header_row"))
+        if key is None:
+            continue
+        mapping, unmapped = _column_mapping(grid, result)
+        votes.setdefault(key, []).append((mapping, unmapped))
+
+    resolved: dict[tuple[str, ...], tuple[dict[int, str], list[str]]] = {}
+    disagreements = 0
+    for key, cast in votes.items():
+        signatures = [tuple(sorted(mapping.items())) for mapping, _ in cast]
+        if len(set(signatures)) > 1:
+            disagreements += 1
+        best = max(
+            range(len(cast)),
+            key=lambda i: (signatures.count(signatures[i]), -i),
+        )
+        resolved[key] = cast[best]
+    return resolved, disagreements
+
+
 def _structure_candidates(
     document: Document,
     page: DocPage,
@@ -510,6 +572,7 @@ def _structure_candidates(
     model: str | None,
     session: Session,
     carried: tuple[dict[int, str], list[str], int] | None = None,
+    resolved: dict | None = None,
 ) -> tuple[list[Candidate], tuple[dict[int, str], list[str], int] | None]:
     table_index = result.get("matrix_table")
     if table_index is None or not (0 <= table_index < len(grids)):
@@ -523,6 +586,11 @@ def _structure_candidates(
     confidence = result.get("mapping_confidence")
 
     if isinstance(header_row, int):
+        # The mapping every page under this header agreed on, not this
+        # page's own reading of it (#101).
+        key = _header_key(grid, header_row)
+        if resolved and key in resolved:
+            mapping, unmapped = resolved[key]
         carried = (mapping, unmapped, len(grid[0]))
     elif carried is not None and carried[2] == len(grid[0]):
         # A continuation page: the matrix runs on but its headings were
