@@ -40,7 +40,7 @@ from corridor.sheets import (
     read_workbook,
     row_text,
 )
-from corridor.vocabulary import MIN_ROW_FIELDS, REQUIRED
+from corridor.vocabulary import MIN_ROW_FIELDS, REQUIRED, is_retired_row
 from corridor.verify import quote_appears_on, threshold_for, unverified_fields
 
 # What produced this reading. The column is named `prompt_version` because
@@ -103,6 +103,10 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
             for position, field in sorted(mapping.items())
             if position < len(raw) and raw[position].strip()
         }
+        if is_retired_row(fields):
+            # The form's retired numbering, excluded by the same stated
+            # rule as the page path (ADR-0012).
+            continue
         if len(fields) < MIN_ROW_FIELDS:
             continue
         if not all(fields.get(name) for name in REQUIRED):

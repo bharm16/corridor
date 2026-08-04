@@ -65,6 +65,7 @@ from corridor.vocabulary import (  # noqa: F401
     REQUIRED,
     ROW_FIELDS,
     TEMPLATE_FIELDS,
+    is_retired_row,
 )
 
 # v2 widens the canonical vocabulary to TxDOT's published template (#97).
@@ -523,6 +524,12 @@ def _structure_candidates(
     for raw in body:
         own = row_to_fields(raw, mapping.fields)
         _settle_strategy(own, raw, mapping)
+        if is_retired_row(own):
+            # The form's own bookkeeping — a printed number whose only
+            # content says the number is not in use (ADR-0012). Skipped by
+            # rule, not by luck: page-inherited owners would otherwise
+            # carry these past REQUIRED as phantom conflicts.
+            continue
         if len(own) < MIN_ROW_FIELDS:
             continue
         fields = {**inherited, **own}
@@ -694,6 +701,10 @@ def _transcribed_candidate(
     # under a heading nobody kept is not a strategy however it was read.
     _drop_bare_mark(row)
     if not row:
+        return None
+    if is_retired_row(row):
+        # The same rule as the structure tier (ADR-0012): a transcribed
+        # `Not Used` row is still the form's bookkeeping.
         return None
 
     fields = {**inherited, **row}
