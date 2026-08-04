@@ -26,9 +26,13 @@ _Avoid_: chainage, location (when a station range is meant), milepost
 A dated event in the project schedule that Dependencies must be ready for.
 _Avoid_: deadline, gate, phase
 
+**Resolution Strategy**:
+How a utility conflict is to be resolved, asserted by the source document: the facility is **relocated**, **protected in place**, resolved by **changing the highway design**, or granted an **exception to policy**. The industry's four published alternatives, not Corridor's invention. A reviewer may override the document's claim — a matrix may say protect-in-place about a duct bank under the only haul road — but nobody may invent one where the document is silent, and many documents are: an inventory records conflicts without ever saying how they resolve.
+_Avoid_: disposition, treatment, remedy, action, fix
+
 **Criticality**:
-How much a Dependency matters, claimed by the source document rather than judged by a reader: a Dependency is **critical** when its document states the facility must move before construction can proceed. Each agency writes that differently — a conflict flag, a relocation-needed column, a recommended resolution — and each layout's signal is identified once before that document is measured. A reviewer may override the claim; nobody may invent it where the document is silent.
-_Avoid_: priority, severity, importance, urgency (severity is a property of an Exception, not of a Dependency)
+Whether a Dependency must move before construction can proceed — **a reading of the Resolution Strategy, never a stored scale**: critical means the strategy is relocation. A facility that stays where it is, however much work it needs, is not critical. Federal regulation defines relocation far more broadly, to include adjustment and protective measures; that definition bounds reimbursement, not schedule, and is not the one meant here.
+_Avoid_: priority, severity, importance, urgency (severity is a property of an Exception, not of a Dependency); high (a middle value nothing can assert)
 
 **Need Date**:
 The date by which a Dependency must be Ready, derived from the Milestone it serves. A property of the project.
@@ -55,6 +59,14 @@ _Avoid_: aggregate, rollup, summary (when meaning the provenance class)
 **Document of Record**:
 When one document is published in several formats, the one Evidence cites. The structured original outranks anything printed from it: a spreadsheet states its values, a PDF of that spreadsheet only depicts them.
 _Avoid_: source of truth, master copy, canonical version, original
+
+**Utility Conflict Matrix**:
+A document that lists utility conflicts *and* how each is to be resolved. The industry form, and the only kind that can assert a Resolution Strategy.
+_Avoid_: UCM (acceptable in filenames and UI copy, never in code), conflict list, utility matrix
+
+**Utility Inventory**:
+A document that lists utility features, and may flag which are in conflict, but never says how a conflict resolves. Distinguishing this from a Utility Conflict Matrix matters because an inventory looks like one and cannot answer what one answers — a conflict flag says a problem exists, not that the facility moves.
+_Avoid_: matrix, inventory matrix (the phrase agencies print on the cover of both)
 
 ### States and signals
 

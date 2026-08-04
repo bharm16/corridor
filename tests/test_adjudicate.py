@@ -4,6 +4,7 @@ from sqlalchemy import select
 from corridor.adjudicate import (
     CRITICALITY_SIGNALS,
     AlreadyAdjudicated,
+    CriticalitySignal,
     accept_candidate,
     set_criticality,
 )
@@ -400,15 +401,22 @@ def test_the_view_carries_the_full_provenance_chain(session, document):
 
 @pytest.fixture
 def signalled(monkeypatch, session, document):
-    """A project whose layout has an identified criticality signal.
+    """A project whose layout has an identified signal.
 
-    Patched rather than fixtured on the real slug because `projects.slug`
-    is unique and `nhhip-3c2` is a real row. This exercises the mechanism;
-    `test_the_shipped_signal_table_reads_project_a` covers the table.
+    The signal is built here rather than borrowed from the shipped table,
+    which is empty by design (ADR-0009) — these tests cover the mechanism
+    that reads a signal, and `test_the_shipped_signal_table_is_empty`
+    covers what is actually shipped.
     """
     project = session.get(Project, document.project_id)
     monkeypatch.setitem(
-        CRITICALITY_SIGNALS, project.slug, CRITICALITY_SIGNALS["nhhip-3c2"]
+        CRITICALITY_SIGNALS,
+        project.slug,
+        CriticalitySignal(
+            field="potential_conflict",
+            critical=frozenset({"y", "yes"}),
+            not_critical=frozenset({"n", "no", "a"}),
+        ),
     )
     return document
 
@@ -565,18 +573,17 @@ def test_the_hardcode_is_gone_not_defaulted_differently(session, document):
     assert Dependency.__table__.c.criticality.nullable is True
 
 
-def test_the_shipped_signal_table_reads_project_a(session):
-    """The table is the thing a human edits, so its contents are the test.
+def test_the_shipped_signal_table_is_empty(session):
+    """Nothing in this corpus asserts a criticality (ADR-0009).
 
-    Project A only. FDOT's and SH 99's signals are not identified in
-    writing yet, and an unidentified layout asserts nothing.
+    `nhhip-3c2` was listed here until the research in ADR-0009: its
+    `Potential Conflict (Yes, No, Abandoned)` column says a conflict
+    exists, never how it resolves, and reading `Y` as critical marked 71%
+    of Project A on a claim the document does not make. The layouts that
+    do record a resolution strategy — FDOT and WSDOT — need the schema
+    change, not an entry here.
+
+    Asserted as a whole rather than key by key: a new entry should have to
+    argue with this test and the ADR behind it.
     """
-    signal = CRITICALITY_SIGNALS["nhhip-3c2"]
-
-    assert signal.field == "potential_conflict"
-    assert signal.read("Y") == "critical"
-    assert signal.read("N") == "normal"
-    assert signal.read("A") == "normal"
-    assert signal.read("") is None
-    assert "fdot-sr789" not in CRITICALITY_SIGNALS
-    assert "sh99-grand-parkway" not in CRITICALITY_SIGNALS
+    assert CRITICALITY_SIGNALS == {}

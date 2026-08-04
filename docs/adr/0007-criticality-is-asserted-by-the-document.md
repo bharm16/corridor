@@ -1,5 +1,13 @@
 # Criticality is asserted by the document, not assigned by a reviewer
 
+> **Superseded by [ADR-0009](0009-the-document-records-a-resolution-strategy-not-a-criticality.md).**
+> The premise below — that TxDOT spells the signal `Potential Conflict = Y` — describes
+> Project A's local form, not TxDOT's published template, which records a
+> `Resolution Strategy Selected` instead. Neither SHRP2 R15B nor TxDOT defines
+> criticality at all. Retained because its argument about *why* the signal must come
+> from the document rather than the reviewer is the reason ADR-0009 exists, and still
+> holds.
+
 `dependencies.criticality` has existed since the v0 schema with the values `critical | high | normal`, no definition in `CONTEXT.md`, and `adjudicate.py` hardcoding `"normal"` on every accepted Candidate. All 141 Ledger records are `normal`. Meanwhile `v0-build-spec.md` gates M7 on *"critical-dependency recall (target ≥95%)"* and weights exception severity by *"rule severity × criticality"* — two things resting on a field nothing sets.
 
 The obvious fix is to let a reviewer mark it during adjudication. **That makes the M7 gate unmeasurable by construction**, and the reason is worth stating slowly because it is easy to miss: a reviewer can only mark rows the extractor surfaced. Recall's denominator is *all* critical Dependencies, including the ones that were missed — and a missed row is never adjudicated, so it can never be labeled critical. Reviewer-assigned criticality yields a denominator that by definition excludes every failure the metric exists to detect. It would report high recall precisely when the extractor was worst.
