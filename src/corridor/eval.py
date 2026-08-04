@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from corridor.db import Session as SessionFactory
 from corridor.models import Candidate, Document, Project
+from corridor.verify import unverified_fields
 
 REQUIRED_COLUMNS = ("source_ref",)
 
@@ -77,6 +78,11 @@ class EvalResult:
     spurious: list[str] = field(default_factory=list)
     prompt_versions: dict[str, int] = field(default_factory=dict)
     models: dict[str, int] = field(default_factory=dict)
+    # Rows carrying a value that is not text on the cited page. Reported
+    # beside recall because the two measure different things and the
+    # ADR-0006 gate turned entirely on the second: two paths matched to
+    # within 0.3 points on recall while differing fifty-fold here.
+    field_failures: int = 0
     coverage_note: str = ""
 
     @property
@@ -140,6 +146,29 @@ def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
     return records
 
 
+def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
+    """The enumeration over several documents, read one document at a time.
+
+    Page numbers restart at 1 in every document, so a single page-keyed
+    dictionary spanning five revisions of the same matrix keeps only the
+    last text written for each page number and silently discards the rest.
+    That reads as a precision collapse — every row of the overwritten
+    documents becomes spurious — and it stayed invisible while only one
+    Project A matrix had ever been extracted.
+    """
+    from corridor.models import DocPage
+
+    records: list[GoldRecord] = []
+    for document_id in sorted(document_ids):
+        pages = session.execute(
+            select(DocPage.page_no, DocPage.text).where(
+                DocPage.document_id == document_id
+            )
+        ).all()
+        records.extend(gold_from_page_text({p: t for p, t in pages}))
+    return records
+
+
 def _followed_by_a_party(text: str, start: int) -> bool:
     for line in text[start:].splitlines():
         line = line.strip()
@@ -149,28 +178,78 @@ def _followed_by_a_party(text: str, start: int) -> bool:
     return False
 
 
+def extracted_documents(
+    session: Session, project_id: int, *, prompt_version: str | None = None
+) -> set[int]:
+    """Documents this extractor actually read.
+
+    Only these belong in the enumeration. A matrix that was ingested but
+    never run through the extractor would otherwise count every one of its
+    rows as missed, and report the backlog as a recall failure.
+    """
+    query = select(Candidate.source_document_id).where(
+        Candidate.project_id == project_id
+    )
+    if prompt_version:
+        query = query.where(Candidate.prompt_version == prompt_version)
+    return set(session.scalars(query.distinct()).all())
+
+
+def _page_text(session: Session, document_ids) -> dict[tuple[int, int], str]:
+    from corridor.models import DocPage
+
+    if not document_ids:
+        return {}
+    rows = session.execute(
+        select(DocPage.document_id, DocPage.page_no, DocPage.text).where(
+            DocPage.document_id.in_(document_ids)
+        )
+    ).all()
+    return {(d, p): (t or "") for d, p, t in rows}
+
+
 def evaluate(
-    session: Session, *, slug: str, gold: list[GoldRecord], kind: str = "dependency"
+    session: Session,
+    *,
+    slug: str,
+    gold: list[GoldRecord],
+    kind: str = "dependency",
+    prompt_version: str | None = None,
 ) -> EvalResult:
+    """Score one extractor's output.
+
+    `prompt_version` scopes the run to a single extraction path. Two paths'
+    Candidates coexist on a project while a migration is undecided, and
+    pooled they are meaningless: every row appears twice, so recall reads
+    100% and precision reads 50% no matter how either extractor did.
+    """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
         raise MalformedGoldSet(f"no project {slug!r}")
 
-    candidates = session.scalars(
-        select(Candidate).where(
-            Candidate.project_id == project.id, Candidate.kind == kind
-        )
-    ).all()
+    query = select(Candidate).where(
+        Candidate.project_id == project.id, Candidate.kind == kind
+    )
+    if prompt_version:
+        query = query.where(Candidate.prompt_version == prompt_version)
+    candidates = session.scalars(query).all()
 
     extracted = Counter()
     versions: Counter = Counter()
     models: Counter = Counter()
+    page_text = _page_text(session, {c.source_document_id for c in candidates})
+    field_failures = 0
     for candidate in candidates:
         ref = (candidate.payload_json.get("fields") or {}).get("utility_id")
         if ref:
             extracted[ref] += 1
         versions[candidate.prompt_version or "—"] += 1
         models[candidate.model or "deterministic"] += 1
+        text = page_text.get(
+            (candidate.source_document_id, (candidate.source_pages or [0])[0]), ""
+        )
+        if unverified_fields(candidate.payload_json.get("fields") or {}, text):
+            field_failures += 1
 
     # Multiset, not set: ids repeat within a revision (47 reused in one
     # Project A matrix), and collapsing them would hide a dropped row
@@ -187,6 +266,7 @@ def evaluate(
         spurious=sorted((extracted - wanted).elements()),
         prompt_versions=dict(versions),
         models=dict(models),
+        field_failures=field_failures,
         coverage_note=(
             "Recall is measured against this enumeration only. The source "
             "document is not ground truth for its own omissions."
@@ -210,6 +290,15 @@ def render(result: EvalResult) -> str:
         shown = ", ".join(result.spurious[:12])
         more = "" if len(result.spurious) <= 12 else f" (+{len(result.spurious) - 12})"
         lines.append(f"  spurious  {len(result.spurious)}: {shown}{more}")
+    share = (
+        100 * result.field_failures / result.extracted_total
+        if result.extracted_total
+        else 0.0
+    )
+    lines.append(
+        f"  field-token failures  {result.field_failures} "
+        f"({share:.2f}% of extracted rows carry a value not on their page)"
+    )
     versions = ", ".join(f"{k}×{v}" for k, v in sorted(result.prompt_versions.items()))
     models = ", ".join(f"{k}×{v}" for k, v in sorted(result.models.items()))
     lines.append(f"  prompt_version: {versions or '—'}")
@@ -219,40 +308,42 @@ def render(result: EvalResult) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """`eval <project-slug> [gold.csv]`.
+    """`eval <project-slug> [gold.csv] [--prompt-version=X]`.
 
     Without a CSV the enumeration is built from the stored page text of the
     project's matrices, which is independent of the table parser under test.
+
+    `--prompt-version` scopes both the enumeration and the scoring to one
+    extraction path, which is what makes two paths on the same project
+    comparable rather than pooled.
     """
-    if not argv:
-        print("usage: eval <project-slug> [gold.csv]", file=sys.stderr)
+    flags = [a for a in argv if a.startswith("--")]
+    args = [a for a in argv if not a.startswith("--")]
+    prompt_version = next(
+        (f.split("=", 1)[1] for f in flags if f.startswith("--prompt-version=")), None
+    )
+    if not args or any(not f.startswith("--prompt-version=") for f in flags):
+        print(
+            "usage: eval <project-slug> [gold.csv] [--prompt-version=X]",
+            file=sys.stderr,
+        )
         return 2
 
-    slug = argv[0]
+    slug = args[0]
     skipped: set[int] = set()
     with SessionFactory() as session:
-        if len(argv) > 1:
-            gold = load_gold(argv[1])
-            source = argv[1]
+        if len(args) > 1:
+            gold = load_gold(args[1])
+            source = args[1]
         else:
-            from corridor.models import DocPage
-
             project = session.scalars(
                 select(Project).where(Project.slug == slug)
             ).first()
             if project is None:
                 print(f"no project {slug!r}", file=sys.stderr)
                 return 1
-            # Only documents something was actually extracted from. A
-            # matrix that was ingested but never run through the extractor
-            # would otherwise count every one of its rows as missed, and
-            # report the backlog as a recall failure.
-            extracted_docs = set(
-                session.scalars(
-                    select(Candidate.source_document_id).where(
-                        Candidate.project_id == project.id
-                    )
-                ).all()
+            extracted_docs = extracted_documents(
+                session, project.id, prompt_version=prompt_version
             )
             matrices = set(
                 session.scalars(
@@ -264,23 +355,26 @@ def main(argv: list[str]) -> int:
             )
             skipped = matrices - extracted_docs
             if not extracted_docs:
-                print(f"{slug}: nothing extracted yet", file=sys.stderr)
+                print(
+                    f"{slug}: nothing extracted yet"
+                    + (f" at {prompt_version}" if prompt_version else ""),
+                    file=sys.stderr,
+                )
                 return 1
 
-            pages = session.execute(
-                select(DocPage.page_no, DocPage.text).where(
-                    DocPage.document_id.in_(extracted_docs)
-                )
-            ).all()
-            gold = gold_from_page_text({p: t for p, t in pages})
+            gold = gold_for_documents(session, extracted_docs)
             source = "page text (independent of the table parser)"
+            if prompt_version:
+                source += f"; scoped to {prompt_version}"
             if skipped:
                 source += f"; {len(skipped)} ingested matrix/matrices not extracted"
 
-        result = evaluate(session, slug=slug, gold=gold)
+        result = evaluate(
+            session, slug=slug, gold=gold, prompt_version=prompt_version
+        )
 
     print(render(result))
-    if len(argv) == 1 and skipped:
+    if len(args) == 1 and skipped:
         print(
             f"  {len(skipped)} ingested matrix/matrices contributed no candidates "
             "and are excluded from the enumeration, not counted as misses."
@@ -288,7 +382,10 @@ def main(argv: list[str]) -> int:
 
     out = Path("out")
     out.mkdir(exist_ok=True)
-    path = out / f"eval-{slug}.json"
+    # One file per extraction path, so measuring the new one does not
+    # overwrite the baseline it is being compared against.
+    stem = f"eval-{slug}" + (f"-{prompt_version}" if prompt_version else "")
+    path = out / f"{stem}.json"
     path.write_text(
         json.dumps(
             {
@@ -302,6 +399,7 @@ def main(argv: list[str]) -> int:
                 "matched": result.matched,
                 "missing": result.missing,
                 "spurious": result.spurious,
+                "field_failures": result.field_failures,
                 "prompt_versions": result.prompt_versions,
                 "models": result.models,
                 "coverage_note": result.coverage_note,

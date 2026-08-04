@@ -6,11 +6,13 @@ from corridor.eval import (
     GoldRecord,
     MalformedGoldSet,
     evaluate,
+    extracted_documents,
+    gold_for_documents,
     gold_from_page_text,
     load_gold,
     render,
 )
-from corridor.models import Candidate, Document, Project
+from corridor.models import Candidate, DocPage, Document, Project
 
 GOLD = """source_ref,page
 FOC1-1,1
@@ -53,7 +55,14 @@ def document(session, project):
     return d
 
 
-def make_candidate(session, project, document, uid, page=1):
+def add_page(session, document, page_no, text):
+    page = DocPage(document_id=document.id, page_no=page_no, text=text)
+    session.add(page)
+    session.flush()
+    return page
+
+
+def make_candidate(session, project, document, uid, page=1, prompt_version="txdot_ucm_v1"):
     c = Candidate(
         project_id=project.id,
         kind="dependency",
@@ -67,7 +76,7 @@ def make_candidate(session, project, document, uid, page=1):
         source_document_id=document.id,
         source_pages=[page],
         confidence=1.0,
-        prompt_version="txdot_ucm_v1",
+        prompt_version=prompt_version,
         citations_verified=True,
     )
     session.add(c)
@@ -146,6 +155,33 @@ def test_an_inline_mention_is_not_counted_as_a_row():
     assert [g.source_ref for g in gold] == ["FOC1-102"]
 
 
+def test_the_enumeration_covers_every_document_not_just_one(session, project, document):
+    """Five revisions of the same matrix all number their pages from 1.
+
+    Keyed by page number alone they collapse onto each other and the
+    enumeration silently shrinks to one document's worth — which reads as
+    a precision collapse, because every row of the four documents that
+    were overwritten becomes spurious. Recall against a gold set that is
+    missing three quarters of its rows is not a number.
+    """
+    revision = Document(
+        project_id=project.id,
+        sha256="a" * 64,
+        filename="matrix-earlier.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(revision)
+    session.flush()
+    add_page(session, document, 1, "E92 \nCenterPoint Energy \n")
+    add_page(session, revision, 1, "W139 \nCity of Houston \n")
+
+    gold = gold_for_documents(session, [document.id, revision.id])
+
+    assert sorted(g.source_ref for g in gold) == ["E92", "W139"]
+
+
 # ------------------------------------------------------------------- scoring
 
 
@@ -217,3 +253,60 @@ def test_an_empty_ledger_scores_zero_not_one(session, project, document):
     assert result.recall == 0.0
     assert result.precision == 0.0
     assert result.missing == ["FOC1-1"]
+
+
+# ------------------------------------------- one extractor at a time (#68)
+
+
+def test_two_extractors_on_one_project_are_scored_separately(
+    session, project, document
+):
+    """Both paths' Candidates coexist while the migration is undecided.
+
+    Pooled they are meaningless — every row appears twice, so recall reads
+    100% and precision reads 50% no matter how either extractor did.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "FOC1-1", prompt_version="matrix_vision_v1")
+    make_candidate(session, project, document, "GHOST", prompt_version="matrix_vision_v1")
+
+    old = evaluate(
+        session, slug=project.slug, gold=[GoldRecord("FOC1-1")],
+        prompt_version="txdot_ucm_v1",
+    )
+    new = evaluate(
+        session, slug=project.slug, gold=[GoldRecord("FOC1-1")],
+        prompt_version="matrix_vision_v1",
+    )
+
+    assert (old.extracted_total, old.precision) == (1, 1.0)
+    assert (new.extracted_total, new.precision) == (2, 0.5)
+    assert new.spurious == ["GHOST"]
+
+
+def test_the_documents_scored_are_the_ones_that_extractor_read(
+    session, project, document
+):
+    """Otherwise the comparison is not "on the same documents".
+
+    A revision the new path has not run over yet would count every one of
+    its rows as missed, and report the backlog as a recall failure.
+    """
+    other = Document(
+        project_id=project.id,
+        sha256="c" * 64,
+        filename="matrix-other.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(other)
+    session.flush()
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, other, "E92")
+    make_candidate(session, project, document, "FOC1-1", prompt_version="matrix_vision_v1")
+
+    assert extracted_documents(session, project.id) == {document.id, other.id}
+    assert extracted_documents(
+        session, project.id, prompt_version="matrix_vision_v1"
+    ) == {document.id}

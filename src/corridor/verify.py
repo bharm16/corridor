@@ -73,3 +73,71 @@ def match_ratio(quote: str, page_text: str) -> float:
 
 def quote_appears_on(quote: str, page_text: str, threshold: float = THRESHOLD) -> bool:
     return match_ratio(quote, page_text) >= threshold
+
+
+# --------------------------------------------------------------- field values
+
+# Some layouts combine stationing and offset in one column, and the page's
+# own tokenization keeps them together — `1112+90,713.40'` is one word.
+# Splitting that cell into two real fields is correct and both halves are on
+# the page, so the comma must not read as invented text.
+#
+# Deliberately not `+`: `1149+00` has to stay one token, because splitting it
+# is exactly how a transcribed `1140+00` would slip through.
+_FIELD_SEPARATORS = re.compile(r"[,;/]")
+_EDGE_PUNCTUATION = ".,;:()[]'\"-"
+
+# Below this a token is enum-ish — `R`, `Y`, `UG` — and matches somewhere on
+# any page, so requiring it proves nothing and rejecting it fails every row.
+MIN_TOKEN_CHARS = 4
+
+
+def tokens(text: str | None) -> set[str]:
+    """Page or field text as tokens, cut on punctuation as well as space.
+
+    Cutting on punctuation rather than matching substrings is what keeps
+    this able to catch a clipped cell: `othwell` is still not `rothwell`,
+    where a substring test would call it found.
+    """
+    out = set()
+    for word in normalize(text or "").split():
+        for piece in _FIELD_SEPARATORS.split(word):
+            piece = piece.strip(_EDGE_PUNCTUATION)
+            if piece:
+                out.add(piece)
+    return out
+
+
+def value_appears_on(value: str | None, page_text: str) -> bool:
+    """Is every token of this field value really on this page?
+
+    Citation verification is row-level and fuzzy at 0.9, so a transcribed
+    `1140+00` where the document says `1149+00` sits inside a perfectly
+    valid row quote and passes. Verified Candidates sort to the top of the
+    review queue, so that wrong value would reach a reviewer wearing a
+    green check. This is the only mechanical check on field *values*.
+
+    Deliberately biased towards flagging. The stored text stream sometimes
+    concatenates spans without a separator (`freeway1148+60`), which costs
+    a few false failures — 3 in 40,417 tokens across Project A's five
+    matrices. A failure marks a Candidate unverified and sinks it in the
+    queue; it never drops it, so being wrong in that direction is cheap
+    and being wrong in the other is not.
+    """
+    return _on_page(value, tokens(page_text))
+
+
+def unverified_fields(fields: dict[str, str], page_text: str) -> set[str]:
+    """Which of these field values are not text on this page.
+
+    Tokenises the page once for the whole row rather than once per field —
+    a matrix page is a few thousand tokens and a row has twenty of them.
+    """
+    page = tokens(page_text)
+    return {name for name, value in fields.items() if not _on_page(value, page)}
+
+
+def _on_page(value: str | None, page: set[str]) -> bool:
+    return all(
+        token in page for token in tokens(value) if len(token) >= MIN_TOKEN_CHARS
+    )

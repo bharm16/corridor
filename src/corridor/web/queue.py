@@ -10,12 +10,11 @@ what they are.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.config import settings
+from corridor.docs import stored_pdf
 from corridor.merge import rank_matches
 from corridor.models import Candidate, DocPage, Document
 
@@ -115,18 +114,6 @@ def build_view(session: Session, candidate: Candidate) -> CandidateView:
             source_document_id=candidate.source_document_id,
         ),
     )
-
-
-def stored_pdf(document: Document) -> Path | None:
-    """Resolve a Document back to the file in the content-addressed store."""
-    if not document or not document.sha256:
-        return None
-    path = (
-        Path(settings.corpus_store)
-        / document.sha256[:2]
-        / f"{document.sha256}.pdf"
-    )
-    return path if path.exists() else None
 
 
 def locate_quote(document: Document, page_no: int, quote: str) -> list[Highlight]:
