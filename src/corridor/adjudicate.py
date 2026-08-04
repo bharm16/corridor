@@ -57,34 +57,30 @@ class CriticalitySignal:
         return None
 
 
-# Each layout's criticality signal, identified in writing before that
-# layout is measured (ADR-0007). Keyed by project, because the canonical
-# field name alone is not enough to identify a signal: SH 99 is also TxDOT
-# and fills `potential_conflict` from `Early TxDOT Utility Activity`, a
-# column that means something else entirely (#85).
+# Deliberately empty. **Nothing in this corpus asserts a criticality**, and
+# ADR-0009 explains why: no document records one. SHRP2 R15B and TxDOT's own
+# published template both record a *resolution strategy* — relocate, protect
+# in place, change the highway design, except from policy — and criticality
+# is a reading of that, not a field of its own.
 #
-# A project that is absent produces **no criticality Assertion at all**.
-# That is the designed outcome for an unidentified layout, not a gap:
+# `nhhip-3c2` was listed here and has been removed. Its `Potential Conflict
+# (Yes, No, Abandoned)` column says a conflict **exists**; it never says how
+# the conflict resolves. Project A's document is a Utility Inventory, not a
+# Utility Conflict Matrix — its filename says so — and reading `Y` as
+# critical marked 71% of its rows on a claim the document does not make.
 #
-# - `fdot-sr789` — ADR-0007 names `Recommended Conflict Resolution`, but
-#   what the extractor captured under `potential_conflict` is a
-#   proposed-feature column ("Prop. Storm pipe (Possible)"). The signal
-#   needs a human reading before it can be listed.
-# - `sh99-grand-parkway` — carries two layouts and no `Potential Conflict`
-#   column on either. Candidates a reader would have to rule on are
-#   `Early TxDOT Utility Activity`, `Abandoned`, and `AURL or DBA`.
-#   Listing it would also need a finer key than the project slug.
-# - WSDOT — must be read off 9424, never the sealed 9540 (ADR-0008).
-CRITICALITY_SIGNALS = {
-    # TxDOT NHHIP 3C-2. `Potential Conflict` is Y / N / A, where A is an
-    # abandoned facility. Absent from two of the five revisions, whose
-    # rows therefore assert nothing rather than asserting `normal`.
-    "nhhip-3c2": CriticalitySignal(
-        field="potential_conflict",
-        critical=frozenset({"y", "yes"}),
-        not_critical=frozenset({"n", "no", "a"}),
-    ),
-}
+# The two layouts that do record a strategy cannot be read through this
+# table's shape, which matches one field against a value set:
+#
+# - `fdot-sr789` — `Recommended Conflict Resolution`, captured today under
+#   `notes` because no canonical field exists for it.
+# - WSDOT 9424 / 9540 — four columns marked `X` beneath a spanning
+#   `RECOMMENDED RESOLUTION` header, which is a different shape entirely.
+#
+# Replacing this with an asserted `resolution_strategy` is the schema work
+# ADR-0009 sets out. Until then nothing is asserted, which is correct: the
+# alternative is a number that measures our guess.
+CRITICALITY_SIGNALS: dict[str, CriticalitySignal] = {}
 
 
 class AlreadyAdjudicated(Exception):
