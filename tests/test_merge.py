@@ -4,6 +4,7 @@ from sqlalchemy import select
 from corridor.db import Session, engine
 from corridor.merge import (
     MIN_MATCH_SCORE,
+    rank_matches,
     STATION_TOLERANCE_FT,
     parse_station,
     rank_matches,
@@ -11,7 +12,7 @@ from corridor.merge import (
     score_match,
     station_score,
 )
-from corridor.models import Dependency, Document, EvidenceLink, ExternalOrg, Project
+from corridor.models import is_placeholder_party, Dependency, Document, EvidenceLink, ExternalOrg, Project
 
 
 # --------------------------------------------------------------------- units
@@ -484,3 +485,53 @@ def test_a_genuine_duplicate_still_surfaces(session, project):
     )
     assert [m.dependency.id for m in matches] == [dep.id]
     assert matches[0].total > 0.8
+
+
+# ------------------------------------- placeholder External Parties (#77)
+
+
+def test_a_placeholder_is_not_an_external_party():
+    """CONTEXT.md: an External Party is *"the organization outside the
+    project that owns a Dependency"*. `NA` is not one — it is the document
+    declining to name one, and 86 Project A rows carry it."""
+    for placeholder in ("NA", "N/A", "n/a", " na ", "TBD", "-", "--", "None",
+                        "Unknown", "UNKNOWN", "No ID", "?", ""):
+        assert is_placeholder_party(placeholder) is True, placeholder
+
+    for real in ("AT&T Texas (SWBT)", "CenterPoint Energy", "City of Houston",
+                 "Nakina Telephone", "ATT"):
+        assert is_placeholder_party(real) is False, real
+
+
+def test_placeholder_owners_do_not_block_together_for_merge(session, project):
+    """The defect this ticket exists for.
+
+    Blocking is on the resolved party and is a hard filter. With 86 rows
+    owned by `NA`, every one of them blocks with every other and the cohort
+    merges into itself — a party nobody can chase, inflating the owner
+    count on any report that groups by party.
+    """
+    org = ExternalOrg(name="NA", org_type="utility", aliases=[])
+    session.add(org)
+    session.flush()
+    make_dep(session, project, org, ref="DEP-00001")
+
+    matches = rank_matches(
+        session,
+        project.id,
+        {"external_org": "NA", "utility_type": "Telecom", "utility_id": "E1"},
+    )
+
+    assert matches == []
+    # A real party still blocks normally. Named oddly on purpose:
+    # `external_orgs.name` is unique and the live table already holds every
+    # party this corpus mentions.
+    real = ExternalOrg(name="Zephyr Telephone Co-op", org_type="utility", aliases=[])
+    session.add(real)
+    session.flush()
+    make_dep(session, project, real, ref="DEP-00002")
+    assert rank_matches(
+        session,
+        project.id,
+        {"external_org": "Zephyr Telephone Co-op", "utility_type": "Telecom"},
+    ) != []

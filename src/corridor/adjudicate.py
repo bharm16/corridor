@@ -24,6 +24,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
     Project,
+    is_placeholder_party,
 )
 
 # Fields the extractor emits that map onto Dependency columns directly.
@@ -368,7 +369,11 @@ def merge_candidate(
 
 
 def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
-    if not name:
+    # A placeholder is the document declining to name a party, not a party
+    # called `NA` (#77). Minting one puts 86 of Project A's rows behind an
+    # owner nobody can chase and inflates every report that groups by
+    # party. The Assertion still records what the document printed.
+    if not name or is_placeholder_party(name):
         return None
     # Exact-name matching only in v0. Alias resolution — collapsing "AT&T"
     # and "AT&T Texas (SWBT)" into one party — is M3's job, and doing it

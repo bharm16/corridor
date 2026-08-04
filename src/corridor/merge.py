@@ -27,7 +27,12 @@ from difflib import SequenceMatcher
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import Dependency, EvidenceLink, ExternalOrg
+from corridor.models import (
+    Dependency,
+    EvidenceLink,
+    ExternalOrg,
+    is_placeholder_party,
+)
 
 # Two records within this distance are plausibly the same facility. Roughly a
 # city block: closer than the spacing between distinct utility crossings, wide
@@ -256,7 +261,16 @@ def rank_matches(
     Passing it excludes the dependencies already evidenced by that same
     document, which is what keeps sibling rows of one matrix apart.
     """
-    org = resolve_org(session, fields.get("external_org"))
+    # A placeholder is the document declining to name a party, so there is
+    # nothing to block on. Without this every one of Project A's 86 `NA`
+    # rows blocks with every other and the cohort merges into itself —
+    # a party nobody can chase, inflating the owner count on any report
+    # that groups by party (#77).
+    owner = fields.get("external_org")
+    if is_placeholder_party(owner):
+        return []
+
+    org = resolve_org(session, owner)
     if org is None:
         return []
 
