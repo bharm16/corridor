@@ -158,12 +158,23 @@ page header. That matches the count taken independently during corpus
 verification. The deterministic parser finds the table and maps **zero**
 of its columns.
 
-The eval command cannot score this document: its enumeration recognises
-TxDOT-style identifiers (`FOC1-23`, `E92`, `WW1**`) and SR 789 numbers its
-conflicts `1, 2, 3`, which no regex can distinguish from every other
-integer on the page. It reports 0% against an empty gold set. The
-comparison here is therefore by row and owner count against the pre-seal
-count, and the enumeration gap is filed rather than papered over.
+At the time of the run the eval command could not score this document: its
+enumeration recognised TxDOT-style identifiers (`FOC1-23`, `E92`, `WW1**`)
+and SR 789 numbers its conflicts `1, 2, 3`. It reported 0% against an empty
+gold set, so the comparison here was by row and owner count against the
+pre-seal count — weaker evidence than every other document got.
+
+**Since #78 it scores properly: recall 100.0%, precision 100.0%, gold 66,
+extracted 66, matched 66, 0 field-token failures.** The enumeration now
+falls back to a second row shape — a bare integer followed by stationing —
+on documents where the prefixed shape finds nothing. It is a fallback
+rather than a second pattern applied alongside the first because TxDOT
+prints an offset after every station, so the same rule matches `303`
+followed by `1153+17`: 668, 531 and 666 phantom rows on three Project A
+revisions. Right answer on one layout, ruinous on the other.
+
+So SR 789's result is no longer asserted against a hand count. It is
+measured by a code path independent of the extractor, and it is exact.
 
 ## Cost
 
