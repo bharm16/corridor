@@ -14,6 +14,12 @@ restatement.
 What this cannot measure is what the source document itself leaves out. A
 matrix is not ground truth for its own omissions, so every number here is
 recall *against that enumeration* and is reported that way.
+
+A gold set may also label which of its rows are **critical**, which is the
+one number M7's gate turns on (≥95%). It is scored from those labels alone
+— the extractor classifies nothing — so it is independent of the
+Ledger-side criticality work. `gold_from_page_text` cannot know, and says
+so rather than reporting zero.
 """
 
 from __future__ import annotations
@@ -35,6 +41,14 @@ from corridor.models import Candidate, Document, Project
 from corridor.verify import unverified_fields
 
 REQUIRED_COLUMNS = ("source_ref",)
+
+# The optional label M7's gate is scored on. Spelled out rather than
+# "anything non-empty is true", so a typo raises instead of silently
+# reading as not-critical: an unrecognised label swallowed as `False`
+# shrinks the denominator, and recall then reads highest exactly when a row
+# went missing from the measurement.
+CRITICAL_TRUE = frozenset({"1", "true", "t", "yes", "y", "critical"})
+CRITICAL_FALSE = frozenset({"", "0", "false", "f", "no", "n", "normal"})
 
 # Utility IDs across the observed layouts: FOC1-23, E92, W139, WW1**,
 # FOC14-69.
@@ -80,6 +94,11 @@ class MalformedGoldSet(Exception):
 class GoldRecord:
     source_ref: str
     page: int | None = None
+    # `None` means this gold set does not label criticality at all, which
+    # is a different fact from "labelled, and this row is not critical".
+    # Carried on the record rather than passed beside the list so a caller
+    # cannot forget it and turn a real score into NOT MEASURED.
+    critical: bool | None = None
 
 
 @dataclass
@@ -103,6 +122,15 @@ class EvalResult:
     # document that had extracted 66 correct rows.
     unmeasurable: bool = False
     coverage_note: str = ""
+    # M7's gate is "≥95% recall on labeled critical dependencies". Scored
+    # from the gold labels alone — the extractor classifies nothing — which
+    # is what keeps this independent of the Ledger-side work (#86).
+    critical_gold_total: int = 0
+    critical_matched: int = 0
+    critical_missing: list[str] = field(default_factory=list)
+    # Whether the gold set labels criticality at all. False makes critical
+    # recall unmeasurable for the same reason an empty enumeration does.
+    critical_labeled: bool = False
 
     @property
     def recall(self) -> float:
@@ -111,6 +139,25 @@ class EvalResult:
     @property
     def precision(self) -> float:
         return self.matched / self.extracted_total if self.extracted_total else 0.0
+
+    @property
+    def critical_recall(self) -> float:
+        return (
+            self.critical_matched / self.critical_gold_total
+            if self.critical_gold_total
+            else 0.0
+        )
+
+    @property
+    def critical_unmeasurable(self) -> bool:
+        """No labeled critical set, so there is nothing to score.
+
+        Distinct from a recall of zero, which says the extractor missed
+        every critical row. Reporting the first as the second is #82's
+        mistake one metric further in, and on the holdout ADR-0008 spends
+        once it cannot be taken back.
+        """
+        return not self.critical_labeled or self.critical_gold_total == 0
 
 
 def load_gold(path: Path | str) -> list[GoldRecord]:
@@ -127,6 +174,8 @@ def load_gold(path: Path | str) -> list[GoldRecord]:
             f"found {', '.join(sorted(headers))}"
         )
 
+    labels_criticality = "critical" in headers
+
     records = []
     for raw in rows:
         row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
@@ -135,11 +184,30 @@ def load_gold(path: Path | str) -> list[GoldRecord]:
             continue
         page = row.get("page")
         records.append(
-            GoldRecord(source_ref=ref, page=int(page) if page and page.isdigit() else None)
+            GoldRecord(
+                source_ref=ref,
+                page=int(page) if page and page.isdigit() else None,
+                critical=_critical(path, row) if labels_criticality else None,
+            )
         )
     if not records:
         raise MalformedGoldSet(f"{path.name}: no rows with a source_ref")
     return records
+
+
+def _critical(path: Path, row: dict[str, str]) -> bool:
+    value = (row.get("critical") or "").lower()
+    if value in CRITICAL_TRUE:
+        return True
+    if value in CRITICAL_FALSE:
+        return False
+    raise MalformedGoldSet(
+        f"{path.name}: row {row.get('source_ref')!r} has critical={value!r}, "
+        f"which is neither {'/'.join(sorted(CRITICAL_TRUE))} nor "
+        f"{'/'.join(sorted(c for c in CRITICAL_FALSE if c))}. Reading it as "
+        "not-critical would drop the row from the denominator the M7 gate "
+        "is scored on."
+    )
 
 
 def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
@@ -299,6 +367,13 @@ def evaluate(
     wanted = Counter(record.source_ref for record in gold)
     matched = sum((wanted & extracted).values())
 
+    # Scored the same way, over the labeled subset. An id that appears in
+    # the gold set twice — once critical, once not — credits the critical
+    # copy from a single extraction, because `source_ref` is the only join
+    # key either metric has. Overall recall still records the miss.
+    critical_wanted = Counter(r.source_ref for r in gold if r.critical)
+    critical_matched = sum((critical_wanted & extracted).values())
+
     result = EvalResult(
         project=slug,
         gold_total=sum(wanted.values()),
@@ -310,6 +385,10 @@ def evaluate(
         models=dict(models),
         field_failures=field_failures,
         unmeasurable=not gold,
+        critical_gold_total=sum(critical_wanted.values()),
+        critical_matched=critical_matched,
+        critical_missing=sorted((critical_wanted - extracted).elements()),
+        critical_labeled=any(r.critical is not None for r in gold),
         coverage_note=(
             "Recall is measured against this enumeration only. The source "
             "document is not ground truth for its own omissions."
@@ -357,12 +436,50 @@ def render(result: EvalResult) -> str:
         f"  field-token failures  {result.field_failures} "
         f"({share:.2f}% of extracted rows carry a value not on their page)"
     )
+    lines.extend(_critical_lines(result))
     versions = ", ".join(f"{k}×{v}" for k, v in sorted(result.prompt_versions.items()))
     models = ", ".join(f"{k}×{v}" for k, v in sorted(result.models.items()))
     lines.append(f"  prompt_version: {versions or '—'}")
     lines.append(f"  model: {models or '—'}")
     lines.append(f"  note: {result.coverage_note}")
     return "\n".join(lines)
+
+
+def _critical_lines(result: EvalResult) -> list[str]:
+    """M7's gate number, or an explicit statement that there isn't one.
+
+    Never "critical recall 0.0%" for a set nobody labeled. The gate reads
+    ≥95% here, and a zero that means "unlabeled" is indistinguishable from
+    one that means "found none of them" at exactly the moment that
+    distinction decides whether a holdout was passed or failed.
+    """
+    if not result.critical_labeled:
+        return [
+            "  critical recall  NOT MEASURED: this gold set does not label "
+            "criticality",
+            "    Add a `critical` column to score the M7 gate's ≥95% bar.",
+        ]
+    if result.critical_gold_total == 0:
+        return [
+            "  critical recall  NOT MEASURED: the gold set labels no row "
+            "critical",
+            "    It is not a recall of zero — there was nothing to find.",
+        ]
+
+    lines = [
+        f"  critical recall {result.critical_recall:.1%}  "
+        f"({result.critical_matched}/{result.critical_gold_total} labeled "
+        "critical rows found)"
+    ]
+    if result.critical_missing:
+        shown = ", ".join(result.critical_missing[:12])
+        more = (
+            ""
+            if len(result.critical_missing) <= 12
+            else f" (+{len(result.critical_missing) - 12})"
+        )
+        lines.append(f"    missing critical  {shown}{more}")
+    return lines
 
 
 def main(argv: list[str]) -> int:
@@ -458,6 +575,16 @@ def main(argv: list[str]) -> int:
                 "missing": result.missing,
                 "spurious": result.spurious,
                 "field_failures": result.field_failures,
+                # Null rather than 0.0 when unmeasurable, so a script
+                # reading this artifact cannot mistake "nobody labeled it"
+                # for "the extractor found none of them".
+                "critical_recall": (
+                    None if result.critical_unmeasurable else result.critical_recall
+                ),
+                "critical_gold_total": result.critical_gold_total,
+                "critical_matched": result.critical_matched,
+                "critical_missing": result.critical_missing,
+                "critical_labeled": result.critical_labeled,
                 "prompt_versions": result.prompt_versions,
                 "models": result.models,
                 "coverage_note": result.coverage_note,
