@@ -72,7 +72,7 @@ WORKSHEET_COLUMNS = (*REQUIRED_COLUMNS, "page", "critical")
 # `Not used for potable supply` should reach the reviewer's eyes without
 # retiring anything, and an unknown phrase still surfaces its row with
 # its cells shown.
-from corridor.vocabulary import RETIREMENT_PHRASES  # noqa: E402
+from corridor.vocabulary import RETIREMENT_PHRASES, is_retired_row  # noqa: E402
 
 # Below this many populated cells, a row is an identifier and little else.
 # Matches `extract_matrix.MIN_ROW_FIELDS`'s reasoning without importing
@@ -454,3 +454,219 @@ if __name__ == "__main__":
     import sys
 
     raise SystemExit(main(sys.argv[1:]))
+
+
+# ---------------- machine-authored gold: the ceiling (#81 as amended)
+#
+# The original criterion — a wholly hand-authored denominator — was amended
+# by the maintainer on 2026-08-04, before the 9540 seal was lifted: "I'm
+# not hand labeling anything. find another way." This is the other way,
+# and everything it produces says what it is: a **semi-independent
+# ceiling**, not the full measurement the unamended criterion bought. The
+# enumeration and the extractor share PyMuPDF's table detection, so a
+# region that library drops is invisible to both; the page-image checklist
+# in the sidecar is what narrows that, whenever a human chooses to look.
+#
+# What keeps the ceiling honest is what it does NOT share: quote-
+# containment matching borrows no column mapping from the model, and the
+# critical marks are read from the grid at header-anchored positions —
+# through the one vocabulary (`WSDOT_APPENDIX_U`) and the one line
+# (`is_critical`) that already encode ADR-0009, so the labelling rule and
+# the Ledger's derivation stay one sentence even here.
+
+# The heading this authoring refuses to run without. 9540 is expected to
+# print the twin's form; if it does not, a surprise layout is a decision
+# for a human, not a fallback for a script.
+_ANCHOR = "509 relocation needed"
+
+_OWNER_HEADINGS = ("owner",)
+_ID_HEADINGS = ("conflict id", "id conflict")
+_NOTES_HEADINGS = ("notes",)
+
+
+class LayoutAnchorMissing(LookupError):
+    """No page carries the anchored header this authoring is written for."""
+
+
+@dataclass(frozen=True)
+class MachineGoldRow:
+    source_ref: str
+    page: int
+    critical: str  # "yes" | "no" | "" — blank stays out of the denominator
+
+
+@dataclass(frozen=True)
+class MachineGold:
+    project: str
+    document: str
+    rows: tuple[MachineGoldRow, ...]
+    # What was read and excluded, for the sidecar's accounting.
+    retired: int
+    empty_slots: int
+    page_images: tuple[tuple[int, str | None], ...]
+
+
+def author_machine_gold(session: Session, project_id: int) -> MachineGold:
+    """A gold set from the independent grid reading (#81 as amended).
+
+    No model and no extractor column mapping: the header is found by its
+    own printed anchor, the marks are cells at those positions, and the
+    canonical reading of each marked heading goes through the same
+    vocabulary the Ledger uses — one sentence, both sides.
+    """
+    from corridor.adjudicate import WSDOT_APPENDIX_U
+    from corridor.models import is_critical
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise LookupError(f"no project {project_id}")
+    document = session.scalars(
+        select(Document)
+        .where(Document.project_id == project_id, Document.doc_type == "matrix")
+        .order_by(Document.doc_date, Document.id)
+    ).first()
+    if document is None:
+        raise LookupError(f"no matrix document in {project.slug}")
+    path = stored_file(document)
+    if path is None:
+        raise LookupError(f"no stored file for {document.filename}")
+
+    images = {
+        page.page_no: page.image_path
+        for page in session.scalars(
+            select(DocPage).where(DocPage.document_id == document.id)
+        )
+    }
+
+    rows: list[MachineGoldRow] = []
+    retired = empty_slots = 0
+    anchored = False
+
+    with pymupdf.open(Path(path)) as pdf:
+        for page_no, page in enumerate(pdf, start=1):
+            tables = page_tables(page)
+            if not tables:
+                continue
+            grid = max(tables, key=len)
+
+            header_index = next(
+                (
+                    i
+                    for i, row in enumerate(grid)
+                    if any(_norm(c) == _ANCHOR for c in row)
+                ),
+                None,
+            )
+            if header_index is None:
+                continue
+            anchored = True
+            headings = [_norm(c) for c in grid[header_index]]
+
+            owner_col = _column(headings, _OWNER_HEADINGS)
+            id_col = _column(headings, _ID_HEADINGS)
+            notes_col = _column(headings, _NOTES_HEADINGS)
+            # Every column whose heading the WSDOT vocabulary can read is a
+            # resolution mark column; the heading's canonical strategy is
+            # what a mark under it asserts.
+            mark_cols = {
+                index: WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
+                for index, heading in enumerate(headings)
+                if heading and WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
+            }
+
+            for raw in grid[header_index + 1 :]:
+                owner = (raw[owner_col] or "").strip() if owner_col is not None else ""
+                ref = (raw[id_col] or "").strip() if id_col is not None else ""
+                notes = (raw[notes_col] or "").strip() if notes_col is not None else ""
+
+                if not owner and not ref:
+                    continue  # furniture or a wholly empty line
+                if not owner:
+                    # An id and no facility: retired numbering when the
+                    # phrase says so, an empty slot when nothing does.
+                    # Neither names a facility; neither is counted
+                    # (ADR-0012).
+                    if is_retired_row({"utility_id": ref, "notes": notes}):
+                        retired += 1
+                    else:
+                        empty_slots += 1
+                    continue
+
+                strategies = {
+                    strategy
+                    for index, strategy in mark_cols.items()
+                    if index < len(raw) and (raw[index] or "").strip()
+                }
+                sides = {is_critical(s) for s in strategies}
+                critical = (
+                    ("yes" if sides == {True} else "no")
+                    if len(sides) == 1
+                    else ""  # unsettled or unmarked: out of the denominator
+                )
+                rows.append(MachineGoldRow(source_ref=ref, page=page_no, critical=critical))
+
+    if not anchored:
+        raise LayoutAnchorMissing(
+            f"no page of {document.filename} prints the anchored header "
+            f"({_ANCHOR!r}). This authoring is written for the WSDOT form; "
+            "a different layout is a human decision, not a fallback."
+        )
+
+    return MachineGold(
+        project=project.slug,
+        document=document.filename,
+        rows=tuple(rows),
+        retired=retired,
+        empty_slots=empty_slots,
+        page_images=tuple(sorted(images.items())),
+    )
+
+
+def _norm(cell) -> str:
+    return " ".join(str(cell or "").split()).casefold()
+
+
+def _column(headings: list[str], wanted: tuple[str, ...]) -> int | None:
+    for index, heading in enumerate(headings):
+        if heading in wanted:
+            return index
+    return None
+
+
+def gold_csv(gold: MachineGold) -> str:
+    lines = ["source_ref,page,critical"]
+    lines += [f"{r.source_ref},{r.page},{r.critical}" for r in gold.rows]
+    return "\n".join(lines) + "\n"
+
+
+def render_machine_gold(gold: MachineGold) -> str:
+    labelled = sum(1 for r in gold.rows if r.critical)
+    yes = sum(1 for r in gold.rows if r.critical == "yes")
+    lines = [
+        f"# Machine-authored gold set — {gold.project}",
+        "",
+        f"Document: `{gold.document}`",
+        "",
+        "**This number is a ceiling, not a full measurement** (#81 as",
+        "amended, 2026-08-04). The enumeration behind it shares PyMuPDF's",
+        "table detection with the extractor: a region that library drops is",
+        "invisible to both readings and cannot be missed here. What it does",
+        "not share is the part that usually errs — no model, no extractor",
+        "column mapping; the header is anchored by its own printed text and",
+        "the critical marks are grid cells read through the same vocabulary",
+        "the Ledger uses (ADR-0009, ADR-0012).",
+        "",
+        f"- gold rows: {len(gold.rows)}",
+        f"- labelled for criticality: {labelled} ({yes} yes / {labelled - yes} no); "
+        f"{len(gold.rows) - labelled} blank — unsettled or unmarked, out of the ≥95% denominator",
+        f"- excluded: {gold.retired} retired rows, {gold.empty_slots} empty slots (ADR-0012)",
+        "",
+        "## Strengthening the ceiling toward a measurement",
+        "",
+        "One look per page image closes the shared blind spot. Optional,",
+        "any time after the run:",
+        "",
+    ]
+    for page_no, image in gold.page_images:
+        lines.append(f"- [ ] page {page_no} — `{image or 'no image'}`")
+    return "\n".join(lines) + "\n"

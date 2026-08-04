@@ -33,7 +33,11 @@ ROWS = [
 def write_pdf(path, rows):
     doc = pymupdf.open()
     page = doc.new_page(width=792, height=612)
-    x0, y0, width, height = 40, 70, 140, 26
+    # Width adapts to the column count: a fixed 140pt puts an 8-column
+    # WSDOT-shaped header off the page edge, and geometry cannot read
+    # cells that were never drawn.
+    x0, y0, height = 40, 70, 26
+    width = min(140, (792 - 2 * x0) // max(1, len(rows[0])))
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
             rect = pymupdf.Rect(
@@ -324,3 +328,129 @@ def test_position_annotates_a_row_it_never_classifies_it(
 
     assert orphan.kind == "identifier only"
     assert orphan.above_body is True
+
+
+# ---------------- machine-authored gold: the ceiling (#81 as amended)
+
+
+WSDOT_SHAPE = [
+    ["Owner", "Conflict ID", "Facility Type", "509 Relocation Needed",
+     "ST Relocation Needed", "Retain and Protect", "Abandon / Deactivate", "Notes"],
+    # One mark on the critical side.
+    ["HWD", "1", "Water Main", "X", "", "", "", ""],
+    # One mark on the stays side.
+    ["PSE", "2", "AG Power", "", "", "X", "", ""],
+    # Two marks that agree: both relocations.
+    ["Comcast", "3", "AG TV", "X", "X", "", "", ""],
+    # Marks on both sides of the line: unsettled, blank label.
+    ["Lumen", "4", "Fiber", "", "X", "X", "", ""],
+    # No mark at all: blank label.
+    ["Zayo", "5", "Fiber", "", "", "", "", ""],
+    # Retired numbering and an empty slot: not conflicts, not rows.
+    ["", "6", "", "", "", "", "", "Not Used"],
+    ["", "7", "", "", "", "", "", ""],
+    # Abandonment is critical (ADR-0009).
+    ["HWD", "8", "Sewer", "", "", "", "X", ""],
+]
+
+
+def authored(session, project, tmp_path, rows=None):
+    from corridor.gold import author_machine_gold
+
+    # Bound, not discarded: the identity map holds Documents weakly, and a
+    # dropped reference takes the fixture's `_pdf_path` with it.
+    document = make_document(session, project, tmp_path, rows or WSDOT_SHAPE)
+    gold = author_machine_gold(session, project.id)
+    assert document.filename in gold.document
+    return gold
+
+
+def test_machine_gold_reads_criticality_from_the_marks(session, project, tmp_path):
+    """Header-anchored grid reading, the published table's line: relocation
+    and abandonment critical, retain-and-protect not (ADR-0009 via the one
+    vocabulary that already encodes it)."""
+    gold = authored(session, project, tmp_path)
+    by_ref = {row.source_ref: row.critical for row in gold.rows}
+
+    assert by_ref["1"] == "yes"
+    assert by_ref["2"] == "no"
+    assert by_ref["3"] == "yes"
+    assert by_ref["8"] == "yes"
+
+
+def test_a_row_the_document_left_unsettled_gets_a_blank_label(
+    session, project, tmp_path
+):
+    """Marks on both sides, or no mark: the document has not settled, and
+    blank keeps the row out of the >=95% denominator — ADR-0009's "left
+    unlabelled", exactly as the hand rule would have written it."""
+    gold = authored(session, project, tmp_path)
+    by_ref = {row.source_ref: row.critical for row in gold.rows}
+
+    assert by_ref["4"] == ""
+    assert by_ref["5"] == ""
+
+
+def test_retired_rows_and_empty_slots_are_not_gold_rows(
+    session, project, tmp_path
+):
+    """The denominator counts what names a facility (ADR-0012)."""
+    gold = authored(session, project, tmp_path)
+
+    assert {row.source_ref for row in gold.rows} == {"1", "2", "3", "4", "5", "8"}
+
+
+def test_authoring_refuses_a_layout_without_its_anchor(
+    session, project, tmp_path
+):
+    """9540 is expected to be the twin's form. If it is not, the authoring
+    stops loudly rather than guessing — a surprise layout is a decision
+    for a human, not a fallback for a script."""
+    from corridor.gold import LayoutAnchorMissing
+
+    with pytest.raises(LayoutAnchorMissing):
+        authored(session, project, tmp_path, rows=ROWS)
+
+
+def test_machine_gold_is_stamped_as_a_ceiling(session, project, tmp_path):
+    """The caveat travels with the artifact, not just the ticket: the
+    sidecar says semi-independent, names the shared blind spot, and lists
+    the page images."""
+    from corridor.gold import render_machine_gold
+
+    gold = authored(session, project, tmp_path)
+    out = render_machine_gold(gold)
+
+    assert "ceiling" in out.lower()
+    assert "shares" in out.lower()
+    assert "#81" in out
+
+
+def test_the_hand_worksheet_path_is_untouched(session, project, tmp_path):
+    """The amendment adds a path; it does not delete the stricter one."""
+    out = worksheet()
+
+    assert out.strip() == ",".join(WORKSHEET_COLUMNS)
+
+
+def test_machine_gold_round_trips_through_the_eval_loader(
+    session, project, tmp_path
+):
+    """The artifact is only worth authoring if the eval can read it."""
+    from corridor.eval import load_gold
+    from corridor.gold import gold_csv
+
+    gold = authored(session, project, tmp_path)
+    path = tmp_path / "machine.csv"
+    path.write_text(gold_csv(gold))
+
+    records = load_gold(path)
+
+    assert len(records) == 6
+    critical = {r.source_ref: r.critical for r in records}
+    assert critical["1"] is True
+    assert critical["2"] is False
+    # Blank reads as not-critical — the documented contract that keeps an
+    # unsettled row out of the ≥95% denominator. None would mean the gold
+    # set labels no criticality at all, which this one does.
+    assert critical["4"] is False
