@@ -110,16 +110,18 @@ def extract_project(
             )
             continue
 
-        # Everything pending on this document is about to be superseded by
-        # the read below, so it goes now — after the parse check, because
-        # nothing is retired when nothing replaces it.
-        _clear_pending(session, document)
-
         try:
             # A savepoint, so a document that raises partway through leaves
             # no half-extracted Candidates behind — which is what the skip
             # on the next run depends on being impossible.
             with session.begin_nested():
+                # Retiring the old reading and writing its replacement are
+                # one step, inside the savepoint together. Outside it, a
+                # document that raised kept the delete and lost the rows
+                # the rollback took back — ending the run quieter than it
+                # started rather than more current, and doing so only when
+                # some *later* document committed on its behalf.
+                _clear_pending(session, document)
                 candidates = extract(session, document)
         except NoMatrixFound as exc:
             outcomes.append(

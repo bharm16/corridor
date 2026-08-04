@@ -1337,3 +1337,36 @@ def test_what_the_extractor_writes_is_what_the_vocabulary_reads(
         # No mark at all.
         "4": None,
     }
+
+
+def test_a_transcribed_mark_is_not_stored_as_a_strategy(session, project, tmp_path):
+    """The other tier reaches the same field, and needs the same guard.
+
+    `X` under a heading nobody kept is not a strategy however it was read.
+    The transcription prompt has no marked-group concept — the model writes
+    values, and a mark is what it sees in the cell — so a page of this
+    layout falling back would put a mark in `resolution_strategy` exactly
+    as the structure tier did on 71 rows.
+
+    9424 fell back on 0 of its 11 pages, so this cannot be measured against
+    it. That is the reason to guard rather than the reason not to: the
+    document the M7 gate is scored on is the one that cannot be checked
+    first, and ADR-0008 spends it once.
+    """
+    document = make_document(session, project, tmp_path, WSDOT_ROWS, sha="t")
+    blind(session, document)
+
+    candidates = extract_document(
+        session,
+        document,
+        client=StubClient([transcribed([{
+            "utility_id": "1",
+            "external_org": "HWD",
+            "resolution_strategy": "X",
+            "quote": "HWD 1",
+            "confidence": 0.9,
+        }])]),
+    )
+
+    assert len(candidates) == 1
+    assert "resolution_strategy" not in candidates[0].payload_json["fields"]

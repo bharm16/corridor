@@ -120,11 +120,12 @@ WSDOT_APPENDIX_U = ResolutionVocabulary(
 # `Early TxDOT Utility Activity`.
 #
 # A project absent here asserts **no strategy at all**, which is the right
-# answer rather than a gap: `nhhip-3c2` and `sh99-grand-parkway` print no
-# resolution column. The first is a Utility Inventory (its filename says
-# so) and the second is TxDOT's template without the `Resolution Strategy
-# Selected` field. They record that conflicts exist and never how they
-# resolve.
+# answer rather than a gap:
+#
+# - `nhhip-3c2` and `sh99-grand-parkway` print no resolution column. The
+#   first is a Utility Inventory (its filename says so) and the second is
+#   TxDOT's template without the `Resolution Strategy Selected` field. They
+#   record that conflicts exist and never how they resolve.
 RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
     # FDOT SR 789's `Recommended Conflict Resolution`, all nine printed
     # phrasings across its 66 rows. Four map; five are declined, and the

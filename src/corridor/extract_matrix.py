@@ -223,10 +223,14 @@ ROW_FIELDS = (*TEMPLATE_FIELDS, *LOCAL_FIELDS)
 # row on a page.
 MARKED_COLUMN_FIELD = "resolution_strategy"
 
-# A cell holding this and nothing else is a mark, and a mark says nothing
-# without the heading above it. Stored alone under a canonical field it is
-# a claim the document never made — which is what 9424 did on 71 rows,
-# where `resolution_strategy` read `X`.
+# A cell holding this and nothing else is *only* a mark — a value that says
+# nothing because the heading it belongs to was not kept.
+#
+# Note this is a narrower question than "is this row marked here", which
+# `_marked_strategy` answers with any non-empty cell. It can afford to,
+# because it knows the heading: under `Retain and Protect`, anything at all
+# in the cell means the row was marked. This set is for the case with no
+# heading to lean on, where the value has to be recognised on its own.
 #
 # Enumerated from the only marked-column document in the corpus rather than
 # guessed at: across its 11 pages the resolution cells hold `X` 171 times
@@ -250,7 +254,7 @@ class ColumnMapping:
     unmapped: list[str]
     marks: dict[int, str]
 
-    def signature(self) -> tuple:
+    def signature(self) -> tuple[tuple, tuple]:
         """What two readings of one header must match on to be one reading.
 
         Both halves, because two pages that agree on the value columns and
@@ -439,7 +443,7 @@ def extract_document(
 
         # Pages in order, so a header printed on page 1 can carry to the
         # continuation pages that follow it.
-        carried: tuple[dict[int, str], list[str], int] | None = None
+        carried: tuple[ColumnMapping, int] | None = None
         for page, result in zip(structure_pages, results):
             if "_error" in result:
                 errors += 1
@@ -661,7 +665,7 @@ def _structure_candidates(
     candidates = []
     for raw in body:
         own = row_to_fields(raw, mapping.fields)
-        _read_strategy(own, raw, mapping)
+        _settle_strategy(own, raw, mapping)
         if len(own) < MIN_ROW_FIELDS:
             continue
         fields = {**inherited, **own}
@@ -685,23 +689,33 @@ def _structure_candidates(
     return candidates, carried
 
 
-def _read_strategy(own: dict[str, str], raw, mapping: ColumnMapping) -> None:
+def _settle_strategy(own: dict[str, str], raw, mapping: ColumnMapping) -> None:
     """Settle this row's resolution strategy, in place.
 
     Two layouts and one rule: whatever is stored has to be something the
     document said. A marked group answers with the heading the row is
     marked under; a value column answers with its cell, unless that cell is
     a bare mark — one column of a marked group with its siblings left
-    unmapped, which is precisely how 9424 extracted before this. `X` under
-    a heading nobody kept is not a strategy, and storing it would put a
-    mark in the Ledger and in an Assertion as though the document had
-    claimed it.
+    unmapped, which is precisely how 9424 extracted before this.
     """
     if mapping.marks:
         if strategy := _marked_strategy(raw, mapping.marks):
             own[MARKED_COLUMN_FIELD] = strategy
-    elif (own.get(MARKED_COLUMN_FIELD) or "").strip().casefold() in MARK_CELLS:
-        del own[MARKED_COLUMN_FIELD]
+        return
+    _drop_bare_mark(own)
+
+
+def _drop_bare_mark(fields: dict[str, str]) -> None:
+    """Forget a resolution strategy that is only a mark, in place.
+
+    `X` under a heading nobody kept says nothing: storing it would put a
+    mark in the Ledger's `resolution_strategy` and in an Assertion as
+    though the document had claimed it, which is what 9424 did on 71 rows.
+    Dropping it leaves the row asserting nothing, the same answer a blank
+    cell gives.
+    """
+    if (fields.get(MARKED_COLUMN_FIELD) or "").strip().casefold() in MARK_CELLS:
+        del fields[MARKED_COLUMN_FIELD]
 
 
 def _column_mapping(grid, result: dict) -> ColumnMapping:
@@ -817,6 +831,11 @@ def _transcribed_candidate(
         for name in ROW_FIELDS
         if (value := (item.get(name) or "").strip())
     }
+    # This tier has no marked-group concept — the model writes what it sees
+    # in the cell, and on a marked layout that is the mark. The same guard
+    # as the structure tier, because the field is the same field and `X`
+    # under a heading nobody kept is not a strategy however it was read.
+    _drop_bare_mark(row)
     if not row:
         return None
 

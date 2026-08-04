@@ -95,6 +95,11 @@ CRITICAL_STRATEGIES = frozenset({"relocate", "remove", "abandon_in_place"})
 # `Abandon / Deactivate`. It is also already one of `verify._FIELD_SEPARATORS`,
 # so a joined value tokenises into the words the page really carries and
 # never reads as invented text.
+#
+# The trailing space joins and does not split: a reader takes the value
+# apart on `;` alone and normalises whitespace per answer anyway, so it
+# tolerates a value written without it. Only the writer needs the space,
+# and it is here rather than at the join so that one constant governs both.
 ANSWER_SEPARATOR = "; "
 
 CANDIDATE_KINDS = ("dependency", "event")

@@ -341,3 +341,28 @@ def test_an_unreadable_document_keeps_the_reading_it_already_had(session, projec
 
     assert outcomes[0].status == "unreadable"
     assert _count(session, doc) == 1
+
+
+def test_a_document_that_cannot_be_read_keeps_the_reading_it_had(session, project):
+    """`NoMatrixFound` must not cost a document its queue rows.
+
+    The savepoint rolls back the Candidates a failed read half-wrote, but a
+    clear that ran outside it survives — so the document ends the run with
+    its old rows deleted and no new ones, quieter than before rather than
+    more current. Retiring a reading and writing its replacement are one
+    step or they are a data-loss bug.
+    """
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    session.add(candidate(doc))
+    session.flush()
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"a.pdf": NoMatrixFound("no utility-matrix headers")}),
+        prompt_version="test_v2",
+        commit=False,
+    )
+
+    assert outcomes[0].status == "unreadable"
+    assert _count(session, doc) == 1
