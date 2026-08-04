@@ -64,11 +64,11 @@ DEP_STATUSES = ("identified", "in_progress", "committed", "blocked", "closed")
 RESOLUTION_STRATEGIES = (
     "relocate",
     "remove",
-    "abandon_deactivate",
+    "abandon_in_place",
     "adjust_vertical",
     "protect_in_place",
     "change_design",
-    "exception",
+    "policy_exception",
 )
 
 # Criticality is a reading of the strategy, never a stored scale. The three
@@ -81,7 +81,7 @@ RESOLUTION_STRATEGIES = (
 # This set and the gold set's `critical` labelling rule are one sentence on
 # purpose (ADR-0009). If they diverge, the M7 gate scores one definition
 # against another and the number means nothing.
-CRITICAL_STRATEGIES = frozenset({"relocate", "remove", "abandon_deactivate"})
+CRITICAL_STRATEGIES = frozenset({"relocate", "remove", "abandon_in_place"})
 
 CANDIDATE_KINDS = ("dependency", "event")
 CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")

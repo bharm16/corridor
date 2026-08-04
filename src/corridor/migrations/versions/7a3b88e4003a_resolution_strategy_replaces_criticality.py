@@ -20,11 +20,11 @@ depends_on: Union[str, Sequence[str], None] = None
 STRATEGIES = (
     "relocate",
     "remove",
-    "abandon_deactivate",
+    "abandon_in_place",
     "adjust_vertical",
     "protect_in_place",
     "change_design",
-    "exception",
+    "policy_exception",
 )
 CRITICALITIES = ("critical", "high", "normal")
 

@@ -83,7 +83,7 @@ class ResolutionVocabulary:
 #   holdout and must never be read to build this (ADR-0008).
 RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
     # FDOT SR 789's `Recommended Conflict Resolution`, all nine printed
-    # phrasings across its 66 rows. Five map; four are declined, and the
+    # phrasings across its 66 rows. Four map; five are declined, and the
     # declines are the point rather than an omission:
     #
     #   "To be adjusted or relocated"   — the document offers two answers
@@ -93,6 +93,15 @@ RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
     #   "To be replaced with 24\"X36\"    — a replacement that stays in the
     #    handhole and adjusted…"          same horizontal alignment reads
     #                                     as both Red and Brown
+    #   "To be adjusted"                — ADR-0009's Brown is specifically
+    #                                     "adjusted **vertically** but to
+    #                                     remain in the same horizontal
+    #                                     alignment". A bare "adjusted"
+    #                                     does not say which, and this form
+    #                                     prints the specific sibling too
+    #                                     ("…to proposed grade", 18 rows),
+    #                                     which is evidence they are not
+    #                                     the same claim.
     #
     # Each is a strategy the document genuinely has not settled, so the
     # Ledger records none. A reviewer can override; nobody may invent.
@@ -102,7 +111,6 @@ RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
             'to be removed. new 2" hdpe conduit to be installed': "remove",
             "to be relocated": "relocate",
             "to be adjusted to proposed grade": "adjust_vertical",
-            "to be adjusted": "adjust_vertical",
         }
     ),
 }

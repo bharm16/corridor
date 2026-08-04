@@ -218,14 +218,19 @@ def _critical_items(
 ) -> Section:
     """Top items by need-date proximity and criticality.
 
-    The weighting is applied twice, and deliberately named rather than
-    quietly fixed: `base` weights the record, and `worst_severity` already
-    carries the same multiplier from `exceptions.evaluate`. So a critical
-    record with an exception is weighted on both terms. That compounding
-    predates this change; what this change owes the reader is that it is
-    visible, since #96 rewrote these exact lines. Ranking only, so it
-    reorders nothing that a single application would order differently —
-    both terms move the same way.
+    The weighting is applied twice: `base` weights the record, and
+    `worst_severity` already carries the same multiplier from
+    `exceptions.evaluate`. The terms are **summed**, so this is not a
+    monotone rescale and it does change the order. A critical record eleven
+    months out with one severity-5 rule scores `3×0.1 + 15/10 = 1.8`; an
+    overdue non-critical record with only an ORPHAN scores `1.0 + 0.1 =
+    1.1`. Applied once, the first would score 0.8 and rank below.
+
+    Left as it is rather than corrected, because changing how the weekly
+    report ranks is a decision about the report and not about this schema
+    change, and #96 asked only that the ranking still work and say what it
+    means. It is named here so the next reader finds it stated rather than
+    having to derive it.
     """
 
     def urgency(row: LedgerRow) -> float:

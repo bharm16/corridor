@@ -619,7 +619,7 @@ def test_criticality_is_derived_from_the_strategy_and_never_stored():
     """
     from corridor.models import is_critical
 
-    assert CRITICAL_STRATEGIES == {"relocate", "remove", "abandon_deactivate"}
+    assert CRITICAL_STRATEGIES == {"relocate", "remove", "abandon_in_place"}
     for strategy in CRITICAL_STRATEGIES:
         assert is_critical(strategy) is True
     for strategy in set(RESOLUTION_STRATEGIES) - CRITICAL_STRATEGIES:
@@ -641,11 +641,42 @@ def test_the_shipped_vocabulary_covers_sr789_and_nothing_else(session):
     assert vocabulary.read("To be removed") == "remove"
     assert vocabulary.read("To be relocated") == "relocate"
     assert vocabulary.read("To be adjusted to proposed grade") == "adjust_vertical"
-    # Declined on purpose — the document offers two answers, or a condition.
+    # Declined on purpose — the document offers two answers, a condition,
+    # or an adjustment it does not say is vertical. ADR-0009's Brown is
+    # specifically "adjusted **vertically** … same horizontal alignment",
+    # and this layout prints the specific sibling separately.
     for undecided in (
         "To be adjusted or relocated",
         "To be monitored and adjusted as needed",
         "To be monitored and adjusted",
         'To be replaced with 24"X36" handhole and adjusted to proposed grade',
+        "To be adjusted",
     ):
         assert vocabulary.read(undecided) is None
+
+
+def test_the_ledger_and_the_gold_labels_agree_on_what_critical_means():
+    """The one divergence that would be invisible in the gate's number.
+
+    `is_critical` decides the Ledger side; `eval._critical` reads the gold
+    set's `critical` column, which is the label side, and the M7 gate
+    scores one against the other. ADR-0009 says outright that the two are
+    one sentence — so a token of the deleted `critical | high | normal`
+    scale surviving in the eval's accepted labels would let a gold set be
+    written in a vocabulary the Ledger no longer has.
+    """
+    from corridor.eval import CRITICAL_FALSE, CRITICAL_TRUE
+
+    # The labelling rule is a boolean about a row, not a strategy name:
+    # gold sets say yes/no, and the mapping from strategy to yes/no lives
+    # in `CRITICAL_STRATEGIES` alone.
+    assert CRITICAL_TRUE & CRITICAL_FALSE == frozenset()
+    assert not (CRITICAL_TRUE | CRITICAL_FALSE) & set(RESOLUTION_STRATEGIES), (
+        "a gold label must not be spelled as a strategy name — the two "
+        "vocabularies are different questions and sharing a token invites "
+        "a gold set that reads as neither"
+    )
+    # `normal` was a value of the scale ADR-0009 deleted. It survives here
+    # only as a falsy gold label, which is fine, but it must never be
+    # readable as a strategy.
+    assert "normal" not in RESOLUTION_STRATEGIES
