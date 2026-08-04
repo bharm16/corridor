@@ -88,18 +88,16 @@ def extract_project(
     outcomes = []
 
     for document in documents:
-        if document.id in done:
-            if not redo:
-                outcomes.append(
-                    Outcome(
-                        document.id,
-                        document.filename,
-                        "skipped",
-                        detail=f"already extracted at {prompt_version}",
-                    )
+        if document.id in done and not redo:
+            outcomes.append(
+                Outcome(
+                    document.id,
+                    document.filename,
+                    "skipped",
+                    detail=f"already extracted at {prompt_version}",
                 )
-                continue
-            _clear_pending(session, document, prompt_version)
+            )
+            continue
 
         if document.parse_status != "parsed":
             outcomes.append(
@@ -117,6 +115,13 @@ def extract_project(
             # no half-extracted Candidates behind — which is what the skip
             # on the next run depends on being impossible.
             with session.begin_nested():
+                # Retiring the old reading and writing its replacement are
+                # one step, inside the savepoint together. Outside it, a
+                # document that raised kept the delete and lost the rows
+                # the rollback took back — ending the run quieter than it
+                # started rather than more current, and doing so only when
+                # some *later* document committed on its behalf.
+                _clear_pending(session, document)
                 candidates = extract(session, document)
         except NoMatrixFound as exc:
             outcomes.append(
@@ -143,17 +148,24 @@ def extract_project(
     return outcomes
 
 
-def _clear_pending(session: Session, document: Document, prompt_version: str) -> None:
+def _clear_pending(session: Session, document: Document) -> None:
     """Drop this document's un-adjudicated Candidates before re-extracting.
 
     Only `pending`. An accepted or merged Candidate backs a Ledger record
     and is cited by its Assertions; a rejected one is a human decision that
     re-running an extractor has no business undoing.
+
+    Whatever prompt produced them, deliberately (#105). Scoped to the
+    version being run, this only fired on a `redo` — a bump made
+    `already_extracted` return nothing, so no document reached the clear
+    and the superseded version's rows stayed in the queue beside the new
+    ones. That doubled the review queue on `txdot_ucm` and again when #97
+    merged, where 4,702 rows were deleted by hand. A reviewer has one
+    queue, not one per prompt version.
     """
     session.execute(
         delete(Candidate).where(
             Candidate.source_document_id == document.id,
-            Candidate.prompt_version == prompt_version,
             Candidate.state == "pending",
         )
     )

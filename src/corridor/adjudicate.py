@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.models import (
+    ANSWER_SEPARATOR,
     RESOLUTION_STRATEGIES,
     Assertion,
     AuditLog,
@@ -59,9 +60,56 @@ class ResolutionVocabulary:
         Whitespace is collapsed before lookup because internal runs of it
         are a transcription artifact of the printed cell, not something the
         document said.
+
+        A value may carry more than one answer, because a layout recording
+        its strategy as marked columns can mark more than one (#105). They
+        read as a strategy only when they agree on it. Two answers from
+        opposite sides of ADR-0009's line are a document that has not
+        settled — the same situation SR 789 spells as `To be adjusted or
+        relocated`, which this table already declines — and one answer
+        beside a phrase nobody has identified is no better, because the
+        unread half may be the disagreeing one.
         """
-        cleaned = " ".join((value or "").split()).casefold()
-        return self.phrases.get(cleaned)
+        answers = {
+            self.phrases.get(" ".join(part.split()).casefold())
+            for part in (value or "").split(ANSWER_SEPARATOR.strip())
+            if part.strip()
+        }
+        return answers.pop() if len(answers) == 1 else None
+
+
+# WSDOT's Appendix U, which records its strategy as four columns marked `X`
+# beneath a spanning `RECOMMENDED RESOLUTION` header rather than as a value
+# (#105). The extractor stores the heading a row is marked under, so the
+# phrases below are those headings and this table reads them exactly as it
+# reads FDOT's prose — which is what makes one canonical value come out of
+# two layouts that spell the answer differently.
+#
+# Every reading is ADR-0009's published table rather than an inference:
+#
+#   `509 Relocation Needed`   — the facility moves. FDOT Red, and the
+#   `ST Relocation Needed`      wording SHRP2 R15B publishes. Which of the
+#                               two projects pays for it is a funding fact,
+#                               not a resolution strategy, so both read the
+#                               same way.
+#   `Retain and Protect`      — the facility stays. FDOT Green, and R15B's
+#                               `Protect in-place`.
+#   `Abandon / Deactivate`    — FDOT Red. Deactivation is scheduled
+#                               utility-owner work, not a facility that
+#                               stays, and ADR-0009 puts it on the critical
+#                               side deliberately — an earlier draft of
+#                               that paragraph did not.
+#
+# Written from 9424, which is the unsealed twin fetched for exactly this
+# purpose (ADR-0008), and never from the holdout.
+WSDOT_APPENDIX_U = ResolutionVocabulary(
+    phrases={
+        "509 relocation needed": "relocate",
+        "st relocation needed": "relocate",
+        "retain and protect": "protect_in_place",
+        "abandon / deactivate": "abandon_in_place",
+    }
+)
 
 
 # Each layout's resolution vocabulary, identified in writing before that
@@ -78,10 +126,6 @@ class ResolutionVocabulary:
 #   first is a Utility Inventory (its filename says so) and the second is
 #   TxDOT's template without the `Resolution Strategy Selected` field. They
 #   record that conflicts exist and never how they resolve.
-# - WSDOT 9424 / 9540 record theirs as four columns marked `X` beneath a
-#   spanning `RECOMMENDED RESOLUTION` header — a shape this table cannot
-#   express, and 9424 has never been ingested (#98). 9540 is the sealed
-#   holdout and must never be read to build this (ADR-0008).
 RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
     # FDOT SR 789's `Recommended Conflict Resolution`, all nine printed
     # phrasings across its 66 rows. Four map; five are declined, and the
@@ -114,6 +158,13 @@ RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
             "to be adjusted to proposed grade": "adjust_vertical",
         }
     ),
+    # The vocabulary belongs to the layout and the key belongs to the
+    # project, so a second contract printing this same Appendix U registers
+    # its slug here against the reading already settled above. That is a
+    # one-line registration rather than a vocabulary written at measuring
+    # time, which is the thing ADR-0008 says cannot be discovered
+    # afterwards.
+    "wsdot-9424": WSDOT_APPENDIX_U,
 }
 
 

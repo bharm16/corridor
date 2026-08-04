@@ -1115,3 +1115,258 @@ def test_two_genuinely_different_headers_keep_their_own_mappings(
     owners = {c.payload_json["fields"].get("external_org") for c in candidates}
     assert owners == {"AT&T", "Comcast"}
     assert document.header_disagreements == 0
+
+
+# ------------------- a strategy recorded as marked columns (#105, ADR-0009)
+
+# WSDOT 9424 Appendix U2, its real shape. Four columns beneath a spanning
+# `RECOMMENDED RESOLUTION` group cell, each marked `X`; the mark means
+# `relocate` only because of the heading above it, and the heading is
+# exactly what a single canonical field discards.
+#
+# The rows are the four cases the real document contains, measured across
+# all 11 of its pages: no mark (100 rows), one mark (149), two marks that
+# agree (11), and two that do not (1).
+WSDOT_ROWS = [
+    [
+        "Owner", "ID Conflict", "509 Relocation Needed",
+        "ST Relocation Needed", "Retain and Protect", "Abandon / Deactivate",
+    ],
+    ["HWD", "1", "X", "X", "", ""],
+    ["PSE", "2", "", "", "X", ""],
+    ["Comcast", "3", "", "X", "X", ""],
+    ["Lumen", "4", "", "", "", ""],
+]
+
+WSDOT_COLUMNS = [
+    {"index": 0, "canonical_field": "external_org"},
+    {"index": 1, "canonical_field": "utility_id"},
+    {"index": 2, "canonical_field": "resolution_strategy"},
+    {"index": 3, "canonical_field": "resolution_strategy"},
+    {"index": 4, "canonical_field": "resolution_strategy"},
+    {"index": 5, "canonical_field": "resolution_strategy"},
+]
+
+
+def wsdot_candidates(session, project, tmp_path, rows=None, columns=None):
+    document = make_document(session, project, tmp_path, rows or WSDOT_ROWS, sha="w")
+    client = StubClient(
+        [structure(columns=columns or WSDOT_COLUMNS, header_row=0)]
+    )
+    made = extract_document(session, document, client=client)
+    return {c.payload_json["fields"]["utility_id"]: c.payload_json for c in made}
+
+
+def test_a_mark_is_stored_as_the_heading_it_sat_under(session, project, tmp_path):
+    """The finding 9424 bought, as a test.
+
+    Extracted before this, the stored `resolution_strategy` was `X` on 71
+    rows and blank on 91 — the mark from whichever one of the four columns
+    happened to be mapped, with the other three dropped. `X` is not a
+    strategy: it says nothing without the column above it.
+    """
+    rows = wsdot_candidates(session, project, tmp_path)
+
+    assert rows["2"]["fields"]["resolution_strategy"] == "Retain and Protect"
+    # Never the mark itself, on any row.
+    assert not any(
+        row["fields"].get("resolution_strategy") in ("X", "x") for row in rows.values()
+    )
+
+
+def test_a_row_carrying_two_marks_keeps_both(session, project, tmp_path):
+    """9424 row 3 is marked under both `509` and `ST Relocation Needed`.
+
+    Twelve of its rows carry two marks. Silently taking the first would
+    assert one of them on no basis; the row records both and what they mean
+    together is the vocabulary's question, not the extractor's.
+    """
+    rows = wsdot_candidates(session, project, tmp_path)
+
+    assert (
+        rows["1"]["fields"]["resolution_strategy"]
+        == "509 Relocation Needed; ST Relocation Needed"
+    )
+    assert (
+        rows["3"]["fields"]["resolution_strategy"]
+        == "ST Relocation Needed; Retain and Protect"
+    )
+
+
+def test_an_unmarked_row_asserts_no_strategy(session, project, tmp_path):
+    """100 of 9424's rows carry no mark at all, and a blank is not an answer."""
+    rows = wsdot_candidates(session, project, tmp_path)
+
+    assert "resolution_strategy" not in rows["4"]["fields"]
+
+
+def test_the_marked_headings_are_not_also_reported_unmapped(
+    session, project, tmp_path
+):
+    """They are read now, so they are no longer a column nobody could use.
+
+    Before this, three of the four sat in `unmapped_columns` on all 162
+    rows — the trigger for a deliberate vocabulary extension, which is
+    what this change is.
+    """
+    rows = wsdot_candidates(session, project, tmp_path)
+
+    for row in rows.values():
+        assert row["unmapped_columns"] == []
+
+
+def test_a_marked_value_is_verifiable_against_the_page(session, project, tmp_path):
+    """The heading is printed on the page, so storing it invents nothing.
+
+    Worth asserting rather than assuming: `unverified_fields` cuts tokens
+    on `;` and `/` already, so `Abandon / Deactivate` and a two-answer
+    value tokenise into words the header row really carries.
+    """
+    rows = wsdot_candidates(session, project, tmp_path)
+
+    for row in rows.values():
+        assert "resolution_strategy" not in row["unverified_fields"]
+
+
+def test_a_lone_marked_column_stores_nothing_rather_than_the_mark(
+    session, project, tmp_path
+):
+    """The regression guard, and the shape 9424 actually extracted as.
+
+    If the model maps one column of a marked group and nulls its siblings —
+    which is exactly what happened on 9424 — there is no heading to pair
+    the mark with. Storing `X` would put a mark in the Ledger's
+    `resolution_strategy` and in an Assertion, claiming the document said
+    something it did not. The field is absent instead, which is the same
+    answer a blank cell gives.
+    """
+    columns = [
+        {"index": 0, "canonical_field": "external_org"},
+        {"index": 1, "canonical_field": "utility_id"},
+        {"index": 2, "canonical_field": "resolution_strategy"},
+        {"index": 3, "canonical_field": None},
+        {"index": 4, "canonical_field": None},
+        {"index": 5, "canonical_field": None},
+    ]
+    rows = wsdot_candidates(session, project, tmp_path, columns=columns)
+
+    assert "resolution_strategy" not in rows["1"]["fields"]
+    # And the siblings are reported, so a reviewer sees what was dropped.
+    assert "Retain and Protect" in rows["1"]["unmapped_columns"]
+
+
+def test_a_prose_resolution_column_is_untouched(session, project, tmp_path):
+    """Projects A, B and C do not use marks, and must read as they did.
+
+    One column claiming the field is the prose layout — FDOT's
+    `Recommended Conflict Resolution`, TxDOT's `Resolution Strategy
+    Selected`. The cell is the value, exactly as before.
+    """
+    rows = [
+        ["Utility ID", "Utility Owner", "Recommended Conflict Resolution"],
+        ["FOC1-133", "AT&T Texas (SWBT)", "To be relocated"],
+    ]
+    columns = [
+        {"index": 0, "canonical_field": "utility_id"},
+        {"index": 1, "canonical_field": "external_org"},
+        {"index": 2, "canonical_field": "resolution_strategy"},
+    ]
+    got = wsdot_candidates(session, project, tmp_path, rows=rows, columns=columns)
+
+    assert got["FOC1-133"]["fields"]["resolution_strategy"] == "To be relocated"
+
+
+def test_only_the_resolution_strategy_may_be_claimed_by_several_columns(
+    session, project, tmp_path
+):
+    """The one-column-one-field guard still holds everywhere else.
+
+    A model naming two columns `external_org` is making a mistake, not
+    describing a marked group, and the second must not silently overwrite
+    the first. Relaxing the guard for every field would have made that
+    failure invisible.
+    """
+    rows = [
+        ["Utility ID", "Utility Owner", "Also Owner"],
+        ["FOC1-133", "AT&T Texas (SWBT)", "Comcast"],
+    ]
+    columns = [
+        {"index": 0, "canonical_field": "utility_id"},
+        {"index": 1, "canonical_field": "external_org"},
+        {"index": 2, "canonical_field": "external_org"},
+    ]
+    got = wsdot_candidates(session, project, tmp_path, rows=rows, columns=columns)
+
+    assert got["FOC1-133"]["fields"]["external_org"] == "AT&T Texas (SWBT)"
+    assert "Also Owner" in got["FOC1-133"]["unmapped_columns"]
+
+
+def test_what_the_extractor_writes_is_what_the_vocabulary_reads(
+    session, project, tmp_path
+):
+    """#105's first acceptance criterion, end to end.
+
+    A layout recording its strategy as marked columns produces the same
+    canonical values as one recording it as prose — which is only true if
+    what `extract_matrix` writes is something `adjudicate` can read. It
+    joins two marked headings; the vocabulary takes them apart again.
+
+    Both sides share `ANSWER_SEPARATOR`, so they cannot disagree about the
+    separator itself — that is the constant's job, not this test's. What
+    this catches is the vocabulary ceasing to take a value apart at all, at
+    which point every two-mark row reads as no strategy and each side's own
+    tests still pass.
+    """
+    from corridor.adjudicate import WSDOT_APPENDIX_U
+
+    rows = wsdot_candidates(session, project, tmp_path)
+    read = {
+        utility_id: WSDOT_APPENDIX_U.read(
+            row["fields"].get("resolution_strategy") or ""
+        )
+        for utility_id, row in rows.items()
+    }
+
+    assert read == {
+        # Marked `509` and `ST Relocation Needed`. Two marks, one answer.
+        "1": "relocate",
+        "2": "protect_in_place",
+        # Marked `ST Relocation Needed` and `Retain and Protect` — opposite
+        # sides of ADR-0009's line, so the document has settled on neither.
+        "3": None,
+        # No mark at all.
+        "4": None,
+    }
+
+
+def test_a_transcribed_mark_is_not_stored_as_a_strategy(session, project, tmp_path):
+    """The other tier reaches the same field, and needs the same guard.
+
+    `X` under a heading nobody kept is not a strategy however it was read.
+    The transcription prompt has no marked-group concept — the model writes
+    values, and a mark is what it sees in the cell — so a page of this
+    layout falling back would put a mark in `resolution_strategy` exactly
+    as the structure tier did on 71 rows.
+
+    9424 fell back on 0 of its 11 pages, so this cannot be measured against
+    it. That is the reason to guard rather than the reason not to: the
+    document the M7 gate is scored on is the one that cannot be checked
+    first, and ADR-0008 spends it once.
+    """
+    document = make_document(session, project, tmp_path, WSDOT_ROWS, sha="t")
+    blind(session, document)
+
+    candidates = extract_document(
+        session,
+        document,
+        client=StubClient([transcribed([{
+            "utility_id": "1",
+            "external_org": "HWD",
+            "resolution_strategy": "X",
+            "quote": "HWD 1",
+            "confidence": 0.9,
+        }])]),
+    )
+
+    assert len(candidates) == 1
+    assert "resolution_strategy" not in candidates[0].payload_json["fields"]

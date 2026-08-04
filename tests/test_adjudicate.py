@@ -627,15 +627,17 @@ def test_criticality_is_derived_from_the_strategy_and_never_stored():
     assert is_critical(None) is False
 
 
-def test_the_shipped_vocabulary_covers_sr789_and_nothing_else(session):
+def test_the_shipped_vocabulary_covers_the_two_layouts_that_state_one(session):
     """The table is what a human edits, so its contents are the test.
 
     Asserted as a whole: a new project entry should have to argue with this
-    test and ADR-0009 behind it. SR 789 is the only layout in the corpus
-    that prints a resolution column and has been ingested — WSDOT records
-    one as four marked columns and 9424 has never been ingested (#98).
+    test and ADR-0009 behind it. Two layouts in the corpus print a
+    resolution strategy — SR 789 as prose, 9424 as four marked columns
+    (#105). Projects A and C print none and must stay absent, because a
+    project absent here asserts no strategy at all, which is the right
+    answer for a document that records none rather than a gap.
     """
-    assert set(RESOLUTION_VOCABULARIES) == {"fdot-sr789"}
+    assert set(RESOLUTION_VOCABULARIES) == {"fdot-sr789", "wsdot-9424"}
 
     vocabulary = RESOLUTION_VOCABULARIES["fdot-sr789"]
     assert vocabulary.read("To be removed") == "remove"
@@ -708,3 +710,118 @@ def test_a_placeholder_owner_never_becomes_an_external_party(session, document):
         )
     ).one()
     assert claim.asserted_value == "NA"
+
+
+# ------------- a strategy spelled as more than one answer (#105, ADR-0009)
+
+
+def test_two_answers_that_agree_read_as_that_strategy():
+    """Eleven of 9424's rows are marked `509` and `ST Relocation Needed`.
+
+    Two marks, one answer: both columns say the facility relocates, and
+    which agency's project pays for it is not a resolution strategy.
+    """
+    vocabulary = RESOLUTION_VOCABULARIES["wsdot-9424"]
+
+    assert (
+        vocabulary.read("509 Relocation Needed; ST Relocation Needed") == "relocate"
+    )
+
+
+def test_two_answers_that_differ_read_as_no_strategy():
+    """One row of 9424 is marked under both `ST Relocation Needed` and
+    `Retain and Protect` — opposite sides of ADR-0009's line.
+
+    This is the same situation SR 789 spells as `To be adjusted or
+    relocated`, which the FDOT vocabulary declines for exactly this reason:
+    the document offers two answers and has settled on neither. Resolving
+    it here would assert a strategy the document does not.
+    """
+    vocabulary = RESOLUTION_VOCABULARIES["wsdot-9424"]
+
+    assert vocabulary.read("ST Relocation Needed; Retain and Protect") is None
+
+
+def test_an_answer_the_vocabulary_cannot_read_sinks_the_whole_value():
+    """A phrase nobody has identified is not a phrase that can be outvoted.
+
+    `Retain and Protect` beside something unrecognised is not a
+    protect-in-place row: the unread half may be an answer from the other
+    side of the line. None is the only honest reading.
+    """
+    vocabulary = RESOLUTION_VOCABULARIES["wsdot-9424"]
+
+    assert vocabulary.read("Retain and Protect; Some New Column") is None
+
+
+def test_a_single_answer_reads_exactly_as_it_did():
+    """Projects A, B and C go through the same code path and must not move."""
+    vocabulary = RESOLUTION_VOCABULARIES["fdot-sr789"]
+
+    assert vocabulary.read("To be removed") == "remove"
+    assert vocabulary.read("To be adjusted or relocated") is None
+    assert vocabulary.read("") is None
+    assert vocabulary.read(None) is None
+
+
+def test_a_marked_layout_and_a_prose_layout_agree_on_the_canonical_value():
+    """#105's first acceptance criterion, as one assertion.
+
+    WSDOT prints `509 Relocation Needed` as a marked column and FDOT prints
+    `To be relocated` as prose. They are the same claim about the same
+    thing, and the Ledger stores one token for both — which is what makes
+    critical recall computable across layouts at all (ADR-0009).
+    """
+    marked = RESOLUTION_VOCABULARIES["wsdot-9424"].read("509 Relocation Needed")
+    prose = RESOLUTION_VOCABULARIES["fdot-sr789"].read("To be relocated")
+
+    assert marked == prose == "relocate"
+
+
+def test_the_wsdot_vocabulary_reads_9424s_four_columns():
+    """Written from 9424 before any document of this layout is measured.
+
+    9424 is the unsealed twin, fetched for exactly this (ADR-0008). Each
+    reading is ADR-0009's published table, not an inference:
+
+      relocation  -> relocate          FDOT Red, WSDOT `Relocation Needed`
+      retain      -> protect_in_place  FDOT Green, WSDOT `Retain and Protect`
+      abandon     -> abandon_in_place  FDOT Red — deactivation is scheduled
+                                       utility-owner work, not a facility
+                                       that stays
+    """
+    vocabulary = RESOLUTION_VOCABULARIES["wsdot-9424"]
+
+    assert vocabulary.read("509 Relocation Needed") == "relocate"
+    assert vocabulary.read("ST Relocation Needed") == "relocate"
+    assert vocabulary.read("Retain and Protect") == "protect_in_place"
+    assert vocabulary.read("Abandon / Deactivate") == "abandon_in_place"
+
+
+def test_three_of_wsdots_four_columns_are_critical_and_one_is_not():
+    """The gate's number turns on this split, so it is asserted directly.
+
+    `relocate` and `abandon_in_place` are FDOT Red; `protect_in_place` is
+    Green. A vocabulary that put all four on one side would give the M7
+    gate a critical set of everything, which ADR-0007 already named as a
+    gate that cannot catch the failure it exists for.
+    """
+    from corridor.models import is_critical
+
+    vocabulary = RESOLUTION_VOCABULARIES["wsdot-9424"]
+    critical = {
+        heading: is_critical(vocabulary.read(heading))
+        for heading in (
+            "509 Relocation Needed",
+            "ST Relocation Needed",
+            "Retain and Protect",
+            "Abandon / Deactivate",
+        )
+    }
+
+    assert critical == {
+        "509 Relocation Needed": True,
+        "ST Relocation Needed": True,
+        "Retain and Protect": False,
+        "Abandon / Deactivate": True,
+    }
