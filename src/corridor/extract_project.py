@@ -55,6 +55,11 @@ class Outcome:
     # that fell back to transcription says so here rather than looking like
     # one that read cleanly.
     tiers: dict[str, int] = field(default_factory=dict)
+    # Printed headers this document read more than one way before majority
+    # resolution (#101). Zero is the expected answer and the one worth
+    # stating: a document that disagreed with itself about what its own
+    # columns mean is one whose mapping a reviewer should look at.
+    header_disagreements: int = 0
 
 
 def extract_project(
@@ -129,6 +134,9 @@ def extract_project(
                 rows=len(candidates),
                 unverified=sum(1 for c in candidates if not c.citations_verified),
                 tiers=dict(getattr(document, "extraction_tiers", {}) or {}),
+                header_disagreements=int(
+                    getattr(document, "header_disagreements", 0) or 0
+                ),
             )
         )
 
@@ -178,6 +186,14 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
         lines.append(
             "  An unreadable document is an unhandled layout, not an empty "
             "matrix. Do not read it as a project with no conflicts."
+        )
+
+    disagreed = sum(o.header_disagreements for o in outcomes)
+    if extracted:
+        lines.append(
+            f"  headers: {disagreed} read more than one way across pages "
+            "and resolved by majority"
+            + ("" if disagreed else " — every page agreed")
         )
 
     # Named even when it is zero, because "no fallback" is the claim worth

@@ -165,6 +165,49 @@ def make_document(session, project, tmp_path, rows, *, banner=None, sha="a", pag
     return doc
 
 
+def make_multipage_document(session, project, tmp_path, pages_rows, *, sha="m"):
+    """A Document of N real pages, each with its own ruled table.
+
+    #101 needs several pages of one document to disagree with each other,
+    which `make_document` cannot express — it writes a single page.
+    """
+    merged = pymupdf.open()
+    for index, rows in enumerate(pages_rows):
+        one = write_pdf(tmp_path / f"{sha}-p{index}.pdf", rows)
+        with pymupdf.open(one) as opened:
+            merged.insert_pdf(opened)
+    path = tmp_path / f"{sha}-all.pdf"
+    merged.save(path)
+    merged.close()
+
+    doc = Document(
+        project_id=project.id,
+        sha256=sha * 64,
+        filename=f"{sha}-matrix.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=len(pages_rows),
+    )
+    session.add(doc)
+    session.flush()
+    with pymupdf.open(path) as opened:
+        for index in range(len(pages_rows)):
+            image = tmp_path / f"{sha}-{index:04d}.png"
+            image.write_bytes(b"\x89PNG page image")
+            session.add(
+                DocPage(
+                    document_id=doc.id,
+                    page_no=index + 1,
+                    text=opened[index].get_text(),
+                    image_path=str(image),
+                    text_source="text_layer",
+                )
+            )
+    session.flush()
+    doc._pdf_path = str(path)
+    return doc
+
+
 @pytest.fixture(autouse=True)
 def stored_pdf_points_at_the_fixture(monkeypatch):
     """The content-addressed store is not populated in tests."""
@@ -919,3 +962,156 @@ def test_the_prompt_and_the_code_name_the_same_fields():
     }
 
     assert named == set(ROW_FIELDS)
+
+
+# ------------------------ one header, one mapping (#101, supersedes #91)
+
+
+def test_pages_sharing_a_header_get_one_mapping(session, project, tmp_path):
+    """The defect, measured on three documents before this landed.
+
+    SH 99's `UCM_to_RIDs` reprints an identical 16-column header on all 17
+    pages and got three different readings of it; WSDOT 9424 reprints its
+    28-column header on all 11 and got three. The model is not being
+    unreliable — it is being asked the same question eleven times and
+    answering independently each time.
+    """
+    rows = [
+        ["Utility ID", "Utility Owner", "Utility Type", "Start Station"],
+        ["FOC1-1", "AT&T", "Telecom", "1149+00"],
+        ["FOC1-2", "AT&T", "Telecom", "1150+00"],
+    ]
+    document = make_multipage_document(session, project, tmp_path, [rows, rows, rows])
+
+    # Page 2 reads the owner column as a size — the wobble, verbatim.
+    agreeing = {
+        "is_utility_matrix": True,
+        "page_attributes": {"external_org": None},
+        "matrix_table": 0,
+        "header_row": 0,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "external_org"},
+            {"index": 2, "canonical_field": "utility_type"},
+            {"index": 3, "canonical_field": "station_from"},
+        ],
+        "mapping_confidence": 0.9,
+    }
+    disagreeing = {
+        **agreeing,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "size"},
+            {"index": 2, "canonical_field": "utility_type"},
+            {"index": 3, "canonical_field": "station_from"},
+        ],
+    }
+    client = StubClient([agreeing, disagreeing, agreeing])
+
+    candidates = extract_document(session, document, client=client)
+
+    # The minority reading is overruled, so every page reads the owner
+    # column as the owner and no page silently files it as a size.
+    assert len(candidates) == 6
+    assert all(
+        c.payload_json["fields"].get("external_org") == "AT&T" for c in candidates
+    )
+    assert not any("size" in c.payload_json["fields"] for c in candidates)
+
+
+def test_a_disagreement_between_pages_is_recorded_not_silently_resolved(
+    session, project, tmp_path
+):
+    """Majority is a decision, and a decision a reviewer cannot see is a
+    guess. Blast radius is the reason: one mapping now governs every page
+    that shares its header, so 457 rows ride on it rather than 28."""
+    rows = [
+        ["Utility ID", "Utility Owner", "Utility Type", "Start Station"],
+        ["FOC1-1", "AT&T", "Telecom", "1149+00"],
+    ]
+    document = make_multipage_document(session, project, tmp_path, [rows, rows, rows])
+
+    base = {
+        "is_utility_matrix": True,
+        "page_attributes": {"external_org": None},
+        "matrix_table": 0,
+        "header_row": 0,
+        "mapping_confidence": 0.9,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "external_org"},
+        ],
+    }
+    other = {**base, "columns": [
+        {"index": 0, "canonical_field": "utility_id"},
+        {"index": 1, "canonical_field": "size"},
+    ]}
+
+    extract_document(session, document, client=StubClient([base, other, base]))
+
+    assert document.header_disagreements == 1
+
+
+def test_a_header_read_the_same_way_everywhere_records_no_disagreement(
+    session, project, tmp_path
+):
+    rows = [
+        ["Utility ID", "Utility Owner"],
+        ["FOC1-1", "AT&T"],
+    ]
+    document = make_multipage_document(session, project, tmp_path, [rows, rows], sha="n")
+    answer = {
+        "is_utility_matrix": True,
+        "page_attributes": {"external_org": None},
+        "matrix_table": 0,
+        "header_row": 0,
+        "mapping_confidence": 0.9,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "external_org"},
+        ],
+    }
+
+    extract_document(session, document, client=StubClient([answer, answer]))
+
+    assert document.header_disagreements == 0
+
+
+def test_two_genuinely_different_headers_keep_their_own_mappings(
+    session, project, tmp_path
+):
+    """A mid-document layout change is not a disagreement to be voted on.
+
+    Project A's oldest revision and SH 99's draft both print more than one
+    form; folding them onto one mapping would file a column under the wrong
+    heading for every row of the minority layout.
+    """
+    first = [["Utility ID", "Utility Owner"], ["FOC1-1", "AT&T"]]
+    second = [["Conflict #", "Facility Description"], ["1", "BTV"]]
+    document = make_multipage_document(session, project, tmp_path, [first, second], sha="o")
+
+    a = {
+        "is_utility_matrix": True,
+        "page_attributes": {"external_org": None},
+        "matrix_table": 0,
+        "header_row": 0,
+        "mapping_confidence": 0.9,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "external_org"},
+        ],
+    }
+    b = {
+        **a,
+        "page_attributes": {"external_org": "Comcast"},
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "utility_type"},
+        ],
+    }
+
+    candidates = extract_document(session, document, client=StubClient([a, b]))
+
+    owners = {c.payload_json["fields"].get("external_org") for c in candidates}
+    assert owners == {"AT&T", "Comcast"}
+    assert document.header_disagreements == 0
