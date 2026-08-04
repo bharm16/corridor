@@ -680,3 +680,31 @@ def test_the_ledger_and_the_gold_labels_agree_on_what_critical_means():
     # only as a falsy gold label, which is fine, but it must never be
     # readable as a strategy.
     assert "normal" not in RESOLUTION_STRATEGIES
+
+
+def test_a_placeholder_owner_never_becomes_an_external_party(session, document):
+    """`NA` is the document declining to name an owner (#77).
+
+    Minting an ExternalOrg for it puts a party in the ledger that nobody
+    can chase, and 86 of Project A's rows would join it. The Assertion
+    still records what the document printed — dropping that would lose
+    evidence — but the Dependency is left unowned, which is true.
+    """
+    candidate = make_candidate(
+        session, document, fields={**FIELDS, "external_org": "NA"}
+    )
+
+    dep = accept_candidate(session, candidate, actor="reviewer")
+
+    assert dep.external_org_id is None
+    assert session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == "NA")
+    ).first() is None
+    # The document said `NA`, and the record still says it said so.
+    claim = session.scalars(
+        select(Assertion).where(
+            Assertion.dependency_id == dep.id,
+            Assertion.field_name == "external_org",
+        )
+    ).one()
+    assert claim.asserted_value == "NA"

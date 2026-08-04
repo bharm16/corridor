@@ -112,6 +112,30 @@ def is_critical(strategy: str | None) -> bool:
     return strategy in CRITICAL_STRATEGIES
 
 
+# Values a document prints where an External Party should be, meaning it
+# declined to name one. `NA` is not an organization — CONTEXT.md defines an
+# External Party as "the organization outside the project that owns a
+# Dependency" — and 86 of Project A's rows carry it, 44 of them the whole
+# last page of its oldest revision.
+#
+# The extractor still stores what the document printed. Dropping it would
+# lose evidence; the fix is that nothing downstream treats it as a party.
+PLACEHOLDER_PARTIES = frozenset(
+    {"", "na", "n/a", "tbd", "none", "unknown", "no id", "-", "--", "?", "n.a."}
+)
+
+
+def is_placeholder_party(name: str | None) -> bool:
+    """Is this the document declining to name an owner?
+
+    Matched on the whole value, never as a substring: a real party can
+    contain a placeholder's letters — `Nakina Telephone` starts with `na`
+    — and blocking that would merge a named utility into the nameless
+    cohort, which is worse than the defect being fixed.
+    """
+    return " ".join((name or "").split()).casefold() in PLACEHOLDER_PARTIES
+
+
 def _enum(*values: str, name: str) -> Enum:
     """A VARCHAR plus a CHECK, not a native PG type.
 
