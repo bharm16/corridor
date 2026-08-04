@@ -1,4 +1,4 @@
-"""The Briefing: a model-drafted, cited narrative over one record (ADR-0011).
+"""The Briefing: a model-drafted, cited narrative over the record (ADR-0011).
 
 The exception engine is deterministic by construction and blind by
 measurement — the record is full of prose no rule reads. A model may read
@@ -183,6 +183,21 @@ def _brief(
     today: date,
 ) -> Briefing:
     citables, floor = _assemble(session, dependencies, today)
+    if not citables:
+        # Nothing to cite means nothing a sentence could stand on: the
+        # honest briefing is empty, and a model call would burn money to
+        # draft prose the checker must then withhold in full.
+        return Briefing(
+            sentences=(),
+            withheld={},
+            ref_code=ref_code,
+            floor=floor,
+            citables=(),
+            prompt_version=PROMPT_VERSION,
+            model=getattr(client, "model", None),
+            evaluated_at=today,
+            ruleset_version=RULESET_VERSION,
+        )
 
     result = client.complete(
         system=PROMPT.read_text(),

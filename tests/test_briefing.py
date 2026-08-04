@@ -490,3 +490,19 @@ def test_a_project_briefing_is_one_model_call(
     brief_project(session, project.id, client=client, today=TODAY)
 
     assert len(client.calls) == 1
+
+
+def test_an_empty_scope_briefs_empty_without_a_model_call(session, project):
+    """Nothing to cite means nothing a sentence could stand on. The
+    honest briefing is empty — and free, because drafting prose only to
+    withhold all of it would burn a call on nothing."""
+    from corridor.briefing import brief_project
+
+    client = StubClient([])
+
+    briefing = brief_project(session, project.id, client=client, today=TODAY)
+
+    assert not briefing.refused
+    assert briefing.sentences == ()
+    assert briefing.citables == ()
+    assert client.calls == []
