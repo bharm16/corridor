@@ -310,3 +310,78 @@ def test_the_documents_scored_are_the_ones_that_extractor_read(
     assert extracted_documents(
         session, project.id, prompt_version="matrix_vision_v1"
     ) == {document.id}
+
+
+# --------------------------------------------- enumerating unfamiliar layouts
+
+
+def test_a_sequential_layout_is_enumerated_when_the_prefixed_one_finds_nothing():
+    """FDOT numbers its conflicts 1, 2, 3 and follows each with stationing.
+
+    A bare integer alone on a line is otherwise indistinguishable from an
+    offset or a sheet number, so this shape is tried only where the
+    prefixed-id shape found nothing at all.
+    """
+    gold = gold_from_page_text(
+        {
+            1: (
+                "Conflict # \nStation Begin \nStation End \nOffset \n"
+                "1 \n203+40.00 \n206+40.00 \n30.00' RT. \nBTV, Size UNK \n"
+                "2 \n206+93.00 \n206+93.00 \n54.00' RT. \nBTV Pedestal \n"
+            )
+        }
+    )
+
+    assert [g.source_ref for g in gold] == ["1", "2"]
+
+
+def test_a_prefixed_layout_never_falls_through_to_the_sequential_one():
+    """The fallback would be ruinous here: TxDOT prints an offset after
+    every station, so `303 \\n1153+17` reads as a row that does not exist.
+    Measured at ~600 phantom rows per revision, which is why the shape is
+    a fallback and not a second pattern applied alongside the first."""
+    gold = gold_from_page_text(
+        {
+            1: (
+                "FOC1-1 \nAT&T Texas (SWBT) \nTelecom \n1149+00 \n303 \n"
+                "1153+17 \n309 \nR \n"
+            )
+        }
+    )
+
+    assert [g.source_ref for g in gold] == ["FOC1-1"]
+
+
+def test_a_page_of_numbers_with_no_stationing_enumerates_nothing():
+    """The sequential shape needs the station to anchor it, or every sheet
+    number on the page becomes a row."""
+    assert gold_from_page_text({1: "12 \n13 \n14 \nSheet index \n"}) == []
+
+
+# ------------------------------------- a measurement that cannot be made
+
+
+def test_an_empty_enumeration_is_not_a_score(session, project, document):
+    """0% recall says the extractor found nothing. An empty gold set says
+    we could not check. Reporting the second as the first is the failure
+    this guards — it read as total extraction failure on a document that
+    had in fact extracted 66 correct rows."""
+    make_candidate(session, project, document, "1")
+
+    result = evaluate(session, slug=project.slug, gold=[])
+
+    assert result.unmeasurable is True
+    rendered = render(result)
+    assert "could not be enumerated" in rendered
+    assert "0.0%" not in rendered
+
+
+def test_a_real_enumeration_is_measurable_even_when_recall_is_zero(
+    session, project, document
+):
+    """A genuine 0% must still be reported as 0%."""
+    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+
+    assert result.unmeasurable is False
+    assert result.recall == 0.0
+    assert "0.0%" in render(result)

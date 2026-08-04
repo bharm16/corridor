@@ -57,6 +57,20 @@ _UTILITY_ID = re.compile(
 # rather than at the head of a row.
 _NUMERIC = re.compile(r"^[\d.,+'\"\-/ ]+$")
 
+# FDOT numbers its conflicts 1, 2, 3 rather than prefixing them, and a bare
+# integer alone on a line is otherwise indistinguishable from an offset, a
+# sheet number or a quantity. What identifies it is what follows: FDOT
+# prints the row's stationing next.
+#
+# This shape is a **fallback**, tried only on a document where the prefixed
+# shape found nothing, and that is not fastidiousness. TxDOT prints an
+# offset after every station, so `303` followed by `1153+17` matches this
+# rule perfectly — measured at 668, 531 and 666 phantom rows on three
+# Project A revisions. Right answer on one layout, ruinous on the other,
+# which is why it can never run alongside the first.
+_SEQUENTIAL_ID = re.compile(r"^[ \t]*(\d{1,3})[ \t]*$", re.MULTILINE)
+_STATION = re.compile(r"^[ \t]*\d{1,5}\+\d{2}(?:\.\d+)?\b")
+
 
 class MalformedGoldSet(Exception):
     """The gold set is unusable, and guessing at it would fake a number."""
@@ -83,6 +97,11 @@ class EvalResult:
     # ADR-0006 gate turned entirely on the second: two paths matched to
     # within 0.3 points on recall while differing fifty-fold here.
     field_failures: int = 0
+    # No enumeration could be built, so nothing here is a score. 0% recall
+    # says the extractor found nothing; an empty gold set says we could not
+    # check. Reporting the second as the first read as total failure on a
+    # document that had extracted 66 correct rows.
+    unmeasurable: bool = False
     coverage_note: str = ""
 
     @property
@@ -126,6 +145,12 @@ def load_gold(path: Path | str) -> list[GoldRecord]:
 def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
     """An enumeration read off the text stream rather than the table.
 
+    Two row shapes are known, and they are tried in order because their
+    discriminators are inverted: a TxDOT row's id is followed by the
+    owner, an FDOT row's by its stationing. Applying both at once would
+    let each layout's rule fire on the other's data. First shape to find
+    anything wins, per document.
+
     Deliberately a different code path from the one under test. It is
     coarser — it finds ids and nothing else — but an id the table parser
     never produced is a row it dropped, which is the number that matters.
@@ -136,14 +161,20 @@ def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
     into / FOC1-6 / 1139+43"). Without that check the enumeration counts
     cross-references as rows and charges the extractor for missing them.
     """
-    records = []
-    for page_no in sorted(page_text):
-        text = page_text[page_no] or ""
-        for match in _UTILITY_ID.finditer(text):
-            if not _followed_by_a_party(text, match.end()):
-                continue
-            records.append(GoldRecord(source_ref=match.group(1), page=page_no))
-    return records
+    for pattern, follows in (
+        (_UTILITY_ID, _followed_by_a_party),
+        (_SEQUENTIAL_ID, _followed_by_stationing),
+    ):
+        records = []
+        for page_no in sorted(page_text):
+            text = page_text[page_no] or ""
+            for match in pattern.finditer(text):
+                if not follows(text, match.end()):
+                    continue
+                records.append(GoldRecord(source_ref=match.group(1), page=page_no))
+        if records:
+            return records
+    return []
 
 
 def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
@@ -167,6 +198,17 @@ def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
         ).all()
         records.extend(gold_from_page_text({p: t for p, t in pages}))
     return records
+
+
+def _followed_by_stationing(text: str, start: int) -> bool:
+    return bool(_STATION.match(_next_line(text, start) or ""))
+
+
+def _next_line(text: str, start: int) -> str | None:
+    for line in text[start:].splitlines():
+        if line.strip():
+            return line
+    return None
 
 
 def _followed_by_a_party(text: str, start: int) -> bool:
@@ -267,6 +309,7 @@ def evaluate(
         prompt_versions=dict(versions),
         models=dict(models),
         field_failures=field_failures,
+        unmeasurable=not gold,
         coverage_note=(
             "Recall is measured against this enumeration only. The source "
             "document is not ground truth for its own omissions."
@@ -276,6 +319,21 @@ def evaluate(
 
 
 def render(result: EvalResult) -> str:
+    if result.unmeasurable:
+        return "\n".join(
+            [
+                f"{result.project} — NOT MEASURED: the gold set is empty",
+                f"  {result.extracted_total} rows were extracted, and none of "
+                "them could be checked.",
+                "  This document's rows could not be enumerated from its page "
+                "text by any known",
+                "  layout, so there is nothing to score against. It is not a "
+                "recall of zero.",
+                "  Supply a hand-authored enumeration: "
+                f"make eval ARGS=\"{result.project} gold.csv\"",
+            ]
+        )
+
     lines = [
         f"{result.project} — recall {result.recall:.1%}  "
         f"precision {result.precision:.1%}",
@@ -409,7 +467,9 @@ def main(argv: list[str]) -> int:
         + "\n"
     )
     print(f"\n{path}")
-    return 0
+    # A measurement that could not be made is not a pass. Exiting zero here
+    # would let a broken enumeration slide through a script as a green run.
+    return 1 if result.unmeasurable else 0
 
 
 if __name__ == "__main__":
