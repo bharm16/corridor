@@ -4,9 +4,33 @@ Deliberately small: one call shape, strict JSON schema, explicit model.
 Extractors get the model injected rather than reaching for a default, so a
 test can pass a recorded stub and `make eval` can pin a version.
 
+The wire shape is the **Responses API**. The provider documents it as the
+surface reasoning models belong on, and every GPT-5.6 control this pipeline
+needs is reachable only there: reasoning effort, image detail, prompt
+caching, and output logprobs. `StructuredClient` is unchanged by that
+migration, so every stub and every text-only extractor is untouched.
+
+Four defaults here are load-bearing, and each was measured rather than
+assumed (spike against `gpt-5.6-luna`, 2026-08-03):
+
+- **`reasoning.effort` is pinned to `none`.** Omitting it silently selects
+  `medium`, which spent 333 reasoning tokens and 466 output tokens on a
+  question that `none` answered in 130 with 0. Reasoning bills as output.
+  Transcription and structure-mapping are perception, not deliberation.
+- **Images are sent at `original` detail.** `original` and `auto` both cost
+  5,085 input tokens on a 2550x1650 page; `high` costs 3,069 because it
+  downscales. Pinning it means digit fidelity never rests on what a default
+  happens to resolve to.
+- **`store` is false.** Responses are retained server-side for 30 days
+  otherwise, which a stateless extraction pipeline has no use for.
+- **`strict` is always explicit.** Omitted, the API attempts strict mode and
+  silently falls back to non-strict on an incompatible schema. Believing you
+  have schema guarantees while running without them is how malformed rows
+  reach a reviewer.
+
 Concurrency lives here rather than in the extractors because the calls are
 the only slow part and they are completely independent — each is a pure
-function of (prompt, page text), with no shared state and no ordering
+function of (prompt, page), with no shared state and no ordering
 requirement. Nothing about running them together changes what any one of
 them returns, so this is a latency change and not a quality one.
 """
@@ -18,6 +42,7 @@ import json
 import random
 import threading
 import time
+import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -37,6 +62,15 @@ DEFAULT_WORKERS = 8
 RETRY_STATUSES = (408, 409, 429, 500, 502, 503, 504)
 MAX_ATTEMPTS = 4
 
+# `gpt-5.6-luna` accepts these and rejects `minimal` with a 400 naming the
+# set. Verified directly rather than inferred from the family docs, which
+# warn that each model supports only a subset.
+EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+
+# Flex is billed at batch rates and queues behind standard traffic; the
+# provider's own examples raise the client timeout to match.
+FLEX_TIMEOUT = 900.0
+
 
 class StructuredClient(Protocol):
     def complete(
@@ -46,6 +80,7 @@ class StructuredClient(Protocol):
         user: str,
         schema: dict,
         images: Sequence[Path | str] = (),
+        logprobs: bool = False,
     ) -> dict: ...
 
 
@@ -53,6 +88,10 @@ class StructuredClient(Protocol):
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Reasoning bills as output and is invisible without this; cached input
+    # bills at a tenth. Neither is separable from the totals after the fact.
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
 
 
 class OpenAIClient:
@@ -63,12 +102,28 @@ class OpenAIClient:
         base_url: str | None = None,
         timeout: float = 180.0,
         max_workers: int = DEFAULT_WORKERS,
+        effort: str = "none",
+        flex: bool = False,
     ):
         self.model = model or settings.llm_model
         self.api_key = api_key or settings.openai_api_key
         self.base_url = (base_url or settings.openai_base_url).rstrip("/")
-        self.timeout = timeout
         self.max_workers = max_workers
+        self.flex = flex
+        self.timeout = FLEX_TIMEOUT if flex else timeout
+        if effort not in EFFORTS:
+            raise ValueError(
+                f"unknown reasoning effort {effort!r}; expected one of "
+                f"{', '.join(EFFORTS)}"
+            )
+        self.effort = effort
+        # One key per client, so a run's requests share a cached prefix.
+        # Deliberately not sharded across workers: the provider suggests
+        # roughly 15 requests a minute per key, and eight workers will
+        # exceed that — but the shared prefix is a few thousand tokens
+        # against a per-page image, so a miss costs a fraction of a cent
+        # and sharding would buy nothing worth the machinery.
+        self.cache_key = f"corridor-{uuid.uuid4().hex[:12]}"
         self.usage = Usage()
         self._usage_lock = threading.Lock()
         if not self.api_key:
@@ -79,7 +134,7 @@ class OpenAIClient:
         # paying a fresh TCP and TLS handshake per page. httpx.Client is
         # thread-safe; the pool is sized to the worker count.
         self._http = httpx.Client(
-            timeout=timeout,
+            timeout=self.timeout,
             limits=httpx.Limits(
                 max_connections=max_workers * 2,
                 max_keepalive_connections=max_workers,
@@ -102,24 +157,34 @@ class OpenAIClient:
         user: str,
         schema: dict,
         images: Sequence[Path | str] = (),
+        logprobs: bool = False,
     ) -> dict:
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": _user_content(user, images)},
-            ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "extraction", "strict": True, "schema": schema},
+            "instructions": system,
+            "input": [{"role": "user", "content": _content(user, images)}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "extraction",
+                    "strict": True,
+                    "schema": schema,
+                }
             },
+            "reasoning": {"effort": self.effort},
+            "store": False,
+            "prompt_cache_key": self.cache_key,
         }
+        if logprobs:
+            payload["include"] = ["message.output_text.logprobs"]
+        if self.flex:
+            payload["service_tier"] = "flex"
 
         last_error = ""
         for attempt in range(MAX_ATTEMPTS):
             try:
                 response = self._http.post(
-                    f"{self.base_url}/chat/completions",
+                    f"{self.base_url}/responses",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=payload,
                 )
@@ -138,23 +203,59 @@ class OpenAIClient:
                     f"{response.text[:300]}"
                 )
 
-            body = response.json()
-            used = body.get("usage") or {}
-            with self._usage_lock:
-                self.usage.prompt_tokens += used.get("prompt_tokens", 0)
-                self.usage.completion_tokens += used.get("completion_tokens", 0)
-
-            content = body["choices"][0]["message"].get("content")
-            if not content:
-                # A refusal or a length stop returns no content. Treated as an
-                # empty extraction rather than a crash, so one bad page cannot
-                # abort a 269-page run.
-                return {}
-            return json.loads(content)
+            return self._read(response.json())
 
         raise RuntimeError(
             f"{self.model} failed after {MAX_ATTEMPTS} attempts: {last_error}"
         )
+
+    def _read(self, body: dict) -> dict:
+        used = body.get("usage") or {}
+        with self._usage_lock:
+            self.usage.prompt_tokens += used.get("input_tokens", 0)
+            self.usage.completion_tokens += used.get("output_tokens", 0)
+            self.usage.cached_tokens += (
+                used.get("input_tokens_details") or {}
+            ).get("cached_tokens", 0)
+            self.usage.reasoning_tokens += (
+                used.get("output_tokens_details") or {}
+            ).get("reasoning_tokens", 0)
+
+        # Truncation must never look like a short page: the JSON would be
+        # cut mid-row, and half a matrix silently accepted is worse than a
+        # page that failed loudly.
+        if body.get("status") == "incomplete":
+            reason = (body.get("incomplete_details") or {}).get("reason", "unknown")
+            raise RuntimeError(f"{self.model} stopped early: {reason}")
+
+        # A reasoning item can precede the message, so the message is found
+        # by type. Indexing output[0] is the classic port-from-chat bug.
+        message = next(
+            (item for item in body.get("output") or [] if item.get("type") == "message"),
+            None,
+        )
+        if message is None:
+            # A length stop or a filtered response returns no message.
+            # Treated as an empty extraction rather than a crash, so one bad
+            # page cannot abort a 269-page run.
+            return {}
+
+        parts = message.get("content") or []
+        refusal = next((p for p in parts if p.get("type") == "refusal"), None)
+        if refusal is not None:
+            raise RuntimeError(f"{self.model} refused: {refusal.get('refusal')}")
+
+        text_part = next((p for p in parts if p.get("type") == "output_text"), None)
+        if text_part is None or not text_part.get("text"):
+            return {}
+
+        result = json.loads(text_part["text"])
+        if text_part.get("logprobs"):
+            # Reserved key, following `_error` in `complete_many`: metadata
+            # about the call travels beside the extraction rather than
+            # forcing a second return channel through every caller.
+            result["_meta"] = {"logprobs": text_part["logprobs"]}
+        return result
 
     def _backoff(self, attempt: int, response: httpx.Response | None = None) -> None:
         if response is not None:
@@ -167,23 +268,23 @@ class OpenAIClient:
         time.sleep(min(2**attempt, 16) * (0.5 + random.random()))
 
 
-def _user_content(user: str, images: Sequence[Path | str]) -> str | list[dict]:
-    """A plain string without images, multipart content with them.
+def _content(user: str, images: Sequence[Path | str]) -> list[dict]:
+    """The text part first, images last.
 
-    Text-only callers and their stubs then see exactly the request they saw
-    before. A named image that is not on disk raises rather than degrading
-    to a text-only call, which would run the vision extractor blind.
+    Prompt caching matches on a shared leading prefix, and the image is the
+    only part that differs between pages — putting it last keeps everything
+    before it cacheable. A named image that is not on disk raises rather
+    than degrading to a text-only call, which would run the vision
+    extractor blind.
     """
-    if not images:
-        return user
-
-    content: list[dict] = [{"type": "text", "text": user}]
+    content: list[dict] = [{"type": "input_text", "text": user}]
     for image in images:
         encoded = base64.b64encode(Path(image).read_bytes()).decode()
         content.append(
             {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                "type": "input_image",
+                "image_url": f"data:image/png;base64,{encoded}",
+                "detail": "original",
             }
         )
     return content
@@ -196,6 +297,7 @@ def complete_many(
     schema: dict,
     users: list[str],
     images: list[Sequence[Path | str]] | None = None,
+    logprobs: bool = False,
     max_workers: int | None = None,
 ) -> list[dict]:
     """Run many completions concurrently, results in input order.
@@ -205,13 +307,14 @@ def complete_many(
 
     `images` is one image set per user, or None. Omitted rather than passed
     empty when there are none, so text-only stubs that take no `images`
-    keyword keep working.
+    keyword keep working; `logprobs` is passed the same way.
     """
     if not users:
         return []
 
     workers = max_workers or getattr(client, "max_workers", DEFAULT_WORKERS)
     results: list[dict] = [{} for _ in users]
+    extra = {"logprobs": True} if logprobs else {}
 
     with ThreadPoolExecutor(max_workers=min(workers, len(users))) as pool:
         futures = {
@@ -221,6 +324,7 @@ def complete_many(
                 user=user,
                 schema=schema,
                 **({"images": images[i]} if images else {}),
+                **extra,
             ): i
             for i, user in enumerate(users)
         }
