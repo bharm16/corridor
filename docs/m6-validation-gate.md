@@ -122,3 +122,115 @@ merge ranking depends on. The vision path earns its place on documents the
 parser cannot read at all.
 
 The decision is #61's. This is the number.
+
+---
+
+# Second gate: the tiered extractor (ADR-0006)
+
+Run 2026-08-03 (#76), after #73–#75. Same corpus, same eval command, same
+independent enumeration. The design under test is the one the first gate
+argued for: the model reads structure, the page's word boxes supply values.
+
+## Project A — exact parity with the parser
+
+| | parser | transcription vision | **tiered** |
+|---|---|---|---|
+| `prompt_version` | `txdot_ucm_v1` | `matrix_vision_v1` | `matrix_tiered_v1` |
+| rows | 3,235 | 3,240 | **3,235** |
+| recall | 99.2% | 98.9% | **99.2%** |
+| precision | 97.7% | 97.4% | **97.7%** |
+| rows with a value not on the page | 3 (0.09%) | 164 (5.1%) | **3 (0.09%)** |
+| rows with an unverifiable quote | — | 83 (2.6%) | **0** |
+| pages that fell back to transcription | — | — | **0 of 110** |
+
+Compared as a multiset of complete rows — every field, every page —
+**3,235 of 3,235 rows are identical to the parser's, with zero rows on
+either side that the other did not produce.** Not almost: exactly. The
+three remaining field-token failures are the same three the parser has,
+the known span-concatenation artifact (`freeway1148+60`).
+
+So the transcription error class is gone, and nothing was traded for it.
+
+## FDOT SR 789 — 66 rows where the parser reads none
+
+66 rows, 9 owners, 0 unverified, every External Party attributed from the
+page header. That matches the count taken independently during corpus
+verification. The deterministic parser finds the table and maps **zero**
+of its columns.
+
+The eval command cannot score this document: its enumeration recognises
+TxDOT-style identifiers (`FOC1-23`, `E92`, `WW1**`) and SR 789 numbers its
+conflicts `1, 2, 3`, which no regex can distinguish from every other
+integer on the page. It reports 0% against an empty gold set. The
+comparison here is therefore by row and owner count against the pre-seal
+count, and the enumeration gap is filed rather than papered over.
+
+## Cost
+
+| | input | output | cost | per page |
+|---|---|---|---|---|
+| transcription vision | 540,995 | 677,757 | $0.92 | $0.0084 |
+| **tiered** | 618,029 | **23,571** | **$0.15** | **$0.0014** |
+
+Output tokens fall **96.5%** because the model returns a column mapping
+instead of 300 transcribed cells; input rises slightly because the prompt
+now carries the header cells geometry read. Six times cheaper overall, and
+zero reasoning tokens — the first gate's run was silently paying for
+`medium` reasoning on every page.
+
+Re-extracting **every matrix in the corpus** (~170 pages) costs about
+**955k in / 36k out, or $0.24**. At transcription rates the same work is
+$1.42.
+
+## Four defects, all found by running it
+
+Every one was surfaced by the gate rather than by a reviewer, which is
+what the gate is for.
+
+**A group-title band read as a conflict row.** FDOT prints
+`FROM C/L CONST GULF OF MEXICO DR.` full-width mid-table. Inheriting the
+page's External Party, a band satisfies both required fields off its single
+cell — nine phantom rows on SR 789, one per page. The parser excluded bands
+for free by demanding both fields from the row itself; page-scoped
+inheritance took that away. Fixed in #74 (`MIN_ROW_FIELDS`).
+
+**A continuation page mapped from data instead of a header.** The last page
+of Project A's oldest revision carries 44 rows and no header. Every owner
+cell on it reads `NA`, which the model reasonably took for a size — so the
+owner column mapped to the wrong field and all 44 rows were dropped. A
+printed header outranks an inference from data, so the mapping now carries
+forward to same-width continuation pages, exactly as the parser does.
+
+**A canonical field missing from the extractor's vocabulary.**
+`Data Source Utility/SUE` is in the parser's synonym table and was not in
+the tiered extractor's field list. It came back **reported as unmapped on
+1,299 rows rather than guessed at** — which is the design working, not
+failing: the extractor refused to file a value under a heading it was not
+sure of, a human read the report, and the vocabulary was extended
+deliberately. That is the intended loop for every new field, and it closed
+in one run.
+
+**86 rows in the baseline whose External Party is `NA`.** Both paths
+reproduce them faithfully, because it is what the document says. But `NA`
+is not an organization, and the parser has been minting Dependencies owned
+by it since #65. Neither path invents this; it is a data-quality defect in
+Project A's oldest revision that the gate happened to expose. Filed
+separately.
+
+`Verified (Y/N)` remains unmapped on 584 rows — the parser does not map it
+either. Correctly surfaced, and a candidate for the vocabulary whenever
+somebody decides what it means for the Ledger.
+
+## Read on #61
+
+The first gate's finding was forward-only: do not re-extract Project A,
+because it would trade 0.1% field error for 5.1%. **That reasoning no
+longer holds, because the trade no longer exists.** The tiered path
+reproduces the parser's output exactly on Project A, so re-extraction is
+now a no-op there — which also means it buys nothing, and forward-only
+remains the cheapest correct answer for records that already exist.
+
+What has changed is the argument for the *future*: there is no longer a
+quality reason to keep the deterministic parser on any document. It stays
+only to generate baselines (#63 tracks its removal), and new projects have
+one path that costs no engineering.

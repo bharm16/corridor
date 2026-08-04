@@ -51,6 +51,7 @@ must not read as a document nobody could parse.
 - `offset_side` — left or right
 - `potential_conflict` — whether a conflict is expected
 - `sue_level` — subsurface utility engineering quality level
+- `data_source` — where the record came from (`SUE`, `Utility`, `Data Source Utility/SUE`)
 - `external_org_contact` — a named contact or phone number for the owner
 - `committed_date` — a date the owner stated it would act by
 - `notes` — comments, resolutions, free prose

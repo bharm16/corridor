@@ -457,6 +457,55 @@ def test_a_page_without_a_text_layer_takes_the_transcription_tier(
     assert candidates[0].payload_json["fields"]["station_from"] == "1092+92"
 
 
+def test_a_continuation_page_reuses_the_header_printed_earlier(
+    session, project, tmp_path
+):
+    """A matrix runs on for pages; its headings are printed once.
+
+    Not academic: on the last page of Project A's oldest revision every
+    owner cell reads `NA`, which the model reasonably took for a size —
+    mapping the owner column to the wrong field and dropping all 44 rows.
+    A printed header outranks a mapping inferred from data.
+    """
+    write_pdf(tmp_path / "b.pdf", [["1", "AT&T TCA", "Telecom", "203+40.00", "206+40.00", "9"]])
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS, pages=2)
+    with pymupdf.open(tmp_path / "a.pdf") as first, pymupdf.open(tmp_path / "b.pdf") as second:
+        merged = pymupdf.open()
+        merged.insert_pdf(first)
+        merged.insert_pdf(second)
+        merged.save(tmp_path / "merged.pdf")
+        text = second[0].get_text()
+    doc._pdf_path = str(tmp_path / "merged.pdf")
+    image = tmp_path / "a-0002.png"
+    image.write_bytes(b"\x89PNG page image")
+    session.add(
+        DocPage(document_id=doc.id, page_no=2, text=text,
+                image_path=str(image), text_source="text_layer")
+    )
+    session.flush()
+
+    # Page 2 has no header, and the model mis-infers the owner column.
+    misread = structure(
+        header_row=None,
+        columns=[
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": "size"},
+            {"index": 2, "canonical_field": "utility_type"},
+            {"index": 3, "canonical_field": "station_from"},
+            {"index": 4, "canonical_field": "station_to"},
+            {"index": 5, "canonical_field": None},
+        ],
+    )
+
+    candidates = extract_document(
+        session, doc, client=StubClient([structure(), misread])
+    )
+
+    page_two = [c for c in candidates if c.source_pages == [2]]
+    assert len(page_two) == 1
+    assert page_two[0].payload_json["fields"]["external_org"] == "AT&T TCA"
+
+
 def transcribed(rows=None, *, owner=None, is_matrix=True, meta=None):
     if rows is None:
         rows = [

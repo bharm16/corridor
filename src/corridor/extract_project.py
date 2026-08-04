@@ -19,7 +19,7 @@ Three outcomes, deliberately distinct:
   Candidate a reviewer then has to clear by hand.
 
 The extractor is injected. The deterministic table parser is the default
-today; the vision extractor swaps in at the same seam.
+today; the tiered extractor (ADR-0006) swaps in at the same seam.
 """
 
 from __future__ import annotations
@@ -241,15 +241,15 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
 
 
 def main(argv: list[str]) -> int:
-    """`make extract ARGS="<slug> [--vision] [--redo]"`"""
+    """`make extract ARGS="<slug> [--tiered] [--redo]"`"""
     from corridor.db import Session as SessionFactory
 
     args = [a for a in argv if not a.startswith("-")]
     flags = {a for a in argv if a.startswith("-")}
-    unknown = flags - {"--redo", "--vision"}
+    unknown = flags - {"--redo", "--tiered"}
     if not args or unknown:
         print(
-            "usage: extract <project-slug> [--vision] [--redo]"
+            "usage: extract <project-slug> [--tiered] [--redo]"
             + (f"\nunknown flag(s): {', '.join(sorted(unknown))}" if unknown else ""),
             file=sys.stderr,
         )
@@ -263,20 +263,20 @@ def main(argv: list[str]) -> int:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
-        if "--vision" in flags:
-            from corridor.extract_matrix import PROMPT_VERSION as VISION_VERSION
+        if "--tiered" in flags:
+            from corridor.extract_matrix import PROMPT_VERSION as TIERED_VERSION
             from corridor.extract_matrix import extract_document
             from corridor.llm import OpenAIClient
 
             # One client for the run, so retry, backoff and usage accounting
             # are shared rather than reset per document.
             client = OpenAIClient()
-            prompt_version = VISION_VERSION
+            prompt_version = TIERED_VERSION
 
             def extract(session, document):
                 return extract_document(session, document, client=client)
 
-            print(f"vision extraction, model {client.model}", flush=True)
+            print(f"tiered extraction, model {client.model}", flush=True)
         else:
             extract, prompt_version = deterministic, DETERMINISTIC_VERSION
 

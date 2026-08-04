@@ -85,6 +85,7 @@ ROW_FIELDS = (
     "offset_side",
     "potential_conflict",
     "sue_level",
+    "data_source",
     "external_org_contact",
     "committed_date",
     "notes",
@@ -244,16 +245,18 @@ def extract_document(
             users=[_structure_user(document, p, grids[p.page_no]) for p in structure_pages],
             images=[[p.image_path] for p in structure_pages],
         )
+        # Pages in order, so a header printed on page 1 can carry to the
+        # continuation pages that follow it.
+        carried: tuple[dict[int, str], list[str], int] | None = None
         for page, result in zip(structure_pages, results):
             if "_error" in result:
                 continue
             if result.get("is_utility_matrix"):
                 recognized += 1
-            candidates.extend(
-                _structure_candidates(
-                    document, page, grids[page.page_no], result, model, session
-                )
+            made, carried = _structure_candidates(
+                document, page, grids[page.page_no], result, model, session, carried
             )
+            candidates.extend(made)
 
     if transcribe_pages:
         results = complete_many(
@@ -363,16 +366,29 @@ def _structure_candidates(
     result: dict,
     model: str | None,
     session: Session,
-) -> list[Candidate]:
+    carried: tuple[dict[int, str], list[str], int] | None = None,
+) -> tuple[list[Candidate], tuple[dict[int, str], list[str], int] | None]:
     table_index = result.get("matrix_table")
     if table_index is None or not (0 <= table_index < len(grids)):
-        return []
+        return [], carried
     grid = grids[table_index]
     if not grid:
-        return []
+        return [], carried
 
-    mapping, unmapped = _column_mapping(grid, result)
     header_row = result.get("header_row")
+    mapping, unmapped = _column_mapping(grid, result)
+
+    if isinstance(header_row, int):
+        carried = (mapping, unmapped, len(grid[0]))
+    elif carried is not None and carried[2] == len(grid[0]):
+        # A continuation page: the matrix runs on but its headings were
+        # printed once, pages ago. A printed header outranks a mapping
+        # inferred from data, and the difference is not academic — on the
+        # last page of Project A's oldest revision every owner cell reads
+        # `NA`, which the model reasonably took for a size. That mapped the
+        # owner column to the wrong field and dropped all 44 rows.
+        mapping, unmapped, _ = carried
+
     body = grid[header_row + 1 :] if isinstance(header_row, int) else grid
     inherited = _page_attributes(result)
     page_text = page.text or ""
@@ -400,7 +416,7 @@ def _structure_candidates(
         )
         session.add(candidate)
         candidates.append(candidate)
-    return candidates
+    return candidates, carried
 
 
 def _column_mapping(grid, result: dict) -> tuple[dict[int, str], list[str]]:
