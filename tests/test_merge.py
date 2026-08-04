@@ -114,7 +114,6 @@ def make_dep(session, project, org, ref, **kw):
         title=kw.pop("title", "Telecom — MT AT&T"),
         external_org_id=org.id if org else None,
         status="identified",
-        criticality="normal",
         **kw,
     )
     session.add(dep)

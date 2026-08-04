@@ -72,7 +72,7 @@ def make_dep(session, project, ref, **kw):
         title="Telecom — Example",
         internal_owner="Bryce",
         status=kw.pop("status", "identified"),
-        criticality=kw.pop("criticality", "normal"),
+        resolution_strategy=kw.pop("resolution_strategy", None),
         **kw,
     )
     session.add(d)
@@ -173,28 +173,55 @@ def test_becoming_ready_is_reported(session, project, document):
     assert change.ref_code == "DEP-1"
 
 
-def test_raising_criticality_is_an_escalation(session, project, document):
-    dep = make_dep(session, project, "DEP-1")
+def test_a_strategy_becoming_critical_is_an_escalation(session, project, document):
+    dep = make_dep(session, project, "DEP-1", resolution_strategy="protect_in_place")
     add_evidence(session, dep, document)
     record_run(session, project.id)
 
-    dep.criticality = "critical"
+    dep.resolution_strategy = "relocate"
     session.flush()
 
     escalations = diff_since_last(session, project.id).of_kind("escalated")
-    assert any("normal" in c.detail and "critical" in c.detail for c in escalations)
+    assert any("relocate" in c.detail and "critical" in c.detail for c in escalations)
 
 
-def test_lowering_criticality_is_not_an_escalation(session, project, document):
-    dep = make_dep(session, project, "DEP-1", criticality="critical")
+def test_a_strategy_ceasing_to_be_critical_is_not_an_escalation(
+    session, project, document
+):
+    dep = make_dep(session, project, "DEP-1", resolution_strategy="relocate")
     add_evidence(session, dep, document)
     record_run(session, project.id)
 
-    dep.criticality = "normal"
+    dep.resolution_strategy = "adjust_vertical"
     session.flush()
 
     escalations = diff_since_last(session, project.id).of_kind("escalated")
-    assert not any("criticality" in c.detail for c in escalations)
+    assert not any("strategy" in c.detail for c in escalations)
+
+
+def test_a_snapshot_written_before_the_strategy_existed_does_not_escalate(
+    session, project, document
+):
+    """Four report runs predate #96 and carry a `criticality` key instead.
+
+    Reading an absent key as "was not critical" would announce an
+    escalation for every record that merely became readable — a change in
+    the schema reported as a change in the world, on the first report after
+    the migration.
+    """
+    dep = make_dep(session, project, "DEP-1", resolution_strategy="relocate")
+    add_evidence(session, dep, document)
+    run = record_run(session, project.id)
+
+    # Rewrite the stored snapshot into its pre-#96 shape.
+    snapshot = dict(run.snapshot_json)
+    for entry in snapshot["dependencies"].values():
+        entry.pop("resolution_strategy", None)
+        entry["criticality"] = "normal"
+    run.snapshot_json = snapshot
+    session.flush()
+
+    assert diff_since_last(session, project.id).of_kind("escalated") == []
 
 
 def test_a_closed_dependency_is_reported_as_closed(session, project, document):

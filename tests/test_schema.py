@@ -33,13 +33,17 @@ def test_database_rejects_a_ready_status(conn):
             "values (9999, 'invariant-test', 'Invariant Test', false)"
         )
     )
-    with pytest.raises(DBAPIError):
+    # Matched on the constraint name, not merely on DBAPIError. A typo in
+    # this statement — a renamed or dropped column, say — also raises
+    # DBAPIError, so the loose assertion would go green while testing
+    # nothing at all. #96 dropped a column named here and this is how that
+    # stayed honest.
+    with pytest.raises(DBAPIError, match="dep_status"):
         conn.execute(
             text(
                 "insert into dependencies "
-                "(project_id, ref_code, dep_type, title, status, criticality) "
-                "values (9999, 'DEP-001', 'utility_relocation', 'x', "
-                "'ready', 'normal')"
+                "(project_id, ref_code, dep_type, title, status) "
+                "values (9999, 'DEP-001', 'utility_relocation', 'x', 'ready')"
             )
         )
 
@@ -62,8 +66,8 @@ def test_evidence_defaults_are_false(conn):
     conn.execute(
         text(
             "insert into dependencies (id, project_id, ref_code, dep_type, "
-            "title, status, criticality) values (9998, 9998, 'DEP-001', "
-            "'utility_relocation', 'x', 'identified', 'normal')"
+            "title, status) values (9998, 9998, 'DEP-001', "
+            "'utility_relocation', 'x', 'identified')"
         )
     )
     conn.execute(

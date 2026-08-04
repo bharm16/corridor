@@ -22,9 +22,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.exceptions import RULESET_VERSION, evaluate
+from corridor.exceptions import CRITICAL_WEIGHT, RULESET_VERSION, evaluate
 from corridor.ledger import LedgerRow, browse
-from corridor.models import Dependency, Document, EvidenceLink, Milestone, Project
+from corridor.models import (
+    Dependency,
+    Document,
+    EvidenceLink,
+    Milestone,
+    Project,
+    is_critical,
+)
 
 # Enough to act on in a weekly meeting. More than this and nobody reads it.
 CRITICAL_ITEM_COUNT = 15
@@ -209,11 +216,20 @@ def _milestone_rollup(
 def _critical_items(
     session: Session, rows: list[LedgerRow], today: date
 ) -> Section:
-    """Top items by need-date proximity times criticality."""
-    weight = {"critical": 3.0, "high": 2.0, "normal": 1.0}
+    """Top items by need-date proximity and criticality.
+
+    The weighting is applied twice, and deliberately named rather than
+    quietly fixed: `base` weights the record, and `worst_severity` already
+    carries the same multiplier from `exceptions.evaluate`. So a critical
+    record with an exception is weighted on both terms. That compounding
+    predates this change; what this change owes the reader is that it is
+    visible, since #96 rewrote these exact lines. Ranking only, so it
+    reorders nothing that a single application would order differently —
+    both terms move the same way.
+    """
 
     def urgency(row: LedgerRow) -> float:
-        base = weight.get(row.dependency.criticality, 1.0)
+        base = CRITICAL_WEIGHT if is_critical(row.dependency.resolution_strategy) else 1.0
         if row.dependency.need_date:
             days = (row.dependency.need_date - today).days
             proximity = 1.0 if days <= 0 else max(0.1, 1.0 - min(days, 365) / 365)
@@ -227,7 +243,13 @@ def _critical_items(
 
     section = Section(
         "Critical items",
-        note=f"Top {CRITICAL_ITEM_COUNT} not-ready records by need-date proximity and criticality.",
+        note=(
+            f"Top {CRITICAL_ITEM_COUNT} not-ready records by need-date proximity, "
+            f"weighted \u00d7{CRITICAL_WEIGHT:.0f} where the document's resolution strategy "
+            "is relocation, removal or abandonment (ADR-0009). A record whose "
+            "document records no strategy ranks unweighted \u2014 that is silence, "
+            "not a judgement that it does not matter."
+        ),
         columns=["Ref", "External party", "Committed", "Need", "Status", "Worst exception"],
         empty_message="Every record is ready.",
     )
