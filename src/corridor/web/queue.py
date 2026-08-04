@@ -10,12 +10,10 @@ what they are.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.config import settings
 from corridor.docs import stored_pdf
 from corridor.merge import rank_matches
 from corridor.models import Candidate, DocPage, Document

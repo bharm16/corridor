@@ -14,6 +14,10 @@ at test time, so `find_tables()` and the word-box reader do their actual
 work without depending on a fetched corpus.
 """
 
+import json
+import re
+from pathlib import Path
+
 import pymupdf
 import pytest
 from sqlalchemy import select
@@ -80,7 +84,8 @@ class StubClient:
         return self.responses.pop(0) if self.responses else structure()
 
 
-def structure(*, matrix_table=0, header_row=0, columns=None, owner=None, is_matrix=True):
+def structure(*, matrix_table=0, header_row=0, columns=None, owner=None,
+              is_matrix=True, confidence=0.97):
     if columns is None:
         columns = [
             {"index": 0, "canonical_field": "utility_id"},
@@ -96,6 +101,7 @@ def structure(*, matrix_table=0, header_row=0, columns=None, owner=None, is_matr
         "matrix_table": matrix_table,
         "header_row": header_row,
         "columns": columns,
+        "mapping_confidence": confidence,
     }
 
 
@@ -417,7 +423,7 @@ def test_the_model_is_never_asked_for_a_value(session, project, tmp_path):
     properties = client.calls[0]["schema"]["properties"]
     assert set(properties) == {
         "is_utility_matrix", "page_attributes", "matrix_table",
-        "header_row", "columns",
+        "header_row", "columns", "mapping_confidence",
     }
     assert "rows" not in properties
 
@@ -644,6 +650,61 @@ def test_the_reserved_meta_key_never_reaches_a_candidate(
     assert "_meta" not in candidate.payload_json["fields"]
 
 
+def test_a_mixed_document_produces_candidates_from_both_tiers(
+    session, project, tmp_path
+):
+    """One document, one call per tier, both tiers' rows coming back.
+
+    The two batches run separately and are the only place their results are
+    stitched together; a single-tier fixture never exercises that.
+    """
+    write_pdf(tmp_path / "b.pdf", TXDOT_ROWS)
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS, pages=2)
+    with pymupdf.open(tmp_path / "a.pdf") as first, pymupdf.open(tmp_path / "b.pdf") as second:
+        merged = pymupdf.open()
+        merged.insert_pdf(first)
+        merged.insert_pdf(second)
+        merged.save(tmp_path / "mixed.pdf")
+        text = second[0].get_text()
+    doc._pdf_path = str(tmp_path / "mixed.pdf")
+    image = tmp_path / "a-0002.png"
+    image.write_bytes(b"\x89PNG page image")
+    # Page 2 was scanned: no text layer, so no word boxes to read.
+    session.add(
+        DocPage(document_id=doc.id, page_no=2, text=text,
+                image_path=str(image), text_source="ocr")
+    )
+    session.flush()
+
+    candidates = extract_document(
+        session, doc, client=StubClient([structure(), transcribed()])
+    )
+
+    tiers = {c.source_pages[0]: c.payload_json["tier"] for c in candidates}
+    assert tiers == {1: TIER_STRUCTURE, 2: TIER_TRANSCRIBE}
+    assert doc.extraction_tiers == {TIER_STRUCTURE: 1, TIER_TRANSCRIBE: 1}
+
+
+def test_every_page_failing_is_not_reported_as_an_unhandled_layout(
+    session, project, tmp_path
+):
+    """An outage says nothing about the document.
+
+    Raising `NoMatrixFound` here would tell a reader the layout is
+    unhandled when nothing was ever read — the same conflation, one level
+    up, that keeps unreadable separate from empty.
+    """
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+
+    with pytest.raises(RuntimeError) as raised:
+        extract_document(
+            session, doc, client=StubClient([{"_error": "503 upstream"}])
+        )
+
+    assert not isinstance(raised.value, NoMatrixFound)
+    assert "failed" in str(raised.value)
+
+
 def test_a_document_reports_how_many_pages_fell_back(session, project, tmp_path):
     """How often we fall back is a number to watch, not a surprise."""
     doc = make_document(session, project, tmp_path, TXDOT_ROWS)
@@ -673,3 +734,76 @@ def test_candidates_are_added_to_the_session(session, project, tmp_path):
         select(Candidate).where(Candidate.source_document_id == doc.id)
     ).all()
     assert len(stored) == 2
+
+
+# ------------------------------------------------------------- real corpus
+#
+# Skipped on a clean clone, following the marker the extract tests use.
+# These assert against the documents the gate measured, so a change that
+# silently stops reading SR 789 fails here rather than in a run.
+
+FDOT_LOCK = Path("corpus/fdot-sr789.lock.json")
+real_corpus = pytest.mark.skipif(
+    not FDOT_LOCK.exists(), reason="corpus not fetched; run `make corpus`"
+)
+
+
+def _sr789_path():
+    """The store is content-addressed, so match on the source URL, not the
+    stored filename — which is a sha256."""
+    lock = json.loads(FDOT_LOCK.read_text())
+    for url, record in lock["sources"].items():
+        if "utility-conflict-matrix" in url and record.get("local_path"):
+            return record["local_path"]
+    return None
+
+
+@real_corpus
+def test_sr789_pages_state_their_external_party_in_the_text_layer():
+    """The fact page-scoped attributes exist for.
+
+    Nine pages, nine utilities, each named once in the page header and
+    never in a column — which is why the deterministic parser reads none
+    of them, and why the owner has to be verifiable against the page text
+    rather than transcribed per row.
+    """
+    path = _sr789_path()
+    if path is None:
+        pytest.skip("SR 789 not in the lockfile")
+
+    owners = []
+    with pymupdf.open(path) as pdf:
+        for page in pdf:
+            match = re.search(r"UTILITY AGENCY OWNER:\s*(.+)", page.get_text())
+            owners.append(match.group(1).strip() if match else None)
+
+    assert None not in owners
+    assert len(set(owners)) == 9
+    assert "Comcast" in owners
+
+
+@real_corpus
+def test_sr789_geometry_finds_a_table_the_synonym_parser_cannot_map():
+    """Tier 1's division of labour, on the document that motivated it.
+
+    `find_tables()` locates the table and the word boxes read it cleanly.
+    What the parser cannot do is say what the columns *mean*: none of
+    SR 789's printed headers match a synonym, so it maps zero of them.
+    """
+    from corridor.extract import find_header, page_tables
+
+    path = _sr789_path()
+    if path is None:
+        pytest.skip("SR 789 not in the lockfile")
+
+    with pymupdf.open(path) as pdf:
+        grids = page_tables(pdf[1])
+
+    assert grids, "geometry found no table"
+    grid = grids[0]
+    header = [(cell or "").strip() for cell in grid[1]]
+    assert "Conflict #" in header
+    # Every value Tier 1 would store is already here, read from the page.
+    assert any("203+40.00" in (cell or "") for row in grid for cell in row)
+    # And the parser maps none of it.
+    assert find_header(grid) == (0, {})

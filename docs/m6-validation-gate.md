@@ -221,6 +221,25 @@ separately.
 either. Correctly surfaced, and a candidate for the vocabulary whenever
 somebody decides what it means for the Ledger.
 
+## Reproducing these numbers
+
+`make eval ARGS="<slug> --prompt-version=<version>"` now reports the
+field-token failure count beside recall and precision, so the figure the
+whole comparison turns on comes out of the same command as the rest rather
+than an ad-hoc script:
+
+    nhhip-3c2 — recall 99.2%  precision 97.7%
+      gold 3186   extracted 3235   matched 3160
+      field-token failures  3 (0.09% of extracted rows carry a value not on their page)
+
+Two things measured here were not in the code at the time of the run and do
+not affect any number above. `mapping_confidence` was added to the Tier 1
+schema afterwards, so the Candidates this run stored carry a null
+confidence; it is verified live and populates on the next extraction. And
+prompt caching does nothing on the structure tier — the shared prefix is
+the instructions alone, which fall just under the provider's 1,024-token
+minimum, and the 110-page run cached zero. Worth a penny, left alone.
+
 ## Read on #61
 
 The first gate's finding was forward-only: do not re-extract Project A,

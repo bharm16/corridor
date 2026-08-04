@@ -294,9 +294,17 @@ def main(argv: list[str]) -> int:
 
         print(render(project, prompt_version, outcomes))
         if client is not None:
+            usage = client.usage
+            # Cached and reasoning are broken out because neither is
+            # recoverable from the totals afterwards, and both move the
+            # bill: cached input bills at a tenth, reasoning bills as
+            # output. A run that quietly reasoned is a run whose cost
+            # nobody can explain.
             print(
-                f"tokens: {client.usage.prompt_tokens:,} in / "
-                f"{client.usage.completion_tokens:,} out"
+                f"tokens: {usage.prompt_tokens:,} in "
+                f"({usage.cached_tokens:,} cached) / "
+                f"{usage.completion_tokens:,} out "
+                f"({usage.reasoning_tokens:,} reasoning)"
             )
 
     return 1 if any(o.status == "unreadable" for o in outcomes) else 0

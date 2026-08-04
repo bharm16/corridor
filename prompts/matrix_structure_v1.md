@@ -30,6 +30,14 @@ printed. Use it **only** for a fact that governs the whole page — if the
 table has an owner column, leave it null and map that column instead.
 Hoisting one row's value here would apply it to every other row.
 
+**`mapping_confidence`** — your own 0–1 judgement of whether you read the
+*columns* right, not the values. A printed header row saying exactly what
+each column holds warrants a high number honestly. Two columns that could
+plausibly swap, a continuation page with no header, an abbreviation you had
+to guess at — those warrant a lower one. Every row read under this mapping
+inherits the number, so it is the one place your uncertainty can reach a
+reviewer.
+
 **`is_utility_matrix`** — false when this page carries no conflict table at
 all: a cover sheet, a plan sheet, standard provisions. True for a matrix
 page whose table is empty; a project with no conflicts is a real answer and

@@ -124,23 +124,20 @@ def value_appears_on(value: str | None, page_text: str) -> bool:
     queue; it never drops it, so being wrong in that direction is cheap
     and being wrong in the other is not.
     """
-    page = tokens(page_text)
-    return all(
-        token in page
-        for token in tokens(value)
-        if len(token) >= MIN_TOKEN_CHARS
-    )
+    return _on_page(value, tokens(page_text))
 
 
 def unverified_fields(fields: dict[str, str], page_text: str) -> set[str]:
-    """Which of these field values are not text on this page."""
+    """Which of these field values are not text on this page.
+
+    Tokenises the page once for the whole row rather than once per field —
+    a matrix page is a few thousand tokens and a row has twenty of them.
+    """
     page = tokens(page_text)
-    return {
-        name
-        for name, value in fields.items()
-        if any(
-            token not in page
-            for token in tokens(value)
-            if len(token) >= MIN_TOKEN_CHARS
-        )
-    }
+    return {name for name, value in fields.items() if not _on_page(value, page)}
+
+
+def _on_page(value: str | None, page: set[str]) -> bool:
+    return all(
+        token in page for token in tokens(value) if len(token) >= MIN_TOKEN_CHARS
+    )

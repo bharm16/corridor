@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from corridor.db import Session as SessionFactory
 from corridor.models import Candidate, Document, Project
+from corridor.verify import unverified_fields
 
 REQUIRED_COLUMNS = ("source_ref",)
 
@@ -77,6 +78,11 @@ class EvalResult:
     spurious: list[str] = field(default_factory=list)
     prompt_versions: dict[str, int] = field(default_factory=dict)
     models: dict[str, int] = field(default_factory=dict)
+    # Rows carrying a value that is not text on the cited page. Reported
+    # beside recall because the two measure different things and the
+    # ADR-0006 gate turned entirely on the second: two paths matched to
+    # within 0.3 points on recall while differing fifty-fold here.
+    field_failures: int = 0
     coverage_note: str = ""
 
     @property
@@ -189,6 +195,19 @@ def extracted_documents(
     return set(session.scalars(query.distinct()).all())
 
 
+def _page_text(session: Session, document_ids) -> dict[tuple[int, int], str]:
+    from corridor.models import DocPage
+
+    if not document_ids:
+        return {}
+    rows = session.execute(
+        select(DocPage.document_id, DocPage.page_no, DocPage.text).where(
+            DocPage.document_id.in_(document_ids)
+        )
+    ).all()
+    return {(d, p): (t or "") for d, p, t in rows}
+
+
 def evaluate(
     session: Session,
     *,
@@ -218,12 +237,19 @@ def evaluate(
     extracted = Counter()
     versions: Counter = Counter()
     models: Counter = Counter()
+    page_text = _page_text(session, {c.source_document_id for c in candidates})
+    field_failures = 0
     for candidate in candidates:
         ref = (candidate.payload_json.get("fields") or {}).get("utility_id")
         if ref:
             extracted[ref] += 1
         versions[candidate.prompt_version or "—"] += 1
         models[candidate.model or "deterministic"] += 1
+        text = page_text.get(
+            (candidate.source_document_id, (candidate.source_pages or [0])[0]), ""
+        )
+        if unverified_fields(candidate.payload_json.get("fields") or {}, text):
+            field_failures += 1
 
     # Multiset, not set: ids repeat within a revision (47 reused in one
     # Project A matrix), and collapsing them would hide a dropped row
@@ -240,6 +266,7 @@ def evaluate(
         spurious=sorted((extracted - wanted).elements()),
         prompt_versions=dict(versions),
         models=dict(models),
+        field_failures=field_failures,
         coverage_note=(
             "Recall is measured against this enumeration only. The source "
             "document is not ground truth for its own omissions."
@@ -263,6 +290,15 @@ def render(result: EvalResult) -> str:
         shown = ", ".join(result.spurious[:12])
         more = "" if len(result.spurious) <= 12 else f" (+{len(result.spurious) - 12})"
         lines.append(f"  spurious  {len(result.spurious)}: {shown}{more}")
+    share = (
+        100 * result.field_failures / result.extracted_total
+        if result.extracted_total
+        else 0.0
+    )
+    lines.append(
+        f"  field-token failures  {result.field_failures} "
+        f"({share:.2f}% of extracted rows carry a value not on their page)"
+    )
     versions = ", ".join(f"{k}×{v}" for k, v in sorted(result.prompt_versions.items()))
     models = ", ".join(f"{k}×{v}" for k, v in sorted(result.models.items()))
     lines.append(f"  prompt_version: {versions or '—'}")
@@ -363,6 +399,7 @@ def main(argv: list[str]) -> int:
                 "matched": result.matched,
                 "missing": result.missing,
                 "spurious": result.spurious,
+                "field_failures": result.field_failures,
                 "prompt_versions": result.prompt_versions,
                 "models": result.models,
                 "coverage_note": result.coverage_note,

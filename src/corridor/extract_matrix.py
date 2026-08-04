@@ -102,7 +102,8 @@ PAGE_FIELDS = ("external_org",)
 # than the row. Also guards a legend table the model mistook for the matrix.
 REQUIRED = ("utility_id", "external_org")
 
-# ...and at least this many of them must come from the row's own cells.
+# ...and a row must map at least this many fields of its own, whichever
+# they are.
 #
 # The deterministic parser got this for free by requiring both fields from
 # the row, which page-scoped inheritance then took away: FDOT prints a
@@ -129,6 +130,10 @@ HEADER_CANDIDATES = 3
 # costs a wrong number in the Ledger.
 MIN_TOKEN_LOGPROB = -3.0
 
+# Shorter fragments than this are matched into so many values that they say
+# nothing about any one row.
+MIN_TOKEN_FRAGMENT = 3
+
 _PAGE_ATTRIBUTES = {
     "type": "object",
     "additionalProperties": False,
@@ -145,6 +150,7 @@ STRUCTURE_SCHEMA = {
         "matrix_table",
         "header_row",
         "columns",
+        "mapping_confidence",
     ],
     "properties": {
         # The only way to tell "this page is not a matrix" from "this matrix
@@ -168,6 +174,11 @@ STRUCTURE_SCHEMA = {
                 },
             },
         },
+        # One number for the page, not one per row: on this tier the model's
+        # only judgement is what the columns mean, so that is the only thing
+        # it can be more or less sure of. Every row read under a mapping
+        # inherits the mapping's confidence.
+        "mapping_confidence": {"type": "number"},
     },
 }
 
@@ -236,6 +247,7 @@ def extract_document(
     model = getattr(client, "model", None)
     candidates: list[Candidate] = []
     recognized = 0
+    errors = 0
 
     if structure_pages:
         results = complete_many(
@@ -250,6 +262,7 @@ def extract_document(
         carried: tuple[dict[int, str], list[str], int] | None = None
         for page, result in zip(structure_pages, results):
             if "_error" in result:
+                errors += 1
                 continue
             if result.get("is_utility_matrix"):
                 recognized += 1
@@ -271,6 +284,7 @@ def extract_document(
         )
         for page, result in zip(transcribe_pages, results):
             if "_error" in result:
+                errors += 1
                 continue
             if result.get("is_utility_matrix"):
                 recognized += 1
@@ -295,10 +309,22 @@ def extract_document(
         if count
     }
 
+    # An outage is not an unhandled layout. Reporting every page failing
+    # as `NoMatrixFound` would tell a reader the document is unreadable
+    # when nothing was ever read — the conflation #59 story 2 forbids, one
+    # level up from the empty-versus-unreadable one.
+    if errors == len(pages):
+        raise RuntimeError(
+            f"every page of {document.filename} failed: {errors} of "
+            f"{len(pages)}. This says nothing about the document."
+        )
+
     if recognized == 0:
         raise NoMatrixFound(
-            f"no page of {document.filename} carries a utility matrix. "
-            "A layout variant is unhandled — do not treat this as an empty matrix."
+            f"no page of {document.filename} carries a utility matrix"
+            + (f" ({errors} of {len(pages)} pages also failed)" if errors else "")
+            + ". A layout variant is unhandled — do not treat this as an "
+            "empty matrix."
         )
 
     session.flush()
@@ -377,6 +403,7 @@ def _structure_candidates(
 
     header_row = result.get("header_row")
     mapping, unmapped = _column_mapping(grid, result)
+    confidence = result.get("mapping_confidence")
 
     if isinstance(header_row, int):
         carried = (mapping, unmapped, len(grid[0]))
@@ -409,7 +436,7 @@ def _structure_candidates(
             fields,
             quote=quote,
             whole_row=whole_row,
-            confidence=None,
+            confidence=confidence,
             model=model,
             tier=TIER_STRUCTURE,
             unmapped=unmapped,
@@ -467,6 +494,8 @@ def _low_confidence_tokens(result: dict) -> list[str]:
     unsure = []
     for entry in entries:
         token = (entry.get("token") or "").strip()
+        if len(token) < MIN_TOKEN_FRAGMENT:
+            continue
         if not any(character.isdigit() for character in token):
             continue
         if entry.get("logprob", 0.0) < MIN_TOKEN_LOGPROB:
@@ -497,7 +526,16 @@ def _transcribed_candidate(
     fields = {**inherited, **row}
     # Only tokens this row actually used: one shaky digit on a page must
     # not sink every other row on it.
-    mine = sorted({t for t in unsure if any(t in value for value in fields.values())})
+    #
+    # Matched as a substring, which over-attributes — the model's tokenizer
+    # splits `1149+00` into fragments, so nothing else would match at all,
+    # and a hesitant `114` will also flag a different row's `1149+00`.
+    # Deliberately the safe direction: an extra sunk row costs a reviewer a
+    # second look, a missed one costs a wrong number in the Ledger. Short
+    # fragments are dropped so `9` does not flag the page.
+    mine = sorted(
+        {t for t in unsure if any(t in value for value in fields.values())}
+    )
 
     return _candidate(
         document,

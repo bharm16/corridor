@@ -11,7 +11,6 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.ingest import ingest_document
