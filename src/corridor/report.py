@@ -55,12 +55,38 @@ class Assertion:
 
 @dataclass(frozen=True)
 class Derivation:
+    """A computation over cited records, or over a run this one compares to.
+
+    ADR-0003's argument is that a Derivation *drills through* to the
+    Evidence beneath it. A Derivation over zero records drills to
+    nothing, so `record_ids` being empty is not enough — a cell whose
+    subject is a comparison (a record that left the Ledger has no id left
+    to cite) names the run instead.
+    """
+
     ruleset_version: str
-    record_ids: tuple[int, ...]
+    record_ids: tuple[int, ...] = ()
+    # What the computation covered when no record can answer for it: an
+    # empty Ledger has nothing to drill to, and a record that left the
+    # Ledger has no id left to cite. A named scope is provenance; an empty
+    # tuple on its own is a bare cell wearing a marker.
+    scope: str = ""
+
+    @property
+    def resolves(self) -> bool:
+        return bool(self.record_ids) or bool(self.scope)
 
     @property
     def marker(self) -> str:
-        return f"[{self.ruleset_version} over {len(self.record_ids)} records]"
+        if self.record_ids:
+            return f"[{self.ruleset_version} over {len(self.record_ids)} records]"
+        return f"[{self.ruleset_version} · {self.scope}]"
+
+    @property
+    def drill(self) -> str:
+        if self.record_ids:
+            return "records: " + ", ".join(str(i) for i in self.record_ids[:20])
+        return f"covers: {self.scope}"
 
 
 @dataclass
@@ -100,8 +126,11 @@ class Report:
         ]
 
 
-def _derived(label: str, value: str, records) -> Cell:
-    return Cell(label, value, Derivation(RULESET_VERSION, tuple(records)))
+EMPTY_LEDGER = "an empty ledger"
+
+
+def _derived(label: str, value: str, records, *, scope: str = "") -> Cell:
+    return Cell(label, value, Derivation(RULESET_VERSION, tuple(records), scope))
 
 
 def build_report(
@@ -127,10 +156,21 @@ def build_report(
         project_name=project.name if project else f"project {project_id}",
         generated_at=datetime.now(timezone.utc),
         summary=[
-            _derived("Dependencies", str(len(ids)), ids),
-            _derived("Ready", str(len(ready)), ready),
-            _derived("With verified evidence", str(len(with_evidence)), with_evidence),
-            _derived("% with verified evidence", f"{pct:.1f}%", ids),
+            # A count of none still names what it counted: the matching
+            # records where there are some, the population where there
+            # are not, and the empty Ledger itself where there is no
+            # population either (ADR-0003).
+            _derived("Dependencies", str(len(ids)), ids, scope=EMPTY_LEDGER),
+            _derived("Ready", str(len(ready)), ready or ids, scope=EMPTY_LEDGER),
+            _derived(
+                "With verified evidence",
+                str(len(with_evidence)),
+                with_evidence or ids,
+                scope=EMPTY_LEDGER,
+            ),
+            _derived(
+                "% with verified evidence", f"{pct:.1f}%", ids, scope=EMPTY_LEDGER
+            ),
         ],
         diff=diff_since_last(session, project_id, evaluation=evaluation),
         coverage_note=_coverage_note(session, project_id, len(ids)),
@@ -196,6 +236,19 @@ def _milestone_rollup(
     if unlinked:
         groups.append(("Not linked to a milestone", "—", unlinked))
 
+    # A milestone nothing is linked to has no records to measure, and
+    # publishing "Ready 0" for it reads as "none of your records are
+    # ready" rather than "no records are linked". Named in the note
+    # instead, so the omission is stated rather than silent.
+    empty = [name for name, _, group in groups if not group]
+    groups = [g for g in groups if g[2]]
+    if empty:
+        section.note = (
+            "Nothing is linked to " + ", ".join(empty) + ", so "
+            + ("they are" if len(empty) > 1 else "it is")
+            + " not measured below."
+        )
+
     for name, need_date, group in groups:
         ids = [r.dependency.id for r in group]
         ready = [r.dependency.id for r in group if r.is_ready]
@@ -214,10 +267,14 @@ def _milestone_rollup(
                 _derived("Milestone", name, ids),
                 _derived("Need date", need_date, ids),
                 _derived("Total", str(len(ids)), ids),
-                _derived("Ready", str(len(ready)), ready),
-                _derived("At risk", str(len(at_risk)), at_risk),
-                _derived("Blocked", str(len(blocked)), blocked),
-                _derived("% evidenced", f"{pct:.0f}%", evidenced),
+                # A count of none is still derived from the records it
+                # examined — the matching subset when there is one, the
+                # group itself when there is not. A Derivation over zero
+                # records drills through to nothing (ADR-0003).
+                _derived("Ready", str(len(ready)), ready or ids),
+                _derived("At risk", str(len(at_risk)), at_risk or ids),
+                _derived("Blocked", str(len(blocked)), blocked or ids),
+                _derived("% evidenced", f"{pct:.0f}%", evidenced or ids),
             ]
         )
     return section
@@ -383,11 +440,21 @@ def _changes_since_last(diff: Diff | None) -> Section:
         )
 
     for change in diff.changes:
+        # A change cites the record it describes. Where that record has
+        # left the Ledger and the previous snapshot predates recorded ids,
+        # the comparison itself is the subject, so the cell names the run.
+        provenance = (
+            Derivation(RULESET_VERSION, (change.dependency_id,))
+            if change.dependency_id is not None
+            else Derivation(
+                RULESET_VERSION, scope=f"report run {diff.previous_run_id}"
+            )
+        )
         section.rows.append(
             [
-                _derived("Ref", change.ref_code, ()),
-                _derived("Change", change.kind, ()),
-                _derived("Detail", change.detail, ()),
+                Cell("Ref", change.ref_code, provenance),
+                Cell("Change", change.kind, provenance),
+                Cell("Detail", change.detail, provenance),
             ]
         )
     return section
@@ -472,7 +539,18 @@ def _as_assertion(evidence: Evidence | None) -> Assertion | None:
 
 
 def assert_no_bare_cells(report: Report) -> None:
-    bare = [c for c in report.cells if c.provenance is None]
+    """No cell is bare, and no Derivation drills through to nothing.
+
+    Checking only for a missing `provenance` let a `Derivation` over zero
+    records satisfy the rule — a bare cell wearing a marker, which is the
+    device ADR-0003 exists to abolish.
+    """
+    bare = [
+        c
+        for c in report.cells
+        if c.provenance is None
+        or (isinstance(c.provenance, Derivation) and not c.provenance.resolves)
+    ]
     if bare:
         raise BareCell(
             f"{len(bare)} cell(s) published without provenance: "
@@ -487,11 +565,7 @@ def render(report: Report) -> str:
     def cell_html(cell: Cell) -> str:
         p = cell.provenance
         kind = "assertion" if isinstance(p, Assertion) else "derivation"
-        title = (
-            html.escape(p.quote)
-            if isinstance(p, Assertion)
-            else "records: " + (", ".join(str(i) for i in p.record_ids[:20]) or "computed")
-        )
+        title = html.escape(p.quote if isinstance(p, Assertion) else p.drill)
         return (
             f'<td class="{kind}">{html.escape(cell.value)}'
             f'<span class="marker" title="{title}">{html.escape(p.marker)}</span></td>'
@@ -516,8 +590,7 @@ def render(report: Report) -> str:
     summary = "".join(
         f'<div class="stat"><span class="n">{html.escape(c.value)}</span>'
         f'<span class="k">{html.escape(c.label)}</span>'
-        f'<span class="marker" title="records: '
-        f'{", ".join(str(i) for i in c.provenance.record_ids[:20])}">'
+        f'<span class="marker" title="{html.escape(c.provenance.drill)}">'
         f"{html.escape(c.provenance.marker)}</span></div>"
         for c in report.summary
     )

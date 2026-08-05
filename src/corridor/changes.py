@@ -30,6 +30,11 @@ class Change:
     ref_code: str
     kind: str  # new | closed | slipped | escalated | became_ready
     detail: str
+    # The Dependency this change is about, so a report cell describing it
+    # drills through to the record rather than citing nothing (ADR-0003).
+    # None only for a record that left the Ledger before snapshots
+    # recorded ids — four such runs are stored.
+    dependency_id: int | None = None
 
 
 @dataclass
@@ -70,6 +75,7 @@ def snapshot(
         "ruleset_version": evaluation.ruleset_version,
         "dependencies": {
             row.dependency.ref_code: {
+                "id": row.dependency.id,
                 "status": row.dependency.status,
                 "resolution_strategy": row.dependency.resolution_strategy,
                 "committed_date": (
@@ -122,16 +128,28 @@ def diff_since_last(
         was = before.get(ref)
         if was is None:
             diff.changes.append(
-                Change(ref, "new", f"added to the ledger as {now['status']}")
+                Change(
+                    ref,
+                    "new",
+                    f"added to the ledger as {now['status']}",
+                    now.get("id"),
+                )
             )
             continue
 
         if now["status"] == "closed" and was["status"] != "closed":
-            diff.changes.append(Change(ref, "closed", "status moved to closed"))
+            diff.changes.append(
+                Change(ref, "closed", "status moved to closed", now.get("id"))
+            )
 
         if now["ready"] and not was["ready"]:
             diff.changes.append(
-                Change(ref, "became_ready", "evidence now meets the closure bar")
+                Change(
+                    ref,
+                    "became_ready",
+                    "evidence now meets the closure bar",
+                    now.get("id"),
+                )
             )
 
         # A slip is the committed date moving *later*. Moving earlier is not
@@ -144,11 +162,17 @@ def diff_since_last(
                         "slipped",
                         f"committed date moved {was['committed_date']} → "
                         f"{now['committed_date']}",
+                        now.get("id"),
                     )
                 )
         elif now["committed_date"] and not was["committed_date"]:
             diff.changes.append(
-                Change(ref, "new", f"first committed date: {now['committed_date']}")
+                Change(
+                    ref,
+                    "new",
+                    f"first committed date: {now['committed_date']}",
+                    now.get("id"),
+                )
             )
 
         # A snapshot written before #96 has no `resolution_strategy` key at
@@ -166,6 +190,7 @@ def diff_since_last(
                     "escalated",
                     "resolution strategy became "
                     f"{now['resolution_strategy']}, which is critical",
+                    now.get("id"),
                 )
             )
 
@@ -175,13 +200,20 @@ def diff_since_last(
             appeared = set(now["exceptions"]) - set(was["exceptions"])
             for rule in sorted(appeared):
                 diff.changes.append(
-                    Change(ref, "escalated", f"new exception: {rule}")
+                    Change(
+                        ref, "escalated", f"new exception: {rule}", now.get("id")
+                    )
                 )
 
     for ref in before:
         if ref not in after:
             diff.changes.append(
-                Change(ref, "closed", "no longer in the ledger")
+                Change(
+                    ref,
+                    "closed",
+                    "no longer in the ledger",
+                    before[ref].get("id"),
+                )
             )
 
     diff.changes.sort(key=lambda c: (c.kind, c.ref_code))

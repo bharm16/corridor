@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 from sqlalchemy import select
 
@@ -488,3 +490,92 @@ def test_the_report_publishes_the_evaluation_the_export_records(
     assert report.evaluation is not None
     assert report.evaluation.today == today
     assert report.evaluation.ruleset_version == report.ruleset_version
+
+
+def test_a_derivation_over_zero_records_is_refused(session):
+    """A marker that drills through to nothing is a bare cell wearing one.
+
+    ADR-0003's argument is that a Derivation drills through to the
+    records' Evidence — "making a percentage clickable down to the
+    evidence beneath it". Checking only that `provenance` was present let
+    `Derivation(version, ())` satisfy the rule, and the whole "Changes
+    since last report" section was built that way.
+    """
+    report = Report(
+        project_name="x",
+        generated_at=None,
+        summary=[Cell("Changed", "3", Derivation(RULESET_VERSION, ()))],
+    )
+    with pytest.raises(BareCell, match="Changed"):
+        assert_no_bare_cells(report)
+
+
+def test_a_derivation_may_name_a_scope_where_no_record_can_answer(session):
+    """An empty ledger and a departed record have nothing to drill to."""
+    scoped = Derivation(RULESET_VERSION, (), "an empty ledger")
+
+    assert scoped.resolves
+    assert "an empty ledger" in scoped.marker
+    assert "an empty ledger" in scoped.drill
+    assert_no_bare_cells(
+        Report(
+            project_name="x",
+            generated_at=None,
+            summary=[Cell("Dependencies", "0", scoped)],
+        )
+    )
+
+
+def test_a_change_cites_the_record_it_describes(
+    session, project_with_two_dependencies
+):
+    """Every cell of the Changes section used to carry an empty tuple."""
+    from corridor.changes import record_run
+    from corridor.models import Dependency
+
+    record_run(session, project_with_two_dependencies.id)
+    dependency = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project_with_two_dependencies.id)
+        .order_by(Dependency.id)
+    ).first()
+    dependency.status = "closed"
+    session.flush()
+
+    report = build_report(session, project_with_two_dependencies.id)
+    changes = section(report, "Changes since last report")
+
+    assert changes.rows
+    for row in changes.rows:
+        for cell in row:
+            assert cell.provenance.resolves
+    closed = next(r for r in changes.rows if r[1].value == "closed")
+    assert closed[0].provenance.record_ids == (dependency.id,)
+
+
+def test_a_milestone_nothing_is_linked_to_is_named_not_scored(
+    session, project_with_two_dependencies
+):
+    """"Ready 0" for an unlinked milestone reads as a measurement.
+
+    It is not one — nothing was measured, and the section says so rather
+    than publishing four zeroes over no records.
+    """
+    from corridor.models import Milestone
+
+    session.add(
+        Milestone(
+            project_id=project_with_two_dependencies.id,
+            code="RELO-CONSTR",
+            name="RELO-CONSTR",
+            need_date=date(2026, 12, 1),
+        )
+    )
+    session.flush()
+
+    report = build_report(session, project_with_two_dependencies.id)
+    milestones = section(report, "Milestone readiness")
+
+    assert "Nothing is linked to RELO-CONSTR" in milestones.note
+    assert "RELO-CONSTR" not in {row[0].value for row in milestones.rows}
+    assert_no_bare_cells(report)
