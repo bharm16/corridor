@@ -98,12 +98,12 @@ def extract_documents(
         per_document: dict[int, list[Candidate]] = {d.id: [] for d, _ in group}
         errors: dict[int, int] = {d.id: 0 for d, _ in group}
 
-        for (doc, page), result in zip(work, results):
-            if "_error" in result:
+        for (doc, page), completion in zip(work, results):
+            if completion.failed:
                 # One page lost, reported, run continues.
                 errors[doc.id] += 1
                 continue
-            for item in result.get(items_key) or []:
+            for item in completion.value.get(items_key) or []:
                 candidate = to_candidate(doc, page, item, model)
                 if candidate is not None:
                     session.add(candidate)

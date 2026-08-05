@@ -321,7 +321,7 @@ def test_complete_many_carries_one_image_set_per_user():
         max_workers=2,
     )
 
-    assert [r["user"] for r in results] == ["a", "b"]
+    assert [r.value["user"] for r in results] == ["a", "b"]
     assert sorted(seen) == [("a", ["a.png"]), ("b", ["b.png"])]
 
 
@@ -338,4 +338,61 @@ def test_complete_many_without_images_does_not_pass_the_argument():
         TextOnly(), system="s", schema=SCHEMA, users=["a", "b"], max_workers=2
     )
 
-    assert [r["user"] for r in results] == ["a", "b"]
+    assert [r.value["user"] for r in results] == ["a", "b"]
+
+
+def test_a_completion_separates_the_answer_from_the_metadata():
+    """The reserved key cannot leak into a Candidate because it is not in
+    the value. It used to travel inside the schema's own dict, and four
+    caller sites had to recognise and strip it."""
+    from corridor.llm import META_KEY, complete_many
+
+    class WithMeta:
+        max_workers = 1
+
+        def complete(self, *, system, user, schema):
+            return {"rows": [{"utility_id": "FOC1-1"}], META_KEY: {"logprobs": [1]}}
+
+    [completion] = complete_many(WithMeta(), system="s", schema={}, users=["p"])
+
+    assert completion.value == {"rows": [{"utility_id": "FOC1-1"}]}
+    assert META_KEY not in completion.value
+    assert completion.meta == {"logprobs": [1]}
+    assert completion.failed is False
+
+
+def test_a_returned_error_key_is_not_a_failure():
+    """Outcome is the type's, not the payload's.
+
+    A model answering with a field called `_error` used to be
+    indistinguishable from the call having failed — and every stub that
+    wanted to simulate a failure returned one rather than raising.
+    """
+    from corridor.llm import complete_many
+
+    class Odd:
+        max_workers = 1
+
+        def complete(self, *, system, user, schema):
+            return {"_error": "a value the document actually printed"}
+
+    [completion] = complete_many(Odd(), system="s", schema={}, users=["p"])
+
+    assert completion.failed is False
+    assert completion.value == {"_error": "a value the document actually printed"}
+
+
+def test_a_raised_failure_is_the_failure():
+    from corridor.llm import complete_many
+
+    class Broken:
+        max_workers = 1
+
+        def complete(self, *, system, user, schema):
+            raise RuntimeError("503 upstream")
+
+    [completion] = complete_many(Broken(), system="s", schema={}, users=["p"])
+
+    assert completion.failed is True
+    assert "503 upstream" in completion.error
+    assert completion.value == {}

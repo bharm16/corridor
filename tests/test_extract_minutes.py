@@ -198,7 +198,7 @@ def test_complete_many_preserves_input_order():
 
     users = [f"page {i}" for i in range(20)]
     results = complete_many(Echo(), system="s", schema={}, users=users, max_workers=4)
-    assert [r["echo"] for r in results] == users
+    assert [r.value["echo"] for r in results] == users
 
 
 def test_one_failing_call_does_not_kill_the_batch():
@@ -217,8 +217,9 @@ def test_one_failing_call_does_not_kill_the_batch():
         Flaky(), system="s", schema={}, users=[f"page {i}" for i in range(6)],
         max_workers=4,
     )
-    assert "_error" in results[3]
-    assert sum(1 for r in results if "_error" in r) == 1
+    assert results[3].failed
+    assert "429 forever" in results[3].error
+    assert sum(1 for r in results if r.failed) == 1
 
 
 def test_batched_extraction_pools_pages_across_documents(session, document):

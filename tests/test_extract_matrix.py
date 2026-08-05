@@ -86,7 +86,12 @@ class StubClient:
             {"system": system, "user": user, "schema": schema,
              "images": [str(i) for i in images], "logprobs": logprobs}
         )
-        return self.responses.pop(0) if self.responses else structure()
+        response = self.responses.pop(0) if self.responses else structure()
+        # A failure is raised, not returned. It used to be a reserved key
+        # in the payload, which any stub — or any model — could fabricate.
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def structure(*, matrix_table=0, header_row=0, columns=None, owner=None,
@@ -746,7 +751,7 @@ def test_every_page_failing_is_not_reported_as_an_unhandled_layout(
 
     with pytest.raises(RuntimeError) as raised:
         extract_document(
-            session, doc, client=StubClient([{"_error": "503 upstream"}])
+            session, doc, client=StubClient([RuntimeError("503 upstream")])
         )
 
     assert not isinstance(raised.value, NoMatrixFound)

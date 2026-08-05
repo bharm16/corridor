@@ -306,10 +306,11 @@ def extract_document(
         # Pages in order, so a header printed on page 1 can carry to the
         # continuation pages that follow it.
         carried: tuple[ColumnMapping, int] | None = None
-        for page, result in zip(structure_pages, results):
-            if "_error" in result:
+        for page, completion in zip(structure_pages, results):
+            if completion.failed:
                 errors += 1
                 continue
+            result = completion.value
             if result.get("is_utility_matrix"):
                 recognized += 1
             made, carried = _structure_candidates(
@@ -329,14 +330,15 @@ def extract_document(
             # measured signal about how sure the model was of each digit.
             logprobs=True,
         )
-        for page, result in zip(transcribe_pages, results):
-            if "_error" in result:
+        for page, completion in zip(transcribe_pages, results):
+            if completion.failed:
                 errors += 1
                 continue
+            result = completion.value
             if result.get("is_utility_matrix"):
                 recognized += 1
             inherited = _page_attributes(result)
-            unsure = _low_confidence_tokens(result)
+            unsure = _low_confidence_tokens(completion)
             for item in result.get("rows") or []:
                 candidate = _transcribed_candidate(
                     document, page, item, model, inherited, unsure
@@ -456,9 +458,10 @@ def _resolve_headers(pages, grids, results):
     the alternative is an ordering nobody can predict from the document.
     """
     votes: dict[tuple[str, ...], list] = {}
-    for page, result in zip(pages, results):
-        if "_error" in result:
+    for page, completion in zip(pages, results):
+        if completion.failed:
             continue
+        result = completion.value
         grid_list = grids.get(page.page_no) or []
         table_index = result.get("matrix_table")
         if table_index is None or not (0 <= table_index < len(grid_list)):
@@ -665,15 +668,16 @@ def _page_attributes(result: dict) -> dict[str, str]:
     }
 
 
-def _low_confidence_tokens(result: dict) -> list[str]:
+def _low_confidence_tokens(completion) -> list[str]:
     """Numeric tokens the model was not sure of, from its own logprobs.
 
     Numeric only: prose wanders harmlessly and a low-probability word says
     little, but a hesitant digit is exactly the failure the gate measured
-    and the one nothing else catches. `_meta` is the client's reserved key
-    and never reaches a Candidate.
+    and the one nothing else catches. Metadata about the call arrives on
+    `Completion.meta`, beside the schema's answer rather than inside it,
+    so it cannot reach a Candidate.
     """
-    entries = ((result.get("_meta") or {}).get("logprobs")) or []
+    entries = (completion.meta.get("logprobs")) or []
     unsure = []
     for entry in entries:
         token = (entry.get("token") or "").strip()
