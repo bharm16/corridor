@@ -605,7 +605,11 @@ def _column_mapping(grid, result: dict) -> ColumnMapping:
         if not isinstance(index, int) or index < 0:
             continue
         field = column.get("canonical_field")
-        printed = headers[index].strip() if index < len(headers) else ""
+        # Coerced, because PyMuPDF returns None for a cell it read nothing
+        # in and a real document carries one in its header row. #105
+        # replaced `normalize_header`'s coercion here with a bare `.strip()`
+        # and no fixture caught it; the M7 cold run did, mid-extraction.
+        printed = (headers[index] or "").strip() if index < len(headers) else ""
         if field == MARKED_COLUMN_FIELD:
             strategy[index] = printed
             continue

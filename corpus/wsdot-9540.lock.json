@@ -1,0 +1,85 @@
+{
+  "agency": "WSDOT",
+  "name": "SR 167 Completion Stage 1b (WSDOT 9540)",
+  "project": "wsdot-9540",
+  "sources": {
+    "https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-02-05-167-1b-PE-UTL-UtilityListing-Gas.pdf": {
+      "bytes": 65924,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/94/94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27.pdf",
+      "retrieved_at": "2026-08-05T00:10:00.824895+00:00",
+      "role": "spine",
+      "sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+      "title": "Appendix U3 utility listing \u2014 gas"
+    },
+    "https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-OPL.pdf": {
+      "bytes": 61301,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/e1/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b.pdf",
+      "retrieved_at": "2026-08-05T00:10:01.995803+00:00",
+      "role": "spine",
+      "sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "title": "Appendix U3 utility listing \u2014 Olympic Pipeline"
+    },
+    "https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Power.pdf": {
+      "bytes": 87541,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/1b/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228.pdf",
+      "retrieved_at": "2026-08-05T00:10:03.099142+00:00",
+      "role": "spine",
+      "sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "title": "Appendix U3 utility listing \u2014 power"
+    },
+    "https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Sewer.pdf": {
+      "bytes": 68286,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/36/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361.pdf",
+      "retrieved_at": "2026-08-05T00:10:04.194771+00:00",
+      "role": "spine",
+      "sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "title": "Appendix U3 utility listing \u2014 sewer"
+    },
+    "https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Water.pdf": {
+      "bytes": 67659,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/3c/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c.pdf",
+      "retrieved_at": "2026-08-05T00:10:05.299806+00:00",
+      "role": "spine",
+      "sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "title": "Appendix U3 utility listing \u2014 water"
+    },
+    "https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-04-09-167-1b-PE-UTL-UtilityListing-Comm.pdf": {
+      "bytes": 76621,
+      "content_type": "application/pdf",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/d7/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db.pdf",
+      "retrieved_at": "2026-08-05T00:10:06.402436+00:00",
+      "role": "spine",
+      "sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "title": "Appendix U3 utility listing \u2014 communications"
+    }
+  }
+}
