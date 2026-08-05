@@ -79,19 +79,22 @@ cat <<DONE
 The extractor's answers are committed. Human eyes may now touch the
 document — the run is already over, so reading it contaminates nothing.
 
-Next, in order (#81):
+Next, in order (#81 as amended 2026-08-04 — machine-authored gold, a
+semi-independent ceiling; the hand path below remains available and
+stricter):
 
-  1. Hand-label the gold set FROM THE DOCUMENT, without querying the
-     extracted rows: gold/${SLUG}.csv with columns
-         source_ref,page,critical
-     'critical' by ADR-0009's rule: 'yes' when the document marks the row
-     relocated / removed / abandoned; 'no' for retain-and-protect or a
-     vertical adjustment; leave the cell BLANK when the document has not
-     settled (a row marked on both sides of the line, or not at all).
-     Blank reads as not-critical, which keeps the row out of the >=95%
-     denominator — ADR-0009's "left unlabelled", as this format spells it.
+  1. Author the gold set from the independent grid reading:
+         uv run python -m corridor.gold ${SLUG} --author
+     It writes gold/${SLUG}.machine.csv and a stamped sidecar carrying
+     the ceiling caveat and the page-image checklist. It refuses any
+     layout that does not print the WSDOT anchor.
 
-  2. Score:  make eval ARGS="${SLUG} gold/${SLUG}.csv --prompt-version=${PINNED}"
+     (Hand alternative, unamended strength: gold/${SLUG}.csv with columns
+     source_ref,page,critical — 'critical' by ADR-0009's rule; blank when
+     the document has not settled. Blank reads as not-critical, out of
+     the >=95% denominator.)
+
+  2. Score:  uv run python -m corridor.eval ${SLUG} gold/${SLUG}.machine.csv --prompt-version=${PINNED}
 
   3. Record the result on #88 and against #22, whatever it says.
      Per #81: on a fail the score stands, and there is no retake.
