@@ -177,6 +177,33 @@ def test_failed_or_foreign_runs_cannot_be_declared_active(session, project):
         extraction_runs.declare_active_run(session, first.id, completed.id)
 
 
+def test_operator_entrypoint_declares_the_exact_active_run(
+    session, project, capsys
+):
+    doc = add_matrix(session, project, "operator.pdf", "f" * 64)
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+    )
+    session.flush()
+
+    class ScopedSession:
+        def __enter__(self):
+            return session
+
+        def __exit__(self, *exc):
+            return False
+
+    assert extraction_runs.main(
+        [str(doc.id), str(run.id)], session_factory=ScopedSession
+    ) == 0
+    assert _run_id(extraction_runs.active_run_for_document(session, doc.id)) == run.id
+    assert f"Active Run {run.id}" in capsys.readouterr().out
+
+
 def test_null_or_ambiguous_lineage_is_not_active(session, project):
     doc = add_matrix(session, project, "a.pdf", "a" * 64)
     session.add(

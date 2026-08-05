@@ -8,6 +8,7 @@ reconstructing lineage from candidate existence, timestamps, or row order.
 from __future__ import annotations
 
 from collections.abc import Sequence
+import sys
 
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import Session
@@ -144,3 +145,38 @@ def active_run_for_document(
         )
         .where(ActiveExtractionRun.document_id == document_id)
     )
+
+
+def main(argv: list[str], *, session_factory=None) -> int:
+    """Declare an Active Run from explicit document and run identifiers."""
+    if len(argv) != 2:
+        print("usage: active-run <document-id> <extraction-run-id>", file=sys.stderr)
+        return 2
+    try:
+        document_id, extraction_run_id = (int(value) for value in argv)
+    except ValueError:
+        print("document-id and extraction-run-id must be integers", file=sys.stderr)
+        return 2
+    if document_id <= 0 or extraction_run_id <= 0:
+        print("document-id and extraction-run-id must be positive", file=sys.stderr)
+        return 2
+
+    if session_factory is None:
+        from corridor.db import Session as session_factory
+
+    with session_factory() as session:
+        try:
+            run = declare_active_run(session, document_id, extraction_run_id)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        session.commit()
+    print(
+        f"document {document_id}: Active Run {run.id} "
+        f"({run.prompt_version}, {run.outcome})"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

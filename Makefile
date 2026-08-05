@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract milestones exceptions gold minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run milestones exceptions gold minutes report
 
 # One command from a clean clone.
 boot:
@@ -53,6 +53,11 @@ agreements:
 #   make extract ARGS="nhhip-3c2 --redo"
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
+
+# Explicitly select reviewer work; extraction never makes "newest" active:
+#   make active-run ARGS="<document-id> <extraction-run-id>"
+active-run:
+	uv run python -m corridor.extraction_runs $(ARGS)
 
 # Import a milestone CSV: make milestones ARGS="sh99-grand-parkway corpus/sh99-milestones.csv RELO-CONSTR"
 milestones:
