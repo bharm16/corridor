@@ -136,7 +136,37 @@ def column_mapping(headings) -> dict[int, str]:
     return mapping
 
 
-def conflict_sheet(sheets: list[Sheet]) -> Sheet:
+@dataclass(frozen=True)
+class ConflictSheet:
+    """The chosen sheet, with the reading that chose it.
+
+    `header_index` and `mapping` are what the selection was made on, so
+    they come back with it. The caller used to recompute both, and had to
+    use `header_row`'s `int | None` unguarded — correct only because the
+    selection had already proved it non-None, which is an invariant the
+    return type could not state.
+
+    `page_no` is the sheet's position in the workbook, which is the page
+    number `ingest` gave the same sheet. Every spreadsheet citation rests
+    on the two agreeing, so it is settled once, here.
+    """
+
+    sheet: Sheet
+    header_index: int
+    mapping: dict[int, str]
+    page_no: int
+
+    @property
+    def headings(self) -> list[str]:
+        return self.sheet.rows[self.header_index]
+
+    @property
+    def rows(self) -> list[list[str]]:
+        """The conflict rows: everything under the header."""
+        return self.sheet.rows[self.header_index + 1 :]
+
+
+def conflict_sheet(sheets: list[Sheet]) -> ConflictSheet:
     """The one sheet that is a utility conflict matrix.
 
     Identified by the conflict id, which is ADR-0009's distinction
@@ -151,16 +181,16 @@ def conflict_sheet(sheets: list[Sheet]) -> Sheet:
     printed view does not outrank the structured original it was made
     from, and being narrower is what makes it the view.
     """
-    best: tuple[int, Sheet] | None = None
-    for sheet in sheets:
+    best: ConflictSheet | None = None
+    for page_no, sheet in enumerate(sheets, start=1):
         index = header_row(sheet)
         if index is None:
             continue
         mapping = column_mapping(sheet.rows[index])
         if not all(field in mapping.values() for field in REQUIRED):
             continue
-        if best is None or len(mapping) > best[0]:
-            best = (len(mapping), sheet)
+        if best is None or len(mapping) > len(best.mapping):
+            best = ConflictSheet(sheet, index, mapping, page_no)
 
     if best is None:
         raise NoConflictSheet(
@@ -169,7 +199,7 @@ def conflict_sheet(sheets: list[Sheet]) -> Sheet:
             "layout variant is unhandled — do not treat this as a workbook "
             "with no conflicts."
         )
-    return best[1]
+    return best
 
 
 def row_text(row) -> str:

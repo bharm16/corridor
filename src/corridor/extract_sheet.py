@@ -34,9 +34,7 @@ from corridor.geometry import dedupe_hint
 from corridor.models import Candidate, DocPage, Document
 from corridor.sheets import (
     NoConflictSheet,
-    column_mapping,
     conflict_sheet,
-    header_row,
     read_workbook,
     row_text,
 )
@@ -71,11 +69,8 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
             "read. Re-ingest before treating this as an empty workbook."
         )
 
-    sheets = read_workbook(path)
-    sheet = conflict_sheet(sheets)
-    page_no = next(
-        index for index, other in enumerate(sheets, start=1) if other.name == sheet.name
-    )
+    chosen = conflict_sheet(read_workbook(path))
+    page_no = chosen.page_no
     page = session.scalars(
         select(DocPage).where(
             DocPage.document_id == document.id, DocPage.page_no == page_no
@@ -87,9 +82,8 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
     # is not, the citation is checked against what it actually is.
     threshold = threshold_for(page.text_source if page else None)
 
-    index = header_row(sheet)
-    headings = sheet.rows[index]
-    mapping = column_mapping(headings)
+    headings = chosen.headings
+    mapping = chosen.mapping
     unmapped = [
         heading.strip()
         for position, heading in enumerate(headings)
@@ -97,7 +91,7 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
     ]
 
     candidates = []
-    for raw in sheet.rows[index + 1 :]:
+    for raw in chosen.rows:
         fields = {
             field: raw[position].strip()
             for position, field in sorted(mapping.items())
