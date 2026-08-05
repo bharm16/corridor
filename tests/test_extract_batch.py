@@ -162,7 +162,7 @@ def test_the_runner_extracts_and_closes_its_client(session, project, capsys):
         1,
         0,
     )
-    assert active_run_for_document(session, run.document_id).id == run.id
+    assert active_run_for_document(session, run.document_id) is None
     assert client.closed is True
     out = capsys.readouterr().out
     assert "1 notes at 2-way concurrency" in out

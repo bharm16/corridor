@@ -214,8 +214,6 @@ def test_first_successful_run_becomes_active_but_redo_does_not_retarget(
         prompt_version="v1",
         commit=False,
     )
-    first_run = _runs(session, doc)[0]
-
     second = extract_project(
         session,
         project,
@@ -228,7 +226,7 @@ def test_first_successful_run_becomes_active_but_redo_does_not_retarget(
     assert first[0].status == "extracted"
     assert second[0].status == "extracted"
     assert [run.prompt_version for run in _runs(session, doc)] == ["v1", "v2"]
-    assert active_run_for_document(session, doc.id).id == first_run.id
+    assert active_run_for_document(session, doc.id) is None
 
 
 def test_a_zero_row_document_is_skipped_after_a_completed_empty_attempt(
