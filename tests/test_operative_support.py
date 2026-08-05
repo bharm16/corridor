@@ -389,5 +389,83 @@ def test_superseded_support_lapses_readiness_and_names_each_affected_role(
     assert link.satisfies_requirement is True
 
 
+def test_superseded_publication_support_preserves_its_exact_field_scope(
+    session, project
+):
+    predecessor = _document(
+        session,
+        project,
+        suffix="matrix-field-old",
+        text="FOC1-1 old station 1149+00",
+    )
+    successor = _document(
+        session,
+        project,
+        suffix="matrix-field-current",
+        text="FOC1-1 current record",
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(
+            session,
+            project,
+            predecessor,
+            quote="FOC1-1 old station 1149+00",
+        ),
+        principal=TEST_PRINCIPAL,
+    )
+    [historical] = _evidence_links(session, dependency.id)
+    current = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=successor.id,
+        page_no=1,
+        quote="FOC1-1 current record",
+        verified=True,
+    )
+    session.add(current)
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        current.id,
+        principal=TEST_PRINCIPAL,
+    )
+    designate_publication_support(
+        session,
+        dependency.id,
+        historical.id,
+        field_name="station_from",
+        principal=TEST_PRINCIPAL,
+    )
+    predecessor.registry_id = "operative-field-old"
+    successor.registry_id = "operative-field-current"
+    session.flush()
+    replacement_date = date(2026, 8, 4)
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=predecessor.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=replacement_date,
+                source_registry_id=predecessor.registry_id,
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.publication.evidence_link_id == current.id
+    assert resolved.superseded_roles == {"publication"}
+    assert len(resolved.superseded_scopes) == 1
+    [scope] = resolved.superseded_scopes
+    assert scope.role == "publication"
+    assert scope.field_name == "station_from"
+    assert scope.evidence.evidence_link_id == historical.id
+    assert scope.evidence.superseded_on == replacement_date
+
+
 def test_resolver_is_batched_and_empty_input_is_empty(session):
     assert resolve_operative_support(session, []) == {}

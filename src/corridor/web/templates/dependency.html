@@ -62,12 +62,11 @@
   <h2>Exceptions</h2>
   {% if view.exceptions %}
     <table>
-      <thead><tr><th>Rule</th><th>Days</th><th>Why</th></tr></thead>
+      <thead><tr><th>Rule</th><th>Why</th></tr></thead>
       <tbody>
-        {% for e in view.exceptions|sort(attribute='rule') %}
+        {% for e in view.exceptions %}
           <tr>
-            <td><span class="pill contra">{{ e.rule }}</span></td>
-            <td class="muted">{{ e.quantity_days ~ 'd' if e.quantity_days is not none else '—' }}</td>
+            <td><span class="pill contra">{{ e.label }}</span></td>
             <td>{{ e.detail }}</td>
           </tr>
         {% endfor %}
