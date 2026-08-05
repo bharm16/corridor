@@ -133,7 +133,7 @@ def test_linking_copies_the_need_date_onto_the_dependency(session, project, tmp_
         if m.code == "UTIL-CLEAR"
     ]
     dep = make_dep(session, project, "DEP-1")
-    link_dependency(session, dep, util)
+    link_dependency(session, dep, util, actor="tester")
 
     assert dep.milestone_id == util.id
     assert dep.need_date == date(2026, 11, 1)
@@ -150,7 +150,7 @@ def test_linking_across_projects_is_refused(session, project, tmp_path):
     session.flush()
     stray = make_dep(session, other, "DEP-x")
     with pytest.raises(ValueError):
-        link_dependency(session, stray, util)
+        link_dependency(session, stray, util, actor="tester")
 
 
 def test_bulk_link_only_touches_unlinked_records(session, project, tmp_path):
@@ -162,9 +162,9 @@ def test_bulk_link_only_touches_unlinked_records(session, project, tmp_path):
 
     a = make_dep(session, project, "DEP-a")
     b = make_dep(session, project, "DEP-b")
-    link_dependency(session, b, row)
+    link_dependency(session, b, row, actor="tester")
 
-    count = link_all(session, project_id=project.id, milestone_code="UTIL-CLEAR")
+    count = link_all(session, project_id=project.id, milestone_code="UTIL-CLEAR", actor="tester")
     assert count == 1
     assert a.milestone_id == util.id
     assert b.milestone_id == row.id
@@ -180,6 +180,7 @@ def test_bulk_link_can_be_scoped_to_a_dependency_type(session, project, tmp_path
         project_id=project.id,
         milestone_code="UTIL-CLEAR",
         dep_type="utility_relocation",
+        actor="tester",
     )
     assert utility.milestone_id is not None
     assert permit.milestone_id is None
@@ -187,4 +188,4 @@ def test_bulk_link_can_be_scoped_to_a_dependency_type(session, project, tmp_path
 
 def test_bulk_link_to_an_unknown_milestone_raises(session, project):
     with pytest.raises(LookupError):
-        link_all(session, project_id=project.id, milestone_code="NOPE")
+        link_all(session, project_id=project.id, milestone_code="NOPE", actor="tester")

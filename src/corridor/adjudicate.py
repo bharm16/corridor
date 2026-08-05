@@ -15,11 +15,11 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor import audit
 from corridor.models import (
     ANSWER_SEPARATOR,
     RESOLUTION_STRATEGIES,
     Assertion,
-    AuditLog,
     Candidate,
     Dependency,
     EvidenceLink,
@@ -277,20 +277,18 @@ def accept_candidate(
     candidate.adjudicated_at = datetime.now(timezone.utc)
     candidate.citations_verified = all(c.get("verified") for c in citations)
 
-    session.add(
-        AuditLog(
-            actor=actor,
-            action="accept_candidate",
-            entity_type="dependency",
-            entity_id=dependency.id,
-            before_json=None,
-            after_json={
-                "candidate_id": candidate.id,
-                "ref_code": dependency.ref_code,
-                "source_ref": dependency.source_ref,
-                "fields": fields,
-            },
-        )
+    audit.record(
+        session,
+        actor=actor,
+        action="accept_candidate",
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={
+            "candidate_id": candidate.id,
+            "ref_code": dependency.ref_code,
+            "source_ref": dependency.source_ref,
+            "fields": fields,
+        },
     )
     session.flush()
     return dependency
@@ -349,15 +347,14 @@ def set_resolution_strategy(
 
     before = dependency.resolution_strategy
     dependency.resolution_strategy = strategy
-    session.add(
-        AuditLog(
-            actor=actor,
-            action="set_resolution_strategy",
-            entity_type="dependency",
-            entity_id=dependency.id,
-            before_json={"resolution_strategy": before},
-            after_json={"resolution_strategy": strategy},
-        )
+    audit.record(
+        session,
+        actor=actor,
+        action="set_resolution_strategy",
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        before={"resolution_strategy": before},
+        after={"resolution_strategy": strategy},
     )
     session.flush()
     return dependency
@@ -439,19 +436,17 @@ def merge_candidate(
     candidate.merged_into = dependency.id
     candidate.adjudicated_at = datetime.now(timezone.utc)
 
-    session.add(
-        AuditLog(
-            actor=actor,
-            action="merge_candidate",
-            entity_type="dependency",
-            entity_id=dependency.id,
-            before_json=None,
-            after_json={
-                "candidate_id": candidate.id,
-                "merged_into": dependency.ref_code,
-                "fields": fields,
-            },
-        )
+    audit.record(
+        session,
+        actor=actor,
+        action="merge_candidate",
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={
+            "candidate_id": candidate.id,
+            "merged_into": dependency.ref_code,
+            "fields": fields,
+        },
     )
     session.flush()
     return dependency

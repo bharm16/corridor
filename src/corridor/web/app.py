@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from corridor import audit
 from corridor.adjudicate import (
     UnadjudicableKind,
     accept_candidate,
@@ -38,7 +39,6 @@ from corridor.ledger import (
 from corridor.models import (
     RESOLUTION_STRATEGIES,
     DEP_STATUSES,
-    AuditLog,
     Candidate,
     Dependency,
     DocPage,
@@ -233,15 +233,14 @@ async def edit_accept(
     }
 
     if edited != original:
-        session.add(
-            AuditLog(
-                actor="reviewer",
-                action="edit_candidate",
-                entity_type="candidate",
-                entity_id=candidate.id,
-                before_json={"fields": original},
-                after_json={"fields": edited},
-            )
+        audit.record(
+            session,
+            actor="reviewer",
+            action="edit_candidate",
+            entity_type=audit.CANDIDATE,
+            entity_id=candidate.id,
+            before={"fields": original},
+            after={"fields": edited},
         )
         payload["fields"] = edited
         candidate.payload_json = payload
@@ -283,15 +282,13 @@ def reject(
     candidate = _pending(session, candidate_id)
     candidate.state = "rejected"
     candidate.adjudicated_at = datetime.now(timezone.utc)
-    session.add(
-        AuditLog(
-            actor="reviewer",
-            action="reject_candidate",
-            entity_type="candidate",
-            entity_id=candidate.id,
-            before_json=None,
-            after_json={"reason": reason},
-        )
+    audit.record(
+        session,
+        actor="reviewer",
+        action="reject_candidate",
+        entity_type=audit.CANDIDATE,
+        entity_id=candidate.id,
+        after={"reason": reason},
     )
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)

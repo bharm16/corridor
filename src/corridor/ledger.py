@@ -16,6 +16,7 @@ from datetime import date
 from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
+from corridor import audit
 from corridor.exceptions import Evaluation, evaluate_project, exceptions_for
 from corridor.models import (
     CRITICAL_STRATEGIES,
@@ -329,14 +330,12 @@ def load_dependency(session: Session, dependency_id: int) -> DependencyView:
             .order_by(DependencyEvent.event_date, DependencyEvent.id)
         ).all(),
         exceptions=exceptions_for(session, dependency_id),
-        audit=session.scalars(
-            select(AuditLog)
-            .where(
-                AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == dependency_id,
-            )
-            .order_by(AuditLog.ts)
-        ).all(),
+        # Including the Candidate's own entries. The reviewer edits before
+        # the Dependency exists, so the record of what the extractor
+        # originally said is written against the Candidate — and this view
+        # queried only `dependency`, which is why the edit trail the route
+        # promises survives has never been visible on the record.
+        audit=audit.trail_for_dependency(session, dependency_id),
     )
 
 
@@ -373,18 +372,17 @@ def mark_satisfies(
 
     was = link.satisfies_requirement
     link.satisfies_requirement = not was
-    session.add(
-        AuditLog(
-            actor=actor,
-            action="mark_satisfies_requirement",
-            entity_type="dependency",
-            entity_id=dependency_id,
-            before_json={"evidence_link_id": link_id, "satisfies": was},
-            after_json={
-                "evidence_link_id": link_id,
-                "satisfies": link.satisfies_requirement,
-            },
-        )
+    audit.record(
+        session,
+        actor=actor,
+        action="mark_satisfies_requirement",
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency_id,
+        before={"evidence_link_id": link_id, "satisfies": was},
+        after={
+            "evidence_link_id": link_id,
+            "satisfies": link.satisfies_requirement,
+        },
     )
     session.flush()
     return link.satisfies_requirement

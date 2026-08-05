@@ -360,7 +360,7 @@ def test_orphan_clears_once_linked(session, project, document):
     session.flush()
     dep = make_dep(session, project)
     add_evidence(session, dep, document)
-    link_dependency(session, dep, milestone)
+    link_dependency(session, dep, milestone, actor="tester")
     assert "ORPHAN" not in codes(session, dep)
 
 
