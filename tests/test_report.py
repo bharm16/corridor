@@ -9,6 +9,7 @@ from corridor.adjudicate import accept_candidate
 from corridor.changes import record_run, snapshot
 from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project, format_exception_label
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.export import to_xlsx
 from corridor.ledger import browse
 from corridor.models import (
@@ -75,6 +76,7 @@ def project_with_two_dependencies(session):
     )
     session.flush()
 
+    candidates = []
     for ref, org in [("FOC1-1", "AT&T Texas (SWBT)"), ("E1", "CenterPoint Energy")]:
         candidate = Candidate(
             project_id=project.id,
@@ -106,8 +108,21 @@ def project_with_two_dependencies(session):
             prompt_version="txdot_ucm_v1",
             citations_verified=True,
         )
-        session.add(candidate)
-        session.flush()
+        candidates.append(candidate)
+
+    session.add_all(candidates)
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version="txdot_ucm_v1",
+        candidate_count=len(candidates),
+        page_errors=0,
+        candidates=tuple(candidates),
+    )
+    session.flush()
+    declare_active_run(session, doc.id, run.id)
+    session.flush()
+    for candidate in candidates:
         accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
 
     return project

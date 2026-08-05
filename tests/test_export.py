@@ -7,6 +7,7 @@ from sqlalchemy import select
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
 from corridor.exceptions import Thresholds, evaluate_project, format_exception_label
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.export import COLUMNS, to_pdf, to_xlsx
 from corridor.models import (
     Candidate,
@@ -89,6 +90,17 @@ def project(session):
         citations_verified=True,
     )
     session.add(candidate)
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=candidate.prompt_version,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model=candidate.model,
+    )
+    session.flush()
+    declare_active_run(session, doc.id, run.id)
     session.flush()
     accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
     return project

@@ -46,9 +46,17 @@
       "local_path": "corpus/files/b1/b1c03cefd881309146b9f056707c2558305c7d1e557abdaa3b3f5da7f98df5a1.pdf",
       "member": "nhhip-seg3c2-utilities-inventory-10-24-2025.pdf",
       "member_crc32": 2778226777,
+      "registry_id": "nhhip-ucm-2025-10-24",
       "retrieved_at": "2026-08-03T04:16:38.658159+00:00",
       "role": "spine",
       "sha256": "b1c03cefd881309146b9f056707c2558305c7d1e557abdaa3b3f5da7f98df5a1",
+      "supersession": {
+        "predecessor_registry_id": "nhhip-ucm-2025-10-24",
+        "replacement_date": "2025-12-15",
+        "source_page": 4,
+        "source_registry_id": "nhhip-rid-index-2026-05-01",
+        "successor_registry_id": "nhhip-ucm-2025-12-15"
+      },
       "title": "Utility Inventory Matrix (10/24/2025)"
     },
     "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=6b8aefdir8164dmbfd7tc12ekq2db8cz&file_id=f_2214783167875::nhhip-seg3c2-utilities-inventory-12-15-2025.pdf": {
@@ -62,9 +70,17 @@
       "local_path": "corpus/files/96/9629b77a525f26298938a579dc0840998634a8d0e4bed282610bcb1c25b04f01.pdf",
       "member": "nhhip-seg3c2-utilities-inventory-12-15-2025.pdf",
       "member_crc32": 4159190925,
+      "registry_id": "nhhip-ucm-2025-12-15",
       "retrieved_at": "2026-08-03T04:16:44.834702+00:00",
       "role": "spine",
       "sha256": "9629b77a525f26298938a579dc0840998634a8d0e4bed282610bcb1c25b04f01",
+      "supersession": {
+        "predecessor_registry_id": "nhhip-ucm-2025-12-15",
+        "replacement_date": "2026-02-13",
+        "source_page": 4,
+        "source_registry_id": "nhhip-rid-index-2026-05-01",
+        "successor_registry_id": "nhhip-ucm-2026-02-13"
+      },
       "title": "Utility Conflict Matrix (12/15/2025)"
     },
     "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=6b8aefdir8164dmbfd7tc12ekq2db8cz&file_id=f_2214783167875::nhhip-seg3c2-utilities-inventory-2-13-2026.pdf": {
@@ -78,6 +94,7 @@
       "local_path": "corpus/files/cf/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8.pdf",
       "member": "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf",
       "member_crc32": 1352762925,
+      "registry_id": "nhhip-ucm-2026-02-13",
       "retrieved_at": "2026-08-03T04:16:50.883249+00:00",
       "role": "spine",
       "sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
@@ -94,9 +111,17 @@
       "local_path": "corpus/files/56/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8.pdf",
       "member": "nhhip-seg3c2-utilities-inventory-7-22-2025.pdf",
       "member_crc32": 3666981046,
+      "registry_id": "nhhip-ucm-2025-07-22",
       "retrieved_at": "2026-08-03T04:16:32.522521+00:00",
       "role": "spine",
       "sha256": "56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8",
+      "supersession": {
+        "predecessor_registry_id": "nhhip-ucm-2025-07-22",
+        "replacement_date": "2025-10-31",
+        "source_page": 4,
+        "source_registry_id": "nhhip-rid-index-2026-05-01",
+        "successor_registry_id": "nhhip-ucm-2025-10-24"
+      },
       "title": "Utility Conflict Matrix (7/22/2025)"
     },
     "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=6b8aefdir8164dmbfd7tc12ekq2db8cz&file_id=f_2214783167875::nhhip-seg3c2-utilities-inventory.pdf": {
@@ -110,9 +135,17 @@
       "local_path": "corpus/files/32/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c.pdf",
       "member": "nhhip-seg3c2-utilities-inventory.pdf",
       "member_crc32": 1758948867,
+      "registry_id": "nhhip-ucm-2025-06-20",
       "retrieved_at": "2026-08-03T04:16:26.049657+00:00",
       "role": "spine",
       "sha256": "329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c",
+      "supersession": {
+        "predecessor_registry_id": "nhhip-ucm-2025-06-20",
+        "replacement_date": "2025-07-22",
+        "source_page": 4,
+        "source_registry_id": "nhhip-rid-index-2026-05-01",
+        "successor_registry_id": "nhhip-ucm-2025-07-22"
+      },
       "title": "Utility Inventory Matrix (6/20/2025)"
     },
     "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=eyvevaldtmolpmq8y9ndmqvms1ja8c1x&file_id=f_2214767039429::city-of-houston-illumination-maintenance-agreement-6-5-1963.pdf": {
@@ -299,6 +332,7 @@
       "history": [],
       "http_status": 200,
       "local_path": "corpus/files/6e/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733.pdf",
+      "registry_id": "nhhip-rid-index-2026-05-01",
       "retrieved_at": "2026-08-03T04:16:19.393734+00:00",
       "role": "evidence",
       "sha256": "6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733",

@@ -57,6 +57,8 @@ def ingest_document(
     source_url: str | None = None,
     retrieved_at: str | datetime | None = None,
     doc_date: date | None = None,
+    registry_id: str | None = None,
+    expected_sha256: str | None = None,
 ) -> Document:
     # The content-addressed store names files by hash, so `path.name` is a
     # 64-character hex string. Callers pass the document's real name — the
@@ -65,6 +67,22 @@ def ingest_document(
     path = Path(path)
     filename = filename or path.name
     sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    if expected_sha256 is not None and sha256 != expected_sha256:
+        raise ValueError(
+            f"document bytes do not match lockfile sha256: expected "
+            f"{expected_sha256}, got {sha256}"
+        )
+    if registry_id is not None and not registry_id.strip():
+        raise ValueError("registry_id must be non-empty")
+
+    registered = None
+    if registry_id is not None:
+        registered = session.scalar(
+            select(Document).where(
+                Document.project_id == project_id,
+                Document.registry_id == registry_id,
+            )
+        )
 
     existing = session.scalars(
         select(Document).where(
@@ -72,11 +90,23 @@ def ingest_document(
         )
     ).first()
     if existing is not None:
+        if registered is not None and registered.id != existing.id:
+            raise ValueError(
+                f"registry_id {registry_id!r} already names another document"
+            )
+        if registry_id is not None and existing.registry_id not in (
+            None,
+            registry_id,
+        ):
+            raise ValueError(
+                "one registered document cannot carry multiple registry ids"
+            )
         # Re-ingest never re-parses — the bytes are identical by definition.
         # But provenance describes where the file came from, not the file,
         # and a document first ingested without a date would otherwise carry
         # that gap forever. Backfill nulls only; never overwrite.
         for attribute, value in (
+            ("registry_id", registry_id),
             ("source_url", source_url),
             ("retrieved_at", _as_datetime(retrieved_at)),
             ("doc_date", doc_date),
@@ -87,8 +117,14 @@ def ingest_document(
         session.flush()
         return existing
 
+    if registered is not None:
+        raise ValueError(
+            f"registry_id {registry_id!r} already names different document bytes"
+        )
+
     document = Document(
         project_id=project_id,
+        registry_id=registry_id,
         sha256=sha256,
         filename=filename,
         doc_type=doc_type,

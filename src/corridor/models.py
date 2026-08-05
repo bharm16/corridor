@@ -17,6 +17,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -226,10 +227,56 @@ class Project(Base):
 
 class Document(Base):
     __tablename__ = "documents"
-    __table_args__ = (UniqueConstraint("project_id", "sha256"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "sha256"),
+        UniqueConstraint(
+            "project_id", "id", name="uq_documents_project_id_id"
+        ),
+        UniqueConstraint(
+            "project_id", "registry_id", name="uq_documents_project_registry_id"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "superseded_by"],
+            ["documents.project_id", "documents.id"],
+            name="fk_documents_superseded_by_same_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "supersession_source_document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_documents_supersession_source_same_project",
+        ),
+        ForeignKeyConstraint(
+            ["supersession_source_document_id", "supersession_source_page"],
+            ["doc_pages.document_id", "doc_pages.page_no"],
+            name="fk_documents_supersession_source_page",
+            use_alter=True,
+        ),
+        CheckConstraint(
+            "superseded_by is null or superseded_by <> id",
+            name="ck_documents_no_self_supersession",
+        ),
+        CheckConstraint(
+            "(superseded_by is null and superseded_on is null "
+            "and supersession_source_document_id is null "
+            "and supersession_source_page is null) or "
+            "(superseded_by is not null and registry_id is not null "
+            "and superseded_on is not null "
+            "and supersession_source_document_id is not null "
+            "and supersession_source_page is not null "
+            "and supersession_source_page > 0)",
+            name="ck_documents_complete_supersession",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    # A human-curated corpus identifier. Database ids remain the internal
+    # identity, while this stable name lets a manifest declare edges before
+    # ingest has assigned database ids. Once set it is immutable at the
+    # database boundary, because declared supersession provenance names
+    # documents by this id. It is nullable for legacy and ad-hoc documents
+    # that are not participants in declared registry relations.
+    registry_id: Mapped[str | None] = mapped_column(String(128))
     sha256: Mapped[str] = mapped_column(String(64))
     filename: Mapped[str] = mapped_column(Text)
     doc_type: Mapped[str] = mapped_column(_enum(*DOC_TYPES, name="doc_type"))
@@ -253,8 +300,15 @@ class Document(Base):
     # fallback nobody notices".
     extraction_tiers: Mapped[dict | None] = mapped_column(JSONB)
     header_disagreements: Mapped[int | None] = mapped_column(Integer)
-    # Always null in v0; supersession lands in M8.
-    superseded_by: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    # Registry metadata, never inferred from dates, filenames, retrieval
+    # order, or similarity (ADR-0015). A database trigger requires every
+    # successor and source document named here to be registered already, and
+    # the source pointer names the page of that registered index that
+    # declared the authority's replacement date.
+    superseded_by: Mapped[int | None] = mapped_column(BigInteger)
+    superseded_on: Mapped[date | None] = mapped_column(Date)
+    supersession_source_document_id: Mapped[int | None] = mapped_column(BigInteger)
+    supersession_source_page: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -280,9 +334,7 @@ class ExtractionRun(Base):
         server_default="completed",
     )
     candidate_count: Mapped[int] = mapped_column(Integer)
-    page_errors: Mapped[int] = mapped_column(
-        Integer, default=0, server_default="0"
-    )
+    page_errors: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     model: Mapped[str | None] = mapped_column(String(64))
     schema_version: Mapped[str | None] = mapped_column(String(64))
     error_detail: Mapped[str | None] = mapped_column(Text)
@@ -418,9 +470,7 @@ class Dependency(Base):
     # two thousand feet apart on the ground.
     station_from: Mapped[str | None] = mapped_column(String(32))
     station_to: Mapped[str | None] = mapped_column(String(32))
-    external_org_id: Mapped[int | None] = mapped_column(
-        ForeignKey("external_orgs.id")
-    )
+    external_org_id: Mapped[int | None] = mapped_column(ForeignKey("external_orgs.id"))
     milestone_id: Mapped[int | None] = mapped_column(ForeignKey("milestones.id"))
     external_contact: Mapped[str | None] = mapped_column(Text)
     internal_owner: Mapped[str | None] = mapped_column(Text)

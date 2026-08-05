@@ -35,6 +35,8 @@ from corridor.models import (
 from corridor.verify import normalize, unverified_fields
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
+from corridor.project_lock import lock_project
+from corridor.supersession import actionable_candidate
 
 REJECT_REASONS = ("duplicate", "wrong", "irrelevant", "bad-citation")
 _REF_CODE = re.compile(r"DEP-(\d{5})$")
@@ -221,14 +223,70 @@ class CandidateAssertsNothing(Exception):
     """This Candidate carries no claim for a Ledger row to be made of."""
 
 
-def accept_candidate(
-    session: Session, candidate: Candidate, *, principal: HumanPrincipal
-) -> Dependency:
-    principal = require_human_principal(principal)
+class InvalidCandidateScope(Exception):
+    """This Candidate is not actionable in the selected declared scope."""
+
+
+def _require_candidate_action_scope(
+    session: Session,
+    candidate: Candidate,
+    *,
+    historical_document_id: int | None,
+) -> None:
+    """Serialize and re-check scope at the authoritative mutation boundary.
+
+    Null-run Candidates are preserved as history but never actionable. Every
+    mutation must resolve through the declared Active Run, with an exact
+    historical override when its document is superseded.
+    """
+
+    lock_project(session, candidate.project_id)
+    session.refresh(candidate)
     if candidate.state != "pending":
         raise AlreadyAdjudicated(
             f"candidate {candidate.id} is already {candidate.state}"
         )
+
+    document = session.get(
+        Document,
+        candidate.source_document_id,
+        populate_existing=True,
+    )
+    if document is None or document.project_id != candidate.project_id:
+        raise InvalidCandidateProvenance(
+            "candidate source document is outside its project"
+        )
+
+    if candidate.extraction_run_id is None:
+        raise InvalidCandidateScope(
+            "a Candidate without declared run lineage is not actionable"
+        )
+
+    scoped = actionable_candidate(
+        session,
+        candidate.project_id,
+        candidate.id,
+        historical_document_id=historical_document_id,
+    )
+    if scoped is None:
+        raise InvalidCandidateScope(
+            "candidate is outside the declared Active Run and Supersession scope"
+        )
+
+
+def accept_candidate(
+    session: Session,
+    candidate: Candidate,
+    *,
+    principal: HumanPrincipal,
+    historical_document_id: int | None = None,
+) -> Dependency:
+    principal = require_human_principal(principal)
+    _require_candidate_action_scope(
+        session,
+        candidate,
+        historical_document_id=historical_document_id,
+    )
     if candidate.kind != "dependency":
         # `make minutes` writes `kind="event"` Candidates into the same
         # table, and the queue serves them. Accepting one used to build a
@@ -355,12 +413,14 @@ def edit_candidate(
     fields: dict[str, str],
     *,
     principal: HumanPrincipal,
+    historical_document_id: int | None = None,
 ) -> Candidate:
     principal = require_human_principal(principal)
-    if candidate.state != "pending":
-        raise AlreadyAdjudicated(
-            f"candidate {candidate.id} is already {candidate.state}"
-        )
+    _require_candidate_action_scope(
+        session,
+        candidate,
+        historical_document_id=historical_document_id,
+    )
 
     payload = dict(candidate.payload_json or {})
     original = dict(payload.get("fields") or {})
@@ -387,16 +447,18 @@ def reject_candidate(
     reason: str,
     *,
     principal: HumanPrincipal,
+    historical_document_id: int | None = None,
 ) -> Candidate:
     principal = require_human_principal(principal)
     if reason not in REJECT_REASONS:
         raise InvalidRejectReason(
             f"{reason!r} is not a reject reason; expected one of {REJECT_REASONS}"
         )
-    if candidate.state != "pending":
-        raise AlreadyAdjudicated(
-            f"candidate {candidate.id} is already {candidate.state}"
-        )
+    _require_candidate_action_scope(
+        session,
+        candidate,
+        historical_document_id=historical_document_id,
+    )
 
     candidate.state = "rejected"
     candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -565,11 +627,7 @@ def _next_ref_code(session: Session, project_id: int) -> str:
     distinct Comcast conflicts both labelled FOC14-69 — so keying the
     ledger on them would either collide or silently merge two records.
     """
-    project = session.scalars(
-        select(Project).where(Project.id == project_id).with_for_update()
-    ).first()
-    if project is None:
-        raise LookupError(f"no project {project_id}")
+    lock_project(session, project_id)
 
     used = [
         int(match.group(1))
@@ -603,6 +661,7 @@ def merge_candidate(
     dependency: Dependency,
     *,
     principal: HumanPrincipal,
+    historical_document_id: int | None = None,
 ) -> Dependency:
     """Fold a candidate into an existing Dependency.
 
@@ -614,10 +673,11 @@ def merge_candidate(
     exists to prevent.
     """
     principal = require_human_principal(principal)
-    if candidate.state != "pending":
-        raise AlreadyAdjudicated(
-            f"candidate {candidate.id} is already {candidate.state}"
-        )
+    _require_candidate_action_scope(
+        session,
+        candidate,
+        historical_document_id=historical_document_id,
+    )
     _, fields, citations = _validate_candidate_provenance(
         session, candidate, dependency=dependency
     )

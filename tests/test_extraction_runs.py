@@ -1,11 +1,17 @@
 """Extraction run lineage and Active Run declaration contracts."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
-from corridor.models import Candidate, Document, ExtractionRun, Project
+from corridor.models import (
+    ActiveExtractionRun,
+    Candidate,
+    Document,
+    ExtractionRun,
+    Project,
+)
 
 extraction_runs = __import__("corridor.extraction_runs", fromlist=["*"])
 
@@ -112,6 +118,38 @@ def test_newer_runs_do_not_imply_active_run(session, project):
     session.flush()
 
     assert _run_id(extraction_runs.active_run_for_document(session, doc.id)) == active.id
+
+
+def test_active_run_declaration_refreshes_a_prewarmed_identity_map(session, project):
+    doc = add_matrix(session, project, "prewarmed.pdf", "b" * 64)
+    first = record_extraction_run(
+        session,
+        doc,
+        prompt_version=f"{PROMPT_VERSION}.first",
+        candidate_count=0,
+        page_errors=0,
+    )
+    second = record_extraction_run(
+        session,
+        doc,
+        prompt_version=f"{PROMPT_VERSION}.second",
+        candidate_count=0,
+        page_errors=0,
+    )
+    extraction_runs.declare_active_run(session, doc.id, first.id)
+    stale = session.get(ActiveExtractionRun, doc.id)
+
+    session.execute(
+        update(ActiveExtractionRun)
+        .where(ActiveExtractionRun.document_id == doc.id)
+        .values(extraction_run_id=second.id)
+        .execution_options(synchronize_session=False)
+    )
+    assert stale.extraction_run_id == first.id
+
+    extraction_runs.declare_active_run(session, doc.id, first.id)
+    session.expire(stale)
+    assert stale.extraction_run_id == first.id
 
 
 def test_run_receipt_carries_provenance_and_owns_its_candidates(session, project):

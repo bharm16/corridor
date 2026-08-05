@@ -1,12 +1,21 @@
 from copy import deepcopy
+from datetime import date
+from hashlib import sha256
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from corridor.adjudicate import edit_candidate
+from corridor.adjudicate import (
+    InvalidCandidateScope,
+    accept_candidate,
+    edit_candidate,
+    merge_candidate,
+    reject_candidate,
+)
 from corridor.config import settings
 from corridor.db import Session, engine
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import (
     Assertion,
     AuditLog,
@@ -64,11 +73,17 @@ def project(session):
     return p
 
 
+def _document_sha(project_id: int, value: str) -> str:
+    return sha256(f"{project_id}:{value}".encode()).hexdigest()
+
+
 @pytest.fixture
 def document(session, project):
     d = Document(
         project_id=project.id,
-        sha256="d" * 64,
+        sha256=_document_sha(
+            project.id, "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
+        ),
         filename="nhhip-seg3c2-utilities-inventory-2-13-2026.pdf",
         doc_type="matrix",
         parse_status="parsed",
@@ -99,12 +114,17 @@ def make_candidate(
     whole_row=True,
     unverified_fields=(),
     low_confidence_tokens=(),
+    kind="dependency",
+    prompt_version="txdot_ucm_v1",
+    auto_active_run=True,
+    model=None,
+    extraction_run_id=None,
 ):
     c = Candidate(
         project_id=project.id,
-        kind="dependency",
+        kind=kind,
         payload_json={
-            "kind": "dependency",
+            "kind": kind,
             "fields": {
                 "utility_id": uid,
                 "external_org": "AT&T Texas (SWBT)",
@@ -127,13 +147,30 @@ def make_candidate(
         source_document_id=document.id,
         source_pages=[1],
         confidence=1.0,
-        prompt_version="txdot_ucm_v1",
+        prompt_version=prompt_version,
+        extraction_run_id=extraction_run_id,
         citations_verified=(
             verified and not unverified_fields and not low_confidence_tokens
         ),
+        model=model,
     )
     session.add(c)
     session.flush()
+
+    if extraction_run_id is None and auto_active_run:
+        run = record_extraction_run(
+            session,
+            document,
+            prompt_version=prompt_version,
+            candidate_count=1,
+            page_errors=0,
+            candidates=(c,),
+            model=model,
+        )
+        declare_active_run(session, document.id, run.id)
+    elif extraction_run_id is not None:
+        c.extraction_run_id = extraction_run_id
+
     return c
 
 
@@ -150,7 +187,14 @@ def test_unverified_candidates_sink_but_are_never_hidden(
 ):
     """A quote that could not be found is a signal, not noise."""
     bad = make_candidate(session, project, document, verified=False, uid="BAD-1")
-    good = make_candidate(session, project, document, verified=True, uid="GOOD-1")
+    good = make_candidate(
+        session,
+        project,
+        document,
+        verified=True,
+        uid="GOOD-1",
+        extraction_run_id=bad.extraction_run_id,
+    )
 
     assert next_candidate(session, project.id).id == good.id
 
@@ -182,7 +226,13 @@ def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
         unverified_fields=["station_from"],
         low_confidence_tokens=["1092"],
     )
-    good = make_candidate(session, project, document, uid="GOOD-1")
+    good = make_candidate(
+        session,
+        project,
+        document,
+        uid="GOOD-1",
+        extraction_run_id=bad.extraction_run_id,
+    )
 
     assert pending_counts(session, project.id) == (2, 1)
     assert next_candidate(session, project.id).id == good.id
@@ -242,7 +292,9 @@ def test_merge_suggestions_appear_once_a_dependency_exists(
 
     later = Document(
         project_id=project.id,
-        sha256="e" * 64,
+        sha256=_document_sha(
+            project.id, "nhhip-seg3c2-utilities-inventory-4-30-2026.pdf"
+        ),
         filename="nhhip-seg3c2-utilities-inventory-4-30-2026.pdf",
         doc_type="matrix",
         parse_status="parsed",
@@ -256,6 +308,386 @@ def test_merge_suggestions_appear_once_a_dependency_exists(
     assert "DEP-00001" in r.text
     # The reason is visible, not just the ranking.
     assert "station" in r.text and "text" in r.text
+
+
+def _document_with_registry_id(session, project, *, registry_id, filename, doc_date):
+    document = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, f"{registry_id}:{filename}"),
+        filename=filename,
+        doc_type="matrix",
+        parse_status="parsed",
+        doc_date=doc_date,
+        pages=3,
+        registry_id=str(registry_id),
+    )
+    session.add(document)
+    session.flush()
+    return document
+
+
+def _supersession_module():
+    return __import__("corridor.supersession", fromlist=["*"])
+
+
+def _seed_supersession_chain(
+    session,
+    project,
+    *,
+    predecessor_registry_id="RID-100",
+    successor_registry_id="RID-101",
+    include_successor_candidate=True,
+    successor_failed=False,
+    register=True,
+):
+    supersession = _supersession_module()
+    Declaration = supersession.SupersessionDeclaration
+
+    source_pointer = _document_with_registry_id(
+        session,
+        project,
+        registry_id="RID-INDEX",
+        filename="rid-index.xlsx",
+        doc_date=date(2010, 1, 1),
+    )
+    session.add_all(
+        [
+            DocPage(document_id=source_pointer.id, page_no=1, text="RID index page 1"),
+            DocPage(document_id=source_pointer.id, page_no=4, text="RID index page 4"),
+        ]
+    )
+
+    predecessor = _document_with_registry_id(
+        session,
+        project,
+        registry_id=predecessor_registry_id,
+        filename="rev-01.pdf",
+        doc_date=date(2025, 10, 1),
+    )
+    successor = _document_with_registry_id(
+        session,
+        project,
+        registry_id=successor_registry_id,
+        filename="rev-02.pdf",
+        doc_date=date(2026, 1, 1),
+    )
+    session.add_all(
+        [
+            DocPage(
+                document_id=predecessor.id,
+                page_no=1,
+                text="PRE-ONLY AT&T Texas (SWBT)",
+            ),
+            DocPage(
+                document_id=successor.id,
+                page_no=1,
+                text="SUCC-ONLY AT&T Texas (SWBT)",
+            ),
+        ]
+    )
+    session.flush()
+
+    predecessor_candidate = make_candidate(
+        session,
+        project,
+        predecessor,
+        uid="PRE-ONLY",
+        model="gpt-4o-mini",
+        auto_active_run=False,
+    )
+    predecessor_run = record_extraction_run(
+        session,
+        predecessor,
+        prompt_version="txdot_ucm_v1",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(predecessor_candidate,),
+        model="gpt-4o-mini",
+    )
+    declare_active_run(session, predecessor.id, predecessor_run.id)
+
+    successor_candidate = None
+    if successor_failed:
+        assert not include_successor_candidate
+        successor_run = record_extraction_run(
+            session,
+            successor,
+            prompt_version="txdot_ucm_v1",
+            candidate_count=0,
+            page_errors=1,
+            outcome="failed",
+            model="gpt-4o-mini",
+            error_detail="page extraction failed",
+        )
+    elif include_successor_candidate:
+        successor_candidate = make_candidate(
+            session,
+            project,
+            successor,
+            uid="SUCC-ONLY",
+            model="gpt-4o-mini",
+            auto_active_run=False,
+        )
+        successor_run = record_extraction_run(
+            session,
+            successor,
+            prompt_version="txdot_ucm_v1",
+            candidate_count=1,
+            page_errors=0,
+            candidates=(successor_candidate,),
+            model="gpt-4o-mini",
+        )
+    else:
+        successor_run = record_extraction_run(
+            session,
+            successor,
+            prompt_version="txdot_ucm_v1",
+            candidate_count=0,
+            page_errors=0,
+            model="gpt-4o-mini",
+        )
+
+    declaration = Declaration(
+        predecessor_registry_id=predecessor.registry_id,
+        successor_registry_id=successor.registry_id,
+        replacement_date=date(2026, 2, 13),
+        source_registry_id=source_pointer.registry_id,
+        source_page=4,
+    )
+
+    def register_supersession():
+        return supersession.register_supersessions(session, [declaration])
+
+    if register:
+        register_supersession()
+
+    return {
+        "predecessor": predecessor,
+        "successor": successor,
+        "predecessor_candidate": predecessor_candidate,
+        "successor_candidate": successor_candidate
+        if include_successor_candidate
+        else None,
+        "successor_run": successor_run,
+        "register_supersession": register_supersession,
+        "activate_successor": lambda: declare_active_run(
+            session, successor.id, successor_run.id
+        ),
+    }
+
+
+def test_queue_selection_changes_immediately_when_successor_is_registered(
+    client, session, project
+):
+    chain = _seed_supersession_chain(session, project, register=False)
+
+    before = client.get(f"/queue/{project.slug}")
+    assert before.status_code == 200
+    assert "PRE-ONLY" in before.text
+
+    chain["register_supersession"]()
+
+    after = client.get(f"/queue/{project.slug}")
+    assert after.status_code == 200
+    assert "Queue empty" in after.text
+    assert "PRE-ONLY" not in after.text
+
+
+def test_queue_hides_predecessor_until_a_successor_active_run_is_declared(
+    client, session, project
+):
+    _seed_supersession_chain(session, project)
+    r = client.get(f"/queue/{project.slug}")
+    assert r.status_code == 200
+    assert "Queue empty" in r.text
+
+
+def test_queue_stays_empty_when_successor_extraction_failed(client, session, project):
+    _seed_supersession_chain(
+        session,
+        project,
+        include_successor_candidate=False,
+        successor_failed=True,
+    )
+
+    r = client.get(f"/queue/{project.slug}")
+    assert r.status_code == 200
+    assert "Queue empty" in r.text
+    assert "PRE-ONLY" not in r.text
+    assert "Every candidate" not in r.text
+
+
+def test_queue_selects_successor_when_active_run_is_declared(client, session, project):
+    chain = _seed_supersession_chain(session, project)
+    chain["activate_successor"]()
+    r = client.get(f"/queue/{project.slug}")
+    assert r.status_code == 200
+    assert "SUCC-ONLY" in r.text
+    assert "PRE-ONLY" not in r.text
+
+
+def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(
+    client, session, project
+):
+    chain = _seed_supersession_chain(session, project)
+    experimental = make_candidate(
+        session,
+        project,
+        chain["successor"],
+        uid="EXPERIMENTAL",
+        prompt_version="txdot_ucm_experiment",
+        model="gpt-4o-mini",
+        auto_active_run=False,
+    )
+    record_extraction_run(
+        session,
+        chain["successor"],
+        prompt_version="txdot_ucm_experiment",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(experimental,),
+        model="gpt-4o-mini",
+    )
+    chain["activate_successor"]()
+
+    r = client.get(f"/queue/{project.slug}")
+    assert r.status_code == 200
+    assert "SUCC-ONLY" in r.text
+    assert "EXPERIMENTAL" not in r.text
+
+
+def test_queue_prefers_historical_document_when_override_is_set(
+    client, session, project
+):
+    chain = _seed_supersession_chain(session, project)
+    chain["activate_successor"]()
+    active = client.get(f"/queue/{project.slug}")
+    assert "SUCC-ONLY" in active.text
+    assert "PRE-ONLY" not in active.text
+
+    r = client.get(
+        f"/queue/{project.slug}?historical_document_id={chain['predecessor'].id}"
+    )
+    assert "PRE-ONLY" in r.text
+    assert "Queue empty" not in r.text
+    assert 'name="historical_document_id"' in r.text
+    assert f'value="{chain["predecessor"].id}"' in r.text
+
+
+@pytest.mark.parametrize(
+    ("action", "extra_form"),
+    [
+        ("accept", {}),
+        ("edit-accept", {}),
+        ("merge", {"dependency_id": "1"}),
+        ("reject", {"reason": "wrong"}),
+    ],
+)
+def test_direct_post_cannot_mutate_a_historical_candidate_by_default(
+    client, session, project, action, extra_form
+):
+    chain = _seed_supersession_chain(session, project)
+
+    response = client.post(
+        f"/candidates/{chain['predecessor_candidate'].id}/{action}",
+        data={"slug": project.slug, **extra_form},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    assert chain["predecessor_candidate"].state == "pending"
+
+
+def test_authoritative_mutation_apis_reject_historical_candidate_bypass(
+    session, project
+):
+    chain = _seed_supersession_chain(session, project)
+    candidate = chain["predecessor_candidate"]
+    target = Dependency(
+        project_id=project.id,
+        ref_code="DEP-SCOPE",
+        dep_type="utility_relocation",
+        title="Scope target",
+        status="identified",
+    )
+    session.add(target)
+    session.flush()
+
+    mutations = (
+        lambda: accept_candidate(session, candidate, principal=TEST_PRINCIPAL),
+        lambda: edit_candidate(
+            session,
+            candidate,
+            {"utility_id": "PRE-EDIT"},
+            principal=TEST_PRINCIPAL,
+        ),
+        lambda: merge_candidate(
+            session,
+            candidate,
+            target,
+            principal=TEST_PRINCIPAL,
+        ),
+        lambda: reject_candidate(
+            session,
+            candidate,
+            "wrong",
+            principal=TEST_PRINCIPAL,
+        ),
+    )
+
+    for mutate in mutations:
+        with pytest.raises(InvalidCandidateScope):
+            mutate()
+        assert candidate.state == "pending"
+
+
+def test_authoritative_mutation_api_rejects_an_inactive_successor_run(
+    session, project
+):
+    chain = _seed_supersession_chain(session, project)
+
+    with pytest.raises(InvalidCandidateScope):
+        accept_candidate(
+            session,
+            chain["successor_candidate"],
+            principal=TEST_PRINCIPAL,
+        )
+
+
+def test_explicit_historical_override_makes_that_exact_candidate_actionable(
+    client, session, project
+):
+    chain = _seed_supersession_chain(session, project)
+
+    response = client.post(
+        f"/candidates/{chain['predecessor_candidate'].id}/accept",
+        data={
+            "slug": project.slug,
+            "historical_document_id": str(chain["predecessor"].id),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert chain["predecessor_candidate"].state == "accepted"
+    assert (
+        f"historical_document_id={chain['predecessor'].id}"
+        in response.headers["location"]
+    )
+
+
+def test_zero_row_successor_run_does_not_fall_back_to_predecessor_by_default(
+    client, session, project
+):
+    chain = _seed_supersession_chain(
+        session, project, include_successor_candidate=False
+    )
+    chain["activate_successor"]()
+
+    r = client.get(f"/queue/{project.slug}")
+    assert r.status_code == 200
+    assert "Queue empty" in r.text
+    assert "PRE-ONLY" not in r.text
 
 
 def test_a_sibling_row_of_the_same_matrix_is_not_suggested(
@@ -1314,29 +1746,39 @@ def test_a_zero_day_quantity_still_renders(client, session, project):
 
 
 def _event_candidate(session, project, document):
-    c = Candidate(
-        project_id=project.id,
+    c = make_candidate(
+        session,
+        project,
+        document,
+        uid="EVT-1",
+        station_from="",
+        whole_row=False,
         kind="event",
-        payload_json={
-            "kind": "event",
-            "fields": {"description": "AT&T confirmed relocation NTP in August"},
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": 1,
-                    "quote": "AT&T confirmed relocation NTP in August",
-                    "verified": True,
-                }
-            ],
-        },
-        source_document_id=document.id,
-        source_pages=[1],
-        confidence=1.0,
         prompt_version="minutes_v1",
-        citations_verified=True,
+        auto_active_run=False,
     )
-    session.add(c)
-    session.flush()
+    c.payload_json = {
+        **c.payload_json,
+        "kind": "event",
+        "fields": {"description": "AT&T confirmed relocation NTP in August"},
+        "citations": [
+            {
+                "document_id": document.id,
+                "page": 1,
+                "quote": "AT&T confirmed relocation NTP in August",
+                "verified": True,
+            }
+        ],
+    }
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="minutes_v1",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(c,),
+    )
+    declare_active_run(session, document.id, run.id)
     return c
 
 
@@ -1359,6 +1801,10 @@ def test_posting_accept_for_an_event_is_refused_not_a_server_error(
 ):
     """The button is disabled; a form post can still reach the route."""
     candidate = _event_candidate(session, project, document)
+    before = {
+        model: session.scalar(select(func.count()).select_from(model))
+        for model in (Dependency, Assertion, EvidenceLink, AuditLog)
+    }
 
     response = client.post(
         f"/candidates/{candidate.id}/accept",
@@ -1368,3 +1814,7 @@ def test_posting_accept_for_an_event_is_refused_not_a_server_error(
 
     assert response.status_code == 400
     assert candidate.state == "pending"
+    assert {
+        model: session.scalar(select(func.count()).select_from(model))
+        for model in before
+    } == before

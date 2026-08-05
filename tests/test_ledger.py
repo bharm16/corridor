@@ -7,6 +7,7 @@ from sqlalchemy import select
 from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import (
     NoSuchEvidence,
     UnverifiedEvidence,
@@ -30,6 +31,7 @@ from corridor.operative_support import (
     resolve_operative_support,
 )
 from corridor.principals import HumanPrincipal
+from corridor.supersession import SupersessionDeclaration, register_supersessions
 from corridor.web.app import app, get_human_principal, get_session
 
 TEST_PRINCIPAL = HumanPrincipal("local:ledger-reviewer")
@@ -124,6 +126,17 @@ def make_candidate(
         citations_verified=verified,
     )
     session.add(c)
+    session.flush()
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=c.prompt_version,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(c,),
+        model=c.model,
+    )
+    declare_active_run(session, document.id, run.id)
     session.flush()
     return c
 
@@ -567,8 +580,22 @@ def test_ledger_readers_use_the_same_current_support_resolution(
     session.flush()
     link = _link_of(session, dependency)
     link.satisfies_requirement = True
-    document.superseded_by = successor.id
+    document.registry_id = "ledger-matrix-old"
+    successor.registry_id = "ledger-matrix-new"
     session.flush()
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=document.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=date(2026, 8, 5),
+                source_registry_id=document.registry_id,
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
 
     resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
     detail = load_dependency(session, dependency.id)
