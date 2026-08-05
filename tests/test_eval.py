@@ -792,3 +792,115 @@ def test_an_enumeration_reaches_only_the_shape_it_actually_used(
     assert gold.can_adjudicate("303") is False
     assert gold.can_adjudicate("OH C45") is False
     assert gold.can_adjudicate("") is False
+
+
+def _second_matrix(session, project, sha="e" * 64, name="matrix-rev2.pdf"):
+    d = Document(
+        project_id=project.id,
+        sha256=sha,
+        filename=name,
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(d)
+    session.flush()
+    return d
+
+
+def test_a_gold_set_covering_one_revision_is_scored_against_that_revision(
+    session, project, document
+):
+    """`main` computed the document set and never passed it.
+
+    `evaluate` filtered on project and kind alone, so a CSV covering one
+    matrix revision, scored against a project holding two, put every row
+    of the other in `spurious`. `scripts/gate-run.sh` offers exactly that
+    invocation as the stricter alternative.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    other = _second_matrix(session, project)
+    make_candidate(session, project, other, "FOC2-1")
+
+    unscoped = evaluate(
+        session, slug=project.slug, gold=authored(GoldRecord("FOC1-1"))
+    )
+    scoped = evaluate(
+        session,
+        slug=project.slug,
+        gold=authored(GoldRecord("FOC1-1")),
+        document_ids={document.id},
+    )
+
+    assert unscoped.spurious == ["FOC2-1"]
+    assert unscoped.precision == 0.5
+    assert scoped.spurious == []
+    assert scoped.precision == 1.0
+    assert scoped.extracted_total == 1
+
+
+def test_scoping_to_no_documents_scores_nothing_rather_than_everything(
+    session, project, document
+):
+    """An empty scope is a stated population, not an absent filter."""
+    make_candidate(session, project, document, "FOC1-1")
+
+    result = evaluate(
+        session,
+        slug=project.slug,
+        gold=authored(GoldRecord("FOC1-1")),
+        document_ids=set(),
+    )
+
+    assert result.extracted_total == 0
+    assert result.matched == 0
+
+
+def test_agreement_candidates_do_not_stamp_a_matrix_score(
+    session, project, document
+):
+    """`extract_agreement` emits `kind="dependency"` Candidates too.
+
+    They carry no `utility_id`, so they never scored — but they were
+    counted into the prompt-version and model stamp and into
+    `field_failures`, whose printed denominator is the matrix row count.
+    Scoping the population to the matrices settles all three together.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    agreement = Document(
+        project_id=project.id,
+        sha256="a" * 64,
+        filename="executed-agreement.pdf",
+        doc_type="agreement",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(agreement)
+    session.flush()
+    session.add(
+        Candidate(
+            project_id=project.id,
+            kind="dependency",
+            payload_json={"kind": "dependency", "fields": {"description": "x"}},
+            source_document_id=agreement.id,
+            source_pages=[1],
+            confidence=1.0,
+            prompt_version="agreement_v1",
+            citations_verified=True,
+        )
+    )
+    session.flush()
+
+    pooled = evaluate(
+        session, slug=project.slug, gold=authored(GoldRecord("FOC1-1"))
+    )
+    matrices_only = evaluate(
+        session,
+        slug=project.slug,
+        gold=authored(GoldRecord("FOC1-1")),
+        document_ids={document.id},
+    )
+
+    assert "agreement_v1" in pooled.prompt_versions
+    assert matrices_only.prompt_versions == {"txdot_ucm_v1": 1}
+    assert sum(matrices_only.prompt_versions.values()) == matrices_only.extracted_total

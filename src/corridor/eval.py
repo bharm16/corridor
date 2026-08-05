@@ -422,6 +422,7 @@ def evaluate(
     gold: GoldSet,
     kind: str = "dependency",
     prompt_version: str | None = None,
+    document_ids: set[int] | None = None,
 ) -> EvalResult:
     """Score one extractor's output.
 
@@ -429,6 +430,13 @@ def evaluate(
     Candidates coexist on a project while a migration is undecided, and
     pooled they are meaningless: every row appears twice, so recall reads
     100% and precision reads 50% no matter how either extractor did.
+
+    `document_ids` scopes the run to the documents the gold set covers.
+    Without it the score compares one enumeration against every Candidate
+    in the project: a CSV covering one matrix revision, scored against a
+    project holding five, puts every row of the other four in `spurious`.
+    `scripts/gate-run.sh` offers exactly that invocation as the stricter
+    alternative. `main` computed the document set and never passed it.
     """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -439,6 +447,8 @@ def evaluate(
     )
     if prompt_version:
         query = query.where(Candidate.prompt_version == prompt_version)
+    if document_ids is not None:
+        query = query.where(Candidate.source_document_id.in_(document_ids or {0}))
     candidates = session.scalars(query).all()
 
     extracted = Counter()
@@ -676,27 +686,40 @@ def main(argv: list[str]) -> int:
     slug = args[0]
     skipped: set[int] = set()
     with SessionFactory() as session:
+        project = session.scalars(
+            select(Project).where(Project.slug == slug)
+        ).first()
+        if project is None:
+            print(f"no project {slug!r}", file=sys.stderr)
+            return 1
+        matrices = set(
+            session.scalars(
+                select(Document.id).where(
+                    Document.project_id == project.id,
+                    Document.doc_type == "matrix",
+                )
+            ).all()
+        )
+        # The population being scored, on both paths. It was computed only
+        # for the page-text gold and never reached `evaluate`, which
+        # filtered on project and kind alone.
+        #
+        # Intersected with the matrices, because this measures matrix
+        # extraction. `extract_agreement` also emits `kind="dependency"`
+        # Candidates; they carry no `utility_id` so they never scored, but
+        # they were still counted into the prompt-version and model stamp
+        # and into `field_failures`, whose printed denominator is the
+        # matrix row count — a provenance stamp describing a different
+        # population than the number beside it.
+        extracted_docs = (
+            extracted_documents(session, project.id, prompt_version=prompt_version)
+            & matrices
+        )
+
         if len(args) > 1:
             gold = load_gold(args[1])
             source = args[1]
         else:
-            project = session.scalars(
-                select(Project).where(Project.slug == slug)
-            ).first()
-            if project is None:
-                print(f"no project {slug!r}", file=sys.stderr)
-                return 1
-            extracted_docs = extracted_documents(
-                session, project.id, prompt_version=prompt_version
-            )
-            matrices = set(
-                session.scalars(
-                    select(Document.id).where(
-                        Document.project_id == project.id,
-                        Document.doc_type == "matrix",
-                    )
-                ).all()
-            )
             skipped = matrices - extracted_docs
             if not extracted_docs:
                 print(
@@ -714,7 +737,11 @@ def main(argv: list[str]) -> int:
                 source += f"; {len(skipped)} ingested matrix/matrices not extracted"
 
         result = evaluate(
-            session, slug=slug, gold=gold, prompt_version=prompt_version
+            session,
+            slug=slug,
+            gold=gold,
+            prompt_version=prompt_version,
+            document_ids=extracted_docs,
         )
 
     print(render(result))
