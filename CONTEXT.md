@@ -52,6 +52,10 @@ _Avoid_: claim, statement, fact, value
 A quote from a specific page of a registered document, verified to actually appear on that page. Evidence is the only thing that can support a factual assertion in the ledger or a report.
 _Avoid_: proof, backup, reference, source (when meaning the quote itself)
 
+**Operative Support**:
+The Evidence doing current work for a Dependency **in a named role** — closing the readiness bar, or backing what a report prints for the record or a field. The roles are distinct facts: proof that work closed does not prove every value printed. Historical Evidence is preserved forever; operative support is the subset the record presently stands on, and the only Evidence whose citing a superseded revision means anything is wrong.
+_Avoid_: active evidence, current evidence, live citation, operative support with no role named
+
 **Derivation**:
 A claim produced by computing over Dependencies rather than by reading a document — a count, a percentage, a rollup. Carries the ruleset version and the records it covered instead of a quote, and drills through to their Evidence. No published number is ever bare: it is an Assertion or a Derivation.
 _Avoid_: aggregate, rollup, summary (when meaning the provenance class)
@@ -59,6 +63,10 @@ _Avoid_: aggregate, rollup, summary (when meaning the provenance class)
 **Document of Record**:
 When one document is published in several formats, the one Evidence cites. The structured original outranks anything printed from it: a spreadsheet states its values, a PDF of that spreadsheet only depicts them.
 _Avoid_: source of truth, master copy, canonical version, original
+
+**Supersession**:
+The registry relation that one document replaced another as the current revision. Declared by the source's own index (the RID index's "Replaced on" chain) and recorded when the document is registered — never inferred from dates or filenames, and never an Assertion: it is registry metadata like a document's date, with one authoritative source. A superseded document stays in the corpus and its pages still say what they said; supersession changes which revision is current, never what a page states.
+_Avoid_: replaced (the index's own word — acceptable in UI copy, never in code), versioning, obsolete, archived
 
 **Utility Conflict Matrix**:
 A document that lists utility conflicts *and* how each is to be resolved. The industry form, and the only kind that can assert a Resolution Strategy.
@@ -76,6 +84,7 @@ _Avoid_: matrix, inventory matrix (the phrase agencies print on the cover of bot
 
 **Ready**:
 A derived state, not a stored one: a Dependency is ready when a reviewer has marked a verified Evidence link as meeting the bar named in its `evidence_required`. The reviewer judges sufficiency; the system refuses readiness without the evidence. Nobody can set a Dependency to ready directly — readiness is proven or it does not hold.
+Proof also stands on the current revision: when every satisfying link cites a superseded document, readiness lapses until a reviewer re-confirms against the revision that replaced it — the old Evidence stays verified and preserved; only present readiness changes.
 _Avoid_: complete, done, cleared, resolved
 
 **Slip**:
@@ -83,7 +92,7 @@ An event in which an External Party's Committed Date moves later than a date it 
 _Avoid_: delay, pushback, reschedule
 
 **Exception**:
-A condition computed over the Ledger indicating a Dependency is not on track — missing an owner, a date, or Evidence; stale, due soon, overdue, contradicted, or unlinked to a Milestone. Exceptions are always queries, never stored flags. An Exception is a fact carrying its category and its quantities (days overdue, days of silence); it has no score — Exceptions are grouped, sorted by their quantities, and filtered by Criticality, never ranked by weights nobody can defend (ADR-0010).
+A condition computed over the Ledger indicating a Dependency needs attention — missing an owner, a date, or Evidence; stale, due soon, overdue, contradicted, unlinked to a Milestone, or standing on a superseded citation. Not every category is a schedule failure: a superseded citation is a provenance fact, presented as re-review work rather than lateness. Exceptions are always queries, never stored flags. An Exception is a fact carrying its category and its quantities (days overdue, days of silence); it has no score — Exceptions are grouped, sorted by their quantities, and filtered by Criticality, never ranked by weights nobody can defend (ADR-0010).
 _Avoid_: alert, flag, issue, risk, warning, severity (retired with the Exception score, ADR-0010)
 
 **Evaluation**:
@@ -96,6 +105,22 @@ _Avoid_: summary, analysis, assessment, AI insights
 
 ### The review pipeline
 
+**Active Run**:
+The one extraction run per document that reviewer work draws from — declared in the run lineage, never inferred as the newest by id or timestamp, so an experimental prompt run or a backfilled receipt can never silently become reviewer work. The queue reads it; a Revision Comparison pins exact run ids; an eval selects its runs explicitly — three readers, one definition, no implicit "latest."
+_Avoid_: latest run, newest run, current extraction
+
+**Revision Comparison**:
+The immutable record of comparing two extraction runs — a document's and its successor's: which rows correspond, which were added or dropped, which fields changed, and where the matcher could not decide. Pinned to the exact runs, matcher version and configuration that produced it; a better matcher produces a new Comparison rather than editing the one a reviewer already acted on.
+_Avoid_: revision diff (implies an exactness the matcher cannot promise), change report (Report is the published weekly artifact), delta
+
+**Supersession Review**:
+The live worklist derived from Supersession and the operative-support resolver: which Ledger records still stand on a superseded revision, what re-confirming each one requires, and where a successor has no usable extraction yet (`awaiting_extraction`, `extraction_failed`). A Revision Comparison enriches it when one exists; the worklist never waits for one. It changes as reviewers work; the Comparison beneath it never does.
+_Avoid_: re-review queue, stale list, migration list
+
+**Reconfirmation**:
+The human act of re-pointing a Dependency's operative support at the current revision after a supersession. It changes what the record stands on — never whether the record should exist, how it was merged, or what its fields conclude: those are Adjudication's questions, and a gesture that performs both records two distinct decisions.
+_Avoid_: re-adjudication, ratification, re-review
+
 **Candidate**:
 A Dependency or event proposed by an extractor, with its citations, not yet part of the Ledger. Extractors produce only Candidates; they can never write to the Ledger.
 _Avoid_: suggestion, extraction, draft, proposal
@@ -103,3 +128,7 @@ _Avoid_: suggestion, extraction, draft, proposal
 **Adjudication**:
 The human act of resolving a Candidate — accept, edit then accept, merge into an existing Dependency, or reject. The only path into the Ledger.
 _Avoid_: review, triage, approval, curation
+
+**Admission**:
+The entry of a record into the Ledger — the outcome of an Adjudication accept, edit-then-accept, or merge, performed by an attributable human principal and recorded with their identity. Reconfirmation never admits; nothing else writes.
+_Avoid_: creation, insertion, import, promotion

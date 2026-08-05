@@ -78,8 +78,9 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 ### M8 — Document versioning and revisions (1-1.5 wk)
 
 - Document supersession (rev B → rev C), re-extraction diff: what changed, which ledger records are affected, which evidence went stale.
+- Design is decision-complete in ADR-0015 through ADR-0020: supersession registry, `SUPERSEDED_CITATION` on operative support, role-scoped resolver, Revision Comparison, fail-closed queue with declared Active Runs, and the human rebuild of the development Ledger. Vocabulary in `CONTEXT.md`.
 
-**Done when:** uploading a revised document produces a change report and flags affected records; nothing is overwritten.
+**Done when:** registering a revised document yields a Revision Comparison and a Supersession Review worklist, reconfirmation moves operative support, and nothing is overwritten.
 
 ### M9 — Second user and write-back lite (1.5-2 wk)
 
@@ -107,8 +108,8 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 
 - Pipeline runs on 3 projects with zero project-specific code.
 - Eval gate passing on a held-out project.
-- A full weekly readiness meeting can be run from the tool alone.
-- The generated report fully replaces a manually built weekly report format.
+- A full weekly readiness meeting is run from the tool alone **by a practitioner who does the work**, with every fallback to the old artifact recorded.
+- The generated report fully replaces a manually built weekly report format. Published templates establish the baseline; replacement is proven only against a real project's populated report and that practitioner-run meeting.
 
 ## Phase 2 pointer (out of scope here)
 
