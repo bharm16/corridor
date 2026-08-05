@@ -40,7 +40,9 @@ from corridor.pipeline import extract_any
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
-# read the document at all.
+# read the document at all, and records how it read the document on
+# `Document.extraction_tiers` and `Document.header_disagreements` — real
+# columns, so the answer survives the run that produced it.
 Extractor = Callable[[Session, Document], list[Candidate]]
 
 
@@ -90,12 +92,18 @@ def extract_project(
 
     for document in documents:
         if document.id in done and not redo:
+            # A skipped document reports the tiers it was read at, not
+            # nothing. Reporting nothing made every resumed run — the
+            # normal case the skip exists for — under-state the fallback
+            # share, which is the one number this report exists to carry.
             outcomes.append(
                 Outcome(
                     document.id,
                     document.filename,
                     "skipped",
                     detail=f"already extracted at {prompt_version}",
+                    tiers=dict(document.extraction_tiers or {}),
+                    header_disagreements=document.header_disagreements or 0,
                 )
             )
             continue
@@ -139,10 +147,8 @@ def extract_project(
                 "extracted",
                 rows=len(candidates),
                 unverified=sum(1 for c in candidates if not c.citations_verified),
-                tiers=dict(getattr(document, "extraction_tiers", {}) or {}),
-                header_disagreements=int(
-                    getattr(document, "header_disagreements", 0) or 0
-                ),
+                tiers=dict(document.extraction_tiers or {}),
+                header_disagreements=document.header_disagreements or 0,
             )
         )
 

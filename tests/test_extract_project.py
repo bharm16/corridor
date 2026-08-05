@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.geometry import NoMatrixFound
-from corridor.extract_project import extract_project
+from corridor.extract_project import extract_project, render
 from corridor.models import Candidate, Document, Project
 
 PROMPT_VERSION = "test_v1"
@@ -366,3 +366,82 @@ def test_a_document_that_cannot_be_read_keeps_the_reading_it_had(session, projec
 
     assert outcomes[0].status == "unreadable"
     assert _count(session, doc) == 1
+
+
+def tiered_extractor(tiers, *, disagreements=0):
+    """An extractor that records how it read the document, as a real one does."""
+
+    def extract(session, document):
+        document.extraction_tiers = dict(tiers)
+        document.header_disagreements = disagreements
+        c = candidate(document)
+        session.add(c)
+        session.flush()
+        return [c]
+
+    return extract
+
+
+def test_how_a_document_was_read_survives_the_run_that_read_it(session, project):
+    """`extraction_tiers` was an ad-hoc attribute, read back with a
+    `getattr` default. It never reached the database, so nothing outside
+    one process could say how a document had been read."""
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+
+    extract_project(
+        session,
+        project,
+        extract=tiered_extractor({"structure": 3, "transcribe": 1}, disagreements=2),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+    session.expire(doc)
+
+    assert doc.extraction_tiers == {"structure": 3, "transcribe": 1}
+    assert doc.header_disagreements == 2
+
+
+def test_a_resumed_run_still_reports_the_fallback_share(session, project):
+    """The skip is the normal case, and it used to report no tiers at all.
+
+    A report that under-states the fallback on every resumed run is the
+    failure this module's own comment names: a fallback nobody counts is
+    a fallback nobody notices.
+    """
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    extract_project(
+        session,
+        project,
+        extract=tiered_extractor({"structure": 3, "transcribe": 1}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    # Second run: the document is already extracted at this version.
+    outcomes = extract_project(
+        session,
+        project,
+        extract=tiered_extractor({}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    [outcome] = outcomes
+    assert outcome.status == "skipped"
+    assert outcome.tiers == {"structure": 3, "transcribe": 1}
+    assert "25.0% fell back" in render(project, PROMPT_VERSION, outcomes)
+
+
+def test_the_fallback_share_is_stated_even_when_nothing_fell_back(session, project):
+    add_matrix(session, project, "a.pdf", "a" * 64)
+    outcomes = extract_project(
+        session,
+        project,
+        extract=tiered_extractor({"structure": 4}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    report = render(project, PROMPT_VERSION, outcomes)
+    assert "4 read from the text layer, 0 transcribed (0.0% fell back)" in report
+    assert "every page agreed" in report

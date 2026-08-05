@@ -223,6 +223,15 @@ class Document(Base):
         default="pending",
         server_default="pending",
     )
+    # How this document was read: pages per extraction tier, and printed
+    # headers it read more than one way before majority resolution (#101).
+    # Both were set as ad-hoc attributes on this object by the extractor
+    # and read back with `getattr` defaults, so neither survived the run
+    # that produced them — a resumed run reported no fallback at all, in a
+    # pipeline whose own comment says "a fallback nobody counts is a
+    # fallback nobody notices".
+    extraction_tiers: Mapped[dict | None] = mapped_column(JSONB)
+    header_disagreements: Mapped[int | None] = mapped_column(Integer)
     # Always null in v0; supersession lands in M8.
     superseded_by: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
     created_at: Mapped[datetime] = mapped_column(

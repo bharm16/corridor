@@ -119,6 +119,9 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
         candidates.append(candidate)
 
     document.extraction_tiers = {TIER_NATIVE: 1}
+    # The structured original states its own headers; there is no printed
+    # header to read two ways.
+    document.header_disagreements = 0
     session.flush()
     return candidates
 

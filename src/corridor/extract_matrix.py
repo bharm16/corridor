@@ -281,6 +281,10 @@ def extract_document(
     candidates: list[Candidate] = []
     recognized = 0
     errors = 0
+    # Zero rather than null: a document read entirely by transcription has
+    # no printed header to disagree about, which is a different fact from
+    # one nobody has read.
+    document.header_disagreements = 0
 
     if structure_pages:
         results = complete_many(
