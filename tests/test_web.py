@@ -440,6 +440,94 @@ def test_merging_malformed_citations_returns_400_without_writes(
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
+@pytest.mark.parametrize(
+    "payload_fields",
+    [{}, {"utility_id": "FOC1-1", "external_org": "AT&T Texas (SWBT)"}],
+    ids=["no-fields", "fields"],
+)
+def test_accepting_a_candidate_that_cites_nothing_returns_400_without_writes(
+    client, session, project, document, payload_fields
+):
+    """The queue's 303 back to the queue was the whole of the feedback.
+
+    A reviewer pressing accept on a citation-less card was redirected as
+    though it had worked, and an evidence-free Dependency was committed
+    behind them. With fields it was a 500 instead — the route has to
+    answer 400 to both.
+    """
+    candidate = make_candidate(session, project, document)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "fields": payload_fields,
+        "citations": [],
+    }
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+@pytest.mark.parametrize(
+    "payload_fields",
+    [{}, {"utility_id": "FOC1-2", "external_org": "AT&T Texas (SWBT)"}],
+    ids=["no-fields", "fields"],
+)
+def test_merging_a_candidate_that_cites_nothing_returns_400_without_writes(
+    client, session, project, document, payload_fields
+):
+    """And the Candidate stays in the queue instead of leaving it merged."""
+    first = make_candidate(session, project, document)
+    client.post(
+        f"/candidates/{first.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    target = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    candidate = make_candidate(session, project, document, uid="FOC1-2")
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "fields": payload_fields,
+        "citations": [],
+    }
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/merge",
+        data={"slug": project.slug, "dependency_id": target.id},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
 def test_merging_non_integer_citation_document_id_returns_400_without_writes(
     client, session, project, document
 ):

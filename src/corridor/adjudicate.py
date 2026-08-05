@@ -262,7 +262,13 @@ def accept_candidate(
     links = [
         _evidence_link(session, dependency, citation) for citation in citations
     ]
-    primary = links[0] if links else None
+    # Never empty: provenance refuses a Candidate that cites nothing, above
+    # and before any of this. `if links else None` said an Assertion may
+    # exist without evidence, which `models.Assertion.evidence_link_id`,
+    # its migration and ADR-0001 all deny — so the disagreement was settled
+    # by Postgres, as a NOT NULL violation on a half-written acceptance,
+    # rather than by this module as a refusal it could name.
+    primary = links[0]
 
     for name, value in fields.items():
         session.add(
@@ -270,7 +276,7 @@ def accept_candidate(
                 dependency_id=dependency.id,
                 field_name=name,
                 asserted_value=value,
-                evidence_link_id=primary.id if primary else None,
+                evidence_link_id=primary.id,
                 doc_date=None,
             )
         )
@@ -576,7 +582,14 @@ def merge_candidate(
     )
 
     links = [_evidence_link(session, dependency, citation) for citation in citations]
-    primary = links[0] if links else None
+    # Never empty, for the same reason and by the same guard as acceptance.
+    # Merge is the quieter of the two paths and was the worse of the two
+    # outcomes: a citation-less merge added no link and no Assertion, then
+    # marked the Candidate `merged`, pointed `merged_into` at a Dependency
+    # it had contributed nothing to, and wrote an audit entry saying so.
+    # Nothing entered the Ledger and the source row left the queue for
+    # good, because merging refuses a Candidate that is no longer pending.
+    primary = links[0]
 
     for name, value in fields.items():
         session.add(
@@ -584,7 +597,7 @@ def merge_candidate(
                 dependency_id=dependency.id,
                 field_name=name,
                 asserted_value=value,
-                evidence_link_id=primary.id if primary else None,
+                evidence_link_id=primary.id,
                 doc_date=None,
             )
         )
@@ -650,6 +663,18 @@ def _validate_candidate_provenance(
     if source_document.project_id != candidate.project_id:
         raise InvalidCandidateProvenance(
             "candidate source document belongs to a different project"
+        )
+
+    if not citations:
+        # Every rule below is about a citation, and none of them run on an
+        # empty list — so the shape of each citation was checked and the
+        # existence of one was not. A Candidate is "a Dependency or event
+        # proposed by an extractor, with its citations" (CONTEXT.md), and
+        # a row that cites nothing is the proposal without the thing that
+        # makes it answerable.
+        raise InvalidCandidateProvenance(
+            "candidate cites nothing, and a Ledger row's whole claim is "
+            "that it points at a page of a document"
         )
 
     for citation in citations:
