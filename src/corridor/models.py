@@ -120,6 +120,22 @@ EVENT_TYPES = (
 )
 
 
+def is_claim(value: str | None) -> bool:
+    """Does this asserted value say anything a source could disagree with?
+
+    A blank cell is an absent value, not a competing one — the same
+    reading the CONTRADICTION query already applied to nulls, because the
+    matrix revisions add and drop columns between editions. Empty strings
+    are the printed form of the same absence.
+
+    Lives here because both readers of contradiction need it and neither
+    may import the other: the exception engine computes CONTRADICTION and
+    the ledger renders the "sources disagree" pill, and the ledger is the
+    one that depends on the engine.
+    """
+    return bool(value and value.strip())
+
+
 def is_critical(strategy: str | None) -> bool:
     """Does this resolution commit the External Party to substantial work?
 

@@ -414,3 +414,57 @@ def test_marking_twice_returns_the_record_to_not_ready(
     assert mark_satisfies(session, dependency.id, link.id, actor="tester") is True
     assert mark_satisfies(session, dependency.id, link.id, actor="tester") is False
     assert load_dependency(session, dependency.id).is_ready is False
+
+
+# --------------------------------------------------------- contradiction
+
+
+def _assert_value(session, dependency, field_name, value):
+    from corridor.models import Assertion
+
+    session.add(
+        Assertion(
+            dependency_id=dependency.id,
+            field_name=field_name,
+            asserted_value=value,
+            evidence_link_id=_link_of(session, dependency).id,
+            doc_date=None,
+        )
+    )
+    session.flush()
+
+
+def test_a_blank_asserted_value_is_not_a_source_disagreeing(
+    session, project, dependency
+):
+    """Three views of contradiction gave two answers.
+
+    The list page and the exception engine filtered on the value being
+    non-null; the detail page filtered on it being truthy. A blank value
+    competing with a real one therefore contradicted in two places and
+    not in the third, on one record.
+    """
+    _assert_value(session, dependency, "external_org", "")
+
+    view = load_dependency(session, dependency.id)
+    field = next(f for f in view.fields if f.name == "external_org")
+    [row] = browse(session, project.id)
+
+    assert field.contradicted is False
+    assert row.contradicted is False
+    assert not any(e.rule == "CONTRADICTION" for e in view.exceptions)
+
+
+def test_two_real_values_still_contradict_everywhere(
+    session, project, dependency
+):
+    """The detection this metric exists for is untouched."""
+    _assert_value(session, dependency, "external_org", "CenterPoint Energy")
+
+    view = load_dependency(session, dependency.id)
+    field = next(f for f in view.fields if f.name == "external_org")
+    [row] = browse(session, project.id)
+
+    assert field.contradicted is True
+    assert row.contradicted is True
+    assert any(e.rule == "CONTRADICTION" for e in view.exceptions)

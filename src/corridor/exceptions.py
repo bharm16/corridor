@@ -255,6 +255,48 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
     return view
 
 
+def contradicted_fields(
+    session: Session, dependency_ids: list[int]
+) -> dict[int, list[str]]:
+    """Fields with two or more distinct verified values, per Dependency.
+
+    The one definition of "sources disagree". It had three: this query,
+    an identical copy in `ledger._contradicted_ids` feeding the list
+    page's pill, and a Python version on `FieldView` feeding the detail
+    page — and the Python one did not agree. It filtered on the value
+    being truthy where the SQL filtered on it being non-null, so a blank
+    asserted value competing with a real one contradicted on the list
+    page and in the engine, and did not on the detail page.
+
+    `is_claim` settles it in the stricter direction, which is the one the
+    query's own comment already argued for: an absent value is not a
+    source disagreeing, and a blank cell is an absent value.
+
+    Lives beside the engine because the ledger depends on the engine and
+    not the other way round.
+    """
+    if not dependency_ids:
+        return {}
+
+    found: dict[int, list[str]] = {}
+    for dependency_id, name in session.execute(
+        select(Assertion.dependency_id, Assertion.field_name)
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
+            Assertion.dependency_id.in_(dependency_ids),
+            EvidenceLink.verified.is_(True),
+            # A null is an absent column, not a competing value — the
+            # matrix revisions add and drop columns between editions.
+            Assertion.asserted_value.is_not(None),
+            func.trim(Assertion.asserted_value) != "",
+        )
+        .group_by(Assertion.dependency_id, Assertion.field_name)
+        .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
+    ).all():
+        found.setdefault(dependency_id, []).append(name)
+    return found
+
+
 def _gather(session: Session, dependency: Dependency) -> _Facts:
     links = session.execute(
         select(EvidenceLink, Document)
@@ -284,22 +326,9 @@ def _gather(session: Session, dependency: Dependency) -> _Facts:
         is not None
     )
 
-    contradicted = [
-        name
-        for name, in session.execute(
-            select(Assertion.field_name)
-            .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
-            .where(
-                Assertion.dependency_id == dependency.id,
-                EvidenceLink.verified.is_(True),
-                # A null is an absent column, not a competing value — the
-                # matrix revisions add and drop columns between editions.
-                Assertion.asserted_value.is_not(None),
-            )
-            .group_by(Assertion.field_name)
-            .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
-        ).all()
-    ]
+    contradicted = contradicted_fields(session, [dependency.id]).get(
+        dependency.id, []
+    )
 
     return _Facts(
         dependency=dependency,

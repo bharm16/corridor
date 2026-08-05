@@ -17,9 +17,15 @@ from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.exceptions import Evaluation, evaluate_project, exceptions_for
+from corridor.exceptions import (
+    Evaluation,
+    contradicted_fields,
+    evaluate_project,
+    exceptions_for,
+)
 from corridor.models import (
     CRITICAL_STRATEGIES,
+    is_claim,
     is_critical,
     RESOLUTION_STRATEGIES,
     Assertion,
@@ -57,9 +63,13 @@ class FieldView:
         """Two or more verified assertions claiming different values.
 
         Only verified assertions count: an unverified claim is not evidence
-        of disagreement, it is evidence of a bad citation.
+        of disagreement, it is evidence of a bad citation. `is_claim` is
+        the same predicate the engine's query applies, so this view and
+        the list page's pill cannot disagree about one record again.
         """
-        verified = {a.value for a in self.assertions if a.verified and a.value}
+        verified = {
+            a.value for a in self.assertions if a.verified and is_claim(a.value)
+        }
         return len(verified) > 1
 
 
@@ -256,23 +266,11 @@ def _ready_ids(session: Session, ids: list[int]) -> set[int]:
 
 
 def _contradicted_ids(session: Session, ids: list[int]) -> set[int]:
-    """Fields with two or more distinct verified values.
+    """Which records show the "sources disagree" pill.
 
-    Only verified assertions count: an unverified claim is a bad citation,
-    not evidence that sources disagree.
+    The definition is the engine's, not a second copy of it.
     """
-    rows = session.execute(
-        select(Assertion.dependency_id, Assertion.field_name)
-        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
-        .where(
-            Assertion.dependency_id.in_(ids),
-            EvidenceLink.verified.is_(True),
-            Assertion.asserted_value.is_not(None),
-        )
-        .group_by(Assertion.dependency_id, Assertion.field_name)
-        .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
-    ).all()
-    return {dependency_id for dependency_id, _ in rows}
+    return set(contradicted_fields(session, ids))
 
 
 def load_dependency(session: Session, dependency_id: int) -> DependencyView:
