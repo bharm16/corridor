@@ -11,7 +11,14 @@ from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project, format_exception_label
 from corridor.export import to_xlsx
 from corridor.ledger import browse
-from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
+from corridor.models import (
+    Candidate,
+    Dependency,
+    DocPage,
+    Document,
+    EvidenceLink,
+    Project,
+)
 from corridor.report import (
     RULESET_VERSION,
     Assertion,
@@ -801,6 +808,92 @@ def test_a_change_cites_the_record_it_describes(
             assert cell.provenance.resolves
     closed = next(r for r in changes.rows if r[1].value == "closed")
     assert closed[0].provenance.record_ids == (dependency.id,)
+
+
+def _summary(report, label):
+    return next(c for c in report.summary if c.label == label)
+
+
+def test_the_verified_evidence_figures_count_only_evidence_that_holds(
+    session, project_with_two_dependencies
+):
+    """The tile says "verified" and the count said "linked"."""
+    before = build_report(session, project_with_two_dependencies.id)
+    assert _summary(before, "With verified evidence").value == "2"
+    assert _summary(before, "% with verified evidence").value == "100.0%"
+
+    first = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project_with_two_dependencies.id)
+        .order_by(Dependency.ref_code)
+    ).first()
+    _unverify_evidence_of(session, first)
+
+    after = build_report(session, project_with_two_dependencies.id)
+    assert _summary(after, "With verified evidence").value == "1"
+    assert _summary(after, "% with verified evidence").value == "50.0%"
+
+
+def test_the_report_never_claims_evidence_for_records_it_says_have_none(
+    session, project_with_two_dependencies
+):
+    """The two sentences could appear in one document, about one record.
+
+    MISSING_EVIDENCE reads "no verified evidence on this record" and the
+    tile above it counted the link anyway, so the report contradicted
+    itself in the direction that flatters the project — which is the worst
+    direction for a document a project forwards to an External Party.
+    """
+    for record in session.scalars(
+        select(Dependency).where(
+            Dependency.project_id == project_with_two_dependencies.id
+        )
+    ).all():
+        _unverify_evidence_of(session, record)
+
+    report = build_report(session, project_with_two_dependencies.id)
+    markup = render(report)
+
+    assert "MISSING_EVIDENCE" in markup
+    assert _summary(report, "With verified evidence").value == "0"
+    assert _summary(report, "% with verified evidence").value == "0.0%"
+
+
+def test_percent_evidenced_on_a_milestone_counts_only_evidence_that_holds(
+    session, project_with_two_dependencies
+):
+    """The rollup's own copy of the same figure, and the same rule."""
+    from corridor.models import Milestone
+
+    milestone = Milestone(
+        project_id=project_with_two_dependencies.id,
+        code="RELO-CONSTR",
+        name="RELO-CONSTR",
+        need_date=date(2026, 12, 1),
+    )
+    session.add(milestone)
+    session.flush()
+    records = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project_with_two_dependencies.id)
+        .order_by(Dependency.ref_code)
+    ).all()
+    for record in records:
+        record.milestone_id = milestone.id
+    session.flush()
+
+    def evidenced_cell():
+        row = section(
+            build_report(session, project_with_two_dependencies.id),
+            "Milestone readiness",
+        ).rows[0]
+        return next(c for c in row if c.label == "% evidenced")
+
+    assert evidenced_cell().value == "100%"
+
+    _unverify_evidence_of(session, records[0])
+
+    assert evidenced_cell().value == "50%"
 
 
 def test_a_milestone_nothing_is_linked_to_is_named_not_scored(

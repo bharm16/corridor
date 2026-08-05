@@ -153,7 +153,11 @@ def build_report(
     by_id = {r.dependency.id: r for r in rows}
     ids = tuple(by_id)
 
-    with_evidence = {r.dependency.id for r in rows if r.evidence_count}
+    # Verified, because that is what the cell beside it says. Counting
+    # every link published "With verified evidence 2 · 100.0%" in the same
+    # document as "MISSING_EVIDENCE — no verified evidence on this record"
+    # about one of those two.
+    with_evidence = {r.dependency.id for r in rows if r.verified_evidence_count}
     ready = {r.dependency.id for r in rows if r.is_ready}
     pct = (100 * len(with_evidence) / len(ids)) if ids else 0.0
 
@@ -265,7 +269,9 @@ def _milestone_rollup(
             )
         ]
         blocked = [r.dependency.id for r in group if r.dependency.status == "blocked"]
-        evidenced = [r.dependency.id for r in group if r.evidence_count]
+        # Verified, as in the summary tile: "% evidenced" is a claim about
+        # evidence that holds, not about links that exist.
+        evidenced = [r.dependency.id for r in group if r.verified_evidence_count]
         pct = (100 * len(evidenced) / len(ids)) if ids else 0.0
         section.rows.append(
             [
