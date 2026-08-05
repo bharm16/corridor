@@ -15,6 +15,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
+from corridor import audit
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session
 from corridor.models import (
@@ -51,11 +52,27 @@ def _reset(session, project: Project) -> None:
     deleted anywhere in this system.
     """
     dep_ids = select(Dependency.id).where(Dependency.project_id == project.id)
+    candidate_ids = select(Candidate.id).where(Candidate.project_id == project.id)
     session.execute(delete(Assertion).where(Assertion.dependency_id.in_(dep_ids)))
     session.execute(
         delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dep_ids))
     )
-    session.execute(delete(AuditLog).where(AuditLog.entity_id.in_(dep_ids)))
+    # Scoped by entity type as well as id. `entity_id` alone is not a key —
+    # the column holds Dependency, Candidate and Milestone ids in one
+    # namespace, so a demo reset was deleting real Milestone history whose
+    # numeric id happened to collide with a demo Dependency's.
+    session.execute(
+        delete(AuditLog).where(
+            (AuditLog.entity_type == audit.DEPENDENCY)
+            & AuditLog.entity_id.in_(dep_ids)
+        )
+    )
+    session.execute(
+        delete(AuditLog).where(
+            (AuditLog.entity_type == audit.CANDIDATE)
+            & AuditLog.entity_id.in_(candidate_ids)
+        )
+    )
     session.execute(delete(Candidate).where(Candidate.project_id == project.id))
     session.execute(delete(Dependency).where(Dependency.project_id == project.id))
 

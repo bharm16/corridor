@@ -226,3 +226,121 @@ def test_another_record_s_candidate_history_does_not_leak_in(session, document):
     dependency = accept_candidate(session, mine, actor="reviewer")
 
     assert entries(session, dependency.id) == ["accept_candidate"]
+
+
+def test_an_unknown_action_is_refused(session):
+    """`entity_type` was checked against its constants; `action` was not.
+
+    It is the column a reader filters and groups the history by, so a typo
+    produced an entry that existed and could not be found.
+    """
+    with pytest.raises(ValueError, match="marked_satisfies"):
+        audit.record(
+            session,
+            actor="tester",
+            action="marked_satisfies",
+            entity_type=audit.DEPENDENCY,
+            entity_id=1,
+        )
+
+
+def test_recording_makes_the_entry_readable_without_the_caller_flushing(
+    session, document
+):
+    """Mutate, record, flush was three statements in five modules.
+
+    An entry only reaches a reader once it is in the database, and every
+    caller remembering the third statement is not a property.
+    """
+    dependency = accept_candidate(
+        session, make_candidate(session, document), actor="tester"
+    )
+    audit.record(
+        session,
+        actor="tester",
+        action=audit.SET_RESOLUTION_STRATEGY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={"resolution_strategy": "relocate"},
+    )
+
+    fetched = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == audit.DEPENDENCY,
+            AuditLog.entity_id == dependency.id,
+            AuditLog.action == audit.SET_RESOLUTION_STRATEGY,
+        )
+    ).all()
+    assert len(fetched) == 1
+
+
+def test_creating_a_milestone_writes_an_entry(session, tmp_path):
+    """Only revisions were recorded.
+
+    The Need Date every linked Dependency inherits is set on creation, so
+    the value that decides whether a record is overdue entered the ledger
+    with nobody's name on it.
+    """
+    from corridor.milestones import import_csv
+
+    project = Project(slug="audit-ms", name="Audit MS", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    path = tmp_path / "milestones.csv"
+    path.write_text("code,name,need_date\nUTIL-CLEAR,Utility clearance,2026-09-01\n")
+
+    result = import_csv(
+        session, project_id=project.id, path=path, actor="scheduler"
+    )
+
+    [milestone] = result.created
+    [entry] = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == audit.MILESTONE,
+            AuditLog.entity_id == milestone.id,
+        )
+    ).all()
+    assert entry.action == audit.CREATE_MILESTONE
+    assert entry.actor == "scheduler"
+    assert entry.after_json["need_date"] == "2026-09-01"
+
+
+def test_a_demo_reset_does_not_delete_another_entity_s_history(session, document):
+    """`entity_id` is not a key.
+
+    The column holds Dependency, Candidate and Milestone ids in one
+    namespace, and the reset filtered on it alone — so it deleted whatever
+    Milestone history happened to share a number with a demo Dependency,
+    out of a table whose own docstring says append-only.
+    """
+    from corridor.demo import _reset
+
+    dependency = accept_candidate(
+        session, make_candidate(session, document), actor="tester"
+    )
+    project = session.get(Project, document.project_id)
+    # A milestone entry numbered like the dependency: the collision.
+    audit.record(
+        session,
+        actor="scheduler",
+        action=audit.CREATE_MILESTONE,
+        entity_type=audit.MILESTONE,
+        entity_id=dependency.id,
+        after={"code": "UTIL-CLEAR"},
+    )
+
+    _reset(session, project)
+
+    survived = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == audit.MILESTONE,
+            AuditLog.entity_id == dependency.id,
+        )
+    ).all()
+    assert len(survived) == 1
+    assert session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == audit.DEPENDENCY,
+            AuditLog.entity_id == dependency.id,
+        )
+    ).all() == []

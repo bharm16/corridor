@@ -240,7 +240,7 @@ async def edit_accept(
         audit.record(
             session,
             actor="reviewer",
-            action="edit_candidate",
+            action=audit.EDIT_CANDIDATE,
             entity_type=audit.CANDIDATE,
             entity_id=candidate.id,
             before={"fields": original},
@@ -289,7 +289,7 @@ def reject(
     audit.record(
         session,
         actor="reviewer",
-        action="reject_candidate",
+        action=audit.REJECT_CANDIDATE,
         entity_type=audit.CANDIDATE,
         entity_id=candidate.id,
         after={"reason": reason},

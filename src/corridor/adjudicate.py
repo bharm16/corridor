@@ -286,7 +286,7 @@ def accept_candidate(
     audit.record(
         session,
         actor=actor,
-        action="accept_candidate",
+        action=audit.ACCEPT_CANDIDATE,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency.id,
         after={
@@ -356,7 +356,7 @@ def set_resolution_strategy(
     audit.record(
         session,
         actor=actor,
-        action="set_resolution_strategy",
+        action=audit.SET_RESOLUTION_STRATEGY,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency.id,
         before={"resolution_strategy": before},
@@ -445,7 +445,7 @@ def merge_candidate(
     audit.record(
         session,
         actor=actor,
-        action="merge_candidate",
+        action=audit.MERGE_CANDIDATE,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency.id,
         after={

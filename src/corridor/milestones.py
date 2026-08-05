@@ -86,6 +86,23 @@ def import_csv(
                 source=source or path.name,
             )
             session.add(milestone)
+            session.flush()
+            # Recorded like a revision. Only revisions were, so the first
+            # Need Date every linked Dependency inherits — the one that
+            # decides whether it is overdue — entered the record with
+            # nobody's name on it.
+            audit.record(
+                session,
+                actor=actor,
+                action=audit.CREATE_MILESTONE,
+                entity_type=audit.MILESTONE,
+                entity_id=milestone.id,
+                after={
+                    "code": code,
+                    "need_date": need_date.isoformat() if need_date else None,
+                    "source": milestone.source,
+                },
+            )
             result.created.append(milestone)
         else:
             # Re-import updates in place: a schedule revision is the normal
@@ -102,7 +119,7 @@ def import_csv(
                 audit.record(
                     session,
                     actor=actor,
-                    action="revise_milestone",
+                    action=audit.REVISE_MILESTONE,
                     entity_type=audit.MILESTONE,
                     entity_id=existing.id,
                     before={"need_date": was.isoformat() if was else None},
@@ -163,7 +180,7 @@ def link_dependency(
     audit.record(
         session,
         actor=actor,
-        action="link_milestone",
+        action=audit.LINK_MILESTONE,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency.id,
         before=before,

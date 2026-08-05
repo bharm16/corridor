@@ -12,6 +12,12 @@ reviewer edits before the Dependency exists, and the only reader queried
 originally said, which the route's own docstring promises survives, never
 appeared on the Dependency it produced. A seam that owns the write and
 not the read cannot stop that happening again.
+
+Both columns a reader searches by are closed vocabularies now, and `record`
+flushes so an entry is readable the moment it is written. What is *not*
+enforced here, and is worth stating rather than implying: nothing can make
+an arbitrary function call `record`. `tests/test_audit.py` walks the
+mutating entry points and is still the thing that notices a new one.
 """
 
 from __future__ import annotations
@@ -28,6 +34,36 @@ DEPENDENCY = "dependency"
 CANDIDATE = "candidate"
 MILESTONE = "milestone"
 
+ENTITY_TYPES = frozenset({DEPENDENCY, CANDIDATE, MILESTONE})
+
+# Every act this system records against the Ledger. `entity_type` was
+# checked against its three constants while `action` stayed free text, so
+# the column a reader filters and groups the history by was the one nothing
+# spelled twice the same way.
+ACCEPT_CANDIDATE = "accept_candidate"
+MERGE_CANDIDATE = "merge_candidate"
+EDIT_CANDIDATE = "edit_candidate"
+REJECT_CANDIDATE = "reject_candidate"
+SET_RESOLUTION_STRATEGY = "set_resolution_strategy"
+MARK_SATISFIES_REQUIREMENT = "mark_satisfies_requirement"
+LINK_MILESTONE = "link_milestone"
+CREATE_MILESTONE = "create_milestone"
+REVISE_MILESTONE = "revise_milestone"
+
+ACTIONS = frozenset(
+    {
+        ACCEPT_CANDIDATE,
+        MERGE_CANDIDATE,
+        EDIT_CANDIDATE,
+        REJECT_CANDIDATE,
+        SET_RESOLUTION_STRATEGY,
+        MARK_SATISFIES_REQUIREMENT,
+        LINK_MILESTONE,
+        CREATE_MILESTONE,
+        REVISE_MILESTONE,
+    }
+)
+
 
 def record(
     session: Session,
@@ -39,9 +75,17 @@ def record(
     before: dict | None = None,
     after: dict | None = None,
 ) -> AuditLog:
-    """Record one ledger mutation. Append-only, never updated."""
-    if entity_type not in (DEPENDENCY, CANDIDATE, MILESTONE):
+    """Record one ledger mutation. Append-only, never updated.
+
+    Flushes. The caller used to have to remember, because the entry is only
+    reachable to a reader once it is in the database — and "mutate, record,
+    flush" spread over three statements in five modules is three chances to
+    write two of them.
+    """
+    if entity_type not in ENTITY_TYPES:
         raise ValueError(f"unknown audit entity {entity_type!r}")
+    if action not in ACTIONS:
+        raise ValueError(f"unknown audit action {action!r}")
     entry = AuditLog(
         actor=actor,
         action=action,
@@ -51,6 +95,7 @@ def record(
         after_json=after,
     )
     session.add(entry)
+    session.flush()
     return entry
 
 

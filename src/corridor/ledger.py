@@ -374,7 +374,7 @@ def mark_satisfies(
     audit.record(
         session,
         actor=actor,
-        action="mark_satisfies_requirement",
+        action=audit.MARK_SATISFIES_REQUIREMENT,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency_id,
         before={"evidence_link_id": link_id, "satisfies": was},
