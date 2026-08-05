@@ -342,7 +342,22 @@ def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
         session, [r.dependency.id for r in ranked]
     )
     for row in ranked:
-        cited = _as_assertion(cited_by_dependency.get(row.dependency.id))
+        # A critical record whose evidence is all unverified has nothing
+        # this section may quote — and it is precisely the record a reader
+        # most needs to see, so it cites the Ledger record instead. The
+        # fallback used to be `None`, which `assert_no_bare_cells` refuses
+        # by design: five bare cells here raised `BareCell` and `render`
+        # produced no report at all, rather than a report missing a row.
+        #
+        # A Derivation over the record's own id, which is what the
+        # Exceptions cell beside it, the Aging section and every Appendix
+        # row already carry. Falling back to the unverified quote was the
+        # other option and is the one to refuse: `cell_html` picks its
+        # class on `isinstance(p, Assertion)` alone, so a quote that is
+        # not on its page would render identically to one that is.
+        cited = _as_assertion(
+            cited_by_dependency.get(row.dependency.id)
+        ) or Derivation(RULESET_VERSION, (row.dependency.id,))
         # The row's exceptions as facts, each with its own quantity — no
         # cross-rule "worst" pick, which is the device ADR-0010 forbids.
         listed = ", ".join(

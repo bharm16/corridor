@@ -359,6 +359,113 @@ def test_accepting_refuses_a_candidate_with_a_missing_quote_key(session, documen
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
+def _ledger_counts(session):
+    return (
+        session.scalar(select(func.count()).select_from(EvidenceLink)),
+        session.scalar(select(func.count()).select_from(Assertion)),
+        session.scalar(select(func.count()).select_from(AuditLog)),
+    )
+
+
+@pytest.mark.parametrize(
+    "payload_fields,label",
+    [({}, "no fields"), (dict(FIELDS), "fields")],
+)
+@pytest.mark.parametrize("drop_key", [False, True], ids=["empty-list", "absent-key"])
+def test_accepting_refuses_a_candidate_that_cites_nothing(
+    session, document, payload_fields, label, drop_key
+):
+    """Every rule ran on each citation; none ran on the absence of one.
+
+    The empty-fields half is the one that mattered. With a field to
+    assert, the missing link surfaced as a NOT NULL violation and Postgres
+    aborted the transaction, so nothing survived. With no fields there was
+    no Assertion to write, nothing objected, and acceptance committed
+    `DEP-00001 / "Utility" / utility_relocation` with no evidence at all.
+    The quiet case was the durable one.
+    """
+    candidate = make_candidate(session, document)
+    payload = {**candidate.payload_json, "fields": payload_fields}
+    if drop_key:
+        payload.pop("citations")
+    else:
+        payload["citations"] = []
+    candidate.payload_json = payload
+    before = _ledger_counts(session)
+
+    with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert _ledger_counts(session) == before
+
+
+@pytest.mark.parametrize(
+    "payload_fields,label",
+    [({}, "no fields"), (dict(FIELDS), "fields")],
+)
+@pytest.mark.parametrize("drop_key", [False, True], ids=["empty-list", "absent-key"])
+def test_merging_refuses_a_candidate_that_cites_nothing(
+    session, document, payload_fields, label, drop_key
+):
+    """Merge was the quieter path and the worse outcome.
+
+    A citation-less merge added no link and no Assertion, then marked the
+    Candidate `merged` and pointed `merged_into` at a Dependency it had
+    contributed nothing to — with an audit entry saying it had. Nothing
+    entered the Ledger and the Candidate left the queue for good, because
+    merging refuses one that is no longer pending.
+
+    Parametrized over the fields for the same reason acceptance is: with
+    fields the pre-fix failure was the NOT NULL violation and without them
+    it was silence, and a guard that reads the fields rather than the
+    citations would still pass one of the two.
+    """
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
+    payload = {**candidate.payload_json, "fields": payload_fields}
+    if drop_key:
+        payload.pop("citations")
+    else:
+        payload["citations"] = []
+    candidate.payload_json = payload
+    before = _ledger_counts(session)
+
+    with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
+        merge_candidate(session, candidate, target, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert _ledger_counts(session) == before
+
+
+def test_a_candidate_whose_only_citation_is_unverified_is_still_adjudicable(
+    session, document
+):
+    """One citation, not one *verified* citation.
+
+    Admission and readiness are different bars deliberately: an unverified
+    quote sinks in the queue and is never filtered out of it, `bad-citation`
+    exists so a reviewer makes that call, and readiness already refuses to
+    rest on such a quote. The guard counts citations and reads nothing
+    about them.
+    """
+    candidate = make_candidate(session, document, verified=False)
+
+    dependency = accept_candidate(session, candidate, actor="reviewer")
+
+    link = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+    assert link.verified is False
+    assert candidate.citations_verified is False
+
+
 def test_accepting_records_one_assertion_per_claimed_field(session, document):
     """The ledger row is a conclusion; the assertions are what sources said."""
     candidate = make_candidate(session, document)
