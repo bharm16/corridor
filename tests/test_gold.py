@@ -582,6 +582,42 @@ def test_a_continuation_page_is_read_not_skipped(session, project, tmp_path):
     assert {r.critical for r in gold.rows} == {"yes"}
 
 
+def test_machine_gold_sidecar_names_the_document_beside_each_page_image(
+    session, project, tmp_path
+):
+    """Two documents can both contribute `page 1`.
+
+    The sidecar is the human checklist that narrows the shared blind spot.
+    Once machine gold grew from one matrix to every matrix in the project,
+    `page 1` stopped being a unique identifier for that checklist.
+    """
+    from corridor.gold import author_machine_gold, render_machine_gold
+
+    rows = [
+        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
+        [
+            "UTILITY OWNER",
+            "UTILITY ID",
+            "FACILITY TYPE",
+            "RELOCATION",
+            "PROTECTION IN PLACE",
+            "ABANDON/ DEACTIVATE",
+            "NOTES",
+        ],
+        ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
+    ]
+    first = make_multipage(session, project, tmp_path, [rows], sha="power")
+    second = make_multipage(session, project, tmp_path, [rows], sha="water")
+
+    gold = author_machine_gold(session, project.id)
+    out = render_machine_gold(gold)
+
+    assert first.filename in gold.document
+    assert second.filename in gold.document
+    assert f"{first.filename} page 1" in out
+    assert f"{second.filename} page 1" in out
+
+
 def test_a_document_that_never_prints_the_band_is_still_refused(
     session, project, tmp_path
 ):
@@ -604,3 +640,42 @@ def test_a_document_that_never_prints_the_band_is_still_refused(
         from corridor.gold import author_machine_gold
 
         author_machine_gold(session, project.id)
+
+
+# ------------------------------------------------- the file-safety rules
+
+
+def test_a_worksheet_in_progress_is_never_overwritten(tmp_path):
+    """Hours of human labelling against a regenerable file. The
+    regenerable one yields, and nothing tested that it did."""
+    from corridor.gold import write_worksheet
+
+    sheet = tmp_path / "wsdot-9540-worksheet.csv"
+
+    assert write_worksheet(sheet) is True
+    sheet.write_text("source_ref,critical\nPSEN-G-1001,yes\n")
+
+    assert write_worksheet(sheet) is False
+    assert "PSEN-G-1001,yes" in sheet.read_text()
+
+
+def test_a_blank_worksheet_is_blank(tmp_path):
+    from corridor.gold import worksheet, write_worksheet
+
+    sheet = tmp_path / "w.csv"
+    write_worksheet(sheet)
+
+    assert sheet.read_text() == worksheet()
+
+
+def test_machine_gold_never_claims_the_hand_authored_name(tmp_path):
+    """A machine gold set is a ceiling (#81 as amended). Letting it take
+    the name a person's labelling would use is how a ceiling gets read as
+    a floor."""
+    from corridor.gold import machine_gold_paths
+
+    csv_path, sidecar = machine_gold_paths("wsdot-9540", directory=tmp_path)
+
+    assert csv_path.name == "wsdot-9540.machine.csv"
+    assert sidecar.name == "wsdot-9540.machine.md"
+    assert csv_path.name != "wsdot-9540.csv"

@@ -62,7 +62,7 @@ if [ "$CURRENT" != "$PINNED" ]; then
 fi
 
 echo "== fetch (${SLUG}) =="
-uv run python -m corridor.corpus
+uv run python -m corridor.corpus "$MANIFEST"
 
 echo
 echo "== ingest (${SLUG}) =="
@@ -93,6 +93,12 @@ stricter):
      source_ref,page,critical — 'critical' by ADR-0009's rule; blank when
      the document has not settled. Blank reads as not-critical, out of
      the >=95% denominator.)
+
+     A hand-authored file that covers fewer than all the project's
+     matrices must say so at step 2 with --document=<id>, repeated. The
+     machine set needs no such flag: it reads every matrix in the project,
+     so the whole extracted population is its own. Nothing in the CSV
+     distinguishes the two, which is why the caller states it.
 
   2. Score:  uv run python -m corridor.eval ${SLUG} gold/${SLUG}.machine.csv --prompt-version=${PINNED}
 

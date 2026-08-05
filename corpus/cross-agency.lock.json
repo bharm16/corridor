@@ -1,5 +1,6 @@
 {
   "agency": "various",
+  "ingest_by_default": false,
   "name": "Cross-agency layout sources",
   "project": "cross-agency",
   "sources": {

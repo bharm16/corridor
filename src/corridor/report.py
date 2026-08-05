@@ -22,8 +22,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.exceptions import RULESET_VERSION, evaluate, facets
-from corridor.ledger import LedgerRow, browse
+from corridor.exceptions import (
+    RULESET_VERSION,
+    Evaluation,
+    evaluate_project,
+    format_exception_label,
+)
+from corridor.ledger import Evidence, LedgerRow, browse, primary_evidence
 from corridor.models import (
     Dependency,
     Document,
@@ -55,12 +60,38 @@ class Assertion:
 
 @dataclass(frozen=True)
 class Derivation:
+    """A computation over cited records, or over a run this one compares to.
+
+    ADR-0003's argument is that a Derivation *drills through* to the
+    Evidence beneath it. A Derivation over zero records drills to
+    nothing, so `record_ids` being empty is not enough — a cell whose
+    subject is a comparison (a record that left the Ledger has no id left
+    to cite) names the run instead.
+    """
+
     ruleset_version: str
-    record_ids: tuple[int, ...]
+    record_ids: tuple[int, ...] = ()
+    # What the computation covered when no record can answer for it: an
+    # empty Ledger has nothing to drill to, and a record that left the
+    # Ledger has no id left to cite. A named scope is provenance; an empty
+    # tuple on its own is a bare cell wearing a marker.
+    scope: str = ""
+
+    @property
+    def resolves(self) -> bool:
+        return bool(self.record_ids) or bool(self.scope)
 
     @property
     def marker(self) -> str:
-        return f"[{self.ruleset_version} over {len(self.record_ids)} records]"
+        if self.record_ids:
+            return f"[{self.ruleset_version} over {len(self.record_ids)} records]"
+        return f"[{self.ruleset_version} · {self.scope}]"
+
+    @property
+    def drill(self) -> str:
+        if self.record_ids:
+            return "records: " + ", ".join(str(i) for i in self.record_ids[:20])
+        return f"covers: {self.scope}"
 
 
 @dataclass
@@ -88,6 +119,9 @@ class Report:
     sections: list[Section] = field(default_factory=list)
     diff: Diff | None = None
     coverage_note: str = ""
+    # The evaluation this report published, so the export and the recorded
+    # run describe the same reading rather than taking their own.
+    evaluation: Evaluation | None = None
 
     @property
     def cells(self) -> list[Cell]:
@@ -97,16 +131,25 @@ class Report:
         ]
 
 
-def _derived(label: str, value: str, records) -> Cell:
-    return Cell(label, value, Derivation(RULESET_VERSION, tuple(records)))
+EMPTY_LEDGER = "an empty ledger"
+
+
+def _derived(label: str, value: str, records, *, scope: str = "") -> Cell:
+    return Cell(label, value, Derivation(RULESET_VERSION, tuple(records), scope))
 
 
 def build_report(
     session: Session, project_id: int, *, today: date | None = None
 ) -> Report:
     today = today or datetime.now(timezone.utc).date()
+    # One evaluation for the whole report. `today` used to reach two
+    # sections while every exception in the same report was computed
+    # against `date.today()` by a separate call, so a report built for a
+    # stated date disagreed with itself about how many days overdue a
+    # record was.
+    evaluation = evaluate_project(session, project_id, today=today)
     project = session.get(Project, project_id)
-    rows = browse(session, project_id, limit=100_000)
+    rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
     by_id = {r.dependency.id: r for r in rows}
     ids = tuple(by_id)
 
@@ -118,21 +161,33 @@ def build_report(
         project_name=project.name if project else f"project {project_id}",
         generated_at=datetime.now(timezone.utc),
         summary=[
-            _derived("Dependencies", str(len(ids)), ids),
-            _derived("Ready", str(len(ready)), ready),
-            _derived("With verified evidence", str(len(with_evidence)), with_evidence),
-            _derived("% with verified evidence", f"{pct:.1f}%", ids),
+            # A count of none still names what it counted: the matching
+            # records where there are some, the population where there
+            # are not, and the empty Ledger itself where there is no
+            # population either (ADR-0003).
+            _derived("Dependencies", str(len(ids)), ids, scope=EMPTY_LEDGER),
+            _derived("Ready", str(len(ready)), ready or ids, scope=EMPTY_LEDGER),
+            _derived(
+                "With verified evidence",
+                str(len(with_evidence)),
+                with_evidence or ids,
+                scope=EMPTY_LEDGER,
+            ),
+            _derived(
+                "% with verified evidence", f"{pct:.1f}%", ids, scope=EMPTY_LEDGER
+            ),
         ],
-        diff=diff_since_last(session, project_id),
+        diff=diff_since_last(session, project_id, evaluation=evaluation),
         coverage_note=_coverage_note(session, project_id, len(ids)),
+        evaluation=evaluation,
     )
 
     report.sections = [
         _milestone_rollup(session, project_id, rows),
-        _critical_items(session, rows, today),
-        _exceptions_summary(session, project_id),
+        _critical_items(session, rows),
+        _exceptions_summary(evaluation),
         _changes_since_last(report.diff),
-        _aging(rows, today),
+        _aging(rows),
         _appendix(rows),
     ]
     return report
@@ -186,6 +241,19 @@ def _milestone_rollup(
     if unlinked:
         groups.append(("Not linked to a milestone", "—", unlinked))
 
+    # A milestone nothing is linked to has no records to measure, and
+    # publishing "Ready 0" for it reads as "none of your records are
+    # ready" rather than "no records are linked". Named in the note
+    # instead, so the omission is stated rather than silent.
+    empty = [name for name, _, group in groups if not group]
+    groups = [g for g in groups if g[2]]
+    if empty:
+        section.note = (
+            "Nothing is linked to " + ", ".join(empty) + ", so "
+            + ("they are" if len(empty) > 1 else "it is")
+            + " not measured below."
+        )
+
     for name, need_date, group in groups:
         ids = [r.dependency.id for r in group]
         ready = [r.dependency.id for r in group if r.is_ready]
@@ -204,18 +272,20 @@ def _milestone_rollup(
                 _derived("Milestone", name, ids),
                 _derived("Need date", need_date, ids),
                 _derived("Total", str(len(ids)), ids),
-                _derived("Ready", str(len(ready)), ready),
-                _derived("At risk", str(len(at_risk)), at_risk),
-                _derived("Blocked", str(len(blocked)), blocked),
-                _derived("% evidenced", f"{pct:.0f}%", evidenced),
+                # A count of none is still derived from the records it
+                # examined — the matching subset when there is one, the
+                # group itself when there is not. A Derivation over zero
+                # records drills through to nothing (ADR-0003).
+                _derived("Ready", str(len(ready)), ready or ids),
+                _derived("At risk", str(len(at_risk)), at_risk or ids),
+                _derived("Blocked", str(len(blocked)), blocked or ids),
+                _derived("% evidenced", f"{pct:.0f}%", evidenced or ids),
             ]
         )
     return section
 
 
-def _critical_items(
-    session: Session, rows: list[LedgerRow], today: date
-) -> Section:
+def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
     """The critical records, nearest need first (ADR-0010, #116).
 
     Criticality is the filter that scopes the section, never a weight: a
@@ -233,8 +303,11 @@ def _critical_items(
             if not r.is_ready and is_critical(r.dependency.resolution_strategy)
         ),
         key=lambda r: (
+            # Undated records sort after dated ones on the first key, so
+            # the second only ever orders dated against dated; `date.min`
+            # is the placeholder that never discriminates.
             r.dependency.need_date is None,
-            r.dependency.need_date or today,
+            r.dependency.need_date or date.min,
             r.dependency.ref_code,
         ),
     )
@@ -265,12 +338,15 @@ def _critical_items(
             "strategy."
         ),
     )
+    cited_by_dependency = primary_evidence(
+        session, [r.dependency.id for r in ranked]
+    )
     for row in ranked:
-        cited = _primary_evidence(session, row.dependency.id)
+        cited = _as_assertion(cited_by_dependency.get(row.dependency.id))
         # The row's exceptions as facts, each with its own quantity — no
         # cross-rule "worst" pick, which is the device ADR-0010 forbids.
         listed = ", ".join(
-            e.rule + (f" {e.quantity_days}d" if e.quantity_days is not None else "")
+            format_exception_label(e)
             for e in sorted(row.exceptions, key=lambda e: e.rule)
         )
         section.rows.append(
@@ -302,8 +378,7 @@ def _critical_items(
     return section
 
 
-def _exceptions_summary(session: Session, project_id: int) -> Section:
-    found = evaluate(session, project_id)
+def _exceptions_summary(evaluation: Evaluation) -> Section:
     section = Section(
         "Exceptions",
         columns=["Rule", "Count", "Most days", "Why"],
@@ -312,7 +387,7 @@ def _exceptions_summary(session: Session, project_id: int) -> Section:
     # The engine's facet view, not a private regrouping (ADR-0010, #116):
     # buckets largest first, and within a bucket the rule's own quantity
     # orders — so the exemplar below is simply the bucket's first row.
-    for facet in facets(found):
+    for facet in evaluation.facets():
         ids = [e.dependency_id for e in facet.exceptions]
         if facet.has_quantities:
             top = facet.exceptions[0]
@@ -370,33 +445,48 @@ def _changes_since_last(diff: Diff | None) -> Section:
         )
 
     for change in diff.changes:
+        # A change cites the record it describes. Where that record has
+        # left the Ledger and the previous snapshot predates recorded ids,
+        # the comparison itself is the subject, so the cell names the run.
+        provenance = (
+            Derivation(RULESET_VERSION, (change.dependency_id,))
+            if change.dependency_id is not None
+            else Derivation(
+                RULESET_VERSION, scope=f"report run {diff.previous_run_id}"
+            )
+        )
         section.rows.append(
             [
-                _derived("Ref", change.ref_code, ()),
-                _derived("Change", change.kind, ()),
-                _derived("Detail", change.detail, ()),
+                Cell("Ref", change.ref_code, provenance),
+                Cell("Change", change.kind, provenance),
+                Cell("Detail", change.detail, provenance),
             ]
         )
     return section
 
 
-def _aging(rows: list[LedgerRow], today: date) -> Section:
+def _aging(rows: list[LedgerRow]) -> Section:
+    """Days overdue as the engine counted them, not as the report recounts.
+
+    The number is the OVERDUE fact's own `quantity_days` (ADR-0010). It
+    used to be recomputed here from the report's `today`, which the engine
+    never saw — two numbers for one fact whenever the two clocks differed.
+    """
     overdue = [
-        r
+        (r, e)
         for r in rows
-        if r.dependency.committed_date
-        and r.dependency.committed_date < today
-        and any(e.rule == "OVERDUE" for e in r.exceptions)
+        for e in r.exceptions
+        if e.rule == "OVERDUE" and r.dependency.committed_date
     ]
-    overdue.sort(key=lambda r: r.dependency.committed_date)
+    overdue.sort(key=lambda pair: pair[0].dependency.committed_date)
 
     section = Section(
         "Aging",
         columns=["Ref", "External party", "Committed", "Days overdue"],
         empty_message="Nothing is overdue.",
     )
-    for row in overdue:
-        days = (today - row.dependency.committed_date).days
+    for row, overdue_fact in overdue:
+        days = overdue_fact.quantity_days
         section.rows.append(
             [
                 _derived("Ref", row.dependency.ref_code, (row.dependency.id,)),
@@ -433,7 +523,11 @@ def _appendix(rows: list[LedgerRow]) -> Section:
                 _derived("Ready", "yes" if row.is_ready else "no", ids),
                 _derived(
                     "Exceptions",
-                    ", ".join(sorted(e.rule for e in row.exceptions)) or "—",
+                    ", ".join(
+                        format_exception_label(e)
+                        for e in sorted(row.exceptions, key=lambda e: e.rule)
+                    )
+                    or "—",
                     ids,
                 ),
             ]
@@ -441,25 +535,31 @@ def _appendix(rows: list[LedgerRow]) -> Section:
     return section
 
 
-def _primary_evidence(session: Session, dependency_id: int) -> Assertion | None:
-    row = session.execute(
-        select(EvidenceLink, Document)
-        .join(Document, EvidenceLink.document_id == Document.id)
-        .where(
-            EvidenceLink.dependency_id == dependency_id,
-            EvidenceLink.verified.is_(True),
-        )
-        .order_by(EvidenceLink.id)
-        .limit(1)
-    ).first()
-    if row is None:
+def _as_assertion(evidence: Evidence | None) -> Assertion | None:
+    """The Ledger's Evidence as this report's provenance class (ADR-0003)."""
+    if evidence is None:
         return None
-    link, document = row
-    return Assertion(document.id, document.filename, link.page_no, link.quote)
+    return Assertion(
+        evidence.document_id,
+        evidence.filename,
+        evidence.page_no,
+        evidence.quote,
+    )
 
 
 def assert_no_bare_cells(report: Report) -> None:
-    bare = [c for c in report.cells if c.provenance is None]
+    """No cell is bare, and no Derivation drills through to nothing.
+
+    Checking only for a missing `provenance` let a `Derivation` over zero
+    records satisfy the rule — a bare cell wearing a marker, which is the
+    device ADR-0003 exists to abolish.
+    """
+    bare = [
+        c
+        for c in report.cells
+        if c.provenance is None
+        or (isinstance(c.provenance, Derivation) and not c.provenance.resolves)
+    ]
     if bare:
         raise BareCell(
             f"{len(bare)} cell(s) published without provenance: "
@@ -474,11 +574,7 @@ def render(report: Report) -> str:
     def cell_html(cell: Cell) -> str:
         p = cell.provenance
         kind = "assertion" if isinstance(p, Assertion) else "derivation"
-        title = (
-            html.escape(p.quote)
-            if isinstance(p, Assertion)
-            else "records: " + (", ".join(str(i) for i in p.record_ids[:20]) or "computed")
-        )
+        title = html.escape(p.quote if isinstance(p, Assertion) else p.drill)
         return (
             f'<td class="{kind}">{html.escape(cell.value)}'
             f'<span class="marker" title="{title}">{html.escape(p.marker)}</span></td>'
@@ -503,14 +599,22 @@ def render(report: Report) -> str:
     summary = "".join(
         f'<div class="stat"><span class="n">{html.escape(c.value)}</span>'
         f'<span class="k">{html.escape(c.label)}</span>'
-        f'<span class="marker" title="records: '
-        f'{", ".join(str(i) for i in c.provenance.record_ids[:20])}">'
+        f'<span class="marker" title="{html.escape(c.provenance.drill)}">'
         f"{html.escape(c.provenance.marker)}</span></div>"
         for c in report.summary
     )
     coverage = (
         f'<p class="coverage">{html.escape(report.coverage_note)}</p>'
         if report.coverage_note
+        else ""
+    )
+    # The date the figures were counted from, not the moment the file was
+    # written. They are usually the same day and the header said only the
+    # second, so a report built for a stated date printed today's date over
+    # last week's numbers.
+    evaluated = (
+        f" · evaluated {report.evaluation.today:%Y-%m-%d}"
+        if report.evaluation
         else ""
     )
 
@@ -545,7 +649,7 @@ def render(report: Report) -> str:
  @page {{ size: A4; margin: 1.5cm; }}
 </style>
 <h1>Readiness — {html.escape(report.project_name)}</h1>
-<p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC · ruleset {report.ruleset_version}</p>
+<p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC{evaluated} · ruleset {report.ruleset_version}</p>
 {coverage}
 {summary}
 {"".join(section_html(s) for s in report.sections)}
@@ -583,14 +687,24 @@ def main(argv: list[str]) -> int:
         report = build_report(session, project.id)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render(report))
-        to_xlsx(session, project.id, Path("out/ledger.xlsx"))
+        to_xlsx(
+            session,
+            project.id,
+            Path("out/ledger.xlsx"),
+            evaluation=report.evaluation,
+        )
         try:
             to_pdf(out.read_text(), Path("out/report.pdf"))
             pdf = " · out/report.pdf"
         except Exception as exc:
             pdf = f" · PDF skipped ({type(exc).__name__})"
 
-        record_run(session, project.id, output_path=str(out))
+        record_run(
+            session,
+            project.id,
+            output_path=str(out),
+            evaluation=report.evaluation,
+        )
         session.commit()
 
     print(f"{out}{pdf} · out/ledger.xlsx")

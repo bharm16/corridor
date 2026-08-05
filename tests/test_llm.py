@@ -231,12 +231,33 @@ def test_a_truncated_response_raises_rather_than_returning_half_a_page():
         client([], body=body).complete(system="s", user="u", schema=SCHEMA)
 
 
-def test_an_empty_response_is_an_empty_extraction_not_a_crash():
-    """One bad page must not abort a 269-page run."""
+def test_a_200_with_no_message_raises_a_clear_error():
     body = responded()
     body["output"] = []
 
-    assert client([], body=body).complete(system="s", user="u", schema=SCHEMA) == {}
+    with pytest.raises(RuntimeError, match="returned 200 with no message"):
+        client([], body=body).complete(system="s", user="u", schema=SCHEMA)
+
+
+def test_a_200_with_no_output_text_part_raises_a_clear_error():
+    body = responded()
+    body["output"][0]["content"] = [{"type": "reasoning", "summary": []}]
+
+    with pytest.raises(RuntimeError, match="returned 200 with no output_text"):
+        client([], body=body).complete(system="s", user="u", schema=SCHEMA)
+
+
+def test_a_200_with_blank_output_text_raises_a_clear_error():
+    body = responded(text="   ")
+
+    with pytest.raises(RuntimeError, match="returned 200 with blank output_text"):
+        client([], body=body).complete(system="s", user="u", schema=SCHEMA)
+
+
+def test_a_valid_empty_json_object_is_a_legitimate_extraction():
+    assert client([], body=responded(text="{}")).complete(
+        system="s", user="u", schema=SCHEMA
+    ) == {}
 
 
 # --------------------------------------------------------- usage and logprobs
@@ -321,7 +342,7 @@ def test_complete_many_carries_one_image_set_per_user():
         max_workers=2,
     )
 
-    assert [r["user"] for r in results] == ["a", "b"]
+    assert [r.value["user"] for r in results] == ["a", "b"]
     assert sorted(seen) == [("a", ["a.png"]), ("b", ["b.png"])]
 
 
@@ -338,4 +359,91 @@ def test_complete_many_without_images_does_not_pass_the_argument():
         TextOnly(), system="s", schema=SCHEMA, users=["a", "b"], max_workers=2
     )
 
-    assert [r["user"] for r in results] == ["a", "b"]
+    assert [r.value["user"] for r in results] == ["a", "b"]
+
+
+def test_a_completion_separates_the_answer_from_the_metadata():
+    """The reserved key cannot leak into a Candidate because it is not in
+    the value. It used to travel inside the schema's own dict, and four
+    caller sites had to recognise and strip it."""
+    from corridor.llm import META_KEY, complete_many
+
+    class WithMeta:
+        max_workers = 1
+
+        def complete(self, *, system, user, schema):
+            return {"rows": [{"utility_id": "FOC1-1"}], META_KEY: {"logprobs": [1]}}
+
+    [completion] = complete_many(WithMeta(), system="s", schema={}, users=["p"])
+
+    assert completion.value == {"rows": [{"utility_id": "FOC1-1"}]}
+    assert META_KEY not in completion.value
+    assert completion.meta == {"logprobs": [1]}
+    assert completion.failed is False
+
+
+def test_a_returned_error_key_is_not_a_failure():
+    """Outcome is the type's, not the payload's.
+
+    A model answering with a field called `_error` used to be
+    indistinguishable from the call having failed — and every stub that
+    wanted to simulate a failure returned one rather than raising.
+    """
+    from corridor.llm import complete_many
+
+    class Odd:
+        max_workers = 1
+
+        def complete(self, *, system, user, schema):
+            return {"_error": "a value the document actually printed"}
+
+    [completion] = complete_many(Odd(), system="s", schema={}, users=["p"])
+
+    assert completion.failed is False
+    assert completion.value == {"_error": "a value the document actually printed"}
+
+
+def test_a_raised_failure_is_the_failure():
+    from corridor.llm import complete_many
+
+    class Broken:
+        max_workers = 1
+
+        def complete(self, *, system, user, schema):
+            raise RuntimeError("503 upstream")
+
+    [completion] = complete_many(Broken(), system="s", schema={}, users=["p"])
+
+    assert completion.failed is True
+    assert "503 upstream" in completion.error
+    assert completion.value == {}
+
+
+def test_complete_many_marks_only_the_bad_page_failed_for_a_200_with_no_message():
+    sent = []
+    bodies = [
+        responded(),
+        {"output": [], "usage": responded()["usage"]},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        user_text = sent[-1]["input"][0]["content"][0]["text"]
+        body = bodies[0] if user_text == "good page" else bodies[1]
+        return httpx.Response(200, json=body)
+
+    c = OpenAIClient(model="test-model", api_key="k", max_workers=2)
+    c._http = httpx.Client(transport=httpx.MockTransport(handler))
+
+    results = complete_many(
+        c,
+        system="s",
+        schema=SCHEMA,
+        users=["good page", "bad page"],
+        max_workers=2,
+    )
+
+    assert results[0].failed is False
+    assert results[0].value == {"rows": []}
+    assert results[1].failed is True
+    assert "returned 200 with no message" in results[1].error

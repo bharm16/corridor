@@ -15,6 +15,7 @@
 project: wsdot-9424
 name: SR 509 Completion Stage 1B (WSDOT 9424)
 agency: WSDOT
+ingest_by_default: false
 
 sources:
   - url: "https://ftp.wsdot.wa.gov/contracts/9424-SR509CompletionStage1B/RFP/Appendices/U/U2/U2-Existing%20Utility%20Listing.pdf"

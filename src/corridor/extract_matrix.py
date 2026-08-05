@@ -39,7 +39,7 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.docs import stored_pdf
+from corridor.candidates import propose
 from corridor.geometry import (
     MatrixRow,
     NoMatrixFound,
@@ -52,6 +52,7 @@ from corridor.geometry import (
 )
 from corridor.llm import OpenAIClient, StructuredClient, complete_many
 from corridor.models import ANSWER_SEPARATOR, Candidate, DocPage, Document
+from corridor.storage import stored_pdf
 from corridor.verify import quote_appears_on, unverified_fields
 
 # Re-exported deliberately. The canonical vocabulary moved out when a second
@@ -84,6 +85,10 @@ TRANSCRIBE_PROMPT = Path("prompts/matrix_v1.md")
 
 TIER_STRUCTURE = "structure"
 TIER_TRANSCRIBE = "transcribe"
+
+
+class ExtractionFailed(RuntimeError):
+    """The extractor could not complete the read, but the layout is unknown."""
 
 
 # The one canonical field several columns may claim at once, because it is
@@ -251,8 +256,10 @@ def extract_document(
     """Every conflict row on every page of one matrix.
 
     Raises `NoMatrixFound` when the document could not be read at all — no
-    rendered pages to show the model, or no page carrying a matrix. Returns
-    an empty list for a matrix with no conflicts.
+    rendered pages to show the model, or no page carrying a matrix. Raises
+    `ExtractionFailed` when page-level extraction fails before any layout
+    answer could be trusted. Returns an empty list for a matrix with no
+    conflicts.
     """
     client = client or OpenAIClient()
 
@@ -281,6 +288,11 @@ def extract_document(
     candidates: list[Candidate] = []
     recognized = 0
     errors = 0
+    # Buffered until the document attempt is known complete. A mixed
+    # success/failure is still an incomplete read, and leaving either rows
+    # or document-level metadata attached to the session would let direct
+    # callers observe a half-finished attempt.
+    header_disagreements = 0
 
     if structure_pages:
         results = complete_many(
@@ -297,19 +309,20 @@ def extract_document(
         # That is not unreliability, it is the same question asked eleven
         # times. Resolved by majority before any row is read (#101).
         resolved, disagreements = _resolve_headers(structure_pages, grids, results)
-        document.header_disagreements = disagreements
+        header_disagreements = disagreements
 
         # Pages in order, so a header printed on page 1 can carry to the
         # continuation pages that follow it.
         carried: tuple[ColumnMapping, int] | None = None
-        for page, result in zip(structure_pages, results):
-            if "_error" in result:
+        for page, completion in zip(structure_pages, results):
+            if completion.failed:
                 errors += 1
                 continue
+            result = completion.value
             if result.get("is_utility_matrix"):
                 recognized += 1
             made, carried = _structure_candidates(
-                document, page, grids[page.page_no], result, model, session,
+                document, page, grids[page.page_no], result, model,
                 carried, resolved=resolved,
             )
             candidates.extend(made)
@@ -325,21 +338,36 @@ def extract_document(
             # measured signal about how sure the model was of each digit.
             logprobs=True,
         )
-        for page, result in zip(transcribe_pages, results):
-            if "_error" in result:
+        for page, completion in zip(transcribe_pages, results):
+            if completion.failed:
                 errors += 1
                 continue
+            result = completion.value
             if result.get("is_utility_matrix"):
                 recognized += 1
             inherited = _page_attributes(result)
-            unsure = _low_confidence_tokens(result)
+            unsure = _low_confidence_tokens(completion)
             for item in result.get("rows") or []:
                 candidate = _transcribed_candidate(
                     document, page, item, model, inherited, unsure
                 )
                 if candidate is not None:
-                    session.add(candidate)
                     candidates.append(candidate)
+
+    if errors:
+        raise ExtractionFailed(
+            f"extraction failed for {document.filename}: {errors} of "
+            f"{len(pages)} pages errored before the document could be "
+            "completed. This says nothing about the layout."
+        )
+
+    if recognized == 0:
+        raise NoMatrixFound(
+            f"no page of {document.filename} carries a utility matrix"
+            + (f" ({errors} of {len(pages)} pages also failed)" if errors else "")
+            + ". A layout variant is unhandled — do not treat this as an "
+            "empty matrix."
+        )
 
     # A run has to be able to say how much of a document it could read
     # properly. A fallback nobody counts is a fallback nobody notices.
@@ -351,25 +379,11 @@ def extract_document(
         )
         if count
     }
-
-    # An outage is not an unhandled layout. Reporting every page failing
-    # as `NoMatrixFound` would tell a reader the document is unreadable
-    # when nothing was ever read — the conflation #59 story 2 forbids, one
-    # level up from the empty-versus-unreadable one.
-    if errors == len(pages):
-        raise RuntimeError(
-            f"every page of {document.filename} failed: {errors} of "
-            f"{len(pages)}. This says nothing about the document."
-        )
-
-    if recognized == 0:
-        raise NoMatrixFound(
-            f"no page of {document.filename} carries a utility matrix"
-            + (f" ({errors} of {len(pages)} pages also failed)" if errors else "")
-            + ". A layout variant is unhandled — do not treat this as an "
-            "empty matrix."
-        )
-
+    # Zero rather than null: a document read entirely by transcription has
+    # no printed header to disagree about, which is a different fact from
+    # one nobody has read.
+    document.header_disagreements = header_disagreements
+    session.add_all(candidates)
     session.flush()
     return candidates
 
@@ -452,9 +466,10 @@ def _resolve_headers(pages, grids, results):
     the alternative is an ordering nobody can predict from the document.
     """
     votes: dict[tuple[str, ...], list] = {}
-    for page, result in zip(pages, results):
-        if "_error" in result:
+    for page, completion in zip(pages, results):
+        if completion.failed:
             continue
+        result = completion.value
         grid_list = grids.get(page.page_no) or []
         table_index = result.get("matrix_table")
         if table_index is None or not (0 <= table_index < len(grid_list)):
@@ -485,7 +500,6 @@ def _structure_candidates(
     grids,
     result: dict,
     model: str | None,
-    session: Session,
     carried: tuple[ColumnMapping, int] | None = None,
     resolved: dict | None = None,
 ) -> tuple[list[Candidate], tuple[ColumnMapping, int] | None]:
@@ -548,7 +562,6 @@ def _structure_candidates(
             tier=TIER_STRUCTURE,
             unmapped=mapping.unmapped,
         )
-        session.add(candidate)
         candidates.append(candidate)
     return candidates, carried
 
@@ -661,15 +674,16 @@ def _page_attributes(result: dict) -> dict[str, str]:
     }
 
 
-def _low_confidence_tokens(result: dict) -> list[str]:
+def _low_confidence_tokens(completion) -> list[str]:
     """Numeric tokens the model was not sure of, from its own logprobs.
 
     Numeric only: prose wanders harmlessly and a low-probability word says
     little, but a hesitant digit is exactly the failure the gate measured
-    and the one nothing else catches. `_meta` is the client's reserved key
-    and never reaches a Candidate.
+    and the one nothing else catches. Metadata about the call arrives on
+    `Completion.meta`, beside the schema's answer rather than inside it,
+    so it cannot reach a Candidate.
     """
-    entries = ((result.get("_meta") or {}).get("logprobs")) or []
+    entries = (completion.meta.get("logprobs")) or []
     unsure = []
     for entry in entries:
         token = (entry.get("token") or "").strip()
@@ -753,46 +767,22 @@ def _candidate(
     low_confidence: list[str] | None = None,
 ) -> Candidate:
     page_text = page.text or ""
-    quote_ok = quote_appears_on(quote, page_text)
-    suspect = sorted(unverified_fields(fields, page_text))
-    unsure = low_confidence or []
 
-    return Candidate(
-        project_id=document.project_id,
+    return propose(
+        document,
         kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": page.page_no,
-                    "quote": quote,
-                    "verified": quote_ok,
-                    "whole_row": whole_row,
-                }
-            ],
-            "confidence": confidence,
-            # Named rather than counted, so a reviewer sees *which* value is
-            # not on the page instead of only that one of them is not.
-            "unverified_fields": suspect,
-            # What the document says that the Ledger has no field for. The
-            # trigger for a deliberate vocabulary extension, not something
-            # an extractor may decide for itself.
-            "unmapped_columns": unmapped,
-            # Transcribed digits the model hesitated on. Empty on the
-            # structure tier, which transcribes nothing.
-            "low_confidence_tokens": unsure,
-            "tier": tier,
-            "dedupe_hint": dedupe_hint(fields),
-            # OCR text is materially noisier, and a citation resting on it
-            # deserves to be visibly different when a reviewer weighs it.
-            "text_source": page.text_source,
-        },
-        source_document_id=document.id,
-        source_pages=[page.page_no],
+        fields=fields,
+        page_no=page.page_no,
+        quote=quote,
+        quote_verified=quote_appears_on(quote, page_text),
+        whole_row=whole_row,
         confidence=confidence,
         prompt_version=PROMPT_VERSION,
         model=model,
-        citations_verified=quote_ok and not suspect and not unsure,
+        tier=tier,
+        dedupe=dedupe_hint(fields),
+        text_source=page.text_source,
+        unverified=sorted(unverified_fields(fields, page_text)),
+        unmapped=unmapped,
+        low_confidence=low_confidence or [],
     )

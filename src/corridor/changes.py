@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import RULESET_VERSION, evaluate
+from corridor.exceptions import RULESET_VERSION, Evaluation
 from corridor.ledger import browse
 from corridor.models import ReportRun, is_critical
 
@@ -30,6 +30,11 @@ class Change:
     ref_code: str
     kind: str  # new | closed | slipped | escalated | became_ready
     detail: str
+    # The Dependency this change is about, so a report cell describing it
+    # drills through to the record rather than citing nothing (ADR-0003).
+    # None only for a record that left the Ledger before snapshots
+    # recorded ids — four such runs are stored.
+    dependency_id: int | None = None
 
 
 @dataclass
@@ -48,19 +53,28 @@ class Diff:
         return [c for c in self.changes if c.kind == kind]
 
 
-def snapshot(session: Session, project_id: int) -> dict:
-    """The state a report was published against, one entry per dependency."""
-    rows = browse(session, project_id, limit=100_000)
-    exceptions = evaluate(session, project_id)
+def snapshot(
+    session: Session, project_id: int, *, evaluation: Evaluation
+) -> dict:
+    """The state a report was published against, one entry per dependency.
 
-    by_dependency: dict[int, set[str]] = {}
-    for exception in exceptions:
-        by_dependency.setdefault(exception.dependency_id, set()).add(exception.rule)
+    The report passes the evaluation it published, so the snapshot records
+    the exceptions the reader saw rather than a second reading taken a
+    moment later. Required, not defaulted: this snapshot is what the *next*
+    report diffs against, so a second reading here misreports change.
+    """
+    rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
+
+    by_dependency = {
+        dependency_id: {e.rule for e in found}
+        for dependency_id, found in evaluation.by_dependency().items()
+    }
 
     return {
-        "ruleset_version": RULESET_VERSION,
+        "ruleset_version": evaluation.ruleset_version,
         "dependencies": {
             row.dependency.ref_code: {
+                "id": row.dependency.id,
                 "status": row.dependency.status,
                 "resolution_strategy": row.dependency.resolution_strategy,
                 "committed_date": (
@@ -81,7 +95,9 @@ def snapshot(session: Session, project_id: int) -> dict:
     }
 
 
-def diff_since_last(session: Session, project_id: int) -> Diff:
+def diff_since_last(
+    session: Session, project_id: int, *, evaluation: Evaluation
+) -> Diff:
     previous = session.scalars(
         select(ReportRun)
         .where(ReportRun.project_id == project_id)
@@ -89,7 +105,7 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
         .limit(1)
     ).first()
 
-    current = snapshot(session, project_id)
+    current = snapshot(session, project_id, evaluation=evaluation)
     if previous is None:
         # A first report has nothing to compare against, and saying "0
         # changes" would read as "nothing moved" rather than "we have not
@@ -111,16 +127,28 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
         was = before.get(ref)
         if was is None:
             diff.changes.append(
-                Change(ref, "new", f"added to the ledger as {now['status']}")
+                Change(
+                    ref,
+                    "new",
+                    f"added to the ledger as {now['status']}",
+                    now.get("id"),
+                )
             )
             continue
 
         if now["status"] == "closed" and was["status"] != "closed":
-            diff.changes.append(Change(ref, "closed", "status moved to closed"))
+            diff.changes.append(
+                Change(ref, "closed", "status moved to closed", now.get("id"))
+            )
 
         if now["ready"] and not was["ready"]:
             diff.changes.append(
-                Change(ref, "became_ready", "evidence now meets the closure bar")
+                Change(
+                    ref,
+                    "became_ready",
+                    "evidence now meets the closure bar",
+                    now.get("id"),
+                )
             )
 
         # A slip is the committed date moving *later*. Moving earlier is not
@@ -133,11 +161,17 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
                         "slipped",
                         f"committed date moved {was['committed_date']} → "
                         f"{now['committed_date']}",
+                        now.get("id"),
                     )
                 )
         elif now["committed_date"] and not was["committed_date"]:
             diff.changes.append(
-                Change(ref, "new", f"first committed date: {now['committed_date']}")
+                Change(
+                    ref,
+                    "new",
+                    f"first committed date: {now['committed_date']}",
+                    now.get("id"),
+                )
             )
 
         # A snapshot written before #96 has no `resolution_strategy` key at
@@ -155,6 +189,7 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
                     "escalated",
                     "resolution strategy became "
                     f"{now['resolution_strategy']}, which is critical",
+                    now.get("id"),
                 )
             )
 
@@ -164,13 +199,20 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
             appeared = set(now["exceptions"]) - set(was["exceptions"])
             for rule in sorted(appeared):
                 diff.changes.append(
-                    Change(ref, "escalated", f"new exception: {rule}")
+                    Change(
+                        ref, "escalated", f"new exception: {rule}", now.get("id")
+                    )
                 )
 
     for ref in before:
         if ref not in after:
             diff.changes.append(
-                Change(ref, "closed", "no longer in the ledger")
+                Change(
+                    ref,
+                    "closed",
+                    "no longer in the ledger",
+                    before[ref].get("id"),
+                )
             )
 
     diff.changes.sort(key=lambda c: (c.kind, c.ref_code))
@@ -178,13 +220,17 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
 
 
 def record_run(
-    session: Session, project_id: int, *, output_path: str | None = None
+    session: Session,
+    project_id: int,
+    *,
+    evaluation: Evaluation,
+    output_path: str | None = None,
 ) -> ReportRun:
     """Store the state this report was published against."""
     run = ReportRun(
         project_id=project_id,
         ruleset_version=RULESET_VERSION,
-        snapshot_json=snapshot(session, project_id),
+        snapshot_json=snapshot(session, project_id, evaluation=evaluation),
         output_path=output_path,
     )
     session.add(run)

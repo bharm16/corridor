@@ -120,6 +120,22 @@ EVENT_TYPES = (
 )
 
 
+def is_claim(value: str | None) -> bool:
+    """Does this asserted value say anything a source could disagree with?
+
+    A blank cell is an absent value, not a competing one — the same
+    reading the CONTRADICTION query already applied to nulls, because the
+    matrix revisions add and drop columns between editions. Empty strings
+    are the printed form of the same absence.
+
+    Lives here because both readers of contradiction need it and neither
+    may import the other: the exception engine computes CONTRADICTION and
+    the ledger renders the "sources disagree" pill, and the ledger is the
+    one that depends on the engine.
+    """
+    return bool(value and value.strip())
+
+
 def is_critical(strategy: str | None) -> bool:
     """Does this resolution commit the External Party to substantial work?
 
@@ -223,9 +239,41 @@ class Document(Base):
         default="pending",
         server_default="pending",
     )
+    # How this document was read: pages per extraction tier, and printed
+    # headers it read more than one way before majority resolution (#101).
+    # Both were set as ad-hoc attributes on this object by the extractor
+    # and read back with `getattr` defaults, so neither survived the run
+    # that produced them — a resumed run reported no fallback at all, in a
+    # pipeline whose own comment says "a fallback nobody counts is a
+    # fallback nobody notices".
+    extraction_tiers: Mapped[dict | None] = mapped_column(JSONB)
+    header_disagreements: Mapped[int | None] = mapped_column(Integer)
     # Always null in v0; supersession lands in M8.
     superseded_by: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExtractionRun(Base):
+    """One completed extraction attempt for one document and prompt version.
+
+    History is deliberate. A redo or a replacement prompt records another
+    completed attempt rather than overwriting the earlier one, so resume can
+    ask the narrow question "has this document completed at this prompt
+    version?" without pretending there was only one try.
+    """
+
+    __tablename__ = "extraction_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    candidate_count: Mapped[int] = mapped_column(Integer)
+    page_errors: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
@@ -332,10 +380,10 @@ class Dependency(Base):
     # two thousand feet apart on the ground.
     station_from: Mapped[str | None] = mapped_column(String(32))
     station_to: Mapped[str | None] = mapped_column(String(32))
-    # FKs arrive with external_orgs and milestones; those tables are not in
-    # the skeleton.
-    external_org_id: Mapped[int | None] = mapped_column(BigInteger)
-    milestone_id: Mapped[int | None] = mapped_column(BigInteger)
+    external_org_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_orgs.id")
+    )
+    milestone_id: Mapped[int | None] = mapped_column(ForeignKey("milestones.id"))
     external_contact: Mapped[str | None] = mapped_column(Text)
     internal_owner: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(

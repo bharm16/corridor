@@ -1,10 +1,14 @@
+from datetime import date
+
 import pytest
 from openpyxl import load_workbook
+from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
+from corridor.exceptions import Thresholds, evaluate_project, format_exception_label
 from corridor.export import COLUMNS, to_pdf, to_xlsx
-from corridor.models import Candidate, Document, Project
+from corridor.models import Candidate, Dependency, DocPage, Document, Project
 from corridor.report import build_report, render
 
 
@@ -33,6 +37,15 @@ def project(session):
         pages=28,
     )
     session.add(doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=4,
+            text="FOC1-1 Export Test Utility Telecom",
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
     session.flush()
 
     candidate = Candidate(
@@ -72,7 +85,12 @@ def project(session):
 
 def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
     """A spreadsheet that drops the provenance is just the matrix they had."""
-    path = to_xlsx(session, project.id, tmp_path / "ledger.xlsx")
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
     sheet = load_workbook(path)["Ledger"]
 
     headers = [c.value for c in sheet[1]]
@@ -91,22 +109,54 @@ def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
 
 def test_the_xlsx_records_what_produced_it(session, project, tmp_path):
     """A snapshot with no ruleset version cannot be reproduced or dated."""
-    path = to_xlsx(session, project.id, tmp_path / "ledger.xlsx")
+    evaluation = evaluate_project(
+        session,
+        project.id,
+        today=date(2026, 8, 1),
+        thresholds=Thresholds(stale_days=21, due_soon_days=9),
+    )
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=evaluation,
+    )
     workbook = load_workbook(path)
     assert "Provenance" in workbook.sheetnames
 
     meta = {row[0]: row[1] for row in workbook["Provenance"].values}
     assert meta["Project"] == "Export Test"
     assert meta["Ruleset version"]
+    assert meta["Evaluated on"] == "2026-08-01"
+    assert meta["STALE threshold (days)"] == 21
+    assert meta["DUE_SOON threshold (days)"] == 9
     assert meta["Records"] == 1
 
 
 def test_the_xlsx_carries_computed_exceptions(session, project, tmp_path):
-    path = to_xlsx(session, project.id, tmp_path / "ledger.xlsx")
+    dep = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dep.committed_date = date(2026, 7, 28)
+    dep.need_date = date(2026, 8, 8)
+    session.flush()
+    evaluation = evaluate_project(session, project.id, today=date(2026, 8, 5))
+
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=evaluation,
+    )
     sheet = load_workbook(path)["Ledger"]
     headers = [c.value for c in sheet[1]]
     row = {h: c.value for h, c in zip(headers, sheet[2])}
-    assert "ORPHAN" in (row["Exceptions"] or "")
+    by_rule = {
+        e.rule: e
+        for e in evaluation.for_dependency(dep.id)
+    }
+    assert format_exception_label(by_rule["OVERDUE"]) in (row["Exceptions"] or "")
+    assert format_exception_label(by_rule["DUE_SOON"]) in (row["Exceptions"] or "")
 
 
 def test_the_pdf_renders(session, project, tmp_path):
@@ -121,7 +171,12 @@ def test_an_empty_ledger_still_exports(session, tmp_path):
     empty = Project(slug="exp-empty", name="Empty", is_synthetic=True)
     session.add(empty)
     session.flush()
-    path = to_xlsx(session, empty.id, tmp_path / "empty.xlsx")
+    path = to_xlsx(
+        session,
+        empty.id,
+        tmp_path / "empty.xlsx",
+        evaluation=evaluate_project(session, empty.id),
+    )
     sheet = load_workbook(path)["Ledger"]
     assert [c.value for c in sheet[1]] == COLUMNS
     assert sheet.max_row == 1

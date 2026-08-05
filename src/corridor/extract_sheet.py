@@ -29,17 +29,16 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.docs import stored_file
+from corridor.candidates import propose
 from corridor.geometry import dedupe_hint
 from corridor.models import Candidate, DocPage, Document
 from corridor.sheets import (
     NoConflictSheet,
-    column_mapping,
     conflict_sheet,
-    header_row,
     read_workbook,
     row_text,
 )
+from corridor.storage import stored_file
 from corridor.vocabulary import MIN_ROW_FIELDS, REQUIRED, is_retired_row
 from corridor.verify import quote_appears_on, threshold_for, unverified_fields
 
@@ -71,11 +70,8 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
             "read. Re-ingest before treating this as an empty workbook."
         )
 
-    sheets = read_workbook(path)
-    sheet = conflict_sheet(sheets)
-    page_no = next(
-        index for index, other in enumerate(sheets, start=1) if other.name == sheet.name
-    )
+    chosen = conflict_sheet(read_workbook(path))
+    page_no = chosen.page_no
     page = session.scalars(
         select(DocPage).where(
             DocPage.document_id == document.id, DocPage.page_no == page_no
@@ -87,9 +83,8 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
     # is not, the citation is checked against what it actually is.
     threshold = threshold_for(page.text_source if page else None)
 
-    index = header_row(sheet)
-    headings = sheet.rows[index]
-    mapping = column_mapping(headings)
+    headings = chosen.headings
+    mapping = chosen.mapping
     unmapped = [
         heading.strip()
         for position, heading in enumerate(headings)
@@ -97,7 +92,7 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
     ]
 
     candidates = []
-    for raw in sheet.rows[index + 1 :]:
+    for raw in chosen.rows:
         fields = {
             field: raw[position].strip()
             for position, field in sorted(mapping.items())
@@ -119,6 +114,9 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
         candidates.append(candidate)
 
     document.extraction_tiers = {TIER_NATIVE: 1}
+    # The structured original states its own headers; there is no printed
+    # header to read two ways.
+    document.header_disagreements = 0
     session.flush()
     return candidates
 
@@ -135,43 +133,26 @@ def _candidate(
     # Rendered by the same function that wrote the page text, so the quote
     # is the line a reviewer reads rather than a reconstruction of one.
     quote = row_text(raw)
-    # Exactly, not at 0.9 — this text was generated from the same cells the
-    # values came from, so there is no print damage to make room for.
-    quote_ok = quote_appears_on(quote, page_text, threshold)
-    suspect = sorted(unverified_fields(fields, page_text))
 
-    return Candidate(
-        project_id=document.project_id,
+    return propose(
+        document,
         kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": page_no,
-                    "quote": quote,
-                    "verified": quote_ok,
-                    "whole_row": True,
-                }
-            ],
-            # No number, deliberately. Confidence on the page path is the
-            # model's judgement about what the columns mean; here there is
-            # no judgement to be more or less sure of, and a hardcoded 1.0
-            # would be this reader asserting certainty it was never asked
-            # for.
-            "confidence": None,
-            "unverified_fields": suspect,
-            "unmapped_columns": unmapped,
-            "low_confidence_tokens": [],
-            "tier": TIER_NATIVE,
-            "dedupe_hint": dedupe_hint(fields),
-            "text_source": "cells",
-        },
-        source_document_id=document.id,
-        source_pages=[page_no],
+        fields=fields,
+        page_no=page_no,
+        quote=quote,
+        # Exactly, not at 0.9 — this text was generated from the same cells
+        # the values came from, so there is no print damage to make room for.
+        quote_verified=quote_appears_on(quote, page_text, threshold),
+        whole_row=True,
+        # No number, deliberately. Confidence on the page path is the
+        # model's judgement about what the columns mean; here there is no
+        # judgement to be more or less sure of, and a hardcoded 1.0 would be
+        # this reader asserting certainty it was never asked for.
         confidence=None,
         prompt_version=PROMPT_VERSION,
-        model=None,
-        citations_verified=quote_ok and not suspect,
+        tier=TIER_NATIVE,
+        dedupe=dedupe_hint(fields),
+        text_source="cells",
+        unverified=sorted(unverified_fields(fields, page_text)),
+        unmapped=unmapped,
     )

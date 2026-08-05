@@ -17,6 +17,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.candidates import dedupe_hint, propose
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
@@ -129,128 +130,40 @@ def _to_candidate(
     if not fields.get("title"):
         return None
 
-    return Candidate(
-        project_id=document.project_id,
+    return propose(
+        document,
         kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": page.page_no,
-                    "quote": quote,
-                    "verified": verified,
-                    "whole_row": False,
-                }
-            ],
-            "confidence": item.get("confidence"),
-            "dedupe_hint": "|".join(
-                [fields.get("external_org", ""), "agreement", fields.get("title", "")]
-            ),
-            # OCR text is materially noisier, and a citation resting on it
-            # deserves to be visibly different when a reviewer weighs it.
-            "text_source": page.text_source,
-        },
-        source_document_id=document.id,
-        source_pages=[page.page_no],
+        fields=fields,
+        page_no=page.page_no,
+        quote=quote,
+        quote_verified=verified,
+        whole_row=False,
         confidence=item.get("confidence"),
         prompt_version=PROMPT_VERSION,
         model=model,
-        citations_verified=verified,
+        dedupe=dedupe_hint(
+            fields.get("external_org", ""), "agreement", fields.get("title", "")
+        ),
+        text_source=page.text_source,
     )
 
 
 def main(argv: list[str]) -> int:
     """`make agreements ARGS="<slug> [limit]"`"""
-    import sys
-    import time
+    from corridor.extract_batch import Noun, run_extraction
 
-    from corridor.db import Session as SessionFactory
-    from corridor.extract_batch import already_extracted, extract_documents
-    from corridor.models import Project
-
-    slug = argv[0] if argv else "nhhip-3c2"
-    limit = int(argv[1]) if len(argv) > 1 else None
-
-    with SessionFactory() as session:
-        project = session.scalars(
-            select(Project).where(Project.slug == slug)
-        ).first()
-        if project is None:
-            print(f"no project {slug!r}", file=sys.stderr)
-            return 1
-
-        documents = session.scalars(
-            select(Document)
-            .where(Document.project_id == project.id, Document.doc_type == "agreement")
-            .order_by(Document.doc_date)
-        ).all()
-
-        # Resume: a killed run leaves whole documents done, so skip those and
-        # pick up where it stopped instead of duplicating their candidates.
-        done = already_extracted(session, project.id, PROMPT_VERSION)
-        skipped = [d for d in documents if d.id in done]
-        documents = [d for d in documents if d.id not in done]
-        if limit:
-            documents = documents[:limit]
-
-        if not documents:
-            print(f"nothing to do: all {len(skipped)} already extracted at {PROMPT_VERSION}")
-            return 0
-
-        client = OpenAIClient()
-        started = time.time()
-        print(
-            f"{len(documents)} agreements at {client.max_workers}-way concurrency, "
-            f"model {client.model}"
-            + (f" ({len(skipped)} already done)" if skipped else ""),
-            flush=True,
-        )
-
-        totals = {"n": 0, "ok": 0, "err": 0}
-
-        def report(document, candidates, errors):
-            ok = sum(1 for c in candidates if c.citations_verified)
-            totals["n"] += len(candidates)
-            totals["ok"] += ok
-            totals["err"] += errors
-            print(
-                f"  {ok:>3}/{len(candidates):<3} verified"
-                + (f"  {errors} page errors" if errors else "")
-                + f"  {document.filename.split('/')[-1][:50]}",
-                flush=True,
-            )
-
-        try:
-            extract_documents(
-                session,
-                documents,
-                client=client,
-                system=PROMPT_PATH.read_text(),
-                schema=SCHEMA,
-                min_page_chars=MIN_PAGE_CHARS,
-                to_candidate=_to_candidate,
-                items_key="obligations",
-                on_document=report,
-            )
-        finally:
-            client.close()
-
-        n, ok = totals["n"], totals["ok"]
-        pct = 100 * ok / n if n else 0.0
-        elapsed = time.time() - started
-        print(
-            f"{n} obligations, {ok} verified ({pct:.1f}%) in {elapsed:.0f}s"
-            + (f", {totals['err']} pages failed" if totals["err"] else ""),
-            flush=True,
-        )
-        print(
-            f"tokens: {client.usage.prompt_tokens:,} in / "
-            f"{client.usage.completion_tokens:,} out",
-            flush=True,
-        )
-    return 0
+    return run_extraction(
+        argv,
+        doc_type="agreement",
+        default_slug="nhhip-3c2",
+        prompt_version=PROMPT_VERSION,
+        system=PROMPT_PATH.read_text(),
+        schema=SCHEMA,
+        min_page_chars=MIN_PAGE_CHARS,
+        to_candidate=_to_candidate,
+        items_key="obligations",
+        noun=Noun("agreements", "obligations"),
+    )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ Two behaviors are load-bearing rather than incidental:
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import json
@@ -72,6 +73,9 @@ class Manifest:
     sources: tuple[Source, ...]
     # Human-readable project name, used by ingest to create the Project row.
     name: str | None = None
+    # Layout evidence belongs in the corpus without being materialized into a
+    # tracked Project on every bulk ingest.
+    ingest_by_default: bool = True
     # An eval holdout. `make corpus` skips it, because fetching is one
     # command away from reading and reading it once spends the corpus for
     # good (#3, corpus-acquisition-spec.md §7.1). A comment in the YAML
@@ -87,8 +91,18 @@ class Summary:
     failed: list[str] = field(default_factory=list)
 
 
+def _load_bool_field(raw: dict, *, path: Path, field: str, default: bool) -> bool:
+    if field not in raw:
+        return default
+    value = raw[field]
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{path}: {field} must be a YAML boolean")
+
+
 def load_manifest(path: Path | str) -> Manifest:
-    raw = yaml.safe_load(Path(path).read_text()) or {}
+    manifest_path = Path(path)
+    raw = yaml.safe_load(manifest_path.read_text()) or {}
     sources = []
     for i, entry in enumerate(raw.get("sources") or []):
         url = entry.get("url")
@@ -121,7 +135,12 @@ def load_manifest(path: Path | str) -> Manifest:
         agency=raw.get("agency"),
         sources=tuple(sources),
         name=raw.get("name"),
-        sealed=bool(raw.get("sealed", False)),
+        ingest_by_default=_load_bool_field(
+            raw, path=manifest_path, field="ingest_by_default", default=True
+        ),
+        sealed=_load_bool_field(
+            raw, path=manifest_path, field="sealed", default=False
+        ),
     )
 
 
@@ -561,6 +580,7 @@ def _read_lock(path: Path, manifest: Manifest) -> dict:
     lock["project"] = manifest.project
     lock["name"] = manifest.name
     lock["agency"] = manifest.agency
+    lock["ingest_by_default"] = manifest.ingest_by_default
     return lock
 
 
@@ -573,16 +593,31 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def main() -> int:
-    """Fetch every manifest in corpus/. One project per manifest file;
-    each writes its own <stem>.lock.json.
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "manifest",
+        nargs="?",
+        help="fetch only this manifest; omit to fetch every manifest in corpus/",
+    )
+    return parser.parse_args(argv if argv is not None else sys.argv[1:])
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Fetch one named manifest, or every manifest in corpus/ by default.
+
+    Each project manifest writes its own <stem>.lock.json.
 
     A sealed manifest is skipped and named in the output. Sealing exists
     because the eval holdout's whole value is that nobody has looked at it,
     and this loop is how it would get looked at by accident — one glob, no
     prompt, irreversible.
     """
-    manifests = sorted(Path("corpus").glob("*.yaml"))
+    args = _parse_args([] if argv is None else argv)
+    if args.manifest:
+        manifests = [Path(args.manifest)]
+    else:
+        manifests = sorted(Path("corpus").glob("*.yaml"))
     if not manifests:
         print("no manifests in corpus/", file=sys.stderr)
         return 1
@@ -616,5 +651,9 @@ def main() -> int:
     return 1 if failed else 0
 
 
+def _run_cli() -> int:
+    return main(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_run_cli())

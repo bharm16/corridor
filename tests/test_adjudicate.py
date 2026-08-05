@@ -1,11 +1,21 @@
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from threading import Event
+from uuid import uuid4
+
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from corridor.adjudicate import (
     RESOLUTION_VOCABULARIES,
+    _next_ref_code,
     AlreadyAdjudicated,
+    InvalidCandidateProvenance,
+    InvalidRejectReason,
     ResolutionVocabulary,
+    UnadjudicableKind,
     accept_candidate,
+    edit_candidate,
+    reject_candidate,
     set_resolution_strategy,
 )
 from corridor.db import Session, engine
@@ -18,6 +28,7 @@ from corridor.models import (
     AuditLog,
     Candidate,
     Document,
+    DocPage,
     EvidenceLink,
     ExternalOrg,
     Project,
@@ -59,10 +70,32 @@ def document(session):
     )
     session.add(doc)
     session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=1,
+            text=(
+                "FOC1-1 AT&T Texas (SWBT) Telecom 1149+00 1153+17 B\n"
+                "FOC14-69 AT&T Texas (SWBT) Telecom 1124+26 1153+17 B"
+            ),
+        )
+    )
+    session.flush()
     return doc
 
 
-def make_candidate(session, document, *, fields=None, verified=True, quote="FOC1-1 AT&T"):
+def make_candidate(
+    session,
+    document,
+    *,
+    fields=None,
+    verified=True,
+    quote="FOC1-1 AT&T",
+    whole_row=True,
+    unverified_fields=(),
+    low_confidence_tokens=(),
+    tier=None,
+):
     fields = FIELDS if fields is None else fields
     candidate = Candidate(
         project_id=document.project_id,
@@ -76,17 +109,22 @@ def make_candidate(session, document, *, fields=None, verified=True, quote="FOC1
                     "page": 1,
                     "quote": quote,
                     "verified": verified,
-                    "whole_row": True,
+                    "whole_row": whole_row,
                 }
             ],
             "confidence": 1.0,
+            "unverified_fields": list(unverified_fields),
+            "low_confidence_tokens": list(low_confidence_tokens),
+            "tier": tier,
             "dedupe_hint": "AT&T Texas (SWBT)|Telecom|1149+00-1153+17",
         },
         source_document_id=document.id,
         source_pages=[1],
         confidence=1.0,
         prompt_version="txdot_ucm_v1",
-        citations_verified=verified,
+        citations_verified=(
+            verified and not unverified_fields and not low_confidence_tokens
+        ),
     )
     session.add(candidate)
     session.flush()
@@ -105,6 +143,220 @@ def test_accepting_creates_a_dependency_from_the_candidate(session, document):
     assert dep.station_from == "1149+00"
     assert dep.status == "identified"
     assert "AT&T Texas (SWBT)" in dep.title
+
+
+def test_accepting_refuses_a_candidate_whose_source_document_is_in_another_project(
+    session, document
+):
+    other = Project(slug="adj-other", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray = Document(
+        project_id=other.id,
+        sha256="b" * 64,
+        filename="other.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray)
+    session.flush()
+
+    candidate = make_candidate(session, document)
+    candidate.source_document_id = stray.id
+    session.flush()
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="source document"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_refuses_a_candidate_citing_another_projects_document(
+    session, document
+):
+    other = Project(slug="adj-other-citation", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray = Document(
+        project_id=other.id,
+        sha256="c" * 64,
+        filename="other-citation.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray)
+    session.flush()
+    session.add(
+        DocPage(document_id=stray.id, page_no=1, text="FOC1-1 AT&T Texas (SWBT)")
+    )
+    session.flush()
+
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "document_id": stray.id,
+            }
+        ],
+    }
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="citation document"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_refuses_a_candidate_with_a_missing_cited_page(session, document):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "page": 9,
+            }
+        ],
+    }
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="cited page"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_refuses_a_candidate_with_non_mapping_payload(session, document):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = []
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="payload must be an object"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_refuses_a_candidate_with_non_mapping_fields(session, document):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {**candidate.payload_json, "fields": []}
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="fields must be an object"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_refuses_a_candidate_with_non_list_citations(session, document):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {**candidate.payload_json, "citations": {"page": 1}}
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="citations must be a list"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_refuses_a_candidate_with_non_mapping_citation(session, document):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {**candidate.payload_json, "citations": ["bad"]}
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="citation must be an object"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_refuses_a_candidate_with_a_missing_quote_key(session, document):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                key: value
+                for key, value in candidate.payload_json["citations"][0].items()
+                if key != "quote"
+            }
+        ],
+    }
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_records_one_assertion_per_claimed_field(session, document):
@@ -203,6 +455,101 @@ def test_duplicate_source_ids_do_not_collide(session, document):
     assert first.ref_code != second.ref_code
 
 
+def test_accepting_after_a_gap_allocates_above_the_highest_existing_suffix(
+    session, document
+):
+    session.add_all(
+        [
+            Dependency(
+                project_id=document.project_id,
+                ref_code="DEP-00001",
+                dep_type="utility_relocation",
+                title="gap one",
+                status="identified",
+            ),
+            Dependency(
+                project_id=document.project_id,
+                ref_code="DEP-00003",
+                dep_type="utility_relocation",
+                title="gap three",
+                status="identified",
+            ),
+        ]
+    )
+    session.flush()
+
+    dep = accept_candidate(session, make_candidate(session, document), actor="b")
+
+    assert dep.ref_code == "DEP-00004"
+
+
+def test_ref_code_allocation_blocks_and_advances_across_two_sessions():
+    setup = engine.connect()
+    setup_tx = setup.begin()
+    project_id = setup.execute(
+        Project.__table__.insert()
+        .values(
+            slug=f"adj-race-{uuid4().hex}",
+            name="Adjudication Race",
+            is_synthetic=True,
+        )
+        .returning(Project.id)
+    ).scalar_one()
+    setup_tx.commit()
+    setup.close()
+
+    conn1 = engine.connect()
+    tx1 = conn1.begin()
+    session1 = Session(bind=conn1)
+    ready = Event()
+
+    def allocate_from_other_session() -> str:
+        conn2 = engine.connect()
+        tx2 = conn2.begin()
+        session2 = Session(bind=conn2)
+        try:
+            ready.set()
+            code = _next_ref_code(session2, project_id)
+            tx2.rollback()
+            return code
+        finally:
+            session2.close()
+            conn2.close()
+
+    try:
+        first = _next_ref_code(session1, project_id)
+        session1.add(
+            Dependency(
+                project_id=project_id,
+                ref_code=first,
+                dep_type="utility_relocation",
+                title="first",
+                status="identified",
+            )
+        )
+        session1.flush()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(allocate_from_other_session)
+            assert ready.wait(timeout=1)
+            with pytest.raises(FutureTimeout):
+                future.result(timeout=0.2)
+
+            tx1.commit()
+            assert future.result(timeout=2) == "DEP-00002"
+    finally:
+        session1.close()
+        conn1.close()
+        cleanup = engine.connect()
+        cleanup_tx = cleanup.begin()
+        cleanup.execute(
+            Dependency.__table__.delete().where(Dependency.project_id == project_id)
+        )
+        cleanup.execute(Project.__table__.delete().where(Project.id == project_id))
+        cleanup_tx.commit()
+        cleanup.close()
+
+
 def test_every_acceptance_writes_an_audit_entry(session, document):
     candidate = make_candidate(session, document)
     dep = accept_candidate(session, candidate, actor="bryce")
@@ -230,6 +577,225 @@ def test_a_candidate_cannot_be_accepted_twice(session, document):
     accept_candidate(session, candidate, actor="bryce")
     with pytest.raises(AlreadyAdjudicated):
         accept_candidate(session, candidate, actor="bryce")
+
+
+def test_editing_replaces_the_payload_fields_and_writes_an_audit_entry(
+    session, document
+):
+    candidate = make_candidate(session, document)
+    original_payload = candidate.payload_json
+
+    edited = {
+        "utility_id": "FOC1-1",
+        "external_org": "AT&T Texas",
+        "station_from": "1150+00",
+    }
+    edit_candidate(session, candidate, edited, actor="reviewer")
+
+    assert candidate.payload_json is not original_payload
+    assert candidate.payload_json["fields"] == edited
+    assert candidate.payload_json["citations"] == original_payload["citations"]
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == "candidate",
+            AuditLog.entity_id == candidate.id,
+            AuditLog.action == "edit_candidate",
+        )
+    ).one()
+    assert entry.before_json == {"fields": FIELDS}
+    assert entry.after_json == {"fields": edited}
+
+
+def test_editing_a_whole_row_candidate_revalidates_and_clears_resolved_diagnostics(
+    session, document
+):
+    candidate = make_candidate(
+        session,
+        document,
+        fields={**FIELDS, "station_from": "1092+00"},
+        quote="FOC1-1 AT&T Texas (SWBT) Telecom 1149+00 1153+17 B",
+        unverified_fields=["station_from"],
+        low_confidence_tokens=["1092"],
+    )
+
+    edit_candidate(session, candidate, dict(FIELDS), actor="reviewer")
+
+    assert candidate.payload_json["fields"] == FIELDS
+    assert candidate.payload_json["unverified_fields"] == []
+    assert candidate.payload_json["low_confidence_tokens"] == []
+    assert candidate.citations_verified is True
+
+
+def test_editing_a_whole_row_candidate_to_an_unsupported_value_stays_unverified(
+    session, document
+):
+    candidate = make_candidate(
+        session,
+        document,
+        fields={**FIELDS, "station_from": "1092+00"},
+        quote="FOC1-1 AT&T Texas (SWBT) Telecom 1149+00 1153+17 B",
+        unverified_fields=["station_from"],
+        low_confidence_tokens=["1092"],
+    )
+
+    edited = {**FIELDS, "station_from": "9999+00"}
+    edit_candidate(session, candidate, edited, actor="reviewer")
+
+    assert candidate.payload_json["fields"] == edited
+    assert candidate.payload_json["unverified_fields"] == ["station_from"]
+    assert candidate.payload_json["low_confidence_tokens"] == []
+    assert candidate.citations_verified is False
+
+
+def test_editing_a_whole_row_candidate_fails_closed_when_any_cited_page_is_missing(
+    session, document
+):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            *candidate.payload_json["citations"],
+            {
+                "document_id": document.id,
+                "page": 2,
+                "quote": "FOC1-1 AT&T Texas (SWBT) Telecom 1149+00 1153+17 B",
+                "verified": True,
+                "whole_row": True,
+            },
+        ],
+    }
+    edited = {**FIELDS, "station_from": "1150+00"}
+
+    edit_candidate(session, candidate, edited, actor="reviewer")
+
+    assert candidate.payload_json["fields"] == edited
+    assert candidate.payload_json["unverified_fields"] == sorted(edited)
+    assert candidate.citations_verified is False
+
+
+def test_editing_a_non_whole_row_candidate_does_not_start_verbatim_field_checks(
+    session, document
+):
+    candidate = make_candidate(
+        session,
+        document,
+        whole_row=False,
+        fields={**FIELDS, "station_from": "summary phrasing"},
+        quote="AT&T confirmed relocation in August",
+    )
+
+    edited = {**FIELDS, "station_from": "a reviewer paraphrase"}
+    edit_candidate(session, candidate, edited, actor="reviewer")
+
+    assert candidate.payload_json["fields"] == edited
+    assert candidate.payload_json["unverified_fields"] == []
+    assert candidate.payload_json["low_confidence_tokens"] == []
+    assert candidate.citations_verified is True
+
+
+def test_a_transcribed_row_is_revalidated_even_when_its_quote_was_not_whole():
+    """`whole_row` is not the question, and 79 live rows prove it.
+
+    `best_verifiable_quote` falls back to the longest contiguous window
+    whenever the assembled row is not printed contiguously — two tables
+    side by side, a `Data Source` column landing elsewhere in reading
+    order. The row is still transcribed cells; only the citation is
+    narrower. Reading `whole_row` as "is this a transcription" let an
+    edited value that appears nowhere on the page come back verified.
+    """
+    from corridor.adjudicate import _transcribes_cells
+
+    fallback_quote_row = {
+        "tier": "structure",
+        "citations": [{"whole_row": False}],
+    }
+    prose_obligation = {"tier": None, "citations": [{"whole_row": False}]}
+    legacy_matrix_row = {"citations": [{"whole_row": True}]}
+
+    assert _transcribes_cells(fallback_quote_row) is True
+    assert _transcribes_cells(prose_obligation) is False
+    assert _transcribes_cells(legacy_matrix_row) is True
+
+
+def test_editing_a_structure_tier_row_cited_by_a_partial_quote_is_revalidated(
+    session, document
+):
+    candidate = make_candidate(
+        session, document, tier="structure", whole_row=False, quote="FOC1-1 AT&T"
+    )
+    assert candidate.citations_verified is True
+
+    edited = {**FIELDS, "station_from": "9999+99"}
+    edit_candidate(session, candidate, edited, actor="reviewer")
+
+    assert candidate.payload_json["unverified_fields"] == ["station_from"]
+    assert candidate.citations_verified is False
+
+
+def test_editing_a_structure_tier_row_clears_a_diagnostic_the_edit_resolved(
+    session, document
+):
+    candidate = make_candidate(
+        session,
+        document,
+        tier="structure",
+        whole_row=False,
+        quote="FOC1-1 AT&T",
+        fields={**FIELDS, "station_from": "1l49+OO"},
+        unverified_fields=("station_from",),
+    )
+    assert candidate.citations_verified is False
+
+    edit_candidate(session, candidate, dict(FIELDS), actor="reviewer")
+
+    assert candidate.payload_json["unverified_fields"] == []
+    assert candidate.citations_verified is True
+
+
+def test_rejecting_sets_the_decision_timestamp_and_records_the_reason(
+    session, document
+):
+    candidate = make_candidate(session, document)
+
+    reject_candidate(session, candidate, "duplicate", actor="reviewer")
+
+    assert candidate.state == "rejected"
+    assert candidate.adjudicated_at is not None
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == "candidate",
+            AuditLog.entity_id == candidate.id,
+            AuditLog.action == "reject_candidate",
+        )
+    ).one()
+    assert entry.after_json == {"reason": "duplicate"}
+
+
+def test_rejecting_refuses_an_unknown_reason(session, document):
+    candidate = make_candidate(session, document)
+
+    with pytest.raises(InvalidRejectReason, match="because"):
+        reject_candidate(session, candidate, "because", actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert candidate.adjudicated_at is None
+
+
+@pytest.mark.parametrize(
+    ("operation", "args"),
+    [
+        (edit_candidate, ({"utility_id": "FOC1-1"},)),
+        (reject_candidate, ("duplicate",)),
+    ],
+)
+def test_edit_and_reject_refuse_an_already_adjudicated_candidate(
+    session, document, operation, args
+):
+    candidate = make_candidate(session, document)
+    accept_candidate(session, candidate, actor="reviewer")
+
+    with pytest.raises(AlreadyAdjudicated):
+        operation(session, candidate, *args, actor="reviewer")
 
 
 def test_merging_adds_assertions_without_creating_a_dependency(session, document):
@@ -304,6 +870,146 @@ def test_merging_is_audited(session, document):
     ).one()
     assert entry.after_json["candidate_id"] == second.id
     assert entry.after_json["merged_into"] == target.ref_code
+
+
+def test_merging_refuses_a_candidate_from_another_project(session, document):
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    other = Project(slug="adj-merge-other", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray_doc = Document(
+        project_id=other.id,
+        sha256="d" * 64,
+        filename="other-merge.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray_doc)
+    session.flush()
+    session.add(
+        DocPage(document_id=stray_doc.id, page_no=1, text="FOC1-9 AT&T Texas (SWBT)")
+    )
+    session.flush()
+    candidate = make_candidate(session, document)
+    candidate.project_id = other.id
+    candidate.source_document_id = stray_doc.id
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "document_id": stray_doc.id,
+            }
+        ],
+    }
+    session.flush()
+
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="different project"):
+        merge_candidate(session, candidate, target, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_merging_refuses_a_candidate_with_a_missing_quote_key(session, document):
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                key: value
+                for key, value in candidate.payload_json["citations"][0].items()
+                if key != "quote"
+            }
+        ],
+    }
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
+        merge_candidate(session, candidate, target, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_merging_refuses_a_candidate_with_non_integer_citation_document_id(
+    session, document
+):
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "document_id": {"id": document.id},
+            }
+        ],
+    }
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(
+        InvalidCandidateProvenance, match="citation document must be an integer"
+    ):
+        merge_candidate(session, candidate, target, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_merging_refuses_a_candidate_with_non_integer_cited_page(session, document):
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "page": {"page": 1},
+            }
+        ],
+    }
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    with pytest.raises(
+        InvalidCandidateProvenance, match="cited page must be a positive integer"
+    ):
+        merge_candidate(session, candidate, target, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_a_candidate_cannot_be_merged_twice(session, document):
@@ -860,3 +1566,57 @@ def test_a_9540_row_marked_on_both_sides_still_settles_nothing():
     assert vocabulary.read("RELOCATION; PROTECTION IN PLACE") is None
     # Two answers on the same side still settle.
     assert vocabulary.read("RELOCATION; ABANDON/ DEACTIVATE/ REMOVE") is None
+
+
+def make_event_candidate(session, document):
+    """What `make minutes` writes: a commitment read off meeting notes."""
+    candidate = Candidate(
+        project_id=document.project_id,
+        kind="event",
+        payload_json={
+            "kind": "event",
+            "fields": {
+                "description": "AT&T confirmed relocation NTP in August",
+                "committed_date": "2026-08-14",
+            },
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": "AT&T confirmed relocation NTP in August",
+                    "verified": True,
+                }
+            ],
+            "confidence": 1.0,
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="minutes_v1",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush()
+    return candidate
+
+
+def test_accepting_an_event_is_refused_rather_than_faked(session, document):
+    """An event Candidate carries nothing a Dependency is made of.
+
+    Acceptance used to read no kind at all, so it built a
+    `utility_relocation` titled "Utility" out of a commitment about a
+    conflict that already exists — a Ledger record no document describes,
+    entering by the one path that exists to stop exactly that.
+    """
+    candidate = make_event_candidate(session, document)
+
+    with pytest.raises(UnadjudicableKind, match="event"):
+        accept_candidate(session, candidate, actor="bryce")
+
+    assert candidate.state == "pending"
+    assert (
+        session.scalars(
+            select(Dependency).where(Dependency.project_id == document.project_id)
+        ).all()
+        == []
+    )

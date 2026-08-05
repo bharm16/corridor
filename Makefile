@@ -28,7 +28,8 @@ corpus:
 demo:
 	uv run python -m corridor.demo $(LIMIT)
 
-# Load every fetched source in the manifest lockfile.
+# Load every lockfile opted into bulk project materialization. Pass
+# `ARGS="<slug>"` to ingest one explicit project, including opted-out ones.
 ingest:
 	uv run python -m corridor.docs ingest
 

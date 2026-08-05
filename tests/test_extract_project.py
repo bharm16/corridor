@@ -10,9 +10,12 @@ import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
+from corridor.extract_matrix import ExtractionFailed
+from corridor.extract_sheet import PROMPT_VERSION as SHEET_PROMPT_VERSION
 from corridor.geometry import NoMatrixFound
-from corridor.extract_project import extract_project
-from corridor.models import Candidate, Document, Project
+from corridor.extract_project import Outcome, extract_project, main, render
+from corridor.models import Candidate, Document, ExtractionRun, Project
+from corridor.pipeline import ExtractionRoute
 
 PROMPT_VERSION = "test_v1"
 
@@ -80,6 +83,26 @@ def extractor(**by_filename):
     return extract
 
 
+def route_selector(**by_filename):
+    """An injected production-like route seam: version first, then extractor."""
+
+    def select_route(document):
+        prompt_version, result = by_filename[document.filename]
+
+        def extract(session, target):
+            if isinstance(result, Exception):
+                raise result
+            candidates = [candidate(target, verified=v) for v in result]
+            for c in candidates:
+                session.add(c)
+            session.flush()
+            return candidates
+
+        return ExtractionRoute(prompt_version, extract)
+
+    return select_route
+
+
 def test_it_reports_rows_and_unverified_citations_per_document(session, project):
     a = add_matrix(session, project, "a.pdf", "a" * 64)
     b = add_matrix(session, project, "b.pdf", "b" * 64)
@@ -141,6 +164,81 @@ def test_a_second_run_does_not_double_the_candidates(session, project):
     assert _count(session, doc) == 2
 
 
+def test_a_zero_row_document_is_skipped_after_a_completed_empty_attempt(
+    session, project
+):
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    extract = extractor(**{"a.pdf": []})
+
+    first = extract_project(
+        session, project, extract=extract, prompt_version=PROMPT_VERSION, commit=False
+    )
+    second = extract_project(
+        session, project, extract=extract, prompt_version=PROMPT_VERSION, commit=False
+    )
+
+    assert first[0].status == "extracted"
+    assert first[0].rows == 0
+    assert second[0].status == "skipped"
+    assert [
+        (run.prompt_version, run.candidate_count, run.page_errors)
+        for run in _runs(session, doc)
+    ] == [(PROMPT_VERSION, 0, 0)]
+
+
+def test_a_zero_row_spreadsheet_is_recorded_and_skipped_at_its_effective_prompt_version(
+    session, project
+):
+    doc = add_matrix(session, project, "matrix.xlsx", "a" * 64)
+    select_route = route_selector(
+        **{"matrix.xlsx": (SHEET_PROMPT_VERSION, [])}
+    )
+
+    first = extract_project(
+        session,
+        project,
+        select_route=select_route,
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+    second = extract_project(
+        session,
+        project,
+        select_route=select_route,
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    assert first[0].status == "extracted"
+    assert first[0].rows == 0
+    assert first[0].effective_prompt_version == SHEET_PROMPT_VERSION
+    assert second[0].status == "skipped"
+    assert second[0].effective_prompt_version == SHEET_PROMPT_VERSION
+    assert second[0].detail == f"already extracted at {SHEET_PROMPT_VERSION}"
+    assert [
+        (run.prompt_version, run.candidate_count, run.page_errors)
+        for run in _runs(session, doc)
+    ] == [(SHEET_PROMPT_VERSION, 0, 0)]
+    assert f"[{SHEET_PROMPT_VERSION}]" in render(project, PROMPT_VERSION, second)
+
+
+def test_a_candidate_without_a_run_does_not_make_a_document_skip(session, project):
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    session.add(candidate(doc))
+    session.flush()
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"a.pdf": [True]}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    assert outcomes[0].status == "extracted"
+    assert len(_runs(session, doc)) == 1
+
+
 def test_redo_replaces_pending_candidates(session, project):
     doc = add_matrix(session, project, "a.pdf", "a" * 64)
 
@@ -162,6 +260,7 @@ def test_redo_replaces_pending_candidates(session, project):
 
     assert outcomes[0].status == "extracted"
     assert _count(session, doc) == 1
+    assert len(_runs(session, doc)) == 2
 
 
 def test_redo_never_disturbs_an_accepted_candidate(session, project):
@@ -233,6 +332,14 @@ def _count(session, document) -> int:
             select(Candidate).where(Candidate.source_document_id == document.id)
         ).all()
     )
+
+
+def _runs(session, document) -> list[ExtractionRun]:
+    return session.scalars(
+        select(ExtractionRun)
+        .where(ExtractionRun.document_id == document.id)
+        .order_by(ExtractionRun.id)
+    ).all()
 
 
 # --------------------------- retiring a superseded reading (#105)
@@ -366,3 +473,241 @@ def test_a_document_that_cannot_be_read_keeps_the_reading_it_had(session, projec
 
     assert outcomes[0].status == "unreadable"
     assert _count(session, doc) == 1
+    assert _runs(session, doc) == []
+
+
+def test_a_transient_failure_does_not_block_a_clean_sibling(session, project):
+    failed = add_matrix(session, project, "a.pdf", "a" * 64)
+    clean = add_matrix(session, project, "b.pdf", "b" * 64)
+    session.add(candidate(failed))
+    session.flush()
+
+    outcomes = extract_project(
+        session,
+        project,
+        select_route=route_selector(
+            **{
+                "a.pdf": (PROMPT_VERSION, ExtractionFailed("503 upstream")),
+                "b.pdf": (PROMPT_VERSION, [True]),
+            }
+        ),
+        prompt_version="ignored_by_route",
+        commit=False,
+    )
+
+    assert [(o.filename, o.status) for o in outcomes] == [
+        ("a.pdf", "failed"),
+        ("b.pdf", "extracted"),
+    ]
+    assert outcomes[0].effective_prompt_version == PROMPT_VERSION
+    assert _count(session, failed) == 1
+    assert _runs(session, failed) == []
+    assert [
+        (run.document_id, run.prompt_version, run.candidate_count, run.page_errors)
+        for run in _runs(session, clean)
+    ] == [(clean.id, PROMPT_VERSION, 1, 0)]
+    report = render(project, PROMPT_VERSION, outcomes)
+    assert "FAILED" in report
+    assert "1 failed, 0 unreadable" in report
+
+
+def test_a_failed_document_writes_no_receipt_and_retries_on_the_next_run(
+    session, project
+):
+    document = add_matrix(session, project, "a.pdf", "a" * 64)
+    superseded = candidate(document)
+    session.add(superseded)
+    session.flush()
+
+    attempts = iter(
+        [
+            ExtractionFailed("every page of a.pdf failed: 1 of 2. This says nothing about the document."),
+            [True, True],
+        ]
+    )
+
+    def select_route(doc):
+        result = next(attempts)
+
+        def extract(session, target):
+            if isinstance(result, Exception):
+                raise result
+            candidates = [candidate(target, verified=v) for v in result]
+            for made in candidates:
+                session.add(made)
+            session.flush()
+            return candidates
+
+        return ExtractionRoute(PROMPT_VERSION, extract)
+
+    first = extract_project(
+        session,
+        project,
+        select_route=select_route,
+        prompt_version="ignored_by_route",
+        commit=False,
+    )
+    assert first[0].status == "failed"
+    assert _runs(session, document) == []
+    assert _count(session, document) == 1
+
+    second = extract_project(
+        session,
+        project,
+        select_route=select_route,
+        prompt_version="ignored_by_route",
+        commit=False,
+    )
+
+    assert _count(session, document) == 2
+    surviving = session.scalars(
+        select(Candidate).where(Candidate.source_document_id == document.id)
+    ).all()
+    assert superseded.id not in {c.id for c in surviving}
+    assert second[0].status == "extracted"
+    assert [
+        (run.prompt_version, run.candidate_count, run.page_errors)
+        for run in _runs(session, document)
+    ] == [(PROMPT_VERSION, 2, 0)]
+
+
+def test_an_unexpected_runtime_error_still_propagates(session, project):
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+
+    with pytest.raises(RuntimeError, match="bug in extractor"):
+        extract_project(
+            session,
+            project,
+            select_route=route_selector(
+                **{"a.pdf": (PROMPT_VERSION, RuntimeError("bug in extractor"))}
+            ),
+            prompt_version="ignored_by_route",
+            commit=False,
+        )
+
+    assert _count(session, doc) == 0
+    assert _runs(session, doc) == []
+
+
+def test_main_returns_nonzero_when_any_document_failed(
+    session, project, monkeypatch, capsys
+):
+    class StubClient:
+        model = "stub-model"
+
+        class _Usage:
+            prompt_tokens = 10
+            cached_tokens = 0
+            completion_tokens = 5
+            reasoning_tokens = 0
+
+        usage = _Usage()
+
+        def close(self):
+            pass
+
+    class Scoped:
+        def __enter__(self):
+            return session
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("corridor.db.Session", lambda: Scoped())
+    monkeypatch.setattr("corridor.llm.OpenAIClient", StubClient)
+    monkeypatch.setattr(
+        "corridor.extract_project.extract_project",
+        lambda *args, **kwargs: [
+            Outcome(
+                document_id=1,
+                filename="a.pdf",
+                status="failed",
+                effective_prompt_version=PROMPT_VERSION,
+                detail="503 upstream",
+            )
+        ],
+    )
+
+    assert main([project.slug]) == 1
+    out = capsys.readouterr().out
+    assert "FAILED" in out
+    assert "1 failed, 0 unreadable, 0 skipped" in out
+
+
+def tiered_extractor(tiers, *, disagreements=0):
+    """An extractor that records how it read the document, as a real one does."""
+
+    def extract(session, document):
+        document.extraction_tiers = dict(tiers)
+        document.header_disagreements = disagreements
+        c = candidate(document)
+        session.add(c)
+        session.flush()
+        return [c]
+
+    return extract
+
+
+def test_how_a_document_was_read_survives_the_run_that_read_it(session, project):
+    """`extraction_tiers` was an ad-hoc attribute, read back with a
+    `getattr` default. It never reached the database, so nothing outside
+    one process could say how a document had been read."""
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+
+    extract_project(
+        session,
+        project,
+        extract=tiered_extractor({"structure": 3, "transcribe": 1}, disagreements=2),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+    session.expire(doc)
+
+    assert doc.extraction_tiers == {"structure": 3, "transcribe": 1}
+    assert doc.header_disagreements == 2
+
+
+def test_a_resumed_run_still_reports_the_fallback_share(session, project):
+    """The skip is the normal case, and it used to report no tiers at all.
+
+    A report that under-states the fallback on every resumed run is the
+    failure this module's own comment names: a fallback nobody counts is
+    a fallback nobody notices.
+    """
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+    extract_project(
+        session,
+        project,
+        extract=tiered_extractor({"structure": 3, "transcribe": 1}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    # Second run: the document is already extracted at this version.
+    outcomes = extract_project(
+        session,
+        project,
+        extract=tiered_extractor({}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    [outcome] = outcomes
+    assert outcome.status == "skipped"
+    assert outcome.tiers == {"structure": 3, "transcribe": 1}
+    assert "25.0% fell back" in render(project, PROMPT_VERSION, outcomes)
+
+
+def test_the_fallback_share_is_stated_even_when_nothing_fell_back(session, project):
+    add_matrix(session, project, "a.pdf", "a" * 64)
+    outcomes = extract_project(
+        session,
+        project,
+        extract=tiered_extractor({"structure": 4}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    report = render(project, PROMPT_VERSION, outcomes)
+    assert "4 read from the text layer, 0 transcribed (0.0% fell back)" in report
+    assert "every page agreed" in report

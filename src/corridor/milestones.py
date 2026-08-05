@@ -19,6 +19,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import audit
 from corridor.models import Dependency, Milestone
 
 REQUIRED_COLUMNS = ("code", "name", "need_date")
@@ -41,7 +42,12 @@ class ImportResult:
 
 
 def import_csv(
-    session: Session, *, project_id: int, path: Path | str, source: str | None = None
+    session: Session,
+    *,
+    project_id: int,
+    path: Path | str,
+    source: str | None = None,
+    actor: str = "import",
 ) -> ImportResult:
     path = Path(path)
     rows = list(csv.DictReader(path.read_text().splitlines()))
@@ -80,14 +86,48 @@ def import_csv(
                 source=source or path.name,
             )
             session.add(milestone)
+            session.flush()
+            # Recorded like a revision. Only revisions were, so the first
+            # Need Date every linked Dependency inherits — the one that
+            # decides whether it is overdue — entered the record with
+            # nobody's name on it.
+            audit.record(
+                session,
+                actor=actor,
+                action=audit.CREATE_MILESTONE,
+                entity_type=audit.MILESTONE,
+                entity_id=milestone.id,
+                after={
+                    "code": code,
+                    "need_date": need_date.isoformat() if need_date else None,
+                    "source": milestone.source,
+                },
+            )
             result.created.append(milestone)
         else:
             # Re-import updates in place: a schedule revision is the normal
             # case, and creating a second row for one milestone code would
             # split every dependency linked to it.
+            was = existing.need_date
             existing.name = row.get("name") or existing.name
             existing.need_date = need_date
             existing.source = source or path.name
+            if was != need_date:
+                # A schedule revision moves every linked Dependency's need
+                # date on the next relink, so who moved it is part of the
+                # record rather than a fact about a CSV nobody kept.
+                audit.record(
+                    session,
+                    actor=actor,
+                    action=audit.REVISE_MILESTONE,
+                    entity_type=audit.MILESTONE,
+                    entity_id=existing.id,
+                    before={"need_date": was.isoformat() if was else None},
+                    after={
+                        "need_date": need_date.isoformat() if need_date else None,
+                        "source": existing.source,
+                    },
+                )
             result.updated.append(existing)
 
     session.flush()
@@ -110,7 +150,11 @@ def _parse_date(value: str | None, filename: str, line: int) -> date | None:
 
 
 def link_dependency(
-    session: Session, dependency: Dependency, milestone: Milestone
+    session: Session,
+    dependency: Dependency,
+    milestone: Milestone,
+    *,
+    actor: str,
 ) -> Dependency:
     """Point a dependency at the milestone it must be ready for.
 
@@ -118,17 +162,47 @@ def link_dependency(
     time, because a schedule revision must not silently rewrite history on
     records already reported against the old date. Re-import updates the
     milestone; re-linking is what pushes a new date onto a dependency.
+
+    `actor` is required because this *is* a ledger mutation: `need_date`
+    drives DUE_SOON and ORPHAN and appears in every recorded run, so a
+    relink moves published numbers. It used to write no audit entry at
+    all — the silent overwrite this module's own docstring is about.
     """
     if milestone.project_id != dependency.project_id:
         raise ValueError("milestone belongs to a different project")
+
+    before = {
+        "milestone_id": dependency.milestone_id,
+        "need_date": dependency.need_date.isoformat() if dependency.need_date else None,
+    }
     dependency.milestone_id = milestone.id
     dependency.need_date = milestone.need_date
+    audit.record(
+        session,
+        actor=actor,
+        action=audit.LINK_MILESTONE,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        before=before,
+        after={
+            "milestone_id": milestone.id,
+            "milestone_code": milestone.code,
+            "need_date": milestone.need_date.isoformat()
+            if milestone.need_date
+            else None,
+        },
+    )
     session.flush()
     return dependency
 
 
 def link_all(
-    session: Session, *, project_id: int, milestone_code: str, dep_type: str | None = None
+    session: Session,
+    *,
+    project_id: int,
+    milestone_code: str,
+    dep_type: str | None = None,
+    actor: str,
 ) -> int:
     """Bulk-link every unlinked dependency to one milestone.
 
@@ -152,7 +226,7 @@ def link_all(
 
     count = 0
     for dependency in session.scalars(query):
-        link_dependency(session, dependency, milestone)
+        link_dependency(session, dependency, milestone, actor=actor)
         count += 1
     return count
 
@@ -188,7 +262,12 @@ def main(argv: list[str]) -> int:
             print(f"  {milestone.code:<16} {milestone.need_date}  {milestone.name}")
 
         if link_code:
-            linked = link_all(session, project_id=project.id, milestone_code=link_code)
+            linked = link_all(
+                session,
+                project_id=project.id,
+                milestone_code=link_code,
+                actor="import",
+            )
             print(f"linked {linked} unlinked dependencies to {link_code}", flush=True)
 
         session.commit()

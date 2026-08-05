@@ -15,6 +15,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
+from corridor import audit
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session
 from corridor.models import (
@@ -51,11 +52,27 @@ def _reset(session, project: Project) -> None:
     deleted anywhere in this system.
     """
     dep_ids = select(Dependency.id).where(Dependency.project_id == project.id)
+    candidate_ids = select(Candidate.id).where(Candidate.project_id == project.id)
     session.execute(delete(Assertion).where(Assertion.dependency_id.in_(dep_ids)))
     session.execute(
         delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dep_ids))
     )
-    session.execute(delete(AuditLog).where(AuditLog.entity_id.in_(dep_ids)))
+    # Scoped by entity type as well as id. `entity_id` alone is not a key —
+    # the column holds Dependency, Candidate and Milestone ids in one
+    # namespace, so a demo reset was deleting real Milestone history whose
+    # numeric id happened to collide with a demo Dependency's.
+    session.execute(
+        delete(AuditLog).where(
+            (AuditLog.entity_type == audit.DEPENDENCY)
+            & AuditLog.entity_id.in_(dep_ids)
+        )
+    )
+    session.execute(
+        delete(AuditLog).where(
+            (AuditLog.entity_type == audit.CANDIDATE)
+            & AuditLog.entity_id.in_(candidate_ids)
+        )
+    )
     session.execute(delete(Candidate).where(Candidate.project_id == project.id))
     session.execute(delete(Dependency).where(Dependency.project_id == project.id))
 
@@ -119,7 +136,7 @@ def main(limit: int | None = None) -> int:
         report = build_report(session, project.id)
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(render(report))
-        to_xlsx(session, project.id, XLSX)
+        to_xlsx(session, project.id, XLSX, evaluation=report.evaluation)
         try:
             to_pdf(OUT.read_text(), PDF)
             pdf_note = f" · {PDF}"
@@ -127,7 +144,12 @@ def main(limit: int | None = None) -> int:
             pdf_note = f" · PDF skipped ({type(exc).__name__})"
 
         # Snapshot last, so the next report can say what changed.
-        record_run(session, project.id, output_path=str(OUT))
+        record_run(
+            session,
+            project.id,
+            output_path=str(OUT),
+            evaluation=report.evaluation,
+        )
         session.commit()
 
     print(

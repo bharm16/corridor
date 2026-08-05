@@ -132,9 +132,15 @@
     <div class="actions">
       <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/accept">
         <input type="hidden" name="slug" value="{{ project.slug }}">
-        <button class="primary" id="accept"><kbd>a</kbd> accept</button>
+        <button class="primary" id="accept"
+          {% if view.accept_refused %}disabled title="{{ view.accept_refused }}"{% endif %}>
+          <kbd>a</kbd> accept
+        </button>
       </form>
-      <button form="candidate" id="edit"><kbd>e</kbd> edit &amp; accept</button>
+      <button form="candidate" id="edit"
+        {% if view.accept_refused %}disabled title="{{ view.accept_refused }}"{% endif %}>
+        <kbd>e</kbd> edit &amp; accept
+      </button>
       <button id="reject-toggle"><kbd>r</kbd> reject</button>
       <button id="merge-toggle" {% if not view.matches %}disabled
         title="No existing dependency for this external party. Nothing to merge into."{% endif %}>

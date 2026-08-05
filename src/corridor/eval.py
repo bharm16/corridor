@@ -37,7 +37,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.db import Session as SessionFactory
-from corridor.models import Candidate, Document, Project
+from corridor.extraction_runs import completed_document_ids, completion_predicate
+from corridor.models import Candidate, Document, ExtractionRun, Project
 from corridor.verify import unverified_fields
 
 REQUIRED_COLUMNS = ("source_ref",)
@@ -86,23 +87,6 @@ _SEQUENTIAL_ID = re.compile(r"^[ \t]*(\d{1,3})[ \t]*$", re.MULTILINE)
 _STATION = re.compile(r"^[ \t]*\d{1,5}\+\d{2}(?:\.\d+)?\b")
 
 
-def _a_known_row_shape(ref: str | None) -> bool:
-    """Could this enumeration have produced this id at all?
-
-    Shape only — deliberately not "is it printed on its cited page". The
-    obvious page test is whole-line equality against the stored text, and
-    five live Project A rows defeat it: `OFOC14-1`, `OFOC14-2`, `OFOC25-1`,
-    `OFOC27-1` and `OFOC27-2` share their line with the owner. A fixture
-    where every id stands alone passes while the corpus does not.
-    """
-    cleaned = (ref or "").strip()
-    if not cleaned:
-        return False
-    return bool(
-        _UTILITY_ID.fullmatch(cleaned) or _SEQUENTIAL_ID.fullmatch(cleaned)
-    )
-
-
 class MalformedGoldSet(Exception):
     """The gold set is unusable, and guessing at it would fake a number."""
 
@@ -116,6 +100,56 @@ class GoldRecord:
     # Carried on the record rather than passed beside the list so a caller
     # cannot forget it and turn a real score into NOT MEASURED.
     critical: bool | None = None
+
+
+@dataclass(frozen=True)
+class GoldSet:
+    """An enumeration, and what it was able to look for.
+
+    Whether an extracted id is *spurious* or merely *outside this
+    enumeration's reach* is a property of the enumeration that produced
+    it, not a global fact about id shapes. `gold_from_page_text` already
+    decides which of two inverted row shapes applies to a document and
+    then threw that decision away, so `evaluate` re-derived it from the
+    union of both — for every gold set, however it was built.
+
+    Two consequences, both removed by carrying it here. A hand-authored
+    CSV reads the whole grid, so an id it does not contain is spurious by
+    definition; under the union rule the M7 holdout's own ids
+    (`PSEN-G-1001`) match no shape, and one genuinely spurious row would
+    have suppressed the precision figure on a holdout that is spent once
+    (ADR-0008). And on a prefixed layout the sequential shape never ran,
+    yet `303` was still treated as a row the enumeration could have
+    found — #90's defect in the opposite direction.
+
+    `reach` of None means "reads everything": no id is beyond it.
+    """
+
+    records: tuple[GoldRecord, ...]
+    reach: tuple[re.Pattern, ...] | None = None
+
+    def __iter__(self):
+        return iter(self.records)
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def can_adjudicate(self, ref: str | None) -> bool:
+        """Could this enumeration have produced this id at all?
+
+        Shape only — deliberately not "is it printed on its cited page".
+        The obvious page test is whole-line equality against the stored
+        text, and five live Project A rows defeat it: `OFOC14-1`,
+        `OFOC14-2`, `OFOC25-1`, `OFOC27-1` and `OFOC27-2` share their
+        line with the owner. A fixture where every id stands alone passes
+        while the corpus does not.
+        """
+        cleaned = (ref or "").strip()
+        if not cleaned:
+            return False
+        if self.reach is None:
+            return True
+        return any(pattern.fullmatch(cleaned) for pattern in self.reach)
 
 
 @dataclass
@@ -210,7 +244,7 @@ class EvalResult:
         return not self.critical_labeled or self.critical_gold_total == 0
 
 
-def load_gold(path: Path | str) -> list[GoldRecord]:
+def load_gold(path: Path | str) -> GoldSet:
     path = Path(path)
     rows = list(csv.DictReader(path.read_text().splitlines()))
     if not rows:
@@ -242,7 +276,10 @@ def load_gold(path: Path | str) -> list[GoldRecord]:
         )
     if not records:
         raise MalformedGoldSet(f"{path.name}: no rows with a source_ref")
-    return records
+    # A hand-authored gold set is a whole-document enumeration: it read the
+    # grid, so an id it does not contain is spurious rather than out of
+    # reach. `reach=None` says exactly that.
+    return GoldSet(tuple(records), None)
 
 
 def _critical(path: Path, row: dict[str, str]) -> bool:
@@ -260,7 +297,7 @@ def _critical(path: Path, row: dict[str, str]) -> bool:
     )
 
 
-def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
+def gold_from_page_text(page_text: dict[int, str]) -> GoldSet:
     """An enumeration read off the text stream rather than the table.
 
     Two row shapes are known, and they are tried in order because their
@@ -291,11 +328,14 @@ def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
                     continue
                 records.append(GoldRecord(source_ref=match.group(1), page=page_no))
         if records:
-            return records
-    return []
+            # The shape that won is this enumeration's reach. The one that
+            # did not run could not have found anything, so an id of that
+            # shape is outside the enumeration rather than spurious.
+            return GoldSet(tuple(records), (pattern,))
+    return GoldSet((), ())
 
 
-def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
+def gold_for_documents(session: Session, document_ids) -> GoldSet:
     """The enumeration over several documents, read one document at a time.
 
     Page numbers restart at 1 in every document, so a single page-keyed
@@ -308,14 +348,22 @@ def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
     from corridor.models import DocPage
 
     records: list[GoldRecord] = []
+    # Documents in one project may print different row shapes, so the
+    # reach of the combined enumeration is the union of what each
+    # document's scan could look for.
+    reach: list[re.Pattern] = []
     for document_id in sorted(document_ids):
         pages = session.execute(
             select(DocPage.page_no, DocPage.text).where(
                 DocPage.document_id == document_id
             )
         ).all()
-        records.extend(gold_from_page_text({p: t for p, t in pages}))
-    return records
+        found = gold_from_page_text({p: t for p, t in pages})
+        records.extend(found.records)
+        for pattern in found.reach or ():
+            if pattern not in reach:
+                reach.append(pattern)
+    return GoldSet(tuple(records), tuple(reach))
 
 
 def _followed_by_stationing(text: str, start: int) -> bool:
@@ -347,12 +395,9 @@ def extracted_documents(
     never run through the extractor would otherwise count every one of its
     rows as missed, and report the backlog as a recall failure.
     """
-    query = select(Candidate.source_document_id).where(
-        Candidate.project_id == project_id
+    return completed_document_ids(
+        session, project_id, prompt_version=prompt_version
     )
-    if prompt_version:
-        query = query.where(Candidate.prompt_version == prompt_version)
-    return set(session.scalars(query.distinct()).all())
 
 
 def _page_text(session: Session, document_ids) -> dict[tuple[int, int], str]:
@@ -372,9 +417,10 @@ def evaluate(
     session: Session,
     *,
     slug: str,
-    gold: list[GoldRecord],
+    gold: GoldSet,
     kind: str = "dependency",
     prompt_version: str | None = None,
+    document_ids: set[int] | None = None,
 ) -> EvalResult:
     """Score one extractor's output.
 
@@ -382,6 +428,18 @@ def evaluate(
     Candidates coexist on a project while a migration is undecided, and
     pooled they are meaningless: every row appears twice, so recall reads
     100% and precision reads 50% no matter how either extractor did.
+
+    `document_ids` is the population being scored. Without it the score
+    compares one enumeration against every Candidate in the project: a CSV
+    covering one matrix revision, scored against a project holding five,
+    puts every row of the other four in `spurious`.
+    `scripts/gate-run.sh` offers exactly that invocation as the stricter
+    alternative. `main` computed the document set and never passed it.
+
+    It is the caller's statement of the population, not a fact derived
+    from the gold set — a CSV cannot say which documents it enumerates,
+    because the format carries no document and `page` restarts at 1 in
+    every one. `measure` is where that gets decided.
     """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -392,6 +450,8 @@ def evaluate(
     )
     if prompt_version:
         query = query.where(Candidate.prompt_version == prompt_version)
+    if document_ids is not None:
+        query = query.where(Candidate.source_document_id.in_(document_ids or {0}))
     candidates = session.scalars(query).all()
 
     extracted = Counter()
@@ -411,6 +471,19 @@ def evaluate(
         if unverified_fields(candidate.payload_json.get("fields") or {}, text):
             field_failures += 1
 
+    if not versions and prompt_version is not None:
+        versions.update(
+            {
+                version: 0
+                for version in _completed_prompt_versions(
+                    session,
+                    project_id=project.id,
+                    prompt_version=prompt_version,
+                    document_ids=document_ids,
+                )
+            }
+        )
+
     # Multiset, not set: ids repeat within a revision (47 reused in one
     # Project A matrix), and collapsing them would hide a dropped row
     # behind its twin.
@@ -424,11 +497,11 @@ def evaluate(
     critical_wanted = Counter(r.source_ref for r in gold if r.critical)
     critical_matched = sum((critical_wanted & extracted).values())
 
-    # An extracted row is adjudicable if this enumeration could have
-    # produced its id — by shape, or because a hand-authored gold set names
-    # it. Everything else is unrecognized rather than spurious: the
-    # enumeration cannot say whether it is real, and charging it to the
-    # extractor is the defect (#90).
+    # An extracted row is adjudicable if *this* enumeration could have
+    # produced its id — which the gold set answers, because only it knows
+    # how it was built. Everything else is unrecognized rather than
+    # spurious: the enumeration cannot say whether it is real, and
+    # charging it to the extractor is the defect (#90).
     #
     # Counted per occurrence, not per distinct id. An extractor emitting
     # one unknown-shape id five times from a page printing it once should
@@ -437,7 +510,8 @@ def evaluate(
     surplus = extracted - wanted
     spurious, unrecognized = [], []
     for ref in surplus.elements():
-        (spurious if (_a_known_row_shape(ref) or ref in wanted) else unrecognized).append(ref)
+        adjudicable = gold.can_adjudicate(ref) or ref in wanted
+        (spurious if adjudicable else unrecognized).append(ref)
 
     result = EvalResult(
         project=slug,
@@ -461,6 +535,34 @@ def evaluate(
         ),
     )
     return result
+
+
+def _completed_prompt_versions(
+    session: Session,
+    *,
+    project_id: int,
+    prompt_version: str,
+    document_ids: set[int] | None,
+) -> list[str]:
+    """Completed prompt versions for the scoped document population.
+
+    Used only when no candidate rows survive the scope, so the prompt
+    provenance still names the extraction path that completed cleanly
+    rather than collapsing to "unknown".
+    """
+    query = (
+        select(ExtractionRun.prompt_version)
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(
+            Document.project_id == project_id,
+            completion_predicate(),
+            ExtractionRun.prompt_version == prompt_version,
+        )
+        .distinct()
+    )
+    if document_ids is not None:
+        query = query.where(ExtractionRun.document_id.in_(document_ids or {0}))
+    return list(session.scalars(query).all())
 
 
 def render(result: EvalResult) -> str:
@@ -513,7 +615,9 @@ def render(result: EvalResult) -> str:
         f"({share:.2f}% of extracted rows carry a value not on their page)"
     )
     lines.extend(_critical_lines(result))
-    versions = ", ".join(f"{k}×{v}" for k, v in sorted(result.prompt_versions.items()))
+    versions = ", ".join(
+        k if v == 0 else f"{k}×{v}" for k, v in sorted(result.prompt_versions.items())
+    )
     models = ", ".join(f"{k}×{v}" for k, v in sorted(result.models.items()))
     lines.append(f"  prompt_version: {versions or '—'}")
     lines.append(f"  model: {models or '—'}")
@@ -603,77 +707,269 @@ def _critical_lines(result: EvalResult) -> list[str]:
     return lines
 
 
-def main(argv: list[str]) -> int:
-    """`eval <project-slug> [gold.csv] [--prompt-version=X]`.
+def artifact(result: EvalResult, *, gold_source: str, ran_at: datetime) -> dict:
+    """The machine-readable record of one measurement.
 
-    Without a CSV the enumeration is built from the stored page text of the
-    project's matrices, which is independent of the table parser under test.
+    The only thing a gate script consumes, and it lived inside `main`
+    beside `mkdir` and `print`, so it could only be exercised by driving
+    the whole command — which no test did. ADR-0008 makes this the
+    highest-consequence untested code here: the artifact is how a
+    measurement spent once is recorded.
+
+    The null-vs-zero rule is the reason it is worth naming. `precision`
+    and `critical_recall` are null rather than a number when the
+    measurement could not be made, so a script cannot mistake "nobody
+    labelled it" for "the extractor found none of them", or a
+    subset figure for a whole-document one. The properties on
+    `EvalResult` already encode that; stating it a second time here is
+    how the JSON and the rendered text drift.
+    """
+    return {
+        "project": result.project,
+        "gold_source": gold_source,
+        "ran_at": ran_at.isoformat(),
+        "recall": result.recall,
+        "gold_total": result.gold_total,
+        "extracted_total": result.extracted_total,
+        "matched": result.matched,
+        "missing": result.missing,
+        "spurious": result.spurious,
+        "field_failures": result.field_failures,
+        # Null under partial coverage. A whole-document precision does not
+        # exist when the enumeration could not read the whole document,
+        # and a gate script reading this key must not receive a subset
+        # figure by accident — the same rule `critical_recall` follows for
+        # an unlabelled gold set.
+        "precision": None if result.partial_coverage else result.precision,
+        "precision_over_recognized": result.precision_over_recognized,
+        "coverage": result.coverage,
+        "recognized_total": result.recognized_total,
+        "unrecognized": result.unrecognized,
+        # Null rather than 0.0 when unmeasurable, so a script reading this
+        # artifact cannot mistake "nobody labeled it" for "the extractor
+        # found none of them".
+        "critical_recall": (
+            None if result.critical_unmeasurable else result.critical_recall
+        ),
+        "critical_gold_total": result.critical_gold_total,
+        "critical_matched": result.critical_matched,
+        "critical_missing": result.critical_missing,
+        "critical_labeled": result.critical_labeled,
+        "prompt_versions": result.prompt_versions,
+        "models": result.models,
+        "coverage_note": result.coverage_note,
+    }
+
+
+def exit_code(result: EvalResult) -> int:
+    """A measurement that could not be made is not a pass.
+
+    Exiting zero on an empty enumeration would let a broken measurement
+    slide through `scripts/gate-run.sh` as a green run.
+    """
+    return 1 if result.unmeasurable else 0
+
+
+class NothingToMeasure(Exception):
+    """There is no measurement to take, so a score would be a fiction."""
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """One scoring run, with the provenance of the enumeration it scored.
+
+    `gold_source` is what the recorded artifact publishes as the origin of
+    the number, so it states every scope that was applied and not only
+    where the rows came from.
+
+    `skipped` is the ingested matrices this extraction never read. They are
+    excluded from the population rather than counted as misses, which is a
+    fact about the measurement and therefore belongs to it.
+    """
+
+    result: EvalResult
+    gold_source: str
+    skipped: frozenset[int] = frozenset()
+
+
+def measure(
+    session: Session,
+    slug: str,
+    *,
+    gold_path: str | Path | None = None,
+    prompt_version: str | None = None,
+    document_ids: set[int] | None = None,
+) -> Measurement:
+    """Score one project's matrix extraction against an enumeration.
+
+    This is the whole measurement. It lived as an eleven-step sequence
+    inside `main`, where nothing drove it — every collaborator it calls has
+    tests, and the wiring between them had none. ADR-0008 makes that the
+    highest-consequence gap in this module: a holdout is spent once, and a
+    holdout scored by a broken measurement is a holdout wasted.
+
+    The refusal is the reason it is worth naming. `document_ids` scopes the
+    scoring to the documents this extractor actually read, on *both* gold
+    paths — so when nothing was extracted, the population is empty and
+    every gold row reads as a miss. The page-text path checked for that;
+    the CSV path, which is the invocation `scripts/gate-run.sh` prints, did
+    not. A slug with nothing extracted at the given prompt version scored
+    `recall 0.0%` with `unmeasurable` false and exited 0: a green gate on a
+    spent holdout. The check now sits above the branch, where it covers
+    both.
+
+    Without `gold_path` the enumeration is built from the stored page text
+    of the project's matrices, which is independent of the table parser
+    under test.
+
+    `document_ids` narrows the population, and exists because a CSV cannot
+    narrow it for itself. `author_machine_gold` reads *every* matrix in
+    the project — deliberately, and its own comment says why — so a
+    machine-authored CSV is a whole-project enumeration and the full
+    extracted set is the right population for it. A hand-authored CSV
+    covering one revision is not, and nothing in the file distinguishes
+    the two: `source_ref,page,critical` names no document, and `page`
+    restarts at 1 in each. So the caller says, and `gold_source` records
+    the population either way — a whole-document precision must not be
+    readable off a run whose scope the reader cannot see.
+    """
+    project = session.scalars(select(Project).where(Project.slug == slug)).first()
+    if project is None:
+        raise NothingToMeasure(f"no project {slug!r}")
+
+    matrices = set(
+        session.scalars(
+            select(Document.id).where(
+                Document.project_id == project.id,
+                Document.doc_type == "matrix",
+            )
+        ).all()
+    )
+    # The population being scored, on both paths. It was computed only for
+    # the page-text gold and never reached `evaluate`, which filtered on
+    # project and kind alone.
+    #
+    # Intersected with the matrices, because this measures matrix
+    # extraction. `extract_agreement` also emits `kind="dependency"`
+    # Candidates; they carry no `utility_id` so they never scored, but they
+    # were still counted into the prompt-version and model stamp and into
+    # `field_failures`, whose printed denominator is the matrix row count —
+    # a provenance stamp describing a different population than the number
+    # beside it.
+    extracted_docs = (
+        extracted_documents(session, project.id, prompt_version=prompt_version)
+        & matrices
+    )
+    if not extracted_docs:
+        raise NothingToMeasure(
+            f"{slug}: nothing extracted yet"
+            + (f" at {prompt_version}" if prompt_version else "")
+        )
+
+    skipped = matrices - extracted_docs
+    named = None
+    if document_ids is not None:
+        named = extracted_docs & set(document_ids)
+        if not named:
+            raise NothingToMeasure(
+                f"{slug}: none of the named documents completed extraction"
+                + (f" at {prompt_version}" if prompt_version else "")
+                + f"; extracted: {sorted(extracted_docs)}"
+            )
+        extracted_docs = named
+
+    if gold_path is not None:
+        gold = load_gold(gold_path)
+        source = str(gold_path)
+    else:
+        gold = gold_for_documents(session, extracted_docs)
+        source = "page text (independent of the table parser)"
+
+    # Both scopes apply to both paths, because both pass `document_ids`.
+    # Stated on the page-text path only, a CSV measurement recorded the
+    # file it read and stayed silent about the population it was narrowed
+    # to — which is the half a reader of the artifact cannot reconstruct.
+    if prompt_version:
+        source += f"; scoped to {prompt_version}"
+    if skipped:
+        source += f"; {len(skipped)} ingested matrix/matrices not extracted"
+    # The population, always. The enumeration is one thing and the rows it
+    # was scored against are another, and a CSV says nothing about the
+    # second — so a reader who sees only `gold/<slug>.machine.csv` cannot
+    # tell a whole-project measurement from a one-revision file scored
+    # against six.
+    source += f"; scored over {len(extracted_docs)} extracted matrix/matrices"
+    if named is not None:
+        source += f" named by the caller ({', '.join(str(i) for i in sorted(named))})"
+
+    return Measurement(
+        result=evaluate(
+            session,
+            slug=slug,
+            gold=gold,
+            prompt_version=prompt_version,
+            document_ids=extracted_docs,
+        ),
+        gold_source=source,
+        skipped=frozenset(skipped),
+    )
+
+
+def main(argv: list[str]) -> int:
+    """`eval <project-slug> [gold.csv] [--prompt-version=X] [--document=N ...]`.
+
+    Argument parsing, printing and the artifact file. The measurement
+    itself is `measure`.
 
     `--prompt-version` scopes both the enumeration and the scoring to one
     extraction path, which is what makes two paths on the same project
     comparable rather than pooled.
+
+    `--document` names the population, repeatably. A hand-authored CSV
+    covering one revision has no other way to say so — the format carries
+    no document — and without it the file is scored against every matrix
+    the project extracted.
     """
+    known = ("--prompt-version=", "--document=")
     flags = [a for a in argv if a.startswith("--")]
     args = [a for a in argv if not a.startswith("--")]
     prompt_version = next(
         (f.split("=", 1)[1] for f in flags if f.startswith("--prompt-version=")), None
     )
-    if not args or any(not f.startswith("--prompt-version=") for f in flags):
+    named = [f.split("=", 1)[1] for f in flags if f.startswith("--document=")]
+    if not args or any(not f.startswith(known) for f in flags):
         print(
-            "usage: eval <project-slug> [gold.csv] [--prompt-version=X]",
+            "usage: eval <project-slug> [gold.csv] [--prompt-version=X] "
+            "[--document=N ...]",
             file=sys.stderr,
         )
         return 2
+    try:
+        document_ids = {int(n) for n in named} or None
+    except ValueError:
+        print("--document takes a document id", file=sys.stderr)
+        return 2
 
     slug = args[0]
-    skipped: set[int] = set()
+    gold_path = args[1] if len(args) > 1 else None
     with SessionFactory() as session:
-        if len(args) > 1:
-            gold = load_gold(args[1])
-            source = args[1]
-        else:
-            project = session.scalars(
-                select(Project).where(Project.slug == slug)
-            ).first()
-            if project is None:
-                print(f"no project {slug!r}", file=sys.stderr)
-                return 1
-            extracted_docs = extracted_documents(
-                session, project.id, prompt_version=prompt_version
+        try:
+            measurement = measure(
+                session,
+                slug,
+                gold_path=gold_path,
+                prompt_version=prompt_version,
+                document_ids=document_ids,
             )
-            matrices = set(
-                session.scalars(
-                    select(Document.id).where(
-                        Document.project_id == project.id,
-                        Document.doc_type == "matrix",
-                    )
-                ).all()
-            )
-            skipped = matrices - extracted_docs
-            if not extracted_docs:
-                print(
-                    f"{slug}: nothing extracted yet"
-                    + (f" at {prompt_version}" if prompt_version else ""),
-                    file=sys.stderr,
-                )
-                return 1
+        except NothingToMeasure as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
-            gold = gold_for_documents(session, extracted_docs)
-            source = "page text (independent of the table parser)"
-            if prompt_version:
-                source += f"; scoped to {prompt_version}"
-            if skipped:
-                source += f"; {len(skipped)} ingested matrix/matrices not extracted"
-
-        result = evaluate(
-            session, slug=slug, gold=gold, prompt_version=prompt_version
-        )
-
-    print(render(result))
-    if len(args) == 1 and skipped:
+    print(render(measurement.result))
+    if gold_path is None and measurement.skipped:
         print(
-            f"  {len(skipped)} ingested matrix/matrices contributed no candidates "
-            "and are excluded from the enumeration, not counted as misses."
+            f"  {len(measurement.skipped)} ingested matrix/matrices contributed no "
+            "candidates and are excluded from the enumeration, not counted as misses."
         )
 
     out = Path("out")
@@ -684,51 +980,17 @@ def main(argv: list[str]) -> int:
     path = out / f"{stem}.json"
     path.write_text(
         json.dumps(
-            {
-                "project": result.project,
-                "gold_source": source,
-                "ran_at": datetime.now(timezone.utc).isoformat(),
-                "recall": result.recall,
-                "gold_total": result.gold_total,
-                "extracted_total": result.extracted_total,
-                "matched": result.matched,
-                "missing": result.missing,
-                "spurious": result.spurious,
-                "field_failures": result.field_failures,
-                # Null under partial coverage. A whole-document precision
-                # does not exist when the enumeration could not read the
-                # whole document, and a gate script reading this key must
-                # not receive a subset figure by accident — the same rule
-                # `critical_recall` follows for an unlabelled gold set.
-                "precision": (
-                    None if result.partial_coverage else result.precision
-                ),
-                "precision_over_recognized": result.precision_over_recognized,
-                "coverage": result.coverage,
-                "recognized_total": result.recognized_total,
-                "unrecognized": result.unrecognized,
-                # Null rather than 0.0 when unmeasurable, so a script
-                # reading this artifact cannot mistake "nobody labeled it"
-                # for "the extractor found none of them".
-                "critical_recall": (
-                    None if result.critical_unmeasurable else result.critical_recall
-                ),
-                "critical_gold_total": result.critical_gold_total,
-                "critical_matched": result.critical_matched,
-                "critical_missing": result.critical_missing,
-                "critical_labeled": result.critical_labeled,
-                "prompt_versions": result.prompt_versions,
-                "models": result.models,
-                "coverage_note": result.coverage_note,
-            },
+            artifact(
+                measurement.result,
+                gold_source=measurement.gold_source,
+                ran_at=datetime.now(timezone.utc),
+            ),
             indent=2,
         )
         + "\n"
     )
     print(f"\n{path}")
-    # A measurement that could not be made is not a pass. Exiting zero here
-    # would let a broken enumeration slide through a script as a green run.
-    return 1 if result.unmeasurable else 0
+    return exit_code(measurement.result)
 
 
 if __name__ == "__main__":

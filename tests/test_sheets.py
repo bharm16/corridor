@@ -163,7 +163,7 @@ def test_the_conflict_sheet_is_the_one_carrying_conflict_ids(tmp_path):
         "Utility Conflicts": conflict_rows(),
     })
 
-    assert conflict_sheet(read_workbook(path)).name == "Utility Conflicts"
+    assert conflict_sheet(read_workbook(path)).sheet.name == "Utility Conflicts"
 
 
 def test_the_fuller_sheet_wins_over_its_printed_view(tmp_path):
@@ -182,7 +182,7 @@ def test_the_fuller_sheet_wins_over_its_printed_view(tmp_path):
         "Utility Conflicts": conflict_rows(),
     })
 
-    assert conflict_sheet(read_workbook(path)).name == "Utility Conflicts"
+    assert conflict_sheet(read_workbook(path)).sheet.name == "Utility Conflicts"
 
 
 def test_a_workbook_with_no_conflict_sheet_says_so(tmp_path):
@@ -208,9 +208,9 @@ def test_a_blank_form_is_a_conflict_sheet_with_no_rows(workbook, tmp_path):
         ],
     })
 
-    sheet = conflict_sheet(read_workbook(path))
-    assert header_row(sheet) == 1
-    assert sheet.rows[header_row(sheet) + 1 :] == ()
+    chosen = conflict_sheet(read_workbook(path))
+    assert chosen.header_index == 1
+    assert chosen.rows == ()
 
 
 # --------------------------------------------------------- the rendering
@@ -324,12 +324,54 @@ def test_the_template_is_a_blank_form_with_its_schema_intact():
     sheets = read_workbook(TEMPLATE)
     conflicts = conflict_sheet(sheets)
 
-    assert conflicts.name == "Utility Conflicts"
-    assert len(conflicts.rows[header_row(conflicts)]) == 40
+    assert conflicts.sheet.name == "Utility Conflicts"
+    assert len(conflicts.headings) == 40
     # A blank form: schema, no conflicts.
-    body = conflicts.rows[header_row(conflicts) + 1 :]
-    assert not [row for row in body if any(cell for cell in row)]
+    assert not [row for row in conflicts.rows if any(cell for cell in row)]
 
 
 def _norm(value) -> str:
     return " ".join(str(value or "").split()).casefold()
+
+
+def test_the_conflict_sheet_carries_the_reading_that_chose_it(tmp_path):
+    """The selector computed the header index and mapping to choose; the
+    caller then recomputed both, and used `header_row`'s `int | None`
+    unguarded — correct only because the selection had already proved it
+    non-None, which the return type could not say."""
+    path = write_workbook(tmp_path / "w.xlsx", {
+        "Cover": [["Utility Conflict Management (UCM)"]],
+        "Utility Conflicts": [
+            ["Utility Conflict Management (UCM) - Utility Conflicts"],
+            CONFLICT_HEADINGS,
+            ["UC-1", "AT&T", "Telecom", "1149+00"],
+        ],
+    })
+
+    chosen = conflict_sheet(read_workbook(path))
+
+    assert chosen.header_index == 1
+    assert list(chosen.headings) == list(CONFLICT_HEADINGS)
+    assert chosen.mapping == column_mapping(CONFLICT_HEADINGS)
+    assert [row[0] for row in chosen.rows] == ["UC-1"]
+
+
+def test_the_page_number_is_the_one_ingest_gave_the_same_sheet(tmp_path):
+    """Every spreadsheet citation's page number used to rest on two
+    modules independently agreeing about workbook order."""
+    from corridor.ingest import _extract_sheets
+
+    path = write_workbook(tmp_path / "w.xlsx", {
+        "Cover": [["Utility Conflict Management (UCM)"]],
+        "Notes": [["Anything"]],
+        "Utility Conflicts": [
+            ["Utility Conflict Management (UCM) - Utility Conflicts"],
+            CONFLICT_HEADINGS,
+        ],
+    })
+
+    chosen = conflict_sheet(read_workbook(path))
+    ingested = {page_no for page_no, *_ in _extract_sheets(path)}
+
+    assert chosen.page_no == 3
+    assert chosen.page_no in ingested

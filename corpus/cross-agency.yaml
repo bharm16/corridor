@@ -20,6 +20,7 @@
 project: cross-agency
 name: Cross-agency layout sources
 agency: various
+ingest_by_default: false
 
 sources:
   - url: "https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/procuement_marketingd1/documents/fy24-25/ad--25115/444008-4-utility-conflict-matrix-(no-conflicts).pdf"

@@ -86,6 +86,10 @@ _Avoid_: delay, pushback, reschedule
 A condition computed over the Ledger indicating a Dependency is not on track — missing an owner, a date, or Evidence; stale, due soon, overdue, contradicted, or unlinked to a Milestone. Exceptions are always queries, never stored flags. An Exception is a fact carrying its category and its quantities (days overdue, days of silence); it has no score — Exceptions are grouped, sorted by their quantities, and filtered by Criticality, never ranked by weights nobody can defend (ADR-0010).
 _Avoid_: alert, flag, issue, risk, warning, severity (retired with the Exception score, ADR-0010)
 
+**Evaluation**:
+One project's Exceptions as computed at one moment, carrying the date they were computed against, the thresholds applied and the ruleset version — so a published number and the fact beneath it cannot disagree about what day it is. A report, its export and its recorded run all describe one Evaluation.
+_Avoid_: run, scan, pass, snapshot (a snapshot is what a report was published against, and it records an Evaluation rather than being one)
+
 **Briefing**:
 A model-drafted narrative view of the record — one Dependency or one project, read across its Evidence, Assertions and Exceptions and rendered as prose. Cited sentence by sentence to the same bar as a report cell; floored by the computed Exceptions, which it may explain but never omit; stamped with the prompt version and model that drafted it and the evaluation time and ruleset version of the Exceptions it cites; regenerable and never itself the record. Anything it surfaces that should become record enters as a Candidate through Adjudication (ADR-0011).
 _Avoid_: summary, analysis, assessment, AI insights

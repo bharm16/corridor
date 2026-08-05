@@ -7,13 +7,16 @@ reasonably concludes the pipeline ran. Four of Project A's five ingested
 matrices had never been extracted, and the only reason that was visible is
 that `make eval` counts them.
 
-Three outcomes, deliberately distinct:
+Four outcomes, deliberately distinct:
 
 - **extracted** — the extractor read the document. Zero rows here is a
   correct answer: a matrix with no conflicts.
 - **unreadable** — the extractor could not read it. Reporting this as
   "0 rows" is exactly how a broken pipeline passes for a quiet one, which
   is why `NoMatrixFound` is an exception and not an empty list.
+- **failed** — the extractor could not finish the attempt. This says the
+  run failed, not that the layout is unhandled, so a sibling document still
+  proceeds and a later retry may succeed unchanged.
 - **skipped** — already extracted at this prompt version. Extraction
   inserts unconditionally, so without this a second run doubles every
   Candidate a reviewer then has to clear by hand.
@@ -27,21 +30,24 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
-from corridor.extract_matrix import PROMPT_VERSION
+from corridor.extraction_runs import record_extraction_run
+from corridor.extract_matrix import ExtractionFailed, PROMPT_VERSION
 from corridor.geometry import NoMatrixFound
 from corridor.models import Candidate, Document, Project
-from corridor.pipeline import extract_any
+from corridor.pipeline import ExtractionRoute, extraction_route
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
-# read the document at all.
+# read the document at all, and records how it read the document on
+# `Document.extraction_tiers` and `Document.header_disagreements` — real
+# columns, so the answer survives the run that produced it.
 Extractor = Callable[[Session, Document], list[Candidate]]
+RouteSelector = Callable[[Document], ExtractionRoute]
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,7 @@ class Outcome:
     document_id: int
     filename: str
     status: str
+    effective_prompt_version: str
     rows: int = 0
     unverified: int = 0
     detail: str = ""
@@ -67,35 +74,61 @@ def extract_project(
     session: Session,
     project: Project,
     *,
-    extract: Extractor,
+    extract: Extractor | None = None,
+    select_route: RouteSelector | None = None,
     prompt_version: str = PROMPT_VERSION,
     redo: bool = False,
     commit: bool = True,
 ) -> list[Outcome]:
     """Extract every matrix in the project, one Outcome per document.
 
-    Committing on document boundaries is what makes resume safe: a killed
-    run then leaves each document either wholly extracted or not started,
-    which is the invariant the skip relies on. "Has candidates" has to mean
-    "finished" or skipping them would drop half a document's rows.
+    Committing each document's Candidates and ExtractionRun together makes
+    resume safe: a killed run cannot expose a completion receipt without the
+    results from that attempt, and a successful zero-row read still has a
+    durable receipt to skip next time.
     """
+    if (extract is None) == (select_route is None):
+        raise TypeError("pass exactly one of extract= or select_route=")
+    if select_route is None:
+        assert extract is not None
+
+        def select_route(document: Document) -> ExtractionRoute:
+            return ExtractionRoute(
+                effective_prompt_version=prompt_version,
+                extract=extract,
+            )
+
     documents = session.scalars(
         select(Document)
         .where(Document.project_id == project.id, Document.doc_type == "matrix")
         .order_by(Document.doc_date, Document.id)
     ).all()
 
-    done = already_extracted(session, project.id, prompt_version)
+    done_by_version: dict[str, set[int]] = {}
     outcomes = []
 
     for document in documents:
+        route = select_route(document)
+        effective_prompt_version = route.effective_prompt_version
+        done = done_by_version.get(effective_prompt_version)
+        if done is None:
+            done = already_extracted(session, project.id, effective_prompt_version)
+            done_by_version[effective_prompt_version] = done
+
         if document.id in done and not redo:
+            # A skipped document reports the tiers it was read at, not
+            # nothing. Reporting nothing made every resumed run — the
+            # normal case the skip exists for — under-state the fallback
+            # share, which is the one number this report exists to carry.
             outcomes.append(
                 Outcome(
                     document.id,
                     document.filename,
                     "skipped",
-                    detail=f"already extracted at {prompt_version}",
+                    effective_prompt_version=effective_prompt_version,
+                    detail=f"already extracted at {effective_prompt_version}",
+                    tiers=dict(document.extraction_tiers or {}),
+                    header_disagreements=document.header_disagreements or 0,
                 )
             )
             continue
@@ -106,6 +139,7 @@ def extract_project(
                     document.id,
                     document.filename,
                     "unreadable",
+                    effective_prompt_version=effective_prompt_version,
                     detail=f"ingest parse_status is {document.parse_status!r}",
                 )
             )
@@ -123,10 +157,34 @@ def extract_project(
                 # started rather than more current, and doing so only when
                 # some *later* document committed on its behalf.
                 _clear_pending(session, document)
-                candidates = extract(session, document)
+                candidates = route.extract(session, document)
+                record_extraction_run(
+                    session,
+                    document,
+                    prompt_version=effective_prompt_version,
+                    candidate_count=len(candidates),
+                    page_errors=0,
+                )
         except NoMatrixFound as exc:
             outcomes.append(
-                Outcome(document.id, document.filename, "unreadable", detail=str(exc))
+                Outcome(
+                    document.id,
+                    document.filename,
+                    "unreadable",
+                    effective_prompt_version=effective_prompt_version,
+                    detail=str(exc),
+                )
+            )
+            continue
+        except ExtractionFailed as exc:
+            outcomes.append(
+                Outcome(
+                    document.id,
+                    document.filename,
+                    "failed",
+                    effective_prompt_version=effective_prompt_version,
+                    detail=str(exc),
+                )
             )
             continue
 
@@ -137,12 +195,11 @@ def extract_project(
                 document.id,
                 document.filename,
                 "extracted",
+                effective_prompt_version=effective_prompt_version,
                 rows=len(candidates),
                 unverified=sum(1 for c in candidates if not c.citations_verified),
-                tiers=dict(getattr(document, "extraction_tiers", {}) or {}),
-                header_disagreements=int(
-                    getattr(document, "header_disagreements", 0) or 0
-                ),
+                tiers=dict(document.extraction_tiers or {}),
+                header_disagreements=document.header_disagreements or 0,
             )
         )
 
@@ -176,25 +233,43 @@ def _clear_pending(session: Session, document: Document) -> None:
 def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> str:
     lines = [f"{project.name} — {prompt_version}"]
     for outcome in outcomes:
-        name = outcome.filename.split("/")[-1][:56]
+        versioned_name = (
+            f"{outcome.filename.split('/')[-1][:56]} "
+            f"[{outcome.effective_prompt_version}]"
+        )
         if outcome.status == "extracted":
             lines.append(
-                f"  {outcome.rows:>5} rows  {outcome.unverified:>4} unverified  {name}"
+                "  "
+                f"{outcome.rows:>5} rows  {outcome.unverified:>4} unverified  "
+                f"{versioned_name}"
             )
+        elif outcome.status == "failed":
+            lines.append(f"  FAILED                      {versioned_name}: {outcome.detail}")
         elif outcome.status == "unreadable":
-            lines.append(f"  UNREADABLE                  {name}: {outcome.detail}")
+            lines.append(
+                f"  UNREADABLE                  {versioned_name}: {outcome.detail}"
+            )
         else:
-            lines.append(f"  skipped                     {name} ({outcome.detail})")
+            lines.append(
+                f"  skipped                     {versioned_name} ({outcome.detail})"
+            )
 
     extracted = [o for o in outcomes if o.status == "extracted"]
+    failed = [o for o in outcomes if o.status == "failed"]
     unreadable = [o for o in outcomes if o.status == "unreadable"]
     skipped = [o for o in outcomes if o.status == "skipped"]
     lines.append(
         f"{len(outcomes)} matrices: {len(extracted)} extracted "
         f"({sum(o.rows for o in extracted):,} rows, "
         f"{sum(o.unverified for o in extracted):,} unverified), "
-        f"{len(unreadable)} unreadable, {len(skipped)} skipped"
+        f"{len(failed)} failed, {len(unreadable)} unreadable, "
+        f"{len(skipped)} skipped"
     )
+    if failed:
+        lines.append(
+            "  A failed document did not finish extraction. Retry it; do not "
+            "treat the failure as evidence the layout is unsupported."
+        )
     if unreadable:
         lines.append(
             "  An unreadable document is an unhandled layout, not an empty "
@@ -258,7 +333,7 @@ def main(argv: list[str]) -> int:
                 # a spreadsheet, as a printout of one, or as both, and
                 # which reader runs is the document's property rather than
                 # this command's (ADR-0005).
-                extract=lambda s, d: extract_any(s, d, client=client),
+                select_route=lambda document: extraction_route(document, client=client),
                 redo="--redo" in flags,
             )
         finally:
@@ -278,7 +353,7 @@ def main(argv: list[str]) -> int:
             f"({usage.reasoning_tokens:,} reasoning)"
         )
 
-    return 1 if any(o.status == "unreadable" for o in outcomes) else 0
+    return 1 if any(o.status in {"failed", "unreadable"} for o in outcomes) else 0
 
 
 if __name__ == "__main__":

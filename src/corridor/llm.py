@@ -45,7 +45,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 from typing import Protocol
 
@@ -70,6 +70,11 @@ EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 # Flex is billed at batch rates and queues behind standard traffic; the
 # provider's own examples raise the client timeout to match.
 FLEX_TIMEOUT = 900.0
+
+# Where a single `complete` call puts metadata about the call itself.
+# `complete_many` lifts it into `Completion.meta`, so the batch API's
+# callers never see it beside the schema's own keys.
+META_KEY = "_meta"
 
 
 class StructuredClient(Protocol):
@@ -235,10 +240,7 @@ class OpenAIClient:
             None,
         )
         if message is None:
-            # A length stop or a filtered response returns no message.
-            # Treated as an empty extraction rather than a crash, so one bad
-            # page cannot abort a 269-page run.
-            return {}
+            raise RuntimeError(f"{self.model} returned 200 with no message")
 
         parts = message.get("content") or []
         refusal = next((p for p in parts if p.get("type") == "refusal"), None)
@@ -246,15 +248,18 @@ class OpenAIClient:
             raise RuntimeError(f"{self.model} refused: {refusal.get('refusal')}")
 
         text_part = next((p for p in parts if p.get("type") == "output_text"), None)
-        if text_part is None or not text_part.get("text"):
-            return {}
+        if text_part is None:
+            raise RuntimeError(f"{self.model} returned 200 with no output_text part")
+        if not str(text_part.get("text") or "").strip():
+            raise RuntimeError(f"{self.model} returned 200 with blank output_text")
 
         result = json.loads(text_part["text"])
         if text_part.get("logprobs"):
-            # Reserved key, following `_error` in `complete_many`: metadata
-            # about the call travels beside the extraction rather than
-            # forcing a second return channel through every caller.
-            result["_meta"] = {"logprobs": text_part["logprobs"]}
+            # The single-call channel for metadata about the call.
+            # `complete_many` lifts it out into `Completion.meta`, so a
+            # caller of the batch API never sees it beside the schema's
+            # own keys and cannot pass it on to a Candidate.
+            result[META_KEY] = {"logprobs": text_part["logprobs"]}
         return result
 
     def _backoff(self, attempt: int, response: httpx.Response | None = None) -> None:
@@ -290,6 +295,31 @@ def _content(user: str, images: Sequence[Path | str]) -> list[dict]:
     return content
 
 
+@dataclass(frozen=True)
+class Completion:
+    """One answer, or the failure that replaced it.
+
+    Outcome used to be encoded in the payload: a returned dict might be
+    the model's schema output, might be `{"_error": …}`, and might carry
+    a `_meta` key the caller had to recognise and strip before anything
+    reached a Candidate. Four sites encoded the sentinel, and there is a
+    test whose entire job is to assert the reserved key never reaches a
+    Candidate — a test that exists because the interface made leaking
+    possible.
+
+    `value` holds only what the schema described. Metadata cannot leak
+    into it, because it is not in it.
+    """
+
+    value: dict = dc_field(default_factory=dict)
+    error: str | None = None
+    meta: dict = dc_field(default_factory=dict)
+
+    @property
+    def failed(self) -> bool:
+        return self.error is not None
+
+
 def complete_many(
     client: StructuredClient,
     *,
@@ -299,11 +329,11 @@ def complete_many(
     images: list[Sequence[Path | str]] | None = None,
     logprobs: bool = False,
     max_workers: int | None = None,
-) -> list[dict]:
+) -> list[Completion]:
     """Run many completions concurrently, results in input order.
 
-    One failure does not kill the batch — it comes back as `{"_error": ...}`
-    in its slot, so a single bad page costs that page and nothing else.
+    One failure does not kill the batch — it comes back as a `Completion`
+    that `failed`, so a single bad page costs that page and nothing else.
 
     `images` is one image set per user, or None. Omitted rather than passed
     empty when there are none, so text-only stubs that take no `images`
@@ -313,7 +343,7 @@ def complete_many(
         return []
 
     workers = max_workers or getattr(client, "max_workers", DEFAULT_WORKERS)
-    results: list[dict] = [{} for _ in users]
+    results: list[Completion] = [Completion() for _ in users]
     extra = {"logprobs": True} if logprobs else {}
 
     with ThreadPoolExecutor(max_workers=min(workers, len(users))) as pool:
@@ -331,8 +361,12 @@ def complete_many(
         for future in futures:
             index = futures[future]
             try:
-                results[index] = future.result()
+                raw = future.result() or {}
+                results[index] = Completion(
+                    value={k: v for k, v in raw.items() if k != META_KEY},
+                    meta=raw.get(META_KEY) or {},
+                )
             except Exception as exc:  # noqa: BLE001 — one page, not the run
-                results[index] = {"_error": str(exc)}
+                results[index] = Completion(error=str(exc))
 
     return results

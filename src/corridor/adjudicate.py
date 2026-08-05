@@ -11,22 +11,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import audit
+from corridor.candidates import citations_verified
 from corridor.models import (
     ANSWER_SEPARATOR,
     RESOLUTION_STRATEGIES,
     Assertion,
-    AuditLog,
     Candidate,
     Dependency,
+    Document,
+    DocPage,
     EvidenceLink,
     ExternalOrg,
     Project,
     is_placeholder_party,
 )
+from corridor.verify import normalize, unverified_fields
+
+REJECT_REASONS = ("duplicate", "wrong", "irrelevant", "bad-citation")
+_REF_CODE = re.compile(r"DEP-(\d{5})$")
 
 # Fields the extractor emits that map onto Dependency columns directly.
 # Everything else it found is still recorded as an assertion — the ledger
@@ -194,6 +202,18 @@ class AlreadyAdjudicated(Exception):
     pass
 
 
+class InvalidRejectReason(Exception):
+    pass
+
+
+class InvalidCandidateProvenance(Exception):
+    """This Candidate's source material does not belong to its project."""
+
+
+class UnadjudicableKind(Exception):
+    """This Candidate is not a kind acceptance knows how to resolve."""
+
+
 def accept_candidate(
     session: Session, candidate: Candidate, *, actor: str
 ) -> Dependency:
@@ -201,9 +221,19 @@ def accept_candidate(
         raise AlreadyAdjudicated(
             f"candidate {candidate.id} is already {candidate.state}"
         )
-
-    fields = candidate.payload_json.get("fields", {})
-    citations = candidate.payload_json.get("citations", [])
+    if candidate.kind != "dependency":
+        # `make minutes` writes `kind="event"` Candidates into the same
+        # table, and the queue serves them. Accepting one used to build a
+        # Dependency from fields it does not have — an event carries no
+        # `utility_id` and no `utility_type`, so it minted a
+        # `utility_relocation` titled "Utility" that no document asserts.
+        # Adjudication is the only path into the Ledger; a path that
+        # fabricates the record is worse than no path at all.
+        raise UnadjudicableKind(
+            f"candidate {candidate.id} is a {candidate.kind}, and acceptance "
+            "builds a Dependency — an event must be attached to one instead"
+        )
+    payload, fields, citations = _validate_candidate_provenance(session, candidate)
 
     org = _resolve_org(session, fields.get("external_org"))
     strategy = _asserted_strategy(session, candidate, fields)
@@ -259,25 +289,81 @@ def accept_candidate(
 
     candidate.state = "accepted"
     candidate.adjudicated_at = datetime.now(timezone.utc)
-    candidate.citations_verified = all(c.get("verified") for c in citations)
+    # The extractor's rule, not a second one. This read only the per-citation
+    # quote flag and dropped `unverified_fields` and `low_confidence_tokens`
+    # entirely, so a row that sank in the queue *because a field value was
+    # not on its page* came out of acceptance recorded as verified — and the
+    # queue's own ordering, `pending_counts` and `eval` all read this column.
+    candidate.citations_verified = citations_verified(payload)
 
-    session.add(
-        AuditLog(
-            actor=actor,
-            action="accept_candidate",
-            entity_type="dependency",
-            entity_id=dependency.id,
-            before_json=None,
-            after_json={
-                "candidate_id": candidate.id,
-                "ref_code": dependency.ref_code,
-                "source_ref": dependency.source_ref,
-                "fields": fields,
-            },
-        )
+    audit.record(
+        session,
+        actor=actor,
+        action=audit.ACCEPT_CANDIDATE,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={
+            "candidate_id": candidate.id,
+            "ref_code": dependency.ref_code,
+            "source_ref": dependency.source_ref,
+            "fields": fields,
+        },
     )
     session.flush()
     return dependency
+
+
+def edit_candidate(
+    session: Session, candidate: Candidate, fields: dict[str, str], *, actor: str
+) -> Candidate:
+    if candidate.state != "pending":
+        raise AlreadyAdjudicated(
+            f"candidate {candidate.id} is already {candidate.state}"
+        )
+
+    payload = dict(candidate.payload_json or {})
+    original = dict(payload.get("fields") or {})
+    if fields != original:
+        updated = _edited_payload(session, payload, fields)
+        audit.record(
+            session,
+            actor=actor,
+            action=audit.EDIT_CANDIDATE,
+            entity_type=audit.CANDIDATE,
+            entity_id=candidate.id,
+            before={"fields": original},
+            after={"fields": fields},
+        )
+        candidate.payload_json = updated
+        candidate.citations_verified = citations_verified(updated)
+        session.flush()
+    return candidate
+
+
+def reject_candidate(
+    session: Session, candidate: Candidate, reason: str, *, actor: str
+) -> Candidate:
+    if reason not in REJECT_REASONS:
+        raise InvalidRejectReason(
+            f"{reason!r} is not a reject reason; expected one of {REJECT_REASONS}"
+        )
+    if candidate.state != "pending":
+        raise AlreadyAdjudicated(
+            f"candidate {candidate.id} is already {candidate.state}"
+        )
+
+    candidate.state = "rejected"
+    candidate.adjudicated_at = datetime.now(timezone.utc)
+    audit.record(
+        session,
+        actor=actor,
+        action=audit.REJECT_CANDIDATE,
+        entity_type=audit.CANDIDATE,
+        entity_id=candidate.id,
+        after={"reason": reason},
+    )
+    session.flush()
+    return candidate
 
 
 def _asserted_strategy(
@@ -333,18 +419,97 @@ def set_resolution_strategy(
 
     before = dependency.resolution_strategy
     dependency.resolution_strategy = strategy
-    session.add(
-        AuditLog(
-            actor=actor,
-            action="set_resolution_strategy",
-            entity_type="dependency",
-            entity_id=dependency.id,
-            before_json={"resolution_strategy": before},
-            after_json={"resolution_strategy": strategy},
-        )
+    audit.record(
+        session,
+        actor=actor,
+        action=audit.SET_RESOLUTION_STRATEGY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        before={"resolution_strategy": before},
+        after={"resolution_strategy": strategy},
     )
     session.flush()
     return dependency
+
+
+def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> dict:
+    updated = {**payload, "fields": dict(fields)}
+    if not _transcribes_cells(payload):
+        return updated
+
+    page_text = _cited_page_text(session, payload)
+    if page_text is None:
+        updated["unverified_fields"] = sorted(fields)
+    else:
+        updated["unverified_fields"] = sorted(unverified_fields(fields, page_text))
+    updated["low_confidence_tokens"] = _reconcile_low_confidence_tokens(
+        payload, fields
+    )
+    return updated
+
+
+def _transcribes_cells(payload: dict) -> bool:
+    """Does this proposal claim its values are printed where it cites?
+
+    `whole_row` was standing in for this question and is not it.
+    `geometry.best_verifiable_quote` returns `whole_row=False` whenever the
+    assembled row is not contiguous on the page — two tables printed side
+    by side, or a leading `Data Source` column that lands elsewhere in
+    reading order — and those rows are still transcribed cells whose
+    `unverified_fields` means exactly what it means everywhere else. 79
+    live rows are in that state, and an edit to one kept the extractor's
+    reading of the values the reviewer had just replaced: a value typed in
+    that is nowhere on the page came out `citations_verified`, which is the
+    defect `citations_verified` was unified to abolish.
+
+    `tier` is the direct answer, and all three matrix readers set it. The
+    prose extractors leave it None, where a field is the model's phrasing
+    of a paragraph and was never expected to appear verbatim — the
+    distinction `candidates` keeps deliberately. The whole-row fallback
+    holds the 141 `txdot_ucm_v1` rows that predate `tier` on the side they
+    are already on.
+    """
+    if payload.get("tier"):
+        return True
+    return any(citation.get("whole_row") for citation in (payload.get("citations") or []))
+
+
+def _cited_page_text(session: Session, payload: dict) -> str | None:
+    """The text of every page this proposal cites, or None if one is missing.
+
+    Every citation, not only the whole-row ones: the page a value must
+    appear on is the page the proposal names, and whether the quote
+    happened to span the whole row says nothing about which page that is.
+
+    None fails closed — the caller marks every field unverified rather
+    than verifying against a page it could not read.
+    """
+    texts = []
+    for citation in payload.get("citations") or []:
+        document_id = citation.get("document_id")
+        page_no = citation.get("page")
+        if document_id is None or page_no is None:
+            return None
+        page = session.scalars(
+            select(DocPage).where(
+                DocPage.document_id == document_id,
+                DocPage.page_no == page_no,
+            )
+        ).first()
+        if page is None or not page.text:
+            return None
+        texts.append(page.text)
+    return "\n".join(texts) if texts else None
+
+
+def _reconcile_low_confidence_tokens(payload: dict, fields: dict[str, str]) -> list[str]:
+    values = [normalize(value) for value in fields.values() if value]
+    kept = []
+    for token in payload.get("low_confidence_tokens") or []:
+        needle = normalize(token)
+        if needle and any(needle in value for value in values):
+            kept.append(token)
+    return kept
 
 
 def _next_ref_code(session: Session, project_id: int) -> str:
@@ -354,15 +519,20 @@ def _next_ref_code(session: Session, project_id: int) -> str:
     distinct Comcast conflicts both labelled FOC14-69 — so keying the
     ledger on them would either collide or silently merge two records.
     """
-    used = (
-        session.scalar(
-            select(func.count())
-            .select_from(Dependency)
-            .where(Dependency.project_id == project_id)
+    project = session.scalars(
+        select(Project).where(Project.id == project_id).with_for_update()
+    ).first()
+    if project is None:
+        raise LookupError(f"no project {project_id}")
+
+    used = [
+        int(match.group(1))
+        for ref_code in session.scalars(
+            select(Dependency.ref_code).where(Dependency.project_id == project_id)
         )
-        or 0
-    )
-    return f"DEP-{used + 1:05d}"
+        if (match := _REF_CODE.fullmatch(ref_code or ""))
+    ]
+    return f"DEP-{max(used, default=0) + 1:05d}"
 
 
 def _evidence_link(session: Session, dependency: Dependency, citation: dict):
@@ -371,7 +541,7 @@ def _evidence_link(session: Session, dependency: Dependency, citation: dict):
         document_id=citation["document_id"],
         page_no=citation["page"],
         quote=citation["quote"],
-        verified=bool(citation.get("verified")),
+        verified=citation.get("verified", False),
         # Never set on acceptance. Readiness is a separate, deliberate
         # judgment that this evidence meets the dependency's bar (ADR-0002).
         satisfies_requirement=False,
@@ -401,9 +571,9 @@ def merge_candidate(
         raise AlreadyAdjudicated(
             f"candidate {candidate.id} is already {candidate.state}"
         )
-
-    fields = candidate.payload_json.get("fields", {})
-    citations = candidate.payload_json.get("citations", [])
+    _, fields, citations = _validate_candidate_provenance(
+        session, candidate, dependency=dependency
+    )
 
     links = [_evidence_link(session, dependency, citation) for citation in citations]
     primary = links[0] if links else None
@@ -423,22 +593,128 @@ def merge_candidate(
     candidate.merged_into = dependency.id
     candidate.adjudicated_at = datetime.now(timezone.utc)
 
-    session.add(
-        AuditLog(
-            actor=actor,
-            action="merge_candidate",
-            entity_type="dependency",
-            entity_id=dependency.id,
-            before_json=None,
-            after_json={
-                "candidate_id": candidate.id,
-                "merged_into": dependency.ref_code,
-                "fields": fields,
-            },
-        )
+    audit.record(
+        session,
+        actor=actor,
+        action=audit.MERGE_CANDIDATE,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={
+            "candidate_id": candidate.id,
+            "merged_into": dependency.ref_code,
+            "fields": fields,
+        },
     )
     session.flush()
     return dependency
+
+
+def _validated_candidate_payload(candidate: Candidate) -> tuple[dict, dict, list[dict]]:
+    payload = candidate.payload_json
+    if not isinstance(payload, dict):
+        raise InvalidCandidateProvenance("candidate payload must be an object")
+
+    fields = payload.get("fields", {})
+    if not isinstance(fields, dict):
+        raise InvalidCandidateProvenance("candidate fields must be an object")
+    for name, value in fields.items():
+        if not isinstance(name, str):
+            raise InvalidCandidateProvenance("candidate field names must be strings")
+        if value is not None and not isinstance(value, str):
+            raise InvalidCandidateProvenance(
+                f"candidate field {name!r} must be a string or null"
+            )
+
+    citations = payload.get("citations", [])
+    if not isinstance(citations, list):
+        raise InvalidCandidateProvenance("candidate citations must be a list")
+
+    return payload, fields, citations
+
+
+def _validate_candidate_provenance(
+    session: Session, candidate: Candidate, *, dependency: Dependency | None = None
+) -> tuple[dict, dict, list[dict]]:
+    if dependency is not None and candidate.project_id != dependency.project_id:
+        raise InvalidCandidateProvenance(
+            "candidate and dependency belong to a different project"
+        )
+
+    payload, fields, citations = _validated_candidate_payload(candidate)
+
+    source_document = session.get(Document, candidate.source_document_id)
+    if source_document is None:
+        raise InvalidCandidateProvenance(
+            f"source document {candidate.source_document_id} does not exist"
+        )
+    if source_document.project_id != candidate.project_id:
+        raise InvalidCandidateProvenance(
+            "candidate source document belongs to a different project"
+        )
+
+    for citation in citations:
+        if not isinstance(citation, dict):
+            raise InvalidCandidateProvenance("candidate citation must be an object")
+
+        if "document_id" not in citation:
+            raise InvalidCandidateProvenance("citation document is missing")
+        if "page" not in citation:
+            raise InvalidCandidateProvenance("cited page is missing")
+        if "quote" not in citation:
+            raise InvalidCandidateProvenance("citation quote is missing")
+
+        document_id = citation.get("document_id")
+        page_no = citation.get("page")
+        quote = citation.get("quote")
+        if document_id is None:
+            raise InvalidCandidateProvenance("citation document is missing")
+        if page_no is None:
+            raise InvalidCandidateProvenance("cited page is missing")
+        if not isinstance(document_id, int) or isinstance(document_id, bool):
+            raise InvalidCandidateProvenance("citation document must be an integer")
+        if (
+            not isinstance(page_no, int)
+            or isinstance(page_no, bool)
+            or page_no <= 0
+        ):
+            raise InvalidCandidateProvenance(
+                "cited page must be a positive integer"
+            )
+        if not isinstance(quote, str) or not quote.strip():
+            raise InvalidCandidateProvenance(
+                "citation quote must be a non-empty string"
+            )
+        if "verified" in citation and not isinstance(citation["verified"], bool):
+            raise InvalidCandidateProvenance(
+                "citation verified flag must be a boolean"
+            )
+        if "whole_row" in citation and not isinstance(citation["whole_row"], bool):
+            raise InvalidCandidateProvenance(
+                "citation whole_row flag must be a boolean"
+            )
+
+        document = session.get(Document, document_id)
+        if document is None:
+            raise InvalidCandidateProvenance(
+                f"citation document {document_id} does not exist"
+            )
+        if document.project_id != candidate.project_id:
+            raise InvalidCandidateProvenance(
+                "candidate citation document belongs to a different project"
+            )
+
+        page = session.scalars(
+            select(DocPage).where(
+                DocPage.document_id == document_id,
+                DocPage.page_no == page_no,
+            )
+        ).first()
+        if page is None:
+            raise InvalidCandidateProvenance(
+                f"cited page {page_no} is not on citation document {document_id}"
+            )
+
+    return payload, fields, citations
 
 
 def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:

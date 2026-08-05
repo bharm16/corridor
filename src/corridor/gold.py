@@ -47,10 +47,10 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.docs import stored_file
 from corridor.eval import REQUIRED_COLUMNS
 from corridor.geometry import page_tables, row_quote
 from corridor.models import Candidate, DocPage, Document, Project
+from corridor.storage import stored_file
 from corridor.verify import normalize
 
 # What the reviewer fills in. `critical` is not in the eval's required set
@@ -410,6 +410,39 @@ def _rows(rows: list[UnreadRow]) -> list[str]:
     return out
 
 
+
+# The file-safety rules of a gate run, out of `main` so they can be
+# tested without driving the whole command. Both protect an artifact a
+# human made, and neither had a test.
+GOLD_DIR = Path("gold")
+WORKSHEET_DIR = Path("out/gold")
+
+
+def machine_gold_paths(slug: str, *, directory: Path = GOLD_DIR) -> tuple[Path, Path]:
+    """Where a machine-authored gold set and its sidecar are written.
+
+    `<slug>.machine.csv`, never `<slug>.csv`. The hand-authored name is
+    the stricter artifact and keeps it (#81 as amended): a machine gold
+    set is a ceiling, and letting it claim the name a person's labelling
+    would use is how a ceiling gets read as a floor.
+    """
+    return directory / f"{slug}.machine.csv", directory / f"{slug}.machine.md"
+
+
+def write_worksheet(path: Path) -> bool:
+    """Write a blank worksheet unless one is already there.
+
+    Returns False when it left an existing file alone. The worksheet is
+    hours of human labelling and this file is regenerable, so the
+    regenerable one yields.
+    """
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(worksheet())
+    return True
+
+
 def main(argv: list[str]) -> int:
     """`make gold ARGS="<slug>"`"""
     import sys
@@ -433,11 +466,9 @@ def main(argv: list[str]) -> int:
             # as the ceiling it is. Never overwrites a hand-authored
             # gold/<slug>.csv — the stricter artifact keeps its name.
             gold = author_machine_gold(session, project.id)
-            directory = Path("gold")
-            directory.mkdir(parents=True, exist_ok=True)
-            csv_path = directory / f"{slug}.machine.csv"
+            csv_path, sidecar = machine_gold_paths(slug)
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
             csv_path.write_text(gold_csv(gold))
-            sidecar = directory / f"{slug}.machine.md"
             sidecar.write_text(render_machine_gold(gold))
             labelled = sum(1 for r in gold.rows if r.critical)
             yes = sum(1 for r in gold.rows if r.critical == "yes")
@@ -458,12 +489,8 @@ def main(argv: list[str]) -> int:
         report.write_text(render(prep))
 
         sheet = out / f"{slug}-worksheet.csv"
-        if sheet.exists():
-            # Never overwrite labelling in progress: the worksheet is
-            # hours of human work and this file is regenerable.
+        if not write_worksheet(sheet):
             print(f"{sheet} exists — left alone", flush=True)
-        else:
-            sheet.write_text(worksheet())
 
         print(f"{prep.extracted_total} extracted, {len(prep.unread)} not")
         if prep.contested:
@@ -535,6 +562,13 @@ class MachineGoldRow:
 
 
 @dataclass(frozen=True)
+class MachineGoldPageImage:
+    filename: str
+    page_no: int
+    image_path: str | None
+
+
+@dataclass(frozen=True)
 class MachineGold:
     project: str
     document: str
@@ -542,7 +576,7 @@ class MachineGold:
     # What was read and excluded, for the sidecar's accounting.
     retired: int
     empty_slots: int
-    page_images: tuple[tuple[int, str | None], ...]
+    page_images: tuple[MachineGoldPageImage, ...]
 
 
 def author_machine_gold(session: Session, project_id: int) -> MachineGold:
@@ -696,7 +730,12 @@ def author_machine_gold(session: Session, project_id: int) -> MachineGold:
         retired=retired,
         empty_slots=empty_slots,
         page_images=tuple(
-            (page_no, path) for (_, page_no), path in sorted(images.items())
+            MachineGoldPageImage(
+                filename=filename,
+                page_no=page_no,
+                image_path=path,
+            )
+            for (filename, page_no), path in sorted(images.items())
         ),
     )
 
@@ -746,8 +785,11 @@ def render_machine_gold(gold: MachineGold) -> str:
         "any time after the run:",
         "",
     ]
-    for page_no, image in gold.page_images:
-        lines.append(f"- [ ] page {page_no} — `{image or 'no image'}`")
+    for page in gold.page_images:
+        lines.append(
+            f"- [ ] {page.filename} page {page.page_no} — "
+            f"`{page.image_path or 'no image'}`"
+        )
     return "\n".join(lines) + "\n"
 
 

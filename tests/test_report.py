@@ -1,9 +1,16 @@
+from datetime import date
+
 import pytest
+from openpyxl import load_workbook
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
+from corridor.changes import record_run, snapshot
 from corridor.db import Session, engine
-from corridor.models import Candidate, Document, EvidenceLink, Project
+from corridor.exceptions import evaluate_project, format_exception_label
+from corridor.export import to_xlsx
+from corridor.ledger import browse
+from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
 from corridor.report import (
     RULESET_VERSION,
     Assertion,
@@ -42,6 +49,18 @@ def project_with_two_dependencies(session):
         pages=28,
     )
     session.add(doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=1,
+            text=(
+                "FOC1-1 AT&T Texas (SWBT) Telecom 1149+00 1153+17\n"
+                "E1 CenterPoint Energy Telecom 1149+00 1153+17"
+            ),
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
     session.flush()
 
     for ref, org in [("FOC1-1", "AT&T Texas (SWBT)"), ("E1", "CenterPoint Energy")]:
@@ -386,14 +405,22 @@ def test_a_critical_row_lists_its_exceptions_as_facts(
     """No cross-rule "worst" pick — the device ADR-0010 forbids. The row
     shows its exceptions with their quantities, and the reader judges."""
     project = project_with_two_dependencies
-    make_critical(session, project)
+    critical = make_critical(session, project)
+    critical.committed_date = date(2026, 7, 28)
+    critical.need_date = date(2026, 8, 8)
+    session.flush()
 
-    report = build_report(session, project.id)
+    report = build_report(session, project.id, today=date(2026, 8, 5))
     found = section(report, "Critical items")
     exceptions_cell = found.rows[0][found.columns.index("Exceptions")]
+    by_rule = {
+        e.rule: e
+        for e in report.evaluation.for_dependency(critical.id)
+    }
 
     assert "ORPHAN" in exceptions_cell.value
-    assert "MISSING_DATE" in exceptions_cell.value
+    assert format_exception_label(by_rule["OVERDUE"]) in exceptions_cell.value
+    assert format_exception_label(by_rule["DUE_SOON"]) in exceptions_cell.value
 
 
 def test_the_exceptions_summary_exemplar_is_the_largest_quantity_or_nothing(
@@ -416,3 +443,263 @@ def test_the_exceptions_summary_exemplar_is_the_largest_quantity_or_nothing(
     # largest-quantity path is pinned at the engine seam and in the
     # critical row's exception listing.
     assert by_rule["STALE"][most_days].value == "—"
+
+
+def _overdue_by(session, project_id, days):
+    """Give every dependency a committed date `days` in the past."""
+    from datetime import date, timedelta
+
+    from corridor.models import Dependency
+
+    committed = date(2026, 6, 1)
+    for dependency in session.scalars(
+        select(Dependency).where(Dependency.project_id == project_id)
+    ).all():
+        dependency.committed_date = committed
+    session.flush()
+    return committed + timedelta(days=days)
+
+
+def test_the_report_is_built_against_the_date_it_was_asked_for(
+    session, project_with_two_dependencies
+):
+    """`today` reaches the engine, so the Aging section exists at all.
+
+    Before the evaluation carried the clock, `today` reached two sections
+    while every exception was computed against `date.today()` — so a
+    report built for a stated date could not produce an overdue row.
+    """
+    today = _overdue_by(session, project_with_two_dependencies.id, 40)
+
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+    aging = section(report, "Aging")
+
+    assert len(aging.rows) == 2
+    days = aging.columns.index("Days overdue")
+    assert {row[days].value for row in aging.rows} == {"40"}
+
+
+def test_days_overdue_is_the_exception_s_own_quantity_not_a_recount(
+    session, project_with_two_dependencies
+):
+    """One fact, one number (ADR-0010).
+
+    The Aging column used to subtract the report's `today` from the
+    committed date while the OVERDUE fact beside it counted from the
+    engine's. Same page, two answers, whenever the clocks differed.
+    """
+    today = _overdue_by(session, project_with_two_dependencies.id, 17)
+
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+    aging = section(report, "Aging")
+    days = aging.columns.index("Days overdue")
+    ref = aging.columns.index("Ref")
+
+    quantities = {
+        e.ref_code: e.quantity_days
+        for e in report.evaluation.found
+        if e.rule == "OVERDUE"
+    }
+    assert quantities
+    for row in aging.rows:
+        assert row[days].value == str(quantities[row[ref].value])
+
+
+def test_the_report_publishes_the_evaluation_the_export_records(
+    session, project_with_two_dependencies
+):
+    """The export and the recorded run describe this reading, not their own."""
+    today = _overdue_by(session, project_with_two_dependencies.id, 3)
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+
+    assert report.evaluation is not None
+    assert report.evaluation.today == today
+    assert report.evaluation.ruleset_version == report.ruleset_version
+
+
+def _due_tomorrow(session, project_id):
+    """Committed in the past, but not yet due at the report's own date.
+
+    Anchored on `date.today()` so the two readings genuinely disagree: a
+    fresh evaluation finds these OVERDUE, and an evaluation taken the day
+    before the committed date does not.
+    """
+    from datetime import timedelta
+
+    from corridor.models import Dependency
+
+    committed = date.today() - timedelta(days=10)
+    for dependency in session.scalars(
+        select(Dependency).where(Dependency.project_id == project_id)
+    ).all():
+        dependency.committed_date = committed
+    session.flush()
+    return committed - timedelta(days=1)
+
+
+def test_the_export_and_the_recorded_run_read_the_report_s_evaluation(
+    session, project_with_two_dependencies, tmp_path
+):
+    """One publication, one reading of the Ledger.
+
+    `make demo` used to call `to_xlsx` and `record_run` without passing the
+    report's evaluation, and both defaulted to taking their own — so the
+    HTML, the workbook and the snapshot the *next* report diffs against
+    were three readings at three clocks. The parameter is required now, and
+    this pins that what is passed is what gets published.
+    """
+    today = _due_tomorrow(session, project_with_two_dependencies.id)
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+
+    # Nothing is overdue at the report's own date; everything is overdue now.
+    assert not any(e.rule == "OVERDUE" for e in report.evaluation.found)
+    assert any(
+        e.rule == "OVERDUE"
+        for e in evaluate_project(session, project_with_two_dependencies.id).found
+    )
+
+    path = to_xlsx(
+        session,
+        project_with_two_dependencies.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=report.evaluation,
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [c.value for c in sheet[1]]
+    exceptions = headers.index("Exceptions")
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        assert "OVERDUE" not in (row[exceptions] or "")
+
+    run = record_run(
+        session,
+        project_with_two_dependencies.id,
+        evaluation=report.evaluation,
+    )
+    recorded = run.snapshot_json["dependencies"].values()
+    assert recorded
+    assert all("OVERDUE" not in entry["exceptions"] for entry in recorded)
+
+
+def test_publishing_without_an_evaluation_is_refused(
+    session, project_with_two_dependencies, tmp_path
+):
+    """The seam is the signature, not the caller's memory.
+
+    While `evaluation` defaulted to a fresh `evaluate_project`, omitting it
+    was silent and produced a second reading. Omitting it is now a
+    TypeError, which is what stops the demo bug coming back.
+    """
+    project_id = project_with_two_dependencies.id
+
+    with pytest.raises(TypeError):
+        to_xlsx(session, project_id, tmp_path / "ledger.xlsx")
+    with pytest.raises(TypeError):
+        record_run(session, project_id)
+    with pytest.raises(TypeError):
+        snapshot(session, project_id)
+    with pytest.raises(TypeError):
+        browse(session, project_id)
+
+
+def test_the_report_states_the_date_its_figures_were_counted_from(
+    session, project_with_two_dependencies
+):
+    """The header used to print only the moment the file was written.
+
+    A report built for a stated date therefore printed today's date over
+    last week's numbers, and nothing on the page said which day the
+    Exceptions had been counted against.
+    """
+    today = _overdue_by(session, project_with_two_dependencies.id, 40)
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+
+    assert f"evaluated {today:%Y-%m-%d}" in render(report)
+
+
+def test_a_derivation_over_zero_records_is_refused(session):
+    """A marker that drills through to nothing is a bare cell wearing one.
+
+    ADR-0003's argument is that a Derivation drills through to the
+    records' Evidence — "making a percentage clickable down to the
+    evidence beneath it". Checking only that `provenance` was present let
+    `Derivation(version, ())` satisfy the rule, and the whole "Changes
+    since last report" section was built that way.
+    """
+    report = Report(
+        project_name="x",
+        generated_at=None,
+        summary=[Cell("Changed", "3", Derivation(RULESET_VERSION, ()))],
+    )
+    with pytest.raises(BareCell, match="Changed"):
+        assert_no_bare_cells(report)
+
+
+def test_a_derivation_may_name_a_scope_where_no_record_can_answer(session):
+    """An empty ledger and a departed record have nothing to drill to."""
+    scoped = Derivation(RULESET_VERSION, (), "an empty ledger")
+
+    assert scoped.resolves
+    assert "an empty ledger" in scoped.marker
+    assert "an empty ledger" in scoped.drill
+    assert_no_bare_cells(
+        Report(
+            project_name="x",
+            generated_at=None,
+            summary=[Cell("Dependencies", "0", scoped)],
+        )
+    )
+
+
+def test_a_change_cites_the_record_it_describes(
+    session, project_with_two_dependencies
+):
+    """Every cell of the Changes section used to carry an empty tuple."""
+    from corridor.models import Dependency
+
+    project_id = project_with_two_dependencies.id
+    record_run(session, project_id, evaluation=evaluate_project(session, project_id))
+    dependency = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project_with_two_dependencies.id)
+        .order_by(Dependency.id)
+    ).first()
+    dependency.status = "closed"
+    session.flush()
+
+    report = build_report(session, project_with_two_dependencies.id)
+    changes = section(report, "Changes since last report")
+
+    assert changes.rows
+    for row in changes.rows:
+        for cell in row:
+            assert cell.provenance.resolves
+    closed = next(r for r in changes.rows if r[1].value == "closed")
+    assert closed[0].provenance.record_ids == (dependency.id,)
+
+
+def test_a_milestone_nothing_is_linked_to_is_named_not_scored(
+    session, project_with_two_dependencies
+):
+    """"Ready 0" for an unlinked milestone reads as a measurement.
+
+    It is not one — nothing was measured, and the section says so rather
+    than publishing four zeroes over no records.
+    """
+    from corridor.models import Milestone
+
+    session.add(
+        Milestone(
+            project_id=project_with_two_dependencies.id,
+            code="RELO-CONSTR",
+            name="RELO-CONSTR",
+            need_date=date(2026, 12, 1),
+        )
+    )
+    session.flush()
+
+    report = build_report(session, project_with_two_dependencies.id)
+    milestones = section(report, "Milestone readiness")
+
+    assert "Nothing is linked to RELO-CONSTR" in milestones.note
+    assert "RELO-CONSTR" not in {row[0].value for row in milestones.rows}
+    assert_no_bare_cells(report)

@@ -16,9 +16,15 @@ from datetime import date
 from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import evaluate, exceptions_for
+from corridor import audit
+from corridor.exceptions import (
+    Evaluation,
+    contradicted_fields,
+    exceptions_for,
+)
 from corridor.models import (
     CRITICAL_STRATEGIES,
+    is_claim,
     is_critical,
     RESOLUTION_STRATEGIES,
     Assertion,
@@ -56,9 +62,13 @@ class FieldView:
         """Two or more verified assertions claiming different values.
 
         Only verified assertions count: an unverified claim is not evidence
-        of disagreement, it is evidence of a bad citation.
+        of disagreement, it is evidence of a bad citation. `is_claim` is
+        the same predicate the engine's query applies, so this view and
+        the list page's pill cannot disagree about one record again.
         """
-        verified = {a.value for a in self.assertions if a.verified and a.value}
+        verified = {
+            a.value for a in self.assertions if a.verified and is_claim(a.value)
+        }
         return len(verified) > 1
 
 
@@ -99,6 +109,7 @@ def browse(
     session: Session,
     project_id: int,
     *,
+    evaluation: Evaluation,
     status: str | None = None,
     org_id: int | None = None,
     resolution_strategy: str | None = None,
@@ -106,10 +117,17 @@ def browse(
     rule: str | None = None,
     limit: int = 200,
 ) -> list[LedgerRow]:
-    """The ledger, filterable.
+    """The ledger, filterable, at one evaluation of the project.
 
     Readiness is computed per row rather than stored, so filtering on it
-    happens here rather than in SQL (ADR-0002).
+    happens here rather than in SQL (ADR-0002). Exceptions are computed the
+    same way, which is why `evaluation` is part of the interface.
+
+    It is required rather than defaulted. While it defaulted to a fresh
+    `evaluate_project`, a caller that forgot it got a second reading against
+    a second clock and no error — which is how `make demo` came to publish
+    an HTML report, an XLSX and a snapshot from three readings of one
+    Ledger. A caller with no evaluation now has to say so.
     """
     query = select(Dependency).where(Dependency.project_id == project_id)
     if status:
@@ -162,10 +180,8 @@ def browse(
     ready_ids = _ready_ids(session, ids)
 
     # Exceptions are computed, never stored (ADR-0002's reasoning), so they
-    # are evaluated here rather than joined.
-    by_dependency: dict[int, list] = {}
-    for exception in evaluate(session, project_id):
-        by_dependency.setdefault(exception.dependency_id, []).append(exception)
+    # are read off the evaluation the caller published rather than joined.
+    by_dependency = evaluation.by_dependency()
 
     rows = [
         LedgerRow(
@@ -186,6 +202,56 @@ def browse(
     return rows[:limit]
 
 
+@dataclass(frozen=True)
+class Evidence:
+    """The quote a published value cites, and where it appears."""
+
+    document_id: int
+    filename: str
+    page_no: int
+    quote: str
+
+
+def primary_evidence(
+    session: Session, dependency_ids: list[int]
+) -> dict[int, Evidence]:
+    """The Evidence a report cell cites for each Dependency.
+
+    One definition, in one place: the first *verified* link by id. The
+    report and the export each held their own copy of this query, so
+    "which quote backs this cell" had two implementations that happened to
+    agree — and one place to change when a citation becomes per-field
+    rather than per-record.
+
+    Batched, because the export asked once per row.
+    """
+    if not dependency_ids:
+        return {}
+
+    found: dict[int, Evidence] = {}
+    for link, document in session.execute(
+        select(EvidenceLink, Document)
+        .join(Document, EvidenceLink.document_id == Document.id)
+        .where(
+            EvidenceLink.dependency_id.in_(dependency_ids),
+            EvidenceLink.verified.is_(True),
+        )
+        .order_by(EvidenceLink.id)
+    ).all():
+        # First by id wins; later links for the same Dependency are the
+        # corroborating ones, not the cited one.
+        found.setdefault(
+            link.dependency_id,
+            Evidence(
+                document_id=document.id,
+                filename=document.filename,
+                page_no=link.page_no,
+                quote=link.quote,
+            ),
+        )
+    return found
+
+
 def _ready_ids(session: Session, ids: list[int]) -> set[int]:
     return set(
         session.scalars(
@@ -201,23 +267,11 @@ def _ready_ids(session: Session, ids: list[int]) -> set[int]:
 
 
 def _contradicted_ids(session: Session, ids: list[int]) -> set[int]:
-    """Fields with two or more distinct verified values.
+    """Which records show the "sources disagree" pill.
 
-    Only verified assertions count: an unverified claim is a bad citation,
-    not evidence that sources disagree.
+    The definition is the engine's, not a second copy of it.
     """
-    rows = session.execute(
-        select(Assertion.dependency_id, Assertion.field_name)
-        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
-        .where(
-            Assertion.dependency_id.in_(ids),
-            EvidenceLink.verified.is_(True),
-            Assertion.asserted_value.is_not(None),
-        )
-        .group_by(Assertion.dependency_id, Assertion.field_name)
-        .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
-    ).all()
-    return {dependency_id for dependency_id, _ in rows}
+    return set(contradicted_fields(session, ids))
 
 
 def load_dependency(session: Session, dependency_id: int) -> DependencyView:
@@ -275,15 +329,62 @@ def load_dependency(session: Session, dependency_id: int) -> DependencyView:
             .order_by(DependencyEvent.event_date, DependencyEvent.id)
         ).all(),
         exceptions=exceptions_for(session, dependency_id),
-        audit=session.scalars(
-            select(AuditLog)
-            .where(
-                AuditLog.entity_type == "dependency",
-                AuditLog.entity_id == dependency_id,
-            )
-            .order_by(AuditLog.ts)
-        ).all(),
+        # Including the Candidate's own entries. The reviewer edits before
+        # the Dependency exists, so the record of what the extractor
+        # originally said is written against the Candidate — and this view
+        # queried only `dependency`, which is why the edit trail the route
+        # promises survives has never been visible on the record.
+        audit=audit.trail_for_dependency(session, dependency_id),
     )
+
+
+class NoSuchEvidence(Exception):
+    """This evidence link does not belong to this Dependency."""
+
+
+class UnverifiedEvidence(Exception):
+    """Readiness cannot rest on a quote that is not on the page."""
+
+
+def mark_satisfies(
+    session: Session, dependency_id: int, link_id: int, *, actor: str
+) -> bool:
+    """Mark, or unmark, an Evidence link as meeting the closure bar.
+
+    The only act that makes a Dependency Ready (ADR-0002), so it lives
+    beside `is_ready` rather than in a route: the ownership check, the
+    verified precondition and the audit entry are the Ledger's rules, and
+    a second caller — a CLI, an API — would otherwise have to reimplement
+    all three. The template's `disabled` attribute becomes a courtesy
+    rather than the second copy of the guard.
+
+    Returns the resulting mark.
+    """
+    link = session.get(EvidenceLink, link_id)
+    if link is None or link.dependency_id != dependency_id:
+        raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
+    if not link.verified:
+        raise UnverifiedEvidence(
+            f"evidence {link_id} is unverified; readiness cannot rest on a "
+            "quote that is not on the page"
+        )
+
+    was = link.satisfies_requirement
+    link.satisfies_requirement = not was
+    audit.record(
+        session,
+        actor=actor,
+        action=audit.MARK_SATISFIES_REQUIREMENT,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency_id,
+        before={"evidence_link_id": link_id, "satisfies": was},
+        after={
+            "evidence_link_id": link_id,
+            "satisfies": link.satisfies_requirement,
+        },
+    )
+    session.flush()
+    return link.satisfies_requirement
 
 
 def is_ready(session: Session, dependency_id: int) -> bool:

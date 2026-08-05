@@ -7,6 +7,7 @@ manifest.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
 from datetime import date
@@ -15,9 +16,10 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.config import settings
 from corridor.db import Session as SessionFactory
 from corridor.models import DocPage, Document, Project
+from corridor.pipeline import ingest_manifest
+from corridor.storage import stored_file, stored_pdf
 
 LOCK = Path("corpus/manifest.lock.json")
 IMAGES = Path("out/page-images")
@@ -126,31 +128,6 @@ def _precedence(document) -> tuple:
     )
 
 
-def stored_file(document: Document) -> Path | None:
-    """Resolve a Document back to the file in the content-addressed store.
-
-    Found by hash rather than by extension: the store preserves whatever
-    suffix the source had so it stays browsable, and since ADR-0005 that is
-    no longer always `.pdf`. One hash, one file — the name is the hash, so
-    a glob cannot match two different documents.
-    """
-    if not document or not document.sha256:
-        return None
-    shard = Path(settings.corpus_store) / document.sha256[:2]
-    return next(iter(sorted(shard.glob(f"{document.sha256}.*"))), None)
-
-
-def stored_pdf(document: Document) -> Path | None:
-    """The stored file, when it really is a PDF.
-
-    Callers that render pages or read word boxes need this rather than
-    `stored_file`: handing a workbook to PyMuPDF raises somewhere deep
-    instead of saying the document is the wrong kind.
-    """
-    path = stored_file(document)
-    return path if path and path.suffix.lower() == ".pdf" else None
-
-
 def _project(session: Session, slug: str) -> Project:
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -159,23 +136,24 @@ def _project(session: Session, slug: str) -> Project:
 
 
 def main(argv: list[str]) -> int:
-    # Imported here rather than at module scope: `pipeline` routes a
-    # document to its reader and needs `stored_file` from this module, so
-    # a top-level import is a cycle. Only the CLI wants it anyway.
-    from corridor.pipeline import ingest_manifest
-
     command = argv[0] if argv else "list"
 
     with SessionFactory() as session:
         if command == "ingest":
-            # Every lockfile in corpus/, one project each. The Project row is
-            # created from the lock header when it does not exist yet.
+            # Bulk ingest materializes only lockfiles still opted into default
+            # project creation. An explicit slug still ingests that one lock.
             only = argv[1] if len(argv) > 1 else None
             total = 0
             for lock_path in sorted(Path("corpus").glob("*.lock.json")):
-                header = __import__("json").loads(lock_path.read_text())
+                header = json.loads(lock_path.read_text())
                 slug = header.get("project")
                 if not slug or (only and slug != only):
+                    continue
+                if only is None and header.get("ingest_by_default", True) is False:
+                    print(
+                        f"{slug}: skipped bulk ingest (ingest_by_default is false)",
+                        flush=True,
+                    )
                     continue
                 project = session.scalars(
                     select(Project).where(Project.slug == slug)

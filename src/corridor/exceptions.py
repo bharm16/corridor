@@ -94,6 +94,19 @@ class Exception_:
     critical: bool
 
 
+def format_exception_label(exception: Exception_) -> str:
+    """The reader-facing label for one exception fact.
+
+    The rule name is the finding; the day count, when present, is that
+    rule's own quantity rather than a derived or weighted score.
+    """
+    return exception.rule + (
+        f" {exception.quantity_days}d"
+        if exception.quantity_days is not None
+        else ""
+    )
+
+
 @dataclass(frozen=True)
 class RuleFacet:
     """One rule's bucket of the facet view: the finding, counted.
@@ -161,6 +174,65 @@ def evaluate(
     return found
 
 
+@dataclass(frozen=True)
+class Evaluation:
+    """One project's exceptions, computed once against a stated clock.
+
+    A bare `list[Exception_]` does not say which `today` produced it, so
+    every consumer that wanted a date supplied its own — and a view that
+    re-derives "days overdue" against a clock the engine never saw
+    publishes two numbers for one fact. The clock, the thresholds and the
+    ruleset version travel with the facts instead.
+
+    `thresholds` reaches a caller here for the first time: it is the
+    configuration ADR-0010 kept when it abolished the weights, and until
+    now only a test could vary it.
+    """
+
+    project_id: int
+    today: date
+    thresholds: Thresholds
+    ruleset_version: str
+    found: tuple[Exception_, ...]
+
+    def by_dependency(self) -> dict[int, list[Exception_]]:
+        """The other grouping every consumer needs, beside `facets`.
+
+        The ledger row, the export, the snapshot and the report each built
+        this by hand; the ordering is the engine's own filing order, so no
+        consumer invents one.
+        """
+        grouped: dict[int, list[Exception_]] = {}
+        for exception in self.found:
+            grouped.setdefault(exception.dependency_id, []).append(exception)
+        return grouped
+
+    def for_dependency(self, dependency_id: int) -> list[Exception_]:
+        return [e for e in self.found if e.dependency_id == dependency_id]
+
+    def facets(self) -> list[RuleFacet]:
+        return facets(list(self.found))
+
+
+def evaluate_project(
+    session: Session,
+    project_id: int,
+    *,
+    today: date | None = None,
+    thresholds: Thresholds | None = None,
+) -> Evaluation:
+    """Evaluate a project once, and hand back the clock along with the facts."""
+    today = today or date.today()
+    thresholds = thresholds or Thresholds()
+    return Evaluation(
+        project_id=project_id,
+        today=today,
+        thresholds=thresholds,
+        ruleset_version=RULESET_VERSION,
+        found=tuple(evaluate(session, project_id, today=today, thresholds=thresholds)),
+    )
+
+
 def facets(found: list[Exception_]) -> list[RuleFacet]:
     """The one grouped view every consumer renders (ADR-0010, #115).
 
@@ -196,6 +268,48 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
     return view
 
 
+def contradicted_fields(
+    session: Session, dependency_ids: list[int]
+) -> dict[int, list[str]]:
+    """Fields with two or more distinct verified values, per Dependency.
+
+    The one definition of "sources disagree". It had three: this query,
+    an identical copy in `ledger._contradicted_ids` feeding the list
+    page's pill, and a Python version on `FieldView` feeding the detail
+    page — and the Python one did not agree. It filtered on the value
+    being truthy where the SQL filtered on it being non-null, so a blank
+    asserted value competing with a real one contradicted on the list
+    page and in the engine, and did not on the detail page.
+
+    `is_claim` settles it in the stricter direction, which is the one the
+    query's own comment already argued for: an absent value is not a
+    source disagreeing, and a blank cell is an absent value.
+
+    Lives beside the engine because the ledger depends on the engine and
+    not the other way round.
+    """
+    if not dependency_ids:
+        return {}
+
+    found: dict[int, list[str]] = {}
+    for dependency_id, name in session.execute(
+        select(Assertion.dependency_id, Assertion.field_name)
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
+            Assertion.dependency_id.in_(dependency_ids),
+            EvidenceLink.verified.is_(True),
+            # A null is an absent column, not a competing value — the
+            # matrix revisions add and drop columns between editions.
+            Assertion.asserted_value.is_not(None),
+            func.trim(Assertion.asserted_value) != "",
+        )
+        .group_by(Assertion.dependency_id, Assertion.field_name)
+        .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
+    ).all():
+        found.setdefault(dependency_id, []).append(name)
+    return found
+
+
 def _gather(session: Session, dependency: Dependency) -> _Facts:
     links = session.execute(
         select(EvidenceLink, Document)
@@ -225,22 +339,9 @@ def _gather(session: Session, dependency: Dependency) -> _Facts:
         is not None
     )
 
-    contradicted = [
-        name
-        for name, in session.execute(
-            select(Assertion.field_name)
-            .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
-            .where(
-                Assertion.dependency_id == dependency.id,
-                EvidenceLink.verified.is_(True),
-                # A null is an absent column, not a competing value — the
-                # matrix revisions add and drop columns between editions.
-                Assertion.asserted_value.is_not(None),
-            )
-            .group_by(Assertion.field_name)
-            .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
-        ).all()
-    ]
+    contradicted = contradicted_fields(session, [dependency.id]).get(
+        dependency.id, []
+    )
 
     return _Facts(
         dependency=dependency,

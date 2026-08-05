@@ -11,7 +11,6 @@ as unavailable rather than faked.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException
@@ -21,14 +20,29 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from corridor.adjudicate import accept_candidate, merge_candidate
+from corridor.adjudicate import (
+    AlreadyAdjudicated,
+    InvalidCandidateProvenance,
+    InvalidRejectReason,
+    REJECT_REASONS,
+    UnadjudicableKind,
+    accept_candidate,
+    edit_candidate,
+    merge_candidate,
+    reject_candidate,
+)
 from corridor.db import Session as SessionFactory
-from corridor.exceptions import RULES
-from corridor.ledger import browse, load_dependency
+from corridor.exceptions import RULES, evaluate_project
+from corridor.ledger import (
+    NoSuchEvidence,
+    UnverifiedEvidence,
+    browse,
+    load_dependency,
+    mark_satisfies,
+)
 from corridor.models import (
     RESOLUTION_STRATEGIES,
     DEP_STATUSES,
-    AuditLog,
     Candidate,
     Dependency,
     DocPage,
@@ -39,8 +53,6 @@ from corridor.models import (
 from corridor.web.queue import build_view, next_candidate, pending_counts
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-REJECT_REASONS = ("duplicate", "wrong", "irrelevant", "bad-citation")
-
 app = FastAPI(title="Corridor — adjudication")
 
 
@@ -91,9 +103,13 @@ def ledger(
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    # This page is its own publication, so it takes its own evaluation —
+    # stated here rather than defaulted inside `browse`, where a caller who
+    # already held one could silently pay for a second.
     rows = browse(
         session,
         project.id,
+        evaluation=evaluate_project(session, project.id),
         status=status or None,
         org_id=org_id,
         resolution_strategy=resolution_strategy or None,
@@ -142,7 +158,7 @@ def dependency_detail(
 
 
 @app.post("/dependencies/{dependency_id}/evidence/{link_id}/satisfies")
-def mark_satisfies(
+def mark_evidence_satisfies(
     dependency_id: int,
     link_id: int,
     slug: str = Form(...),
@@ -152,25 +168,17 @@ def mark_satisfies(
 
     This is the only way a Dependency becomes ready (ADR-0002), so it is a
     deliberate act on a named piece of evidence rather than a status change.
+    The rules belong to the Ledger; this route carries the HTTP.
     """
-    link = session.get(EvidenceLink, link_id)
-    if link is None or link.dependency_id != dependency_id:
-        raise HTTPException(404, "no such evidence on this dependency")
-    if not link.verified:
-        # Readiness cannot rest on a quote that is not on the page.
-        raise HTTPException(400, "evidence is unverified")
-
-    link.satisfies_requirement = not link.satisfies_requirement
-    session.add(
-        AuditLog(
-            actor="reviewer",
-            action="mark_satisfies_requirement",
-            entity_type="dependency",
-            entity_id=dependency_id,
-            before_json={"evidence_link_id": link_id, "satisfies": not link.satisfies_requirement},
-            after_json={"evidence_link_id": link_id, "satisfies": link.satisfies_requirement},
-        )
-    )
+    project = _project(session, slug)
+    dependency = _project_dependency(session, project, dependency_id)
+    _project_evidence(session, dependency, link_id)
+    try:
+        mark_satisfies(session, dependency_id, link_id, actor="reviewer")
+    except NoSuchEvidence as exc:
+        raise HTTPException(404, str(exc))
+    except UnverifiedEvidence as exc:
+        raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
@@ -195,10 +203,23 @@ def accept(
     slug: str = Form(...),
     session: Session = Depends(get_session),
 ):
-    candidate = _pending(session, candidate_id)
-    accept_candidate(session, candidate, actor="reviewer")
+    project = _project(session, slug)
+    candidate = _project_pending_candidate(session, project, candidate_id)
+    _accept(session, candidate)
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
+
+
+def _accept(session: Session, candidate) -> None:
+    """The queue disables this button; a form post can still reach it."""
+    try:
+        accept_candidate(session, candidate, actor="reviewer")
+    except AlreadyAdjudicated as exc:
+        raise HTTPException(409, str(exc))
+    except InvalidCandidateProvenance as exc:
+        raise HTTPException(400, str(exc))
+    except UnadjudicableKind as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/candidates/{candidate_id}/edit-accept")
@@ -216,31 +237,19 @@ async def edit_accept(
     """
     form = await request.form()
     slug = form.get("slug")
-    candidate = _pending(session, candidate_id)
-
-    payload = dict(candidate.payload_json or {})
-    original = dict(payload.get("fields") or {})
+    project = _project(session, slug)
+    candidate = _project_candidate(session, project, candidate_id)
     edited = {
         key[6:]: value.strip()
         for key, value in form.items()
         if key.startswith("field_") and value.strip()
     }
+    try:
+        edit_candidate(session, candidate, edited, actor="reviewer")
+    except AlreadyAdjudicated as exc:
+        raise HTTPException(409, str(exc))
 
-    if edited != original:
-        session.add(
-            AuditLog(
-                actor="reviewer",
-                action="edit_candidate",
-                entity_type="candidate",
-                entity_id=candidate.id,
-                before_json={"fields": original},
-                after_json={"fields": edited},
-            )
-        )
-        payload["fields"] = edited
-        candidate.payload_json = payload
-
-    accept_candidate(session, candidate, actor="reviewer")
+    _accept(session, candidate)
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
 
@@ -252,14 +261,14 @@ def merge(
     dependency_id: int = Form(...),
     session: Session = Depends(get_session),
 ):
-    candidate = _pending(session, candidate_id)
-    dependency = session.get(Dependency, dependency_id)
-    if dependency is None or dependency.project_id != candidate.project_id:
-        # Blocking is a hard filter, and so is this: merging across projects
-        # would join two ledgers that were never the same thing.
-        raise HTTPException(400, "no such dependency in this project")
+    project = _project(session, slug)
+    candidate = _project_pending_candidate(session, project, candidate_id)
+    dependency = _project_dependency(session, project, dependency_id)
 
-    merge_candidate(session, candidate, dependency, actor="reviewer")
+    try:
+        merge_candidate(session, candidate, dependency, actor="reviewer")
+    except InvalidCandidateProvenance as exc:
+        raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
 
@@ -271,32 +280,56 @@ def reject(
     reason: str = Form(...),
     session: Session = Depends(get_session),
 ):
-    if reason not in REJECT_REASONS:
-        raise HTTPException(400, f"reason must be one of {REJECT_REASONS}")
-
-    candidate = _pending(session, candidate_id)
-    candidate.state = "rejected"
-    candidate.adjudicated_at = datetime.now(timezone.utc)
-    session.add(
-        AuditLog(
-            actor="reviewer",
-            action="reject_candidate",
-            entity_type="candidate",
-            entity_id=candidate.id,
-            before_json=None,
-            after_json={"reason": reason},
-        )
-    )
+    project = _project(session, slug)
+    candidate = _project_candidate(session, project, candidate_id)
+    try:
+        reject_candidate(session, candidate, reason, actor="reviewer")
+    except AlreadyAdjudicated as exc:
+        raise HTTPException(409, str(exc))
+    except InvalidRejectReason as exc:
+        raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
 
 
-def _pending(session: Session, candidate_id: int) -> Candidate:
+def _candidate(session: Session, candidate_id: int) -> Candidate:
     candidate = session.get(Candidate, candidate_id)
     if candidate is None:
         raise HTTPException(404, "no such candidate")
+    return candidate
+
+
+def _project_candidate(session: Session, project: Project, candidate_id: int) -> Candidate:
+    candidate = _candidate(session, candidate_id)
+    if candidate.project_id != project.id:
+        raise HTTPException(404, "no such candidate")
+    return candidate
+
+
+def _project_pending_candidate(
+    session: Session, project: Project, candidate_id: int
+) -> Candidate:
+    candidate = _project_candidate(session, project, candidate_id)
     if candidate.state != "pending":
         # Two tabs, or a double submit. Adjudicating twice would create a
         # second Dependency from one source row.
         raise HTTPException(409, f"already {candidate.state}")
     return candidate
+
+
+def _project_dependency(
+    session: Session, project: Project, dependency_id: int
+) -> Dependency:
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None or dependency.project_id != project.id:
+        raise HTTPException(404, "no such dependency")
+    return dependency
+
+
+def _project_evidence(
+    session: Session, dependency: Dependency, link_id: int
+) -> EvidenceLink:
+    link = session.get(EvidenceLink, link_id)
+    if link is None or link.dependency_id != dependency.id:
+        raise HTTPException(404, "no such evidence")
+    return link

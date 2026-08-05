@@ -3,6 +3,8 @@ from datetime import date
 
 import pymupdf
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from corridor.db import Session, engine
 from corridor.docs import get_page, list_documents
@@ -171,6 +173,116 @@ def test_reingesting_a_manifest_is_a_noop(session, project, lockfile, tmp_path):
     )
     assert [d.id for d in first] == [d.id for d in second]
     assert len(list_documents(session, project.id)) == 2
+
+
+def test_bulk_ingest_skips_locks_opted_out_of_default_materialization(
+    session, tmp_path, monkeypatch, capsys
+):
+    import corridor.docs as docs_module
+
+    tracked = make_pdf(
+        tmp_path / "tracked.pdf",
+        ["Tracked project matrix text long enough to stay above OCR fallback"],
+    )
+    layout = make_pdf(
+        tmp_path / "layout.pdf",
+        ["Layout evidence text long enough to stay above OCR fallback"],
+    )
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "tracked.lock.json").write_text(
+        json.dumps(
+            {
+                "project": "tracked-project",
+                "name": "Tracked Project",
+                "agency": "TxDOT",
+                "ingest_by_default": True,
+                "sources": {
+                    "tracked": {
+                        "sha256": "1" * 64,
+                        "local_path": str(tracked),
+                        "doc_type": "matrix",
+                        "retrieved_at": "2026-08-05T00:00:00+00:00",
+                    }
+                },
+            }
+        )
+    )
+    (corpus_dir / "cross-agency.lock.json").write_text(
+        json.dumps(
+            {
+                "project": "layout-evidence",
+                "name": "Layout Evidence",
+                "agency": "various",
+                "ingest_by_default": False,
+                "sources": {
+                    "layout": {
+                        "sha256": "2" * 64,
+                        "local_path": str(layout),
+                        "doc_type": "matrix",
+                        "retrieved_at": "2026-08-05T00:00:00+00:00",
+                    }
+                },
+            }
+        )
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(docs_module, "SessionFactory", sessionmaker(bind=session.get_bind()))
+
+    assert docs_module.main(["ingest"]) == 0
+
+    out = capsys.readouterr().out
+    assert "tracked-project: 1/1 parsed from tracked.lock.json" in out
+    assert "layout-evidence: skipped bulk ingest (ingest_by_default is false)" in out
+    assert "1 documents total" in out
+
+    projects = {p.slug for p in session.scalars(select(Project))}
+    assert "tracked-project" in projects
+    assert "layout-evidence" not in projects
+
+
+def test_explicit_slug_ingest_overrides_the_default_skip_policy(
+    session, tmp_path, monkeypatch, capsys
+):
+    import corridor.docs as docs_module
+
+    layout = make_pdf(
+        tmp_path / "layout.pdf",
+        ["Layout evidence text long enough to stay above OCR fallback"],
+    )
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "cross-agency.lock.json").write_text(
+        json.dumps(
+            {
+                "project": "layout-evidence",
+                "name": "Layout Evidence",
+                "agency": "various",
+                "ingest_by_default": False,
+                "sources": {
+                    "layout": {
+                        "sha256": "2" * 64,
+                        "local_path": str(layout),
+                        "doc_type": "matrix",
+                        "retrieved_at": "2026-08-05T00:00:00+00:00",
+                    }
+                },
+            }
+        )
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(docs_module, "SessionFactory", sessionmaker(bind=session.get_bind()))
+
+    assert docs_module.main(["ingest", "layout-evidence"]) == 0
+
+    out = capsys.readouterr().out
+    assert "layout-evidence: 1/1 parsed from cross-agency.lock.json" in out
+    assert "skipped bulk ingest" not in out
+
+    projects = {p.slug for p in session.scalars(select(Project))}
+    assert "layout-evidence" in projects
 
 
 def test_listing_reports_pages_and_ocr_counts(session, project, lockfile, tmp_path):

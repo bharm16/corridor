@@ -26,6 +26,7 @@ from corridor.geometry import NoMatrixFound
 from corridor.db import Session, engine
 from corridor.extract_matrix import (
     DECLINED_COLUMNS,
+    ExtractionFailed,
     LOCAL_FIELDS,
     PROMPT_VERSION,
     ROW_FIELDS,
@@ -86,7 +87,12 @@ class StubClient:
             {"system": system, "user": user, "schema": schema,
              "images": [str(i) for i in images], "logprobs": logprobs}
         )
-        return self.responses.pop(0) if self.responses else structure()
+        response = self.responses.pop(0) if self.responses else structure()
+        # A failure is raised, not returned. It used to be a reserved key
+        # in the payload, which any stub — or any model — could fabricate.
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def structure(*, matrix_table=0, header_row=0, columns=None, owner=None,
@@ -733,6 +739,31 @@ def test_a_mixed_document_produces_candidates_from_both_tiers(
     assert doc.extraction_tiers == {TIER_STRUCTURE: 1, TIER_TRANSCRIBE: 1}
 
 
+def test_any_failed_page_fails_the_whole_document_and_leaves_no_partial_candidates(
+    session, project, tmp_path
+):
+    """A mixed success/failure is still an incomplete document attempt.
+
+    Resume and eval key off completed document attempts, not off the fact
+    that some page happened to yield rows before another page failed.
+    """
+    document = make_multipage_document(
+        session, project, tmp_path, [TXDOT_ROWS, TXDOT_ROWS], sha="z"
+    )
+
+    with pytest.raises(ExtractionFailed, match="1 of 2") as raised:
+        extract_document(
+            session,
+            document,
+            client=StubClient([structure(), RuntimeError("503 upstream")]),
+        )
+
+    assert "1 of 2" in str(raised.value)
+    assert session.scalars(
+        select(Candidate).where(Candidate.source_document_id == document.id)
+    ).all() == []
+
+
 def test_every_page_failing_is_not_reported_as_an_unhandled_layout(
     session, project, tmp_path
 ):
@@ -744,9 +775,9 @@ def test_every_page_failing_is_not_reported_as_an_unhandled_layout(
     """
     doc = make_document(session, project, tmp_path, TXDOT_ROWS)
 
-    with pytest.raises(RuntimeError) as raised:
+    with pytest.raises(ExtractionFailed) as raised:
         extract_document(
-            session, doc, client=StubClient([{"_error": "503 upstream"}])
+            session, doc, client=StubClient([RuntimeError("503 upstream")])
         )
 
     assert not isinstance(raised.value, NoMatrixFound)

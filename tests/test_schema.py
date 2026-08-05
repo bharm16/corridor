@@ -1,9 +1,9 @@
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import DBAPIError
 
 from corridor.config import settings
-from corridor.models import DEP_STATUSES
+from corridor.models import DEP_STATUSES, Dependency
 
 
 @pytest.fixture
@@ -84,3 +84,68 @@ def test_evidence_defaults_are_false(conn):
     ).one()
     assert row.verified is False
     assert row.satisfies_requirement is False
+
+
+def test_dependency_model_declares_external_org_and_milestone_foreign_keys():
+    expected = {
+        "external_org_id": {
+            "external_orgs.id",
+        },
+        "milestone_id": {
+            "milestones.id",
+        },
+    }
+    actual = {
+        column_name: {fk.target_fullname for fk in Dependency.__table__.c[column_name].foreign_keys}
+        for column_name in expected
+    }
+    assert actual == expected
+
+
+def test_database_has_named_dependency_foreign_keys(conn):
+    expected = {
+        ("external_org_id",): {
+            "name": "fk_dependencies_external_org_id_external_orgs_id",
+            "referred_table": "external_orgs",
+            "referred_columns": ("id",),
+        },
+        ("milestone_id",): {
+            "name": "fk_dependencies_milestone_id_milestones_id",
+            "referred_table": "milestones",
+            "referred_columns": ("id",),
+        },
+    }
+    actual = {
+        tuple(fk["constrained_columns"]): {
+            "name": fk["name"],
+            "referred_table": fk["referred_table"],
+            "referred_columns": tuple(fk["referred_columns"]),
+        }
+        for fk in inspect(conn).get_foreign_keys("dependencies")
+        if tuple(fk["constrained_columns"]) in expected
+    }
+    assert actual == expected
+
+
+def test_extraction_runs_require_a_prompt_version(conn):
+    conn.execute(
+        text(
+            "insert into projects (id, slug, name, is_synthetic) "
+            "values (9997, 'run-test', 'Run Test', false)"
+        )
+    )
+    conn.execute(
+        text(
+            "insert into documents (id, project_id, sha256, filename, "
+            "doc_type, parse_status) values (9997, 9997, 'def', 'g.pdf', "
+            "'minutes', 'parsed')"
+        )
+    )
+    with pytest.raises(DBAPIError, match="prompt_version"):
+        conn.execute(
+            text(
+                "insert into extraction_runs "
+                "(document_id, prompt_version, candidate_count, page_errors) "
+                "values (9997, null, 0, 0)"
+            )
+        )
