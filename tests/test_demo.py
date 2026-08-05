@@ -5,6 +5,7 @@ from corridor import audit
 from corridor.adjudicate import accept_candidate
 from corridor.demo import _reset
 from corridor.db import Session, engine
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import AuditLog, Candidate, Dependency, DocPage, Document, Project
 from corridor.principals import HumanPrincipal
 from corridor.demo import DEMO_SLUG, DemoIsolationError
@@ -96,6 +97,17 @@ def make_candidate(session, document):
         citations_verified=True,
     )
     session.add(candidate)
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=candidate.prompt_version,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model=candidate.model,
+    )
+    session.flush()
+    declare_active_run(session, document.id, run.id)
     session.flush()
     return candidate
 

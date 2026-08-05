@@ -95,26 +95,24 @@ def document_of_record(documents) -> Document | None:
 
     Two rules, and the order is the substance rather than a detail:
 
-    1. **Supersession by date.** A February printout beats a spreadsheet
-       from the previous June, because the project replaced that revision.
+    1. **Later rendition date.** Within forms already known to represent one
+       registered document, a February rendition beats one from June.
     2. **Then format.** Among documents of the same date, the structured
        original outranks its printed rendering — every defect ADR-0004
        catalogues is damage done in the printing, and the spreadsheet is
        the thing it was done to.
 
-    Applied the other way round, a stale spreadsheet outranks a current
-    PDF and the Ledger cites a revision the project has already replaced.
-    ADR-0005 says so outright, and this function is that sentence.
+    Applied the other way round, an older structured rendition can outrank a
+    later PDF. ADR-0005 says so outright, and this function is that sentence.
 
     An undated document sorts below every dated one. Treating a missing
     date as today's would let a file nobody dated supersede the revision
     the project actually issued.
 
-    **What this does not do is decide which documents are forms of one
-    document.** That is supersession, it needs the RID index's "Replaced
-    on" chain, and it is M8's — `documents.superseded_by` exists and
-    nothing populates it yet. Callers pass a set they already know renders
-    the same thing; this only ranks it.
+    **This never determines Supersession.** Callers pass forms they already
+    know render one registered document; this only ranks those forms.
+    Supersession is the separately declared RID-index relation stored in
+    `documents.superseded_by`, never a consequence of this date ordering.
     """
     return max(documents, key=_precedence, default=None)
 

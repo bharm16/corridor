@@ -34,12 +34,12 @@ import httpx
 import yaml
 
 from corridor.models import DOC_TYPES
+from corridor.supersession import SupersessionDeclaration
 
 ROLES = ("spine", "stream", "schedule", "evidence")
 
 USER_AGENT = (
-    "corridor-corpus/0.1 (research prototype; "
-    "+https://github.com/bharm16/corridor)"
+    "corridor-corpus/0.1 (research prototype; +https://github.com/bharm16/corridor)"
 )
 
 # Box, and some CDNs behind it, return 404 to anything that does not look
@@ -64,6 +64,10 @@ class Source:
     # reaches one level deeper — SH 99's meeting notes are a zip inside the
     # zip: "Utility Owner Coordination/Notes.zip::Meeting Notes/x.pdf".
     member: str | None = None
+    # Stable human-curated identity used by declared registry relations.
+    # Optional for documents that do not participate in one.
+    registry_id: str | None = None
+    supersession: SupersessionDeclaration | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,17 @@ def load_manifest(path: Path | str) -> Manifest:
                 f"expected one of {', '.join(ROLES)}"
             )
         doc_date = entry.get("doc_date")
+        registry_id = entry.get("registry_id")
+        if registry_id is not None and (
+            not isinstance(registry_id, str) or not registry_id.strip()
+        ):
+            raise ValueError(f"source {i} ({url}): registry_id must be non-empty")
+        supersession = _load_supersession(
+            entry.get("supersession"),
+            registry_id=registry_id,
+            index=i,
+            url=url,
+        )
         sources.append(
             Source(
                 url=url,
@@ -128,8 +143,11 @@ def load_manifest(path: Path | str) -> Manifest:
                 doc_date=doc_date if isinstance(doc_date, date) else None,
                 notes=entry.get("notes"),
                 member=entry.get("member"),
+                registry_id=registry_id,
+                supersession=supersession,
             )
         )
+    _validate_manifest_registry(tuple(sources), path=manifest_path)
     return Manifest(
         project=raw["project"],
         agency=raw.get("agency"),
@@ -138,10 +156,82 @@ def load_manifest(path: Path | str) -> Manifest:
         ingest_by_default=_load_bool_field(
             raw, path=manifest_path, field="ingest_by_default", default=True
         ),
-        sealed=_load_bool_field(
-            raw, path=manifest_path, field="sealed", default=False
-        ),
+        sealed=_load_bool_field(raw, path=manifest_path, field="sealed", default=False),
     )
+
+
+def _load_supersession(
+    raw,
+    *,
+    registry_id: str | None,
+    index: int,
+    url: str | None,
+) -> SupersessionDeclaration | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"source {index} ({url}): supersession must be an object")
+    if not registry_id:
+        raise ValueError(f"source {index} ({url}): supersession requires registry_id")
+    source = raw.get("source")
+    if not isinstance(source, dict):
+        raise ValueError(
+            f"source {index} ({url}): supersession source must be an object"
+        )
+    replacement_date = raw.get("replacement_date")
+    if not isinstance(replacement_date, date):
+        raise ValueError(
+            f"source {index} ({url}): replacement_date must be a YAML date"
+        )
+    source_page = source.get("page")
+    if (
+        isinstance(source_page, bool)
+        or not isinstance(source_page, int)
+        or source_page <= 0
+    ):
+        raise ValueError(
+            f"source {index} ({url}): supersession source page must be positive"
+        )
+    return SupersessionDeclaration(
+        predecessor_registry_id=registry_id,
+        successor_registry_id=raw.get("successor"),
+        replacement_date=replacement_date,
+        source_registry_id=source.get("document"),
+        source_page=source_page,
+    )
+
+
+def _validate_manifest_registry(sources: tuple[Source, ...], *, path: Path) -> None:
+    identifiers = [source.registry_id for source in sources if source.registry_id]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError(f"{path}: registry_id values must be unique")
+    known = set(identifiers)
+    graph: dict[str, str] = {}
+    for source in sources:
+        declaration = source.supersession
+        if declaration is None:
+            continue
+        for label, value in (
+            ("successor", declaration.successor_registry_id),
+            ("source document", declaration.source_registry_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{path}: supersession {label} must be non-empty")
+            if value not in known:
+                raise ValueError(
+                    f"{path}: supersession {label} {value!r} is not registered"
+                )
+        if declaration.predecessor_registry_id == declaration.successor_registry_id:
+            raise ValueError(f"{path}: a document cannot supersede itself")
+        graph[declaration.predecessor_registry_id] = declaration.successor_registry_id
+    for start in graph:
+        seen: set[str] = set()
+        current = start
+        while current in graph:
+            if current in seen:
+                raise ValueError(f"{path}: supersession declarations contain a cycle")
+            seen.add(current)
+            current = graph[current]
 
 
 def fetch_all(
@@ -166,6 +256,9 @@ def fetch_all(
             if i and delay:
                 time.sleep(delay)
             _fetch_one(source, store, lock, summary, client, archives)
+            record = lock["sources"].get(_source_key(source))
+            if record is not None:
+                _sync_registry_metadata(record, source)
     finally:
         if owns_client:
             client.close()
@@ -449,6 +542,7 @@ def _store_and_record(
         "history": history,
     }
     record.update(extra or {})
+    _sync_registry_metadata(record, source)
     lock["sources"][key] = record
     (summary.drifted if drifted else summary.fetched).append(key)
 
@@ -545,16 +639,22 @@ class _HttpRangeFile:
         return response.content
 
 
-def _failure(prior: dict | None, *, status: int | None, error: str | None = None) -> dict:
+def _failure(
+    prior: dict | None, *, status: int | None, error: str | None = None
+) -> dict:
     """Record the attempt without discarding a prior successful retrieval."""
-    record = dict(prior) if prior else {
-        "sha256": None,
-        "retrieved_at": None,
-        "local_path": None,
-        "content_type": None,
-        "bytes": None,
-        "history": [],
-    }
+    record = (
+        dict(prior)
+        if prior
+        else {
+            "sha256": None,
+            "retrieved_at": None,
+            "local_path": None,
+            "content_type": None,
+            "bytes": None,
+            "history": [],
+        }
+    )
     record["http_status"] = status
     record["last_error"] = error
     record["last_attempt_at"] = _now()
@@ -570,6 +670,27 @@ def _store_path(store: Path, sha: str, name: str) -> Path:
     return store / sha[:2] / f"{sha}{suffix}"
 
 
+def _source_key(source: Source) -> str:
+    return f"{source.url}::{source.member}" if source.member else source.url
+
+
+def _sync_registry_metadata(record: dict, source: Source) -> None:
+    """Mirror curated declarations without making fetch recency meaningful."""
+    record.pop("registry_id", None)
+    record.pop("supersession", None)
+    if source.registry_id is not None:
+        record["registry_id"] = source.registry_id
+    declaration = source.supersession
+    if declaration is not None:
+        record["supersession"] = {
+            "predecessor_registry_id": declaration.predecessor_registry_id,
+            "successor_registry_id": declaration.successor_registry_id,
+            "replacement_date": declaration.replacement_date.isoformat(),
+            "source_registry_id": declaration.source_registry_id,
+            "source_page": declaration.source_page,
+        }
+
+
 def _read_lock(path: Path, manifest: Manifest) -> dict:
     if path.exists():
         lock = json.loads(path.read_text())
@@ -581,6 +702,10 @@ def _read_lock(path: Path, manifest: Manifest) -> dict:
     lock["name"] = manifest.name
     lock["agency"] = manifest.agency
     lock["ingest_by_default"] = manifest.ingest_by_default
+    for source in manifest.sources:
+        record = lock["sources"].get(_source_key(source))
+        if record is not None:
+            _sync_registry_metadata(record, source)
     return lock
 
 

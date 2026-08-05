@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 from corridor import audit
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session
+from corridor.extraction_runs import declare_active_run
 from corridor.models import (
     Assertion,
     ActiveExtractionRun,
@@ -165,6 +166,11 @@ def main(limit: int | None = None) -> int:
         )
 
         chosen = candidates[:limit] if limit else candidates
+        if candidates:
+            run_ids = {candidate.extraction_run_id for candidate in candidates}
+            if len(run_ids) != 1 or None in run_ids:
+                raise RuntimeError("demo extraction did not produce one declared run")
+            declare_active_run(session, document.id, run_ids.pop())
         for candidate in chosen:
             accept_candidate(session, candidate, principal=principal)
         print(f"adjudicated {len(chosen)} accepted")

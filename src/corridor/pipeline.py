@@ -13,14 +13,16 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.extraction_runs import record_extraction_run
 from corridor.extract_matrix import ExtractionFailed
 from corridor.geometry import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
-from corridor.models import Candidate, Document
+from corridor.models import Candidate, DocPage, Document
 from corridor.storage import stored_file
+from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 
 Extractor = Callable[[Session, Document], list[Candidate]]
@@ -49,8 +51,11 @@ def ingest_manifest(
     """
     lock = json.loads(Path(lock_path).read_text())
     documents = []
+    declarations: list[SupersessionDeclaration] = []
 
     for key, record in sorted(lock.get("sources", {}).items()):
+        if record.get("supersession") is not None:
+            declarations.append(_lock_supersession(record["supersession"]))
         # A failed fetch has a null sha256 and nothing on disk. It stays
         # visible in the lockfile rather than being ingested as though it
         # had worked.
@@ -71,9 +76,107 @@ def ingest_manifest(
                 source_url=record.get("archive_url") or key,
                 retrieved_at=record.get("retrieved_at"),
                 doc_date=parse_doc_date(record.get("doc_date")),
+                registry_id=record.get("registry_id"),
+                expected_sha256=record["sha256"],
             )
         )
+
+    _register_complete_supersession_set(
+        session,
+        declarations,
+        project_id=project_id,
+    )
     return documents
+
+
+def _lock_supersession(raw) -> SupersessionDeclaration:
+    if not isinstance(raw, dict):
+        raise ValueError("lockfile supersession must be an object")
+    replacement_date = parse_doc_date(raw.get("replacement_date"))
+    if replacement_date is None:
+        raise ValueError("lockfile supersession replacement_date is required")
+    identifiers = {
+        "predecessor_registry_id": raw.get("predecessor_registry_id"),
+        "successor_registry_id": raw.get("successor_registry_id"),
+        "source_registry_id": raw.get("source_registry_id"),
+    }
+    for name, value in identifiers.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"lockfile supersession {name} must be non-empty")
+    source_page = raw.get("source_page")
+    if (
+        isinstance(source_page, bool)
+        or not isinstance(source_page, int)
+        or source_page <= 0
+    ):
+        raise ValueError("lockfile supersession source_page must be positive")
+    return SupersessionDeclaration(
+        predecessor_registry_id=identifiers["predecessor_registry_id"],
+        successor_registry_id=identifiers["successor_registry_id"],
+        replacement_date=replacement_date,
+        source_registry_id=identifiers["source_registry_id"],
+        source_page=source_page,
+    )
+
+
+def _register_complete_supersession_set(
+    session: Session,
+    declarations: list[SupersessionDeclaration],
+    *,
+    project_id: int,
+) -> None:
+    """Register the declaration batch only when every participant exists.
+
+    A failed fetch remains explicit in the lockfile, but it must not prevent
+    other successfully fetched sources from being ingested. The declarations
+    stay all-or-nothing: if even one registered document is unavailable, no
+    edge from the batch is written and a later ingest can retry the full set.
+    """
+    if not declarations:
+        return
+
+    required_registry_ids = {
+        registry_id
+        for declaration in declarations
+        for registry_id in (
+            declaration.predecessor_registry_id,
+            declaration.successor_registry_id,
+            declaration.source_registry_id,
+        )
+    }
+    available_registry_ids = set(
+        session.scalars(
+            select(Document.registry_id).where(
+                Document.project_id == project_id,
+                Document.registry_id.in_(required_registry_ids),
+            )
+        ).all()
+    )
+    if available_registry_ids != required_registry_ids:
+        return
+
+    required_source_pointers = {
+        (declaration.source_registry_id, declaration.source_page)
+        for declaration in declarations
+    }
+    available_source_pointers = {
+        (registry_id, page_no)
+        for registry_id, page_no in session.execute(
+            select(Document.registry_id, DocPage.page_no)
+            .join(DocPage, DocPage.document_id == Document.id)
+            .where(
+                Document.project_id == project_id,
+                Document.registry_id.in_(
+                    {registry_id for registry_id, _ in required_source_pointers}
+                ),
+            )
+        ).all()
+        if (registry_id, page_no) in required_source_pointers
+    }
+    if available_source_pointers != required_source_pointers:
+        return
+
+    register_supersessions(session, declarations, project_id=project_id)
 
 
 def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
@@ -109,7 +212,9 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
     )
 
 
-def extract_any(session: Session, document: Document, *, client=None) -> list[Candidate]:
+def extract_any(
+    session: Session, document: Document, *, client=None
+) -> list[Candidate]:
     """Read one matrix, whichever form it was published in (ADR-0005).
 
     Which reader runs is a property of the document rather than something a

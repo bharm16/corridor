@@ -20,10 +20,12 @@ from corridor.adjudicate import (
     set_resolution_strategy,
 )
 from corridor.db import Session, engine
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import load_dependency
 from corridor.models import (
     CRITICAL_STRATEGIES,
     RESOLUTION_STRATEGIES,
+    ActiveExtractionRun,
     Dependency,
     Assertion,
     AuditLog,
@@ -31,6 +33,7 @@ from corridor.models import (
     Document,
     DocPage,
     EvidenceLink,
+    ExtractionRun,
     ExternalOrg,
     Project,
 )
@@ -136,6 +139,58 @@ def make_candidate(
     )
     session.add(candidate)
     session.flush()
+    _activate_fixture_candidate(session, document, candidate)
+    return candidate
+
+
+def _activate_fixture_candidate(session, document, candidate):
+    """Attach a test Candidate to the document's explicit Active Run.
+
+    Most tests build several Candidates for one document through separate
+    helper calls. They represent one completed extraction attempt, so reuse
+    its receipt and keep the receipt's count aligned with the attached rows.
+    Rebinding remains available to provenance tests that deliberately mutate
+    a Candidate onto another document after constructing it.
+    """
+    with session.no_autoflush:
+        previous_run = (
+            session.get(ExtractionRun, candidate.extraction_run_id)
+            if candidate.extraction_run_id is not None
+            else None
+        )
+        active = session.get(ActiveExtractionRun, document.id)
+        run = (
+            session.get(ExtractionRun, active.extraction_run_id)
+            if active is not None
+            else None
+        )
+
+    if run is not None and (
+        run.prompt_version != candidate.prompt_version or run.model != candidate.model
+    ):
+        run = None
+
+    if previous_run is not None and (run is None or previous_run.id != run.id):
+        candidate.extraction_run_id = None
+        session.flush([candidate])
+        previous_run.candidate_count -= 1
+
+    if run is None:
+        run = record_extraction_run(
+            session,
+            document,
+            prompt_version=candidate.prompt_version,
+            candidate_count=1,
+            page_errors=0,
+            candidates=(candidate,),
+            model=candidate.model,
+        )
+        declare_active_run(session, document.id, run.id)
+    elif candidate.extraction_run_id != run.id:
+        candidate.extraction_run_id = run.id
+        run.candidate_count += 1
+
+    session.flush()
     return candidate
 
 
@@ -172,7 +227,7 @@ def test_accepting_refuses_a_candidate_whose_source_document_is_in_another_proje
 
     candidate = make_candidate(session, document)
     candidate.source_document_id = stray.id
-    session.flush()
+    _activate_fixture_candidate(session, stray, candidate)
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1073,7 +1128,7 @@ def test_merging_refuses_a_candidate_from_another_project(session, document):
             }
         ],
     }
-    session.flush()
+    _activate_fixture_candidate(session, stray_doc, candidate)
 
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
@@ -1765,6 +1820,7 @@ def make_event_candidate(session, document):
     )
     session.add(candidate)
     session.flush()
+    _activate_fixture_candidate(session, document, candidate)
     return candidate
 
 

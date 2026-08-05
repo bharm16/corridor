@@ -78,6 +78,50 @@ def test_registers_the_document_with_its_provenance(session, project, pdf, tmp_p
     assert doc.retrieved_at is not None
 
 
+def test_registry_identity_cannot_alias_one_document_to_two_declared_ids(
+    session, project, pdf, tmp_path
+):
+    ingest(
+        session,
+        project,
+        pdf,
+        tmp_path / "images",
+        registry_id="matrix-r1",
+    )
+
+    with pytest.raises(ValueError, match="multiple registry ids"):
+        ingest(
+            session,
+            project,
+            pdf,
+            tmp_path / "images",
+            registry_id="matrix-r2",
+        )
+
+
+def test_registry_identity_cannot_move_to_different_document_bytes(
+    session, project, pdf, tmp_path
+):
+    ingest(
+        session,
+        project,
+        pdf,
+        tmp_path / "images",
+        registry_id="matrix-r1",
+    )
+    other = tmp_path / "other.pdf"
+    other.write_bytes(pdf.read_bytes() + b"\n%different registered bytes")
+
+    with pytest.raises(ValueError, match="different document bytes"):
+        ingest(
+            session,
+            project,
+            other,
+            tmp_path / "images",
+            registry_id="matrix-r1",
+        )
+
+
 def test_every_page_gets_text_and_an_image(session, project, pdf, tmp_path):
     doc = ingest(session, project, pdf, tmp_path / "images")
     pages = session.scalars(

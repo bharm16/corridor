@@ -20,6 +20,7 @@ from corridor.models import (
     Document,
     ExtractionRun,
 )
+from corridor.project_lock import lock_project
 
 
 def completion_predicate():
@@ -105,6 +106,13 @@ def declare_active_run(
     session: Session, document_id: int, extraction_run_id: int
 ) -> ExtractionRun:
     """Declare a completed run operative; never infer one from recency."""
+    project_id = session.scalar(
+        select(Document.project_id).where(Document.id == document_id)
+    )
+    if project_id is None:
+        raise ValueError("document does not exist")
+    lock_project(session, project_id)
+
     run = session.scalar(
         select(ExtractionRun).where(
             ExtractionRun.id == extraction_run_id,
@@ -116,7 +124,11 @@ def declare_active_run(
     if run.outcome != "completed" or run.page_errors != 0:
         raise ValueError("only a completed extraction run can be active")
 
-    current = session.get(ActiveExtractionRun, document_id)
+    current = session.get(
+        ActiveExtractionRun,
+        document_id,
+        populate_existing=True,
+    )
     if current is None:
         session.add(
             ActiveExtractionRun(

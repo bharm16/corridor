@@ -79,6 +79,109 @@ def test_manifest_parses_sources(tmp_path):
     assert m.sources[1].doc_date is None
 
 
+def test_nhhip_manifest_declares_the_five_revision_chain_from_the_rid_index():
+    manifest = load_manifest("corpus/manifest.yaml")
+    declarations = [
+        source.supersession
+        for source in manifest.sources
+        if source.supersession is not None
+    ]
+
+    assert [
+        (
+            declaration.predecessor_registry_id,
+            declaration.successor_registry_id,
+            declaration.replacement_date,
+            declaration.source_registry_id,
+            declaration.source_page,
+        )
+        for declaration in declarations
+    ] == [
+        (
+            "nhhip-ucm-2025-06-20",
+            "nhhip-ucm-2025-07-22",
+            date(2025, 7, 22),
+            "nhhip-rid-index-2026-05-01",
+            4,
+        ),
+        (
+            "nhhip-ucm-2025-07-22",
+            "nhhip-ucm-2025-10-24",
+            date(2025, 10, 31),
+            "nhhip-rid-index-2026-05-01",
+            4,
+        ),
+        (
+            "nhhip-ucm-2025-10-24",
+            "nhhip-ucm-2025-12-15",
+            date(2025, 12, 15),
+            "nhhip-rid-index-2026-05-01",
+            4,
+        ),
+        (
+            "nhhip-ucm-2025-12-15",
+            "nhhip-ucm-2026-02-13",
+            date(2026, 2, 13),
+            "nhhip-rid-index-2026-05-01",
+            4,
+        ),
+    ]
+
+
+def test_supersession_declarations_survive_into_the_generated_lockfile(tmp_path):
+    manifest_text = """
+project: registry-test
+agency: TxDOT
+sources:
+  - registry_id: rid-index
+    url: https://example.gov/index.pdf
+    doc_type: other
+    role: evidence
+    title: RID index
+  - registry_id: matrix-r1
+    url: https://example.gov/r1.pdf
+    doc_type: matrix
+    role: spine
+    title: Matrix R1
+    supersession:
+      successor: matrix-r2
+      replacement_date: 2026-02-13
+      source:
+        document: rid-index
+        page: 4
+  - registry_id: matrix-r2
+    url: https://example.gov/r2.pdf
+    doc_type: matrix
+    role: spine
+    title: Matrix R2
+"""
+    manifest_path = write_manifest(tmp_path, manifest_text)
+    bodies = {
+        "https://example.gov/index.pdf": b"RID index",
+        "https://example.gov/r1.pdf": b"matrix r1",
+        "https://example.gov/r2.pdf": b"matrix r2",
+    }
+
+    fetch_all(
+        load_manifest(manifest_path),
+        store=tmp_path / "files",
+        lock_path=tmp_path / "manifest.lock.json",
+        client=httpx.Client(transport=transport(bodies)),
+        delay=0.0,
+    )
+
+    lock = json.loads((tmp_path / "manifest.lock.json").read_text())
+    predecessor = lock["sources"]["https://example.gov/r1.pdf"]
+    assert predecessor["registry_id"] == "matrix-r1"
+    assert predecessor["supersession"] == {
+        "predecessor_registry_id": "matrix-r1",
+        "successor_registry_id": "matrix-r2",
+        "replacement_date": "2026-02-13",
+        "source_registry_id": "rid-index",
+        "source_page": 4,
+    }
+
+
 def test_manifest_accepts_real_yaml_booleans_for_policy_fields(tmp_path):
     manifest = "ingest_by_default: false\nsealed: true\n" + MANIFEST
     parsed = load_manifest(write_manifest(tmp_path, manifest))

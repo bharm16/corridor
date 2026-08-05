@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from corridor.merge import rank_matches
 from corridor.models import Candidate, DocPage, Document
 from corridor.storage import stored_pdf
+from corridor.supersession import actionable_candidate_query
 
 
 @dataclass
@@ -66,31 +67,40 @@ class CandidateView:
     # button that fabricates the record — the same treatment merge already
     # gets when there is nothing to merge into.
     accept_refused: str = ""
+    # Present only when the reviewer explicitly opened one superseded
+    # document. Forms carry it so the write boundary sees the same scope.
+    historical_document_id: int | None = None
 
 
-def pending_counts(session: Session, project_id: int) -> tuple[int, int]:
+def pending_counts(
+    session: Session,
+    project_id: int,
+    *,
+    historical_document_id: int | None = None,
+) -> tuple[int, int]:
     """(total pending, pending with verified citations)."""
-    total = session.scalar(
-        select(func.count())
-        .select_from(Candidate)
-        .where(Candidate.project_id == project_id, Candidate.state == "pending")
+    scoped = actionable_candidate_query(
+        project_id, historical_document_id=historical_document_id
     )
     verified = session.scalar(
-        select(func.count())
-        .select_from(Candidate)
-        .where(
-            Candidate.project_id == project_id,
-            Candidate.state == "pending",
-            Candidate.citations_verified.is_(True),
-        )
+        scoped.with_only_columns(func.count())
+        .where(Candidate.citations_verified.is_(True))
+        .order_by(None)
     )
+    total = session.scalar(scoped.with_only_columns(func.count()).order_by(None))
     return total or 0, verified or 0
 
 
-def next_candidate(session: Session, project_id: int) -> Candidate | None:
+def next_candidate(
+    session: Session,
+    project_id: int,
+    *,
+    historical_document_id: int | None = None,
+) -> Candidate | None:
     return session.scalars(
-        select(Candidate)
-        .where(Candidate.project_id == project_id, Candidate.state == "pending")
+        actionable_candidate_query(
+            project_id, historical_document_id=historical_document_id
+        )
         # Unverified citations sink. Never filtered out — a candidate whose
         # quote could not be found is a signal, not noise.
         .order_by(Candidate.citations_verified.desc(), Candidate.id)
@@ -98,7 +108,12 @@ def next_candidate(session: Session, project_id: int) -> Candidate | None:
     ).first()
 
 
-def build_view(session: Session, candidate: Candidate) -> CandidateView:
+def build_view(
+    session: Session,
+    candidate: Candidate,
+    *,
+    historical_document_id: int | None = None,
+) -> CandidateView:
     payload = candidate.payload_json or {}
     citation = (payload.get("citations") or [{}])[0]
     page_no = citation.get("page") or 1
@@ -112,7 +127,11 @@ def build_view(session: Session, candidate: Candidate) -> CandidateView:
         )
     ).first()
 
-    total, verified = pending_counts(session, candidate.project_id)
+    total, verified = pending_counts(
+        session,
+        candidate.project_id,
+        historical_document_id=historical_document_id,
+    )
 
     return CandidateView(
         candidate=candidate,
@@ -130,6 +149,7 @@ def build_view(session: Session, candidate: Candidate) -> CandidateView:
         highlights=locate_quote(document, page_no, quote),
         remaining=total,
         verified_remaining=verified,
+        historical_document_id=historical_document_id,
         accept_refused=(
             ""
             if candidate.kind == "dependency"

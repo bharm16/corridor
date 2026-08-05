@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import date
 
@@ -8,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from corridor.db import Session, engine
 from corridor.docs import get_page, list_documents
-from corridor.models import Project
+from corridor.models import Document, Project
 from corridor.pipeline import ingest_manifest
 
 
@@ -41,6 +42,10 @@ def make_pdf(path, lines):
     return path
 
 
+def file_sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 @pytest.fixture
 def lockfile(tmp_path):
     good = make_pdf(
@@ -58,7 +63,7 @@ def lockfile(tmp_path):
         "project": "docs-test",
         "sources": {
             "https://example.gov/utilities.zip::matrix.pdf": {
-                "sha256": "1" * 64,
+                "sha256": file_sha256(good),
                 "local_path": str(good),
                 "member": "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf",
                 "archive_url": "https://example.gov/utilities.zip",
@@ -67,7 +72,7 @@ def lockfile(tmp_path):
                 "retrieved_at": "2026-08-02T20:00:00+00:00",
             },
             "https://example.gov/agreement.pdf": {
-                "sha256": "2" * 64,
+                "sha256": file_sha256(other),
                 "local_path": str(other),
                 "doc_type": "agreement",
                 "doc_date": None,
@@ -100,6 +105,237 @@ def test_ingesting_a_manifest_loads_every_fetched_source(
     assert all(d.parse_status == "parsed" for d in documents)
 
 
+def test_ingest_rejects_lockfile_hash_mismatch_before_binding_registry_id(
+    session, project, tmp_path
+):
+    document_path = make_pdf(tmp_path / "swapped.pdf", ["Unexpected bytes"])
+    lock_path = tmp_path / "swapped.lock.json"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "project": project.slug,
+                "sources": {
+                    "https://example.gov/expected.pdf": {
+                        "sha256": "0" * 64,
+                        "local_path": str(document_path),
+                        "doc_type": "matrix",
+                        "registry_id": "matrix-stable-id",
+                    }
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="lockfile sha256"):
+        ingest_manifest(
+            session,
+            project_id=project.id,
+            lock_path=lock_path,
+            images_dir=tmp_path / "images",
+        )
+
+    assert session.scalars(
+        select(Document).where(Document.project_id == project.id)
+    ).all() == []
+
+
+def test_ingest_registers_structured_supersession_after_all_documents_exist(
+    session, project, tmp_path
+):
+    index = make_pdf(tmp_path / "index.pdf", ["R1 Replaced on 2026-02-13"])
+    first = make_pdf(tmp_path / "r1.pdf", ["Matrix revision one"])
+    second = make_pdf(tmp_path / "r2.pdf", ["Matrix revision two"])
+    lock = {
+        "project": project.slug,
+        "sources": {
+            "https://example.gov/index.pdf": {
+                "sha256": file_sha256(index),
+                "local_path": str(index),
+                "doc_type": "other",
+                "registry_id": "rid-index",
+            },
+            "https://example.gov/r1.pdf": {
+                "sha256": file_sha256(first),
+                "local_path": str(first),
+                "doc_type": "matrix",
+                "registry_id": "matrix-r1",
+                "supersession": {
+                    "predecessor_registry_id": "matrix-r1",
+                    "successor_registry_id": "matrix-r2",
+                    "replacement_date": "2026-02-13",
+                    "source_registry_id": "rid-index",
+                    "source_page": 1,
+                },
+            },
+            "https://example.gov/r2.pdf": {
+                "sha256": file_sha256(second),
+                "local_path": str(second),
+                "doc_type": "matrix",
+                "registry_id": "matrix-r2",
+            },
+        },
+    }
+    lock_path = tmp_path / "registry.lock.json"
+    lock_path.write_text(json.dumps(lock))
+
+    ingest_manifest(
+        session,
+        project_id=project.id,
+        lock_path=lock_path,
+        images_dir=tmp_path / "images",
+    )
+
+    predecessor = session.scalar(
+        select(Document).where(
+            Document.project_id == project.id,
+            Document.registry_id == "matrix-r1",
+        )
+    )
+    successor = session.scalar(
+        select(Document).where(
+            Document.project_id == project.id,
+            Document.registry_id == "matrix-r2",
+        )
+    )
+    source = session.scalar(
+        select(Document).where(
+            Document.project_id == project.id,
+            Document.registry_id == "rid-index",
+        )
+    )
+    assert predecessor.superseded_by == successor.id
+    assert predecessor.superseded_on == date(2026, 2, 13)
+    assert predecessor.supersession_source_document_id == source.id
+    assert predecessor.supersession_source_page == 1
+
+
+def test_missing_supersession_participant_defers_edges_without_losing_documents(
+    session, project, tmp_path
+):
+    index = make_pdf(tmp_path / "index.pdf", ["R1 Replaced on 2026-02-13"])
+    first = make_pdf(tmp_path / "r1.pdf", ["Matrix revision one"])
+    lock_path = tmp_path / "incomplete-registry.lock.json"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "project": project.slug,
+                "sources": {
+                    "https://example.gov/index.pdf": {
+                        "sha256": file_sha256(index),
+                        "local_path": str(index),
+                        "doc_type": "other",
+                        "registry_id": "rid-index",
+                    },
+                    "https://example.gov/r1.pdf": {
+                        "sha256": file_sha256(first),
+                        "local_path": str(first),
+                        "doc_type": "matrix",
+                        "registry_id": "matrix-r1",
+                        "supersession": {
+                            "predecessor_registry_id": "matrix-r1",
+                            "successor_registry_id": "matrix-r2",
+                            "replacement_date": "2026-02-13",
+                            "source_registry_id": "rid-index",
+                            "source_page": 1,
+                        },
+                    },
+                    "https://example.gov/r2.pdf": {
+                        "sha256": None,
+                        "local_path": None,
+                        "http_status": 503,
+                        "doc_type": "matrix",
+                        "registry_id": "matrix-r2",
+                    },
+                },
+            }
+        )
+    )
+
+    documents = ingest_manifest(
+        session,
+        project_id=project.id,
+        lock_path=lock_path,
+        images_dir=tmp_path / "images",
+    )
+
+    assert {document.registry_id for document in documents} == {
+        "rid-index",
+        "matrix-r1",
+    }
+    predecessor = session.scalar(
+        select(Document).where(
+            Document.project_id == project.id,
+            Document.registry_id == "matrix-r1",
+        )
+    )
+    assert predecessor.superseded_by is None
+    assert predecessor.superseded_on is None
+    assert predecessor.supersession_source_document_id is None
+    assert predecessor.supersession_source_page is None
+
+
+def test_missing_source_page_defers_edges_without_losing_documents(
+    session, project, tmp_path
+):
+    index = tmp_path / "broken-index.pdf"
+    index.write_bytes(b"not a parseable PDF")
+    first = make_pdf(tmp_path / "r1.pdf", ["Matrix revision one"])
+    second = make_pdf(tmp_path / "r2.pdf", ["Matrix revision two"])
+    lock_path = tmp_path / "unparsed-registry.lock.json"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "project": project.slug,
+                "sources": {
+                    "https://example.gov/index.pdf": {
+                        "sha256": file_sha256(index),
+                        "local_path": str(index),
+                        "doc_type": "other",
+                        "registry_id": "rid-index",
+                    },
+                    "https://example.gov/r1.pdf": {
+                        "sha256": file_sha256(first),
+                        "local_path": str(first),
+                        "doc_type": "matrix",
+                        "registry_id": "matrix-r1",
+                        "supersession": {
+                            "predecessor_registry_id": "matrix-r1",
+                            "successor_registry_id": "matrix-r2",
+                            "replacement_date": "2026-02-13",
+                            "source_registry_id": "rid-index",
+                            "source_page": 1,
+                        },
+                    },
+                    "https://example.gov/r2.pdf": {
+                        "sha256": file_sha256(second),
+                        "local_path": str(second),
+                        "doc_type": "matrix",
+                        "registry_id": "matrix-r2",
+                    },
+                },
+            }
+        )
+    )
+
+    documents = ingest_manifest(
+        session,
+        project_id=project.id,
+        lock_path=lock_path,
+        images_dir=tmp_path / "images",
+    )
+
+    assert len(documents) == 3
+    source = next(
+        document for document in documents if document.registry_id == "rid-index"
+    )
+    assert source.parse_status == "failed"
+    predecessor = next(
+        document for document in documents if document.registry_id == "matrix-r1"
+    )
+    assert predecessor.superseded_by is None
+    assert predecessor.supersession_source_document_id is None
+
+
 def test_a_failed_fetch_is_not_ingested_as_though_it_worked(
     session, project, lockfile, tmp_path
 ):
@@ -113,9 +349,7 @@ def test_a_failed_fetch_is_not_ingested_as_though_it_worked(
     assert "missing.pdf" not in {d.filename for d in documents}
 
 
-def test_provenance_survives_the_ingest_boundary(
-    session, project, lockfile, tmp_path
-):
+def test_provenance_survives_the_ingest_boundary(session, project, lockfile, tmp_path):
     ingest_manifest(
         session,
         project_id=project.id,
@@ -131,9 +365,7 @@ def test_provenance_survives_the_ingest_boundary(
     assert matrix.source_url == "https://example.gov/utilities.zip"
 
 
-def test_a_nested_member_records_only_its_leaf_path(
-    session, project, tmp_path
-):
+def test_a_nested_member_records_only_its_leaf_path(session, project, tmp_path):
     """The inner zip's own name is noise in a citation."""
     import json as _json
 
@@ -145,7 +377,7 @@ def test_a_nested_member_records_only_its_leaf_path(
         "project": "docs-test",
         "sources": {
             "https://example.gov/u.zip::Coordination/Notes.zip::Meeting Notes/Air Liquide/2024.07.30 notes.pdf": {
-                "sha256": "9" * 64,
+                "sha256": file_sha256(pdf),
                 "local_path": str(pdf),
                 "member": "Coordination/Notes.zip::Meeting Notes/Air Liquide/2024.07.30 notes.pdf",
                 "archive_url": "https://example.gov/u.zip",
@@ -199,7 +431,7 @@ def test_bulk_ingest_skips_locks_opted_out_of_default_materialization(
                 "ingest_by_default": True,
                 "sources": {
                     "tracked": {
-                        "sha256": "1" * 64,
+                        "sha256": file_sha256(tracked),
                         "local_path": str(tracked),
                         "doc_type": "matrix",
                         "retrieved_at": "2026-08-05T00:00:00+00:00",
@@ -217,7 +449,7 @@ def test_bulk_ingest_skips_locks_opted_out_of_default_materialization(
                 "ingest_by_default": False,
                 "sources": {
                     "layout": {
-                        "sha256": "2" * 64,
+                        "sha256": file_sha256(layout),
                         "local_path": str(layout),
                         "doc_type": "matrix",
                         "retrieved_at": "2026-08-05T00:00:00+00:00",
@@ -228,7 +460,9 @@ def test_bulk_ingest_skips_locks_opted_out_of_default_materialization(
     )
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(docs_module, "SessionFactory", sessionmaker(bind=session.get_bind()))
+    monkeypatch.setattr(
+        docs_module, "SessionFactory", sessionmaker(bind=session.get_bind())
+    )
 
     assert docs_module.main(["ingest"]) == 0
 
@@ -262,7 +496,7 @@ def test_explicit_slug_ingest_overrides_the_default_skip_policy(
                 "ingest_by_default": False,
                 "sources": {
                     "layout": {
-                        "sha256": "2" * 64,
+                        "sha256": file_sha256(layout),
                         "local_path": str(layout),
                         "doc_type": "matrix",
                         "retrieved_at": "2026-08-05T00:00:00+00:00",
@@ -273,7 +507,9 @@ def test_explicit_slug_ingest_overrides_the_default_skip_policy(
     )
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(docs_module, "SessionFactory", sessionmaker(bind=session.get_bind()))
+    monkeypatch.setattr(
+        docs_module, "SessionFactory", sessionmaker(bind=session.get_bind())
+    )
 
     assert docs_module.main(["ingest", "layout-evidence"]) == 0
 
@@ -337,15 +573,15 @@ def test_the_spreadsheet_outranks_its_own_printout(session, project):
 
 
 def test_a_newer_printout_outranks_a_stale_spreadsheet():
-    """The ordering ADR-0005 is explicit about, and the reason it matters.
+    """The rendition ordering ADR-0005 is explicit about.
 
     "A stale spreadsheet must not outrank a newer PDF. Precedence is by
-    format only where both render the same document; supersession by date
-    still wins, and the two rules have to be applied in that order."
+    format only where both render the same registered document; rendition
+    date wins first, and the two rules have to be applied in that order."
 
     Applied the other way round, a February PDF loses to a spreadsheet from
-    the previous June — which is the ledger citing a revision the project
-    has already replaced.
+    the previous June. Declared Supersession is a separate registry relation;
+    this helper only ranks caller-supplied equivalent forms.
     """
     from corridor.docs import document_of_record
 

@@ -9,7 +9,8 @@ agency: TxDOT
 sources:
   # The RID index is itself evidence: it records each document's issuance
   # date and its "Replaced on" supersession chain.
-  - url: https://www.txdot.gov/content/dam/docs/division/ald/nhhip-3c-2/nhhip-3c2-rid-index-20260501.pdf
+  - registry_id: nhhip-rid-index-2026-05-01
+    url: https://www.txdot.gov/content/dam/docs/division/ald/nhhip-3c-2/nhhip-3c2-rid-index-20260501.pdf
     doc_type: other
     role: evidence
     title: "Reference Information Documents (RID) Index"
@@ -17,39 +18,68 @@ sources:
 
   # Utility Conflict Matrix, five dated revisions. Note the layout is not
   # stable across them — see corpus-acquisition-spec.md §7.6.
-  - url: &utilities https://app.box.com/index.php?rm=box_download_shared_file&shared_name=6b8aefdir8164dmbfd7tc12ekq2db8cz&file_id=f_2214783167875
+  - registry_id: nhhip-ucm-2025-06-20
+    url: &utilities https://app.box.com/index.php?rm=box_download_shared_file&shared_name=6b8aefdir8164dmbfd7tc12ekq2db8cz&file_id=f_2214783167875
     member: nhhip-seg3c2-utilities-inventory.pdf
     doc_type: matrix
     role: spine
     title: "Utility Inventory Matrix (6/20/2025)"
     doc_date: 2025-06-20
     notes: "622 rows. Replaced on 7/22/2025. No conflict or SUE columns."
+    supersession:
+      successor: nhhip-ucm-2025-07-22
+      replacement_date: 2025-07-22
+      source:
+        document: nhhip-rid-index-2026-05-01
+        page: 4
 
-  - url: *utilities
+  - registry_id: nhhip-ucm-2025-07-22
+    url: *utilities
     member: nhhip-seg3c2-utilities-inventory-7-22-2025.pdf
     doc_type: matrix
     role: spine
     title: "Utility Conflict Matrix (7/22/2025)"
     doc_date: 2025-07-22
     notes: "522 rows. Replaced on 10/31/2025."
+    supersession:
+      successor: nhhip-ucm-2025-10-24
+      replacement_date: 2025-10-31
+      source:
+        document: nhhip-rid-index-2026-05-01
+        page: 4
 
-  - url: *utilities
+  - registry_id: nhhip-ucm-2025-10-24
+    url: *utilities
     member: nhhip-seg3c2-utilities-inventory-10-24-2025.pdf
     doc_type: matrix
     role: spine
     title: "Utility Inventory Matrix (10/24/2025)"
     doc_date: 2025-10-24
     notes: "680 rows. Adds Data Source and SUE Level columns."
+    supersession:
+      successor: nhhip-ucm-2025-12-15
+      replacement_date: 2025-12-15
+      source:
+        document: nhhip-rid-index-2026-05-01
+        page: 4
 
-  - url: *utilities
+  - registry_id: nhhip-ucm-2025-12-15
+    url: *utilities
     member: nhhip-seg3c2-utilities-inventory-12-15-2025.pdf
     doc_type: matrix
     role: spine
     title: "Utility Conflict Matrix (12/15/2025)"
     doc_date: 2025-12-15
     notes: "561 rows. First revision carrying Potential Conflict."
+    supersession:
+      successor: nhhip-ucm-2026-02-13
+      replacement_date: 2026-02-13
+      source:
+        document: nhhip-rid-index-2026-05-01
+        page: 4
 
-  - url: *utilities
+  - registry_id: nhhip-ucm-2026-02-13
+    url: *utilities
     member: nhhip-seg3c2-utilities-inventory-2-13-2026.pdf
     doc_type: matrix
     role: spine

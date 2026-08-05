@@ -24,6 +24,7 @@ from corridor.adjudicate import (
     AlreadyAdjudicated,
     CandidateAssertsNothing,
     InvalidCandidateProvenance,
+    InvalidCandidateScope,
     InvalidRejectReason,
     REJECT_REASONS,
     UnadjudicableKind,
@@ -54,6 +55,7 @@ from corridor.models import (
 )
 from corridor.web.queue import build_view, next_candidate, pending_counts
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.supersession import actionable_candidate_for_update
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Corridor — adjudication")
@@ -89,12 +91,25 @@ def root():
 
 
 @app.get("/queue/{slug}", response_class=HTMLResponse)
-def queue(request: Request, slug: str, session: Session = Depends(get_session)):
+def queue(
+    request: Request,
+    slug: str,
+    historical_document_id: int | None = None,
+    session: Session = Depends(get_session),
+):
     project = _project(session, slug)
-    candidate = next_candidate(session, project.id)
+    candidate = next_candidate(
+        session,
+        project.id,
+        historical_document_id=historical_document_id,
+    )
 
     if candidate is None:
-        total, verified = pending_counts(session, project.id)
+        total, _verified = pending_counts(
+            session,
+            project.id,
+            historical_document_id=historical_document_id,
+        )
         return TEMPLATES.TemplateResponse(
             request, "empty.html", {"project": project, "remaining": total}
         )
@@ -102,7 +117,14 @@ def queue(request: Request, slug: str, session: Session = Depends(get_session)):
     return TEMPLATES.TemplateResponse(
         request,
         "queue.html",
-        {"project": project, "view": build_view(session, candidate)},
+        {
+            "project": project,
+            "view": build_view(
+                session,
+                candidate,
+                historical_document_id=historical_document_id,
+            ),
+        },
     )
 
 
@@ -190,9 +212,7 @@ def mark_evidence_satisfies(
     dependency = _project_dependency(session, project, dependency_id)
     _project_evidence(session, dependency, link_id)
     try:
-        mark_satisfies(
-            session, dependency_id, link_id, principal=principal
-        )
+        mark_satisfies(session, dependency_id, link_id, principal=principal)
     except NoSuchEvidence as exc:
         raise HTTPException(404, str(exc))
     except UnverifiedEvidence as exc:
@@ -202,9 +222,7 @@ def mark_evidence_satisfies(
 
 
 @app.get("/page-image/{document_id}/{page_no}")
-def page_image(
-    document_id: int, page_no: int, session: Session = Depends(get_session)
-):
+def page_image(document_id: int, page_no: int, session: Session = Depends(get_session)):
     page = session.scalars(
         select(DocPage).where(
             DocPage.document_id == document_id, DocPage.page_no == page_no
@@ -219,23 +237,45 @@ def page_image(
 def accept(
     candidate_id: int,
     slug: str = Form(...),
+    historical_document_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
-    candidate = _project_pending_candidate(session, project, candidate_id)
-    _accept(session, candidate, principal)
+    candidate = _project_pending_candidate(
+        session,
+        project,
+        candidate_id,
+        historical_document_id=historical_document_id,
+    )
+    _accept(
+        session,
+        candidate,
+        principal,
+        historical_document_id=historical_document_id,
+    )
     session.commit()
-    return RedirectResponse(f"/queue/{slug}", status_code=303)
+    return RedirectResponse(
+        _queue_location(slug, historical_document_id), status_code=303
+    )
 
 
 def _accept(
-    session: Session, candidate: Candidate, principal: HumanPrincipal
+    session: Session,
+    candidate: Candidate,
+    principal: HumanPrincipal,
+    *,
+    historical_document_id: int | None = None,
 ) -> None:
     """The queue disables this button; a form post can still reach it."""
     try:
-        accept_candidate(session, candidate, principal=principal)
-    except AlreadyAdjudicated as exc:
+        accept_candidate(
+            session,
+            candidate,
+            principal=principal,
+            historical_document_id=historical_document_id,
+        )
+    except (AlreadyAdjudicated, InvalidCandidateScope) as exc:
         raise HTTPException(409, str(exc))
     except InvalidCandidateProvenance as exc:
         raise HTTPException(400, str(exc))
@@ -261,21 +301,42 @@ async def edit_accept(
     """
     form = await request.form()
     slug = form.get("slug")
+    historical_document_id = _parse_historical_document_id(
+        form.get("historical_document_id")
+    )
     project = _project(session, slug)
-    candidate = _project_candidate(session, project, candidate_id)
+    candidate = _project_pending_candidate(
+        session,
+        project,
+        candidate_id,
+        historical_document_id=historical_document_id,
+    )
     edited = {
         key[6:]: value.strip()
         for key, value in form.items()
         if key.startswith("field_") and value.strip()
     }
     try:
-        edit_candidate(session, candidate, edited, principal=principal)
-    except AlreadyAdjudicated as exc:
+        edit_candidate(
+            session,
+            candidate,
+            edited,
+            principal=principal,
+            historical_document_id=historical_document_id,
+        )
+    except (AlreadyAdjudicated, InvalidCandidateScope) as exc:
         raise HTTPException(409, str(exc))
 
-    _accept(session, candidate, principal)
+    _accept(
+        session,
+        candidate,
+        principal,
+        historical_document_id=historical_document_id,
+    )
     session.commit()
-    return RedirectResponse(f"/queue/{slug}", status_code=303)
+    return RedirectResponse(
+        _queue_location(slug, historical_document_id), status_code=303
+    )
 
 
 @app.post("/candidates/{candidate_id}/merge")
@@ -283,19 +344,35 @@ def merge(
     candidate_id: int,
     slug: str = Form(...),
     dependency_id: int = Form(...),
+    historical_document_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
-    candidate = _project_pending_candidate(session, project, candidate_id)
+    candidate = _project_pending_candidate(
+        session,
+        project,
+        candidate_id,
+        historical_document_id=historical_document_id,
+    )
     dependency = _project_dependency(session, project, dependency_id)
 
     try:
-        merge_candidate(session, candidate, dependency, principal=principal)
+        merge_candidate(
+            session,
+            candidate,
+            dependency,
+            principal=principal,
+            historical_document_id=historical_document_id,
+        )
+    except InvalidCandidateScope as exc:
+        raise HTTPException(409, str(exc))
     except InvalidCandidateProvenance as exc:
         raise HTTPException(400, str(exc))
     session.commit()
-    return RedirectResponse(f"/queue/{slug}", status_code=303)
+    return RedirectResponse(
+        _queue_location(slug, historical_document_id), status_code=303
+    )
 
 
 @app.post("/candidates/{candidate_id}/reject")
@@ -303,19 +380,33 @@ def reject(
     candidate_id: int,
     slug: str = Form(...),
     reason: str = Form(...),
+    historical_document_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
-    candidate = _project_candidate(session, project, candidate_id)
+    candidate = _project_pending_candidate(
+        session,
+        project,
+        candidate_id,
+        historical_document_id=historical_document_id,
+    )
     try:
-        reject_candidate(session, candidate, reason, principal=principal)
-    except AlreadyAdjudicated as exc:
+        reject_candidate(
+            session,
+            candidate,
+            reason,
+            principal=principal,
+            historical_document_id=historical_document_id,
+        )
+    except (AlreadyAdjudicated, InvalidCandidateScope) as exc:
         raise HTTPException(409, str(exc))
     except InvalidRejectReason as exc:
         raise HTTPException(400, str(exc))
     session.commit()
-    return RedirectResponse(f"/queue/{slug}", status_code=303)
+    return RedirectResponse(
+        _queue_location(slug, historical_document_id), status_code=303
+    )
 
 
 def _candidate(session: Session, candidate_id: int) -> Candidate:
@@ -325,7 +416,9 @@ def _candidate(session: Session, candidate_id: int) -> Candidate:
     return candidate
 
 
-def _project_candidate(session: Session, project: Project, candidate_id: int) -> Candidate:
+def _project_candidate(
+    session: Session, project: Project, candidate_id: int
+) -> Candidate:
     candidate = _candidate(session, candidate_id)
     if candidate.project_id != project.id:
         raise HTTPException(404, "no such candidate")
@@ -333,14 +426,45 @@ def _project_candidate(session: Session, project: Project, candidate_id: int) ->
 
 
 def _project_pending_candidate(
-    session: Session, project: Project, candidate_id: int
+    session: Session,
+    project: Project,
+    candidate_id: int,
+    *,
+    historical_document_id: int | None = None,
 ) -> Candidate:
     candidate = _project_candidate(session, project, candidate_id)
     if candidate.state != "pending":
         # Two tabs, or a double submit. Adjudicating twice would create a
         # second Dependency from one source row.
         raise HTTPException(409, f"already {candidate.state}")
-    return candidate
+    scoped = actionable_candidate_for_update(
+        session,
+        project.id,
+        candidate_id,
+        historical_document_id=historical_document_id,
+    )
+    if scoped is None:
+        raise HTTPException(409, "candidate is outside the actionable queue scope")
+    return scoped
+
+
+def _parse_historical_document_id(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        document_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, "historical_document_id must be an integer") from exc
+    if document_id <= 0:
+        raise HTTPException(422, "historical_document_id must be positive")
+    return document_id
+
+
+def _queue_location(slug: str, historical_document_id: int | None) -> str:
+    location = f"/queue/{slug}"
+    if historical_document_id is not None:
+        return f"{location}?historical_document_id={historical_document_id}"
+    return location
 
 
 def _project_dependency(

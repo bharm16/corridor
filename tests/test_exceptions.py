@@ -21,6 +21,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DocPage,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -28,6 +29,7 @@ from corridor.models import (
     Project,
 )
 from corridor.operative_support import resolve_operative_support
+from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 TODAY = date(2026, 8, 3)
 
@@ -393,8 +395,29 @@ def test_exceptions_use_current_readiness_support_not_superseded_history(
         verified=True,
         satisfies=True,
     )
-    document.superseded_by = successor.id
+    document.registry_id = "exceptions-matrix-old"
+    successor.registry_id = "exceptions-matrix-new"
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=1,
+            text="authority supersession index",
+        )
+    )
     session.flush()
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=document.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=TODAY,
+                source_registry_id=document.registry_id,
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
 
     resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
     found = codes(session, dependency)

@@ -86,6 +86,9 @@
 
     <form method="post" action="/candidates/{{ view.candidate.id }}/edit-accept" id="candidate">
       <input type="hidden" name="slug" value="{{ project.slug }}">
+      {% if view.historical_document_id %}
+        <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
+      {% endif %}
       <table class="fields">
         {% for name, value in view.fields %}
           <tr>
@@ -132,6 +135,9 @@
     <div class="actions">
       <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/accept">
         <input type="hidden" name="slug" value="{{ project.slug }}">
+        {% if view.historical_document_id %}
+          <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
+        {% endif %}
         <button class="primary" id="accept"
           {% if view.accept_refused %}disabled title="{{ view.accept_refused }}"{% endif %}>
           <kbd>a</kbd> accept
@@ -156,6 +162,9 @@
       {% for m in view.matches %}
         <form class="mergerow" method="post" action="/candidates/{{ view.candidate.id }}/merge">
           <input type="hidden" name="slug" value="{{ project.slug }}">
+          {% if view.historical_document_id %}
+            <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
+          {% endif %}
           <input type="hidden" name="dependency_id" value="{{ m.dependency.id }}">
           <button><kbd>{{ loop.index }}</kbd>
             {{ m.dependency.ref_code }}
@@ -173,6 +182,9 @@
       {% for reason in ["duplicate", "wrong", "irrelevant", "bad-citation"] %}
         <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/reject">
           <input type="hidden" name="slug" value="{{ project.slug }}">
+          {% if view.historical_document_id %}
+            <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
+          {% endif %}
           <input type="hidden" name="reason" value="{{ reason }}">
           <button><kbd>{{ loop.index }}</kbd> {{ reason }}</button>
         </form>

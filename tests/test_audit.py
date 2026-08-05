@@ -11,6 +11,11 @@ from sqlalchemy import select
 from corridor import audit
 from corridor.adjudicate import accept_candidate, merge_candidate, set_resolution_strategy
 from corridor.db import Session, engine
+from corridor.extraction_runs import (
+    active_run_for_document,
+    declare_active_run,
+    record_extraction_run,
+)
 from corridor.ledger import load_dependency, mark_satisfies
 from corridor.milestones import link_dependency
 from corridor.models import (
@@ -97,6 +102,24 @@ def make_candidate(session, document, *, utility_id="FOC1-1"):
         citations_verified=True,
     )
     session.add(c)
+    session.flush()
+    run = active_run_for_document(session, document.id)
+    if run is None:
+        run = record_extraction_run(
+            session,
+            document,
+            prompt_version=c.prompt_version,
+            candidate_count=1,
+            page_errors=0,
+            candidates=(c,),
+            model=c.model,
+        )
+        declare_active_run(session, document.id, run.id)
+    else:
+        assert run.prompt_version == c.prompt_version
+        assert run.model == c.model
+        c.extraction_run_id = run.id
+        run.candidate_count += 1
     session.flush()
     return c
 

@@ -3,6 +3,7 @@ import pytest
 from corridor.adjudicate import accept_candidate
 from corridor.candidates import citations_verified, dedupe_hint, propose
 from corridor.db import Session, engine
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.geometry import dedupe_hint as matrix_hint
 from corridor.models import DocPage, Document, Project
 from corridor.principals import HumanPrincipal
@@ -77,6 +78,20 @@ def _propose(document, **kwargs):
     return propose(document, **{**defaults, **kwargs})
 
 
+def _declare_candidate_active(session, document, candidate):
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=candidate.prompt_version,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model=candidate.model,
+    )
+    declare_active_run(session, document.id, run.id)
+    session.flush()
+
+
 # ------------------------------------------------------------- the key set
 
 
@@ -141,6 +156,7 @@ def test_accepting_does_not_relax_the_verdict(session, document):
     candidate = _propose(document, unverified=["station_to"])
     session.add(candidate)
     session.flush()
+    _declare_candidate_active(session, document, candidate)
     assert candidate.citations_verified is False
 
     accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
@@ -152,6 +168,7 @@ def test_accepting_a_clean_row_still_records_it_verified(session, document):
     candidate = _propose(document)
     session.add(candidate)
     session.flush()
+    _declare_candidate_active(session, document, candidate)
 
     accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
 

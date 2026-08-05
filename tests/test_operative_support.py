@@ -5,12 +5,14 @@ from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
 from corridor.db import Session, engine
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
 from corridor.operative_support import (
     designate_publication_support,
     resolve_operative_support,
 )
 from corridor.principals import HumanPrincipal
+from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 
 TEST_PRINCIPAL = HumanPrincipal("local:operative-support-reviewer")
@@ -102,6 +104,17 @@ def _candidate(
         citations_verified=True,
     )
     session.add(candidate)
+    session.flush()
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=candidate.prompt_version,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model=candidate.model,
+    )
+    declare_active_run(session, document.id, run.id)
     session.flush()
     return candidate
 
@@ -347,8 +360,22 @@ def test_superseded_support_lapses_readiness_and_names_each_affected_role(
     )
     [link] = _evidence_links(session, dependency.id)
     link.satisfies_requirement = True
-    predecessor.superseded_by = successor.id
+    predecessor.registry_id = "operative-matrix-old"
+    successor.registry_id = "operative-matrix-new"
     session.flush()
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=predecessor.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=date(2026, 8, 5),
+                source_registry_id=predecessor.registry_id,
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
 
     resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
 
