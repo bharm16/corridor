@@ -1,7 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from corridor.adjudicate import edit_candidate
 from corridor.db import Session, engine
 from corridor.models import (
     Assertion,
@@ -10,10 +11,11 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
+    EvidenceLink,
     Project,
 )
 from corridor.web.app import app, get_session
-from corridor.web.queue import build_view, next_candidate
+from corridor.web.queue import build_view, next_candidate, pending_counts
 
 
 @pytest.fixture
@@ -56,10 +58,30 @@ def document(session, project):
     )
     session.add(d)
     session.flush()
+    session.add(
+        DocPage(
+            document_id=d.id,
+            page_no=1,
+            text="FOC1-1 GOOD-1 BAD-1 AT&T Texas (SWBT) 1149+00",
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
+    session.flush()
     return d
 
 
-def make_candidate(session, project, document, *, verified=True, uid="FOC1-1"):
+def make_candidate(
+    session,
+    project,
+    document,
+    *,
+    verified=True,
+    uid="FOC1-1",
+    station_from="1149+00",
+    whole_row=True,
+    unverified_fields=(),
+    low_confidence_tokens=(),
+):
     c = Candidate(
         project_id=project.id,
         kind="dependency",
@@ -68,7 +90,7 @@ def make_candidate(session, project, document, *, verified=True, uid="FOC1-1"):
             "fields": {
                 "utility_id": uid,
                 "external_org": "AT&T Texas (SWBT)",
-                "station_from": "1149+00",
+                "station_from": station_from,
             },
             "citations": [
                 {
@@ -76,17 +98,21 @@ def make_candidate(session, project, document, *, verified=True, uid="FOC1-1"):
                     "page": 1,
                     "quote": f"{uid} AT&T Texas (SWBT)",
                     "verified": verified,
-                    "whole_row": True,
+                    "whole_row": whole_row,
                 }
             ],
             "confidence": 1.0,
+            "unverified_fields": list(unverified_fields),
+            "low_confidence_tokens": list(low_confidence_tokens),
             "dedupe_hint": "x",
         },
         source_document_id=document.id,
         source_pages=[1],
         confidence=1.0,
         prompt_version="txdot_ucm_v1",
-        citations_verified=verified,
+        citations_verified=(
+            verified and not unverified_fields and not low_confidence_tokens
+        ),
     )
     session.add(c)
     session.flush()
@@ -116,6 +142,51 @@ def test_unverified_candidates_sink_but_are_never_hidden(
 
     r = client.get(f"/queue/{project.slug}")
     assert "Citation unverified" in r.text
+
+
+def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
+    session, project, document
+):
+    page = session.scalars(
+        select(DocPage).where(
+            DocPage.document_id == document.id, DocPage.page_no == 1
+        )
+    ).one()
+    page.text = "BAD-1 GOOD-1 AT&T Texas (SWBT) 1149+00"
+    session.flush()
+
+    bad = make_candidate(
+        session,
+        project,
+        document,
+        uid="BAD-1",
+        station_from="1092+00",
+        unverified_fields=["station_from"],
+        low_confidence_tokens=["1092"],
+    )
+    good = make_candidate(session, project, document, uid="GOOD-1")
+
+    assert pending_counts(session, project.id) == (2, 1)
+    assert next_candidate(session, project.id).id == good.id
+
+    edit_candidate(
+        session,
+        bad,
+        {
+            "utility_id": "BAD-1",
+            "external_org": "AT&T Texas (SWBT)",
+            "station_from": "1149+00",
+        },
+        actor="reviewer",
+    )
+
+    assert pending_counts(session, project.id) == (2, 2)
+    assert next_candidate(session, project.id).id == bad.id
+
+    view = build_view(session, bad)
+    assert view.citations_verified is True
+    assert view.unverified_fields == []
+    assert view.low_confidence_tokens == []
 
 
 def test_a_verified_candidate_is_labelled_verified(client, session, project, document):
@@ -242,8 +313,376 @@ def test_merging_into_another_projects_dependency_is_refused(
         data={"slug": project.slug, "dependency_id": stray.id},
         follow_redirects=False,
     )
-    assert r.status_code == 400
+    assert r.status_code == 404
     assert candidate.state == "pending"
+
+
+def test_accepting_malformed_citations_returns_400_without_writes(
+    client, session, project, document
+):
+    candidate = make_candidate(session, project, document)
+    candidate.payload_json = {**candidate.payload_json, "citations": {"page": 1}}
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_non_mapping_payload_returns_400_without_writes(
+    client, session, project, document
+):
+    candidate = make_candidate(session, project, document)
+    candidate.payload_json = []
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_non_mapping_fields_returns_400_without_writes(
+    client, session, project, document
+):
+    candidate = make_candidate(session, project, document)
+    candidate.payload_json = {**candidate.payload_json, "fields": []}
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_merging_malformed_citations_returns_400_without_writes(
+    client, session, project, document
+):
+    first = make_candidate(session, project, document)
+    client.post(
+        f"/candidates/{first.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    target = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    candidate = make_candidate(session, project, document, uid="FOC1-2")
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                key: value
+                for key, value in candidate.payload_json["citations"][0].items()
+                if key != "quote"
+            }
+        ],
+    }
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/merge",
+        data={"slug": project.slug, "dependency_id": target.id},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_merging_non_integer_citation_document_id_returns_400_without_writes(
+    client, session, project, document
+):
+    first = make_candidate(session, project, document)
+    client.post(
+        f"/candidates/{first.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    target = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    candidate = make_candidate(session, project, document, uid="FOC1-2")
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "document_id": {"id": document.id},
+            }
+        ],
+    }
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/merge",
+        data={"slug": project.slug, "dependency_id": target.id},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_merging_non_integer_cited_page_returns_400_without_writes(
+    client, session, project, document
+):
+    first = make_candidate(session, project, document)
+    client.post(
+        f"/candidates/{first.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    target = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    candidate = make_candidate(session, project, document, uid="FOC1-2")
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "page": {"page": 1},
+            }
+        ],
+    }
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/merge",
+        data={"slug": project.slug, "dependency_id": target.id},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_accepting_another_projects_candidate_is_hidden_and_refused(
+    client, session, project, document
+):
+    other = Project(slug="web-accept-other", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray_doc = Document(
+        project_id=other.id,
+        sha256="f" * 64,
+        filename="other-accept.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray_doc)
+    session.flush()
+    candidate = make_candidate(session, other, stray_doc)
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_rejecting_another_projects_candidate_is_hidden_and_refused(
+    client, session, project, document
+):
+    other = Project(slug="web-reject-other", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray_doc = Document(
+        project_id=other.id,
+        sha256="g" * 64,
+        filename="other-reject.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray_doc)
+    session.flush()
+    candidate = make_candidate(session, other, stray_doc)
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/reject",
+        data={"slug": project.slug, "reason": "duplicate"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_edit_accepting_another_projects_candidate_is_hidden_and_refused(
+    client, session, project, document
+):
+    other = Project(slug="web-edit-other", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray_doc = Document(
+        project_id=other.id,
+        sha256="h" * 64,
+        filename="other-edit.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray_doc)
+    session.flush()
+    candidate = make_candidate(session, other, stray_doc)
+    original = dict(candidate.payload_json["fields"])
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/edit-accept",
+        data={
+            "slug": project.slug,
+            "field_utility_id": "FOC9-9",
+            "field_external_org": "AT&T Texas (SWBT)",
+            "field_station_from": "1150+00",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert candidate.state == "pending"
+    assert candidate.payload_json["fields"] == original
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).all() == []
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+
+
+def test_marking_evidence_on_another_projects_dependency_is_hidden_and_refused(
+    client, session, project, document
+):
+    other = Project(slug="web-evidence-other", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    stray_doc = Document(
+        project_id=other.id,
+        sha256="i" * 64,
+        filename="other-evidence.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray_doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=stray_doc.id,
+            page_no=1,
+            text="FOC1-1 AT&T Texas (SWBT) 1149+00",
+        )
+    )
+    session.flush()
+    candidate = make_candidate(session, other, stray_doc)
+    response = client.post(
+        f"/candidates/{candidate.id}/accept",
+        data={"slug": other.slug},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == other.id)
+    ).one()
+    evidence = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+    mark = client.post(
+        f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert mark.status_code == 404
+    session.refresh(evidence)
+    assert evidence.satisfies_requirement is False
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_accepting_creates_a_dependency_and_advances(

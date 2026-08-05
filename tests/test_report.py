@@ -10,7 +10,7 @@ from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project
 from corridor.export import to_xlsx
 from corridor.ledger import browse
-from corridor.models import Candidate, Document, EvidenceLink, Project
+from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
 from corridor.report import (
     RULESET_VERSION,
     Assertion,
@@ -49,6 +49,18 @@ def project_with_two_dependencies(session):
         pages=28,
     )
     session.add(doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=1,
+            text=(
+                "FOC1-1 AT&T Texas (SWBT) Telecom 1149+00 1153+17\n"
+                "E1 CenterPoint Energy Telecom 1149+00 1153+17"
+            ),
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
     session.flush()
 
     for ref, org in [("FOC1-1", "AT&T Texas (SWBT)"), ("E1", "CenterPoint Energy")]:

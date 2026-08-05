@@ -17,6 +17,7 @@ from corridor.models import (
     AuditLog,
     Candidate,
     Dependency,
+    DocPage,
     Document,
     EvidenceLink,
     Milestone,
@@ -56,6 +57,15 @@ def document(session):
         pages=1,
     )
     session.add(doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=1,
+            text="FOC1-1 AT&T Texas Telecom FOC1-2 AT&T Texas Telecom",
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
     session.flush()
     return doc
 

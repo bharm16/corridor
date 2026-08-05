@@ -5,7 +5,7 @@ from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project
 from corridor.export import COLUMNS, to_pdf, to_xlsx
-from corridor.models import Candidate, Document, Project
+from corridor.models import Candidate, DocPage, Document, Project
 from corridor.report import build_report, render
 
 
@@ -34,6 +34,15 @@ def project(session):
         pages=28,
     )
     session.add(doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=4,
+            text="FOC1-1 Export Test Utility Telecom",
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
     session.flush()
 
     candidate = Candidate(

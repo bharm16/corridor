@@ -4,7 +4,7 @@ from corridor.adjudicate import accept_candidate
 from corridor.candidates import citations_verified, dedupe_hint, propose
 from corridor.db import Session, engine
 from corridor.geometry import dedupe_hint as matrix_hint
-from corridor.models import Document, Project
+from corridor.models import DocPage, Document, Project
 
 PAYLOAD_KEYS = {
     "kind",
@@ -45,6 +45,15 @@ def document(session):
         pages=1,
     )
     session.add(doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=1,
+            text="FOC1-1 AT&T Texas Telecom",
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
     session.flush()
     return doc
 
