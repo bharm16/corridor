@@ -170,10 +170,12 @@ def main(argv: list[str], *, session_factory=None) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        run_summary = (run.id, run.prompt_version, run.outcome)
         session.commit()
+    run_id, prompt_version, outcome = run_summary
     print(
-        f"document {document_id}: Active Run {run.id} "
-        f"({run.prompt_version}, {run.outcome})"
+        f"document {document_id}: Active Run {run_id} "
+        f"({prompt_version}, {outcome})"
     )
     return 0
 

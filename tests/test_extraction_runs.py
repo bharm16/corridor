@@ -189,19 +189,25 @@ def test_operator_entrypoint_declares_the_exact_active_run(
         page_errors=0,
     )
     session.flush()
+    document_id = doc.id
+    extraction_run_id = run.id
 
     class ScopedSession:
         def __enter__(self):
             return session
 
         def __exit__(self, *exc):
+            session.close()
             return False
 
     assert extraction_runs.main(
-        [str(doc.id), str(run.id)], session_factory=ScopedSession
+        [str(document_id), str(extraction_run_id)], session_factory=ScopedSession
     ) == 0
-    assert _run_id(extraction_runs.active_run_for_document(session, doc.id)) == run.id
-    assert f"Active Run {run.id}" in capsys.readouterr().out
+    assert (
+        _run_id(extraction_runs.active_run_for_document(session, document_id))
+        == extraction_run_id
+    )
+    assert f"Active Run {extraction_run_id}" in capsys.readouterr().out
 
 
 def test_null_or_ambiguous_lineage_is_not_active(session, project):
