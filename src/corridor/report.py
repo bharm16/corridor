@@ -599,6 +599,15 @@ def render(report: Report) -> str:
         if report.coverage_note
         else ""
     )
+    # The date the figures were counted from, not the moment the file was
+    # written. They are usually the same day and the header said only the
+    # second, so a report built for a stated date printed today's date over
+    # last week's numbers.
+    evaluated = (
+        f" · evaluated {report.evaluation.today:%Y-%m-%d}"
+        if report.evaluation
+        else ""
+    )
 
     return f"""<!doctype html>
 <meta charset="utf-8">
@@ -631,7 +640,7 @@ def render(report: Report) -> str:
  @page {{ size: A4; margin: 1.5cm; }}
 </style>
 <h1>Readiness — {html.escape(report.project_name)}</h1>
-<p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC · ruleset {report.ruleset_version}</p>
+<p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC{evaluated} · ruleset {report.ruleset_version}</p>
 {coverage}
 {summary}
 {"".join(section_html(s) for s in report.sections)}

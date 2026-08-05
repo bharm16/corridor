@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import RULESET_VERSION, Evaluation, evaluate_project
+from corridor.exceptions import RULESET_VERSION, Evaluation
 from corridor.ledger import browse
 from corridor.models import ReportRun, is_critical
 
@@ -54,16 +54,15 @@ class Diff:
 
 
 def snapshot(
-    session: Session, project_id: int, *, evaluation: Evaluation | None = None
+    session: Session, project_id: int, *, evaluation: Evaluation
 ) -> dict:
     """The state a report was published against, one entry per dependency.
 
     The report passes the evaluation it published, so the snapshot records
     the exceptions the reader saw rather than a second reading taken a
-    moment later.
+    moment later. Required, not defaulted: this snapshot is what the *next*
+    report diffs against, so a second reading here misreports change.
     """
-    if evaluation is None:
-        evaluation = evaluate_project(session, project_id)
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
 
     by_dependency = {
@@ -97,7 +96,7 @@ def snapshot(
 
 
 def diff_since_last(
-    session: Session, project_id: int, *, evaluation: Evaluation | None = None
+    session: Session, project_id: int, *, evaluation: Evaluation
 ) -> Diff:
     previous = session.scalars(
         select(ReportRun)
@@ -224,8 +223,8 @@ def record_run(
     session: Session,
     project_id: int,
     *,
+    evaluation: Evaluation,
     output_path: str | None = None,
-    evaluation: Evaluation | None = None,
 ) -> ReportRun:
     """Store the state this report was published against."""
     run = ReportRun(

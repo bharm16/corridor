@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import Evaluation, evaluate_project
+from corridor.exceptions import Evaluation
 from corridor.ledger import browse, primary_evidence
 from corridor.models import Project
 
@@ -54,14 +54,18 @@ def to_xlsx(
     project_id: int,
     path: Path | str,
     *,
-    evaluation: Evaluation | None = None,
+    evaluation: Evaluation,
 ) -> Path:
+    """The ledger as a workbook, at the evaluation the report published.
+
+    Required, not defaulted: this workbook is the artefact a project
+    forwards to an External Party, and a second reading here would let it
+    disagree with the report it was sent alongside.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
     project = session.get(Project, project_id)
-    if evaluation is None:
-        evaluation = evaluate_project(session, project_id)
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
 
     by_dependency = {

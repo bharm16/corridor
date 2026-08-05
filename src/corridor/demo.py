@@ -119,7 +119,7 @@ def main(limit: int | None = None) -> int:
         report = build_report(session, project.id)
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(render(report))
-        to_xlsx(session, project.id, XLSX)
+        to_xlsx(session, project.id, XLSX, evaluation=report.evaluation)
         try:
             to_pdf(OUT.read_text(), PDF)
             pdf_note = f" · {PDF}"
@@ -127,7 +127,12 @@ def main(limit: int | None = None) -> int:
             pdf_note = f" · PDF skipped ({type(exc).__name__})"
 
         # Snapshot last, so the next report can say what changed.
-        record_run(session, project.id, output_path=str(OUT))
+        record_run(
+            session,
+            project.id,
+            output_path=str(OUT),
+            evaluation=report.evaluation,
+        )
         session.commit()
 
     print(

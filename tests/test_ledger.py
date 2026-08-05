@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session, engine
+from corridor.exceptions import evaluate_project
 from corridor.ledger import (
     NoSuchEvidence,
     UnverifiedEvidence,
@@ -115,8 +116,23 @@ def dependency(session, project, document):
 # ------------------------------------------------------------------- browse
 
 
+def _browse(session, project, **filters):
+    """Browse at a reading taken now.
+
+    `browse` requires its evaluation rather than defaulting to a fresh one,
+    so a caller that already holds one cannot silently pay for a second
+    against a second clock. These tests hold none, and say so here once.
+    """
+    return browse(
+        session,
+        project.id,
+        evaluation=evaluate_project(session, project.id),
+        **filters,
+    )
+
+
 def test_browse_lists_dependencies_with_their_backing(session, project, dependency):
-    [row] = browse(session, project.id)
+    [row] = _browse(session, project)
     assert row.dependency.id == dependency.id
     assert row.org_name == "LT AT&T Texas"
     assert row.assertion_count == len(FIELDS)
@@ -126,14 +142,14 @@ def test_browse_lists_dependencies_with_their_backing(session, project, dependen
 
 
 def test_browse_filters_by_status(session, project, dependency):
-    assert len(browse(session, project.id, status="identified")) == 1
-    assert browse(session, project.id, status="closed") == []
+    assert len(_browse(session, project, status="identified")) == 1
+    assert _browse(session, project, status="closed") == []
 
 
 def test_browse_filters_by_readiness(session, project, dependency):
     """Readiness is computed, so this filter cannot be a WHERE clause."""
-    assert browse(session, project.id, ready=True) == []
-    assert len(browse(session, project.id, ready=False)) == 1
+    assert _browse(session, project, ready=True) == []
+    assert len(_browse(session, project, ready=False)) == 1
 
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
@@ -141,8 +157,8 @@ def test_browse_filters_by_readiness(session, project, dependency):
     link.satisfies_requirement = True
     session.flush()
 
-    assert len(browse(session, project.id, ready=True)) == 1
-    assert browse(session, project.id, ready=False) == []
+    assert len(_browse(session, project, ready=True)) == 1
+    assert _browse(session, project, ready=False) == []
 
 
 def test_browse_flags_contradicted_records(session, project, document, dependency):
@@ -154,7 +170,7 @@ def test_browse_flags_contradicted_records(session, project, document, dependenc
         dependency,
         actor="tester",
     )
-    [row] = browse(session, project.id)
+    [row] = _browse(session, project)
     assert row.contradicted is True
 
 
@@ -174,7 +190,7 @@ def test_an_unverified_disagreement_is_not_a_contradiction(
         dependency,
         actor="tester",
     )
-    [row] = browse(session, project.id)
+    [row] = _browse(session, project)
     assert row.contradicted is False
 
 
@@ -256,7 +272,7 @@ def test_unverified_evidence_cannot_be_marked_as_closing(
 
 
 def test_ledger_rows_carry_their_exceptions(session, project, dependency):
-    [row] = browse(session, project.id)
+    [row] = _browse(session, project)
     rules = {e.rule for e in row.exceptions}
     # No milestone linked and no committed date on a fresh matrix record.
     assert "ORPHAN" in rules
@@ -264,8 +280,8 @@ def test_ledger_rows_carry_their_exceptions(session, project, dependency):
 
 
 def test_the_ledger_can_be_filtered_to_one_rule(session, project, dependency):
-    assert len(browse(session, project.id, rule="ORPHAN")) == 1
-    assert browse(session, project.id, rule="OVERDUE") == []
+    assert len(_browse(session, project, rule="ORPHAN")) == 1
+    assert _browse(session, project, rule="OVERDUE") == []
 
 
 def test_the_ledger_page_shows_exception_pills(client, project, dependency):
@@ -448,7 +464,7 @@ def test_a_blank_asserted_value_is_not_a_source_disagreeing(
 
     view = load_dependency(session, dependency.id)
     field = next(f for f in view.fields if f.name == "external_org")
-    [row] = browse(session, project.id)
+    [row] = _browse(session, project)
 
     assert field.contradicted is False
     assert row.contradicted is False
@@ -463,7 +479,7 @@ def test_two_real_values_still_contradict_everywhere(
 
     view = load_dependency(session, dependency.id)
     field = next(f for f in view.fields if f.name == "external_org")
-    [row] = browse(session, project.id)
+    [row] = _browse(session, project)
 
     assert field.contradicted is True
     assert row.contradicted is True

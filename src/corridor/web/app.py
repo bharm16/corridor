@@ -28,7 +28,7 @@ from corridor.adjudicate import (
     merge_candidate,
 )
 from corridor.db import Session as SessionFactory
-from corridor.exceptions import RULES
+from corridor.exceptions import RULES, evaluate_project
 from corridor.ledger import (
     NoSuchEvidence,
     UnverifiedEvidence,
@@ -100,9 +100,13 @@ def ledger(
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    # This page is its own publication, so it takes its own evaluation —
+    # stated here rather than defaulted inside `browse`, where a caller who
+    # already held one could silently pay for a second.
     rows = browse(
         session,
         project.id,
+        evaluation=evaluate_project(session, project.id),
         status=status or None,
         org_id=org_id,
         resolution_strategy=resolution_strategy or None,

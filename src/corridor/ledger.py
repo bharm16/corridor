@@ -20,7 +20,6 @@ from corridor import audit
 from corridor.exceptions import (
     Evaluation,
     contradicted_fields,
-    evaluate_project,
     exceptions_for,
 )
 from corridor.models import (
@@ -110,21 +109,25 @@ def browse(
     session: Session,
     project_id: int,
     *,
+    evaluation: Evaluation,
     status: str | None = None,
     org_id: int | None = None,
     resolution_strategy: str | None = None,
     ready: bool | None = None,
     rule: str | None = None,
     limit: int = 200,
-    evaluation: Evaluation | None = None,
 ) -> list[LedgerRow]:
     """The ledger, filterable, at one evaluation of the project.
 
     Readiness is computed per row rather than stored, so filtering on it
     happens here rather than in SQL (ADR-0002). Exceptions are computed the
-    same way, which is why `evaluation` is part of the interface: a caller
-    that already holds one passes it rather than paying for the project to
-    be evaluated a second time against a second clock.
+    same way, which is why `evaluation` is part of the interface.
+
+    It is required rather than defaulted. While it defaulted to a fresh
+    `evaluate_project`, a caller that forgot it got a second reading against
+    a second clock and no error — which is how `make demo` came to publish
+    an HTML report, an XLSX and a snapshot from three readings of one
+    Ledger. A caller with no evaluation now has to say so.
     """
     query = select(Dependency).where(Dependency.project_id == project_id)
     if status:
@@ -177,9 +180,7 @@ def browse(
     ready_ids = _ready_ids(session, ids)
 
     # Exceptions are computed, never stored (ADR-0002's reasoning), so they
-    # are evaluated here rather than joined.
-    if evaluation is None:
-        evaluation = evaluate_project(session, project_id)
+    # are read off the evaluation the caller published rather than joined.
     by_dependency = evaluation.by_dependency()
 
     rows = [

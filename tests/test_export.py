@@ -3,6 +3,7 @@ from openpyxl import load_workbook
 
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
+from corridor.exceptions import evaluate_project
 from corridor.export import COLUMNS, to_pdf, to_xlsx
 from corridor.models import Candidate, Document, Project
 from corridor.report import build_report, render
@@ -72,7 +73,12 @@ def project(session):
 
 def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
     """A spreadsheet that drops the provenance is just the matrix they had."""
-    path = to_xlsx(session, project.id, tmp_path / "ledger.xlsx")
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
     sheet = load_workbook(path)["Ledger"]
 
     headers = [c.value for c in sheet[1]]
@@ -91,7 +97,12 @@ def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
 
 def test_the_xlsx_records_what_produced_it(session, project, tmp_path):
     """A snapshot with no ruleset version cannot be reproduced or dated."""
-    path = to_xlsx(session, project.id, tmp_path / "ledger.xlsx")
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
     workbook = load_workbook(path)
     assert "Provenance" in workbook.sheetnames
 
@@ -102,7 +113,12 @@ def test_the_xlsx_records_what_produced_it(session, project, tmp_path):
 
 
 def test_the_xlsx_carries_computed_exceptions(session, project, tmp_path):
-    path = to_xlsx(session, project.id, tmp_path / "ledger.xlsx")
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
     sheet = load_workbook(path)["Ledger"]
     headers = [c.value for c in sheet[1]]
     row = {h: c.value for h, c in zip(headers, sheet[2])}
@@ -121,7 +137,12 @@ def test_an_empty_ledger_still_exports(session, tmp_path):
     empty = Project(slug="exp-empty", name="Empty", is_synthetic=True)
     session.add(empty)
     session.flush()
-    path = to_xlsx(session, empty.id, tmp_path / "empty.xlsx")
+    path = to_xlsx(
+        session,
+        empty.id,
+        tmp_path / "empty.xlsx",
+        evaluation=evaluate_project(session, empty.id),
+    )
     sheet = load_workbook(path)["Ledger"]
     assert [c.value for c in sheet[1]] == COLUMNS
     assert sheet.max_row == 1

@@ -1,10 +1,15 @@
 from datetime import date
 
 import pytest
+from openpyxl import load_workbook
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
+from corridor.changes import record_run, snapshot
 from corridor.db import Session, engine
+from corridor.exceptions import evaluate_project
+from corridor.export import to_xlsx
+from corridor.ledger import browse
 from corridor.models import Candidate, Document, EvidenceLink, Project
 from corridor.report import (
     RULESET_VERSION,
@@ -492,6 +497,105 @@ def test_the_report_publishes_the_evaluation_the_export_records(
     assert report.evaluation.ruleset_version == report.ruleset_version
 
 
+def _due_tomorrow(session, project_id):
+    """Committed in the past, but not yet due at the report's own date.
+
+    Anchored on `date.today()` so the two readings genuinely disagree: a
+    fresh evaluation finds these OVERDUE, and an evaluation taken the day
+    before the committed date does not.
+    """
+    from datetime import timedelta
+
+    from corridor.models import Dependency
+
+    committed = date.today() - timedelta(days=10)
+    for dependency in session.scalars(
+        select(Dependency).where(Dependency.project_id == project_id)
+    ).all():
+        dependency.committed_date = committed
+    session.flush()
+    return committed - timedelta(days=1)
+
+
+def test_the_export_and_the_recorded_run_read_the_report_s_evaluation(
+    session, project_with_two_dependencies, tmp_path
+):
+    """One publication, one reading of the Ledger.
+
+    `make demo` used to call `to_xlsx` and `record_run` without passing the
+    report's evaluation, and both defaulted to taking their own — so the
+    HTML, the workbook and the snapshot the *next* report diffs against
+    were three readings at three clocks. The parameter is required now, and
+    this pins that what is passed is what gets published.
+    """
+    today = _due_tomorrow(session, project_with_two_dependencies.id)
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+
+    # Nothing is overdue at the report's own date; everything is overdue now.
+    assert not any(e.rule == "OVERDUE" for e in report.evaluation.found)
+    assert any(
+        e.rule == "OVERDUE"
+        for e in evaluate_project(session, project_with_two_dependencies.id).found
+    )
+
+    path = to_xlsx(
+        session,
+        project_with_two_dependencies.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=report.evaluation,
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [c.value for c in sheet[1]]
+    exceptions = headers.index("Exceptions")
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        assert "OVERDUE" not in (row[exceptions] or "")
+
+    run = record_run(
+        session,
+        project_with_two_dependencies.id,
+        evaluation=report.evaluation,
+    )
+    recorded = run.snapshot_json["dependencies"].values()
+    assert recorded
+    assert all("OVERDUE" not in entry["exceptions"] for entry in recorded)
+
+
+def test_publishing_without_an_evaluation_is_refused(
+    session, project_with_two_dependencies, tmp_path
+):
+    """The seam is the signature, not the caller's memory.
+
+    While `evaluation` defaulted to a fresh `evaluate_project`, omitting it
+    was silent and produced a second reading. Omitting it is now a
+    TypeError, which is what stops the demo bug coming back.
+    """
+    project_id = project_with_two_dependencies.id
+
+    with pytest.raises(TypeError):
+        to_xlsx(session, project_id, tmp_path / "ledger.xlsx")
+    with pytest.raises(TypeError):
+        record_run(session, project_id)
+    with pytest.raises(TypeError):
+        snapshot(session, project_id)
+    with pytest.raises(TypeError):
+        browse(session, project_id)
+
+
+def test_the_report_states_the_date_its_figures_were_counted_from(
+    session, project_with_two_dependencies
+):
+    """The header used to print only the moment the file was written.
+
+    A report built for a stated date therefore printed today's date over
+    last week's numbers, and nothing on the page said which day the
+    Exceptions had been counted against.
+    """
+    today = _overdue_by(session, project_with_two_dependencies.id, 40)
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+
+    assert f"evaluated {today:%Y-%m-%d}" in render(report)
+
+
 def test_a_derivation_over_zero_records_is_refused(session):
     """A marker that drills through to nothing is a bare cell wearing one.
 
@@ -530,10 +634,10 @@ def test_a_change_cites_the_record_it_describes(
     session, project_with_two_dependencies
 ):
     """Every cell of the Changes section used to carry an empty tuple."""
-    from corridor.changes import record_run
     from corridor.models import Dependency
 
-    record_run(session, project_with_two_dependencies.id)
+    project_id = project_with_two_dependencies.id
+    record_run(session, project_id, evaluation=evaluate_project(session, project_id))
     dependency = session.scalars(
         select(Dependency)
         .where(Dependency.project_id == project_with_two_dependencies.id)
