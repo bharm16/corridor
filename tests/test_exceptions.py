@@ -11,6 +11,8 @@ from corridor.exceptions import (
     STALE_DAYS,
     Thresholds,
     evaluate,
+    evaluate_project,
+    facets,
     exceptions_for,
 )
 from corridor.models import (
@@ -595,3 +597,56 @@ def test_every_exception_explains_itself(session, project, document):
     for exception in exceptions_for(session, dep.id, today=TODAY):
         assert exception.detail
         assert exception.rule in RULES
+
+
+def test_an_evaluation_carries_the_clock_that_produced_it(session, project):
+    """A bare list of facts does not say which `today` made it.
+
+    Every consumer that wanted a date used to supply its own, so a view
+    could re-derive "days overdue" against a clock the engine never saw.
+    """
+    make_dep(session, project, committed_date=TODAY - timedelta(days=9))
+
+    evaluation = evaluate_project(session, project.id, today=TODAY)
+
+    assert evaluation.today == TODAY
+    assert evaluation.ruleset_version == RULESET_VERSION
+    assert evaluation.thresholds == Thresholds()
+    overdue = next(e for e in evaluation.found if e.rule == "OVERDUE")
+    assert overdue.quantity_days == 9
+
+
+def test_an_evaluation_publishes_the_thresholds_it_used(session, project):
+    """The configuration ADR-0010 kept when it abolished the weights.
+
+    Until the evaluation carried it, no published surface could vary it.
+    """
+    make_dep(session, project, need_date=TODAY + timedelta(days=20))
+
+    default = evaluate_project(session, project.id, today=TODAY)
+    tightened = evaluate_project(
+        session, project.id, today=TODAY, thresholds=Thresholds(due_soon_days=10)
+    )
+
+    assert any(e.rule == "DUE_SOON" for e in default.found)
+    assert not any(e.rule == "DUE_SOON" for e in tightened.found)
+    assert tightened.thresholds.due_soon_days == 10
+
+
+def test_an_evaluation_groups_by_dependency_so_no_consumer_regroups(
+    session, project
+):
+    """The other grouping every consumer needs, beside `facets`."""
+    first = make_dep(session, project, ref="DEP-1")
+    second = make_dep(session, project, ref="DEP-2")
+
+    evaluation = evaluate_project(session, project.id, today=TODAY)
+    grouped = evaluation.by_dependency()
+
+    assert set(grouped) == {first.id, second.id}
+    assert grouped[first.id] == evaluation.for_dependency(first.id)
+    # Same facts, two views of them — nothing is invented by the grouping.
+    assert sum(len(v) for v in grouped.values()) == len(evaluation.found)
+    assert [f.rule for f in evaluation.facets()] == [
+        f.rule for f in facets(list(evaluation.found))
+    ]

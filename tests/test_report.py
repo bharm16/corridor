@@ -416,3 +416,75 @@ def test_the_exceptions_summary_exemplar_is_the_largest_quantity_or_nothing(
     # largest-quantity path is pinned at the engine seam and in the
     # critical row's exception listing.
     assert by_rule["STALE"][most_days].value == "—"
+
+
+def _overdue_by(session, project_id, days):
+    """Give every dependency a committed date `days` in the past."""
+    from datetime import date, timedelta
+
+    from corridor.models import Dependency
+
+    committed = date(2026, 6, 1)
+    for dependency in session.scalars(
+        select(Dependency).where(Dependency.project_id == project_id)
+    ).all():
+        dependency.committed_date = committed
+    session.flush()
+    return committed + timedelta(days=days)
+
+
+def test_the_report_is_built_against_the_date_it_was_asked_for(
+    session, project_with_two_dependencies
+):
+    """`today` reaches the engine, so the Aging section exists at all.
+
+    Before the evaluation carried the clock, `today` reached two sections
+    while every exception was computed against `date.today()` — so a
+    report built for a stated date could not produce an overdue row.
+    """
+    today = _overdue_by(session, project_with_two_dependencies.id, 40)
+
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+    aging = section(report, "Aging")
+
+    assert len(aging.rows) == 2
+    days = aging.columns.index("Days overdue")
+    assert {row[days].value for row in aging.rows} == {"40"}
+
+
+def test_days_overdue_is_the_exception_s_own_quantity_not_a_recount(
+    session, project_with_two_dependencies
+):
+    """One fact, one number (ADR-0010).
+
+    The Aging column used to subtract the report's `today` from the
+    committed date while the OVERDUE fact beside it counted from the
+    engine's. Same page, two answers, whenever the clocks differed.
+    """
+    today = _overdue_by(session, project_with_two_dependencies.id, 17)
+
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+    aging = section(report, "Aging")
+    days = aging.columns.index("Days overdue")
+    ref = aging.columns.index("Ref")
+
+    quantities = {
+        e.ref_code: e.quantity_days
+        for e in report.evaluation.found
+        if e.rule == "OVERDUE"
+    }
+    assert quantities
+    for row in aging.rows:
+        assert row[days].value == str(quantities[row[ref].value])
+
+
+def test_the_report_publishes_the_evaluation_the_export_records(
+    session, project_with_two_dependencies
+):
+    """The export and the recorded run describe this reading, not their own."""
+    today = _overdue_by(session, project_with_two_dependencies.id, 3)
+    report = build_report(session, project_with_two_dependencies.id, today=today)
+
+    assert report.evaluation is not None
+    assert report.evaluation.today == today
+    assert report.evaluation.ruleset_version == report.ruleset_version

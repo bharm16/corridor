@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import RULESET_VERSION, evaluate
+from corridor.exceptions import RULESET_VERSION, Evaluation, evaluate_project
 from corridor.ledger import browse
 from corridor.models import ReportRun, is_critical
 
@@ -48,17 +48,26 @@ class Diff:
         return [c for c in self.changes if c.kind == kind]
 
 
-def snapshot(session: Session, project_id: int) -> dict:
-    """The state a report was published against, one entry per dependency."""
-    rows = browse(session, project_id, limit=100_000)
-    exceptions = evaluate(session, project_id)
+def snapshot(
+    session: Session, project_id: int, *, evaluation: Evaluation | None = None
+) -> dict:
+    """The state a report was published against, one entry per dependency.
 
-    by_dependency: dict[int, set[str]] = {}
-    for exception in exceptions:
-        by_dependency.setdefault(exception.dependency_id, set()).add(exception.rule)
+    The report passes the evaluation it published, so the snapshot records
+    the exceptions the reader saw rather than a second reading taken a
+    moment later.
+    """
+    if evaluation is None:
+        evaluation = evaluate_project(session, project_id)
+    rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
+
+    by_dependency = {
+        dependency_id: {e.rule for e in found}
+        for dependency_id, found in evaluation.by_dependency().items()
+    }
 
     return {
-        "ruleset_version": RULESET_VERSION,
+        "ruleset_version": evaluation.ruleset_version,
         "dependencies": {
             row.dependency.ref_code: {
                 "status": row.dependency.status,
@@ -81,7 +90,9 @@ def snapshot(session: Session, project_id: int) -> dict:
     }
 
 
-def diff_since_last(session: Session, project_id: int) -> Diff:
+def diff_since_last(
+    session: Session, project_id: int, *, evaluation: Evaluation | None = None
+) -> Diff:
     previous = session.scalars(
         select(ReportRun)
         .where(ReportRun.project_id == project_id)
@@ -89,7 +100,7 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
         .limit(1)
     ).first()
 
-    current = snapshot(session, project_id)
+    current = snapshot(session, project_id, evaluation=evaluation)
     if previous is None:
         # A first report has nothing to compare against, and saying "0
         # changes" would read as "nothing moved" rather than "we have not
@@ -178,13 +189,17 @@ def diff_since_last(session: Session, project_id: int) -> Diff:
 
 
 def record_run(
-    session: Session, project_id: int, *, output_path: str | None = None
+    session: Session,
+    project_id: int,
+    *,
+    output_path: str | None = None,
+    evaluation: Evaluation | None = None,
 ) -> ReportRun:
     """Store the state this report was published against."""
     run = ReportRun(
         project_id=project_id,
         ruleset_version=RULESET_VERSION,
-        snapshot_json=snapshot(session, project_id),
+        snapshot_json=snapshot(session, project_id, evaluation=evaluation),
         output_path=output_path,
     )
     session.add(run)

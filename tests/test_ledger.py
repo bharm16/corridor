@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session, engine
-from corridor.ledger import browse, load_dependency
+from corridor.ledger import browse, load_dependency, primary_evidence
 from corridor.models import (
     Candidate,
     DependencyEvent,
@@ -279,3 +279,52 @@ def test_a_dependency_from_another_project_is_not_reachable(
     session.flush()
     r = client.get(f"/ledger/{other.slug}/{dependency.id}")
     assert r.status_code == 404
+
+
+# --------------------------------------------------------- primary evidence
+
+
+def test_primary_evidence_is_the_first_verified_link(
+    session, project, document, dependency
+):
+    """One definition of "the quote this cell cites".
+
+    The report and the export each held their own copy of this query, so
+    the rule had two implementations that happened to agree.
+    """
+    found = primary_evidence(session, [dependency.id])
+
+    evidence = found[dependency.id]
+    assert evidence.document_id == document.id
+    assert evidence.filename == document.filename
+    assert evidence.page_no == 1
+    assert evidence.quote == "FOC1-1 LT AT&T Texas Telecom"
+
+
+def test_primary_evidence_skips_an_unverified_link(session, project, document):
+    """An unverified quote is a bad citation, not a citable one."""
+    unverified = accept_candidate(
+        session,
+        make_candidate(session, project, document, verified=False),
+        actor="tester",
+    )
+
+    assert primary_evidence(session, [unverified.id]) == {}
+
+
+def test_primary_evidence_answers_for_many_dependencies_at_once(
+    session, project, document, dependency
+):
+    """Batched: the export used to ask once per exported row."""
+    other = accept_candidate(
+        session,
+        make_candidate(
+            session, project, document, fields={**FIELDS, "utility_id": "FOC1-2"}
+        ),
+        actor="tester",
+    )
+
+    found = primary_evidence(session, [dependency.id, other.id])
+
+    assert set(found) == {dependency.id, other.id}
+    assert primary_evidence(session, []) == {}

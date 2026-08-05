@@ -22,8 +22,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.exceptions import RULESET_VERSION, evaluate, facets
-from corridor.ledger import LedgerRow, browse
+from corridor.exceptions import RULESET_VERSION, Evaluation, evaluate_project
+from corridor.ledger import Evidence, LedgerRow, browse, primary_evidence
 from corridor.models import (
     Dependency,
     Document,
@@ -88,6 +88,9 @@ class Report:
     sections: list[Section] = field(default_factory=list)
     diff: Diff | None = None
     coverage_note: str = ""
+    # The evaluation this report published, so the export and the recorded
+    # run describe the same reading rather than taking their own.
+    evaluation: Evaluation | None = None
 
     @property
     def cells(self) -> list[Cell]:
@@ -105,8 +108,14 @@ def build_report(
     session: Session, project_id: int, *, today: date | None = None
 ) -> Report:
     today = today or datetime.now(timezone.utc).date()
+    # One evaluation for the whole report. `today` used to reach two
+    # sections while every exception in the same report was computed
+    # against `date.today()` by a separate call, so a report built for a
+    # stated date disagreed with itself about how many days overdue a
+    # record was.
+    evaluation = evaluate_project(session, project_id, today=today)
     project = session.get(Project, project_id)
-    rows = browse(session, project_id, limit=100_000)
+    rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
     by_id = {r.dependency.id: r for r in rows}
     ids = tuple(by_id)
 
@@ -123,16 +132,17 @@ def build_report(
             _derived("With verified evidence", str(len(with_evidence)), with_evidence),
             _derived("% with verified evidence", f"{pct:.1f}%", ids),
         ],
-        diff=diff_since_last(session, project_id),
+        diff=diff_since_last(session, project_id, evaluation=evaluation),
         coverage_note=_coverage_note(session, project_id, len(ids)),
+        evaluation=evaluation,
     )
 
     report.sections = [
         _milestone_rollup(session, project_id, rows),
-        _critical_items(session, rows, today),
-        _exceptions_summary(session, project_id),
+        _critical_items(session, rows),
+        _exceptions_summary(evaluation),
         _changes_since_last(report.diff),
-        _aging(rows, today),
+        _aging(rows),
         _appendix(rows),
     ]
     return report
@@ -213,9 +223,7 @@ def _milestone_rollup(
     return section
 
 
-def _critical_items(
-    session: Session, rows: list[LedgerRow], today: date
-) -> Section:
+def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
     """The critical records, nearest need first (ADR-0010, #116).
 
     Criticality is the filter that scopes the section, never a weight: a
@@ -233,8 +241,11 @@ def _critical_items(
             if not r.is_ready and is_critical(r.dependency.resolution_strategy)
         ),
         key=lambda r: (
+            # Undated records sort after dated ones on the first key, so
+            # the second only ever orders dated against dated; `date.min`
+            # is the placeholder that never discriminates.
             r.dependency.need_date is None,
-            r.dependency.need_date or today,
+            r.dependency.need_date or date.min,
             r.dependency.ref_code,
         ),
     )
@@ -265,8 +276,11 @@ def _critical_items(
             "strategy."
         ),
     )
+    cited_by_dependency = primary_evidence(
+        session, [r.dependency.id for r in ranked]
+    )
     for row in ranked:
-        cited = _primary_evidence(session, row.dependency.id)
+        cited = _as_assertion(cited_by_dependency.get(row.dependency.id))
         # The row's exceptions as facts, each with its own quantity — no
         # cross-rule "worst" pick, which is the device ADR-0010 forbids.
         listed = ", ".join(
@@ -302,8 +316,7 @@ def _critical_items(
     return section
 
 
-def _exceptions_summary(session: Session, project_id: int) -> Section:
-    found = evaluate(session, project_id)
+def _exceptions_summary(evaluation: Evaluation) -> Section:
     section = Section(
         "Exceptions",
         columns=["Rule", "Count", "Most days", "Why"],
@@ -312,7 +325,7 @@ def _exceptions_summary(session: Session, project_id: int) -> Section:
     # The engine's facet view, not a private regrouping (ADR-0010, #116):
     # buckets largest first, and within a bucket the rule's own quantity
     # orders — so the exemplar below is simply the bucket's first row.
-    for facet in facets(found):
+    for facet in evaluation.facets():
         ids = [e.dependency_id for e in facet.exceptions]
         if facet.has_quantities:
             top = facet.exceptions[0]
@@ -380,23 +393,28 @@ def _changes_since_last(diff: Diff | None) -> Section:
     return section
 
 
-def _aging(rows: list[LedgerRow], today: date) -> Section:
+def _aging(rows: list[LedgerRow]) -> Section:
+    """Days overdue as the engine counted them, not as the report recounts.
+
+    The number is the OVERDUE fact's own `quantity_days` (ADR-0010). It
+    used to be recomputed here from the report's `today`, which the engine
+    never saw — two numbers for one fact whenever the two clocks differed.
+    """
     overdue = [
-        r
+        (r, e)
         for r in rows
-        if r.dependency.committed_date
-        and r.dependency.committed_date < today
-        and any(e.rule == "OVERDUE" for e in r.exceptions)
+        for e in r.exceptions
+        if e.rule == "OVERDUE" and r.dependency.committed_date
     ]
-    overdue.sort(key=lambda r: r.dependency.committed_date)
+    overdue.sort(key=lambda pair: pair[0].dependency.committed_date)
 
     section = Section(
         "Aging",
         columns=["Ref", "External party", "Committed", "Days overdue"],
         empty_message="Nothing is overdue.",
     )
-    for row in overdue:
-        days = (today - row.dependency.committed_date).days
+    for row, overdue_fact in overdue:
+        days = overdue_fact.quantity_days
         section.rows.append(
             [
                 _derived("Ref", row.dependency.ref_code, (row.dependency.id,)),
@@ -441,21 +459,16 @@ def _appendix(rows: list[LedgerRow]) -> Section:
     return section
 
 
-def _primary_evidence(session: Session, dependency_id: int) -> Assertion | None:
-    row = session.execute(
-        select(EvidenceLink, Document)
-        .join(Document, EvidenceLink.document_id == Document.id)
-        .where(
-            EvidenceLink.dependency_id == dependency_id,
-            EvidenceLink.verified.is_(True),
-        )
-        .order_by(EvidenceLink.id)
-        .limit(1)
-    ).first()
-    if row is None:
+def _as_assertion(evidence: Evidence | None) -> Assertion | None:
+    """The Ledger's Evidence as this report's provenance class (ADR-0003)."""
+    if evidence is None:
         return None
-    link, document = row
-    return Assertion(document.id, document.filename, link.page_no, link.quote)
+    return Assertion(
+        evidence.document_id,
+        evidence.filename,
+        evidence.page_no,
+        evidence.quote,
+    )
 
 
 def assert_no_bare_cells(report: Report) -> None:
@@ -583,14 +596,24 @@ def main(argv: list[str]) -> int:
         report = build_report(session, project.id)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render(report))
-        to_xlsx(session, project.id, Path("out/ledger.xlsx"))
+        to_xlsx(
+            session,
+            project.id,
+            Path("out/ledger.xlsx"),
+            evaluation=report.evaluation,
+        )
         try:
             to_pdf(out.read_text(), Path("out/report.pdf"))
             pdf = " · out/report.pdf"
         except Exception as exc:
             pdf = f" · PDF skipped ({type(exc).__name__})"
 
-        record_run(session, project.id, output_path=str(out))
+        record_run(
+            session,
+            project.id,
+            output_path=str(out),
+            evaluation=report.evaluation,
+        )
         session.commit()
 
     print(f"{out}{pdf} · out/ledger.xlsx")

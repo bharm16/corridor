@@ -161,6 +161,65 @@ def evaluate(
     return found
 
 
+@dataclass(frozen=True)
+class Evaluation:
+    """One project's exceptions, computed once against a stated clock.
+
+    A bare `list[Exception_]` does not say which `today` produced it, so
+    every consumer that wanted a date supplied its own — and a view that
+    re-derives "days overdue" against a clock the engine never saw
+    publishes two numbers for one fact. The clock, the thresholds and the
+    ruleset version travel with the facts instead.
+
+    `thresholds` reaches a caller here for the first time: it is the
+    configuration ADR-0010 kept when it abolished the weights, and until
+    now only a test could vary it.
+    """
+
+    project_id: int
+    today: date
+    thresholds: Thresholds
+    ruleset_version: str
+    found: tuple[Exception_, ...]
+
+    def by_dependency(self) -> dict[int, list[Exception_]]:
+        """The other grouping every consumer needs, beside `facets`.
+
+        The ledger row, the export, the snapshot and the report each built
+        this by hand; the ordering is the engine's own filing order, so no
+        consumer invents one.
+        """
+        grouped: dict[int, list[Exception_]] = {}
+        for exception in self.found:
+            grouped.setdefault(exception.dependency_id, []).append(exception)
+        return grouped
+
+    def for_dependency(self, dependency_id: int) -> list[Exception_]:
+        return [e for e in self.found if e.dependency_id == dependency_id]
+
+    def facets(self) -> list[RuleFacet]:
+        return facets(list(self.found))
+
+
+def evaluate_project(
+    session: Session,
+    project_id: int,
+    *,
+    today: date | None = None,
+    thresholds: Thresholds | None = None,
+) -> Evaluation:
+    """Evaluate a project once, and hand back the clock along with the facts."""
+    today = today or date.today()
+    thresholds = thresholds or Thresholds()
+    return Evaluation(
+        project_id=project_id,
+        today=today,
+        thresholds=thresholds,
+        ruleset_version=RULESET_VERSION,
+        found=tuple(evaluate(session, project_id, today=today, thresholds=thresholds)),
+    )
+
+
 def facets(found: list[Exception_]) -> list[RuleFacet]:
     """The one grouped view every consumer renders (ADR-0010, #115).
 

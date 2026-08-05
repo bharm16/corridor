@@ -16,7 +16,7 @@ from datetime import date
 from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import evaluate, exceptions_for
+from corridor.exceptions import Evaluation, evaluate_project, exceptions_for
 from corridor.models import (
     CRITICAL_STRATEGIES,
     is_critical,
@@ -105,11 +105,15 @@ def browse(
     ready: bool | None = None,
     rule: str | None = None,
     limit: int = 200,
+    evaluation: Evaluation | None = None,
 ) -> list[LedgerRow]:
-    """The ledger, filterable.
+    """The ledger, filterable, at one evaluation of the project.
 
     Readiness is computed per row rather than stored, so filtering on it
-    happens here rather than in SQL (ADR-0002).
+    happens here rather than in SQL (ADR-0002). Exceptions are computed the
+    same way, which is why `evaluation` is part of the interface: a caller
+    that already holds one passes it rather than paying for the project to
+    be evaluated a second time against a second clock.
     """
     query = select(Dependency).where(Dependency.project_id == project_id)
     if status:
@@ -163,9 +167,9 @@ def browse(
 
     # Exceptions are computed, never stored (ADR-0002's reasoning), so they
     # are evaluated here rather than joined.
-    by_dependency: dict[int, list] = {}
-    for exception in evaluate(session, project_id):
-        by_dependency.setdefault(exception.dependency_id, []).append(exception)
+    if evaluation is None:
+        evaluation = evaluate_project(session, project_id)
+    by_dependency = evaluation.by_dependency()
 
     rows = [
         LedgerRow(
@@ -184,6 +188,56 @@ def browse(
     if rule:
         rows = [r for r in rows if any(e.rule == rule for e in r.exceptions)]
     return rows[:limit]
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """The quote a published value cites, and where it appears."""
+
+    document_id: int
+    filename: str
+    page_no: int
+    quote: str
+
+
+def primary_evidence(
+    session: Session, dependency_ids: list[int]
+) -> dict[int, Evidence]:
+    """The Evidence a report cell cites for each Dependency.
+
+    One definition, in one place: the first *verified* link by id. The
+    report and the export each held their own copy of this query, so
+    "which quote backs this cell" had two implementations that happened to
+    agree — and one place to change when a citation becomes per-field
+    rather than per-record.
+
+    Batched, because the export asked once per row.
+    """
+    if not dependency_ids:
+        return {}
+
+    found: dict[int, Evidence] = {}
+    for link, document in session.execute(
+        select(EvidenceLink, Document)
+        .join(Document, EvidenceLink.document_id == Document.id)
+        .where(
+            EvidenceLink.dependency_id.in_(dependency_ids),
+            EvidenceLink.verified.is_(True),
+        )
+        .order_by(EvidenceLink.id)
+    ).all():
+        # First by id wins; later links for the same Dependency are the
+        # corroborating ones, not the cited one.
+        found.setdefault(
+            link.dependency_id,
+            Evidence(
+                document_id=document.id,
+                filename=document.filename,
+                page_no=link.page_no,
+                quote=link.quote,
+            ),
+        )
+    return found
 
 
 def _ready_ids(session: Session, ids: list[int]) -> set[int]:

@@ -9,12 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import RULESET_VERSION, evaluate
-from corridor.ledger import browse
-from corridor.models import Document, EvidenceLink, Project
+from corridor.exceptions import Evaluation, evaluate_project
+from corridor.ledger import browse, primary_evidence
+from corridor.models import Project
 
 COLUMNS = [
     "Ref",
@@ -50,16 +49,28 @@ def to_pdf(html: str, path: Path | str) -> Path:
     return path
 
 
-def to_xlsx(session: Session, project_id: int, path: Path | str) -> Path:
+def to_xlsx(
+    session: Session,
+    project_id: int,
+    path: Path | str,
+    *,
+    evaluation: Evaluation | None = None,
+) -> Path:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
     project = session.get(Project, project_id)
-    rows = browse(session, project_id, limit=100_000)
+    if evaluation is None:
+        evaluation = evaluate_project(session, project_id)
+    rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
 
-    by_dependency: dict[int, list[str]] = {}
-    for exception in evaluate(session, project_id):
-        by_dependency.setdefault(exception.dependency_id, []).append(exception.rule)
+    by_dependency = {
+        dependency_id: [e.rule for e in found]
+        for dependency_id, found in evaluation.by_dependency().items()
+    }
+    evidence_by_dependency = primary_evidence(
+        session, [row.dependency.id for row in rows]
+    )
 
     workbook = Workbook()
     sheet = workbook.active
@@ -72,7 +83,7 @@ def to_xlsx(session: Session, project_id: int, path: Path | str) -> Path:
 
     for row in rows:
         dependency = row.dependency
-        evidence = _primary_evidence(session, dependency.id)
+        evidence = evidence_by_dependency.get(dependency.id)
         sheet.append(
             [
                 dependency.ref_code,
@@ -88,9 +99,9 @@ def to_xlsx(session: Session, project_id: int, path: Path | str) -> Path:
                 dependency.need_date,
                 "yes" if row.is_ready else "no",
                 ", ".join(sorted(by_dependency.get(dependency.id, ()))),
-                evidence[0] if evidence else None,
-                evidence[1] if evidence else None,
-                evidence[2] if evidence else None,
+                evidence.filename if evidence else None,
+                evidence.page_no if evidence else None,
+                evidence.quote if evidence else None,
             ]
         )
 
@@ -104,7 +115,7 @@ def to_xlsx(session: Session, project_id: int, path: Path | str) -> Path:
     # export is a snapshot with no way to reproduce or date it.
     meta = workbook.create_sheet("Provenance")
     meta.append(["Project", project.name if project else str(project_id)])
-    meta.append(["Ruleset version", RULESET_VERSION])
+    meta.append(["Ruleset version", evaluation.ruleset_version])
     meta.append(["Records", len(rows)])
     meta.append(
         ["Note", "Exception columns are computed at export time, not stored."]
@@ -116,20 +127,3 @@ def to_xlsx(session: Session, project_id: int, path: Path | str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
     return path
-
-
-def _primary_evidence(session: Session, dependency_id: int):
-    row = session.execute(
-        select(EvidenceLink, Document)
-        .join(Document, EvidenceLink.document_id == Document.id)
-        .where(
-            EvidenceLink.dependency_id == dependency_id,
-            EvidenceLink.verified.is_(True),
-        )
-        .order_by(EvidenceLink.id)
-        .limit(1)
-    ).first()
-    if row is None:
-        return None
-    link, document = row
-    return (document.filename, link.page_no, link.quote)
