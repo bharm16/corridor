@@ -6,8 +6,16 @@ from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session, engine
-from corridor.ledger import browse, load_dependency, primary_evidence
+from corridor.ledger import (
+    NoSuchEvidence,
+    UnverifiedEvidence,
+    browse,
+    load_dependency,
+    mark_satisfies,
+    primary_evidence,
+)
 from corridor.models import (
+    AuditLog,
     Candidate,
     DependencyEvent,
     Document,
@@ -328,3 +336,81 @@ def test_primary_evidence_answers_for_many_dependencies_at_once(
 
     assert set(found) == {dependency.id, other.id}
     assert primary_evidence(session, []) == {}
+
+
+# ------------------------------------------------------------- readiness
+
+
+def _link_of(session, dependency):
+    return session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+
+
+def test_marking_evidence_is_the_ledger_s_act_not_a_route_s(
+    session, project, dependency
+):
+    """The ownership check, the verified precondition and the audit entry
+    are the Ledger's rules. They lived inside a FastAPI handler, so the
+    only way to prove readiness was to POST a form."""
+    link = _link_of(session, dependency)
+
+    assert mark_satisfies(session, dependency.id, link.id, actor="tester") is True
+    assert load_dependency(session, dependency.id).is_ready is True
+
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == "dependency",
+            AuditLog.entity_id == dependency.id,
+            AuditLog.action == "mark_satisfies_requirement",
+        )
+    ).one()
+    assert entry.actor == "tester"
+    assert entry.before_json["satisfies"] is False
+    assert entry.after_json["satisfies"] is True
+
+
+def test_readiness_is_refused_without_a_verified_quote(session, project, document):
+    """ADR-0002: readiness cannot rest on a quote that is not on the page."""
+    dep = accept_candidate(
+        session,
+        make_candidate(session, project, document, verified=False),
+        actor="tester",
+    )
+
+    with pytest.raises(UnverifiedEvidence):
+        mark_satisfies(session, dep.id, _link_of(session, dep).id, actor="tester")
+
+    assert load_dependency(session, dep.id).is_ready is False
+
+
+def test_evidence_belonging_to_another_dependency_is_refused(
+    session, project, document, dependency
+):
+    """Marking is scoped to the record it is claimed against."""
+    other = accept_candidate(
+        session,
+        make_candidate(
+            session, project, document, fields={**FIELDS, "utility_id": "FOC1-9"}
+        ),
+        actor="tester",
+    )
+
+    with pytest.raises(NoSuchEvidence):
+        mark_satisfies(
+            session, dependency.id, _link_of(session, other).id, actor="tester"
+        )
+
+    assert load_dependency(session, dependency.id).is_ready is False
+
+
+def test_marking_twice_returns_the_record_to_not_ready(
+    session, project, dependency
+):
+    """It is a toggle. Nothing in the domain names un-readying, and this
+    pins the behaviour that exists rather than endorsing it."""
+    link = _link_of(session, dependency)
+
+    assert mark_satisfies(session, dependency.id, link.id, actor="tester") is True
+    assert mark_satisfies(session, dependency.id, link.id, actor="tester") is False
+    assert load_dependency(session, dependency.id).is_ready is False

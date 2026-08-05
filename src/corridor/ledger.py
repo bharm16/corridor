@@ -340,6 +340,56 @@ def load_dependency(session: Session, dependency_id: int) -> DependencyView:
     )
 
 
+class NoSuchEvidence(Exception):
+    """This evidence link does not belong to this Dependency."""
+
+
+class UnverifiedEvidence(Exception):
+    """Readiness cannot rest on a quote that is not on the page."""
+
+
+def mark_satisfies(
+    session: Session, dependency_id: int, link_id: int, *, actor: str
+) -> bool:
+    """Mark, or unmark, an Evidence link as meeting the closure bar.
+
+    The only act that makes a Dependency Ready (ADR-0002), so it lives
+    beside `is_ready` rather than in a route: the ownership check, the
+    verified precondition and the audit entry are the Ledger's rules, and
+    a second caller — a CLI, an API — would otherwise have to reimplement
+    all three. The template's `disabled` attribute becomes a courtesy
+    rather than the second copy of the guard.
+
+    Returns the resulting mark.
+    """
+    link = session.get(EvidenceLink, link_id)
+    if link is None or link.dependency_id != dependency_id:
+        raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
+    if not link.verified:
+        raise UnverifiedEvidence(
+            f"evidence {link_id} is unverified; readiness cannot rest on a "
+            "quote that is not on the page"
+        )
+
+    was = link.satisfies_requirement
+    link.satisfies_requirement = not was
+    session.add(
+        AuditLog(
+            actor=actor,
+            action="mark_satisfies_requirement",
+            entity_type="dependency",
+            entity_id=dependency_id,
+            before_json={"evidence_link_id": link_id, "satisfies": was},
+            after_json={
+                "evidence_link_id": link_id,
+                "satisfies": link.satisfies_requirement,
+            },
+        )
+    )
+    session.flush()
+    return link.satisfies_requirement
+
+
 def is_ready(session: Session, dependency_id: int) -> bool:
     """Verified evidence that a reviewer marked as meeting the bar.
 

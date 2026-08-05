@@ -28,7 +28,13 @@ from corridor.adjudicate import (
 )
 from corridor.db import Session as SessionFactory
 from corridor.exceptions import RULES
-from corridor.ledger import browse, load_dependency
+from corridor.ledger import (
+    NoSuchEvidence,
+    UnverifiedEvidence,
+    browse,
+    load_dependency,
+    mark_satisfies,
+)
 from corridor.models import (
     RESOLUTION_STRATEGIES,
     DEP_STATUSES,
@@ -36,7 +42,6 @@ from corridor.models import (
     Candidate,
     Dependency,
     DocPage,
-    EvidenceLink,
     ExternalOrg,
     Project,
 )
@@ -146,7 +151,7 @@ def dependency_detail(
 
 
 @app.post("/dependencies/{dependency_id}/evidence/{link_id}/satisfies")
-def mark_satisfies(
+def mark_evidence_satisfies(
     dependency_id: int,
     link_id: int,
     slug: str = Form(...),
@@ -156,25 +161,14 @@ def mark_satisfies(
 
     This is the only way a Dependency becomes ready (ADR-0002), so it is a
     deliberate act on a named piece of evidence rather than a status change.
+    The rules belong to the Ledger; this route carries the HTTP.
     """
-    link = session.get(EvidenceLink, link_id)
-    if link is None or link.dependency_id != dependency_id:
-        raise HTTPException(404, "no such evidence on this dependency")
-    if not link.verified:
-        # Readiness cannot rest on a quote that is not on the page.
-        raise HTTPException(400, "evidence is unverified")
-
-    link.satisfies_requirement = not link.satisfies_requirement
-    session.add(
-        AuditLog(
-            actor="reviewer",
-            action="mark_satisfies_requirement",
-            entity_type="dependency",
-            entity_id=dependency_id,
-            before_json={"evidence_link_id": link_id, "satisfies": not link.satisfies_requirement},
-            after_json={"evidence_link_id": link_id, "satisfies": link.satisfies_requirement},
-        )
-    )
+    try:
+        mark_satisfies(session, dependency_id, link_id, actor="reviewer")
+    except NoSuchEvidence as exc:
+        raise HTTPException(404, str(exc))
+    except UnverifiedEvidence as exc:
+        raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
