@@ -1,17 +1,25 @@
-"""Shared seams for completed extraction attempts.
+"""Authoritative lineage for immutable extraction attempts.
 
-Resume and evaluation both answer the same question: has this document
-completed extraction at this prompt version? The answer is not "is there a
-Candidate row" and it is not "did an attempt happen". It is the narrower
-predicate below, and it lives in one place so the two readers cannot drift.
+Receipts, Candidate attachment, resume selection, and Active Run declaration
+meet here.  Keeping those operations together prevents a reader from silently
+reconstructing lineage from candidate existence, timestamps, or row order.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from collections.abc import Sequence
+import sys
+
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import Session
 
-from corridor.models import Document, ExtractionRun
+from corridor.models import (
+    EXTRACTION_OUTCOMES,
+    ActiveExtractionRun,
+    Candidate,
+    Document,
+    ExtractionRun,
+)
 
 
 def completion_predicate():
@@ -22,7 +30,9 @@ def completion_predicate():
     failed page must retry as a whole, so its run is history, not completion,
     even if some pages appeared to yield candidates before the failure.
     """
-    return ExtractionRun.page_errors == 0
+    return and_(
+        ExtractionRun.outcome == "completed", ExtractionRun.page_errors == 0
+    )
 
 
 def completed_document_ids(
@@ -45,15 +55,130 @@ def record_extraction_run(
     prompt_version: str,
     candidate_count: int,
     page_errors: int,
+    outcome: str = "completed",
+    candidates: Sequence[Candidate] = (),
+    model: str | None = None,
+    schema_version: str | None = None,
+    error_detail: str | None = None,
 ) -> ExtractionRun:
-    """Record one completed attempt in the same transaction as its results."""
+    """Append one terminal attempt and attach every Candidate it produced."""
     if not prompt_version:
         raise ValueError("prompt_version must be non-empty")
+    if outcome not in EXTRACTION_OUTCOMES:
+        raise ValueError(f"unknown extraction outcome {outcome!r}")
+    if candidate_count < 0 or page_errors < 0:
+        raise ValueError("candidate_count and page_errors must be non-negative")
+    if outcome == "completed" and page_errors:
+        raise ValueError("a completed extraction run cannot have page errors")
+    if outcome != "completed" and (candidate_count or candidates):
+        raise ValueError("a non-completed extraction run cannot own Candidates")
+    if outcome != "completed" and page_errors == 0:
+        raise ValueError("a non-completed extraction run must record an error")
+    if candidates and candidate_count != len(candidates):
+        raise ValueError("candidate_count does not match the attached candidates")
+    for candidate in candidates:
+        if candidate.source_document_id != document.id:
+            raise ValueError("a run cannot own another document's Candidate")
+        if candidate.prompt_version != prompt_version:
+            raise ValueError("Candidate prompt_version does not match its run")
+        if candidate.model != model:
+            raise ValueError("Candidate model does not match its run")
+
     run = ExtractionRun(
         document_id=document.id,
         prompt_version=prompt_version,
+        outcome=outcome,
         candidate_count=candidate_count,
         page_errors=page_errors,
+        model=model,
+        schema_version=schema_version,
+        error_detail=error_detail,
     )
     session.add(run)
+    session.flush([run])
+    for candidate in candidates:
+        candidate.extraction_run_id = run.id
     return run
+
+
+def declare_active_run(
+    session: Session, document_id: int, extraction_run_id: int
+) -> ExtractionRun:
+    """Declare a completed run operative; never infer one from recency."""
+    run = session.scalar(
+        select(ExtractionRun).where(
+            ExtractionRun.id == extraction_run_id,
+            ExtractionRun.document_id == document_id,
+        )
+    )
+    if run is None:
+        raise ValueError("extraction run does not belong to the document")
+    if run.outcome != "completed" or run.page_errors != 0:
+        raise ValueError("only a completed extraction run can be active")
+
+    current = session.get(ActiveExtractionRun, document_id)
+    if current is None:
+        session.add(
+            ActiveExtractionRun(
+                document_id=document_id, extraction_run_id=extraction_run_id
+            )
+        )
+    elif current.extraction_run_id != extraction_run_id:
+        session.execute(
+            update(ActiveExtractionRun)
+            .where(ActiveExtractionRun.document_id == document_id)
+            .values(extraction_run_id=extraction_run_id, declared_at=func.now())
+        )
+        session.expire(current)
+    return run
+
+
+def active_run_for_document(
+    session: Session, document_id: int
+) -> ExtractionRun | None:
+    """Return only the explicitly declared Active Run for a document."""
+    return session.scalar(
+        select(ExtractionRun)
+        .join(
+            ActiveExtractionRun,
+            ActiveExtractionRun.extraction_run_id == ExtractionRun.id,
+        )
+        .where(ActiveExtractionRun.document_id == document_id)
+    )
+
+
+def main(argv: list[str], *, session_factory=None) -> int:
+    """Declare an Active Run from explicit document and run identifiers."""
+    if len(argv) != 2:
+        print("usage: active-run <document-id> <extraction-run-id>", file=sys.stderr)
+        return 2
+    try:
+        document_id, extraction_run_id = (int(value) for value in argv)
+    except ValueError:
+        print("document-id and extraction-run-id must be integers", file=sys.stderr)
+        return 2
+    if document_id <= 0 or extraction_run_id <= 0:
+        print("document-id and extraction-run-id must be positive", file=sys.stderr)
+        return 2
+
+    if session_factory is None:
+        from corridor.db import Session as session_factory
+
+    with session_factory() as session:
+        try:
+            run = declare_active_run(session, document_id, extraction_run_id)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        run_summary = (run.id, run.prompt_version, run.outcome)
+        session.commit()
+    run_id, prompt_version, outcome = run_summary
+    print(
+        f"document {document_id}: Active Run {run_id} "
+        f"({prompt_version}, {outcome})"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

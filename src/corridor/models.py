@@ -22,12 +22,15 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     false,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -44,6 +47,8 @@ DOC_TYPES = (
     "other",
 )
 PARSE_STATUSES = ("pending", "parsed", "failed")
+EXTRACTION_OUTCOMES = ("completed", "failed", "unreadable", "no_matrix")
+SUPPORT_ROLES = ("publication",)
 # Where a page's text came from, most reliable first. `cells` is a
 # spreadsheet source read natively (ADR-0005): its text was generated from
 # the cells rather than recovered from a layout, which is what lets a
@@ -256,25 +261,53 @@ class Document(Base):
 
 
 class ExtractionRun(Base):
-    """One completed extraction attempt for one document and prompt version.
+    """One immutable extraction attempt for one document and prompt version.
 
-    History is deliberate. A redo or a replacement prompt records another
-    completed attempt rather than overwriting the earlier one, so resume can
-    ask the narrow question "has this document completed at this prompt
-    version?" without pretending there was only one try.
+    A receipt exists for every terminal outcome, including failures and valid
+    zero-row reads.  A redo appends another receipt; it never rewrites the
+    earlier attempt or the Candidates that attempt produced.
     """
 
     __tablename__ = "extraction_runs"
+    __table_args__ = (UniqueConstraint("document_id", "id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
     prompt_version: Mapped[str] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(
+        _enum(*EXTRACTION_OUTCOMES, name="extraction_outcome"),
+        default="completed",
+        server_default="completed",
+    )
     candidate_count: Mapped[int] = mapped_column(Integer)
     page_errors: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0"
     )
+    model: Mapped[str | None] = mapped_column(String(64))
+    schema_version: Mapped[str | None] = mapped_column(String(64))
+    error_detail: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ActiveExtractionRun(Base):
+    """The explicitly declared run whose Candidates are operative for a document."""
+
+    __tablename__ = "active_extraction_runs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+        ),
+    )
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id"), primary_key=True
+    )
+    extraction_run_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -325,6 +358,11 @@ class AuditLog(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     actor: Mapped[str] = mapped_column(Text)
+    # Null on legacy and non-Admission entries.  New Admissions store the
+    # exact namespaced subject here; ``actor`` remains for honest display of
+    # historical labels such as ``agent`` and ``demo`` rather than relabelling
+    # them as people (ADR-0020).
+    human_principal: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(String(64))
     entity_type: Mapped[str] = mapped_column(String(64))
     entity_id: Mapped[int] = mapped_column(BigInteger)
@@ -442,6 +480,7 @@ class DependencyEvent(Base):
 
 class EvidenceLink(Base):
     __tablename__ = "evidence_links"
+    __table_args__ = (UniqueConstraint("dependency_id", "id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # Always set, even when the evidence is really about an event: an
@@ -467,6 +506,51 @@ class EvidenceLink(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OperativeSupport(Base):
+    """A human designation of which Evidence supports a publication scope.
+
+    Readiness deliberately does not live here: it remains the independent
+    ``EvidenceLink.satisfies_requirement`` judgment. The resolver combines
+    the two roles without collapsing their meanings (ADR-0017).
+    """
+
+    __tablename__ = "operative_support"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dependency_id", "evidence_link_id"],
+            ["evidence_links.dependency_id", "evidence_links.id"],
+            name="fk_operative_support_dependency_evidence",
+        ),
+        Index(
+            "uq_operative_support_record_role",
+            "dependency_id",
+            "role",
+            unique=True,
+            postgresql_where=text("field_name is null"),
+        ),
+        Index(
+            "uq_operative_support_field_role",
+            "dependency_id",
+            "role",
+            "field_name",
+            unique=True,
+            postgresql_where=text("field_name is not null"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    evidence_link_id: Mapped[int] = mapped_column(BigInteger)
+    role: Mapped[str] = mapped_column(
+        _enum(*SUPPORT_ROLES, name="operative_support_role")
+    )
+    field_name: Mapped[str | None] = mapped_column(String(64))
+    designated_by: Mapped[str] = mapped_column(Text)
+    designated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -502,12 +586,21 @@ class Candidate(Base):
     """
 
     __tablename__ = "candidates"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_document_id", "extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     kind: Mapped[str] = mapped_column(_enum(*CANDIDATE_KINDS, name="candidate_kind"))
     payload_json: Mapped[dict] = mapped_column(JSONB)
     source_document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    # Null only for history that cannot be tied to exactly one attempt
+    # without guessing. Every new production extraction sets this.
+    extraction_run_id: Mapped[int | None] = mapped_column(BigInteger)
     source_pages: Mapped[list[int]] = mapped_column(ARRAY(Integer))
     confidence: Mapped[float | None] = mapped_column(Float)
     # Recorded on every candidate. Without both, eval history across runs is

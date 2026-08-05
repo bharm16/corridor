@@ -34,6 +34,13 @@ from corridor.models import (
     ExternalOrg,
     Project,
 )
+from corridor.principals import HumanPrincipal
+
+BRYCE = HumanPrincipal("local:bryce")
+REVIEWER = HumanPrincipal("local:test-reviewer")
+B = HumanPrincipal("local:b")
+X = HumanPrincipal("local:x")
+EXTRACTOR = HumanPrincipal("local:test-extractor")
 
 FIELDS = {
     "utility_id": "FOC1-1",
@@ -134,7 +141,7 @@ def make_candidate(
 
 def test_accepting_creates_a_dependency_from_the_candidate(session, document):
     candidate = make_candidate(session, document)
-    dep = accept_candidate(session, candidate, actor="bryce")
+    dep = accept_candidate(session, candidate, principal=BRYCE)
 
     # Our identifier, not the source's: NHHIP's matrix carries two distinct
     # conflicts both labelled FOC14-69.
@@ -171,7 +178,7 @@ def test_accepting_refuses_a_candidate_whose_source_document_is_in_another_proje
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="source document"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -218,7 +225,7 @@ def test_accepting_refuses_a_candidate_citing_another_projects_document(
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="citation document"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -245,7 +252,7 @@ def test_accepting_refuses_a_candidate_with_a_missing_cited_page(session, docume
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="cited page"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -264,7 +271,7 @@ def test_accepting_refuses_a_candidate_with_non_mapping_payload(session, documen
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="payload must be an object"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -283,7 +290,7 @@ def test_accepting_refuses_a_candidate_with_non_mapping_fields(session, document
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="fields must be an object"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -302,7 +309,7 @@ def test_accepting_refuses_a_candidate_with_non_list_citations(session, document
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="citations must be a list"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -321,7 +328,7 @@ def test_accepting_refuses_a_candidate_with_non_mapping_citation(session, docume
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="citation must be an object"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -349,7 +356,7 @@ def test_accepting_refuses_a_candidate_with_a_missing_quote_key(session, documen
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -395,7 +402,7 @@ def test_accepting_refuses_a_candidate_that_cites_nothing(
     before = _ledger_counts(session)
 
     with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -427,7 +434,7 @@ def test_merging_refuses_a_candidate_that_cites_nothing(
     """
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
     payload = {**candidate.payload_json, "fields": payload_fields}
     if drop_key:
@@ -438,7 +445,7 @@ def test_merging_refuses_a_candidate_that_cites_nothing(
     before = _ledger_counts(session)
 
     with pytest.raises(InvalidCandidateProvenance, match="cites nothing"):
-        merge_candidate(session, candidate, target, actor="reviewer")
+        merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
@@ -464,7 +471,7 @@ def test_accepting_refuses_a_candidate_that_asserts_nothing(
     before = _ledger_counts(session)
 
     with pytest.raises(CandidateAssertsNothing, match="asserts nothing"):
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert session.scalars(
@@ -485,10 +492,10 @@ def test_merging_a_candidate_that_asserts_nothing_keeps_its_evidence(
     """
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     corroborating = make_candidate(session, document, fields={})
 
-    merge_candidate(session, corroborating, target, actor="reviewer")
+    merge_candidate(session, corroborating, target, principal=REVIEWER)
 
     links = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == target.id)
@@ -510,7 +517,7 @@ def test_a_candidate_whose_only_citation_is_unverified_is_still_adjudicable(
     """
     candidate = make_candidate(session, document, verified=False)
 
-    dependency = accept_candidate(session, candidate, actor="reviewer")
+    dependency = accept_candidate(session, candidate, principal=REVIEWER)
 
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
@@ -522,7 +529,7 @@ def test_a_candidate_whose_only_citation_is_unverified_is_still_adjudicable(
 def test_accepting_records_one_assertion_per_claimed_field(session, document):
     """The ledger row is a conclusion; the assertions are what sources said."""
     candidate = make_candidate(session, document)
-    dep = accept_candidate(session, candidate, actor="bryce")
+    dep = accept_candidate(session, candidate, principal=BRYCE)
 
     assertions = session.scalars(
         select(Assertion).where(Assertion.dependency_id == dep.id)
@@ -538,7 +545,7 @@ def test_accepting_records_one_assertion_per_claimed_field(session, document):
 
 def test_accepting_links_the_evidence_with_its_quote(session, document):
     candidate = make_candidate(session, document, quote="FOC1-1 AT&T Texas (SWBT)")
-    dep = accept_candidate(session, candidate, actor="bryce")
+    dep = accept_candidate(session, candidate, principal=BRYCE)
 
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dep.id)
@@ -553,13 +560,13 @@ def test_accepting_links_the_evidence_with_its_quote(session, document):
 def test_acceptance_does_not_make_a_dependency_ready(session, document):
     """ADR-0002: readiness is proven separately, never a side effect."""
     candidate = make_candidate(session, document)
-    dep = accept_candidate(session, candidate, actor="bryce")
+    dep = accept_candidate(session, candidate, principal=BRYCE)
     assert load_dependency(session, dep.id).is_ready is False
 
 
 def test_marking_evidence_as_satisfying_makes_it_ready(session, document):
     candidate = make_candidate(session, document)
-    dep = accept_candidate(session, candidate, actor="bryce")
+    dep = accept_candidate(session, candidate, principal=BRYCE)
 
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dep.id)
@@ -572,7 +579,7 @@ def test_marking_evidence_as_satisfying_makes_it_ready(session, document):
 
 def test_unverified_evidence_can_never_confer_readiness(session, document):
     candidate = make_candidate(session, document, verified=False)
-    dep = accept_candidate(session, candidate, actor="bryce")
+    dep = accept_candidate(session, candidate, principal=BRYCE)
 
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dep.id)
@@ -585,11 +592,11 @@ def test_unverified_evidence_can_never_confer_readiness(session, document):
 
 
 def test_the_external_party_is_resolved_and_reused(session, document):
-    first = accept_candidate(session, make_candidate(session, document), actor="b")
+    first = accept_candidate(session, make_candidate(session, document), principal=B)
     second = accept_candidate(
         session,
         make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-2"}),
-        actor="b",
+        principal=B,
     )
     assert first.external_org_id == second.external_org_id
     orgs = session.scalars(
@@ -605,11 +612,11 @@ def test_duplicate_source_ids_do_not_collide(session, document):
     silently merge two genuinely different records.
     """
     dupe = {**FIELDS, "utility_id": "FOC14-69"}
-    first = accept_candidate(session, make_candidate(session, document, fields=dupe), actor="b")
+    first = accept_candidate(session, make_candidate(session, document, fields=dupe), principal=B)
     second = accept_candidate(
         session,
         make_candidate(session, document, fields={**dupe, "station_from": "1124+26"}),
-        actor="b",
+        principal=B,
     )
     assert first.source_ref == second.source_ref == "FOC14-69"
     assert first.ref_code != second.ref_code
@@ -638,7 +645,7 @@ def test_accepting_after_a_gap_allocates_above_the_highest_existing_suffix(
     )
     session.flush()
 
-    dep = accept_candidate(session, make_candidate(session, document), actor="b")
+    dep = accept_candidate(session, make_candidate(session, document), principal=B)
 
     assert dep.ref_code == "DEP-00004"
 
@@ -712,14 +719,15 @@ def test_ref_code_allocation_blocks_and_advances_across_two_sessions():
 
 def test_every_acceptance_writes_an_audit_entry(session, document):
     candidate = make_candidate(session, document)
-    dep = accept_candidate(session, candidate, actor="bryce")
+    dep = accept_candidate(session, candidate, principal=BRYCE)
 
     entry = session.scalars(
         select(AuditLog).where(
             AuditLog.entity_type == "dependency", AuditLog.entity_id == dep.id
         )
     ).one()
-    assert entry.actor == "bryce"
+    assert entry.actor == "local:bryce"
+    assert entry.human_principal == "local:bryce"
     assert entry.action == "accept_candidate"
     assert entry.after_json["ref_code"].startswith("DEP-")
     assert entry.after_json["source_ref"] == "FOC1-1"
@@ -727,16 +735,16 @@ def test_every_acceptance_writes_an_audit_entry(session, document):
 
 def test_the_candidate_is_marked_accepted(session, document):
     candidate = make_candidate(session, document)
-    accept_candidate(session, candidate, actor="bryce")
+    accept_candidate(session, candidate, principal=BRYCE)
     assert candidate.state == "accepted"
     assert candidate.adjudicated_at is not None
 
 
 def test_a_candidate_cannot_be_accepted_twice(session, document):
     candidate = make_candidate(session, document)
-    accept_candidate(session, candidate, actor="bryce")
+    accept_candidate(session, candidate, principal=BRYCE)
     with pytest.raises(AlreadyAdjudicated):
-        accept_candidate(session, candidate, actor="bryce")
+        accept_candidate(session, candidate, principal=BRYCE)
 
 
 def test_editing_replaces_the_payload_fields_and_writes_an_audit_entry(
@@ -750,7 +758,7 @@ def test_editing_replaces_the_payload_fields_and_writes_an_audit_entry(
         "external_org": "AT&T Texas",
         "station_from": "1150+00",
     }
-    edit_candidate(session, candidate, edited, actor="reviewer")
+    edit_candidate(session, candidate, edited, principal=REVIEWER)
 
     assert candidate.payload_json is not original_payload
     assert candidate.payload_json["fields"] == edited
@@ -778,7 +786,7 @@ def test_editing_a_whole_row_candidate_revalidates_and_clears_resolved_diagnosti
         low_confidence_tokens=["1092"],
     )
 
-    edit_candidate(session, candidate, dict(FIELDS), actor="reviewer")
+    edit_candidate(session, candidate, dict(FIELDS), principal=REVIEWER)
 
     assert candidate.payload_json["fields"] == FIELDS
     assert candidate.payload_json["unverified_fields"] == []
@@ -799,7 +807,7 @@ def test_editing_a_whole_row_candidate_to_an_unsupported_value_stays_unverified(
     )
 
     edited = {**FIELDS, "station_from": "9999+00"}
-    edit_candidate(session, candidate, edited, actor="reviewer")
+    edit_candidate(session, candidate, edited, principal=REVIEWER)
 
     assert candidate.payload_json["fields"] == edited
     assert candidate.payload_json["unverified_fields"] == ["station_from"]
@@ -826,7 +834,7 @@ def test_editing_a_whole_row_candidate_fails_closed_when_any_cited_page_is_missi
     }
     edited = {**FIELDS, "station_from": "1150+00"}
 
-    edit_candidate(session, candidate, edited, actor="reviewer")
+    edit_candidate(session, candidate, edited, principal=REVIEWER)
 
     assert candidate.payload_json["fields"] == edited
     assert candidate.payload_json["unverified_fields"] == sorted(edited)
@@ -845,7 +853,7 @@ def test_editing_a_non_whole_row_candidate_does_not_start_verbatim_field_checks(
     )
 
     edited = {**FIELDS, "station_from": "a reviewer paraphrase"}
-    edit_candidate(session, candidate, edited, actor="reviewer")
+    edit_candidate(session, candidate, edited, principal=REVIEWER)
 
     assert candidate.payload_json["fields"] == edited
     assert candidate.payload_json["unverified_fields"] == []
@@ -886,7 +894,7 @@ def test_editing_a_structure_tier_row_cited_by_a_partial_quote_is_revalidated(
     assert candidate.citations_verified is True
 
     edited = {**FIELDS, "station_from": "9999+99"}
-    edit_candidate(session, candidate, edited, actor="reviewer")
+    edit_candidate(session, candidate, edited, principal=REVIEWER)
 
     assert candidate.payload_json["unverified_fields"] == ["station_from"]
     assert candidate.citations_verified is False
@@ -906,7 +914,7 @@ def test_editing_a_structure_tier_row_clears_a_diagnostic_the_edit_resolved(
     )
     assert candidate.citations_verified is False
 
-    edit_candidate(session, candidate, dict(FIELDS), actor="reviewer")
+    edit_candidate(session, candidate, dict(FIELDS), principal=REVIEWER)
 
     assert candidate.payload_json["unverified_fields"] == []
     assert candidate.citations_verified is True
@@ -917,7 +925,7 @@ def test_rejecting_sets_the_decision_timestamp_and_records_the_reason(
 ):
     candidate = make_candidate(session, document)
 
-    reject_candidate(session, candidate, "duplicate", actor="reviewer")
+    reject_candidate(session, candidate, "duplicate", principal=REVIEWER)
 
     assert candidate.state == "rejected"
     assert candidate.adjudicated_at is not None
@@ -935,34 +943,34 @@ def test_rejecting_refuses_an_unknown_reason(session, document):
     candidate = make_candidate(session, document)
 
     with pytest.raises(InvalidRejectReason, match="because"):
-        reject_candidate(session, candidate, "because", actor="reviewer")
+        reject_candidate(session, candidate, "because", principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.adjudicated_at is None
 
 
 @pytest.mark.parametrize(
-    ("operation", "args"),
+    ("operation", "args", "identity"),
     [
-        (edit_candidate, ({"utility_id": "FOC1-1"},)),
-        (reject_candidate, ("duplicate",)),
+        (edit_candidate, ({"utility_id": "FOC1-1"},), {"principal": REVIEWER}),
+        (reject_candidate, ("duplicate",), {"principal": REVIEWER}),
     ],
 )
 def test_edit_and_reject_refuse_an_already_adjudicated_candidate(
-    session, document, operation, args
+    session, document, operation, args, identity
 ):
     candidate = make_candidate(session, document)
-    accept_candidate(session, candidate, actor="reviewer")
+    accept_candidate(session, candidate, principal=REVIEWER)
 
     with pytest.raises(AlreadyAdjudicated):
-        operation(session, candidate, *args, actor="reviewer")
+        operation(session, candidate, *args, **identity)
 
 
 def test_merging_adds_assertions_without_creating_a_dependency(session, document):
     """Accepting a duplicate instead of merging is the unrecoverable error."""
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     before = len(
         session.scalars(select(Dependency).where(Dependency.project_id == document.project_id)).all()
     )
@@ -970,7 +978,7 @@ def test_merging_adds_assertions_without_creating_a_dependency(session, document
     second = make_candidate(
         session, document, fields={**FIELDS, "station_from": "1160+00"}
     )
-    merged = merge_candidate(session, second, target, actor="b")
+    merged = merge_candidate(session, second, target, principal=B)
 
     after = session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
@@ -985,14 +993,14 @@ def test_merging_never_overwrites_the_targets_values(session, document):
     """ADR-0001: the ledger row is a conclusion, not the latest write."""
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     assert target.station_from == "1149+00"
 
     merge_candidate(
         session,
         make_candidate(session, document, fields={**FIELDS, "station_from": "1160+00"}),
         target,
-        actor="b",
+        principal=B,
     )
     session.flush()
     assert target.station_from == "1149+00"
@@ -1002,12 +1010,12 @@ def test_a_merged_disagreement_becomes_a_contradiction(session, document):
     """The competing claim survives and is visible, rather than being lost."""
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     merge_candidate(
         session,
         make_candidate(session, document, fields={**FIELDS, "station_from": "1160+00"}),
         target,
-        actor="b",
+        principal=B,
     )
 
     view = load_dependency(session, target.id)
@@ -1019,9 +1027,9 @@ def test_a_merged_disagreement_becomes_a_contradiction(session, document):
 def test_merging_is_audited(session, document):
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     second = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
-    merge_candidate(session, second, target, actor="reviewer")
+    merge_candidate(session, second, target, principal=REVIEWER)
 
     entry = session.scalars(
         select(AuditLog).where(
@@ -1035,7 +1043,7 @@ def test_merging_is_audited(session, document):
 def test_merging_refuses_a_candidate_from_another_project(session, document):
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     other = Project(slug="adj-merge-other", name="Other", is_synthetic=True)
     session.add(other)
     session.flush()
@@ -1072,7 +1080,7 @@ def test_merging_refuses_a_candidate_from_another_project(session, document):
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="different project"):
-        merge_candidate(session, candidate, target, actor="reviewer")
+        merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
@@ -1084,7 +1092,7 @@ def test_merging_refuses_a_candidate_from_another_project(session, document):
 def test_merging_refuses_a_candidate_with_a_missing_quote_key(session, document):
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
     candidate.payload_json = {
         **candidate.payload_json,
@@ -1101,7 +1109,7 @@ def test_merging_refuses_a_candidate_with_a_missing_quote_key(session, document)
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
     with pytest.raises(InvalidCandidateProvenance, match="citation quote is missing"):
-        merge_candidate(session, candidate, target, actor="reviewer")
+        merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
@@ -1115,7 +1123,7 @@ def test_merging_refuses_a_candidate_with_non_integer_citation_document_id(
 ):
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
     candidate.payload_json = {
         **candidate.payload_json,
@@ -1133,7 +1141,7 @@ def test_merging_refuses_a_candidate_with_non_integer_citation_document_id(
     with pytest.raises(
         InvalidCandidateProvenance, match="citation document must be an integer"
     ):
-        merge_candidate(session, candidate, target, actor="reviewer")
+        merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
@@ -1145,7 +1153,7 @@ def test_merging_refuses_a_candidate_with_non_integer_citation_document_id(
 def test_merging_refuses_a_candidate_with_non_integer_cited_page(session, document):
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     candidate = make_candidate(session, document, fields={**FIELDS, "utility_id": "FOC1-9"})
     candidate.payload_json = {
         **candidate.payload_json,
@@ -1163,7 +1171,7 @@ def test_merging_refuses_a_candidate_with_non_integer_cited_page(session, docume
     with pytest.raises(
         InvalidCandidateProvenance, match="cited page must be a positive integer"
     ):
-        merge_candidate(session, candidate, target, actor="reviewer")
+        merge_candidate(session, candidate, target, principal=REVIEWER)
 
     assert candidate.state == "pending"
     assert candidate.merged_into is None
@@ -1175,16 +1183,16 @@ def test_merging_refuses_a_candidate_with_non_integer_cited_page(session, docume
 def test_a_candidate_cannot_be_merged_twice(session, document):
     from corridor.adjudicate import merge_candidate
 
-    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    target = accept_candidate(session, make_candidate(session, document), principal=B)
     second = make_candidate(session, document)
-    merge_candidate(session, second, target, actor="b")
+    merge_candidate(session, second, target, principal=B)
     with pytest.raises(AlreadyAdjudicated):
-        merge_candidate(session, second, target, actor="b")
+        merge_candidate(session, second, target, principal=B)
 
 
 def test_competing_sources_are_both_kept_and_flagged(session, document):
     """The reason assertions exist at all (ADR-0001)."""
-    dep = accept_candidate(session, make_candidate(session, document), actor="b")
+    dep = accept_candidate(session, make_candidate(session, document), principal=B)
 
     other = Document(
         project_id=document.project_id,
@@ -1224,7 +1232,7 @@ def test_competing_sources_are_both_kept_and_flagged(session, document):
 
 def test_an_unverified_claim_is_not_a_contradiction(session, document):
     """A bad citation is a bad citation, not evidence that sources disagree."""
-    dep = accept_candidate(session, make_candidate(session, document), actor="b")
+    dep = accept_candidate(session, make_candidate(session, document), principal=B)
 
     link = EvidenceLink(
         dependency_id=dep.id,
@@ -1252,7 +1260,7 @@ def test_an_unverified_claim_is_not_a_contradiction(session, document):
 
 
 def test_the_view_carries_the_full_provenance_chain(session, document):
-    dep = accept_candidate(session, make_candidate(session, document), actor="b")
+    dep = accept_candidate(session, make_candidate(session, document), principal=B)
     view = load_dependency(session, dep.id)
 
     assert view.org_name == "AT&T Texas (SWBT)"
@@ -1309,7 +1317,7 @@ def test_a_document_saying_the_facility_moves_produces_a_critical_dependency(
         session, with_vocabulary, fields={**FIELDS, "resolution_strategy": "To be removed"}
     )
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     assert dep.resolution_strategy == "remove"
     assert load_dependency(session, dep.id).is_critical is True
@@ -1324,7 +1332,7 @@ def test_a_document_saying_the_facility_stays_is_not_critical(
         fields={**FIELDS, "resolution_strategy": "To be adjusted to proposed grade"},
     )
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     assert dep.resolution_strategy == "adjust_vertical"
     assert load_dependency(session, dep.id).is_critical is False
@@ -1347,7 +1355,7 @@ def test_reading_a_strategy_does_not_make_the_row_contradict_itself(
         session, with_vocabulary, fields={**FIELDS, "resolution_strategy": "To be removed"}
     )
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     claims = strategy_assertions(session, dep)
     assert len(claims) == 1
@@ -1365,7 +1373,7 @@ def test_a_document_that_records_no_strategy_asserts_none(session, with_vocabula
     resolve — Project A's 3,235 rows and SH 99's 1,401 assert nothing."""
     candidate = make_candidate(session, with_vocabulary)
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     assert dep.resolution_strategy is None
     assert strategy_assertions(session, dep) == []
@@ -1383,7 +1391,7 @@ def test_a_layout_with_no_identified_vocabulary_does_not_guess(session, document
         session, document, fields={**FIELDS, "resolution_strategy": "To be removed"}
     )
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     assert dep.resolution_strategy is None
     assert load_dependency(session, dep.id).is_critical is False
@@ -1401,7 +1409,7 @@ def test_a_phrase_the_vocabulary_does_not_carry_asserts_nothing(
         fields={**FIELDS, "resolution_strategy": "To be adjusted or relocated"},
     )
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     assert dep.resolution_strategy is None
     # The document's prose survives as evidence even though no conclusion
@@ -1420,7 +1428,7 @@ def test_whitespace_in_a_printed_cell_does_not_defeat_the_vocabulary(
         session, with_vocabulary, fields={**FIELDS, "resolution_strategy": "To  be\nremoved "}
     )
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     assert dep.resolution_strategy == "remove"
 
@@ -1433,7 +1441,7 @@ def test_a_reviewer_override_wins_and_is_audited(session, with_vocabulary):
         with_vocabulary,
         fields={**FIELDS, "resolution_strategy": "Retain and protect"},
     )
-    dep = accept_candidate(session, candidate, actor="extractor")
+    dep = accept_candidate(session, candidate, principal=EXTRACTOR)
     assert dep.resolution_strategy == "protect_in_place"
 
     set_resolution_strategy(session, dep, "relocate", actor="reviewer")
@@ -1458,7 +1466,7 @@ def test_a_reviewer_override_wins_and_is_audited(session, with_vocabulary):
 def test_a_reviewer_cannot_invent_a_strategy_outside_the_vocabulary(
     session, with_vocabulary
 ):
-    dep = accept_candidate(session, make_candidate(session, with_vocabulary), actor="x")
+    dep = accept_candidate(session, make_candidate(session, with_vocabulary), principal=X)
 
     with pytest.raises(ValueError, match="bulldoze"):
         set_resolution_strategy(session, dep, "bulldoze", actor="reviewer")
@@ -1467,7 +1475,7 @@ def test_a_reviewer_cannot_invent_a_strategy_outside_the_vocabulary(
 def test_the_column_has_no_default_at_any_level(session, document):
     """A default would be the column claiming something no document said —
     the failure ADR-0007 named and then committed."""
-    dep = accept_candidate(session, make_candidate(session, document), actor="x")
+    dep = accept_candidate(session, make_candidate(session, document), principal=X)
     session.flush()
     session.refresh(dep)
 
@@ -1566,7 +1574,7 @@ def test_a_placeholder_owner_never_becomes_an_external_party(session, document):
         session, document, fields={**FIELDS, "external_org": "NA"}
     )
 
-    dep = accept_candidate(session, candidate, actor="reviewer")
+    dep = accept_candidate(session, candidate, principal=REVIEWER)
 
     assert dep.external_org_id is None
     assert session.scalars(
@@ -1771,7 +1779,7 @@ def test_accepting_an_event_is_refused_rather_than_faked(session, document):
     candidate = make_event_candidate(session, document)
 
     with pytest.raises(UnadjudicableKind, match="event"):
-        accept_candidate(session, candidate, actor="bryce")
+        accept_candidate(session, candidate, principal=BRYCE)
 
     assert candidate.state == "pending"
     assert (

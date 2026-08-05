@@ -109,6 +109,7 @@ def extract_documents(
             )
 
         per_document: dict[int, list[Candidate]] = {d.id: [] for d, _ in group}
+        unreadable = {d.id for d, pages in group if not pages}
         errors: dict[int, int] = {
             d.id: 1 if not pages else 0 for d, pages in group
         }
@@ -133,8 +134,24 @@ def extract_documents(
                 prompt_version=prompt_version,
                 candidate_count=len(batch),
                 page_errors=errors[doc.id],
+                outcome=(
+                    "unreadable"
+                    if doc.id in unreadable
+                    else "failed"
+                    if errors[doc.id]
+                    else "completed"
+                ),
+                candidates=tuple(batch),
+                model=model,
+                schema_version=prompt_version,
+                error_detail=(
+                    "no eligible readable pages"
+                    if doc.id in unreadable
+                    else f"{errors[doc.id]} page extraction error(s)"
+                    if errors[doc.id]
+                    else None
+                ),
             )
-
         session.flush()
         if commit:
             session.commit()

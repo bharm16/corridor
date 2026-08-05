@@ -1,0 +1,227 @@
+"""One authoritative reading of the Evidence that is operative now.
+
+Publication support is an explicit human designation. Readiness support is
+the separate ``satisfies_requirement`` judgment. This resolver combines the
+roles for readers without turning either into the other or inferring support
+from Evidence insertion order (ADR-0017).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from typing import Iterable
+
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session
+
+from corridor.models import Dependency, Document, EvidenceLink, OperativeSupport
+from corridor.principals import HumanPrincipal, require_human_principal
+
+
+class NoSuchSupportEvidence(ValueError):
+    """The requested EvidenceLink does not belong to the Dependency."""
+
+
+@dataclass(frozen=True)
+class EvidenceSupport:
+    evidence_link_id: int
+    dependency_id: int
+    document_id: int
+    filename: str
+    page_no: int
+    quote: str
+    verified: bool
+    satisfies_requirement: bool
+    evidence_date: date | None
+    superseded_by: int | None
+
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_by is None
+
+
+@dataclass(frozen=True)
+class ResolvedSupport:
+    dependency_id: int
+    publication: EvidenceSupport | None
+    publication_by_field: tuple[tuple[str, EvidenceSupport], ...]
+    readiness: tuple[EvidenceSupport, ...]
+    current_readiness: tuple[EvidenceSupport, ...]
+    is_ready: bool
+    superseded_roles: frozenset[str]
+    verified_evidence_count: int
+    last_evidenced_at: date | None
+
+    def publication_for(self, field_name: str | None = None) -> EvidenceSupport | None:
+        if field_name is None:
+            return self.publication
+        return dict(self.publication_by_field).get(field_name)
+
+    @classmethod
+    def empty(cls, dependency_id: int) -> "ResolvedSupport":
+        return cls(
+            dependency_id=dependency_id,
+            publication=None,
+            publication_by_field=(),
+            readiness=(),
+            current_readiness=(),
+            is_ready=False,
+            superseded_roles=frozenset(),
+            verified_evidence_count=0,
+            last_evidenced_at=None,
+        )
+
+
+def designate_publication_support(
+    session: Session,
+    dependency_id: int,
+    evidence_link_id: int,
+    *,
+    principal: HumanPrincipal,
+    field_name: str | None = None,
+) -> OperativeSupport:
+    """Set the human-adjudicated publication support for one record scope."""
+    principal = require_human_principal(principal)
+    if field_name is not None:
+        field_name = field_name.strip()
+        if not field_name:
+            raise ValueError("field_name must be non-empty when provided")
+        if len(field_name) > 64:
+            raise ValueError("field_name is longer than 64 characters")
+
+    link = session.scalar(
+        select(EvidenceLink).where(
+            EvidenceLink.id == evidence_link_id,
+            EvidenceLink.dependency_id == dependency_id,
+        )
+    )
+    if link is None:
+        raise NoSuchSupportEvidence(
+            f"no evidence {evidence_link_id} on dependency {dependency_id}"
+        )
+    if session.get(Dependency, dependency_id) is None:
+        raise NoSuchSupportEvidence(f"no dependency {dependency_id}")
+
+    scope = select(OperativeSupport).where(
+        OperativeSupport.dependency_id == dependency_id,
+        OperativeSupport.role == "publication",
+        (
+            OperativeSupport.field_name.is_(None)
+            if field_name is None
+            else OperativeSupport.field_name == field_name
+        ),
+    )
+    designation = session.scalar(scope)
+    if designation is None:
+        designation = OperativeSupport(
+            dependency_id=dependency_id,
+            evidence_link_id=evidence_link_id,
+            role="publication",
+            field_name=field_name,
+            designated_by=principal.subject,
+        )
+        session.add(designation)
+    else:
+        session.execute(
+            update(OperativeSupport)
+            .where(OperativeSupport.id == designation.id)
+            .values(
+                evidence_link_id=evidence_link_id,
+                designated_by=principal.subject,
+                designated_at=func.now(),
+            )
+        )
+        session.expire(designation)
+    session.flush()
+    return designation
+
+
+def resolve_operative_support(
+    session: Session, dependency_ids: Iterable[int]
+) -> dict[int, ResolvedSupport]:
+    """Resolve every support role in two batched reads, with no fallback."""
+    ids = tuple(dict.fromkeys(dependency_ids))
+    if not ids:
+        return {}
+
+    evidence_by_dependency: dict[int, list[EvidenceSupport]] = {
+        dependency_id: [] for dependency_id in ids
+    }
+    evidence_by_id: dict[int, EvidenceSupport] = {}
+    for link, document in session.execute(
+        select(EvidenceLink, Document)
+        .join(Document, EvidenceLink.document_id == Document.id)
+        .where(EvidenceLink.dependency_id.in_(ids))
+        .order_by(EvidenceLink.id)
+    ).all():
+        evidence_date = document.doc_date
+        if evidence_date is None and document.retrieved_at is not None:
+            evidence_date = document.retrieved_at.date()
+        support = EvidenceSupport(
+            evidence_link_id=link.id,
+            dependency_id=link.dependency_id,
+            document_id=document.id,
+            filename=document.filename,
+            page_no=link.page_no,
+            quote=link.quote,
+            verified=bool(link.verified),
+            satisfies_requirement=bool(link.satisfies_requirement),
+            evidence_date=evidence_date,
+            superseded_by=document.superseded_by,
+        )
+        evidence_by_dependency.setdefault(link.dependency_id, []).append(support)
+        evidence_by_id[link.id] = support
+
+    designations: dict[int, list[OperativeSupport]] = {
+        dependency_id: [] for dependency_id in ids
+    }
+    for designation in session.scalars(
+        select(OperativeSupport)
+        .where(OperativeSupport.dependency_id.in_(ids))
+        .order_by(OperativeSupport.id)
+    ):
+        designations.setdefault(designation.dependency_id, []).append(designation)
+
+    resolved: dict[int, ResolvedSupport] = {}
+    for dependency_id in ids:
+        evidence = evidence_by_dependency.get(dependency_id, [])
+        verified = tuple(item for item in evidence if item.verified)
+        readiness = tuple(
+            item for item in verified if item.satisfies_requirement
+        )
+        current_readiness = tuple(item for item in readiness if item.is_current)
+
+        publication = None
+        by_field: dict[str, EvidenceSupport] = {}
+        superseded_roles: set[str] = set()
+        for designation in designations.get(dependency_id, []):
+            support = evidence_by_id.get(designation.evidence_link_id)
+            # A human judgment cannot make a mechanically unverified quote
+            # citable. Preserve the designation row, but it is not operative.
+            if support is None or not support.verified:
+                continue
+            if designation.field_name is None:
+                publication = support
+                if not support.is_current:
+                    superseded_roles.add("publication")
+            else:
+                by_field[designation.field_name] = support
+                if not support.is_current:
+                    superseded_roles.add("publication")
+
+        if readiness and not current_readiness:
+            superseded_roles.add("readiness")
+        dates = tuple(item.evidence_date for item in verified if item.evidence_date)
+        resolved[dependency_id] = ResolvedSupport(
+            dependency_id=dependency_id,
+            publication=publication,
+            publication_by_field=tuple(sorted(by_field.items())),
+            readiness=readiness,
+            current_readiness=current_readiness,
+            is_ready=bool(current_readiness),
+            superseded_roles=frozenset(superseded_roles),
+            verified_evidence_count=len(verified),
+            last_evidenced_at=max(dates) if dates else None,
+        )
+    return resolved

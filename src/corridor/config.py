@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +11,13 @@ class Settings(BaseSettings):
     # Content-addressed store written by `make corpus`. The queue resolves a
     # Document back to its PDF from here to compute quote highlights.
     corpus_store: str = "corpus/files"
+
+    # Fail closed by default.  This is a deployment-resolved stable subject,
+    # not a request header or form value.  Full authentication/SSO is M9;
+    # M8 only closes Admission over an attributable principal.
+    human_principal: str = Field(
+        default="", validation_alias="CORRIDOR_HUMAN_PRINCIPAL"
+    )
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"

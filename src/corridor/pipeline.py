@@ -15,6 +15,9 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
+from corridor.extraction_runs import record_extraction_run
+from corridor.extract_matrix import ExtractionFailed
+from corridor.geometry import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.models import Candidate, Document
 from corridor.storage import stored_file
@@ -120,7 +123,60 @@ def extract_any(session: Session, document: Document, *, client=None) -> list[Ca
     spreadsheet. It is not.
     """
     route = extraction_route(document, client=client)
-    return route.extract(session, document)
+    try:
+        with session.begin_nested():
+            candidates = route.extract(session, document)
+            models = {candidate.model for candidate in candidates if candidate.model}
+            if len(models) > 1:
+                raise ValueError("one extraction run cannot contain multiple models")
+            record_extraction_run(
+                session,
+                document,
+                prompt_version=route.effective_prompt_version,
+                candidate_count=len(candidates),
+                page_errors=0,
+                outcome="completed",
+                candidates=tuple(candidates),
+                model=next(iter(models), None),
+                schema_version=route.effective_prompt_version,
+            )
+    except NoMatrixFound as exc:
+        record_extraction_run(
+            session,
+            document,
+            prompt_version=route.effective_prompt_version,
+            candidate_count=0,
+            page_errors=1,
+            outcome="no_matrix",
+            schema_version=route.effective_prompt_version,
+            error_detail=str(exc),
+        )
+        raise
+    except ExtractionFailed as exc:
+        record_extraction_run(
+            session,
+            document,
+            prompt_version=route.effective_prompt_version,
+            candidate_count=0,
+            page_errors=1,
+            outcome="failed",
+            schema_version=route.effective_prompt_version,
+            error_detail=str(exc),
+        )
+        raise
+    except Exception as exc:
+        record_extraction_run(
+            session,
+            document,
+            prompt_version=route.effective_prompt_version,
+            candidate_count=0,
+            page_errors=1,
+            outcome="failed",
+            schema_version=route.effective_prompt_version,
+            error_detail=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+    return candidates
 
 
 def _basename(url: str) -> str:
@@ -164,6 +220,17 @@ def ingest_and_extract(
         doc_date=doc_date,
     )
     if document.parse_status != "parsed":
+        route = extraction_route(document, client=client)
+        record_extraction_run(
+            session,
+            document,
+            prompt_version=route.effective_prompt_version,
+            candidate_count=0,
+            page_errors=1,
+            outcome="unreadable",
+            schema_version=route.effective_prompt_version,
+            error_detail=f"ingest parse_status is {document.parse_status!r}",
+        )
         return document, []
 
     # The same routing `make extract` uses, so a workbook here reads as a

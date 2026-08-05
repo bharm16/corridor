@@ -1,0 +1,366 @@
+from datetime import date
+
+import pytest
+from sqlalchemy import select
+
+from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
+from corridor.db import Session, engine
+from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
+from corridor.operative_support import (
+    designate_publication_support,
+    resolve_operative_support,
+)
+from corridor.principals import HumanPrincipal
+
+
+TEST_PRINCIPAL = HumanPrincipal("local:operative-support-reviewer")
+FIELDS = {
+    "utility_id": "FOC1-1",
+    "external_org": "LT AT&T Texas",
+    "utility_type": "Telecom",
+    "station_from": "1149+00",
+    "station_to": "1153+17",
+}
+
+
+@pytest.fixture
+def session():
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    yield db
+    db.close()
+    transaction.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def project(session):
+    project = Project(
+        slug="operative-support-test",
+        name="Operative Support Test",
+        is_synthetic=True,
+    )
+    session.add(project)
+    session.flush()
+    return project
+
+
+def _document(session, project, *, suffix: str, text: str) -> Document:
+    document = Document(
+        project_id=project.id,
+        sha256=(suffix * 64)[:64],
+        filename=f"{suffix}.pdf",
+        doc_type="matrix" if suffix.startswith("matrix") else "agreement",
+        parse_status="parsed",
+        pages=1,
+        doc_date=date(2026, 8, 5),
+    )
+    session.add(document)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=1,
+            text=text,
+            image_path="/tmp/corridor-missing-page.png",
+        )
+    )
+    session.flush()
+    return document
+
+
+def _candidate(
+    session,
+    project,
+    document,
+    *,
+    quote: str,
+    fields: dict[str, str] | None = None,
+) -> Candidate:
+    candidate = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": fields or FIELDS,
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": quote,
+                    "verified": True,
+                }
+            ],
+            "confidence": 1.0,
+            "dedupe_hint": "operative-support-contract",
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="txdot_ucm_v1",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush()
+    return candidate
+
+
+def _evidence_links(session, dependency_id: int) -> list[EvidenceLink]:
+    return session.scalars(
+        select(EvidenceLink)
+        .where(EvidenceLink.dependency_id == dependency_id)
+        .order_by(EvidenceLink.id)
+    ).all()
+
+
+def test_completion_readiness_support_does_not_replace_publication_support(
+    session, project
+):
+    matrix = _document(
+        session,
+        project,
+        suffix="matrix-a",
+        text="FOC1-1 LT AT&T Texas Telecom 1149+00 1153+17",
+    )
+    completion = _document(
+        session,
+        project,
+        suffix="completion-a",
+        text="FOC1-1 relocation complete and accepted",
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(
+            session,
+            project,
+            matrix,
+            quote="FOC1-1 LT AT&T Texas Telecom 1149+00 1153+17",
+        ),
+        principal=TEST_PRINCIPAL,
+    )
+    [publication] = _evidence_links(session, dependency.id)
+    readiness = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=completion.id,
+        page_no=1,
+        quote="FOC1-1 relocation complete and accepted",
+        verified=True,
+        satisfies_requirement=True,
+    )
+    session.add(readiness)
+    session.flush()
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.publication.evidence_link_id == publication.id
+    assert {support.evidence_link_id for support in resolved.readiness} == {
+        readiness.id
+    }
+    assert resolved.is_ready is True
+    assert set(resolved.superseded_roles) == set()
+
+
+def test_satisfying_but_unverified_evidence_cannot_make_a_record_ready(
+    session, project
+):
+    matrix = _document(
+        session,
+        project,
+        suffix="matrix-b",
+        text="FOC1-1 LT AT&T Texas Telecom",
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(
+            session,
+            project,
+            matrix,
+            quote="FOC1-1 LT AT&T Texas Telecom",
+        ),
+        principal=TEST_PRINCIPAL,
+    )
+    unverified_completion = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=matrix.id,
+        page_no=1,
+        quote="not actually present",
+        verified=False,
+        satisfies_requirement=True,
+    )
+    session.add(unverified_completion)
+    session.flush()
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.readiness == ()
+    assert resolved.is_ready is False
+
+
+def test_record_and_field_publication_scopes_are_independent(session, project):
+    document = _document(
+        session,
+        project,
+        suffix="matrix-fields",
+        text="FOC1-1 record claim station 1149+00",
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(session, project, document, quote="FOC1-1 record claim"),
+        principal=TEST_PRINCIPAL,
+    )
+    [record_link] = _evidence_links(session, dependency.id)
+    field_link = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="station 1149+00",
+        verified=True,
+    )
+    session.add(field_link)
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        field_link.id,
+        field_name="station_from",
+        principal=TEST_PRINCIPAL,
+    )
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.publication.evidence_link_id == record_link.id
+    assert resolved.publication_for("station_from").evidence_link_id == field_link.id
+    assert resolved.publication_for("station_to") is None
+
+
+def test_accept_designates_its_primary_evidence_as_publication_support(
+    session, project
+):
+    document = _document(
+        session,
+        project,
+        suffix="matrix-accept",
+        text="FOC1-1 accepted source row",
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(
+            session, project, document, quote="FOC1-1 accepted source row"
+        ),
+        principal=TEST_PRINCIPAL,
+    )
+    [link] = _evidence_links(session, dependency.id)
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.publication.evidence_link_id == link.id
+
+
+def test_edit_then_accept_designates_publication_support_in_the_same_decision(
+    session, project
+):
+    document = _document(
+        session,
+        project,
+        suffix="matrix-edit",
+        text="FOC1-1 edited source row",
+    )
+    candidate = _candidate(
+        session, project, document, quote="FOC1-1 edited source row"
+    )
+    edit_candidate(
+        session,
+        candidate,
+        {**FIELDS, "station_to": "1154+00"},
+        principal=TEST_PRINCIPAL,
+    )
+    dependency = accept_candidate(
+        session, candidate, principal=TEST_PRINCIPAL
+    )
+    [link] = _evidence_links(session, dependency.id)
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.publication.evidence_link_id == link.id
+
+
+def test_merge_moves_publication_support_to_the_admitted_source(
+    session, project
+):
+    first = _document(
+        session,
+        project,
+        suffix="matrix-merge-a",
+        text="FOC1-1 original source row",
+    )
+    second = _document(
+        session,
+        project,
+        suffix="matrix-merge-b",
+        text="FOC1-1 successor source row",
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(
+            session, project, first, quote="FOC1-1 original source row"
+        ),
+        principal=TEST_PRINCIPAL,
+    )
+    merge_candidate(
+        session,
+        _candidate(
+            session, project, second, quote="FOC1-1 successor source row"
+        ),
+        dependency,
+        principal=TEST_PRINCIPAL,
+    )
+    links = _evidence_links(session, dependency.id)
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.publication.evidence_link_id == links[-1].id
+    assert resolved.publication.quote == "FOC1-1 successor source row"
+
+
+def test_superseded_support_lapses_readiness_and_names_each_affected_role(
+    session, project
+):
+    predecessor = _document(
+        session,
+        project,
+        suffix="matrix-old",
+        text="FOC1-1 old source row",
+    )
+    successor = _document(
+        session,
+        project,
+        suffix="matrix-new",
+        text="FOC1-1 new source row",
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(
+            session, project, predecessor, quote="FOC1-1 old source row"
+        ),
+        principal=TEST_PRINCIPAL,
+    )
+    [link] = _evidence_links(session, dependency.id)
+    link.satisfies_requirement = True
+    predecessor.superseded_by = successor.id
+    session.flush()
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+
+    assert resolved.publication.evidence_link_id == link.id
+    assert {support.evidence_link_id for support in resolved.readiness} == {link.id}
+    assert resolved.current_readiness == ()
+    assert resolved.is_ready is False
+    assert set(resolved.superseded_roles) == {"publication", "readiness"}
+    # Currency changed; historical provenance did not.
+    assert link.verified is True
+    assert link.satisfies_requirement is True
+
+
+def test_resolver_is_batched_and_empty_input_is_empty(session):
+    assert resolve_operative_support(session, []) == {}

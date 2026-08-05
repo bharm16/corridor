@@ -18,13 +18,21 @@ from corridor.ledger import (
 from corridor.models import (
     AuditLog,
     Candidate,
+    Dependency,
     DependencyEvent,
     DocPage,
     Document,
     EvidenceLink,
     Project,
 )
-from corridor.web.app import app, get_session
+from corridor.operative_support import (
+    designate_publication_support,
+    resolve_operative_support,
+)
+from corridor.principals import HumanPrincipal
+from corridor.web.app import app, get_human_principal, get_session
+
+TEST_PRINCIPAL = HumanPrincipal("local:ledger-reviewer")
 
 FIELDS = {
     "utility_id": "FOC1-1",
@@ -49,6 +57,7 @@ def session():
 @pytest.fixture
 def client(session):
     app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: TEST_PRINCIPAL
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -87,14 +96,17 @@ def document(session, project):
     return d
 
 
-def make_candidate(session, project, document, *, fields=None, verified=True):
+def make_candidate(
+    session, project, document, *, fields=None, verified=True, citations=None
+):
     c = Candidate(
         project_id=project.id,
         kind="dependency",
         payload_json={
             "kind": "dependency",
             "fields": fields or FIELDS,
-            "citations": [
+            "citations": citations
+            or [
                 {
                     "document_id": document.id,
                     "page": 1,
@@ -119,7 +131,9 @@ def make_candidate(session, project, document, *, fields=None, verified=True):
 @pytest.fixture
 def dependency(session, project, document):
     return accept_candidate(
-        session, make_candidate(session, project, document), actor="tester"
+        session,
+        make_candidate(session, project, document),
+        principal=TEST_PRINCIPAL,
     )
 
 
@@ -200,7 +214,7 @@ def test_browse_flags_contradicted_records(session, project, document, dependenc
             session, project, document, fields={**FIELDS, "station_from": "1160+00"}
         ),
         dependency,
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
     [row] = _browse(session, project)
     assert row.contradicted is True
@@ -220,7 +234,7 @@ def test_an_unverified_disagreement_is_not_a_contradiction(
             verified=False,
         ),
         dependency,
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
     [row] = _browse(session, project)
     assert row.contradicted is False
@@ -289,7 +303,7 @@ def test_unverified_evidence_cannot_be_marked_as_closing(
     dep = accept_candidate(
         session,
         make_candidate(session, project, document, verified=False),
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dep.id)
@@ -340,21 +354,74 @@ def test_a_dependency_from_another_project_is_not_reachable(
 # --------------------------------------------------------- primary evidence
 
 
-def test_primary_evidence_is_the_first_verified_link(
-    session, project, document, dependency
-):
-    """One definition of "the quote this cell cites".
+def _manual_dependency_with_links(session, project, document, *, ref_code, quotes):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code=ref_code,
+        dep_type="utility_relocation",
+        title="Telecom — Manual support fixture",
+        status="identified",
+    )
+    session.add(dependency)
+    session.flush()
+    links = [
+        EvidenceLink(
+            dependency_id=dependency.id,
+            document_id=document.id,
+            page_no=1,
+            quote=quote,
+            verified=True,
+        )
+        for quote in quotes
+    ]
+    session.add_all(links)
+    session.flush()
+    return dependency, links
 
-    The report and the export each held their own copy of this query, so
-    the rule had two implementations that happened to agree.
-    """
+
+def test_primary_evidence_prefers_designated_publication_support(
+    session, project, document
+):
+    """Publication is a human designation, never the lowest link id."""
+    dependency, links = _manual_dependency_with_links(
+        session,
+        project,
+        document,
+        ref_code="DEP-09001",
+        quotes=["FOC1-1 completion complete", "FOC1-1 utility claim"],
+    )
+    designate_publication_support(
+        session,
+        dependency.id,
+        links[1].id,
+        principal=TEST_PRINCIPAL,
+    )
+
     found = primary_evidence(session, [dependency.id])
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
 
     evidence = found[dependency.id]
+    assert resolved.publication.evidence_link_id == links[1].id
     assert evidence.document_id == document.id
     assert evidence.filename == document.filename
     assert evidence.page_no == 1
-    assert evidence.quote == "FOC1-1 LT AT&T Texas Telecom"
+    assert evidence.quote == "FOC1-1 utility claim"
+
+
+def test_primary_evidence_does_not_fall_back_without_publication_designation(
+    session, project, document
+):
+    dependency, _ = _manual_dependency_with_links(
+        session,
+        project,
+        document,
+        ref_code="DEP-09002",
+        quotes=["first verified quote", "second verified quote"],
+    )
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+    assert resolved.publication is None
+    assert primary_evidence(session, [dependency.id]) == {}
 
 
 def test_primary_evidence_skips_an_unverified_link(session, project, document):
@@ -362,7 +429,7 @@ def test_primary_evidence_skips_an_unverified_link(session, project, document):
     unverified = accept_candidate(
         session,
         make_candidate(session, project, document, verified=False),
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
 
     assert primary_evidence(session, [unverified.id]) == {}
@@ -377,7 +444,7 @@ def test_primary_evidence_answers_for_many_dependencies_at_once(
         make_candidate(
             session, project, document, fields={**FIELDS, "utility_id": "FOC1-2"}
         ),
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
 
     found = primary_evidence(session, [dependency.id, other.id])
@@ -403,7 +470,12 @@ def test_marking_evidence_is_the_ledger_s_act_not_a_route_s(
     only way to prove readiness was to POST a form."""
     link = _link_of(session, dependency)
 
-    assert mark_satisfies(session, dependency.id, link.id, actor="tester") is True
+    assert (
+        mark_satisfies(
+            session, dependency.id, link.id, principal=TEST_PRINCIPAL
+        )
+        is True
+    )
     assert load_dependency(session, dependency.id).is_ready is True
 
     entry = session.scalars(
@@ -413,7 +485,8 @@ def test_marking_evidence_is_the_ledger_s_act_not_a_route_s(
             AuditLog.action == "mark_satisfies_requirement",
         )
     ).one()
-    assert entry.actor == "tester"
+    assert entry.actor == TEST_PRINCIPAL.subject
+    assert entry.human_principal == TEST_PRINCIPAL.subject
     assert entry.before_json["satisfies"] is False
     assert entry.after_json["satisfies"] is True
 
@@ -423,11 +496,13 @@ def test_readiness_is_refused_without_a_verified_quote(session, project, documen
     dep = accept_candidate(
         session,
         make_candidate(session, project, document, verified=False),
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
 
     with pytest.raises(UnverifiedEvidence):
-        mark_satisfies(session, dep.id, _link_of(session, dep).id, actor="tester")
+        mark_satisfies(
+            session, dep.id, _link_of(session, dep).id, principal=TEST_PRINCIPAL
+        )
 
     assert load_dependency(session, dep.id).is_ready is False
 
@@ -441,12 +516,15 @@ def test_evidence_belonging_to_another_dependency_is_refused(
         make_candidate(
             session, project, document, fields={**FIELDS, "utility_id": "FOC1-9"}
         ),
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
 
     with pytest.raises(NoSuchEvidence):
         mark_satisfies(
-            session, dependency.id, _link_of(session, other).id, actor="tester"
+            session,
+            dependency.id,
+            _link_of(session, other).id,
+            principal=TEST_PRINCIPAL,
         )
 
     assert load_dependency(session, dependency.id).is_ready is False
@@ -459,9 +537,47 @@ def test_marking_twice_returns_the_record_to_not_ready(
     pins the behaviour that exists rather than endorsing it."""
     link = _link_of(session, dependency)
 
-    assert mark_satisfies(session, dependency.id, link.id, actor="tester") is True
-    assert mark_satisfies(session, dependency.id, link.id, actor="tester") is False
+    assert (
+        mark_satisfies(
+            session, dependency.id, link.id, principal=TEST_PRINCIPAL
+        )
+        is True
+    )
+    assert (
+        mark_satisfies(
+            session, dependency.id, link.id, principal=TEST_PRINCIPAL
+        )
+        is False
+    )
     assert load_dependency(session, dependency.id).is_ready is False
+
+
+def test_ledger_readers_use_the_same_current_support_resolution(
+    session, project, document, dependency
+):
+    successor = Document(
+        project_id=project.id,
+        sha256="a1" * 32,
+        filename="successor-matrix.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(successor)
+    session.flush()
+    link = _link_of(session, dependency)
+    link.satisfies_requirement = True
+    document.superseded_by = successor.id
+    session.flush()
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+    detail = load_dependency(session, dependency.id)
+    [row] = _browse(session, project)
+
+    assert resolved.is_ready is False
+    assert set(resolved.superseded_roles) == {"publication", "readiness"}
+    assert detail.is_ready is resolved.is_ready
+    assert row.is_ready is resolved.is_ready
 
 
 # --------------------------------------------------------- contradiction

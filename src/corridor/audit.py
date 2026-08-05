@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import AuditLog
+from corridor.principals import HumanPrincipal, require_human_principal
 
 # The two entities a ledger mutation is recorded against. A Candidate's
 # entries belong to the Dependency it becomes; `trail_for_dependency`
@@ -68,7 +69,8 @@ ACTIONS = frozenset(
 def record(
     session: Session,
     *,
-    actor: str,
+    actor: str | None = None,
+    principal: HumanPrincipal | None = None,
     action: str,
     entity_type: str,
     entity_id: int,
@@ -86,8 +88,17 @@ def record(
         raise ValueError(f"unknown audit entity {entity_type!r}")
     if action not in ACTIONS:
         raise ValueError(f"unknown audit action {action!r}")
+    if (actor is None) == (principal is None):
+        raise ValueError("pass exactly one of actor= or principal=")
+    principal_subject = None
+    if principal is not None:
+        principal = require_human_principal(principal)
+        principal_subject = principal.subject
+        actor = principal.subject
+    assert actor is not None
     entry = AuditLog(
         actor=actor,
+        human_principal=principal_subject,
         action=action,
         entity_type=entity_type,
         entity_id=entity_id,

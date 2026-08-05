@@ -19,6 +19,7 @@ from corridor.models import (
     EvidenceLink,
     Project,
 )
+from corridor.operative_support import designate_publication_support
 from corridor.report import (
     RULESET_VERSION,
     Assertion,
@@ -30,6 +31,9 @@ from corridor.report import (
     build_report,
     render,
 )
+from corridor.principals import HumanPrincipal
+
+TEST_PRINCIPAL = HumanPrincipal("local:bryce")
 
 
 @pytest.fixture
@@ -104,7 +108,7 @@ def project_with_two_dependencies(session):
         )
         session.add(candidate)
         session.flush()
-        accept_candidate(session, candidate, actor="bryce")
+        accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
 
     return project
 
@@ -922,3 +926,39 @@ def test_a_milestone_nothing_is_linked_to_is_named_not_scored(
     assert "Nothing is linked to RELO-CONSTR" in milestones.note
     assert "RELO-CONSTR" not in {row[0].value for row in milestones.rows}
     assert_no_bare_cells(report)
+
+
+def test_report_cites_designated_publication_support_not_the_first_link(
+    session, project_with_two_dependencies
+):
+    dependency = make_critical(session, project_with_two_dependencies)
+    first = session.scalars(
+        select(EvidenceLink)
+        .where(EvidenceLink.dependency_id == dependency.id)
+        .order_by(EvidenceLink.id)
+    ).first()
+    designated = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=first.document_id,
+        page_no=1,
+        quote="human-designated publication quote",
+        verified=True,
+    )
+    session.add(designated)
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        designated.id,
+        principal=TEST_PRINCIPAL,
+    )
+
+    report = build_report(session, project_with_two_dependencies.id)
+    row = next(
+        row
+        for row in section(report, "Critical items").rows
+        if row[0].value == dependency.ref_code
+    )
+
+    assert isinstance(row[0].provenance, Assertion)
+    assert row[0].provenance.quote == "human-designated publication quote"

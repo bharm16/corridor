@@ -5,6 +5,9 @@ from corridor.candidates import citations_verified, dedupe_hint, propose
 from corridor.db import Session, engine
 from corridor.geometry import dedupe_hint as matrix_hint
 from corridor.models import DocPage, Document, Project
+from corridor.principals import HumanPrincipal
+
+TEST_PRINCIPAL = HumanPrincipal("local:tester")
 
 PAYLOAD_KEYS = {
     "kind",
@@ -140,7 +143,7 @@ def test_accepting_does_not_relax_the_verdict(session, document):
     session.flush()
     assert candidate.citations_verified is False
 
-    accept_candidate(session, candidate, actor="tester")
+    accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
 
     assert candidate.citations_verified is False
 
@@ -150,7 +153,7 @@ def test_accepting_a_clean_row_still_records_it_verified(session, document):
     session.add(candidate)
     session.flush()
 
-    accept_candidate(session, candidate, actor="tester")
+    accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
 
     assert candidate.citations_verified is True
 
