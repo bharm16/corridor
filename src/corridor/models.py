@@ -255,6 +255,29 @@ class Document(Base):
     )
 
 
+class ExtractionRun(Base):
+    """One completed extraction attempt for one document and prompt version.
+
+    History is deliberate. A redo or a replacement prompt records another
+    completed attempt rather than overwriting the earlier one, so resume can
+    ask the narrow question "has this document completed at this prompt
+    version?" without pretending there was only one try.
+    """
+
+    __tablename__ = "extraction_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    candidate_count: Mapped[int] = mapped_column(Integer)
+    page_errors: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ExternalOrg(Base):
     __tablename__ = "external_orgs"
 

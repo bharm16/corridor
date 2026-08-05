@@ -231,12 +231,33 @@ def test_a_truncated_response_raises_rather_than_returning_half_a_page():
         client([], body=body).complete(system="s", user="u", schema=SCHEMA)
 
 
-def test_an_empty_response_is_an_empty_extraction_not_a_crash():
-    """One bad page must not abort a 269-page run."""
+def test_a_200_with_no_message_raises_a_clear_error():
     body = responded()
     body["output"] = []
 
-    assert client([], body=body).complete(system="s", user="u", schema=SCHEMA) == {}
+    with pytest.raises(RuntimeError, match="returned 200 with no message"):
+        client([], body=body).complete(system="s", user="u", schema=SCHEMA)
+
+
+def test_a_200_with_no_output_text_part_raises_a_clear_error():
+    body = responded()
+    body["output"][0]["content"] = [{"type": "reasoning", "summary": []}]
+
+    with pytest.raises(RuntimeError, match="returned 200 with no output_text"):
+        client([], body=body).complete(system="s", user="u", schema=SCHEMA)
+
+
+def test_a_200_with_blank_output_text_raises_a_clear_error():
+    body = responded(text="   ")
+
+    with pytest.raises(RuntimeError, match="returned 200 with blank output_text"):
+        client([], body=body).complete(system="s", user="u", schema=SCHEMA)
+
+
+def test_a_valid_empty_json_object_is_a_legitimate_extraction():
+    assert client([], body=responded(text="{}")).complete(
+        system="s", user="u", schema=SCHEMA
+    ) == {}
 
 
 # --------------------------------------------------------- usage and logprobs
@@ -396,3 +417,33 @@ def test_a_raised_failure_is_the_failure():
     assert completion.failed is True
     assert "503 upstream" in completion.error
     assert completion.value == {}
+
+
+def test_complete_many_marks_only_the_bad_page_failed_for_a_200_with_no_message():
+    sent = []
+    bodies = [
+        responded(),
+        {"output": [], "usage": responded()["usage"]},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        user_text = sent[-1]["input"][0]["content"][0]["text"]
+        body = bodies[0] if user_text == "good page" else bodies[1]
+        return httpx.Response(200, json=body)
+
+    c = OpenAIClient(model="test-model", api_key="k", max_workers=2)
+    c._http = httpx.Client(transport=httpx.MockTransport(handler))
+
+    results = complete_many(
+        c,
+        system="s",
+        schema=SCHEMA,
+        users=["good page", "bad page"],
+        max_workers=2,
+    )
+
+    assert results[0].failed is False
+    assert results[0].value == {"rows": []}
+    assert results[1].failed is True
+    assert "returned 200 with no message" in results[1].error

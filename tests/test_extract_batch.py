@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.extract_batch import Noun, run_extraction
-from corridor.models import Candidate, DocPage, Document, Project
+from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
 
 PROMPT_VERSION = "batch_test_v1"
 SCHEMA = {"type": "object"}
@@ -51,6 +51,11 @@ def add_note(session, project, name, sha, *, text="AT&T will relocate in August.
     session.add(DocPage(document_id=doc.id, page_no=1, text=text))
     session.flush()
     return doc
+
+
+def add_page(session, document, page_no, text):
+    session.add(DocPage(document_id=document.id, page_no=page_no, text=text))
+    session.flush()
 
 
 class StubClient:
@@ -134,6 +139,15 @@ def _candidates(session, project):
     ).all()
 
 
+def _runs(session, project):
+    return session.scalars(
+        select(ExtractionRun)
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(Document.project_id == project.id)
+        .order_by(ExtractionRun.id)
+    ).all()
+
+
 def test_the_runner_extracts_and_closes_its_client(session, project, capsys):
     add_note(session, project, "notes-a.pdf", "a" * 64)
     client = StubClient()
@@ -141,6 +155,12 @@ def test_the_runner_extracts_and_closes_its_client(session, project, capsys):
     assert _run(session, project, client) == 0
 
     assert len(_candidates(session, project)) == 1
+    [run] = _runs(session, project)
+    assert (run.prompt_version, run.candidate_count, run.page_errors) == (
+        PROMPT_VERSION,
+        1,
+        0,
+    )
     assert client.closed is True
     out = capsys.readouterr().out
     assert "1 notes at 2-way concurrency" in out
@@ -165,6 +185,150 @@ def test_a_resumed_run_skips_documents_already_extracted(
     assert "nothing to do: all 2 already extracted" in capsys.readouterr().out
 
 
+def test_a_zero_row_document_is_still_marked_done_for_resume(
+    session, project, capsys
+):
+    add_note(session, project, "notes-a.pdf", "a" * 64)
+    client = StubClient()
+    client.complete = lambda **kw: {"events": []}
+
+    assert _run(session, project, client) == 0
+
+    assert _candidates(session, project) == []
+    [run] = _runs(session, project)
+    assert (run.document_id, run.prompt_version, run.candidate_count, run.page_errors) == (
+        session.scalars(select(Document.id).where(Document.project_id == project.id)).one(),
+        PROMPT_VERSION,
+        0,
+        0,
+    )
+
+    second = StubClient()
+    assert _run(session, project, second) == 0
+    assert second.calls == 0
+    assert "nothing to do: all 1 already extracted" in capsys.readouterr().out
+
+
+def test_a_document_with_any_failed_page_persists_no_partial_candidates_and_retries_cleanly(
+    session, project, capsys
+):
+    from corridor.eval import extracted_documents
+    from corridor.extract_batch import already_extracted
+
+    failed = add_note(
+        session, project, "notes-a.pdf", "a" * 64, text="page one about AT&T"
+    )
+    add_page(session, failed, 2, "page two about PSE")
+    clean = add_note(session, project, "notes-b.pdf", "b" * 64, text="page three about OUC")
+
+    first = StubClient(fail_on="page one")
+    assert _run(session, project, first) == 0
+
+    assert [c.source_document_id for c in _candidates(session, project)] == [clean.id]
+    first_runs = _runs(session, project)
+    assert [
+        (run.document_id, run.candidate_count, run.page_errors) for run in first_runs
+    ] == [
+        (failed.id, 0, 1),
+        (clean.id, 1, 0),
+    ]
+    assert already_extracted(session, project.id, PROMPT_VERSION) == {clean.id}
+    assert extracted_documents(session, project.id, prompt_version=PROMPT_VERSION) == {
+        clean.id
+    }
+
+    second = StubClient()
+    assert _run(session, project, second) == 0
+
+    failed_candidates = [
+        c for c in _candidates(session, project) if c.source_document_id == failed.id
+    ]
+    assert len(failed_candidates) == 2
+    assert {tuple(c.source_pages) for c in failed_candidates} == {(1,), (2,)}
+    assert already_extracted(session, project.id, PROMPT_VERSION) == {
+        failed.id,
+        clean.id,
+    }
+    assert extracted_documents(session, project.id, prompt_version=PROMPT_VERSION) == {
+        failed.id,
+        clean.id,
+    }
+    out = capsys.readouterr().out
+    assert "1 page errors" in out
+    assert "2 events, 2 verified (100.0%)" in out
+
+
+def test_an_all_page_failed_zero_row_attempt_is_not_marked_done_for_resume(
+    session, project, capsys
+):
+    add_note(session, project, "notes-a.pdf", "a" * 64, text="page one about AT&T")
+    first = StubClient(fail_on="page one")
+
+    assert _run(session, project, first) == 0
+
+    assert _candidates(session, project) == []
+    [run] = _runs(session, project)
+    assert (run.prompt_version, run.candidate_count, run.page_errors) == (
+        PROMPT_VERSION,
+        0,
+        1,
+    )
+
+    second = StubClient(fail_on="page one")
+    assert _run(session, project, second) == 0
+    assert second.calls == 1
+    assert len(_runs(session, project)) == 2
+    out = capsys.readouterr().out
+    assert "1 page errors" in out
+
+
+def test_a_document_with_no_eligible_pages_is_recorded_as_an_error_not_done(
+    session, project, capsys
+):
+    add_note(session, project, "notes-a.pdf", "a" * 64, text="")
+    client = StubClient()
+
+    assert _run(session, project, client) == 0
+
+    assert client.calls == 0
+    assert _candidates(session, project) == []
+    [run] = _runs(session, project)
+    assert (run.prompt_version, run.candidate_count, run.page_errors) == (
+        PROMPT_VERSION,
+        0,
+        1,
+    )
+
+    second = StubClient()
+    assert _run(session, project, second) == 0
+    assert second.calls == 0
+    assert len(_runs(session, project)) == 2
+    out = capsys.readouterr().out
+    assert "1 page errors" in out
+
+
+def test_candidate_presence_alone_does_not_mark_a_document_done(session, project):
+    doc = add_note(session, project, "notes-a.pdf", "a" * 64)
+    session.add(
+        Candidate(
+            project_id=project.id,
+            kind="event",
+            payload_json={"kind": "event", "fields": {"description": "legacy only"}},
+            source_document_id=doc.id,
+            source_pages=[1],
+            confidence=1.0,
+            prompt_version=PROMPT_VERSION,
+            model="stub",
+            citations_verified=True,
+        )
+    )
+    session.flush()
+
+    from corridor.extract_batch import already_extracted
+
+    assert already_extracted(session, project.id, PROMPT_VERSION) == set()
+
+
 def test_the_limit_stops_after_n_documents(session, project, capsys):
     add_note(session, project, "notes-a.pdf", "a" * 64)
     add_note(session, project, "notes-b.pdf", "b" * 64)
@@ -175,10 +339,10 @@ def test_the_limit_stops_after_n_documents(session, project, capsys):
     assert len(_candidates(session, project)) == 2
 
 
-def test_a_failing_page_is_counted_and_the_run_continues(
+def test_a_failed_document_does_not_block_clean_siblings(
     session, project, capsys
 ):
-    """One page lost, reported, run continues — untested until now."""
+    """A failed document retries later, but clean siblings still commit now."""
     add_note(session, project, "notes-a.pdf", "a" * 64, text="page one about AT&T")
     add_note(session, project, "notes-b.pdf", "b" * 64, text="page two about PSE")
     client = StubClient(fail_on="page one")
@@ -186,6 +350,9 @@ def test_a_failing_page_is_counted_and_the_run_continues(
     assert _run(session, project, client) == 0
 
     assert len(_candidates(session, project)) == 1
+    [failed_run, clean_run] = _runs(session, project)
+    assert (failed_run.candidate_count, failed_run.page_errors) == (0, 1)
+    assert (clean_run.candidate_count, clean_run.page_errors) == (1, 0)
     out = capsys.readouterr().out
     assert "1 page errors" in out
     assert "1 pages failed" in out

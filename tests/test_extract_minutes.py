@@ -255,6 +255,7 @@ def test_batched_extraction_pools_pages_across_documents(session, document):
         to_candidate=_to_candidate,
         items_key="events",
         max_workers=4,
+        prompt_version="minutes_v1",
         commit=False,
     )
     # Both documents' pages went out in one pooled batch.
@@ -265,18 +266,46 @@ def test_batched_extraction_pools_pages_across_documents(session, document):
 
 def test_already_extracted_lets_a_killed_run_resume(session, document):
     """Without this a restart duplicates every document already finished."""
-    from corridor.extract_batch import already_extracted
-    from corridor.extract_minutes import PROMPT_VERSION
+    from corridor.extract_batch import already_extracted, extract_documents
+    from corridor.extract_minutes import PROMPT_VERSION, _to_candidate
+    from corridor.models import Candidate
 
     assert already_extracted(session, document.project_id, PROMPT_VERSION) == set()
 
     client = StubClient([{"events": [event()]}])
-    extract_document(session, document, client=client)
+    extract_documents(
+        session,
+        [document],
+        client=client,
+        system="s",
+        schema=SCHEMA_STUB,
+        min_page_chars=200,
+        to_candidate=_to_candidate,
+        items_key="events",
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
 
     assert already_extracted(session, document.project_id, PROMPT_VERSION) == {
         document.id
     }
     # A different prompt version is a different run and is not skipped.
+    assert already_extracted(session, document.project_id, "minutes_v99") == set()
+
+    session.add(
+        Candidate(
+            project_id=document.project_id,
+            kind="event",
+            payload_json={"kind": "event", "fields": {"description": "legacy only"}},
+            source_document_id=document.id,
+            source_pages=[1],
+            confidence=1.0,
+            prompt_version="minutes_v99",
+            model="stub",
+            citations_verified=True,
+        )
+    )
+    session.flush()
     assert already_extracted(session, document.project_id, "minutes_v99") == set()
 
 

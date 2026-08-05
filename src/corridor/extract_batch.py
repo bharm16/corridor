@@ -6,10 +6,10 @@ Two structural choices, both load-bearing:
 is often a single page, so a per-document pool would have nothing to
 parallelise and the run would stay sequential in practice.
 
-**Commits stay on document boundaries.** A killed run then leaves every
-document either wholly extracted or not started, which is exactly the
-invariant `already_extracted` relies on — resume by skipping documents that
-already have candidates is only safe if "has candidates" means "finished".
+**Documents stay atomic even inside a pooled page run.** If one page for a
+document fails, that document persists no Candidates from any of its pages
+and retries as a whole next time. Clean sibling documents in the same pool
+still commit.
 
 Only the HTTP calls run concurrently. SQLAlchemy sessions are not
 thread-safe, so every `session.add` happens back on the calling thread.
@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from dataclasses import dataclass
 
+from corridor.extraction_runs import completed_document_ids, record_extraction_run
 from corridor.llm import DEFAULT_WORKERS, complete_many
 from corridor.models import Candidate, DocPage, Document
 
@@ -44,21 +45,15 @@ class Noun:
 def already_extracted(
     session: Session, project_id: int, prompt_version: str
 ) -> set[int]:
-    """Document ids that already have candidates from this prompt version.
+    """Document ids that completed extraction at this prompt version.
 
-    Without this a restarted run re-extracts everything already done and
-    creates a second set of candidates for each — duplicates a reviewer then
-    has to clear by hand.
+    Candidate existence is not the seam: a completed document may validly
+    yield zero candidates, and a legacy candidate row with no recorded
+    completed attempt must not make resume skip it. The durable boundary is
+    the document attempt itself.
     """
-    return set(
-        session.scalars(
-            select(Candidate.source_document_id)
-            .where(
-                Candidate.project_id == project_id,
-                Candidate.prompt_version == prompt_version,
-            )
-            .distinct()
-        ).all()
+    return completed_document_ids(
+        session, project_id, prompt_version=prompt_version
     )
 
 
@@ -88,6 +83,7 @@ def extract_documents(
     items_key: str,
     max_workers: int | None = None,
     on_document: Callable[[Document, list[Candidate], int], None] | None = None,
+    prompt_version: str,
     commit: bool = True,
 ) -> list[Candidate]:
     workers = max_workers or getattr(client, "max_workers", DEFAULT_WORKERS)
@@ -102,34 +98,49 @@ def extract_documents(
 
     def run(group):
         work = [(doc, page) for doc, pages in group for page in pages]
-        users = [
-            f"Page {page.page_no} of {doc.filename}:\n\n{(page.text or '').strip()}"
-            for doc, page in work
-        ]
-        results = complete_many(
-            client, system=system, schema=schema, users=users, max_workers=workers
-        )
+        results = []
+        if work:
+            users = [
+                f"Page {page.page_no} of {doc.filename}:\n\n{(page.text or '').strip()}"
+                for doc, page in work
+            ]
+            results = complete_many(
+                client, system=system, schema=schema, users=users, max_workers=workers
+            )
 
         per_document: dict[int, list[Candidate]] = {d.id: [] for d, _ in group}
-        errors: dict[int, int] = {d.id: 0 for d, _ in group}
+        errors: dict[int, int] = {
+            d.id: 1 if not pages else 0 for d, pages in group
+        }
 
         for (doc, page), completion in zip(work, results):
             if completion.failed:
-                # One page lost, reported, run continues.
+                # This document will retry as a whole; keep counting siblings.
                 errors[doc.id] += 1
                 continue
             for item in completion.value.get(items_key) or []:
                 candidate = to_candidate(doc, page, item, model)
                 if candidate is not None:
-                    session.add(candidate)
                     per_document[doc.id].append(candidate)
+
+        for doc, _ in group:
+            batch = per_document[doc.id] if errors[doc.id] == 0 else []
+            for candidate in batch:
+                session.add(candidate)
+            record_extraction_run(
+                session,
+                doc,
+                prompt_version=prompt_version,
+                candidate_count=len(batch),
+                page_errors=errors[doc.id],
+            )
 
         session.flush()
         if commit:
             session.commit()
 
         for doc, _ in group:
-            batch = per_document[doc.id]
+            batch = per_document[doc.id] if errors[doc.id] == 0 else []
             created.extend(batch)
             if on_document:
                 on_document(doc, batch, errors[doc.id])
@@ -251,6 +262,7 @@ def run_extraction(
                 to_candidate=to_candidate,
                 items_key=items_key,
                 on_document=report,
+                prompt_version=prompt_version,
             )
         finally:
             client.close()

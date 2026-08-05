@@ -240,10 +240,7 @@ class OpenAIClient:
             None,
         )
         if message is None:
-            # A length stop or a filtered response returns no message.
-            # Treated as an empty extraction rather than a crash, so one bad
-            # page cannot abort a 269-page run.
-            return {}
+            raise RuntimeError(f"{self.model} returned 200 with no message")
 
         parts = message.get("content") or []
         refusal = next((p for p in parts if p.get("type") == "refusal"), None)
@@ -251,8 +248,10 @@ class OpenAIClient:
             raise RuntimeError(f"{self.model} refused: {refusal.get('refusal')}")
 
         text_part = next((p for p in parts if p.get("type") == "output_text"), None)
-        if text_part is None or not text_part.get("text"):
-            return {}
+        if text_part is None:
+            raise RuntimeError(f"{self.model} returned 200 with no output_text part")
+        if not str(text_part.get("text") or "").strip():
+            raise RuntimeError(f"{self.model} returned 200 with blank output_text")
 
         result = json.loads(text_part["text"])
         if text_part.get("logprobs"):

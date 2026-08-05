@@ -87,6 +87,10 @@ TIER_STRUCTURE = "structure"
 TIER_TRANSCRIBE = "transcribe"
 
 
+class ExtractionFailed(RuntimeError):
+    """The extractor could not complete the read, but the layout is unknown."""
+
+
 # The one canonical field several columns may claim at once, because it is
 # the one this corpus records as marked columns: WSDOT prints four of them
 # beneath a spanning `RECOMMENDED RESOLUTION` group cell, each marked `X`
@@ -252,8 +256,10 @@ def extract_document(
     """Every conflict row on every page of one matrix.
 
     Raises `NoMatrixFound` when the document could not be read at all — no
-    rendered pages to show the model, or no page carrying a matrix. Returns
-    an empty list for a matrix with no conflicts.
+    rendered pages to show the model, or no page carrying a matrix. Raises
+    `ExtractionFailed` when page-level extraction fails before any layout
+    answer could be trusted. Returns an empty list for a matrix with no
+    conflicts.
     """
     client = client or OpenAIClient()
 
@@ -282,10 +288,11 @@ def extract_document(
     candidates: list[Candidate] = []
     recognized = 0
     errors = 0
-    # Zero rather than null: a document read entirely by transcription has
-    # no printed header to disagree about, which is a different fact from
-    # one nobody has read.
-    document.header_disagreements = 0
+    # Buffered until the document attempt is known complete. A mixed
+    # success/failure is still an incomplete read, and leaving either rows
+    # or document-level metadata attached to the session would let direct
+    # callers observe a half-finished attempt.
+    header_disagreements = 0
 
     if structure_pages:
         results = complete_many(
@@ -302,7 +309,7 @@ def extract_document(
         # That is not unreliability, it is the same question asked eleven
         # times. Resolved by majority before any row is read (#101).
         resolved, disagreements = _resolve_headers(structure_pages, grids, results)
-        document.header_disagreements = disagreements
+        header_disagreements = disagreements
 
         # Pages in order, so a header printed on page 1 can carry to the
         # continuation pages that follow it.
@@ -315,7 +322,7 @@ def extract_document(
             if result.get("is_utility_matrix"):
                 recognized += 1
             made, carried = _structure_candidates(
-                document, page, grids[page.page_no], result, model, session,
+                document, page, grids[page.page_no], result, model,
                 carried, resolved=resolved,
             )
             candidates.extend(made)
@@ -345,8 +352,22 @@ def extract_document(
                     document, page, item, model, inherited, unsure
                 )
                 if candidate is not None:
-                    session.add(candidate)
                     candidates.append(candidate)
+
+    if errors:
+        raise ExtractionFailed(
+            f"extraction failed for {document.filename}: {errors} of "
+            f"{len(pages)} pages errored before the document could be "
+            "completed. This says nothing about the layout."
+        )
+
+    if recognized == 0:
+        raise NoMatrixFound(
+            f"no page of {document.filename} carries a utility matrix"
+            + (f" ({errors} of {len(pages)} pages also failed)" if errors else "")
+            + ". A layout variant is unhandled — do not treat this as an "
+            "empty matrix."
+        )
 
     # A run has to be able to say how much of a document it could read
     # properly. A fallback nobody counts is a fallback nobody notices.
@@ -358,25 +379,11 @@ def extract_document(
         )
         if count
     }
-
-    # An outage is not an unhandled layout. Reporting every page failing
-    # as `NoMatrixFound` would tell a reader the document is unreadable
-    # when nothing was ever read — the conflation #59 story 2 forbids, one
-    # level up from the empty-versus-unreadable one.
-    if errors == len(pages):
-        raise RuntimeError(
-            f"every page of {document.filename} failed: {errors} of "
-            f"{len(pages)}. This says nothing about the document."
-        )
-
-    if recognized == 0:
-        raise NoMatrixFound(
-            f"no page of {document.filename} carries a utility matrix"
-            + (f" ({errors} of {len(pages)} pages also failed)" if errors else "")
-            + ". A layout variant is unhandled — do not treat this as an "
-            "empty matrix."
-        )
-
+    # Zero rather than null: a document read entirely by transcription has
+    # no printed header to disagree about, which is a different fact from
+    # one nobody has read.
+    document.header_disagreements = header_disagreements
+    session.add_all(candidates)
     session.flush()
     return candidates
 
@@ -493,7 +500,6 @@ def _structure_candidates(
     grids,
     result: dict,
     model: str | None,
-    session: Session,
     carried: tuple[ColumnMapping, int] | None = None,
     resolved: dict | None = None,
 ) -> tuple[list[Candidate], tuple[ColumnMapping, int] | None]:
@@ -556,7 +562,6 @@ def _structure_candidates(
             tier=TIER_STRUCTURE,
             unmapped=mapping.unmapped,
         )
-        session.add(candidate)
         candidates.append(candidate)
     return candidates, carried
 

@@ -37,7 +37,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.db import Session as SessionFactory
-from corridor.models import Candidate, Document, Project
+from corridor.extraction_runs import completed_document_ids, completion_predicate
+from corridor.models import Candidate, Document, ExtractionRun, Project
 from corridor.verify import unverified_fields
 
 REQUIRED_COLUMNS = ("source_ref",)
@@ -394,12 +395,9 @@ def extracted_documents(
     never run through the extractor would otherwise count every one of its
     rows as missed, and report the backlog as a recall failure.
     """
-    query = select(Candidate.source_document_id).where(
-        Candidate.project_id == project_id
+    return completed_document_ids(
+        session, project_id, prompt_version=prompt_version
     )
-    if prompt_version:
-        query = query.where(Candidate.prompt_version == prompt_version)
-    return set(session.scalars(query.distinct()).all())
 
 
 def _page_text(session: Session, document_ids) -> dict[tuple[int, int], str]:
@@ -468,6 +466,19 @@ def evaluate(
         if unverified_fields(candidate.payload_json.get("fields") or {}, text):
             field_failures += 1
 
+    if not versions and prompt_version is not None:
+        versions.update(
+            {
+                version: 0
+                for version in _completed_prompt_versions(
+                    session,
+                    project_id=project.id,
+                    prompt_version=prompt_version,
+                    document_ids=document_ids,
+                )
+            }
+        )
+
     # Multiset, not set: ids repeat within a revision (47 reused in one
     # Project A matrix), and collapsing them would hide a dropped row
     # behind its twin.
@@ -521,6 +532,34 @@ def evaluate(
     return result
 
 
+def _completed_prompt_versions(
+    session: Session,
+    *,
+    project_id: int,
+    prompt_version: str,
+    document_ids: set[int] | None,
+) -> list[str]:
+    """Completed prompt versions for the scoped document population.
+
+    Used only when no candidate rows survive the scope, so the prompt
+    provenance still names the extraction path that completed cleanly
+    rather than collapsing to "unknown".
+    """
+    query = (
+        select(ExtractionRun.prompt_version)
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(
+            Document.project_id == project_id,
+            completion_predicate(),
+            ExtractionRun.prompt_version == prompt_version,
+        )
+        .distinct()
+    )
+    if document_ids is not None:
+        query = query.where(ExtractionRun.document_id.in_(document_ids or {0}))
+    return list(session.scalars(query).all())
+
+
 def render(result: EvalResult) -> str:
     if result.unmeasurable:
         return "\n".join(
@@ -571,7 +610,9 @@ def render(result: EvalResult) -> str:
         f"({share:.2f}% of extracted rows carry a value not on their page)"
     )
     lines.extend(_critical_lines(result))
-    versions = ", ".join(f"{k}×{v}" for k, v in sorted(result.prompt_versions.items()))
+    versions = ", ".join(
+        k if v == 0 else f"{k}×{v}" for k, v in sorted(result.prompt_versions.items())
+    )
     models = ", ".join(f"{k}×{v}" for k, v in sorted(result.models.items()))
     lines.append(f"  prompt_version: {versions or '—'}")
     lines.append(f"  model: {models or '—'}")

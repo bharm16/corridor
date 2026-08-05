@@ -126,3 +126,26 @@ def test_database_has_named_dependency_foreign_keys(conn):
     }
     assert actual == expected
 
+
+def test_extraction_runs_require_a_prompt_version(conn):
+    conn.execute(
+        text(
+            "insert into projects (id, slug, name, is_synthetic) "
+            "values (9997, 'run-test', 'Run Test', false)"
+        )
+    )
+    conn.execute(
+        text(
+            "insert into documents (id, project_id, sha256, filename, "
+            "doc_type, parse_status) values (9997, 9997, 'def', 'g.pdf', "
+            "'minutes', 'parsed')"
+        )
+    )
+    with pytest.raises(DBAPIError, match="prompt_version"):
+        conn.execute(
+            text(
+                "insert into extraction_runs "
+                "(document_id, prompt_version, candidate_count, page_errors) "
+                "values (9997, null, 0, 0)"
+            )
+        )

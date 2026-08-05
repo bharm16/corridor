@@ -18,7 +18,7 @@ from corridor.eval import (
     render,
 )
 from corridor.eval import _SEQUENTIAL_ID, _UTILITY_ID
-from corridor.models import Candidate, DocPage, Document, Project
+from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
 
 
 def scanned(*records):
@@ -103,6 +103,25 @@ def make_candidate(session, project, document, uid, page=1, prompt_version="txdo
     session.add(c)
     session.flush()
     return c
+
+
+def mark_extracted(
+    session,
+    document,
+    *,
+    prompt_version="txdot_ucm_v1",
+    candidate_count=1,
+    page_errors=0,
+):
+    run = ExtractionRun(
+        document_id=document.id,
+        prompt_version=prompt_version,
+        candidate_count=candidate_count,
+        page_errors=page_errors,
+    )
+    session.add(run)
+    session.flush()
+    return run
 
 
 # ----------------------------------------------------------------- gold sets
@@ -332,11 +351,60 @@ def test_the_documents_scored_are_the_ones_that_extractor_read(
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, other, "E92")
     make_candidate(session, project, document, "FOC1-1", prompt_version="matrix_vision_v1")
+    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
+    mark_extracted(session, other, prompt_version="txdot_ucm_v1")
+    mark_extracted(session, document, prompt_version="matrix_vision_v1")
 
     assert extracted_documents(session, project.id) == {document.id, other.id}
     assert extracted_documents(
         session, project.id, prompt_version="matrix_vision_v1"
     ) == {document.id}
+
+
+def test_candidate_rows_without_a_run_do_not_count_as_extracted(
+    session, project, document
+):
+    make_candidate(session, project, document, "FOC1-1")
+
+    assert extracted_documents(session, project.id) == set()
+
+
+def test_a_zero_row_clean_run_counts_as_extracted(session, project, document):
+    mark_extracted(
+        session,
+        document,
+        prompt_version="txdot_ucm_v1",
+        candidate_count=0,
+        page_errors=0,
+    )
+
+    assert extracted_documents(session, project.id) == {document.id}
+
+
+def test_a_zero_row_failed_run_does_not_count_as_extracted(session, project, document):
+    mark_extracted(
+        session,
+        document,
+        prompt_version="txdot_ucm_v1",
+        candidate_count=0,
+        page_errors=1,
+    )
+
+    assert extracted_documents(session, project.id) == set()
+
+
+def test_a_run_with_candidates_and_page_errors_still_does_not_count_as_extracted(
+    session, project, document
+):
+    mark_extracted(
+        session,
+        document,
+        prompt_version="txdot_ucm_v1",
+        candidate_count=2,
+        page_errors=1,
+    )
+
+    assert extracted_documents(session, project.id) == set()
 
 
 # --------------------------------------------- enumerating unfamiliar layouts
@@ -1017,6 +1085,30 @@ def test_the_artifact_records_where_the_enumeration_came_from(
     assert written["project"] == project.slug
 
 
+def test_a_scoped_zero_row_run_still_reports_its_prompt_version(
+    session, project, document
+):
+    mark_extracted(
+        session,
+        document,
+        prompt_version="txdot_ucm_v1",
+        candidate_count=0,
+        page_errors=0,
+    )
+
+    result = evaluate(
+        session,
+        slug=project.slug,
+        gold=authored(GoldRecord("FOC1-1")),
+        prompt_version="txdot_ucm_v1",
+        document_ids={document.id},
+    )
+
+    assert result.prompt_versions == {"txdot_ucm_v1": 0}
+    assert "prompt_version: txdot_ucm_v1" in render(result)
+    assert _artifact(result)["prompt_versions"] == {"txdot_ucm_v1": 0}
+
+
 # --------------------------------------------------------------- measurement
 
 
@@ -1080,6 +1172,7 @@ def test_a_csv_measurement_records_the_scope_it_was_taken_at(
     """
     add_page(session, document, 1, "FOC1-1 1149+00\n")
     make_candidate(session, project, document, "FOC1-1")
+    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
     path = tmp_path / "gold.csv"
     path.write_text(GOLD)
 
@@ -1097,6 +1190,7 @@ def test_the_measurement_names_the_matrices_it_did_not_read(
     """An ingested matrix nobody extracted is excluded, not counted missed."""
     add_page(session, document, 1, "FOC1-1 1149+00\n")
     make_candidate(session, project, document, "FOC1-1")
+    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
     unread = Document(
         project_id=project.id,
         sha256="e" * 64,
@@ -1122,6 +1216,7 @@ def test_the_measurement_scores_only_the_documents_that_extractor_read(
     """The whole point of the sequence: gold, scope and score agree."""
     add_page(session, document, 1, "FOC1-1 1149+00\nFOC1-2 1150+00\n")
     make_candidate(session, project, document, "FOC1-1")
+    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
     path = tmp_path / "gold.csv"
     path.write_text("source_ref,page\nFOC1-1,1\nFOC1-2,1\n")
 

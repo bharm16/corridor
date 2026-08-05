@@ -7,6 +7,8 @@ single path onward is a human keystroke in `corridor.adjudicate`.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
@@ -16,6 +18,17 @@ from sqlalchemy.orm import Session
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.models import Candidate, Document
 from corridor.storage import stored_file
+
+
+Extractor = Callable[[Session, Document], list[Candidate]]
+
+
+@dataclass(frozen=True)
+class ExtractionRoute:
+    """Which reader will run for one document, and how to name that reading."""
+
+    effective_prompt_version: str
+    extract: Extractor
 
 
 def ingest_manifest(
@@ -60,6 +73,39 @@ def ingest_manifest(
     return documents
 
 
+def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
+    """Choose the reader for one document and expose its effective version.
+
+    Resume and evaluation key off the document attempt rather than the
+    candidate rows it happened to produce, so the version recorded for that
+    attempt has to be the version of the reader that actually ran.
+    """
+    path = stored_file(document)
+    if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
+        from corridor.extract_sheet import (
+            PROMPT_VERSION as SHEET_PROMPT_VERSION,
+            extract_document as extract_sheet,
+        )
+
+        return ExtractionRoute(
+            effective_prompt_version=SHEET_PROMPT_VERSION,
+            extract=extract_sheet,
+        )
+
+    from corridor.extract_matrix import (
+        PROMPT_VERSION as MATRIX_PROMPT_VERSION,
+        extract_document as extract_matrix,
+    )
+
+    def extract(session: Session, document: Document) -> list[Candidate]:
+        return extract_matrix(session, document, client=client)
+
+    return ExtractionRoute(
+        effective_prompt_version=MATRIX_PROMPT_VERSION,
+        extract=extract,
+    )
+
+
 def extract_any(session: Session, document: Document, *, client=None) -> list[Candidate]:
     """Read one matrix, whichever form it was published in (ADR-0005).
 
@@ -73,15 +119,8 @@ def extract_any(session: Session, document: Document, *, client=None) -> list[Ca
     would ignore would suggest a model is involved somewhere in reading a
     spreadsheet. It is not.
     """
-    path = stored_file(document)
-    if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
-        from corridor.extract_sheet import extract_document as extract_sheet
-
-        return extract_sheet(session, document)
-
-    from corridor.extract_matrix import extract_document as extract_matrix
-
-    return extract_matrix(session, document, client=client)
+    route = extraction_route(document, client=client)
+    return route.extract(session, document)
 
 
 def _basename(url: str) -> str:
