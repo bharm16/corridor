@@ -636,3 +636,60 @@ def test_a_zero_day_quantity_still_renders(client, session, project):
     body = client.get(f"/ledger/{project.slug}").text
 
     assert "DUE_SOON 0d" in body
+
+
+def _event_candidate(session, project, document):
+    c = Candidate(
+        project_id=project.id,
+        kind="event",
+        payload_json={
+            "kind": "event",
+            "fields": {"description": "AT&T confirmed relocation NTP in August"},
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": "AT&T confirmed relocation NTP in August",
+                    "verified": True,
+                }
+            ],
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="minutes_v1",
+        citations_verified=True,
+    )
+    session.add(c)
+    session.flush()
+    return c
+
+
+def test_the_queue_refuses_to_offer_accept_on_an_event(session, project, document):
+    """The same treatment merge gets when there is nothing to merge into.
+
+    `make minutes` writes events into this queue; accepting one built a
+    Dependency out of fields it does not have.
+    """
+    _event_candidate(session, project, document)
+
+    view = build_view(session, next_candidate(session, project.id))
+
+    assert "not a dependency" in view.accept_refused
+    assert "merging" in view.accept_refused
+
+
+def test_posting_accept_for_an_event_is_refused_not_a_server_error(
+    session, project, document, client
+):
+    """The button is disabled; a form post can still reach the route."""
+    candidate = _event_candidate(session, project, document)
+
+    response = client.post(
+        f"/candidates/{candidate.id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"

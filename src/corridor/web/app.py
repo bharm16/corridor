@@ -21,7 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from corridor.adjudicate import accept_candidate, merge_candidate
+from corridor.adjudicate import (
+    UnadjudicableKind,
+    accept_candidate,
+    merge_candidate,
+)
 from corridor.db import Session as SessionFactory
 from corridor.exceptions import RULES
 from corridor.ledger import browse, load_dependency
@@ -196,9 +200,17 @@ def accept(
     session: Session = Depends(get_session),
 ):
     candidate = _pending(session, candidate_id)
-    accept_candidate(session, candidate, actor="reviewer")
+    _accept(session, candidate)
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
+
+
+def _accept(session: Session, candidate) -> None:
+    """The queue disables this button; a form post can still reach it."""
+    try:
+        accept_candidate(session, candidate, actor="reviewer")
+    except UnadjudicableKind as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/candidates/{candidate_id}/edit-accept")
@@ -240,7 +252,7 @@ async def edit_accept(
         payload["fields"] = edited
         candidate.payload_json = payload
 
-    accept_candidate(session, candidate, actor="reviewer")
+    _accept(session, candidate)
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
 

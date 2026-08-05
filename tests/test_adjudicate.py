@@ -5,6 +5,7 @@ from corridor.adjudicate import (
     RESOLUTION_VOCABULARIES,
     AlreadyAdjudicated,
     ResolutionVocabulary,
+    UnadjudicableKind,
     accept_candidate,
     set_resolution_strategy,
 )
@@ -860,3 +861,57 @@ def test_a_9540_row_marked_on_both_sides_still_settles_nothing():
     assert vocabulary.read("RELOCATION; PROTECTION IN PLACE") is None
     # Two answers on the same side still settle.
     assert vocabulary.read("RELOCATION; ABANDON/ DEACTIVATE/ REMOVE") is None
+
+
+def make_event_candidate(session, document):
+    """What `make minutes` writes: a commitment read off meeting notes."""
+    candidate = Candidate(
+        project_id=document.project_id,
+        kind="event",
+        payload_json={
+            "kind": "event",
+            "fields": {
+                "description": "AT&T confirmed relocation NTP in August",
+                "committed_date": "2026-08-14",
+            },
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": "AT&T confirmed relocation NTP in August",
+                    "verified": True,
+                }
+            ],
+            "confidence": 1.0,
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="minutes_v1",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush()
+    return candidate
+
+
+def test_accepting_an_event_is_refused_rather_than_faked(session, document):
+    """An event Candidate carries nothing a Dependency is made of.
+
+    Acceptance used to read no kind at all, so it built a
+    `utility_relocation` titled "Utility" out of a commitment about a
+    conflict that already exists — a Ledger record no document describes,
+    entering by the one path that exists to stop exactly that.
+    """
+    candidate = make_event_candidate(session, document)
+
+    with pytest.raises(UnadjudicableKind, match="event"):
+        accept_candidate(session, candidate, actor="bryce")
+
+    assert candidate.state == "pending"
+    assert (
+        session.scalars(
+            select(Dependency).where(Dependency.project_id == document.project_id)
+        ).all()
+        == []
+    )

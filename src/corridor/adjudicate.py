@@ -194,12 +194,28 @@ class AlreadyAdjudicated(Exception):
     pass
 
 
+class UnadjudicableKind(Exception):
+    """This Candidate is not a kind acceptance knows how to resolve."""
+
+
 def accept_candidate(
     session: Session, candidate: Candidate, *, actor: str
 ) -> Dependency:
     if candidate.state != "pending":
         raise AlreadyAdjudicated(
             f"candidate {candidate.id} is already {candidate.state}"
+        )
+    if candidate.kind != "dependency":
+        # `make minutes` writes `kind="event"` Candidates into the same
+        # table, and the queue serves them. Accepting one used to build a
+        # Dependency from fields it does not have — an event carries no
+        # `utility_id` and no `utility_type`, so it minted a
+        # `utility_relocation` titled "Utility" that no document asserts.
+        # Adjudication is the only path into the Ledger; a path that
+        # fabricates the record is worse than no path at all.
+        raise UnadjudicableKind(
+            f"candidate {candidate.id} is a {candidate.kind}, and acceptance "
+            "builds a Dependency — an event must be attached to one instead"
         )
 
     fields = candidate.payload_json.get("fields", {})

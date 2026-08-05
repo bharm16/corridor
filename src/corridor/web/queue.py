@@ -61,6 +61,11 @@ class CandidateView:
     # has to re-verify all of them.
     unverified_fields: list[str] = field(default_factory=list)
     low_confidence_tokens: list[str] = field(default_factory=list)
+    # Acceptance builds a Dependency, and only a `dependency` Candidate
+    # carries what one needs. The queue says so rather than offering a
+    # button that fabricates the record — the same treatment merge already
+    # gets when there is nothing to merge into.
+    accept_refused: str = ""
 
 
 def pending_counts(session: Session, project_id: int) -> tuple[int, int]:
@@ -125,6 +130,15 @@ def build_view(session: Session, candidate: Candidate) -> CandidateView:
         highlights=locate_quote(document, page_no, quote),
         remaining=total,
         verified_remaining=verified,
+        accept_refused=(
+            ""
+            if candidate.kind == "dependency"
+            else (
+                f"This is a {candidate.kind}, not a dependency. Attach it to an "
+                "existing Dependency by merging; accepting would create one the "
+                "document never described."
+            )
+        ),
         matches=rank_matches(
             session,
             candidate.project_id,
