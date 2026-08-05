@@ -434,10 +434,10 @@ def set_resolution_strategy(
 
 def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> dict:
     updated = {**payload, "fields": dict(fields)}
-    if not _is_whole_row(payload):
+    if not _transcribes_cells(payload):
         return updated
 
-    page_text = _whole_row_page_text(session, payload)
+    page_text = _cited_page_text(session, payload)
     if page_text is None:
         updated["unverified_fields"] = sorted(fields)
     else:
@@ -448,15 +448,44 @@ def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> 
     return updated
 
 
-def _is_whole_row(payload: dict) -> bool:
+def _transcribes_cells(payload: dict) -> bool:
+    """Does this proposal claim its values are printed where it cites?
+
+    `whole_row` was standing in for this question and is not it.
+    `geometry.best_verifiable_quote` returns `whole_row=False` whenever the
+    assembled row is not contiguous on the page — two tables printed side
+    by side, or a leading `Data Source` column that lands elsewhere in
+    reading order — and those rows are still transcribed cells whose
+    `unverified_fields` means exactly what it means everywhere else. 79
+    live rows are in that state, and an edit to one kept the extractor's
+    reading of the values the reviewer had just replaced: a value typed in
+    that is nowhere on the page came out `citations_verified`, which is the
+    defect `citations_verified` was unified to abolish.
+
+    `tier` is the direct answer, and all three matrix readers set it. The
+    prose extractors leave it None, where a field is the model's phrasing
+    of a paragraph and was never expected to appear verbatim — the
+    distinction `candidates` keeps deliberately. The whole-row fallback
+    holds the 141 `txdot_ucm_v1` rows that predate `tier` on the side they
+    are already on.
+    """
+    if payload.get("tier"):
+        return True
     return any(citation.get("whole_row") for citation in (payload.get("citations") or []))
 
 
-def _whole_row_page_text(session: Session, payload: dict) -> str | None:
+def _cited_page_text(session: Session, payload: dict) -> str | None:
+    """The text of every page this proposal cites, or None if one is missing.
+
+    Every citation, not only the whole-row ones: the page a value must
+    appear on is the page the proposal names, and whether the quote
+    happened to span the whole row says nothing about which page that is.
+
+    None fails closed — the caller marks every field unverified rather
+    than verifying against a page it could not read.
+    """
     texts = []
     for citation in payload.get("citations") or []:
-        if not citation.get("whole_row"):
-            continue
         document_id = citation.get("document_id")
         page_no = citation.get("page")
         if document_id is None or page_no is None:

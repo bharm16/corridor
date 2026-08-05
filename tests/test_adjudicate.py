@@ -94,6 +94,7 @@ def make_candidate(
     whole_row=True,
     unverified_fields=(),
     low_confidence_tokens=(),
+    tier=None,
 ):
     fields = FIELDS if fields is None else fields
     candidate = Candidate(
@@ -114,6 +115,7 @@ def make_candidate(
             "confidence": 1.0,
             "unverified_fields": list(unverified_fields),
             "low_confidence_tokens": list(low_confidence_tokens),
+            "tier": tier,
             "dedupe_hint": "AT&T Texas (SWBT)|Telecom|1149+00-1153+17",
         },
         source_document_id=document.id,
@@ -688,6 +690,65 @@ def test_editing_a_non_whole_row_candidate_does_not_start_verbatim_field_checks(
     assert candidate.payload_json["fields"] == edited
     assert candidate.payload_json["unverified_fields"] == []
     assert candidate.payload_json["low_confidence_tokens"] == []
+    assert candidate.citations_verified is True
+
+
+def test_a_transcribed_row_is_revalidated_even_when_its_quote_was_not_whole():
+    """`whole_row` is not the question, and 79 live rows prove it.
+
+    `best_verifiable_quote` falls back to the longest contiguous window
+    whenever the assembled row is not printed contiguously — two tables
+    side by side, a `Data Source` column landing elsewhere in reading
+    order. The row is still transcribed cells; only the citation is
+    narrower. Reading `whole_row` as "is this a transcription" let an
+    edited value that appears nowhere on the page come back verified.
+    """
+    from corridor.adjudicate import _transcribes_cells
+
+    fallback_quote_row = {
+        "tier": "structure",
+        "citations": [{"whole_row": False}],
+    }
+    prose_obligation = {"tier": None, "citations": [{"whole_row": False}]}
+    legacy_matrix_row = {"citations": [{"whole_row": True}]}
+
+    assert _transcribes_cells(fallback_quote_row) is True
+    assert _transcribes_cells(prose_obligation) is False
+    assert _transcribes_cells(legacy_matrix_row) is True
+
+
+def test_editing_a_structure_tier_row_cited_by_a_partial_quote_is_revalidated(
+    session, document
+):
+    candidate = make_candidate(
+        session, document, tier="structure", whole_row=False, quote="FOC1-1 AT&T"
+    )
+    assert candidate.citations_verified is True
+
+    edited = {**FIELDS, "station_from": "9999+99"}
+    edit_candidate(session, candidate, edited, actor="reviewer")
+
+    assert candidate.payload_json["unverified_fields"] == ["station_from"]
+    assert candidate.citations_verified is False
+
+
+def test_editing_a_structure_tier_row_clears_a_diagnostic_the_edit_resolved(
+    session, document
+):
+    candidate = make_candidate(
+        session,
+        document,
+        tier="structure",
+        whole_row=False,
+        quote="FOC1-1 AT&T",
+        fields={**FIELDS, "station_from": "1l49+OO"},
+        unverified_fields=("station_from",),
+    )
+    assert candidate.citations_verified is False
+
+    edit_candidate(session, candidate, dict(FIELDS), actor="reviewer")
+
+    assert candidate.payload_json["unverified_fields"] == []
     assert candidate.citations_verified is True
 
 
