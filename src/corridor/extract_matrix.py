@@ -39,6 +39,7 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.candidates import propose
 from corridor.docs import stored_pdf
 from corridor.geometry import (
     MatrixRow,
@@ -761,46 +762,22 @@ def _candidate(
     low_confidence: list[str] | None = None,
 ) -> Candidate:
     page_text = page.text or ""
-    quote_ok = quote_appears_on(quote, page_text)
-    suspect = sorted(unverified_fields(fields, page_text))
-    unsure = low_confidence or []
 
-    return Candidate(
-        project_id=document.project_id,
+    return propose(
+        document,
         kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": page.page_no,
-                    "quote": quote,
-                    "verified": quote_ok,
-                    "whole_row": whole_row,
-                }
-            ],
-            "confidence": confidence,
-            # Named rather than counted, so a reviewer sees *which* value is
-            # not on the page instead of only that one of them is not.
-            "unverified_fields": suspect,
-            # What the document says that the Ledger has no field for. The
-            # trigger for a deliberate vocabulary extension, not something
-            # an extractor may decide for itself.
-            "unmapped_columns": unmapped,
-            # Transcribed digits the model hesitated on. Empty on the
-            # structure tier, which transcribes nothing.
-            "low_confidence_tokens": unsure,
-            "tier": tier,
-            "dedupe_hint": dedupe_hint(fields),
-            # OCR text is materially noisier, and a citation resting on it
-            # deserves to be visibly different when a reviewer weighs it.
-            "text_source": page.text_source,
-        },
-        source_document_id=document.id,
-        source_pages=[page.page_no],
+        fields=fields,
+        page_no=page.page_no,
+        quote=quote,
+        quote_verified=quote_appears_on(quote, page_text),
+        whole_row=whole_row,
         confidence=confidence,
         prompt_version=PROMPT_VERSION,
         model=model,
-        citations_verified=quote_ok and not suspect and not unsure,
+        tier=tier,
+        dedupe=dedupe_hint(fields),
+        text_source=page.text_source,
+        unverified=sorted(unverified_fields(fields, page_text)),
+        unmapped=unmapped,
+        low_confidence=low_confidence or [],
     )

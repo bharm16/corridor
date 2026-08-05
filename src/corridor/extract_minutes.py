@@ -18,6 +18,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.candidates import dedupe_hint, propose
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import EVENT_TYPES, Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
@@ -135,42 +136,28 @@ def _to_candidate(
     if not fields.get("description"):
         return None
 
-    return Candidate(
-        project_id=document.project_id,
+    return propose(
+        document,
         # An event, not a dependency: these notes discuss conflicts that
         # already exist, and the adjudicator's job is to attach this to the
         # right one rather than create another.
         kind="event",
-        payload_json={
-            "kind": "event",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": page.page_no,
-                    "quote": quote,
-                    "verified": verified,
-                    "whole_row": False,
-                }
-            ],
-            "confidence": item.get("confidence"),
-            # The merge search blocks on the resolved party, then scores on
-            # stationing — both of which these notes carry.
-            "dedupe_hint": "|".join(
-                [
-                    fields.get("external_org", ""),
-                    fields.get("conflict_ref", ""),
-                    f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
-                ]
-            ),
-            "text_source": page.text_source,
-        },
-        source_document_id=document.id,
-        source_pages=[page.page_no],
+        fields=fields,
+        page_no=page.page_no,
+        quote=quote,
+        quote_verified=verified,
+        whole_row=False,
         confidence=item.get("confidence"),
         prompt_version=PROMPT_VERSION,
         model=model,
-        citations_verified=verified,
+        # The merge search blocks on the resolved party, then scores on
+        # stationing — both of which these notes carry.
+        dedupe=dedupe_hint(
+            fields.get("external_org", ""),
+            fields.get("conflict_ref", ""),
+            f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
+        ),
+        text_source=page.text_source,
     )
 
 

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 
 import pymupdf
 
+from corridor.candidates import dedupe_hint as join_hint
 from corridor.verify import quote_appears_on
 
 # Share of a table's cells whose two readings must match before the word-box
@@ -260,12 +261,16 @@ def page_tables(page) -> list[list[list[str]]]:
 
 
 def dedupe_hint(fields: dict[str, str]) -> str:
-    return "|".join(
-        [
-            fields.get("external_org", ""),
-            fields.get("utility_type", ""),
-            f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
-        ]
+    """What discriminates one matrix row from another: party, kind, where.
+
+    The join itself is `candidates.dedupe_hint`, shared with the extractors
+    that read prose and discriminate on different parts. `merge` blocks on
+    the result, so the separator is one rule even where the parts are not.
+    """
+    return join_hint(
+        fields.get("external_org", ""),
+        fields.get("utility_type", ""),
+        f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
     )
 
 

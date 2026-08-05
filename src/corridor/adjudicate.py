@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.candidates import citations_verified
 from corridor.models import (
     ANSWER_SEPARATOR,
     RESOLUTION_STRATEGIES,
@@ -275,7 +276,12 @@ def accept_candidate(
 
     candidate.state = "accepted"
     candidate.adjudicated_at = datetime.now(timezone.utc)
-    candidate.citations_verified = all(c.get("verified") for c in citations)
+    # The extractor's rule, not a second one. This read only the per-citation
+    # quote flag and dropped `unverified_fields` and `low_confidence_tokens`
+    # entirely, so a row that sank in the queue *because a field value was
+    # not on its page* came out of acceptance recorded as verified — and the
+    # queue's own ordering, `pending_counts` and `eval` all read this column.
+    candidate.citations_verified = citations_verified(candidate.payload_json or {})
 
     audit.record(
         session,

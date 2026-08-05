@@ -17,6 +17,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.candidates import dedupe_hint, propose
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
@@ -129,35 +130,21 @@ def _to_candidate(
     if not fields.get("title"):
         return None
 
-    return Candidate(
-        project_id=document.project_id,
+    return propose(
+        document,
         kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": page.page_no,
-                    "quote": quote,
-                    "verified": verified,
-                    "whole_row": False,
-                }
-            ],
-            "confidence": item.get("confidence"),
-            "dedupe_hint": "|".join(
-                [fields.get("external_org", ""), "agreement", fields.get("title", "")]
-            ),
-            # OCR text is materially noisier, and a citation resting on it
-            # deserves to be visibly different when a reviewer weighs it.
-            "text_source": page.text_source,
-        },
-        source_document_id=document.id,
-        source_pages=[page.page_no],
+        fields=fields,
+        page_no=page.page_no,
+        quote=quote,
+        quote_verified=verified,
+        whole_row=False,
         confidence=item.get("confidence"),
         prompt_version=PROMPT_VERSION,
         model=model,
-        citations_verified=verified,
+        dedupe=dedupe_hint(
+            fields.get("external_org", ""), "agreement", fields.get("title", "")
+        ),
+        text_source=page.text_source,
     )
 
 

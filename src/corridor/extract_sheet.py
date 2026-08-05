@@ -29,6 +29,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.candidates import propose
 from corridor.docs import stored_file
 from corridor.geometry import dedupe_hint
 from corridor.models import Candidate, DocPage, Document
@@ -132,43 +133,26 @@ def _candidate(
     # Rendered by the same function that wrote the page text, so the quote
     # is the line a reviewer reads rather than a reconstruction of one.
     quote = row_text(raw)
-    # Exactly, not at 0.9 — this text was generated from the same cells the
-    # values came from, so there is no print damage to make room for.
-    quote_ok = quote_appears_on(quote, page_text, threshold)
-    suspect = sorted(unverified_fields(fields, page_text))
 
-    return Candidate(
-        project_id=document.project_id,
+    return propose(
+        document,
         kind="dependency",
-        payload_json={
-            "kind": "dependency",
-            "fields": fields,
-            "citations": [
-                {
-                    "document_id": document.id,
-                    "page": page_no,
-                    "quote": quote,
-                    "verified": quote_ok,
-                    "whole_row": True,
-                }
-            ],
-            # No number, deliberately. Confidence on the page path is the
-            # model's judgement about what the columns mean; here there is
-            # no judgement to be more or less sure of, and a hardcoded 1.0
-            # would be this reader asserting certainty it was never asked
-            # for.
-            "confidence": None,
-            "unverified_fields": suspect,
-            "unmapped_columns": unmapped,
-            "low_confidence_tokens": [],
-            "tier": TIER_NATIVE,
-            "dedupe_hint": dedupe_hint(fields),
-            "text_source": "cells",
-        },
-        source_document_id=document.id,
-        source_pages=[page_no],
+        fields=fields,
+        page_no=page_no,
+        quote=quote,
+        # Exactly, not at 0.9 — this text was generated from the same cells
+        # the values came from, so there is no print damage to make room for.
+        quote_verified=quote_appears_on(quote, page_text, threshold),
+        whole_row=True,
+        # No number, deliberately. Confidence on the page path is the
+        # model's judgement about what the columns mean; here there is no
+        # judgement to be more or less sure of, and a hardcoded 1.0 would be
+        # this reader asserting certainty it was never asked for.
         confidence=None,
         prompt_version=PROMPT_VERSION,
-        model=None,
-        citations_verified=quote_ok and not suspect,
+        tier=TIER_NATIVE,
+        dedupe=dedupe_hint(fields),
+        text_source="cells",
+        unverified=sorted(unverified_fields(fields, page_text)),
+        unmapped=unmapped,
     )
