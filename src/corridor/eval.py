@@ -86,23 +86,6 @@ _SEQUENTIAL_ID = re.compile(r"^[ \t]*(\d{1,3})[ \t]*$", re.MULTILINE)
 _STATION = re.compile(r"^[ \t]*\d{1,5}\+\d{2}(?:\.\d+)?\b")
 
 
-def _a_known_row_shape(ref: str | None) -> bool:
-    """Could this enumeration have produced this id at all?
-
-    Shape only — deliberately not "is it printed on its cited page". The
-    obvious page test is whole-line equality against the stored text, and
-    five live Project A rows defeat it: `OFOC14-1`, `OFOC14-2`, `OFOC25-1`,
-    `OFOC27-1` and `OFOC27-2` share their line with the owner. A fixture
-    where every id stands alone passes while the corpus does not.
-    """
-    cleaned = (ref or "").strip()
-    if not cleaned:
-        return False
-    return bool(
-        _UTILITY_ID.fullmatch(cleaned) or _SEQUENTIAL_ID.fullmatch(cleaned)
-    )
-
-
 class MalformedGoldSet(Exception):
     """The gold set is unusable, and guessing at it would fake a number."""
 
@@ -116,6 +99,56 @@ class GoldRecord:
     # Carried on the record rather than passed beside the list so a caller
     # cannot forget it and turn a real score into NOT MEASURED.
     critical: bool | None = None
+
+
+@dataclass(frozen=True)
+class GoldSet:
+    """An enumeration, and what it was able to look for.
+
+    Whether an extracted id is *spurious* or merely *outside this
+    enumeration's reach* is a property of the enumeration that produced
+    it, not a global fact about id shapes. `gold_from_page_text` already
+    decides which of two inverted row shapes applies to a document and
+    then threw that decision away, so `evaluate` re-derived it from the
+    union of both — for every gold set, however it was built.
+
+    Two consequences, both removed by carrying it here. A hand-authored
+    CSV reads the whole grid, so an id it does not contain is spurious by
+    definition; under the union rule the M7 holdout's own ids
+    (`PSEN-G-1001`) match no shape, and one genuinely spurious row would
+    have suppressed the precision figure on a holdout that is spent once
+    (ADR-0008). And on a prefixed layout the sequential shape never ran,
+    yet `303` was still treated as a row the enumeration could have
+    found — #90's defect in the opposite direction.
+
+    `reach` of None means "reads everything": no id is beyond it.
+    """
+
+    records: tuple[GoldRecord, ...]
+    reach: tuple[re.Pattern, ...] | None = None
+
+    def __iter__(self):
+        return iter(self.records)
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def can_adjudicate(self, ref: str | None) -> bool:
+        """Could this enumeration have produced this id at all?
+
+        Shape only — deliberately not "is it printed on its cited page".
+        The obvious page test is whole-line equality against the stored
+        text, and five live Project A rows defeat it: `OFOC14-1`,
+        `OFOC14-2`, `OFOC25-1`, `OFOC27-1` and `OFOC27-2` share their
+        line with the owner. A fixture where every id stands alone passes
+        while the corpus does not.
+        """
+        cleaned = (ref or "").strip()
+        if not cleaned:
+            return False
+        if self.reach is None:
+            return True
+        return any(pattern.fullmatch(cleaned) for pattern in self.reach)
 
 
 @dataclass
@@ -210,7 +243,7 @@ class EvalResult:
         return not self.critical_labeled or self.critical_gold_total == 0
 
 
-def load_gold(path: Path | str) -> list[GoldRecord]:
+def load_gold(path: Path | str) -> GoldSet:
     path = Path(path)
     rows = list(csv.DictReader(path.read_text().splitlines()))
     if not rows:
@@ -242,7 +275,10 @@ def load_gold(path: Path | str) -> list[GoldRecord]:
         )
     if not records:
         raise MalformedGoldSet(f"{path.name}: no rows with a source_ref")
-    return records
+    # A hand-authored gold set is a whole-document enumeration: it read the
+    # grid, so an id it does not contain is spurious rather than out of
+    # reach. `reach=None` says exactly that.
+    return GoldSet(tuple(records), None)
 
 
 def _critical(path: Path, row: dict[str, str]) -> bool:
@@ -260,7 +296,7 @@ def _critical(path: Path, row: dict[str, str]) -> bool:
     )
 
 
-def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
+def gold_from_page_text(page_text: dict[int, str]) -> GoldSet:
     """An enumeration read off the text stream rather than the table.
 
     Two row shapes are known, and they are tried in order because their
@@ -291,11 +327,14 @@ def gold_from_page_text(page_text: dict[int, str]) -> list[GoldRecord]:
                     continue
                 records.append(GoldRecord(source_ref=match.group(1), page=page_no))
         if records:
-            return records
-    return []
+            # The shape that won is this enumeration's reach. The one that
+            # did not run could not have found anything, so an id of that
+            # shape is outside the enumeration rather than spurious.
+            return GoldSet(tuple(records), (pattern,))
+    return GoldSet((), ())
 
 
-def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
+def gold_for_documents(session: Session, document_ids) -> GoldSet:
     """The enumeration over several documents, read one document at a time.
 
     Page numbers restart at 1 in every document, so a single page-keyed
@@ -308,14 +347,22 @@ def gold_for_documents(session: Session, document_ids) -> list[GoldRecord]:
     from corridor.models import DocPage
 
     records: list[GoldRecord] = []
+    # Documents in one project may print different row shapes, so the
+    # reach of the combined enumeration is the union of what each
+    # document's scan could look for.
+    reach: list[re.Pattern] = []
     for document_id in sorted(document_ids):
         pages = session.execute(
             select(DocPage.page_no, DocPage.text).where(
                 DocPage.document_id == document_id
             )
         ).all()
-        records.extend(gold_from_page_text({p: t for p, t in pages}))
-    return records
+        found = gold_from_page_text({p: t for p, t in pages})
+        records.extend(found.records)
+        for pattern in found.reach or ():
+            if pattern not in reach:
+                reach.append(pattern)
+    return GoldSet(tuple(records), tuple(reach))
 
 
 def _followed_by_stationing(text: str, start: int) -> bool:
@@ -372,7 +419,7 @@ def evaluate(
     session: Session,
     *,
     slug: str,
-    gold: list[GoldRecord],
+    gold: GoldSet,
     kind: str = "dependency",
     prompt_version: str | None = None,
 ) -> EvalResult:
@@ -424,11 +471,11 @@ def evaluate(
     critical_wanted = Counter(r.source_ref for r in gold if r.critical)
     critical_matched = sum((critical_wanted & extracted).values())
 
-    # An extracted row is adjudicable if this enumeration could have
-    # produced its id — by shape, or because a hand-authored gold set names
-    # it. Everything else is unrecognized rather than spurious: the
-    # enumeration cannot say whether it is real, and charging it to the
-    # extractor is the defect (#90).
+    # An extracted row is adjudicable if *this* enumeration could have
+    # produced its id — which the gold set answers, because only it knows
+    # how it was built. Everything else is unrecognized rather than
+    # spurious: the enumeration cannot say whether it is real, and
+    # charging it to the extractor is the defect (#90).
     #
     # Counted per occurrence, not per distinct id. An extractor emitting
     # one unknown-shape id five times from a page printing it once should
@@ -437,7 +484,8 @@ def evaluate(
     surplus = extracted - wanted
     spurious, unrecognized = [], []
     for ref in surplus.elements():
-        (spurious if (_a_known_row_shape(ref) or ref in wanted) else unrecognized).append(ref)
+        adjudicable = gold.can_adjudicate(ref) or ref in wanted
+        (spurious if adjudicable else unrecognized).append(ref)
 
     result = EvalResult(
         project=slug,

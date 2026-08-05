@@ -4,6 +4,7 @@ from sqlalchemy import select
 from corridor.db import Session, engine
 from corridor.eval import (
     GoldRecord,
+    GoldSet,
     MalformedGoldSet,
     evaluate,
     extracted_documents,
@@ -12,7 +13,23 @@ from corridor.eval import (
     load_gold,
     render,
 )
+from corridor.eval import _SEQUENTIAL_ID, _UTILITY_ID
 from corridor.models import Candidate, DocPage, Document, Project
+
+
+def scanned(*records):
+    """An enumeration read off the page text.
+
+    It could look for the two known row shapes and nothing else, which is
+    what `gold_for_documents` produces over a project whose documents
+    print both.
+    """
+    return GoldSet(tuple(records), (_UTILITY_ID, _SEQUENTIAL_ID))
+
+
+def authored(*records):
+    """A hand-authored enumeration: it read the grid, so it sees every row."""
+    return GoldSet(tuple(records), None)
 
 GOLD = """source_ref,page
 FOC1-1,1
@@ -92,7 +109,9 @@ def test_a_gold_set_loads(tmp_path):
     path.write_text(GOLD)
     gold = load_gold(path)
     assert [g.source_ref for g in gold] == ["FOC1-1", "FOC1-2", "E92"]
-    assert gold[2].page == 2
+    assert gold.records[2].page == 2
+    # It read the grid, so no id is beyond it.
+    assert gold.reach is None
 
 
 def test_a_gold_set_without_source_ref_is_refused(tmp_path):
@@ -189,7 +208,7 @@ def test_recall_and_precision_against_the_enumeration(session, project, document
     for uid in ("FOC1-1", "FOC1-2"):
         make_candidate(session, project, document, uid)
 
-    gold = [GoldRecord("FOC1-1"), GoldRecord("FOC1-2"), GoldRecord("E92")]
+    gold = scanned(GoldRecord("FOC1-1"), GoldRecord("FOC1-2"), GoldRecord("E92"))
     result = evaluate(session, slug=project.slug, gold=gold)
 
     assert result.matched == 2
@@ -211,7 +230,7 @@ def test_an_extracted_row_that_is_not_in_the_enumeration_is_spurious(
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, document, "FOC9-9")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     assert result.spurious == ["FOC9-9"]
     assert result.precision == 0.5
 
@@ -224,7 +243,7 @@ def test_a_repeated_id_is_counted_twice_not_collapsed(session, project, document
     """
     make_candidate(session, project, document, "FOC14-69")
 
-    gold = [GoldRecord("FOC14-69"), GoldRecord("FOC14-69")]
+    gold = scanned(GoldRecord("FOC14-69"), GoldRecord("FOC14-69"))
     result = evaluate(session, slug=project.slug, gold=gold)
 
     assert result.gold_total == 2
@@ -238,7 +257,7 @@ def test_the_versions_that_produced_the_number_are_recorded(
 ):
     """A figure that moved must be attributable to code or to data."""
     make_candidate(session, project, document, "FOC1-1")
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     assert result.prompt_versions == {"txdot_ucm_v1": 1}
     assert result.models == {"deterministic": 1}
 
@@ -246,14 +265,14 @@ def test_the_versions_that_produced_the_number_are_recorded(
 def test_the_output_states_what_it_cannot_measure(session, project, document):
     """A matrix is not ground truth for its own omissions."""
     make_candidate(session, project, document, "FOC1-1")
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     assert "omissions" in render(result)
     assert result.recall == 1.0
 
 
 def test_an_empty_ledger_scores_zero_not_one(session, project, document):
     """Nothing extracted is 0% recall, never a vacuous 100%."""
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     assert result.recall == 0.0
     assert result.precision == 0.0
     assert result.missing == ["FOC1-1"]
@@ -275,11 +294,11 @@ def test_two_extractors_on_one_project_are_scored_separately(
     make_candidate(session, project, document, "FOC9-9", prompt_version="matrix_vision_v1")
 
     old = evaluate(
-        session, slug=project.slug, gold=[GoldRecord("FOC1-1")],
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")),
         prompt_version="txdot_ucm_v1",
     )
     new = evaluate(
-        session, slug=project.slug, gold=[GoldRecord("FOC1-1")],
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")),
         prompt_version="matrix_vision_v1",
     )
 
@@ -359,7 +378,7 @@ def test_a_prefixed_layout_never_falls_through_to_the_sequential_one():
 def test_a_page_of_numbers_with_no_stationing_enumerates_nothing():
     """The sequential shape needs the station to anchor it, or every sheet
     number on the page becomes a row."""
-    assert gold_from_page_text({1: "12 \n13 \n14 \nSheet index \n"}) == []
+    assert gold_from_page_text({1: "12 \n13 \n14 \nSheet index \n"}).records == ()
 
 
 # ------------------------------------- a measurement that cannot be made
@@ -372,7 +391,7 @@ def test_an_empty_enumeration_is_not_a_score(session, project, document):
     had in fact extracted 66 correct rows."""
     make_candidate(session, project, document, "1")
 
-    result = evaluate(session, slug=project.slug, gold=[])
+    result = evaluate(session, slug=project.slug, gold=scanned())
 
     assert result.unmeasurable is True
     rendered = render(result)
@@ -384,7 +403,7 @@ def test_a_real_enumeration_is_measurable_even_when_recall_is_zero(
     session, project, document
 ):
     """A genuine 0% must still be reported as 0%."""
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
 
     assert result.unmeasurable is False
     assert result.recall == 0.0
@@ -451,11 +470,11 @@ def test_critical_recall_is_scored_from_the_gold_labels(session, project, docume
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, document, "E92")
 
-    gold = [
+    gold = scanned(
         GoldRecord("FOC1-1", critical=True),
         GoldRecord("FOC1-2", critical=True),
         GoldRecord("E92"),
-    ]
+    )
     result = evaluate(session, slug=project.slug, gold=gold)
 
     assert result.critical_gold_total == 2
@@ -478,7 +497,7 @@ def test_a_gold_set_labeling_nothing_critical_is_not_a_recall_of_zero(
     make_candidate(session, project, document, "FOC1-1")
 
     result = evaluate(
-        session, slug=project.slug, gold=[GoldRecord("FOC1-1", critical=False)]
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1", critical=False))
     )
 
     assert result.critical_unmeasurable is True
@@ -491,7 +510,7 @@ def test_a_gold_set_with_no_critical_column_says_so_rather_than_erroring(
     """Everything else scores unchanged, and the absence is stated."""
     make_candidate(session, project, document, "FOC1-1")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     rendered = render(result)
 
     assert result.unmeasurable is False
@@ -507,7 +526,7 @@ def test_a_genuine_critical_recall_of_zero_is_reported_as_zero(
     make_candidate(session, project, document, "E92")
 
     result = evaluate(
-        session, slug=project.slug, gold=[GoldRecord("FOC1-1", critical=True)]
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1", critical=True))
     )
 
     assert result.critical_unmeasurable is False
@@ -523,7 +542,7 @@ def test_critical_recall_is_scoped_to_one_extractor(session, project, document):
         session, project, document, "FOC1-2", prompt_version="matrix_tiered_v1"
     )
 
-    gold = [GoldRecord("FOC1-1", critical=True), GoldRecord("FOC1-2", critical=True)]
+    gold = scanned(GoldRecord("FOC1-1", critical=True), GoldRecord("FOC1-2", critical=True))
 
     old = evaluate(
         session, slug=project.slug, gold=gold, prompt_version="txdot_ucm_v1"
@@ -573,7 +592,7 @@ def test_an_id_shape_the_enumeration_cannot_read_is_not_spurious(
     make_candidate(session, project, document, "C448")
     make_candidate(session, project, document, "OH C45")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
 
     assert result.spurious == []
     assert result.unrecognized == ["C448", "OH C45"]
@@ -592,7 +611,7 @@ def test_a_recognisable_id_the_gold_set_lacks_is_still_spurious(
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, document, "FOC9-9")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
 
     assert result.spurious == ["FOC9-9"]
     assert result.unrecognized == []
@@ -607,7 +626,7 @@ def test_coverage_is_the_share_of_extracted_rows_the_enumeration_can_read(
     result = evaluate(
         session,
         slug=project.slug,
-        gold=[GoldRecord("FOC1-1"), GoldRecord("FOC1-2")],
+        gold=scanned(GoldRecord("FOC1-1"), GoldRecord("FOC1-2")),
     )
 
     assert result.recognized_total == 2
@@ -624,7 +643,7 @@ def test_precision_is_scoped_to_the_rows_the_enumeration_could_adjudicate(
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, document, "C448")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     rendered = render(result)
 
     assert result.precision_over_recognized == 1.0
@@ -641,7 +660,7 @@ def test_full_coverage_reports_precision_exactly_as_before(
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, document, "FOC9-9")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     rendered = render(result)
 
     assert result.coverage == 1.0
@@ -658,7 +677,7 @@ def test_recall_is_untouched_by_what_the_enumeration_cannot_read(
     make_candidate(session, project, document, "FOC1-1")
     make_candidate(session, project, document, "C448")
 
-    gold = [GoldRecord("FOC1-1"), GoldRecord("E92")]
+    gold = scanned(GoldRecord("FOC1-1"), GoldRecord("E92"))
     result = evaluate(session, slug=project.slug, gold=gold)
 
     assert result.gold_total == 2
@@ -680,7 +699,7 @@ def test_a_repeated_unreadable_id_is_counted_every_time(
     for _ in range(3):
         make_candidate(session, project, document, "C448")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
 
     assert result.unrecognized == ["C448", "C448", "C448"]
     assert result.recognized_total == 0
@@ -693,7 +712,7 @@ def test_nothing_recognisable_is_still_not_a_precision_of_zero(
     none of a document reports no precision rather than 0%."""
     make_candidate(session, project, document, "C448")
 
-    result = evaluate(session, slug=project.slug, gold=[GoldRecord("FOC1-1")])
+    result = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
     rendered = render(result)
 
     assert result.recognized_total == 0
@@ -706,3 +725,70 @@ def test_nothing_recognisable_is_still_not_a_precision_of_zero(
     assert "precision  NOT MEASURED" in rendered
     assert "nothing to score" in rendered
     assert "precision 0.0%" not in rendered
+
+
+def test_a_hand_authored_gold_set_makes_every_surplus_row_spurious(
+    session, project, document
+):
+    """The M7 holdout's own ids match no shape this scanner knows.
+
+    `gold/wsdot-9540.machine.csv` enumerates the whole document by grid
+    reading, and `PSEN-G-1001` is not a `_UTILITY_ID` or a
+    `_SEQUENTIAL_ID`. Under the old union-of-both-shapes rule one
+    genuinely spurious row would have printed `precision NOT MEASURED as
+    a whole-document figure` and written `"precision": null` into the
+    gate artifact — on a holdout that is spent once (ADR-0008).
+    """
+    make_candidate(session, project, document, "PSEN-G-1001")
+    make_candidate(session, project, document, "TCPR-P-1043")
+
+    result = evaluate(
+        session,
+        slug=project.slug,
+        gold=authored(GoldRecord("PSEN-G-1001")),
+    )
+
+    assert result.unrecognized == []
+    assert result.spurious == ["TCPR-P-1043"]
+    assert result.coverage == 1.0
+    assert result.partial_coverage is False
+    assert result.precision == 0.5
+
+
+def test_a_matched_row_is_within_reach_by_definition(session, project, document):
+    """Coverage claimed every matched row was an id shape it could read.
+
+    On the holdout that claim was false for all 192 of them — matched rows
+    were never shape-tested at all, so the headline stated something
+    nobody had checked.
+    """
+    make_candidate(session, project, document, "PSEN-G-1001")
+
+    result = evaluate(
+        session, slug=project.slug, gold=authored(GoldRecord("PSEN-G-1001"))
+    )
+
+    assert result.matched == 1
+    assert result.coverage == 1.0
+    assert "every one of 1 extracted rows" in render(result)
+
+
+def test_an_enumeration_reaches_only_the_shape_it_actually_used(
+    session, project, document
+):
+    """#90's defect in the opposite direction.
+
+    `gold_from_page_text` tries the two shapes in order and stops at the
+    first that finds anything, because their discriminators are inverted.
+    A prefixed layout therefore never runs the sequential shape — so `303`
+    is an id that enumeration provably could not have found, and calling
+    it spurious charges the extractor for the scanner's blind spot.
+    """
+    page = "FOC1-1 \nAT&T Texas \nFOC1-2 \nCenterPoint \n"
+    gold = gold_from_page_text({1: page})
+    assert [r.source_ref for r in gold] == ["FOC1-1", "FOC1-2"]
+
+    assert gold.can_adjudicate("FOC9-9") is True
+    assert gold.can_adjudicate("303") is False
+    assert gold.can_adjudicate("OH C45") is False
+    assert gold.can_adjudicate("") is False
