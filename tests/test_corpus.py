@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import zipfile
 from datetime import date
 
@@ -68,12 +69,34 @@ def test_manifest_parses_sources(tmp_path):
     m = load_manifest(write_manifest(tmp_path))
     assert m.project == "nhhip-3c2"
     assert m.agency == "TxDOT"
+    assert m.ingest_by_default is True
+    assert m.sealed is False
     assert len(m.sources) == 2
     first = m.sources[0]
     assert first.doc_type == "matrix"
     assert first.role == "spine"
     assert first.doc_date == date(2026, 2, 13)
     assert m.sources[1].doc_date is None
+
+
+def test_manifest_accepts_real_yaml_booleans_for_policy_fields(tmp_path):
+    manifest = "ingest_by_default: false\nsealed: true\n" + MANIFEST
+    parsed = load_manifest(write_manifest(tmp_path, manifest))
+    assert parsed.ingest_by_default is False
+    assert parsed.sealed is True
+
+
+@pytest.mark.parametrize("field", ["ingest_by_default", "sealed"])
+@pytest.mark.parametrize("value", ['"false"', "0", "1", "null"])
+def test_manifest_rejects_non_boolean_policy_fields(tmp_path, field, value):
+    manifest_path = tmp_path / "manifest.yaml"
+    manifest_path.write_text(f"{field}: {value}\n" + MANIFEST)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(f"{manifest_path}: {field} must be a YAML boolean"),
+    ):
+        load_manifest(manifest_path)
 
 
 def test_manifest_rejects_an_unknown_doc_type(tmp_path):
@@ -189,6 +212,66 @@ def test_a_real_corpus_run_skips_the_holdout_and_names_it(capsys, monkeypatch):
     # successor holdout switches it back on for a real document.
     named = capsys.readouterr().out
     assert all(f"{slug}:" in named for slug in ("wsdot-9424", "wsdot-9540"))
+
+
+def test_an_explicit_manifest_argument_fetches_only_that_manifest(tmp_path, monkeypatch):
+    import corridor.corpus as corpus_module
+
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    first = corpus_dir / "first.yaml"
+    second = corpus_dir / "second.yaml"
+    first.write_text(MANIFEST.replace("nhhip-3c2", "first-project"))
+    second.write_text(MANIFEST.replace("nhhip-3c2", "second-project"))
+
+    reached = []
+
+    def record(manifest, **kwargs):
+        reached.append(manifest.project)
+        return corpus_module.Summary()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(corpus_module, "fetch_all", record)
+
+    assert corpus_module.main([str(second)]) == 0
+    assert reached == ["second-project"]
+
+
+def test_main_without_argv_ignores_process_cli_flags(tmp_path, monkeypatch):
+    import corridor.corpus as corpus_module
+
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "only.yaml").write_text(MANIFEST.replace("nhhip-3c2", "only-project"))
+
+    reached = []
+
+    def record(manifest, **kwargs):
+        reached.append(manifest.project)
+        return corpus_module.Summary()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(corpus_module, "fetch_all", record)
+    monkeypatch.setattr(corpus_module.sys, "argv", ["pytest", "--unexpected-flag"])
+
+    assert corpus_module.main() == 0
+    assert reached == ["only-project"]
+
+
+def test_run_cli_forwards_process_argv(monkeypatch):
+    import corridor.corpus as corpus_module
+
+    seen = {}
+
+    def fake_main(argv=None):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(corpus_module, "main", fake_main)
+    monkeypatch.setattr(corpus_module.sys, "argv", ["corridor.corpus", "corpus/one.yaml"])
+
+    assert corpus_module._run_cli() == 0
+    assert seen["argv"] == ["corpus/one.yaml"]
 
 
 def test_fetch_stores_content_addressed_and_records_provenance(tmp_path):
@@ -598,6 +681,24 @@ def test_manifest_carries_project_name_for_ingest(tmp_path):
     assert lock["project"] == "sh99-grand-parkway"
     assert lock["name"] == "SH 99 Grand Parkway Segment B-1"
     assert lock["agency"] == "TxDOT"
+
+
+def test_manifest_carries_ingest_policy_into_the_lock_header(tmp_path):
+    manifest = (
+        "ingest_by_default: false\n"
+        + NESTED_MANIFEST
+    )
+    m = load_manifest(write_manifest(tmp_path, manifest))
+    assert m.ingest_by_default is False
+
+    lock_path = tmp_path / "manifest.lock.json"
+    run_with(
+        tmp_path,
+        manifest,
+        ranged_transport({"https://example.gov/utilities.zip": make_nested_zip()}),
+    )
+    lock = json.loads(lock_path.read_text())
+    assert lock["ingest_by_default"] is False
 
 
 def test_polite_user_agent_is_used_first(tmp_path):

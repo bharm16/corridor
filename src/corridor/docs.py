@@ -7,6 +7,7 @@ manifest.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
 from datetime import date
@@ -139,14 +140,20 @@ def main(argv: list[str]) -> int:
 
     with SessionFactory() as session:
         if command == "ingest":
-            # Every lockfile in corpus/, one project each. The Project row is
-            # created from the lock header when it does not exist yet.
+            # Bulk ingest materializes only lockfiles still opted into default
+            # project creation. An explicit slug still ingests that one lock.
             only = argv[1] if len(argv) > 1 else None
             total = 0
             for lock_path in sorted(Path("corpus").glob("*.lock.json")):
-                header = __import__("json").loads(lock_path.read_text())
+                header = json.loads(lock_path.read_text())
                 slug = header.get("project")
                 if not slug or (only and slug != only):
+                    continue
+                if only is None and header.get("ingest_by_default", True) is False:
+                    print(
+                        f"{slug}: skipped bulk ingest (ingest_by_default is false)",
+                        flush=True,
+                    )
                     continue
                 project = session.scalars(
                     select(Project).where(Project.slug == slug)

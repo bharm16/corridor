@@ -62,7 +62,7 @@ if [ "$CURRENT" != "$PINNED" ]; then
 fi
 
 echo "== fetch (${SLUG}) =="
-uv run python -m corridor.corpus
+uv run python -m corridor.corpus "$MANIFEST"
 
 echo
 echo "== ingest (${SLUG}) =="

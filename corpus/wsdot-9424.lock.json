@@ -1,5 +1,6 @@
 {
   "agency": "WSDOT",
+  "ingest_by_default": false,
   "name": "SR 509 Completion Stage 1B (WSDOT 9424)",
   "project": "wsdot-9424",
   "sources": {
