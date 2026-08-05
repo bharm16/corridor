@@ -814,6 +814,51 @@ def test_edit_then_accept_records_the_edited_values(
     assert station.asserted_value == "1150+00"
 
 
+@pytest.mark.parametrize(
+    "form_fields",
+    [
+        {},
+        {"field_utility_id": "", "field_external_org": "   "},
+    ],
+    ids=["boxes-absent", "boxes-blanked"],
+)
+def test_edit_accepting_with_every_field_box_cleared_is_refused(
+    client, session, project, document, form_fields
+):
+    """The live path, and the only one of these defects a reviewer can reach.
+
+    `edit_accept` keeps only `field_*` inputs that still hold a value, so
+    clearing the boxes sends `fields = {}` — and acceptance committed a
+    Dependency with a real verified EvidenceLink, zero Assertions, and
+    `_title` calling it "Utility" because there was no utility_type left
+    to name it by. Evidence for nothing, at 303 back to the queue.
+    """
+    candidate = make_candidate(session, project, document)
+    before_dependencies = session.scalar(
+        select(func.count()).select_from(Dependency)
+    )
+    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
+    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
+
+    response = client.post(
+        f"/candidates/{candidate.id}/edit-accept",
+        data={"slug": project.slug, **form_fields},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert candidate.state == "pending"
+    # On the Ledger, not on the payload. `edit_accept` is one act: the edit
+    # is written and flushed before acceptance refuses it, and the route's
+    # session never commits on that path, so production takes the whole
+    # thing back. These tests share the caller's session, which cannot
+    # tell a flush-then-rollback from a never-write — so they assert the
+    # thing both harnesses agree on.
+    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
+    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+
+
 def test_an_edit_is_audited_against_the_original_extraction(
     client, session, project, document
 ):

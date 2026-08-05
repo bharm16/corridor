@@ -22,6 +22,7 @@ from starlette.requests import Request
 
 from corridor.adjudicate import (
     AlreadyAdjudicated,
+    CandidateAssertsNothing,
     InvalidCandidateProvenance,
     InvalidRejectReason,
     REJECT_REASONS,
@@ -219,6 +220,8 @@ def _accept(session: Session, candidate) -> None:
     except InvalidCandidateProvenance as exc:
         raise HTTPException(400, str(exc))
     except UnadjudicableKind as exc:
+        raise HTTPException(400, str(exc))
+    except CandidateAssertsNothing as exc:
         raise HTTPException(400, str(exc))
 
 

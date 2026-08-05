@@ -147,8 +147,30 @@ def test_browse_lists_dependencies_with_their_backing(session, project, dependen
     assert row.org_name == "LT AT&T Texas"
     assert row.assertion_count == len(FIELDS)
     assert row.evidence_count == 1
+    assert row.verified_evidence_count == 1
     assert row.is_ready is False
     assert row.contradicted is False
+
+
+def test_a_link_that_does_not_hold_is_still_backing_but_not_evidence(
+    session, project, dependency
+):
+    """Two facts the Backing column and the report each want a different one of.
+
+    The ledger page's "1e" means "one link behind this record", which is
+    what a reviewer chasing a bad citation needs to see. A published
+    figure saying "evidence" means the ones that hold.
+    """
+    link = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+    link.verified = False
+    session.flush()
+
+    [row] = _browse(session, project)
+
+    assert row.evidence_count == 1
+    assert row.verified_evidence_count == 0
 
 
 def test_browse_filters_by_status(session, project, dependency):

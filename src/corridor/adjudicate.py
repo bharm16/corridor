@@ -29,6 +29,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
     Project,
+    is_claim,
     is_placeholder_party,
 )
 from corridor.verify import normalize, unverified_fields
@@ -214,6 +215,10 @@ class UnadjudicableKind(Exception):
     """This Candidate is not a kind acceptance knows how to resolve."""
 
 
+class CandidateAssertsNothing(Exception):
+    """This Candidate carries no claim for a Ledger row to be made of."""
+
+
 def accept_candidate(
     session: Session, candidate: Candidate, *, actor: str
 ) -> Dependency:
@@ -234,6 +239,25 @@ def accept_candidate(
             "builds a Dependency — an event must be attached to one instead"
         )
     payload, fields, citations = _validate_candidate_provenance(session, candidate)
+    if not any(is_claim(value) for value in fields.values()):
+        # The mirror of the citation rule, and the reachable half of it: a
+        # reviewer who clears every field box and presses accept sends an
+        # edit whose `fields` is `{}` — the route keeps only `field_*`
+        # inputs that still hold a value — and the Assertion loop below
+        # then does not run. What committed was a Dependency with a real
+        # verified EvidenceLink and no claims: evidence for nothing, and
+        # `_title` naming it "Utility" because there was no utility_type
+        # to name it by.
+        #
+        # `is_claim` rather than truthiness, because it is already this
+        # system's answer to "does this value say anything a source could
+        # disagree with", and a row whose every field is blank asserts
+        # exactly as much as a row with no fields at all.
+        raise CandidateAssertsNothing(
+            f"candidate {candidate.id} asserts nothing, and a Ledger row is "
+            "what a document claims — an edit that empties every field is a "
+            "rejection, not an acceptance"
+        )
 
     org = _resolve_org(session, fields.get("external_org"))
     strategy = _asserted_strategy(session, candidate, fields)
@@ -591,6 +615,12 @@ def merge_candidate(
     # good, because merging refuses a Candidate that is no longer pending.
     primary = links[0]
 
+    # No "asserts nothing" rule here, unlike acceptance, and the asymmetry
+    # is the point: acceptance builds the record, so a Candidate with no
+    # claim leaves nothing for the record to be made of. A merge attaches
+    # to a record that already has its claims, and a Candidate carrying
+    # only a citation is a second document saying the same conflict exists
+    # — corroboration, which is worth keeping.
     for name, value in fields.items():
         session.add(
             Assertion(

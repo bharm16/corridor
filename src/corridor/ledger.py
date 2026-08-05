@@ -99,7 +99,14 @@ class LedgerRow:
     dependency: Dependency
     org_name: str | None
     is_ready: bool
+    # Two facts, not one. `evidence_count` is how many links this record
+    # carries, which is what the ledger page's Backing column means and
+    # what a reviewer chasing a bad citation needs. `verified_evidence_count`
+    # is how many of them hold — the question `_ready_ids`,
+    # `primary_evidence` and the engine's MISSING_EVIDENCE all ask, and the
+    # one a published figure means when it says "evidence".
     evidence_count: int
+    verified_evidence_count: int
     assertion_count: int
     contradicted: bool
     exceptions: list = field(default_factory=list)
@@ -162,13 +169,21 @@ def browse(
         o.id: o.name
         for o in session.scalars(select(ExternalOrg))
     }
-    evidence_counts = dict(
-        session.execute(
-            select(EvidenceLink.dependency_id, func.count())
+    # Both counts in one pass, so they cannot describe different
+    # populations — which is the whole failure being fixed: a report cell
+    # labelled "With verified evidence" was counting every link.
+    evidence_counts = {
+        dependency_id: (total, verified)
+        for dependency_id, total, verified in session.execute(
+            select(
+                EvidenceLink.dependency_id,
+                func.count(),
+                func.count().filter(EvidenceLink.verified.is_(True)),
+            )
             .where(EvidenceLink.dependency_id.in_(ids))
             .group_by(EvidenceLink.dependency_id)
         ).all()
-    )
+    }
     assertion_counts = dict(
         session.execute(
             select(Assertion.dependency_id, func.count())
@@ -188,7 +203,8 @@ def browse(
             dependency=d,
             org_name=orgs.get(d.external_org_id),
             is_ready=d.id in ready_ids,
-            evidence_count=evidence_counts.get(d.id, 0),
+            evidence_count=evidence_counts.get(d.id, (0, 0))[0],
+            verified_evidence_count=evidence_counts.get(d.id, (0, 0))[1],
             assertion_count=assertion_counts.get(d.id, 0),
             contradicted=d.id in contradicted,
             exceptions=by_dependency.get(d.id, []),

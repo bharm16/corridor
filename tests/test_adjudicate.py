@@ -9,6 +9,7 @@ from corridor.adjudicate import (
     RESOLUTION_VOCABULARIES,
     _next_ref_code,
     AlreadyAdjudicated,
+    CandidateAssertsNothing,
     InvalidCandidateProvenance,
     InvalidRejectReason,
     ResolutionVocabulary,
@@ -442,6 +443,58 @@ def test_merging_refuses_a_candidate_that_cites_nothing(
     assert candidate.state == "pending"
     assert candidate.merged_into is None
     assert _ledger_counts(session) == before
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{}, {"utility_id": "", "external_org": "   "}],
+    ids=["no-fields", "blank-fields"],
+)
+def test_accepting_refuses_a_candidate_that_asserts_nothing(
+    session, document, fields
+):
+    """Evidence for nothing is the mirror of a claim with no evidence.
+
+    The blank-fields case is the same row by `is_claim`'s reading: a
+    document declining to fill a cell asserts exactly as much as one with
+    no cell, and the Ledger already answers "does this value say anything
+    a source could disagree with" that way.
+    """
+    candidate = make_candidate(session, document, fields=fields)
+    before = _ledger_counts(session)
+
+    with pytest.raises(CandidateAssertsNothing, match="asserts nothing"):
+        accept_candidate(session, candidate, actor="reviewer")
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+    assert _ledger_counts(session) == before
+
+
+def test_merging_a_candidate_that_asserts_nothing_keeps_its_evidence(
+    session, document
+):
+    """The asymmetry, stated as behaviour.
+
+    Acceptance builds the record, so a Candidate with no claim leaves
+    nothing for it to be made of. A merge attaches to a record that
+    already has its claims, and a Candidate carrying only a citation is a
+    second document saying the conflict exists.
+    """
+    from corridor.adjudicate import merge_candidate
+
+    target = accept_candidate(session, make_candidate(session, document), actor="b")
+    corroborating = make_candidate(session, document, fields={})
+
+    merge_candidate(session, corroborating, target, actor="reviewer")
+
+    links = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == target.id)
+    ).all()
+    assert len(links) == 2
+    assert corroborating.state == "merged"
 
 
 def test_a_candidate_whose_only_citation_is_unverified_is_still_adjudicable(
