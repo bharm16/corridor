@@ -582,6 +582,42 @@ def test_a_continuation_page_is_read_not_skipped(session, project, tmp_path):
     assert {r.critical for r in gold.rows} == {"yes"}
 
 
+def test_machine_gold_sidecar_names_the_document_beside_each_page_image(
+    session, project, tmp_path
+):
+    """Two documents can both contribute `page 1`.
+
+    The sidecar is the human checklist that narrows the shared blind spot.
+    Once machine gold grew from one matrix to every matrix in the project,
+    `page 1` stopped being a unique identifier for that checklist.
+    """
+    from corridor.gold import author_machine_gold, render_machine_gold
+
+    rows = [
+        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
+        [
+            "UTILITY OWNER",
+            "UTILITY ID",
+            "FACILITY TYPE",
+            "RELOCATION",
+            "PROTECTION IN PLACE",
+            "ABANDON/ DEACTIVATE",
+            "NOTES",
+        ],
+        ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
+    ]
+    first = make_multipage(session, project, tmp_path, [rows], sha="power")
+    second = make_multipage(session, project, tmp_path, [rows], sha="water")
+
+    gold = author_machine_gold(session, project.id)
+    out = render_machine_gold(gold)
+
+    assert first.filename in gold.document
+    assert second.filename in gold.document
+    assert f"{first.filename} page 1" in out
+    assert f"{second.filename} page 1" in out
+
+
 def test_a_document_that_never_prints_the_band_is_still_refused(
     session, project, tmp_path
 ):

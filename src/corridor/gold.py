@@ -562,6 +562,13 @@ class MachineGoldRow:
 
 
 @dataclass(frozen=True)
+class MachineGoldPageImage:
+    filename: str
+    page_no: int
+    image_path: str | None
+
+
+@dataclass(frozen=True)
 class MachineGold:
     project: str
     document: str
@@ -569,7 +576,7 @@ class MachineGold:
     # What was read and excluded, for the sidecar's accounting.
     retired: int
     empty_slots: int
-    page_images: tuple[tuple[int, str | None], ...]
+    page_images: tuple[MachineGoldPageImage, ...]
 
 
 def author_machine_gold(session: Session, project_id: int) -> MachineGold:
@@ -723,7 +730,12 @@ def author_machine_gold(session: Session, project_id: int) -> MachineGold:
         retired=retired,
         empty_slots=empty_slots,
         page_images=tuple(
-            (page_no, path) for (_, page_no), path in sorted(images.items())
+            MachineGoldPageImage(
+                filename=filename,
+                page_no=page_no,
+                image_path=path,
+            )
+            for (filename, page_no), path in sorted(images.items())
         ),
     )
 
@@ -773,8 +785,11 @@ def render_machine_gold(gold: MachineGold) -> str:
         "any time after the run:",
         "",
     ]
-    for page_no, image in gold.page_images:
-        lines.append(f"- [ ] page {page_no} — `{image or 'no image'}`")
+    for page in gold.page_images:
+        lines.append(
+            f"- [ ] {page.filename} page {page.page_no} — "
+            f"`{page.image_path or 'no image'}`"
+        )
     return "\n".join(lines) + "\n"
 
 
