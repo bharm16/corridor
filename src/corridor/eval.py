@@ -724,11 +724,125 @@ def exit_code(result: EvalResult) -> int:
     return 1 if result.unmeasurable else 0
 
 
+class NothingToMeasure(Exception):
+    """There is no measurement to take, so a score would be a fiction."""
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """One scoring run, with the provenance of the enumeration it scored.
+
+    `gold_source` is what the recorded artifact publishes as the origin of
+    the number, so it states every scope that was applied and not only
+    where the rows came from.
+
+    `skipped` is the ingested matrices this extraction never read. They are
+    excluded from the population rather than counted as misses, which is a
+    fact about the measurement and therefore belongs to it.
+    """
+
+    result: EvalResult
+    gold_source: str
+    skipped: frozenset[int] = frozenset()
+
+
+def measure(
+    session: Session,
+    slug: str,
+    *,
+    gold_path: str | Path | None = None,
+    prompt_version: str | None = None,
+) -> Measurement:
+    """Score one project's matrix extraction against an enumeration.
+
+    This is the whole measurement. It lived as an eleven-step sequence
+    inside `main`, where nothing drove it — every collaborator it calls has
+    tests, and the wiring between them had none. ADR-0008 makes that the
+    highest-consequence gap in this module: a holdout is spent once, and a
+    holdout scored by a broken measurement is a holdout wasted.
+
+    The refusal is the reason it is worth naming. `document_ids` scopes the
+    scoring to the documents this extractor actually read, on *both* gold
+    paths — so when nothing was extracted, the population is empty and
+    every gold row reads as a miss. The page-text path checked for that;
+    the CSV path, which is the invocation `scripts/gate-run.sh` prints, did
+    not. A slug with nothing extracted at the given prompt version scored
+    `recall 0.0%` with `unmeasurable` false and exited 0: a green gate on a
+    spent holdout. The check now sits above the branch, where it covers
+    both.
+
+    Without `gold_path` the enumeration is built from the stored page text
+    of the project's matrices, which is independent of the table parser
+    under test.
+    """
+    project = session.scalars(select(Project).where(Project.slug == slug)).first()
+    if project is None:
+        raise NothingToMeasure(f"no project {slug!r}")
+
+    matrices = set(
+        session.scalars(
+            select(Document.id).where(
+                Document.project_id == project.id,
+                Document.doc_type == "matrix",
+            )
+        ).all()
+    )
+    # The population being scored, on both paths. It was computed only for
+    # the page-text gold and never reached `evaluate`, which filtered on
+    # project and kind alone.
+    #
+    # Intersected with the matrices, because this measures matrix
+    # extraction. `extract_agreement` also emits `kind="dependency"`
+    # Candidates; they carry no `utility_id` so they never scored, but they
+    # were still counted into the prompt-version and model stamp and into
+    # `field_failures`, whose printed denominator is the matrix row count —
+    # a provenance stamp describing a different population than the number
+    # beside it.
+    extracted_docs = (
+        extracted_documents(session, project.id, prompt_version=prompt_version)
+        & matrices
+    )
+    if not extracted_docs:
+        raise NothingToMeasure(
+            f"{slug}: nothing extracted yet"
+            + (f" at {prompt_version}" if prompt_version else "")
+        )
+
+    skipped = matrices - extracted_docs
+    if gold_path is not None:
+        gold = load_gold(gold_path)
+        source = str(gold_path)
+    else:
+        gold = gold_for_documents(session, extracted_docs)
+        source = "page text (independent of the table parser)"
+
+    # Both scopes apply to both paths, because both pass `document_ids`.
+    # Stated on the page-text path only, a CSV measurement recorded the
+    # file it read and stayed silent about the population it was narrowed
+    # to — which is the half a reader of the artifact cannot reconstruct.
+    if prompt_version:
+        source += f"; scoped to {prompt_version}"
+    if skipped:
+        source += f"; {len(skipped)} ingested matrix/matrices not extracted"
+
+    return Measurement(
+        result=evaluate(
+            session,
+            slug=slug,
+            gold=gold,
+            prompt_version=prompt_version,
+            document_ids=extracted_docs,
+        ),
+        gold_source=source,
+        skipped=frozenset(skipped),
+    )
+
+
 def main(argv: list[str]) -> int:
     """`eval <project-slug> [gold.csv] [--prompt-version=X]`.
 
-    Without a CSV the enumeration is built from the stored page text of the
-    project's matrices, which is independent of the table parser under test.
+    Argument parsing, printing and the artifact file. The measurement
+    itself is `measure`.
 
     `--prompt-version` scopes both the enumeration and the scoring to one
     extraction path, which is what makes two paths on the same project
@@ -747,71 +861,21 @@ def main(argv: list[str]) -> int:
         return 2
 
     slug = args[0]
-    skipped: set[int] = set()
+    gold_path = args[1] if len(args) > 1 else None
     with SessionFactory() as session:
-        project = session.scalars(
-            select(Project).where(Project.slug == slug)
-        ).first()
-        if project is None:
-            print(f"no project {slug!r}", file=sys.stderr)
+        try:
+            measurement = measure(
+                session, slug, gold_path=gold_path, prompt_version=prompt_version
+            )
+        except NothingToMeasure as exc:
+            print(str(exc), file=sys.stderr)
             return 1
-        matrices = set(
-            session.scalars(
-                select(Document.id).where(
-                    Document.project_id == project.id,
-                    Document.doc_type == "matrix",
-                )
-            ).all()
-        )
-        # The population being scored, on both paths. It was computed only
-        # for the page-text gold and never reached `evaluate`, which
-        # filtered on project and kind alone.
-        #
-        # Intersected with the matrices, because this measures matrix
-        # extraction. `extract_agreement` also emits `kind="dependency"`
-        # Candidates; they carry no `utility_id` so they never scored, but
-        # they were still counted into the prompt-version and model stamp
-        # and into `field_failures`, whose printed denominator is the
-        # matrix row count — a provenance stamp describing a different
-        # population than the number beside it.
-        extracted_docs = (
-            extracted_documents(session, project.id, prompt_version=prompt_version)
-            & matrices
-        )
 
-        if len(args) > 1:
-            gold = load_gold(args[1])
-            source = args[1]
-        else:
-            skipped = matrices - extracted_docs
-            if not extracted_docs:
-                print(
-                    f"{slug}: nothing extracted yet"
-                    + (f" at {prompt_version}" if prompt_version else ""),
-                    file=sys.stderr,
-                )
-                return 1
-
-            gold = gold_for_documents(session, extracted_docs)
-            source = "page text (independent of the table parser)"
-            if prompt_version:
-                source += f"; scoped to {prompt_version}"
-            if skipped:
-                source += f"; {len(skipped)} ingested matrix/matrices not extracted"
-
-        result = evaluate(
-            session,
-            slug=slug,
-            gold=gold,
-            prompt_version=prompt_version,
-            document_ids=extracted_docs,
-        )
-
-    print(render(result))
-    if len(args) == 1 and skipped:
+    print(render(measurement.result))
+    if gold_path is None and measurement.skipped:
         print(
-            f"  {len(skipped)} ingested matrix/matrices contributed no candidates "
-            "and are excluded from the enumeration, not counted as misses."
+            f"  {len(measurement.skipped)} ingested matrix/matrices contributed no "
+            "candidates and are excluded from the enumeration, not counted as misses."
         )
 
     out = Path("out")
@@ -822,13 +886,17 @@ def main(argv: list[str]) -> int:
     path = out / f"{stem}.json"
     path.write_text(
         json.dumps(
-            artifact(result, gold_source=source, ran_at=datetime.now(timezone.utc)),
+            artifact(
+                measurement.result,
+                gold_source=measurement.gold_source,
+                ran_at=datetime.now(timezone.utc),
+            ),
             indent=2,
         )
         + "\n"
     )
     print(f"\n{path}")
-    return exit_code(result)
+    return exit_code(measurement.result)
 
 
 if __name__ == "__main__":

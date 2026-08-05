@@ -6,6 +6,7 @@ from corridor.eval import (
     GoldRecord,
     GoldSet,
     MalformedGoldSet,
+    NothingToMeasure,
     artifact,
     evaluate,
     exit_code,
@@ -13,6 +14,7 @@ from corridor.eval import (
     gold_for_documents,
     gold_from_page_text,
     load_gold,
+    measure,
     render,
 )
 from corridor.eval import _SEQUENTIAL_ID, _UTILITY_ID
@@ -1013,3 +1015,119 @@ def test_the_artifact_records_where_the_enumeration_came_from(
     assert written["gold_source"] == "gold.csv"
     assert written["ran_at"] == "2026-08-04T00:00:00+00:00"
     assert written["project"] == project.slug
+
+
+# --------------------------------------------------------------- measurement
+
+
+def test_a_csv_gold_set_is_refused_when_nothing_was_extracted(
+    session, project, document, tmp_path
+):
+    """The gate's own invocation, on a project the extractor never ran over.
+
+    `document_ids` scopes the scoring to the documents this extractor read,
+    so an empty set makes every gold row a miss. The page-text path checked
+    for that; the CSV path — which is what `scripts/gate-run.sh` prints —
+    did not, and reported `recall 0.0%` with `unmeasurable` false and exit
+    code 0. ADR-0008 says a holdout is spent once; that combination spends
+    one on a green run that measured nothing.
+    """
+    add_page(session, document, 1, "FOC1-1 1149+00\n")
+    path = tmp_path / "gold.csv"
+    path.write_text(GOLD)
+
+    with pytest.raises(NothingToMeasure, match="nothing extracted"):
+        measure(session, project.slug, gold_path=path)
+
+
+def test_the_page_text_path_is_refused_the_same_way(session, project, document):
+    add_page(session, document, 1, "FOC1-1 1149+00\n")
+
+    with pytest.raises(NothingToMeasure, match="nothing extracted"):
+        measure(session, project.slug)
+
+
+def test_the_refusal_names_the_prompt_version_it_looked_for(
+    session, project, document, tmp_path
+):
+    """Extraction ran, but not on the path being measured."""
+    add_page(session, document, 1, "FOC1-1 1149+00\n")
+    make_candidate(session, project, document, "FOC1-1")
+    path = tmp_path / "gold.csv"
+    path.write_text(GOLD)
+
+    with pytest.raises(NothingToMeasure, match="matrix_tiered_v3"):
+        measure(
+            session, project.slug, gold_path=path, prompt_version="matrix_tiered_v3"
+        )
+
+
+def test_a_missing_project_is_refused_as_a_measurement_not_a_gold_set(session):
+    """`no project` reached the caller as MalformedGoldSet, whose own
+    docstring says the gold set is unusable. The gold set was fine."""
+    with pytest.raises(NothingToMeasure, match="no project"):
+        measure(session, "nobody")
+
+
+def test_a_csv_measurement_records_the_scope_it_was_taken_at(
+    session, project, document, tmp_path
+):
+    """Both scopes apply to both paths, because both pass `document_ids`.
+
+    A CSV run recorded only the file it read, so a reader of the artifact
+    could not tell which extraction path the number covered — while the
+    page-text run beside it said so.
+    """
+    add_page(session, document, 1, "FOC1-1 1149+00\n")
+    make_candidate(session, project, document, "FOC1-1")
+    path = tmp_path / "gold.csv"
+    path.write_text(GOLD)
+
+    taken = measure(
+        session, project.slug, gold_path=path, prompt_version="txdot_ucm_v1"
+    )
+
+    assert str(path) in taken.gold_source
+    assert "scoped to txdot_ucm_v1" in taken.gold_source
+
+
+def test_the_measurement_names_the_matrices_it_did_not_read(
+    session, project, document, tmp_path
+):
+    """An ingested matrix nobody extracted is excluded, not counted missed."""
+    add_page(session, document, 1, "FOC1-1 1149+00\n")
+    make_candidate(session, project, document, "FOC1-1")
+    unread = Document(
+        project_id=project.id,
+        sha256="e" * 64,
+        filename="second.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(unread)
+    session.flush()
+    path = tmp_path / "gold.csv"
+    path.write_text(GOLD)
+
+    taken = measure(session, project.slug, gold_path=path)
+
+    assert taken.skipped == frozenset({unread.id})
+    assert "1 ingested matrix/matrices not extracted" in taken.gold_source
+
+
+def test_the_measurement_scores_only_the_documents_that_extractor_read(
+    session, project, document, tmp_path
+):
+    """The whole point of the sequence: gold, scope and score agree."""
+    add_page(session, document, 1, "FOC1-1 1149+00\nFOC1-2 1150+00\n")
+    make_candidate(session, project, document, "FOC1-1")
+    path = tmp_path / "gold.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\nFOC1-2,1\n")
+
+    taken = measure(session, project.slug, gold_path=path)
+
+    assert taken.result.gold_total == 2
+    assert taken.result.matched == 1
+    assert taken.result.unmeasurable is False
+    assert exit_code(taken.result) == 0
