@@ -33,6 +33,7 @@ from corridor.report import (
     render,
 )
 from corridor.principals import HumanPrincipal
+from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 TEST_PRINCIPAL = HumanPrincipal("local:bryce")
 
@@ -393,6 +394,51 @@ def test_the_exceptions_section_counts_by_rule(
     report = build_report(session, project_with_two_dependencies.id)
     rules = {row[0].value for row in section(report, "Exceptions").rows}
     assert "ORPHAN" in rules
+
+
+def test_report_names_superseded_citations_as_reconfirmation_work(
+    session, project_with_two_dependencies
+):
+    predecessor = session.scalars(
+        select(Document).where(
+            Document.project_id == project_with_two_dependencies.id
+        )
+    ).one()
+    successor = Document(
+        project_id=project_with_two_dependencies.id,
+        sha256="d" * 64,
+        filename="current-revision.pdf",
+        doc_type="matrix",
+        parse_status="pending",
+        pages=1,
+        registry_id="report-current-revision",
+    )
+    predecessor.registry_id = "report-predecessor-revision"
+    session.add(successor)
+    session.flush()
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=predecessor.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=date(2026, 8, 5),
+                source_registry_id=predecessor.registry_id,
+                source_page=1,
+            )
+        ],
+        project_id=project_with_two_dependencies.id,
+    )
+
+    report = build_report(
+        session,
+        project_with_two_dependencies.id,
+        today=date(2026, 8, 5),
+    )
+    rules = {row[0].value for row in section(report, "Exceptions").rows}
+
+    assert "SUPERSEDED_CITATION · re-confirmation" in rules
+    assert "SUPERSEDED_CITATION" not in rules
 
 
 def test_the_appendix_lists_every_ledger_record(

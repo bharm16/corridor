@@ -26,7 +26,9 @@ from corridor.models import (
     EvidenceLink,
     Project,
 )
+from corridor.operative_support import designate_publication_support
 from corridor.principals import HumanPrincipal
+from corridor.supersession import SupersessionDeclaration, register_supersessions
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.queue import build_view, next_candidate, pending_counts
 
@@ -1743,6 +1745,66 @@ def test_a_zero_day_quantity_still_renders(client, session, project):
     body = client.get(f"/ledger/{project.slug}").text
 
     assert "DUE_SOON 0d" in body
+
+
+def test_superseded_citation_is_visible_as_reconfirmation_work(
+    client, session, project, document
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-PROVENANCE-REVIEW",
+        dep_type="utility_relocation",
+        title="Telecom — provenance review",
+        status="identified",
+    )
+    successor = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "successor-awaiting-extraction.pdf"),
+        filename="successor-awaiting-extraction.pdf",
+        doc_type="matrix",
+        parse_status="pending",
+        pages=1,
+    )
+    session.add_all([dependency, successor])
+    session.flush()
+    publication = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="FOC1-1 AT&T Texas (SWBT)",
+        verified=True,
+    )
+    session.add(publication)
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        publication.id,
+        principal=TEST_PRINCIPAL,
+    )
+    document.registry_id = f"web-predecessor-{document.id}"
+    successor.registry_id = f"web-successor-{successor.id}"
+    session.flush()
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=document.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=date.today(),
+                source_registry_id=document.registry_id,
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
+
+    ledger = client.get(f"/ledger/{project.slug}").text
+    detail = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+
+    for body in (ledger, detail):
+        assert "SUPERSEDED_CITATION 0d · re-confirmation" in body
+        assert "needs human re-confirmation against the current revision" in body
 
 
 def _event_candidate(session, project, document):

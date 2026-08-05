@@ -35,10 +35,28 @@ class EvidenceSupport:
     satisfies_requirement: bool
     evidence_date: date | None
     superseded_by: int | None
+    superseded_on: date | None
 
     @property
     def is_current(self) -> bool:
         return self.superseded_by is None
+
+
+@dataclass(frozen=True)
+class SupersededOperativeScope:
+    """One exact support role that still cites a superseded revision."""
+
+    role: str
+    field_name: str | None
+    evidence: EvidenceSupport
+
+    @property
+    def label(self) -> str:
+        if self.role == "publication" and self.field_name is not None:
+            return f"publication field {self.field_name}"
+        if self.role == "publication":
+            return "record publication"
+        return self.role
 
 
 @dataclass(frozen=True)
@@ -49,9 +67,13 @@ class ResolvedSupport:
     readiness: tuple[EvidenceSupport, ...]
     current_readiness: tuple[EvidenceSupport, ...]
     is_ready: bool
-    superseded_roles: frozenset[str]
+    superseded_scopes: tuple[SupersededOperativeScope, ...]
     verified_evidence_count: int
     last_evidenced_at: date | None
+
+    @property
+    def superseded_roles(self) -> frozenset[str]:
+        return frozenset(scope.role for scope in self.superseded_scopes)
 
     def publication_for(self, field_name: str | None = None) -> EvidenceSupport | None:
         if field_name is None:
@@ -67,7 +89,7 @@ class ResolvedSupport:
             readiness=(),
             current_readiness=(),
             is_ready=False,
-            superseded_roles=frozenset(),
+            superseded_scopes=(),
             verified_evidence_count=0,
             last_evidenced_at=None,
         )
@@ -169,6 +191,7 @@ def resolve_operative_support(
             satisfies_requirement=bool(link.satisfies_requirement),
             evidence_date=evidence_date,
             superseded_by=document.superseded_by,
+            superseded_on=document.superseded_on,
         )
         evidence_by_dependency.setdefault(link.dependency_id, []).append(support)
         evidence_by_id[link.id] = support
@@ -194,7 +217,7 @@ def resolve_operative_support(
 
         publication = None
         by_field: dict[str, EvidenceSupport] = {}
-        superseded_roles: set[str] = set()
+        superseded_scopes: list[SupersededOperativeScope] = []
         for designation in designations.get(dependency_id, []):
             support = evidence_by_id.get(designation.evidence_link_id)
             # A human judgment cannot make a mechanically unverified quote
@@ -204,14 +227,33 @@ def resolve_operative_support(
             if designation.field_name is None:
                 publication = support
                 if not support.is_current:
-                    superseded_roles.add("publication")
+                    superseded_scopes.append(
+                        SupersededOperativeScope(
+                            role="publication",
+                            field_name=None,
+                            evidence=support,
+                        )
+                    )
             else:
                 by_field[designation.field_name] = support
                 if not support.is_current:
-                    superseded_roles.add("publication")
+                    superseded_scopes.append(
+                        SupersededOperativeScope(
+                            role="publication",
+                            field_name=designation.field_name,
+                            evidence=support,
+                        )
+                    )
 
         if readiness and not current_readiness:
-            superseded_roles.add("readiness")
+            superseded_scopes.extend(
+                SupersededOperativeScope(
+                    role="readiness",
+                    field_name=None,
+                    evidence=support,
+                )
+                for support in readiness
+            )
         dates = tuple(item.evidence_date for item in verified if item.evidence_date)
         resolved[dependency_id] = ResolvedSupport(
             dependency_id=dependency_id,
@@ -220,7 +262,7 @@ def resolve_operative_support(
             readiness=readiness,
             current_readiness=current_readiness,
             is_ready=bool(current_readiness),
-            superseded_roles=frozenset(superseded_roles),
+            superseded_scopes=tuple(superseded_scopes),
             verified_evidence_count=len(verified),
             last_evidenced_at=max(dates) if dates else None,
         )

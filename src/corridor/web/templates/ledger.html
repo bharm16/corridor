@@ -96,12 +96,11 @@
           <td class="num">{{ r.assertion_count }}a / {{ r.evidence_count }}e</td>
           <td>
             <span class="excs">
-            {#- Grouped by rule, each with the rule's own quantity — a fact
-                a reviewer can check against the record, where the score
-                this replaces was a constant nobody could (ADR-0010). #}
-            {%- for e in r.exceptions|sort(attribute='rule') %}
+            {#- Preserve the engine's filing order; this view does not invent
+                cross-category priority (ADR-0010). #}
+            {%- for e in r.exceptions %}
               <span class="pill exc"
-                    title="{{ e.detail }}">{{ e.rule }}{% if e.quantity_days is not none %} {{ e.quantity_days }}d{% endif %}</span>
+                    title="{{ e.detail }}">{{ e.label }}</span>
             {%- else %}<span class="muted">—</span>{% endfor %}
             </span>
           </td>

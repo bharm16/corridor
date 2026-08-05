@@ -28,10 +28,16 @@ from corridor.models import (
     Milestone,
     Project,
 )
-from corridor.operative_support import resolve_operative_support
+from corridor.ledger import mark_satisfies
+from corridor.operative_support import (
+    designate_publication_support,
+    resolve_operative_support,
+)
+from corridor.principals import HumanPrincipal
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 TODAY = date(2026, 8, 3)
+TEST_PRINCIPAL = HumanPrincipal("local:exceptions-reviewer")
 
 
 @pytest.fixture
@@ -117,10 +123,45 @@ def codes(session, dep, today=TODAY):
     return {e.rule for e in exceptions_for(session, dep.id, today=today)}
 
 
+def register_chain(session, project, documents, replacement_dates):
+    """Declare a test revision chain from one authority-index page."""
+    assert len(documents) == len(replacement_dates) + 1
+    for document in documents:
+        document.registry_id = f"exceptions-{project.id}-{document.id}"
+    source = documents[0]
+    session.add(
+        DocPage(
+            document_id=source.id,
+            page_no=1,
+            text="authority supersession index",
+        )
+    )
+    session.flush()
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=predecessor.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=replacement_date,
+                source_registry_id=source.registry_id,
+                source_page=1,
+            )
+            for predecessor, successor, replacement_date in zip(
+                documents[:-1],
+                documents[1:],
+                replacement_dates,
+                strict=True,
+            )
+        ],
+        project_id=project.id,
+    )
+
+
 # --------------------------------------------------------------- the ruleset
 
 
-def test_the_ruleset_has_the_eight_documented_rules():
+def test_the_ruleset_has_the_nine_documented_rules():
     assert set(RULES) == {
         "MISSING_OWNER",
         "MISSING_DATE",
@@ -130,6 +171,7 @@ def test_the_ruleset_has_the_eight_documented_rules():
         "OVERDUE",
         "CONTRADICTION",
         "ORPHAN",
+        "SUPERSEDED_CITATION",
     }
 
 
@@ -368,7 +410,7 @@ def test_orphan_clears_once_linked(session, project, document):
     assert "ORPHAN" not in codes(session, dep)
 
 
-def test_exceptions_use_current_readiness_support_not_superseded_history(
+def test_exceptions_lapse_readiness_without_recasting_it_as_schedule_failure(
     session, project, document
 ):
     successor = Document(
@@ -395,29 +437,7 @@ def test_exceptions_use_current_readiness_support_not_superseded_history(
         verified=True,
         satisfies=True,
     )
-    document.registry_id = "exceptions-matrix-old"
-    successor.registry_id = "exceptions-matrix-new"
-    session.add(
-        DocPage(
-            document_id=document.id,
-            page_no=1,
-            text="authority supersession index",
-        )
-    )
-    session.flush()
-    register_supersessions(
-        session,
-        [
-            SupersessionDeclaration(
-                predecessor_registry_id=document.registry_id,
-                successor_registry_id=successor.registry_id,
-                replacement_date=TODAY,
-                source_registry_id=document.registry_id,
-                source_page=1,
-            )
-        ],
-        project_id=project.id,
-    )
+    register_chain(session, project, [document, successor], [TODAY])
 
     resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
     found = codes(session, dependency)
@@ -426,12 +446,263 @@ def test_exceptions_use_current_readiness_support_not_superseded_history(
     assert resolved.current_readiness == ()
     assert resolved.is_ready is False
     assert set(resolved.superseded_roles) == {"readiness"}
-    assert "DUE_SOON" in found
+    assert "DUE_SOON" not in found
+    assert "SUPERSEDED_CITATION" in found
     # The historical quote remains mechanically verified even though it is
     # no longer current enough to satisfy readiness.
     assert "MISSING_EVIDENCE" not in found
     assert link.verified is True
     assert link.satisfies_requirement is True
+
+
+def test_registering_a_successor_immediately_creates_provenance_review_work(
+    session, project, document
+):
+    """The registry event is enough; no successor extraction gates the signal."""
+    successor = Document(
+        project_id=project.id,
+        sha256="e3" * 32,
+        filename="matrix-successor-not-extracted.pdf",
+        doc_type="matrix",
+        parse_status="pending",
+        pages=1,
+        # Deliberately unrelated to the authority's replacement date.
+        doc_date=date(2025, 1, 1),
+    )
+    session.add(successor)
+    session.flush()
+    dependency = make_dep(session, project, ref="DEP-review-now")
+    add_evidence(
+        session,
+        dependency,
+        document,
+        verified=True,
+        satisfies=True,
+    )
+    replacement_date = TODAY - timedelta(days=11)
+    register_chain(
+        session,
+        project,
+        [document, successor],
+        [replacement_date],
+    )
+
+    exception = next(
+        item
+        for item in exceptions_for(session, dependency.id, today=TODAY)
+        if item.rule == "SUPERSEDED_CITATION"
+    )
+
+    assert exception.quantity_days == 11
+    assert replacement_date.isoformat() in exception.detail
+    assert "re-confirmation" in exception.detail
+    assert "overdue" not in exception.detail.lower()
+    assert format_exception_label(exception) == (
+        "SUPERSEDED_CITATION 11d · re-confirmation"
+    )
+
+
+def test_readiness_currency_lapse_does_not_invent_new_schedule_failures(
+    session, project, document
+):
+    """A registry event creates review work, not a fictional schedule change."""
+    document.doc_date = TODAY - timedelta(days=60)
+    successor = Document(
+        project_id=project.id,
+        sha256="e4" * 32,
+        filename="matrix-current.pdf",
+        doc_type="matrix",
+        parse_status="pending",
+        pages=1,
+    )
+    session.add(successor)
+    session.flush()
+    dependency = make_dep(
+        session,
+        project,
+        ref="DEP-currency-lapse",
+        internal_owner=None,
+        need_date=TODAY + timedelta(days=5),
+    )
+    add_evidence(
+        session,
+        dependency,
+        document,
+        verified=True,
+        satisfies=True,
+    )
+    before = codes(session, dependency)
+    register_chain(session, project, [document, successor], [TODAY])
+    after = codes(session, dependency)
+
+    assert {"MISSING_OWNER", "DUE_SOON", "STALE"}.isdisjoint(before)
+    assert {"MISSING_OWNER", "DUE_SOON", "STALE"}.isdisjoint(after)
+    assert "SUPERSEDED_CITATION" in after
+
+
+def test_publication_supersession_keeps_real_schedule_findings(
+    session, project, document
+):
+    """Provenance review must not hide facts on a genuinely unready record."""
+    document.doc_date = TODAY - timedelta(days=60)
+    successor = Document(
+        project_id=project.id,
+        sha256="e8" * 32,
+        filename="matrix-publication-current.pdf",
+        doc_type="matrix",
+        parse_status="pending",
+        pages=1,
+    )
+    session.add(successor)
+    session.flush()
+    dependency = make_dep(
+        session,
+        project,
+        ref="DEP-publication-still-unready",
+        internal_owner=None,
+        need_date=TODAY + timedelta(days=5),
+    )
+    publication = add_evidence(session, dependency, document, verified=True)
+    designate_publication_support(
+        session,
+        dependency.id,
+        publication.id,
+        principal=TEST_PRINCIPAL,
+    )
+    before = codes(session, dependency)
+    register_chain(session, project, [document, successor], [TODAY])
+    after = codes(session, dependency)
+
+    schedule_rules = {"MISSING_OWNER", "DUE_SOON", "STALE"}
+    assert schedule_rules <= before
+    assert schedule_rules <= after
+    assert "SUPERSEDED_CITATION" in after
+
+
+def test_current_human_review_clears_the_signal_without_deleting_history(
+    session, project, document
+):
+    successor = Document(
+        project_id=project.id,
+        sha256="e5" * 32,
+        filename="matrix-reviewed-current.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(successor)
+    session.flush()
+    dependency = make_dep(session, project, ref="DEP-reconfirmed")
+    historical = add_evidence(
+        session,
+        dependency,
+        document,
+        verified=True,
+        satisfies=True,
+    )
+    designate_publication_support(
+        session,
+        dependency.id,
+        historical.id,
+        principal=TEST_PRINCIPAL,
+    )
+    assertion = Assertion(
+        dependency_id=dependency.id,
+        field_name="status",
+        asserted_value="ready in predecessor",
+        evidence_link_id=historical.id,
+    )
+    session.add(assertion)
+    session.flush()
+    register_chain(session, project, [document, successor], [TODAY])
+    assert "SUPERSEDED_CITATION" in codes(session, dependency)
+
+    current = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=successor.id,
+        page_no=1,
+        quote="reviewer verified the unchanged current row",
+        verified=True,
+    )
+    session.add(current)
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        current.id,
+        principal=TEST_PRINCIPAL,
+    )
+    mark_satisfies(
+        session,
+        dependency.id,
+        current.id,
+        principal=TEST_PRINCIPAL,
+    )
+
+    assert "SUPERSEDED_CITATION" not in codes(session, dependency)
+    assert resolve_operative_support(session, [dependency.id])[dependency.id].is_ready
+    assert session.get(EvidenceLink, historical.id).verified is True
+    assert session.get(EvidenceLink, historical.id).satisfies_requirement is True
+    assert session.get(Assertion, assertion.id).evidence_link_id == historical.id
+
+
+def test_multiple_superseded_scopes_keep_each_authority_date(
+    session, project, document
+):
+    middle = Document(
+        project_id=project.id,
+        sha256="e6" * 32,
+        filename="matrix-middle.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    current = Document(
+        project_id=project.id,
+        sha256="e7" * 32,
+        filename="matrix-current-two-edges.pdf",
+        doc_type="matrix",
+        parse_status="pending",
+        pages=1,
+    )
+    session.add_all([middle, current])
+    session.flush()
+    dependency = make_dep(session, project, ref="DEP-two-dates")
+    oldest_link = add_evidence(session, dependency, document)
+    middle_link = add_evidence(session, dependency, middle)
+    designate_publication_support(
+        session,
+        dependency.id,
+        middle_link.id,
+        principal=TEST_PRINCIPAL,
+    )
+    designate_publication_support(
+        session,
+        dependency.id,
+        oldest_link.id,
+        field_name="external_org",
+        principal=TEST_PRINCIPAL,
+    )
+    oldest_replacement = TODAY - timedelta(days=20)
+    middle_replacement = TODAY - timedelta(days=3)
+    register_chain(
+        session,
+        project,
+        [document, middle, current],
+        [oldest_replacement, middle_replacement],
+    )
+
+    exception = next(
+        item
+        for item in exceptions_for(session, dependency.id, today=TODAY)
+        if item.rule == "SUPERSEDED_CITATION"
+    )
+
+    assert exception.quantity_days == 20
+    assert oldest_replacement.isoformat() in exception.detail
+    assert middle_replacement.isoformat() in exception.detail
+    assert "publication field external_org" in exception.detail
+    assert "record publication" in exception.detail
 
 
 # --------------------------------------- facts, not scores (#115, ADR-0010)
@@ -626,11 +897,8 @@ def test_absent_quantities_sort_after_present_ones_stably(
 
 
 def test_the_ruleset_version_is_pinned(session):
-    """The contract changed when the score died, and the version is how a
-    published list that reads differently is attributable to the ruleset
-    rather than mistaken for a data change. Bump this test only with
-    another contract change."""
-    assert RULESET_VERSION == "v0.2"
+    """Adding a rule changes published counts and therefore the contract."""
+    assert RULESET_VERSION == "v0.3"
 
 
 # ------------------------------------------------------------------ project

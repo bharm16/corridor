@@ -27,6 +27,7 @@ from corridor.exceptions import (
     Evaluation,
     evaluate_project,
     format_exception_label,
+    format_exception_name,
 )
 from corridor.ledger import Evidence, LedgerRow, browse, primary_evidence
 from corridor.models import (
@@ -434,7 +435,7 @@ def _exceptions_summary(evaluation: Evaluation) -> Section:
             )
         section.rows.append(
             [
-                _derived("Rule", facet.rule, ids),
+                _derived("Rule", format_exception_name(facet.rule), ids),
                 _derived("Count", str(facet.count), ids),
                 most,
                 why,

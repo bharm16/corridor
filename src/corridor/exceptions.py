@@ -27,13 +27,15 @@ from corridor.models import (
     EvidenceLink,
     is_critical,
 )
-from corridor.operative_support import resolve_operative_support
+from corridor.operative_support import (
+    SupersededOperativeScope,
+    resolve_operative_support,
+)
 
-# v0.2: the score died (ADR-0010, #115). Exceptions carry quantities and a
-# criticality flag instead of a severity, so every ordering published under
-# v0.1 changed meaning — which is exactly what this version exists to make
-# attributable.
-RULESET_VERSION = "v0.2"
+# v0.3 adds SUPERSEDED_CITATION as provenance-review work (ADR-0016, #145).
+# A ruleset change can move published counts without a data edit, which is
+# exactly what this version exists to make attributable.
+RULESET_VERSION = "v0.3"
 
 # Fixed by v0-build-spec.md §9. Overridable per project, but the defaults are
 # documented and a drift changes every count ever recorded.
@@ -44,7 +46,7 @@ RULESET_VERSION = "v0.2"
 STALE_DAYS = 14
 DUE_SOON_DAYS = 30
 
-# The eight rules. Names only — the weights that used to sit beside them
+# The nine rules. Names only — the weights that used to sit beside them
 # (5.0, 4.0, ×3 for criticality) had no source a reader could check, which
 # is ADR-0009's finding one layer up, and ADR-0010 abolished them. Tuple
 # order carries no meaning and nothing renders it — the facet view orders
@@ -58,12 +60,15 @@ RULES: tuple[str, ...] = (
     "STALE",
     "CONTRADICTION",
     "ORPHAN",
+    "SUPERSEDED_CITATION",
 )
 
 # The rules whose fact carries a number of days. The rest state absences,
 # and an absence has no quantity — inventing 0 or infinity for one would be
 # the scalar sneaking back in.
-QUANTITY_RULES = frozenset({"OVERDUE", "DUE_SOON", "STALE"})
+QUANTITY_RULES = frozenset(
+    {"OVERDUE", "DUE_SOON", "STALE", "SUPERSEDED_CITATION"}
+)
 
 # Neither of these is "on track", so time-based rules stay quiet on them.
 SETTLED_STATUSES = ("closed",)
@@ -93,6 +98,20 @@ class Exception_:
     quantity_days: int | None
     critical: bool
 
+    @property
+    def label(self) -> str:
+        """The canonical reader-facing label, exposed to Jinja templates."""
+        return format_exception_label(self)
+
+
+def format_exception_name(rule: str) -> str:
+    """Name a rule without making provenance review look like lateness."""
+    return rule + _exception_name_suffix(rule)
+
+
+def _exception_name_suffix(rule: str) -> str:
+    return " · re-confirmation" if rule == "SUPERSEDED_CITATION" else ""
+
 
 def format_exception_label(exception: Exception_) -> str:
     """The reader-facing label for one exception fact.
@@ -100,11 +119,12 @@ def format_exception_label(exception: Exception_) -> str:
     The rule name is the finding; the day count, when present, is that
     rule's own quantity rather than a derived or weighted score.
     """
-    return exception.rule + (
+    quantity = (
         f" {exception.quantity_days}d"
         if exception.quantity_days is not None
         else ""
     )
+    return f"{exception.rule}{quantity}{_exception_name_suffix(exception.rule)}"
 
 
 @dataclass(frozen=True)
@@ -130,10 +150,12 @@ class _Facts:
 
     dependency: Dependency
     is_ready: bool
+    readiness_lapsed: bool
     has_verified_evidence: bool
     last_evidenced_at: date | None
     has_closure: bool
     contradicted_fields: list[str]
+    superseded_scopes: tuple[SupersededOperativeScope, ...]
 
 
 def exceptions_for(
@@ -330,10 +352,12 @@ def _gather(session: Session, dependency: Dependency) -> _Facts:
     return _Facts(
         dependency=dependency,
         is_ready=support.is_ready,
+        readiness_lapsed=bool(support.readiness and not support.current_readiness),
         has_verified_evidence=bool(support.verified_evidence_count),
         last_evidenced_at=support.last_evidenced_at,
         has_closure=has_closure,
         contradicted_fields=contradicted,
+        superseded_scopes=support.superseded_scopes,
     )
 
 
@@ -341,7 +365,11 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
     dependency = facts.dependency
     settled = dependency.status in SETTLED_STATUSES
     # "On track" for time-based rules means neither proven done nor closed.
-    live = not facts.is_ready and not settled
+    # Supersession can lapse currency without changing the underlying
+    # schedule fact. The record needs provenance review, but registration
+    # alone must not manufacture new DUE_SOON/STALE/MISSING_OWNER findings
+    # that were suppressed while the same proof was current (ADR-0016).
+    live = not facts.is_ready and not facts.readiness_lapsed and not settled
 
     # (rule, detail, quantity_days) — the quantity is the rule's own
     # number, and None where the fact is an absence.
@@ -404,6 +432,34 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
                 "CONTRADICTION",
                 "sources disagree on " + ", ".join(sorted(facts.contradicted_fields)),
                 None,
+            )
+        )
+
+    if facts.superseded_scopes:
+        # Registry constraints require the authority's replacement date on
+        # every Supersession edge. Keep the fallback quantity absent rather
+        # than substituting a document, retrieval, or ingestion date if a
+        # pre-constraint row is ever encountered.
+        dates = tuple(
+            scope.evidence.superseded_on
+            for scope in facts.superseded_scopes
+            if scope.evidence.superseded_on is not None
+        )
+        superseded_on = min(dates) if dates else None
+        quantity = (today - superseded_on).days if superseded_on else None
+        scope_details = set()
+        for scope in facts.superseded_scopes:
+            replacement_date = scope.evidence.superseded_on or "unavailable"
+            scope_details.add(
+                f"{scope.label} (authority replacement date {replacement_date})"
+            )
+        scopes = "; ".join(sorted(scope_details))
+        found.append(
+            (
+                "SUPERSEDED_CITATION",
+                f"operative support needs human re-confirmation against the "
+                f"current revision: {scopes}",
+                quantity,
             )
         )
 
