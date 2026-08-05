@@ -12,6 +12,7 @@ from sqlalchemy import select
 from corridor.db import Session, engine
 from corridor.extract_matrix import ExtractionFailed
 from corridor.extract_sheet import PROMPT_VERSION as SHEET_PROMPT_VERSION
+from corridor.extraction_runs import active_run_for_document
 from corridor.geometry import NoMatrixFound
 from corridor.extract_project import Outcome, extract_project, main, render
 from corridor.models import Candidate, Document, ExtractionRun, Project
@@ -67,7 +68,7 @@ def candidate(document, *, verified=True, state="pending"):
     )
 
 
-def extractor(**by_filename):
+def extractor(*, prompt_version=PROMPT_VERSION, **by_filename):
     """An extractor scripted per document: a list of Candidates, or an error."""
 
     def extract(session, document):
@@ -76,6 +77,7 @@ def extractor(**by_filename):
             raise result
         candidates = [candidate(document, verified=v) for v in result]
         for c in candidates:
+            c.prompt_version = prompt_version
             session.add(c)
         session.flush()
         return candidates
@@ -94,6 +96,7 @@ def route_selector(**by_filename):
                 raise result
             candidates = [candidate(target, verified=v) for v in result]
             for c in candidates:
+                c.prompt_version = prompt_version
                 session.add(c)
             session.flush()
             return candidates
@@ -147,8 +150,43 @@ def test_unreadable_is_a_different_outcome_from_no_rows(session, project):
     assert by_name["empty.pdf"].rows == 0
     assert by_name["broken.pdf"].status == "unreadable"
     assert "utility-matrix headers" in by_name["broken.pdf"].detail
+    assert [run.outcome for run in _runs(session, empty)] == ["completed"]
+    assert [run.outcome for run in _runs(session, broken)] == ["no_matrix"]
 
 
+def test_terminal_outcomes_distinguish_extracted_failed_and_unreadable(session, project):
+    empty = add_matrix(session, project, "empty.pdf", "e" * 64)
+    failed = add_matrix(session, project, "failed.pdf", "f" * 64)
+    broken = add_matrix(session, project, "broken.pdf", "g" * 64)
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(
+            **{
+                "empty.pdf": [],
+                "failed.pdf": ExtractionFailed("503 upstream"),
+                "broken.pdf": NoMatrixFound("no table with utility-matrix headers"),
+            }
+        ),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    by_name = {o.filename: o for o in outcomes}
+    assert by_name["empty.pdf"].status == "extracted"
+    assert by_name["empty.pdf"].rows == 0
+    assert by_name["failed.pdf"].status == "failed"
+    assert "503 upstream" in by_name["failed.pdf"].detail
+    assert by_name["broken.pdf"].status == "unreadable"
+    assert "utility-matrix headers" in by_name["broken.pdf"].detail
+    assert [run.outcome for run in _runs(session, empty)] == ["completed"]
+    assert [run.outcome for run in _runs(session, failed)] == ["failed"]
+    assert [run.outcome for run in _runs(session, broken)] == ["no_matrix"]
+
+    rendered = render(project, PROMPT_VERSION, outcomes)
+    assert "FAILED" in rendered
+    assert "UNREADABLE" in rendered
 def test_a_second_run_does_not_double_the_candidates(session, project):
     doc = add_matrix(session, project, "a.pdf", "a" * 64)
     extract = extractor(**{"a.pdf": [True, True]})
@@ -162,6 +200,35 @@ def test_a_second_run_does_not_double_the_candidates(session, project):
 
     assert outcomes[0].status == "skipped"
     assert _count(session, doc) == 2
+
+
+def test_first_successful_run_becomes_active_but_redo_does_not_retarget(
+    session, project
+):
+    doc = add_matrix(session, project, "a.pdf", "z" * 64)
+
+    first = extract_project(
+        session,
+        project,
+        extract=extractor(prompt_version="v1", **{"a.pdf": [True]}),
+        prompt_version="v1",
+        commit=False,
+    )
+    first_run = _runs(session, doc)[0]
+
+    second = extract_project(
+        session,
+        project,
+        extract=extractor(prompt_version="v2", **{"a.pdf": [True, True]}),
+        prompt_version="v2",
+        redo=True,
+        commit=False,
+    )
+
+    assert first[0].status == "extracted"
+    assert second[0].status == "extracted"
+    assert [run.prompt_version for run in _runs(session, doc)] == ["v1", "v2"]
+    assert active_run_for_document(session, doc.id).id == first_run.id
 
 
 def test_a_zero_row_document_is_skipped_after_a_completed_empty_attempt(
@@ -239,7 +306,7 @@ def test_a_candidate_without_a_run_does_not_make_a_document_skip(session, projec
     assert len(_runs(session, doc)) == 1
 
 
-def test_redo_replaces_pending_candidates(session, project):
+def test_redo_appends_pending_candidates(session, project):
     doc = add_matrix(session, project, "a.pdf", "a" * 64)
 
     extract_project(
@@ -259,7 +326,7 @@ def test_redo_replaces_pending_candidates(session, project):
     )
 
     assert outcomes[0].status == "extracted"
-    assert _count(session, doc) == 1
+    assert _count(session, doc) == 3
     assert len(_runs(session, doc)) == 2
 
 
@@ -285,7 +352,7 @@ def test_redo_never_disturbs_an_accepted_candidate(session, project):
             select(Candidate).where(Candidate.source_document_id == doc.id)
         )
     )
-    assert states == ["accepted", "pending"]
+    assert states == ["accepted", "pending", "pending"]
 
 
 def test_a_document_ingest_could_not_parse_is_reported_not_skipped(session, project):
@@ -299,6 +366,7 @@ def test_a_document_ingest_could_not_parse_is_reported_not_skipped(session, proj
 
     assert outcomes[0].status == "unreadable"
     assert "failed" in outcomes[0].detail
+    assert [run.outcome for run in _runs(session, doc)] == ["unreadable"]
 
 
 def test_only_matrices_are_eligible(session, project):
@@ -345,7 +413,7 @@ def _runs(session, document) -> list[ExtractionRun]:
 # --------------------------- retiring a superseded reading (#105)
 
 
-def test_a_prompt_bump_retires_the_old_versions_pending_candidates(
+def test_a_prompt_bump_appends_prior_pending_candidates(
     session, project
 ):
     """The trap this repo has cleared by hand twice.
@@ -370,19 +438,18 @@ def test_a_prompt_bump_retires_the_old_versions_pending_candidates(
     outcomes = extract_project(
         session,
         project,
-        extract=extractor(**{"a.pdf": [True]}),
+        extract=extractor(prompt_version="test_v2", **{"a.pdf": [True]}),
         prompt_version="test_v2",
         commit=False,
     )
 
     assert outcomes[0].status == "extracted"
-    # One reading of the document, and it is the new one. Identity rather
-    # than `prompt_version`, because the stub extractor stamps its own.
+    # Append the new run; preserve prior pending rows.
     remaining = session.scalars(
         select(Candidate).where(Candidate.source_document_id == doc.id)
     ).all()
-    assert len(remaining) == 1
-    assert remaining[0].id != superseded_id
+    assert len(remaining) == 2
+    assert any(c.id == superseded_id for c in remaining)
 
 
 def test_a_prompt_bump_never_disturbs_an_adjudicated_candidate(session, project):
@@ -408,7 +475,7 @@ def test_a_prompt_bump_never_disturbs_an_adjudicated_candidate(session, project)
     extract_project(
         session,
         project,
-        extract=extractor(**{"a.pdf": [True]}),
+        extract=extractor(prompt_version="test_v2", **{"a.pdf": [True]}),
         prompt_version="test_v2",
         commit=False,
     )
@@ -419,10 +486,11 @@ def test_a_prompt_bump_never_disturbs_an_adjudicated_candidate(session, project)
     assert sorted(c.state for c in surviving) == [
         "accepted",
         "pending",
+        "pending",
         "rejected",
     ]
-    # The decisions kept their rows; only the un-adjudicated one was replaced.
-    assert not superseded & {c.id for c in surviving}
+    # Keep one adjudicated history and the prior un-adjudicated reading.
+    assert superseded & {c.id for c in surviving}
 
 
 def test_an_unreadable_document_keeps_the_reading_it_already_had(session, project):
@@ -473,7 +541,10 @@ def test_a_document_that_cannot_be_read_keeps_the_reading_it_had(session, projec
 
     assert outcomes[0].status == "unreadable"
     assert _count(session, doc) == 1
-    assert _runs(session, doc) == []
+    assert [
+        (run.outcome, run.candidate_count, run.page_errors)
+        for run in _runs(session, doc)
+    ] == [("no_matrix", 0, 1)]
 
 
 def test_a_transient_failure_does_not_block_a_clean_sibling(session, project):
@@ -501,7 +572,7 @@ def test_a_transient_failure_does_not_block_a_clean_sibling(session, project):
     ]
     assert outcomes[0].effective_prompt_version == PROMPT_VERSION
     assert _count(session, failed) == 1
-    assert _runs(session, failed) == []
+    assert [run.outcome for run in _runs(session, failed)] == ["failed"]
     assert [
         (run.document_id, run.prompt_version, run.candidate_count, run.page_errors)
         for run in _runs(session, clean)
@@ -511,7 +582,7 @@ def test_a_transient_failure_does_not_block_a_clean_sibling(session, project):
     assert "1 failed, 0 unreadable" in report
 
 
-def test_a_failed_document_writes_no_receipt_and_retries_on_the_next_run(
+def test_a_failed_document_writes_a_receipt_and_retries_on_the_next_run(
     session, project
 ):
     document = add_matrix(session, project, "a.pdf", "a" * 64)
@@ -548,7 +619,7 @@ def test_a_failed_document_writes_no_receipt_and_retries_on_the_next_run(
         commit=False,
     )
     assert first[0].status == "failed"
-    assert _runs(session, document) == []
+    assert [run.outcome for run in _runs(session, document)] == ["failed"]
     assert _count(session, document) == 1
 
     second = extract_project(
@@ -559,16 +630,39 @@ def test_a_failed_document_writes_no_receipt_and_retries_on_the_next_run(
         commit=False,
     )
 
-    assert _count(session, document) == 2
+    assert _count(session, document) == 3
     surviving = session.scalars(
         select(Candidate).where(Candidate.source_document_id == document.id)
     ).all()
-    assert superseded.id not in {c.id for c in surviving}
+    assert superseded.id in {c.id for c in surviving}
     assert second[0].status == "extracted"
     assert [
-        (run.prompt_version, run.candidate_count, run.page_errors)
+        (run.prompt_version, run.outcome, run.candidate_count, run.page_errors)
         for run in _runs(session, document)
-    ] == [(PROMPT_VERSION, 2, 0)]
+    ] == [
+        (PROMPT_VERSION, "failed", 0, 1),
+        (PROMPT_VERSION, "completed", 2, 0),
+    ]
+
+
+def test_newly_persisted_candidates_always_reference_a_run(session, project):
+    doc = add_matrix(session, project, "a.pdf", "a" * 64)
+
+    extract_project(
+        session,
+        project,
+        extract=extractor(**{"a.pdf": [True, True]}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    candidates = session.scalars(
+        select(Candidate).where(Candidate.source_document_id == doc.id)
+    ).all()
+    assert len(candidates) == 2
+    assert all(
+        c.extraction_run_id is not None for c in candidates
+    ), "every newly persisted candidate should reference one run"
 
 
 def test_an_unexpected_runtime_error_still_propagates(session, project):
@@ -586,7 +680,9 @@ def test_an_unexpected_runtime_error_still_propagates(session, project):
         )
 
     assert _count(session, doc) == 0
-    assert _runs(session, doc) == []
+    runs = _runs(session, doc)
+    assert [(run.outcome, run.candidate_count) for run in runs] == [("failed", 0)]
+    assert runs[0].error_detail == "RuntimeError: bug in extractor"
 
 
 def test_main_returns_nonzero_when_any_document_failed(

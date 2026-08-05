@@ -24,10 +24,10 @@ from corridor.models import (
     Assertion,
     Dependency,
     DependencyEvent,
-    Document,
     EvidenceLink,
     is_critical,
 )
+from corridor.operative_support import resolve_operative_support
 
 # v0.2: the score died (ADR-0010, #115). Exceptions carry quantities and a
 # criticality flag instead of a severity, so every ordering published under
@@ -311,23 +311,7 @@ def contradicted_fields(
 
 
 def _gather(session: Session, dependency: Dependency) -> _Facts:
-    links = session.execute(
-        select(EvidenceLink, Document)
-        .outerjoin(Document, EvidenceLink.document_id == Document.id)
-        .where(EvidenceLink.dependency_id == dependency.id)
-    ).all()
-
-    verified = [(link, doc) for link, doc in links if link.verified]
-    dates = []
-    for link, doc in verified:
-        if doc is None:
-            continue
-        if doc.doc_date:
-            dates.append(doc.doc_date)
-        elif doc.retrieved_at:
-            # An undated document is not infinitely stale; fall back to when
-            # we retrieved it.
-            dates.append(doc.retrieved_at.date())
+    support = resolve_operative_support(session, [dependency.id])[dependency.id]
 
     has_closure = (
         session.scalars(
@@ -345,11 +329,9 @@ def _gather(session: Session, dependency: Dependency) -> _Facts:
 
     return _Facts(
         dependency=dependency,
-        is_ready=any(
-            link.verified and link.satisfies_requirement for link, _ in links
-        ),
-        has_verified_evidence=bool(verified),
-        last_evidenced_at=max(dates) if dates else None,
+        is_ready=support.is_ready,
+        has_verified_evidence=bool(support.verified_evidence_count),
+        last_evidenced_at=support.last_evidenced_at,
         has_closure=has_closure,
         contradicted_fields=contradicted,
     )

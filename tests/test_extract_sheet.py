@@ -321,10 +321,11 @@ def test_the_router_sends_a_pdf_to_the_page_extractor(session, project, monkeypa
 
     seen = {}
     monkeypatch.setattr(pipeline, "stored_file", lambda d: Path("x.pdf"))
-    monkeypatch.setattr(
-        "corridor.extract_matrix.extract_document",
-        lambda s, d, client=None: seen.setdefault("client", client) or [],
-    )
+    def extract_pdf(session, target, client=None):
+        seen["client"] = client
+        return []
+
+    monkeypatch.setattr("corridor.extract_matrix.extract_document", extract_pdf)
 
     pipeline.extract_any(session, document, client="the-client")
 

@@ -20,12 +20,15 @@ from corridor.adjudicate import accept_candidate
 from corridor.db import Session
 from corridor.models import (
     Assertion,
+    ActiveExtractionRun,
     AuditLog,
     Candidate,
     Dependency,
     DocPage,
     Document,
     EvidenceLink,
+    ExtractionRun,
+    OperativeSupport,
     Project,
 )
 from corridor.changes import record_run
@@ -33,14 +36,20 @@ from corridor.export import to_pdf, to_xlsx
 from corridor.llm import OpenAIClient
 from corridor.pipeline import ingest_and_extract, parse_doc_date
 from corridor.report import build_report, render
+from corridor.config import settings
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
-SLUG = "nhhip-3c2"
+DEMO_SLUG = "corridor-demo"
 MEMBER = "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
 LOCK = Path("corpus/manifest.lock.json")
 OUT = Path("out/report.html")
 PDF = Path("out/report.pdf")
 XLSX = Path("out/ledger.xlsx")
 IMAGES = Path("out/page-images")
+
+
+class DemoIsolationError(RuntimeError):
+    """A demo reset was pointed at anything except the isolated demo project."""
 
 
 def _reset(session, project: Project) -> None:
@@ -51,9 +60,18 @@ def _reset(session, project: Project) -> None:
     would destroy whatever `make ingest` loaded. Originals are never
     deleted anywhere in this system.
     """
+    if project.slug != DEMO_SLUG or not project.is_synthetic:
+        raise DemoIsolationError(
+            "demo reset is allowed only for the synthetic corridor-demo project"
+        )
+
     dep_ids = select(Dependency.id).where(Dependency.project_id == project.id)
     candidate_ids = select(Candidate.id).where(Candidate.project_id == project.id)
+    document_ids = select(Document.id).where(Document.project_id == project.id)
     session.execute(delete(Assertion).where(Assertion.dependency_id.in_(dep_ids)))
+    session.execute(
+        delete(OperativeSupport).where(OperativeSupport.dependency_id.in_(dep_ids))
+    )
     session.execute(
         delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dep_ids))
     )
@@ -73,11 +91,29 @@ def _reset(session, project: Project) -> None:
             & AuditLog.entity_id.in_(candidate_ids)
         )
     )
+    session.execute(
+        delete(ActiveExtractionRun).where(
+            ActiveExtractionRun.document_id.in_(document_ids)
+        )
+    )
     session.execute(delete(Candidate).where(Candidate.project_id == project.id))
+    session.execute(
+        delete(ExtractionRun).where(ExtractionRun.document_id.in_(document_ids))
+    )
     session.execute(delete(Dependency).where(Dependency.project_id == project.id))
 
 
 def main(limit: int | None = None) -> int:
+    try:
+        principal = HumanPrincipal(settings.human_principal)
+    except InvalidHumanPrincipal as exc:
+        print(
+            "CORRIDOR_HUMAN_PRINCIPAL must name the human running the demo "
+            f"({exc})",
+            file=sys.stderr,
+        )
+        return 1
+
     if not LOCK.exists():
         print("no corpus/manifest.lock.json — run `make corpus` first", file=sys.stderr)
         return 1
@@ -93,14 +129,14 @@ def main(limit: int | None = None) -> int:
     started = time.time()
     with Session() as session:
         project = session.scalars(
-            select(Project).where(Project.slug == SLUG)
+            select(Project).where(Project.slug == DEMO_SLUG)
         ).first()
         if project is None:
             project = Project(
-                slug=SLUG,
-                name="NHHIP Segment 3C-2",
+                slug=DEMO_SLUG,
+                name="Corridor demonstration",
                 agency="TxDOT",
-                is_synthetic=False,
+                is_synthetic=True,
             )
             session.add(project)
             session.flush()
@@ -130,7 +166,7 @@ def main(limit: int | None = None) -> int:
 
         chosen = candidates[:limit] if limit else candidates
         for candidate in chosen:
-            accept_candidate(session, candidate, actor="demo")
+            accept_candidate(session, candidate, principal=principal)
         print(f"adjudicated {len(chosen)} accepted")
 
         report = build_report(session, project.id)

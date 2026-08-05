@@ -33,6 +33,8 @@ from corridor.models import (
     is_placeholder_party,
 )
 from corridor.verify import normalize, unverified_fields
+from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.operative_support import designate_publication_support
 
 REJECT_REASONS = ("duplicate", "wrong", "irrelevant", "bad-citation")
 _REF_CODE = re.compile(r"DEP-(\d{5})$")
@@ -220,8 +222,9 @@ class CandidateAssertsNothing(Exception):
 
 
 def accept_candidate(
-    session: Session, candidate: Candidate, *, actor: str
+    session: Session, candidate: Candidate, *, principal: HumanPrincipal
 ) -> Dependency:
+    principal = require_human_principal(principal)
     if candidate.state != "pending":
         raise AlreadyAdjudicated(
             f"candidate {candidate.id} is already {candidate.state}"
@@ -293,6 +296,9 @@ def accept_candidate(
     # by Postgres, as a NOT NULL violation on a half-written acceptance,
     # rather than by this module as a refusal it could name.
     primary = links[0]
+    designate_publication_support(
+        session, dependency.id, primary.id, principal=principal
+    )
 
     for name, value in fields.items():
         session.add(
@@ -328,7 +334,7 @@ def accept_candidate(
 
     audit.record(
         session,
-        actor=actor,
+        principal=principal,
         action=audit.ACCEPT_CANDIDATE,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency.id,
@@ -344,8 +350,13 @@ def accept_candidate(
 
 
 def edit_candidate(
-    session: Session, candidate: Candidate, fields: dict[str, str], *, actor: str
+    session: Session,
+    candidate: Candidate,
+    fields: dict[str, str],
+    *,
+    principal: HumanPrincipal,
 ) -> Candidate:
+    principal = require_human_principal(principal)
     if candidate.state != "pending":
         raise AlreadyAdjudicated(
             f"candidate {candidate.id} is already {candidate.state}"
@@ -357,7 +368,7 @@ def edit_candidate(
         updated = _edited_payload(session, payload, fields)
         audit.record(
             session,
-            actor=actor,
+            principal=principal,
             action=audit.EDIT_CANDIDATE,
             entity_type=audit.CANDIDATE,
             entity_id=candidate.id,
@@ -371,8 +382,13 @@ def edit_candidate(
 
 
 def reject_candidate(
-    session: Session, candidate: Candidate, reason: str, *, actor: str
+    session: Session,
+    candidate: Candidate,
+    reason: str,
+    *,
+    principal: HumanPrincipal,
 ) -> Candidate:
+    principal = require_human_principal(principal)
     if reason not in REJECT_REASONS:
         raise InvalidRejectReason(
             f"{reason!r} is not a reject reason; expected one of {REJECT_REASONS}"
@@ -386,7 +402,7 @@ def reject_candidate(
     candidate.adjudicated_at = datetime.now(timezone.utc)
     audit.record(
         session,
-        actor=actor,
+        principal=principal,
         action=audit.REJECT_CANDIDATE,
         entity_type=audit.CANDIDATE,
         entity_id=candidate.id,
@@ -586,7 +602,7 @@ def merge_candidate(
     candidate: Candidate,
     dependency: Dependency,
     *,
-    actor: str,
+    principal: HumanPrincipal,
 ) -> Dependency:
     """Fold a candidate into an existing Dependency.
 
@@ -597,6 +613,7 @@ def merge_candidate(
     CONTRADICTION computable and what stops the tool doing the very thing it
     exists to prevent.
     """
+    principal = require_human_principal(principal)
     if candidate.state != "pending":
         raise AlreadyAdjudicated(
             f"candidate {candidate.id} is already {candidate.state}"
@@ -614,6 +631,9 @@ def merge_candidate(
     # Nothing entered the Ledger and the source row left the queue for
     # good, because merging refuses a Candidate that is no longer pending.
     primary = links[0]
+    designate_publication_support(
+        session, dependency.id, primary.id, principal=principal
+    )
 
     # No "asserts nothing" rule here, unlike acceptance, and the asymmetry
     # is the point: acceptance builds the record, so a Candidate with no
@@ -638,7 +658,7 @@ def merge_candidate(
 
     audit.record(
         session,
-        actor=actor,
+        principal=principal,
         action=audit.MERGE_CANDIDATE,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency.id,

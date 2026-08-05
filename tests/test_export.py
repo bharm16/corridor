@@ -8,8 +8,19 @@ from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
 from corridor.exceptions import Thresholds, evaluate_project, format_exception_label
 from corridor.export import COLUMNS, to_pdf, to_xlsx
-from corridor.models import Candidate, Dependency, DocPage, Document, Project
+from corridor.models import (
+    Candidate,
+    Dependency,
+    DocPage,
+    Document,
+    EvidenceLink,
+    Project,
+)
+from corridor.operative_support import designate_publication_support
+from corridor.principals import HumanPrincipal
 from corridor.report import build_report, render
+
+TEST_PRINCIPAL = HumanPrincipal("local:tester")
 
 
 @pytest.fixture
@@ -79,7 +90,7 @@ def project(session):
     )
     session.add(candidate)
     session.flush()
-    accept_candidate(session, candidate, actor="tester")
+    accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
     return project
 
 
@@ -180,3 +191,51 @@ def test_an_empty_ledger_still_exports(session, tmp_path):
     sheet = load_workbook(path)["Ledger"]
     assert [c.value for c in sheet[1]] == COLUMNS
     assert sheet.max_row == 1
+
+
+def test_xlsx_uses_publication_support_while_readiness_stays_independent(
+    session, project, tmp_path
+):
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    original = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+    completion = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=original.document_id,
+        page_no=4,
+        quote="completion evidence only",
+        verified=True,
+        satisfies_requirement=True,
+    )
+    publication = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=original.document_id,
+        page_no=4,
+        quote="explicit publication evidence",
+        verified=True,
+    )
+    session.add_all([completion, publication])
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        publication.id,
+        principal=TEST_PRINCIPAL,
+    )
+
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "role-scoped.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: cell.value for header, cell in zip(headers, sheet[2])}
+
+    assert row["Ready"] == "yes"
+    assert row["Evidence quote"] == "explicit publication evidence"
+    assert row["Evidence quote"] != "completion evidence only"

@@ -31,7 +31,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
@@ -134,13 +134,26 @@ def extract_project(
             continue
 
         if document.parse_status != "parsed":
+            detail = f"ingest parse_status is {document.parse_status!r}"
+            record_extraction_run(
+                session,
+                document,
+                prompt_version=effective_prompt_version,
+                candidate_count=0,
+                page_errors=1,
+                outcome="unreadable",
+                schema_version=effective_prompt_version,
+                error_detail=detail,
+            )
+            if commit:
+                session.commit()
             outcomes.append(
                 Outcome(
                     document.id,
                     document.filename,
                     "unreadable",
                     effective_prompt_version=effective_prompt_version,
-                    detail=f"ingest parse_status is {document.parse_status!r}",
+                    detail=detail,
                 )
             )
             continue
@@ -150,13 +163,6 @@ def extract_project(
             # no half-extracted Candidates behind — which is what the skip
             # on the next run depends on being impossible.
             with session.begin_nested():
-                # Retiring the old reading and writing its replacement are
-                # one step, inside the savepoint together. Outside it, a
-                # document that raised kept the delete and lost the rows
-                # the rollback took back — ending the run quieter than it
-                # started rather than more current, and doing so only when
-                # some *later* document committed on its behalf.
-                _clear_pending(session, document)
                 candidates = route.extract(session, document)
                 record_extraction_run(
                     session,
@@ -164,8 +170,24 @@ def extract_project(
                     prompt_version=effective_prompt_version,
                     candidate_count=len(candidates),
                     page_errors=0,
+                    outcome="completed",
+                    candidates=tuple(candidates),
+                    model=_run_model(candidates),
+                    schema_version=effective_prompt_version,
                 )
         except NoMatrixFound as exc:
+            record_extraction_run(
+                session,
+                document,
+                prompt_version=effective_prompt_version,
+                candidate_count=0,
+                page_errors=1,
+                outcome="no_matrix",
+                schema_version=effective_prompt_version,
+                error_detail=str(exc),
+            )
+            if commit:
+                session.commit()
             outcomes.append(
                 Outcome(
                     document.id,
@@ -177,6 +199,18 @@ def extract_project(
             )
             continue
         except ExtractionFailed as exc:
+            record_extraction_run(
+                session,
+                document,
+                prompt_version=effective_prompt_version,
+                candidate_count=0,
+                page_errors=1,
+                outcome="failed",
+                schema_version=effective_prompt_version,
+                error_detail=str(exc),
+            )
+            if commit:
+                session.commit()
             outcomes.append(
                 Outcome(
                     document.id,
@@ -187,6 +221,20 @@ def extract_project(
                 )
             )
             continue
+        except Exception as exc:
+            record_extraction_run(
+                session,
+                document,
+                prompt_version=effective_prompt_version,
+                candidate_count=0,
+                page_errors=1,
+                outcome="failed",
+                schema_version=effective_prompt_version,
+                error_detail=f"{type(exc).__name__}: {exc}",
+            )
+            if commit:
+                session.commit()
+            raise
 
         if commit:
             session.commit()
@@ -206,28 +254,12 @@ def extract_project(
     return outcomes
 
 
-def _clear_pending(session: Session, document: Document) -> None:
-    """Drop this document's un-adjudicated Candidates before re-extracting.
-
-    Only `pending`. An accepted or merged Candidate backs a Ledger record
-    and is cited by its Assertions; a rejected one is a human decision that
-    re-running an extractor has no business undoing.
-
-    Whatever prompt produced them, deliberately (#105). Scoped to the
-    version being run, this only fired on a `redo` — a bump made
-    `already_extracted` return nothing, so no document reached the clear
-    and the superseded version's rows stayed in the queue beside the new
-    ones. That doubled the review queue on `txdot_ucm` and again when #97
-    merged, where 4,702 rows were deleted by hand. A reviewer has one
-    queue, not one per prompt version.
-    """
-    session.execute(
-        delete(Candidate).where(
-            Candidate.source_document_id == document.id,
-            Candidate.state == "pending",
-        )
-    )
-    session.flush()
+def _run_model(candidates: list[Candidate]) -> str | None:
+    """Return the one model used by a run, rejecting mixed provenance."""
+    models = {candidate.model for candidate in candidates if candidate.model}
+    if len(models) > 1:
+        raise ValueError("one extraction run cannot contain multiple models")
+    return next(iter(models), None)
 
 
 def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> str:

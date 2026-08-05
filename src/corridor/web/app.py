@@ -33,6 +33,7 @@ from corridor.adjudicate import (
     reject_candidate,
 )
 from corridor.db import Session as SessionFactory
+from corridor.config import settings
 from corridor.exceptions import RULES, evaluate_project
 from corridor.ledger import (
     NoSuchEvidence,
@@ -52,6 +53,7 @@ from corridor.models import (
     Project,
 )
 from corridor.web.queue import build_view, next_candidate, pending_counts
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Corridor — adjudication")
@@ -60,6 +62,18 @@ app = FastAPI(title="Corridor — adjudication")
 def get_session():
     with SessionFactory() as session:
         yield session
+
+
+def get_human_principal() -> HumanPrincipal:
+    """Resolve deployment identity, never identity supplied by the request."""
+    try:
+        return HumanPrincipal(settings.human_principal)
+    except InvalidHumanPrincipal as exc:
+        raise HTTPException(
+            503,
+            "Admission is unavailable until CORRIDOR_HUMAN_PRINCIPAL names "
+            "a stable human subject",
+        ) from exc
 
 
 def _project(session: Session, slug: str) -> Project:
@@ -163,6 +177,7 @@ def mark_evidence_satisfies(
     dependency_id: int,
     link_id: int,
     slug: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Mark evidence as meeting the dependency's `evidence_required` bar.
@@ -175,7 +190,9 @@ def mark_evidence_satisfies(
     dependency = _project_dependency(session, project, dependency_id)
     _project_evidence(session, dependency, link_id)
     try:
-        mark_satisfies(session, dependency_id, link_id, actor="reviewer")
+        mark_satisfies(
+            session, dependency_id, link_id, principal=principal
+        )
     except NoSuchEvidence as exc:
         raise HTTPException(404, str(exc))
     except UnverifiedEvidence as exc:
@@ -202,19 +219,22 @@ def page_image(
 def accept(
     candidate_id: int,
     slug: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
     candidate = _project_pending_candidate(session, project, candidate_id)
-    _accept(session, candidate)
+    _accept(session, candidate, principal)
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
 
 
-def _accept(session: Session, candidate) -> None:
+def _accept(
+    session: Session, candidate: Candidate, principal: HumanPrincipal
+) -> None:
     """The queue disables this button; a form post can still reach it."""
     try:
-        accept_candidate(session, candidate, actor="reviewer")
+        accept_candidate(session, candidate, principal=principal)
     except AlreadyAdjudicated as exc:
         raise HTTPException(409, str(exc))
     except InvalidCandidateProvenance as exc:
@@ -229,6 +249,7 @@ def _accept(session: Session, candidate) -> None:
 async def edit_accept(
     request: Request,
     candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Edit-then-accept.
@@ -248,11 +269,11 @@ async def edit_accept(
         if key.startswith("field_") and value.strip()
     }
     try:
-        edit_candidate(session, candidate, edited, actor="reviewer")
+        edit_candidate(session, candidate, edited, principal=principal)
     except AlreadyAdjudicated as exc:
         raise HTTPException(409, str(exc))
 
-    _accept(session, candidate)
+    _accept(session, candidate, principal)
     session.commit()
     return RedirectResponse(f"/queue/{slug}", status_code=303)
 
@@ -262,6 +283,7 @@ def merge(
     candidate_id: int,
     slug: str = Form(...),
     dependency_id: int = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -269,7 +291,7 @@ def merge(
     dependency = _project_dependency(session, project, dependency_id)
 
     try:
-        merge_candidate(session, candidate, dependency, actor="reviewer")
+        merge_candidate(session, candidate, dependency, principal=principal)
     except InvalidCandidateProvenance as exc:
         raise HTTPException(400, str(exc))
     session.commit()
@@ -281,12 +303,13 @@ def reject(
     candidate_id: int,
     slug: str = Form(...),
     reason: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
     candidate = _project_candidate(session, project, candidate_id)
     try:
-        reject_candidate(session, candidate, reason, actor="reviewer")
+        reject_candidate(session, candidate, reason, principal=principal)
     except AlreadyAdjudicated as exc:
         raise HTTPException(409, str(exc))
     except InvalidRejectReason as exc:

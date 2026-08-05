@@ -35,6 +35,8 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
 )
+from corridor.operative_support import resolve_operative_support
+from corridor.principals import HumanPrincipal, require_human_principal
 
 
 @dataclass
@@ -172,18 +174,13 @@ def browse(
     # Both counts in one pass, so they cannot describe different
     # populations — which is the whole failure being fixed: a report cell
     # labelled "With verified evidence" was counting every link.
-    evidence_counts = {
-        dependency_id: (total, verified)
-        for dependency_id, total, verified in session.execute(
-            select(
-                EvidenceLink.dependency_id,
-                func.count(),
-                func.count().filter(EvidenceLink.verified.is_(True)),
-            )
+    evidence_counts = dict(
+        session.execute(
+            select(EvidenceLink.dependency_id, func.count())
             .where(EvidenceLink.dependency_id.in_(ids))
             .group_by(EvidenceLink.dependency_id)
         ).all()
-    }
+    )
     assertion_counts = dict(
         session.execute(
             select(Assertion.dependency_id, func.count())
@@ -192,7 +189,7 @@ def browse(
         ).all()
     )
     contradicted = _contradicted_ids(session, ids)
-    ready_ids = _ready_ids(session, ids)
+    support_by_dependency = resolve_operative_support(session, ids)
 
     # Exceptions are computed, never stored (ADR-0002's reasoning), so they
     # are read off the evaluation the caller published rather than joined.
@@ -202,9 +199,11 @@ def browse(
         LedgerRow(
             dependency=d,
             org_name=orgs.get(d.external_org_id),
-            is_ready=d.id in ready_ids,
-            evidence_count=evidence_counts.get(d.id, (0, 0))[0],
-            verified_evidence_count=evidence_counts.get(d.id, (0, 0))[1],
+            is_ready=support_by_dependency[d.id].is_ready,
+            evidence_count=evidence_counts.get(d.id, 0),
+            verified_evidence_count=(
+                support_by_dependency[d.id].verified_evidence_count
+            ),
             assertion_count=assertion_counts.get(d.id, 0),
             contradicted=d.id in contradicted,
             exceptions=by_dependency.get(d.id, []),
@@ -231,55 +230,26 @@ class Evidence:
 def primary_evidence(
     session: Session, dependency_ids: list[int]
 ) -> dict[int, Evidence]:
-    """The Evidence a report cell cites for each Dependency.
-
-    One definition, in one place: the first *verified* link by id. The
-    report and the export each held their own copy of this query, so
-    "which quote backs this cell" had two implementations that happened to
-    agree — and one place to change when a citation becomes per-field
-    rather than per-record.
-
-    Batched, because the export asked once per row.
-    """
-    if not dependency_ids:
-        return {}
-
-    found: dict[int, Evidence] = {}
-    for link, document in session.execute(
-        select(EvidenceLink, Document)
-        .join(Document, EvidenceLink.document_id == Document.id)
-        .where(
-            EvidenceLink.dependency_id.in_(dependency_ids),
-            EvidenceLink.verified.is_(True),
+    """Compatibility read of explicitly designated record publication support."""
+    resolved = resolve_operative_support(session, dependency_ids)
+    return {
+        dependency_id: Evidence(
+            document_id=support.publication.document_id,
+            filename=support.publication.filename,
+            page_no=support.publication.page_no,
+            quote=support.publication.quote,
         )
-        .order_by(EvidenceLink.id)
-    ).all():
-        # First by id wins; later links for the same Dependency are the
-        # corroborating ones, not the cited one.
-        found.setdefault(
-            link.dependency_id,
-            Evidence(
-                document_id=document.id,
-                filename=document.filename,
-                page_no=link.page_no,
-                quote=link.quote,
-            ),
-        )
-    return found
+        for dependency_id, support in resolved.items()
+        if support.publication is not None
+    }
 
 
 def _ready_ids(session: Session, ids: list[int]) -> set[int]:
-    return set(
-        session.scalars(
-            select(EvidenceLink.dependency_id)
-            .where(
-                EvidenceLink.dependency_id.in_(ids),
-                EvidenceLink.verified.is_(True),
-                EvidenceLink.satisfies_requirement.is_(True),
-            )
-            .distinct()
-        ).all()
-    )
+    return {
+        dependency_id
+        for dependency_id, support in resolve_operative_support(session, ids).items()
+        if support.is_ready
+    }
 
 
 def _contradicted_ids(session: Session, ids: list[int]) -> set[int]:
@@ -332,13 +302,14 @@ def load_dependency(session: Session, dependency_id: int) -> DependencyView:
         .order_by(EvidenceLink.id)
     ).all()
 
+    support = resolve_operative_support(session, [dependency_id])[dependency_id]
     return DependencyView(
         dependency=dependency,
         org_name=org_name,
         fields=sorted(by_field.values(), key=lambda f: f.name),
         evidence=[(link, doc) for link, doc in evidence],
-        is_ready=is_ready(session, dependency_id),
-        last_evidenced_at=last_evidenced_at(session, dependency_id),
+        is_ready=support.is_ready,
+        last_evidenced_at=support.last_evidenced_at,
         events=session.scalars(
             select(DependencyEvent)
             .where(DependencyEvent.dependency_id == dependency_id)
@@ -363,7 +334,11 @@ class UnverifiedEvidence(Exception):
 
 
 def mark_satisfies(
-    session: Session, dependency_id: int, link_id: int, *, actor: str
+    session: Session,
+    dependency_id: int,
+    link_id: int,
+    *,
+    principal: HumanPrincipal,
 ) -> bool:
     """Mark, or unmark, an Evidence link as meeting the closure bar.
 
@@ -376,6 +351,7 @@ def mark_satisfies(
 
     Returns the resulting mark.
     """
+    principal = require_human_principal(principal)
     link = session.get(EvidenceLink, link_id)
     if link is None or link.dependency_id != dependency_id:
         raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
@@ -389,7 +365,7 @@ def mark_satisfies(
     link.satisfies_requirement = not was
     audit.record(
         session,
-        actor=actor,
+        principal=principal,
         action=audit.MARK_SATISFIES_REQUIREMENT,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency_id,
@@ -409,16 +385,7 @@ def is_ready(session: Session, dependency_id: int) -> bool:
     Both halves are required. `verified` alone means the quote is really on
     the page; it says nothing about whether the quote closes anything.
     """
-    return (
-        session.scalars(
-            select(EvidenceLink.id).where(
-                EvidenceLink.dependency_id == dependency_id,
-                EvidenceLink.verified.is_(True),
-                EvidenceLink.satisfies_requirement.is_(True),
-            )
-        ).first()
-        is not None
-    )
+    return resolve_operative_support(session, [dependency_id])[dependency_id].is_ready
 
 
 def last_evidenced_at(session: Session, dependency_id: int) -> date | None:
@@ -428,19 +395,6 @@ def last_evidenced_at(session: Session, dependency_id: int) -> date | None:
     attention. Falls back to retrieval date when a document carries no date
     of its own — otherwise an undated source would read as infinitely stale.
     """
-    rows = session.execute(
-        select(Document.doc_date, Document.retrieved_at)
-        .join(EvidenceLink, EvidenceLink.document_id == Document.id)
-        .where(
-            EvidenceLink.dependency_id == dependency_id,
-            EvidenceLink.verified.is_(True),
-        )
-    ).all()
-
-    dates = []
-    for doc_date, retrieved in rows:
-        if doc_date:
-            dates.append(doc_date)
-        elif retrieved:
-            dates.append(retrieved.date())
-    return max(dates) if dates else None
+    return resolve_operative_support(session, [dependency_id])[
+        dependency_id
+    ].last_evidenced_at

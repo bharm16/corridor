@@ -23,6 +23,10 @@ from corridor.models import (
     Milestone,
     Project,
 )
+from corridor.principals import HumanPrincipal
+
+TEST_PRINCIPAL = HumanPrincipal("local:tester")
+REVIEWER_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
 FIELDS = {
     "utility_id": "FOC1-1",
@@ -121,14 +125,16 @@ def test_every_ledger_mutation_writes_an_entry(session, document):
     its history.
     """
     dependency = accept_candidate(
-        session, make_candidate(session, document), actor="tester"
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
     )
     assert entries(session, dependency.id) == ["accept_candidate"]
 
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
     ).one()
-    mark_satisfies(session, dependency.id, link.id, actor="tester")
+    mark_satisfies(
+        session, dependency.id, link.id, principal=TEST_PRINCIPAL
+    )
 
     set_resolution_strategy(session, dependency, "relocate", actor="tester")
 
@@ -143,7 +149,7 @@ def test_every_ledger_mutation_writes_an_entry(session, document):
         session,
         make_candidate(session, document, utility_id="FOC1-2"),
         dependency,
-        actor="tester",
+        principal=TEST_PRINCIPAL,
     )
 
     assert entries(session, dependency.id) == [
@@ -154,7 +160,8 @@ def test_every_ledger_mutation_writes_an_entry(session, document):
         "merge_candidate",
     ]
     assert {e.actor for e in audit.trail_for_dependency(session, dependency.id)} == {
-        "tester"
+        "tester",
+        "local:tester",
     }
 
 
@@ -164,7 +171,7 @@ def test_relinking_a_milestone_records_the_date_it_moved(session, document):
     from datetime import date
 
     dependency = accept_candidate(
-        session, make_candidate(session, document), actor="tester"
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
     )
     first = Milestone(
         project_id=document.project_id,
@@ -213,7 +220,9 @@ def test_the_edit_trail_appears_on_the_record_it_produced(session, document):
         before={"fields": {"utility_id": "FOC1-l"}},
         after={"fields": {"utility_id": "FOC1-1"}},
     )
-    dependency = accept_candidate(session, candidate, actor="reviewer")
+    dependency = accept_candidate(
+        session, candidate, principal=REVIEWER_PRINCIPAL
+    )
 
     assert entries(session, dependency.id) == ["edit_candidate", "accept_candidate"]
     assert load_dependency(session, dependency.id).audit[0].before_json == {
@@ -233,7 +242,7 @@ def test_another_record_s_candidate_history_does_not_leak_in(session, document):
         entity_id=theirs.id,
         after={"fields": {}},
     )
-    dependency = accept_candidate(session, mine, actor="reviewer")
+    dependency = accept_candidate(session, mine, principal=REVIEWER_PRINCIPAL)
 
     assert entries(session, dependency.id) == ["accept_candidate"]
 
@@ -263,7 +272,7 @@ def test_recording_makes_the_entry_readable_without_the_caller_flushing(
     caller remembering the third statement is not a property.
     """
     dependency = accept_candidate(
-        session, make_candidate(session, document), actor="tester"
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
     )
     audit.record(
         session,
@@ -323,12 +332,16 @@ def test_a_demo_reset_does_not_delete_another_entity_s_history(session, document
     Milestone history happened to share a number with a demo Dependency,
     out of a table whose own docstring says append-only.
     """
-    from corridor.demo import _reset
+    from corridor.demo import DEMO_SLUG, _reset
+
+    project = session.get(Project, document.project_id)
+    project.slug = DEMO_SLUG
+    project.is_synthetic = True
+    session.flush()
 
     dependency = accept_candidate(
-        session, make_candidate(session, document), actor="tester"
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
     )
-    project = session.get(Project, document.project_id)
     # A milestone entry numbered like the dependency: the collision.
     audit.record(
         session,

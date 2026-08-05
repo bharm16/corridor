@@ -1,8 +1,11 @@
+from copy import deepcopy
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from corridor.adjudicate import edit_candidate
+from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.models import (
     Assertion,
@@ -14,8 +17,11 @@ from corridor.models import (
     EvidenceLink,
     Project,
 )
-from corridor.web.app import app, get_session
+from corridor.principals import HumanPrincipal
+from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.queue import build_view, next_candidate, pending_counts
+
+TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
 
 @pytest.fixture
@@ -32,6 +38,18 @@ def session():
 @pytest.fixture
 def client(session):
     """The app shares the test's transaction, so nothing is committed."""
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: TEST_PRINCIPAL
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_without_principal(session, monkeypatch):
+    """Exercise the real fail-closed deployment identity dependency."""
+    monkeypatch.setattr(settings, "human_principal", "")
+    app.dependency_overrides.clear()
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as c:
         yield c
@@ -177,7 +195,7 @@ def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
             "external_org": "AT&T Texas (SWBT)",
             "station_from": "1149+00",
         },
-        actor="reviewer",
+        principal=TEST_PRINCIPAL,
     )
 
     assert pending_counts(session, project.id) == (2, 2)
@@ -787,6 +805,91 @@ def test_accepting_creates_a_dependency_and_advances(
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).all()
+
+
+@pytest.mark.parametrize("action", ["accept", "edit-accept", "merge", "reject"])
+def test_mutation_routes_refuse_without_a_configured_human_principal_and_write_nothing(
+    client_without_principal, session, project, document, action
+):
+    candidate = make_candidate(session, project, document)
+    original_payload = deepcopy(candidate.payload_json)
+    data = {"slug": project.slug}
+    if action == "edit-accept":
+        data["field_station_from"] = "1150+00"
+    elif action == "merge":
+        target = Dependency(
+            project_id=project.id,
+            ref_code="DEP-00001",
+            dep_type="utility_relocation",
+            title="Existing dependency",
+            status="identified",
+        )
+        session.add(target)
+        session.flush()
+        data["dependency_id"] = target.id
+    elif action == "reject":
+        data["reason"] = "duplicate"
+
+    before = {
+        model: session.scalar(select(func.count()).select_from(model))
+        for model in (Dependency, Assertion, EvidenceLink, AuditLog)
+    }
+
+    response = client_without_principal.post(
+        f"/candidates/{candidate.id}/{action}",
+        data=data,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 503
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+    assert candidate.merged_into is None
+    assert candidate.payload_json == original_payload
+    assert {
+        model: session.scalar(select(func.count()).select_from(model))
+        for model in before
+    } == before
+
+
+def test_mark_satisfies_route_refuses_without_a_configured_human_principal(
+    client_without_principal, session, project, document
+):
+    candidate = make_candidate(session, project, document)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).first()
+    assert dependency is None
+
+    app.dependency_overrides[get_human_principal] = lambda: TEST_PRINCIPAL
+    try:
+        accepted = client_without_principal.post(
+            f"/candidates/{candidate.id}/accept",
+            data={"slug": project.slug},
+            follow_redirects=False,
+        )
+    finally:
+        app.dependency_overrides.pop(get_human_principal, None)
+    assert accepted.status_code == 303
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    evidence = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+
+    response = client_without_principal.post(
+        f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 503
+    session.refresh(evidence)
+    assert evidence.satisfies_requirement is False
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
 def test_edit_then_accept_records_the_edited_values(

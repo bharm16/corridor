@@ -27,6 +27,7 @@ from corridor.models import (
     Milestone,
     Project,
 )
+from corridor.operative_support import resolve_operative_support
 
 TODAY = date(2026, 8, 3)
 
@@ -363,6 +364,51 @@ def test_orphan_clears_once_linked(session, project, document):
     add_evidence(session, dep, document)
     link_dependency(session, dep, milestone, actor="tester")
     assert "ORPHAN" not in codes(session, dep)
+
+
+def test_exceptions_use_current_readiness_support_not_superseded_history(
+    session, project, document
+):
+    successor = Document(
+        project_id=project.id,
+        sha256="e2" * 32,
+        filename="matrix-successor.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+        doc_date=TODAY,
+    )
+    session.add(successor)
+    session.flush()
+    dependency = make_dep(
+        session,
+        project,
+        ref="DEP-superseded-ready",
+        need_date=TODAY + timedelta(days=5),
+    )
+    link = add_evidence(
+        session,
+        dependency,
+        document,
+        verified=True,
+        satisfies=True,
+    )
+    document.superseded_by = successor.id
+    session.flush()
+
+    resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
+    found = codes(session, dependency)
+
+    assert {support.evidence_link_id for support in resolved.readiness} == {link.id}
+    assert resolved.current_readiness == ()
+    assert resolved.is_ready is False
+    assert set(resolved.superseded_roles) == {"readiness"}
+    assert "DUE_SOON" in found
+    # The historical quote remains mechanically verified even though it is
+    # no longer current enough to satisfy readiness.
+    assert "MISSING_EVIDENCE" not in found
+    assert link.verified is True
+    assert link.satisfies_requirement is True
 
 
 # --------------------------------------- facts, not scores (#115, ADR-0010)
