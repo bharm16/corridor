@@ -417,15 +417,38 @@ def main(argv: list[str]) -> int:
     from corridor.db import Session as SessionFactory
 
     if not argv:
-        print("usage: python -m corridor.gold <slug>", file=sys.stderr)
+        print("usage: python -m corridor.gold <slug> [--author]", file=sys.stderr)
         return 2
 
     slug = argv[0]
+    author = "--author" in argv[1:]
     with SessionFactory() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
+
+        if author:
+            # The amended path (#81): a machine-authored gold set, stamped
+            # as the ceiling it is. Never overwrites a hand-authored
+            # gold/<slug>.csv — the stricter artifact keeps its name.
+            gold = author_machine_gold(session, project.id)
+            directory = Path("gold")
+            directory.mkdir(parents=True, exist_ok=True)
+            csv_path = directory / f"{slug}.machine.csv"
+            csv_path.write_text(gold_csv(gold))
+            sidecar = directory / f"{slug}.machine.md"
+            sidecar.write_text(render_machine_gold(gold))
+            labelled = sum(1 for r in gold.rows if r.critical)
+            yes = sum(1 for r in gold.rows if r.critical == "yes")
+            print(
+                f"{len(gold.rows)} gold rows ({yes} yes / {labelled - yes} no / "
+                f"{len(gold.rows) - labelled} blank); excluded {gold.retired} "
+                f"retired, {gold.empty_slots} empty slots"
+            )
+            print(f"gold:    {csv_path}")
+            print(f"sidecar: {sidecar} (the ceiling caveat travels with it)")
+            return 0
 
         prep = prepare(session, project.id)
         out = Path("out/gold")
@@ -450,10 +473,6 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    import sys
-
-    raise SystemExit(main(sys.argv[1:]))
 
 
 # ---------------- machine-authored gold: the ceiling (#81 as amended)
@@ -670,3 +689,9 @@ def render_machine_gold(gold: MachineGold) -> str:
     for page_no, image in gold.page_images:
         lines.append(f"- [ ] page {page_no} — `{image or 'no image'}`")
     return "\n".join(lines) + "\n"
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))
