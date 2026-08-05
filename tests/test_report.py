@@ -1,4 +1,5 @@
 from datetime import date
+from html import escape as escape_html
 
 import pytest
 from openpyxl import load_workbook
@@ -168,6 +169,131 @@ def test_row_figures_are_assertions_carrying_a_page_and_quote(
     assert ref.provenance.quote
     assert ref.provenance.marker.startswith("[D")
     assert "p.1]" in ref.provenance.marker
+
+
+def _unverify_evidence_of(session, dependency):
+    """Leave the links in place and strike their verification.
+
+    Not "delete the links" and not "accept a candidate that cites
+    nothing" — adjudication refuses the second outright now, and building
+    a `Dependency(...)` by hand to get the first would pin a state
+    production can no longer reach. This is the surviving path:
+    `_evidence_link` copies `verified` off the citation, so any quote the
+    verifier could not find on its page lands here.
+    """
+    links = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).all()
+    assert links, "the fixture's records are supposed to carry evidence"
+    for link in links:
+        link.verified = False
+    session.flush()
+    return links
+
+
+def _make_every_record_critical(session, project):
+    """Both fixture records, because one row cannot tell the fix apart.
+
+    `make_critical` marks the first. With a single row in the section, a
+    cell citing *its own* record and a cell citing every record in the
+    section are the same tuple — and which record the cell drills to is
+    the entire content of the fix.
+    """
+    from corridor.models import Dependency
+
+    records = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project.id)
+        .order_by(Dependency.ref_code)
+    ).all()
+    for record in records:
+        record.resolution_strategy = "relocate"
+    session.flush()
+    return records
+
+
+def test_a_critical_record_with_no_verified_evidence_is_still_published(
+    session, project_with_two_dependencies
+):
+    """The section selects records that may have nothing to quote.
+
+    Its filter is "not ready and critical", and MISSING_EVIDENCE fires on
+    the unsettled ones among those — so `primary_evidence` returning
+    nothing is a normal state of the section, not an anomaly. It published
+    five cells with no provenance, `assert_no_bare_cells` refused them,
+    and `render` produced no report at all.
+    """
+    records = _make_every_record_critical(session, project_with_two_dependencies)
+    for record in records:
+        _unverify_evidence_of(session, record)
+
+    report = build_report(session, project_with_two_dependencies.id)
+    assert_no_bare_cells(report)
+
+    rows = section(report, "Critical items").rows
+    assert len(rows) == len(records) > 1
+    by_ref = {record.ref_code: record for record in records}
+    for row in rows:
+        record = by_ref[row[0].value]
+        for cell in row[:5]:
+            assert isinstance(cell.provenance, Derivation)
+            # Its own record. A tuple of every critical record would drill
+            # to a set the reader did not ask about, and with one row in
+            # the section the two are indistinguishable.
+            assert cell.provenance.record_ids == (record.id,)
+            assert cell.provenance.resolves
+
+
+def test_an_unverified_quote_is_never_published_as_the_citation(
+    session, project_with_two_dependencies
+):
+    """The other way to make the report render, and the wrong one.
+
+    `cell_html` picks its class on `isinstance(p, Assertion)` alone, so a
+    quote the verifier rejected would render byte-for-byte like one it
+    accepted. Dropping the verified filter from `ledger.primary_evidence`
+    is the same mistake wearing a different hat.
+
+    Both halves are load-bearing. The provenance check is what fails under
+    that mutation; the string check is escaped because `cell_html` escapes
+    what it publishes, and the fixture's `AT&T` renders as `AT&amp;T` —
+    so searching for the raw quote passes on the verified path too, where
+    that quote *is* the published citation, and proves nothing.
+    """
+    critical = make_critical(session, project_with_two_dependencies)
+    links = _unverify_evidence_of(session, critical)
+    quotes = [link.quote for link in links]
+
+    report = build_report(session, project_with_two_dependencies.id)
+    markup = render(report)
+    row = section(report, "Critical items").rows[0]
+
+    assert not isinstance(row[0].provenance, Assertion)
+    assert quotes and all(escape_html(quote) not in markup for quote in quotes)
+
+
+def test_striking_a_records_verification_removes_no_row_from_the_report(
+    session, project_with_two_dependencies
+):
+    """Omitting the row was the other candidate fix, and it is the worst.
+
+    A critical record whose evidence does not hold is the record a reader
+    most needs in front of them. ADR-0013 omits a milestone with no
+    records because there is no population to measure; here there is a
+    record, and it is the finding.
+    """
+    critical = make_critical(session, project_with_two_dependencies)
+    before = [row[0].value for row in section(
+        build_report(session, project_with_two_dependencies.id), "Critical items"
+    ).rows]
+
+    _unverify_evidence_of(session, critical)
+    report = build_report(session, project_with_two_dependencies.id)
+    after = [row[0].value for row in section(report, "Critical items").rows]
+
+    assert before == after
+    assert critical.ref_code in after
+    assert critical.ref_code in render(report)
 
 
 def test_the_report_has_the_six_documented_sections(
