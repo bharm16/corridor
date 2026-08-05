@@ -429,12 +429,17 @@ def evaluate(
     pooled they are meaningless: every row appears twice, so recall reads
     100% and precision reads 50% no matter how either extractor did.
 
-    `document_ids` scopes the run to the documents the gold set covers.
-    Without it the score compares one enumeration against every Candidate
-    in the project: a CSV covering one matrix revision, scored against a
-    project holding five, puts every row of the other four in `spurious`.
+    `document_ids` is the population being scored. Without it the score
+    compares one enumeration against every Candidate in the project: a CSV
+    covering one matrix revision, scored against a project holding five,
+    puts every row of the other four in `spurious`.
     `scripts/gate-run.sh` offers exactly that invocation as the stricter
     alternative. `main` computed the document set and never passed it.
+
+    It is the caller's statement of the population, not a fact derived
+    from the gold set — a CSV cannot say which documents it enumerates,
+    because the format carries no document and `page` restarts at 1 in
+    every one. `measure` is where that gets decided.
     """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -793,6 +798,7 @@ def measure(
     *,
     gold_path: str | Path | None = None,
     prompt_version: str | None = None,
+    document_ids: set[int] | None = None,
 ) -> Measurement:
     """Score one project's matrix extraction against an enumeration.
 
@@ -815,6 +821,17 @@ def measure(
     Without `gold_path` the enumeration is built from the stored page text
     of the project's matrices, which is independent of the table parser
     under test.
+
+    `document_ids` narrows the population, and exists because a CSV cannot
+    narrow it for itself. `author_machine_gold` reads *every* matrix in
+    the project — deliberately, and its own comment says why — so a
+    machine-authored CSV is a whole-project enumeration and the full
+    extracted set is the right population for it. A hand-authored CSV
+    covering one revision is not, and nothing in the file distinguishes
+    the two: `source_ref,page,critical` names no document, and `page`
+    restarts at 1 in each. So the caller says, and `gold_source` records
+    the population either way — a whole-document precision must not be
+    readable off a run whose scope the reader cannot see.
     """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -850,6 +867,17 @@ def measure(
         )
 
     skipped = matrices - extracted_docs
+    named = None
+    if document_ids is not None:
+        named = extracted_docs & set(document_ids)
+        if not named:
+            raise NothingToMeasure(
+                f"{slug}: none of the named documents completed extraction"
+                + (f" at {prompt_version}" if prompt_version else "")
+                + f"; extracted: {sorted(extracted_docs)}"
+            )
+        extracted_docs = named
+
     if gold_path is not None:
         gold = load_gold(gold_path)
         source = str(gold_path)
@@ -865,6 +893,14 @@ def measure(
         source += f"; scoped to {prompt_version}"
     if skipped:
         source += f"; {len(skipped)} ingested matrix/matrices not extracted"
+    # The population, always. The enumeration is one thing and the rows it
+    # was scored against are another, and a CSV says nothing about the
+    # second — so a reader who sees only `gold/<slug>.machine.csv` cannot
+    # tell a whole-project measurement from a one-revision file scored
+    # against six.
+    source += f"; scored over {len(extracted_docs)} extracted matrix/matrices"
+    if named is not None:
+        source += f" named by the caller ({', '.join(str(i) for i in sorted(named))})"
 
     return Measurement(
         result=evaluate(
@@ -880,7 +916,7 @@ def measure(
 
 
 def main(argv: list[str]) -> int:
-    """`eval <project-slug> [gold.csv] [--prompt-version=X]`.
+    """`eval <project-slug> [gold.csv] [--prompt-version=X] [--document=N ...]`.
 
     Argument parsing, printing and the artifact file. The measurement
     itself is `measure`.
@@ -888,17 +924,30 @@ def main(argv: list[str]) -> int:
     `--prompt-version` scopes both the enumeration and the scoring to one
     extraction path, which is what makes two paths on the same project
     comparable rather than pooled.
+
+    `--document` names the population, repeatably. A hand-authored CSV
+    covering one revision has no other way to say so — the format carries
+    no document — and without it the file is scored against every matrix
+    the project extracted.
     """
+    known = ("--prompt-version=", "--document=")
     flags = [a for a in argv if a.startswith("--")]
     args = [a for a in argv if not a.startswith("--")]
     prompt_version = next(
         (f.split("=", 1)[1] for f in flags if f.startswith("--prompt-version=")), None
     )
-    if not args or any(not f.startswith("--prompt-version=") for f in flags):
+    named = [f.split("=", 1)[1] for f in flags if f.startswith("--document=")]
+    if not args or any(not f.startswith(known) for f in flags):
         print(
-            "usage: eval <project-slug> [gold.csv] [--prompt-version=X]",
+            "usage: eval <project-slug> [gold.csv] [--prompt-version=X] "
+            "[--document=N ...]",
             file=sys.stderr,
         )
+        return 2
+    try:
+        document_ids = {int(n) for n in named} or None
+    except ValueError:
+        print("--document takes a document id", file=sys.stderr)
         return 2
 
     slug = args[0]
@@ -906,7 +955,11 @@ def main(argv: list[str]) -> int:
     with SessionFactory() as session:
         try:
             measurement = measure(
-                session, slug, gold_path=gold_path, prompt_version=prompt_version
+                session,
+                slug,
+                gold_path=gold_path,
+                prompt_version=prompt_version,
+                document_ids=document_ids,
             )
         except NothingToMeasure as exc:
             print(str(exc), file=sys.stderr)

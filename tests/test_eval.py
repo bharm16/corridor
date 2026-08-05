@@ -1226,3 +1226,80 @@ def test_the_measurement_scores_only_the_documents_that_extractor_read(
     assert taken.result.matched == 1
     assert taken.result.unmeasurable is False
     assert exit_code(taken.result) == 0
+
+
+def _two_extracted_revisions(session, project, document, tmp_path):
+    """One CSV enumerating revision 1, and two extracted revisions to score."""
+    add_page(session, document, 1, "FOC1-1 1149+00\n")
+    make_candidate(session, project, document, "FOC1-1")
+    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
+
+    other = _second_matrix(session, project)
+    add_page(session, other, 1, "FOC2-1 2249+00\n")
+    make_candidate(session, project, other, "FOC2-1")
+    mark_extracted(session, other, prompt_version="txdot_ucm_v1")
+
+    path = tmp_path / "gold.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    return other, path
+
+
+def test_a_csv_is_scored_against_every_extracted_matrix_until_the_caller_narrows(
+    session, project, document, tmp_path
+):
+    """The scope `measure` passed was every extracted matrix, not the gold's.
+
+    `evaluate` gained `document_ids` and `measure` filled it with the
+    documents *the extractor read*, which is the right population for a
+    machine-authored CSV — `author_machine_gold` reads every matrix in the
+    project on purpose. It is the wrong one for a hand-authored file
+    covering one revision, and the file cannot say which it is.
+    """
+    other, path = _two_extracted_revisions(session, project, document, tmp_path)
+
+    wide = measure(session, project.slug, gold_path=path)
+    narrowed = measure(
+        session, project.slug, gold_path=path, document_ids={document.id}
+    )
+
+    assert wide.result.spurious == ["FOC2-1"]
+    assert wide.result.precision == 0.5
+    assert narrowed.result.spurious == []
+    assert narrowed.result.precision == 1.0
+    assert narrowed.result.extracted_total == 1
+
+
+def test_the_measurement_records_the_population_it_was_scored_over(
+    session, project, document, tmp_path
+):
+    """A CSV names a file, and the file names no documents.
+
+    Without the population in `gold_source`, a reader of the artifact
+    cannot tell a whole-project measurement from a one-revision file
+    scored against six — and `precision` is a real number in both.
+    """
+    other, path = _two_extracted_revisions(session, project, document, tmp_path)
+
+    wide = measure(session, project.slug, gold_path=path)
+    narrowed = measure(
+        session, project.slug, gold_path=path, document_ids={document.id}
+    )
+
+    assert "scored over 2 extracted matrix/matrices" in wide.gold_source
+    assert "named by the caller" not in wide.gold_source
+    assert "scored over 1 extracted matrix/matrices" in narrowed.gold_source
+    assert f"named by the caller ({document.id})" in narrowed.gold_source
+
+
+def test_naming_a_document_nothing_extracted_is_refused_not_scored_empty(
+    session, project, document, tmp_path
+):
+    """A population of none is not a measurement, on the named path too."""
+    other, path = _two_extracted_revisions(session, project, document, tmp_path)
+    unread = _second_matrix(session, project, sha="d" * 64, name="matrix-rev3.pdf")
+
+    with pytest.raises(NothingToMeasure) as raised:
+        measure(session, project.slug, gold_path=path, document_ids={unread.id})
+
+    assert "none of the named documents completed extraction" in str(raised.value)
+    assert str(document.id) in str(raised.value)

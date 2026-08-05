@@ -94,6 +94,12 @@ stricter):
      the document has not settled. Blank reads as not-critical, out of
      the >=95% denominator.)
 
+     A hand-authored file that covers fewer than all the project's
+     matrices must say so at step 2 with --document=<id>, repeated. The
+     machine set needs no such flag: it reads every matrix in the project,
+     so the whole extracted population is its own. Nothing in the CSV
+     distinguishes the two, which is why the caller states it.
+
   2. Score:  uv run python -m corridor.eval ${SLUG} gold/${SLUG}.machine.csv --prompt-version=${PINNED}
 
   3. Record the result on #88 and against #22, whatever it says.
