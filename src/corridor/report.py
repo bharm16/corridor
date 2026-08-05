@@ -22,7 +22,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.exceptions import RULESET_VERSION, Evaluation, evaluate_project
+from corridor.exceptions import (
+    RULESET_VERSION,
+    Evaluation,
+    evaluate_project,
+    format_exception_label,
+)
 from corridor.ledger import Evidence, LedgerRow, browse, primary_evidence
 from corridor.models import (
     Dependency,
@@ -341,7 +346,7 @@ def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
         # The row's exceptions as facts, each with its own quantity — no
         # cross-rule "worst" pick, which is the device ADR-0010 forbids.
         listed = ", ".join(
-            e.rule + (f" {e.quantity_days}d" if e.quantity_days is not None else "")
+            format_exception_label(e)
             for e in sorted(row.exceptions, key=lambda e: e.rule)
         )
         section.rows.append(
@@ -518,7 +523,11 @@ def _appendix(rows: list[LedgerRow]) -> Section:
                 _derived("Ready", "yes" if row.is_ready else "no", ids),
                 _derived(
                     "Exceptions",
-                    ", ".join(sorted(e.rule for e in row.exceptions)) or "—",
+                    ", ".join(
+                        format_exception_label(e)
+                        for e in sorted(row.exceptions, key=lambda e: e.rule)
+                    )
+                    or "—",
                     ids,
                 ),
             ]

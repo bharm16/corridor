@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import Evaluation
+from corridor.exceptions import Evaluation, format_exception_label
 from corridor.ledger import browse, primary_evidence
 from corridor.models import Project
 
@@ -69,7 +69,7 @@ def to_xlsx(
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
 
     by_dependency = {
-        dependency_id: [e.rule for e in found]
+        dependency_id: [format_exception_label(e) for e in found]
         for dependency_id, found in evaluation.by_dependency().items()
     }
     evidence_by_dependency = primary_evidence(
@@ -120,9 +120,12 @@ def to_xlsx(
     meta = workbook.create_sheet("Provenance")
     meta.append(["Project", project.name if project else str(project_id)])
     meta.append(["Ruleset version", evaluation.ruleset_version])
+    meta.append(["Evaluated on", evaluation.today.isoformat()])
+    meta.append(["STALE threshold (days)", evaluation.thresholds.stale_days])
+    meta.append(["DUE_SOON threshold (days)", evaluation.thresholds.due_soon_days])
     meta.append(["Records", len(rows)])
     meta.append(
-        ["Note", "Exception columns are computed at export time, not stored."]
+        ["Note", "Exception columns are derived from the passed evaluation, not stored."]
     )
     meta.column_dimensions["A"].width = 18
     meta.column_dimensions["B"].width = 60

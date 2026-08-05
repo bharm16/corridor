@@ -7,7 +7,7 @@ from sqlalchemy import select
 from corridor.adjudicate import accept_candidate
 from corridor.changes import record_run, snapshot
 from corridor.db import Session, engine
-from corridor.exceptions import evaluate_project
+from corridor.exceptions import evaluate_project, format_exception_label
 from corridor.export import to_xlsx
 from corridor.ledger import browse
 from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
@@ -405,14 +405,22 @@ def test_a_critical_row_lists_its_exceptions_as_facts(
     """No cross-rule "worst" pick — the device ADR-0010 forbids. The row
     shows its exceptions with their quantities, and the reader judges."""
     project = project_with_two_dependencies
-    make_critical(session, project)
+    critical = make_critical(session, project)
+    critical.committed_date = date(2026, 7, 28)
+    critical.need_date = date(2026, 8, 8)
+    session.flush()
 
-    report = build_report(session, project.id)
+    report = build_report(session, project.id, today=date(2026, 8, 5))
     found = section(report, "Critical items")
     exceptions_cell = found.rows[0][found.columns.index("Exceptions")]
+    by_rule = {
+        e.rule: e
+        for e in report.evaluation.for_dependency(critical.id)
+    }
 
     assert "ORPHAN" in exceptions_cell.value
-    assert "MISSING_DATE" in exceptions_cell.value
+    assert format_exception_label(by_rule["OVERDUE"]) in exceptions_cell.value
+    assert format_exception_label(by_rule["DUE_SOON"]) in exceptions_cell.value
 
 
 def test_the_exceptions_summary_exemplar_is_the_largest_quantity_or_nothing(

@@ -94,6 +94,19 @@ class Exception_:
     critical: bool
 
 
+def format_exception_label(exception: Exception_) -> str:
+    """The reader-facing label for one exception fact.
+
+    The rule name is the finding; the day count, when present, is that
+    rule's own quantity rather than a derived or weighted score.
+    """
+    return exception.rule + (
+        f" {exception.quantity_days}d"
+        if exception.quantity_days is not None
+        else ""
+    )
+
+
 @dataclass(frozen=True)
 class RuleFacet:
     """One rule's bucket of the facet view: the finding, counted.

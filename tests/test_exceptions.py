@@ -14,6 +14,7 @@ from corridor.exceptions import (
     evaluate_project,
     facets,
     exceptions_for,
+    format_exception_label,
 )
 from corridor.models import (
     Assertion,
@@ -424,6 +425,24 @@ def test_a_rule_with_a_quantity_states_it_in_days(session, project, document):
     assert by_rule["STALE"].quantity_days == 21
 
 
+def test_exception_labels_include_the_rule_s_own_days_when_present(
+    session, project, document
+):
+    dep = make_dep(
+        session,
+        project,
+        committed_date=TODAY - timedelta(days=8),
+        need_date=TODAY + timedelta(days=3),
+    )
+    add_evidence(session, dep, document, doc_date=TODAY - timedelta(days=21))
+
+    by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
+
+    assert format_exception_label(by_rule["OVERDUE"]) == "OVERDUE 8d"
+    assert format_exception_label(by_rule["DUE_SOON"]) == "DUE_SOON 3d"
+    assert format_exception_label(by_rule["STALE"]) == "STALE 21d"
+
+
 def test_a_rule_whose_fact_is_an_absence_carries_no_quantity(
     session, project, document
 ):
@@ -437,6 +456,16 @@ def test_a_rule_whose_fact_is_an_absence_carries_no_quantity(
     assert by_rule["MISSING_OWNER"].quantity_days is None
     assert by_rule["MISSING_DATE"].quantity_days is None
     assert by_rule["ORPHAN"].quantity_days is None
+
+
+def test_exception_labels_omit_days_for_absence_rules(session, project, document):
+    dep = make_dep(session, project, internal_owner=None)
+    add_evidence(session, dep, document)
+
+    by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
+
+    assert format_exception_label(by_rule["MISSING_OWNER"]) == "MISSING_OWNER"
+    assert format_exception_label(by_rule["MISSING_DATE"]) == "MISSING_DATE"
 
 
 def test_stale_with_no_dated_evidence_at_all_has_no_quantity(
