@@ -7,11 +7,13 @@ and persists the resulting findings.  Nothing here writes to the Ledger.
 
 The matcher deliberately does not call ``merge.rank_matches``.  Merge is an
 asymmetric Candidate-to-Dependency suggestion contract; revision comparison
-builds a sparse Candidate-to-Candidate graph, marks near-equal alternatives as
-ambiguous, and solves maximum-cardinality / maximum-weight one-to-one
-correspondence globally inside each connected component.
+builds a sparse Candidate-to-Candidate graph and solves maximum-cardinality,
+then maximum-weight, one-to-one correspondence globally inside each connected
+component. Strong alternatives are ambiguous only when exact residual-graph
+regret proves that forcing them preserves cardinality within the configured
+weight margin.
 
-Version 1 deliberately supports only utility-matrix ``dependency`` rows.
+Version 2 deliberately supports only utility-matrix ``dependency`` rows.
 Agreement obligations and minutes events have different identity contracts
 that have not been calibrated on a real revision chain.  A non-empty run
 containing either shape fails closed before any receipt is written.  For two
@@ -52,13 +54,14 @@ from corridor.project_lock import lock_project
 from corridor.verify import normalize
 
 
-DEFAULT_MATCHER_VERSION = "revision-correspondence-v1"
+DEFAULT_MATCHER_VERSION = "revision-correspondence-v2"
 DEFAULT_MATCHER_CONFIG: dict[str, Any] = {
     "minimum_score": 0.60,
     "ambiguity_margin": 0.04,
     "station_tolerance_ft": 500.0,
     "minimum_station_identity": 0.80,
     "minimum_location_identity": 0.85,
+    "minimum_baseline_correction_anchors": 2,
     "max_ambiguity_rows": 20,
     "max_ambiguity_alternatives": 32,
     "normalization": "nfkc-casefold-whitespace-v1",
@@ -166,6 +169,15 @@ class _FlowEdge:
     pair: tuple[int, int] | None = None
 
 
+@dataclass(frozen=True)
+class _ResidualEdge:
+    """One available arc after the chosen fixed-cardinality flow."""
+
+    to: int
+    cost: int
+    pair: tuple[int, int] | None = None
+
+
 def create_revision_comparison(
     session: Session,
     predecessor_extraction_run_id: int,
@@ -184,6 +196,7 @@ def create_revision_comparison(
 
     if not isinstance(matcher_version, str) or not matcher_version.strip():
         raise RevisionComparisonError("matcher_version must be a non-empty string")
+    effective_matcher_version = matcher_version.strip()
     config = _resolved_config(matcher_config)
 
     with session.begin_nested():
@@ -191,45 +204,20 @@ def create_revision_comparison(
         successor_run = _run(session, successor_extraction_run_id)
         predecessor_document = session.get(Document, predecessor_run.document_id)
         successor_document = session.get(Document, successor_run.document_id)
-        if predecessor_document is None or successor_document is None:
-            raise InvalidRevisionPair("an Extraction Run has no registered document")
-        if predecessor_document.project_id != successor_document.project_id:
-            raise InvalidRevisionPair("a Revision Comparison cannot cross projects")
+        _validate_revision_pair(
+            predecessor_document,
+            successor_document,
+            predecessor_run,
+            successor_run,
+        )
+        project_id = predecessor_document.project_id
+        predecessor_document_id = predecessor_document.id
+        successor_document_id = successor_document.id
 
-        lock_project(session, predecessor_document.project_id)
-        predecessor_document = session.get(
-            Document, predecessor_document.id, populate_existing=True
-        )
-        successor_document = session.get(
-            Document, successor_document.id, populate_existing=True
-        )
-        predecessor_run = session.get(
-            ExtractionRun, predecessor_run.id, populate_existing=True
-        )
-        successor_run = session.get(
-            ExtractionRun, successor_run.id, populate_existing=True
-        )
-        if (
-            predecessor_document is None
-            or successor_document is None
-            or predecessor_run is None
-            or successor_run is None
-        ):
-            raise InvalidRevisionPair("the requested revision inputs disappeared")
-        if predecessor_document.superseded_by != successor_document.id:
-            raise InvalidRevisionPair(
-                "documents are not an authority-declared predecessor-successor pair"
-            )
-        if not is_completed_run(predecessor_run):
-            raise IncompletePredecessorExtraction(
-                "predecessor extraction must have completed successfully"
-            )
-        if not is_completed_run(successor_run):
-            raise IncompleteSuccessorExtraction(
-                "successor extraction must have completed successfully before "
-                "rows can be classified as dropped or vanished"
-            )
-
+        # ExtractionRun snapshots and Candidate membership are database-
+        # immutable. Do the quadratic pure matcher work before taking the
+        # project mutation lock, then revalidate the authoritative registry
+        # edge and exact inputs under the lock before writing the receipt.
         predecessor_inputs = _run_inputs(
             session, predecessor_document, predecessor_run
         )
@@ -237,15 +225,71 @@ def create_revision_comparison(
             session, successor_document, successor_run
         )
         _validate_supported_inputs(
-            predecessor_document, predecessor_inputs, side="predecessor"
+            predecessor_document,
+            predecessor_inputs,
+            side="predecessor",
+            matcher_version=effective_matcher_version,
         )
         _validate_supported_inputs(
-            successor_document, successor_inputs, side="successor"
+            successor_document,
+            successor_inputs,
+            side="successor",
+            matcher_version=effective_matcher_version,
         )
         findings = _compare_inputs(
             predecessor_inputs,
             successor_inputs,
             config,
+        )
+
+        lock_project(session, project_id)
+        predecessor_document = session.get(
+            Document, predecessor_document_id, populate_existing=True
+        )
+        successor_document = session.get(
+            Document, successor_document_id, populate_existing=True
+        )
+        predecessor_run = session.get(
+            ExtractionRun,
+            predecessor_extraction_run_id,
+            populate_existing=True,
+        )
+        successor_run = session.get(
+            ExtractionRun,
+            successor_extraction_run_id,
+            populate_existing=True,
+        )
+        _validate_revision_pair(
+            predecessor_document,
+            successor_document,
+            predecessor_run,
+            successor_run,
+            expected_project_id=project_id,
+        )
+        locked_predecessor_inputs = _run_inputs(
+            session, predecessor_document, predecessor_run
+        )
+        locked_successor_inputs = _run_inputs(
+            session, successor_document, successor_run
+        )
+        if (
+            locked_predecessor_inputs != predecessor_inputs
+            or locked_successor_inputs != successor_inputs
+        ):
+            raise RevisionComparisonError(
+                "exact Extraction Run inputs changed while comparison was computed"
+            )
+        _validate_supported_inputs(
+            predecessor_document,
+            locked_predecessor_inputs,
+            side="predecessor",
+            matcher_version=effective_matcher_version,
+        )
+        _validate_supported_inputs(
+            successor_document,
+            locked_successor_inputs,
+            side="successor",
+            matcher_version=effective_matcher_version,
         )
 
         content = _receipt_content(
@@ -254,7 +298,7 @@ def create_revision_comparison(
             successor_document_id=successor_document.id,
             predecessor_run=predecessor_run,
             successor_run=successor_run,
-            matcher_version=matcher_version.strip(),
+            matcher_version=effective_matcher_version,
             matcher_config=config,
             predecessor_inputs=predecessor_inputs,
             successor_inputs=successor_inputs,
@@ -272,7 +316,7 @@ def create_revision_comparison(
             successor_prompt_version=successor_run.prompt_version,
             predecessor_model=predecessor_run.model,
             successor_model=successor_run.model,
-            matcher_version=matcher_version.strip(),
+            matcher_version=effective_matcher_version,
             matcher_config=config,
             predecessor_inputs_json=predecessor_inputs,
             successor_inputs_json=successor_inputs,
@@ -410,6 +454,52 @@ def _run(session: Session, run_id: int) -> ExtractionRun:
     return run
 
 
+def _validate_revision_pair(
+    predecessor_document: Document | None,
+    successor_document: Document | None,
+    predecessor_run: ExtractionRun | None,
+    successor_run: ExtractionRun | None,
+    *,
+    expected_project_id: int | None = None,
+) -> None:
+    """Validate the exact declared pair before compute and again under lock."""
+
+    if (
+        predecessor_document is None
+        or successor_document is None
+        or predecessor_run is None
+        or successor_run is None
+    ):
+        raise InvalidRevisionPair("the requested revision inputs disappeared")
+    if (
+        predecessor_run.document_id != predecessor_document.id
+        or successor_run.document_id != successor_document.id
+    ):
+        raise InvalidRevisionPair("an Extraction Run has no registered document")
+    if predecessor_document.project_id != successor_document.project_id:
+        raise InvalidRevisionPair("a Revision Comparison cannot cross projects")
+    if (
+        expected_project_id is not None
+        and predecessor_document.project_id != expected_project_id
+    ):
+        raise InvalidRevisionPair(
+            "revision inputs changed projects while comparison was computed"
+        )
+    if predecessor_document.superseded_by != successor_document.id:
+        raise InvalidRevisionPair(
+            "documents are not an authority-declared predecessor-successor pair"
+        )
+    if not is_completed_run(predecessor_run):
+        raise IncompletePredecessorExtraction(
+            "predecessor extraction must have completed successfully"
+        )
+    if not is_completed_run(successor_run):
+        raise IncompleteSuccessorExtraction(
+            "successor extraction must have completed successfully before "
+            "rows can be classified as dropped or vanished"
+        )
+
+
 def _run_inputs(
     session: Session, document: Document, run: ExtractionRun
 ) -> list[dict[str, Any]]:
@@ -482,6 +572,7 @@ def _validate_supported_inputs(
     inputs: list[dict[str, Any]],
     *,
     side: str,
+    matcher_version: str,
 ) -> None:
     """Reject non-utility source shapes before comparison writes a receipt."""
 
@@ -492,7 +583,7 @@ def _validate_supported_inputs(
         raise UnsupportedComparisonShape(
             f"{side} Extraction Run contains Candidates {candidate_ids} from "
             f"document type {document.doc_type!r}; matcher "
-            f"{DEFAULT_MATCHER_VERSION} supports only utility-matrix "
+            f"{matcher_version} supports only utility-matrix "
             "dependency rows"
         )
     unsupported: list[int] = []
@@ -507,7 +598,7 @@ def _validate_supported_inputs(
     if unsupported:
         raise UnsupportedComparisonShape(
             f"{side} Extraction Run contains unsupported Candidates "
-            f"{unsupported}; matcher {DEFAULT_MATCHER_VERSION} supports only "
+            f"{unsupported}; matcher {matcher_version} supports only "
             "utility-matrix dependency rows"
         )
 
@@ -562,6 +653,15 @@ def _resolved_config(overrides: dict[str, Any] | None) -> dict[str, Any]:
         raise RevisionComparisonError("minimum_station_identity must be in [0, 1]")
     if not 0 <= config["minimum_location_identity"] <= 1:
         raise RevisionComparisonError("minimum_location_identity must be in [0, 1]")
+    baseline_anchors = config["minimum_baseline_correction_anchors"]
+    if (
+        isinstance(baseline_anchors, bool)
+        or not isinstance(baseline_anchors, int)
+        or not 1 <= baseline_anchors <= 3
+    ):
+        raise RevisionComparisonError(
+            "minimum_baseline_correction_anchors must be an integer in [1, 3]"
+        )
     for name in ("max_ambiguity_rows", "max_ambiguity_alternatives"):
         value = config[name]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -624,19 +724,30 @@ def _compare_inputs(
         snapshot["candidate_id"]: _row(snapshot) for snapshot in successor_inputs
     }
     edges = _eligible_edges(predecessor_rows, successor_rows, config)
-    assignable = {
+    strong_edges = {
         pair: edge
         for pair, edge in edges.items()
+        if edge.strong_identity
+    }
+    assignable = {
+        pair: edge
+        for pair, edge in strong_edges.items()
         if edge.score >= config["minimum_score"]
-        and edge.strong_identity
     }
     matched = _global_matching(assignable)
     uncertainty = {
-        "weak_identity": {
-            pair for pair, edge in edges.items() if not edge.strong_identity
-        },
-        "near_tied": _near_tied_pairs(edges, config["ambiguity_margin"]),
-        "displaced_stronger": _displaced_pairs(assignable, matched),
+        "weak_identity": _competitive_weak_pairs(
+            edges, matched, config["ambiguity_margin"]
+        ),
+        "below_threshold": _competitive_below_threshold_pairs(
+            strong_edges,
+            matched,
+            config["minimum_score"],
+            config["ambiguity_margin"],
+        ),
+        "assignment_regret": _assignment_regret_pairs(
+            assignable, matched, config["ambiguity_margin"]
+        ),
     }
     ambiguous, ambiguous_predecessors, ambiguous_successors = (
         _bounded_ambiguities(edges, matched, uncertainty, config)
@@ -835,15 +946,14 @@ def _score_edge(
         predecessor.fields, successor.fields
     )
 
-    station = _station_similarity(
+    raw_station = _raw_station_similarity(
         predecessor.fields,
         successor.fields,
         config["station_tolerance_ft"],
     )
-    if station == 0.0:
+    station = None if baseline_conflict else raw_station
+    if not baseline_conflict and station == 0.0:
         return None
-    if station is not None and weights["station"]:
-        signals.append(_signal("station", station, weights["station"]))
 
     predecessor_ref = _meaningful_identity(predecessor.fields.get("utility_id"))
     successor_ref = _meaningful_identity(successor.fields.get("utility_id"))
@@ -890,26 +1000,51 @@ def _score_edge(
         _independent_location_text(predecessor.fields),
         _independent_location_text(successor.fields),
     )
-    independent_location_identity = (
-        independent_location_score is not None
-        and independent_location_score >= config["minimum_location_identity"]
+    shared_location_anchors = (
+        _independent_location_anchors(predecessor.fields)
+        & _independent_location_anchors(successor.fields)
     )
+    baseline_location_hypothesis = bool(
+        baseline_conflict
+        and reference_exact
+        and predecessor_owner
+        and predecessor_owner == successor_owner
+        and shared_location_anchors
+    )
+    baseline_correction_identity = bool(
+        baseline_location_hypothesis
+        and raw_station is not None
+        and raw_station >= config["minimum_station_identity"]
+        and len(shared_location_anchors)
+        >= config["minimum_baseline_correction_anchors"]
+    )
+    station_evidence = raw_station if baseline_correction_identity else station
+    if station_evidence is not None and weights["station"]:
+        signals.append(
+            _signal(
+                (
+                    "station_across_corrected_baseline"
+                    if baseline_correction_identity
+                    else "station"
+                ),
+                station_evidence,
+                weights["station"],
+            )
+        )
 
     # Owner and utility type identify a cohort, not a row.  An explicit source
     # id disagreement without strong station or location evidence is a pair of
     # unmatched rows, never an exact correspondence manufactured by a score at
     # the threshold.  Renumbering remains supported when the physical identity
     # primitives agree.
-    physical_identity = (
-        (
-            not baseline_conflict
-            and station is not None
-            and station >= config["minimum_station_identity"]
-        )
-        or (
-            independent_location_identity
-            if baseline_conflict
-            else (
+    physical_identity = baseline_correction_identity or (
+        not baseline_conflict
+        and (
+            (
+                station is not None
+                and station >= config["minimum_station_identity"]
+            )
+            or (
                 location_score is not None
                 and location_score >= config["minimum_location_identity"]
             )
@@ -921,25 +1056,28 @@ def _score_edge(
     if owner_score is not None and weights["owner"]:
         signals.append(_signal("owner", owner_score, weights["owner"]))
 
-    # Matrix ids repeat across corridors.  Once both rows establish different
-    # baselines, the shared printed id cannot overrule those contradictory
-    # coordinates; only a separate named location can link the rows.
+    # Matrix ids repeat across corridors. A baseline label change is identity
+    # only when exact id/owner, close raw spans, and multiple structured named
+    # places corroborate it; a reused id by itself never overrules coordinates.
     strong_identity = physical_identity or (
         reference_exact and not baseline_conflict
     )
     weak_physical_identity = (
-        not baseline_conflict
-        and (
-            (
-                station is not None
-                and station > 0.0
-                and _has_comparable_baseline(
-                    predecessor.fields, successor.fields
+        baseline_location_hypothesis
+        or (
+            not baseline_conflict
+            and (
+                (
+                    station is not None
+                    and station > 0.0
+                    and _has_comparable_baseline(
+                        predecessor.fields, successor.fields
+                    )
                 )
-            )
-            or (
-                independent_location_score is not None
-                and independent_location_score > 0.0
+                or (
+                    independent_location_score is not None
+                    and independent_location_score > 0.0
+                )
             )
         )
     )
@@ -1036,6 +1174,18 @@ def _station_similarity(
         # coordinates. This is incomparable station evidence, not a distant
         # point: an exact source id or a location may still establish identity.
         return None
+    return _raw_station_similarity(
+        predecessor_fields, successor_fields, tolerance
+    )
+
+
+def _raw_station_similarity(
+    predecessor_fields: dict[str, Any],
+    successor_fields: dict[str, Any],
+    tolerance: float,
+) -> float | None:
+    """Compare printed spans without interpreting their baseline labels."""
+
     predecessor = _station_span(predecessor_fields)
     successor = _station_span(successor_fields)
     if predecessor is None or successor is None:
@@ -1095,57 +1245,292 @@ def _independent_location_text(fields: dict[str, Any]) -> str:
     return " ".join(values)
 
 
-def _near_tied_pairs(
-    edges: dict[tuple[int, int], _ScoredEdge], margin: float
-) -> set[tuple[int, int]]:
-    by_predecessor: dict[int, list[_ScoredEdge]] = defaultdict(list)
-    by_successor: dict[int, list[_ScoredEdge]] = defaultdict(list)
-    for edge in edges.values():
-        by_predecessor[edge.predecessor_id].append(edge)
-        by_successor[edge.successor_id].append(edge)
+def _independent_location_anchors(fields: dict[str, Any]) -> frozenset[str]:
+    """Structured named places, excluding values that are station notation."""
 
-    uncertain_pairs: set[tuple[int, int]] = set()
-    for alternatives in (*by_predecessor.values(), *by_successor.values()):
-        alternatives.sort(
-            key=lambda edge: (-edge.score, edge.predecessor_id, edge.successor_id)
-        )
-        if (
-            len(alternatives) >= 2
-            and alternatives[0].score - alternatives[1].score <= margin
-        ):
-            top = alternatives[0].score
-            uncertain_pairs.update(
-                (edge.predecessor_id, edge.successor_id)
-                for edge in alternatives
-                if top - edge.score <= margin
-            )
-
-    return uncertain_pairs
+    anchors = set()
+    for name in ("location_start", "location_end", "alignment"):
+        value = fields.get(name)
+        if name != "alignment" and parse_station(value) is not None:
+            continue
+        normalized = _meaningful_identity(value)
+        if normalized:
+            anchors.add(normalized)
+    return frozenset(anchors)
 
 
-def _displaced_pairs(
+def _competitive_weak_pairs(
     edges: dict[tuple[int, int], _ScoredEdge],
     matched: list[_ScoredEdge],
+    margin: float,
 ) -> set[tuple[int, int]]:
-    """Find unchosen evidence stronger than a conflicting chosen edge."""
+    """Retain weak evidence only when a chosen match does not dominate it."""
 
+    chosen_by_predecessor = {
+        edge.predecessor_id: edge.score for edge in matched
+    }
+    chosen_by_successor = {edge.successor_id: edge.score for edge in matched}
+    competitive: set[tuple[int, int]] = set()
+    for pair, edge in edges.items():
+        if edge.strong_identity:
+            continue
+        if _not_dominated_by_incident_assignment(
+            edge,
+            chosen_by_predecessor,
+            chosen_by_successor,
+            margin,
+        ):
+            competitive.add(pair)
+    return competitive
+
+
+def _competitive_below_threshold_pairs(
+    edges: dict[tuple[int, int], _ScoredEdge],
+    matched: list[_ScoredEdge],
+    minimum_score: float,
+    margin: float,
+) -> set[tuple[int, int]]:
+    """Return full local tie witnesses triggered by a sub-threshold edge.
+
+    A lone plausible edge below ``minimum_score`` remains terminal added and
+    dropped evidence. A sub-threshold edge seeds review only when another
+    strong edge on either endpoint is within the configured integer-scaled
+    margin and neither edge is dominated by the chosen incident assignment.
+    The complete local witness is returned because an unchosen assignable
+    competitor would not otherwise be attached by ``_bounded_ambiguities``.
+    """
+
+    chosen_by_predecessor = {
+        edge.predecessor_id: edge.score for edge in matched
+    }
+    chosen_by_successor = {edge.successor_id: edge.score for edge in matched}
+    competitive = {
+        pair: edge
+        for pair, edge in edges.items()
+        if _not_dominated_by_incident_assignment(
+            edge,
+            chosen_by_predecessor,
+            chosen_by_successor,
+            margin,
+        )
+    }
+    by_predecessor: dict[
+        int, list[tuple[tuple[int, int], _ScoredEdge]]
+    ] = defaultdict(list)
+    by_successor: dict[
+        int, list[tuple[tuple[int, int], _ScoredEdge]]
+    ] = defaultdict(list)
+    for pair, edge in competitive.items():
+        by_predecessor[edge.predecessor_id].append((pair, edge))
+        by_successor[edge.successor_id].append((pair, edge))
+
+    margin_units = _score_units(margin)
+    below_threshold: set[tuple[int, int]] = set()
+    for pair, edge in competitive.items():
+        if edge.score >= minimum_score:
+            continue
+        edge_units = _score_units(edge.score)
+        alternatives = (
+            by_predecessor[edge.predecessor_id]
+            + by_successor[edge.successor_id]
+        )
+        tied_pairs = {
+            alternative_pair
+            for alternative_pair, alternative in alternatives
+            if alternative_pair != pair
+            and abs(edge_units - _score_units(alternative.score)) <= margin_units
+        }
+        if tied_pairs:
+            below_threshold.add(pair)
+            below_threshold.update(tied_pairs)
+    return below_threshold
+
+
+def _not_dominated_by_incident_assignment(
+    edge: _ScoredEdge,
+    chosen_by_predecessor: dict[int, float],
+    chosen_by_successor: dict[int, float],
+    margin: float,
+) -> bool:
+    chosen_scores = [
+        score
+        for score in (
+            chosen_by_predecessor.get(edge.predecessor_id),
+            chosen_by_successor.get(edge.successor_id),
+        )
+        if score is not None
+    ]
+    return not chosen_scores or all(
+        chosen_score - edge.score <= margin + _SCORE_EPSILON
+        for chosen_score in chosen_scores
+    )
+
+
+def _assignment_regret_pairs(
+    edges: dict[tuple[int, int], _ScoredEdge],
+    matched: list[_ScoredEdge],
+    margin: float,
+) -> set[tuple[int, int]]:
+    """Return exact low-regret alternating witnesses for unchosen edges.
+
+    ``matched`` is the documented maximum-cardinality, then maximum-weight,
+    assignment. Its residual network includes source/sink arcs so a forced
+    edge may exchange which left or right endpoint is unmatched without
+    changing cardinality. One feasible Johnson potential is computed for the
+    whole integer residual network. Unchosen edges are then grouped by their
+    successor, allowing one cutoff Dijkstra search to answer every forced-edge
+    query from that successor.
+
+    For an unchosen edge ``left -> right``, exact forced-assignment regret is
+    its reduced arc cost plus the shortest residual return path ``right ->
+    left``. If that total is within the integer-scaled ambiguity margin, the
+    returned set includes every chosen and unchosen pair on the full
+    alternating witness, not merely the edge that triggered the query.
+    """
+
+    if not edges or not matched:
+        return set()
     chosen_pairs = {
         (edge.predecessor_id, edge.successor_id) for edge in matched
     }
-    by_predecessor = {edge.predecessor_id: edge for edge in matched}
-    by_successor = {edge.successor_id: edge for edge in matched}
-    displaced_pairs: set[tuple[int, int]] = set()
-    for pair, edge in edges.items():
+    predecessors = sorted({pair[0] for pair in edges})
+    successors = sorted({pair[1] for pair in edges})
+    source = 0
+    left_offset = 1
+    right_offset = left_offset + len(predecessors)
+    sink = right_offset + len(successors)
+    graph: list[list[_ResidualEdge]] = [[] for _ in range(sink + 1)]
+    left_node = {
+        candidate_id: left_offset + index
+        for index, candidate_id in enumerate(predecessors)
+    }
+    right_node = {
+        candidate_id: right_offset + index
+        for index, candidate_id in enumerate(successors)
+    }
+    chosen_predecessors = {pair[0] for pair in chosen_pairs}
+    chosen_successors = {pair[1] for pair in chosen_pairs}
+
+    for candidate_id in predecessors:
+        node = left_node[candidate_id]
+        if candidate_id in chosen_predecessors:
+            graph[node].append(_ResidualEdge(source, 0))
+        else:
+            graph[source].append(_ResidualEdge(node, 0))
+    for candidate_id in successors:
+        node = right_node[candidate_id]
+        if candidate_id in chosen_successors:
+            graph[sink].append(_ResidualEdge(node, 0))
+        else:
+            graph[node].append(_ResidualEdge(sink, 0))
+    for pair, edge in sorted(edges.items()):
+        cost = _edge_cost(edge)
+        if pair in chosen_pairs:
+            graph[right_node[pair[1]]].append(
+                _ResidualEdge(left_node[pair[0]], -cost, pair)
+            )
+        else:
+            graph[left_node[pair[0]]].append(
+                _ResidualEdge(right_node[pair[1]], cost, pair)
+            )
+
+    potentials = _feasible_residual_potentials(graph)
+    margin_units = _score_units(margin)
+    candidates_by_successor: dict[
+        int, list[tuple[tuple[int, int], int]]
+    ] = defaultdict(list)
+    for pair, edge in sorted(edges.items()):
         if pair in chosen_pairs:
             continue
-        competing = []
-        if edge.predecessor_id in by_predecessor:
-            competing.append(by_predecessor[edge.predecessor_id].score)
-        if edge.successor_id in by_successor:
-            competing.append(by_successor[edge.successor_id].score)
-        if competing and edge.score > min(competing) + _SCORE_EPSILON:
-            displaced_pairs.add(pair)
-    return displaced_pairs
+        left = left_node[pair[0]]
+        right = right_node[pair[1]]
+        reduced_cost = _edge_cost(edge) + potentials[left] - potentials[right]
+        if reduced_cost < 0:
+            raise RuntimeError("assignment residual potential is not feasible")
+        if reduced_cost <= margin_units:
+            candidates_by_successor[pair[1]].append((pair, reduced_cost))
+
+    witness_pairs: set[tuple[int, int]] = set()
+    for successor_id, candidates in sorted(candidates_by_successor.items()):
+        cutoff = max(margin_units - reduced for _, reduced in candidates)
+        start = right_node[successor_id]
+        distances, previous = _residual_dijkstra(
+            graph, potentials, start, cutoff
+        )
+        for pair, forced_reduced_cost in candidates:
+            target = left_node[pair[0]]
+            if distances[target] > margin_units - forced_reduced_cost:
+                continue
+            witness_pairs.add(pair)
+            node = target
+            while node != start:
+                step = previous[node]
+                if step is None:
+                    raise RuntimeError("finite residual distance has no witness path")
+                prior, edge_index = step
+                residual_edge = graph[prior][edge_index]
+                if residual_edge.pair is not None:
+                    witness_pairs.add(residual_edge.pair)
+                node = prior
+    return witness_pairs
+
+
+def _edge_cost(edge: _ScoredEdge) -> int:
+    return _COST_SCALE - _score_units(edge.score)
+
+
+def _score_units(score: float) -> int:
+    return int(round(score * _COST_SCALE))
+
+
+def _feasible_residual_potentials(
+    graph: list[list[_ResidualEdge]],
+) -> list[int]:
+    """Bellman-Ford from an implicit zero-cost super-source."""
+
+    potentials = [0] * len(graph)
+    for _ in range(len(graph)):
+        changed = False
+        for node, outgoing in enumerate(graph):
+            for edge in outgoing:
+                candidate = potentials[node] + edge.cost
+                if candidate < potentials[edge.to]:
+                    potentials[edge.to] = candidate
+                    changed = True
+        if not changed:
+            return potentials
+    raise RuntimeError("maximum-weight assignment left a negative residual cycle")
+
+
+def _residual_dijkstra(
+    graph: list[list[_ResidualEdge]],
+    potentials: list[int],
+    start: int,
+    cutoff: int,
+) -> tuple[list[int], list[tuple[int, int] | None]]:
+    """Shortest reduced-cost paths, stopping beyond the largest useful regret."""
+
+    unreachable = 10**30
+    distances = [unreachable] * len(graph)
+    previous: list[tuple[int, int] | None] = [None] * len(graph)
+    distances[start] = 0
+    queue: list[tuple[int, int]] = [(0, start)]
+    while queue:
+        distance, node = heapq.heappop(queue)
+        if distance != distances[node]:
+            continue
+        if distance > cutoff:
+            break
+        for edge_index, edge in enumerate(graph[node]):
+            reduced_cost = edge.cost + potentials[node] - potentials[edge.to]
+            if reduced_cost < 0:
+                raise RuntimeError("assignment residual potential is not feasible")
+            candidate = distance + reduced_cost
+            if candidate <= cutoff and candidate < distances[edge.to]:
+                distances[edge.to] = candidate
+                previous[edge.to] = (node, edge_index)
+                heapq.heappush(queue, (candidate, edge.to))
+    return distances, previous
 
 
 def _bounded_ambiguities(
@@ -1479,7 +1864,7 @@ def _maximum_weight_for_cardinality(
     for candidate_id in right:
         _add_flow_edge(graph, right_node[candidate_id], sink, 0)
     for pair, edge in sorted(edges.items()):
-        cost = _COST_SCALE - int(round(edge.score * _COST_SCALE))
+        cost = _edge_cost(edge)
         _add_flow_edge(
             graph,
             left_node[pair[0]],

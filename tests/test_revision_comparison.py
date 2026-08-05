@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
+import corridor.revision_comparison as revision_comparison
 from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import (
@@ -31,6 +32,7 @@ from corridor.revision_comparison import (
     RevisionComparisonError,
     UnsupportedComparisonShape,
     _ScoredEdge,
+    _assignment_regret_pairs,
     _bounded_ambiguities,
     _global_matching,
     comparison_derivation,
@@ -205,7 +207,7 @@ def _run(
 def test_unsupported_candidate_shape_fails_closed_without_a_partial_receipt(
     session, consecutive_nhhip_documents, doc_type, kind, fields
 ):
-    """V1 refuses source shapes for which no correspondence contract exists."""
+    """The effective matcher refuses shapes without a correspondence contract."""
 
     _, predecessor, successor = consecutive_nhhip_documents
     predecessor.doc_type = doc_type
@@ -231,10 +233,16 @@ def test_unsupported_candidate_shape_fails_closed_without_a_partial_receipt(
 
     with pytest.raises(
         UnsupportedComparisonShape,
-        match="utility-matrix dependency rows",
+        match=(
+            "matcher custom-correspondence-v9 supports only "
+            "utility-matrix dependency rows"
+        ),
     ):
         create_revision_comparison(
-            session, predecessor_run.id, successor_run.id
+            session,
+            predecessor_run.id,
+            successor_run.id,
+            matcher_version="  custom-correspondence-v9  ",
         )
 
     assert session.scalars(select(RevisionComparisonRun)).all() == []
@@ -389,15 +397,10 @@ def test_consecutive_nhhip_runs_persist_an_exact_reviewer_readable_receipt(
     } == {candidate.id for candidate in successor_candidates}
 
 
-def test_near_tied_component_is_ambiguous_without_artificial_drops_or_additions(
+def test_unique_maximum_cardinality_assignment_is_not_locally_ambiguous(
     session, consecutive_nhhip_documents
 ):
-    """An eligible row adjacent to uncertainty belongs to the ambiguity.
-
-    P1 is tied between S1/S2. P2 has only S2 above the configured threshold.
-    Removing S2 before assignment must not make P2 look dropped; the whole
-    plausible component is one reviewer-visible ambiguity.
-    """
+    """A near edge is certain when forcing it would reduce cardinality."""
 
     _, predecessor, successor = consecutive_nhhip_documents
     predecessor_run, predecessor_candidates = _run(
@@ -449,21 +452,19 @@ def test_near_tied_component_is_ambiguous_without_artificial_drops_or_additions(
     )
     readback = read_revision_comparison(session, comparison.id)
 
-    assert [finding.state for finding in readback.findings] == ["ambiguous"]
-    [ambiguous] = readback.findings
-    assert set(ambiguous.predecessor_candidate_ids) == {
-        candidate.id for candidate in predecessor_candidates
+    assert len(readback.findings) == 2
+    assert {
+        (
+            tuple(finding.predecessor_candidate_ids),
+            tuple(finding.successor_candidate_ids),
+        )
+        for finding in readback.findings
+    } == {
+        ((predecessor_candidates[0].id,), (successor_candidates[0].id,)),
+        ((predecessor_candidates[1].id,), (successor_candidates[1].id,)),
     }
-    assert set(ambiguous.successor_candidate_ids) == {
-        candidate.id for candidate in successor_candidates
-    }
-    assert len(ambiguous.matcher_detail["alternatives"]) == 3
-    assert any(
-        alternative["near_tied"]
-        for alternative in ambiguous.matcher_detail["alternatives"]
-    )
     assert {finding.state for finding in readback.findings}.isdisjoint(
-        {"added", "dropped", "split", "combined"}
+        {"ambiguous", "added", "dropped", "split", "combined"}
     )
 
 
@@ -1157,10 +1158,94 @@ def test_repeated_source_id_cannot_override_contradictory_coordinates(
     ) == {"dropped": 1, "added": 1}
 
 
-def test_independent_location_can_link_a_row_across_changed_baselines(
+def test_exact_foc8_baseline_correction_corresponds_as_changed(
     session, consecutive_nhhip_documents
 ):
-    """A named physical location can establish identity despite re-stationing."""
+    """The real FOC8-3 row is re-stationed across a corrected baseline."""
+
+    _, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, [predecessor_candidate] = _run(
+        session,
+        predecessor,
+        [
+            {
+                "alignment": "Rothwell Street",
+                "baseline": "IH 10",
+                "data_source": "SUE",
+                "external_org": "Verizon/MCI",
+                "location_end": "IH 69",
+                "location_start": "Nance Street",
+                "offset_from": "388",
+                "offset_side": "R",
+                "offset_to": "883",
+                "oh_ug": "UG",
+                "orientation": "Perpendicular",
+                "potential_conflict": "Y",
+                "size": "FOC",
+                "station_from": "1112+62",
+                "station_to": "1116+18",
+                "sue_level": "A",
+                "utility_id": "FOC8-3",
+                "utility_type": "Telecom",
+            }
+        ],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, [successor_candidate] = _run(
+        session,
+        successor,
+        [
+            {
+                "alignment": "Rothwell Street",
+                "baseline": "IH 69",
+                "data_source": "SUE",
+                "external_org": "Verizon/MCI",
+                "location_end": "Nance Street",
+                "location_start": "Grayson Street",
+                "material": "FOC",
+                "offset_from": "212",
+                "offset_side": "L",
+                "offset_to": "750",
+                "oh_ug": "UG",
+                "orientation": "Crossing",
+                "potential_conflict": "Y",
+                "station_from": "1116+95",
+                "station_to": "1119+20",
+                "sue_level": "A",
+                "utility_id": "FOC8-3",
+                "utility_type": "Telecom",
+            }
+        ],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+
+    comparison = create_revision_comparison(
+        session, predecessor_run.id, successor_run.id
+    )
+    [finding] = read_revision_comparison(session, comparison.id).findings
+
+    assert finding.state == "changed"
+    assert finding.predecessor_candidate_ids == [predecessor_candidate.id]
+    assert finding.successor_candidate_ids == [successor_candidate.id]
+    assert {change["field"] for change in finding.field_changes} >= {
+        "baseline",
+        "station_from",
+        "station_to",
+    }
+    assert any(
+        signal["name"] == "station_across_corrected_baseline"
+        for signal in finding.matcher_detail["signals"]
+    )
+
+
+def test_one_location_anchor_routes_cross_baseline_identity_to_ambiguity(
+    session, consecutive_nhhip_documents
+):
+    """One shared place is review evidence, not assignable baseline correction."""
 
     _, predecessor, successor = consecutive_nhhip_documents
     predecessor_run, _ = _run(
@@ -1199,13 +1284,17 @@ def test_independent_location_can_link_a_row_across_changed_baselines(
     comparison = create_revision_comparison(
         session, predecessor_run.id, successor_run.id
     )
+
     [finding] = read_revision_comparison(session, comparison.id).findings
 
-    assert finding.state == "changed"
-    assert {change["field"] for change in finding.field_changes} == {
-        "baseline",
-        "station_from",
-    }
+    assert finding.state == "ambiguous"
+    [alternative] = finding.matcher_detail["alternatives"]
+    assert alternative["weak_identity"] is True
+    assert alternative["chosen"] is False
+    assert all(
+        signal["name"] != "station_across_corrected_baseline"
+        for signal in alternative["signals"]
+    )
 
 
 def test_equivalent_baseline_and_station_formatting_is_unchanged(
@@ -1399,6 +1488,10 @@ def test_near_threshold_alternative_is_preserved_as_ambiguity(
     assert set(finding.successor_candidate_ids) == {
         candidate.id for candidate in successor_candidates
     }
+    assert sum(
+        alternative["below_threshold"]
+        for alternative in finding.matcher_detail["alternatives"]
+    ) == 2
 
 
 def test_lone_below_threshold_edge_remains_added_and_dropped(
@@ -1459,10 +1552,10 @@ def test_lone_below_threshold_edge_remains_added_and_dropped(
     ) == {"dropped": 1, "added": 1}
 
 
-def test_global_assignment_withholds_a_stronger_displaced_pair_as_ambiguous(
+def test_infeasible_stronger_displaced_pair_does_not_override_assignment(
     session, consecutive_nhhip_documents
 ):
-    """A stronger displaced edge makes the whole component uncertain."""
+    """A stronger edge is irrelevant when forcing it loses cardinality."""
 
     _, predecessor, successor = consecutive_nhhip_documents
     predecessor_run, predecessor_candidates = _run(
@@ -1508,15 +1601,20 @@ def test_global_assignment_withholds_a_stronger_displaced_pair_as_ambiguous(
     comparison = create_revision_comparison(
         session, predecessor_run.id, successor_run.id
     )
-    [finding] = read_revision_comparison(session, comparison.id).findings
+    findings = read_revision_comparison(session, comparison.id).findings
 
-    assert finding.state == "ambiguous"
-    assert set(finding.predecessor_candidate_ids) == {
-        candidate.id for candidate in predecessor_candidates
+    assert len(findings) == 2
+    assert {
+        (
+            tuple(finding.predecessor_candidate_ids),
+            tuple(finding.successor_candidate_ids),
+        )
+        for finding in findings
+    } == {
+        ((predecessor_candidates[0].id,), (successor_candidates[1].id,)),
+        ((predecessor_candidates[1].id,), (successor_candidates[0].id,)),
     }
-    assert set(finding.successor_candidate_ids) == {
-        candidate.id for candidate in successor_candidates
-    }
+    assert all(finding.state != "ambiguous" for finding in findings)
 
 
 def test_sparse_global_assignment_beats_greedy_cardinality():
@@ -1534,6 +1632,111 @@ def test_sparse_global_assignment_beats_greedy_cardinality():
     } == {(1, 11), (2, 10)}
 
 
+def test_assignment_regret_at_exact_margin_returns_full_alternating_witness():
+    """A four-point loss at integer scale is reviewer-visible, inclusively."""
+
+    edges = {
+        (1, 10): _ScoredEdge(1, 10, 0.60, ()),
+        (1, 20): _ScoredEdge(1, 20, 0.62, ()),
+        (2, 10): _ScoredEdge(2, 10, 0.62, ()),
+        (2, 20): _ScoredEdge(2, 20, 0.68, ()),
+    }
+    matched = _global_matching(edges)
+
+    assert {
+        (edge.predecessor_id, edge.successor_id) for edge in matched
+    } == {(1, 10), (2, 20)}
+    assert _assignment_regret_pairs(edges, matched, 0.04) == set(edges)
+
+
+def test_assignment_regret_just_outside_margin_is_not_uncertain():
+    edges = {
+        (1, 10): _ScoredEdge(1, 10, 0.60, ()),
+        (1, 20): _ScoredEdge(1, 20, 0.62, ()),
+        (2, 10): _ScoredEdge(2, 10, 0.62, ()),
+        (2, 20): _ScoredEdge(2, 20, 0.680001, ()),
+    }
+    matched = _global_matching(edges)
+
+    assert _assignment_regret_pairs(edges, matched, 0.04) == set()
+
+
+def test_assignment_regret_exact_tie_returns_both_assignments():
+    edges = {
+        (1, 10): _ScoredEdge(1, 10, 0.60, ()),
+        (1, 20): _ScoredEdge(1, 20, 0.62, ()),
+        (2, 10): _ScoredEdge(2, 10, 0.62, ()),
+        (2, 20): _ScoredEdge(2, 20, 0.64, ()),
+    }
+    matched = _global_matching(edges)
+
+    assert _assignment_regret_pairs(edges, matched, 0.0) == set(edges)
+
+
+def test_assignment_regret_rejects_infeasible_lone_cross_edge():
+    """A locally tempting edge is irrelevant if forcing it loses cardinality."""
+
+    edges = {
+        (1, 10): _ScoredEdge(1, 10, 0.99, ()),
+        (2, 20): _ScoredEdge(2, 20, 0.60, ()),
+        (2, 10): _ScoredEdge(2, 10, 0.70, ()),
+    }
+    matched = _global_matching(edges)
+
+    assert _assignment_regret_pairs(edges, matched, 0.20) == set()
+
+
+def test_assignment_regret_handles_unmatched_left_swap():
+    edges = {
+        (1, 10): _ScoredEdge(1, 10, 0.90, ()),
+        (2, 10): _ScoredEdge(2, 10, 0.88, ()),
+    }
+    matched = _global_matching(edges)
+
+    assert _assignment_regret_pairs(edges, matched, 0.02) == set(edges)
+
+
+def test_assignment_regret_handles_unmatched_right_swap():
+    edges = {
+        (1, 10): _ScoredEdge(1, 10, 0.90, ()),
+        (1, 20): _ScoredEdge(1, 20, 0.88, ()),
+    }
+    matched = _global_matching(edges)
+
+    assert _assignment_regret_pairs(edges, matched, 0.02) == set(edges)
+
+
+def test_assignment_regret_keeps_independent_groups_separate():
+    edges = {
+        (1, 10): _ScoredEdge(1, 10, 0.60, ()),
+        (1, 20): _ScoredEdge(1, 20, 0.62, ()),
+        (2, 10): _ScoredEdge(2, 10, 0.62, ()),
+        (2, 20): _ScoredEdge(2, 20, 0.68, ()),
+        (3, 30): _ScoredEdge(3, 30, 0.60, ()),
+        (3, 40): _ScoredEdge(3, 40, 0.62, ()),
+        (4, 30): _ScoredEdge(4, 30, 0.62, ()),
+        (4, 40): _ScoredEdge(4, 40, 0.68, ()),
+    }
+    matched = _global_matching(edges)
+    regret_pairs = _assignment_regret_pairs(edges, matched, 0.04)
+
+    assert regret_pairs == set(edges)
+    findings, predecessor_ids, successor_ids = _bounded_ambiguities(
+        edges,
+        matched,
+        {
+            "weak_identity": set(),
+            "below_threshold": set(),
+            "assignment_regret": regret_pairs,
+        },
+        DEFAULT_MATCHER_CONFIG,
+    )
+    assert len(findings) == 2
+    assert {finding.predecessor_ids for finding in findings} == {(1, 2), (3, 4)}
+    assert predecessor_ids == {1, 2, 3, 4}
+    assert successor_ids == {10, 20, 30, 40}
+
+
 def test_station_neighbor_chain_overflow_becomes_bounded_unmatched_rows():
     """Corridor-scale uncertainty never becomes one giant reviewer task."""
 
@@ -1545,19 +1748,19 @@ def test_station_neighbor_chain_overflow_becomes_bounded_unmatched_rows():
     edges = {
         (edge.predecessor_id, edge.successor_id): edge for edge in matched
     }
-    near_tied = set()
+    regret_pairs = set()
     for index in range(1, rows_per_side):
         pair = (index, 1000 + index + 1)
         edges[pair] = _ScoredEdge(*pair, 0.94, ())
-        near_tied.add(pair)
+        regret_pairs.add(pair)
 
     findings, predecessor_ids, successor_ids = _bounded_ambiguities(
         edges,
         matched,
         {
             "weak_identity": set(),
-            "near_tied": near_tied,
-            "displaced_stronger": set(),
+            "below_threshold": set(),
+            "assignment_regret": regret_pairs,
         },
         DEFAULT_MATCHER_CONFIG,
     )
@@ -1690,6 +1893,64 @@ def test_non_successor_documents_are_rejected_even_inside_one_project(
             session, predecessor_run.id, unrelated_run.id
         )
 
+    assert predecessor.superseded_by == successor.id
+
+
+def test_registry_edge_changed_during_compute_is_rejected_after_lock(
+    session, consecutive_nhhip_documents, monkeypatch
+):
+    """Optimistic matching never seals a receipt against stale registry state."""
+
+    _, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    real_compare = revision_comparison._compare_inputs
+
+    def compare_then_change_registry(*args, **kwargs):
+        findings = real_compare(*args, **kwargs)
+        session.execute(
+            text(
+                "update documents set superseded_by = null, "
+                "superseded_on = null, "
+                "supersession_source_document_id = null, "
+                "supersession_source_page = null where id = :document_id"
+            ),
+            {"document_id": predecessor.id},
+        )
+        return findings
+
+    monkeypatch.setattr(
+        revision_comparison, "_compare_inputs", compare_then_change_registry
+    )
+
+    with pytest.raises(InvalidRevisionPair, match="declared"):
+        create_revision_comparison(
+            session, predecessor_run.id, successor_run.id
+        )
+
+    assert session.scalars(
+        select(RevisionComparisonRun).where(
+            RevisionComparisonRun.predecessor_extraction_run_id
+            == predecessor_run.id,
+            RevisionComparisonRun.successor_extraction_run_id
+            == successor_run.id,
+        )
+    ).all() == []
+    session.refresh(predecessor)
     assert predecessor.superseded_by == successor.id
 
 
