@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from corridor.adjudicate import (
     RESOLUTION_VOCABULARIES,
@@ -25,7 +26,6 @@ from corridor.ledger import load_dependency
 from corridor.models import (
     CRITICAL_STRATEGIES,
     RESOLUTION_STRATEGIES,
-    ActiveExtractionRun,
     Dependency,
     Assertion,
     AuditLog,
@@ -33,7 +33,6 @@ from corridor.models import (
     Document,
     DocPage,
     EvidenceLink,
-    ExtractionRun,
     ExternalOrg,
     Project,
 )
@@ -106,6 +105,7 @@ def make_candidate(
     unverified_fields=(),
     low_confidence_tokens=(),
     tier=None,
+    activate=True,
 ):
     fields = FIELDS if fields is None else fields
     candidate = Candidate(
@@ -139,58 +139,24 @@ def make_candidate(
     )
     session.add(candidate)
     session.flush()
-    _activate_fixture_candidate(session, document, candidate)
+    if activate:
+        _activate_fixture_candidate(session, document, candidate)
     return candidate
 
 
 def _activate_fixture_candidate(session, document, candidate):
-    """Attach a test Candidate to the document's explicit Active Run.
+    """Record one complete immutable fixture extraction and activate it."""
 
-    Most tests build several Candidates for one document through separate
-    helper calls. They represent one completed extraction attempt, so reuse
-    its receipt and keep the receipt's count aligned with the attached rows.
-    Rebinding remains available to provenance tests that deliberately mutate
-    a Candidate onto another document after constructing it.
-    """
-    with session.no_autoflush:
-        previous_run = (
-            session.get(ExtractionRun, candidate.extraction_run_id)
-            if candidate.extraction_run_id is not None
-            else None
-        )
-        active = session.get(ActiveExtractionRun, document.id)
-        run = (
-            session.get(ExtractionRun, active.extraction_run_id)
-            if active is not None
-            else None
-        )
-
-    if run is not None and (
-        run.prompt_version != candidate.prompt_version or run.model != candidate.model
-    ):
-        run = None
-
-    if previous_run is not None and (run is None or previous_run.id != run.id):
-        candidate.extraction_run_id = None
-        session.flush([candidate])
-        previous_run.candidate_count -= 1
-
-    if run is None:
-        run = record_extraction_run(
-            session,
-            document,
-            prompt_version=candidate.prompt_version,
-            candidate_count=1,
-            page_errors=0,
-            candidates=(candidate,),
-            model=candidate.model,
-        )
-        declare_active_run(session, document.id, run.id)
-    elif candidate.extraction_run_id != run.id:
-        candidate.extraction_run_id = run.id
-        run.candidate_count += 1
-
-    session.flush()
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=candidate.prompt_version,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model=candidate.model,
+    )
+    declare_active_run(session, document.id, run.id)
     return candidate
 
 
@@ -208,7 +174,7 @@ def test_accepting_creates_a_dependency_from_the_candidate(session, document):
     assert "AT&T Texas (SWBT)" in dep.title
 
 
-def test_accepting_refuses_a_candidate_whose_source_document_is_in_another_project(
+def test_database_refuses_to_move_a_candidate_source_across_projects(
     session, document
 ):
     other = Project(slug="adj-other", name="Other", is_synthetic=True)
@@ -225,23 +191,11 @@ def test_accepting_refuses_a_candidate_whose_source_document_is_in_another_proje
     session.add(stray)
     session.flush()
 
-    candidate = make_candidate(session, document)
-    candidate.source_document_id = stray.id
-    _activate_fixture_candidate(session, stray, candidate)
-    before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
-    before_assertions = session.scalar(select(func.count()).select_from(Assertion))
-    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
-
-    with pytest.raises(InvalidCandidateProvenance, match="source document"):
-        accept_candidate(session, candidate, principal=REVIEWER)
-
-    assert candidate.state == "pending"
-    assert session.scalars(
-        select(Dependency).where(Dependency.project_id == document.project_id)
-    ).all() == []
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+    candidate = make_candidate(session, document, activate=False)
+    with pytest.raises(IntegrityError, match="Candidate run lineage is immutable"):
+        with session.begin_nested():
+            candidate.source_document_id = stray.id
+            session.flush([candidate])
 
 
 def test_accepting_refuses_a_candidate_citing_another_projects_document(
@@ -1116,19 +1070,7 @@ def test_merging_refuses_a_candidate_from_another_project(session, document):
         DocPage(document_id=stray_doc.id, page_no=1, text="FOC1-9 AT&T Texas (SWBT)")
     )
     session.flush()
-    candidate = make_candidate(session, document)
-    candidate.project_id = other.id
-    candidate.source_document_id = stray_doc.id
-    candidate.payload_json = {
-        **candidate.payload_json,
-        "citations": [
-            {
-                **candidate.payload_json["citations"][0],
-                "document_id": stray_doc.id,
-            }
-        ],
-    }
-    _activate_fixture_candidate(session, stray_doc, candidate)
+    candidate = make_candidate(session, stray_doc)
 
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))

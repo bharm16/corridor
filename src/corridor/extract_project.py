@@ -172,7 +172,7 @@ def extract_project(
                     page_errors=0,
                     outcome="completed",
                     candidates=tuple(candidates),
-                    model=_run_model(candidates),
+                    model=_run_model(candidates, route.model),
                     schema_version=effective_prompt_version,
                 )
         except NoMatrixFound as exc:
@@ -184,6 +184,7 @@ def extract_project(
                 page_errors=1,
                 outcome="no_matrix",
                 schema_version=effective_prompt_version,
+                model=route.model,
                 error_detail=str(exc),
             )
             if commit:
@@ -207,6 +208,7 @@ def extract_project(
                 page_errors=1,
                 outcome="failed",
                 schema_version=effective_prompt_version,
+                model=route.model,
                 error_detail=str(exc),
             )
             if commit:
@@ -230,6 +232,7 @@ def extract_project(
                 page_errors=1,
                 outcome="failed",
                 schema_version=effective_prompt_version,
+                model=route.model,
                 error_detail=f"{type(exc).__name__}: {exc}",
             )
             if commit:
@@ -254,12 +257,16 @@ def extract_project(
     return outcomes
 
 
-def _run_model(candidates: list[Candidate]) -> str | None:
-    """Return the one model used by a run, rejecting mixed provenance."""
+def _run_model(
+    candidates: list[Candidate], configured_model: str | None
+) -> str | None:
+    """Resolve one configured/observed model without losing zero-row lineage."""
     models = {candidate.model for candidate in candidates if candidate.model}
     if len(models) > 1:
         raise ValueError("one extraction run cannot contain multiple models")
-    return next(iter(models), None)
+    if configured_model is not None and models and models != {configured_model}:
+        raise ValueError("Candidate model does not match the configured extraction model")
+    return configured_model or next(iter(models), None)
 
 
 def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> str:

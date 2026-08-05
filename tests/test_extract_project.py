@@ -251,6 +251,30 @@ def test_a_zero_row_document_is_skipped_after_a_completed_empty_attempt(
     ] == [(PROMPT_VERSION, 0, 0)]
 
 
+def test_a_model_backed_zero_row_run_keeps_the_configured_model(session, project):
+    doc = add_matrix(session, project, "model-empty.pdf", "0" * 64)
+
+    def select_route(document):
+        assert document.id == doc.id
+        return ExtractionRoute(
+            PROMPT_VERSION,
+            lambda session, target: [],
+            model="gpt-zero-row",
+        )
+
+    outcomes = extract_project(
+        session,
+        project,
+        select_route=select_route,
+        prompt_version="ignored-by-route",
+        commit=False,
+    )
+
+    assert outcomes[0].rows == 0
+    [run] = _runs(session, doc)
+    assert run.model == "gpt-zero-row"
+
+
 def test_a_zero_row_spreadsheet_is_recorded_and_skipped_at_its_effective_prompt_version(
     session, project
 ):

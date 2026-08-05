@@ -23,9 +23,13 @@ def test_a_pdf_route_carries_the_client_to_the_matrix_extractor(monkeypatch):
 
     session = object()
     document = object()
-    client = object()
+    class Client:
+        model = "gpt-zero-row"
+
+    client = Client()
     route = extraction_route(document, client=client)
 
     assert route.effective_prompt_version == MATRIX_PROMPT_VERSION
+    assert route.model == "gpt-zero-row"
     assert route.extract(session, document) == []
     assert captured["args"] == (session, document, client, None)

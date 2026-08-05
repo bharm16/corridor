@@ -5,7 +5,6 @@ from corridor import audit
 from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
 from corridor.db import Session, engine
 from corridor.extraction_runs import (
-    active_run_for_document,
     declare_active_run,
     record_extraction_run,
 )
@@ -98,23 +97,16 @@ def make_candidate(session, project, document):
     )
     session.add(candidate)
     session.flush()
-    run = active_run_for_document(session, document.id)
-    if run is None:
-        run = record_extraction_run(
-            session,
-            document,
-            prompt_version=candidate.prompt_version,
-            candidate_count=1,
-            page_errors=0,
-            candidates=(candidate,),
-            model=candidate.model,
-        )
-        declare_active_run(session, document.id, run.id)
-    else:
-        assert run.prompt_version == candidate.prompt_version
-        assert run.model == candidate.model
-        candidate.extraction_run_id = run.id
-        run.candidate_count += 1
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=candidate.prompt_version,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model=candidate.model,
+    )
+    declare_active_run(session, document.id, run.id)
     session.flush()
     return candidate
 
