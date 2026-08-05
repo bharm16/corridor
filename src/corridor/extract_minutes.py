@@ -176,94 +176,20 @@ def _to_candidate(
 
 def main(argv: list[str]) -> int:
     """`make minutes ARGS="<slug> [limit]"`"""
-    import sys
-    import time
+    from corridor.extract_batch import Noun, run_extraction
 
-    from corridor.db import Session as SessionFactory
-    from corridor.extract_batch import already_extracted, extract_documents
-    from corridor.models import Project
-
-    slug = argv[0] if argv else "sh99-grand-parkway"
-    limit = int(argv[1]) if len(argv) > 1 else None
-
-    with SessionFactory() as session:
-        project = session.scalars(
-            select(Project).where(Project.slug == slug)
-        ).first()
-        if project is None:
-            print(f"no project {slug!r}", file=sys.stderr)
-            return 1
-
-        documents = session.scalars(
-            select(Document)
-            .where(Document.project_id == project.id, Document.doc_type == "minutes")
-            .order_by(Document.doc_date)
-        ).all()
-
-        # Resume: a killed run leaves whole documents done, so skip those and
-        # pick up where it stopped instead of duplicating their candidates.
-        done = already_extracted(session, project.id, PROMPT_VERSION)
-        skipped = [d for d in documents if d.id in done]
-        documents = [d for d in documents if d.id not in done]
-        if limit:
-            documents = documents[:limit]
-
-        if not documents:
-            print(f"nothing to do: all {len(skipped)} already extracted at {PROMPT_VERSION}")
-            return 0
-
-        client = OpenAIClient()
-        started = time.time()
-        print(
-            f"{len(documents)} notes at {client.max_workers}-way concurrency, "
-            f"model {client.model}"
-            + (f" ({len(skipped)} already done)" if skipped else ""),
-            flush=True,
-        )
-
-        totals = {"n": 0, "ok": 0, "err": 0}
-
-        def report(document, candidates, errors):
-            ok = sum(1 for c in candidates if c.citations_verified)
-            totals["n"] += len(candidates)
-            totals["ok"] += ok
-            totals["err"] += errors
-            print(
-                f"  {ok:>3}/{len(candidates):<3} verified"
-                + (f"  {errors} page errors" if errors else "")
-                + f"  {document.filename.split('/')[-1][:50]}",
-                flush=True,
-            )
-
-        try:
-            extract_documents(
-                session,
-                documents,
-                client=client,
-                system=PROMPT_PATH.read_text(),
-                schema=SCHEMA,
-                min_page_chars=MIN_PAGE_CHARS,
-                to_candidate=_to_candidate,
-                items_key="events",
-                on_document=report,
-            )
-        finally:
-            client.close()
-
-        n, ok = totals["n"], totals["ok"]
-        pct = 100 * ok / n if n else 0.0
-        elapsed = time.time() - started
-        print(
-            f"{n} events, {ok} verified ({pct:.1f}%) in {elapsed:.0f}s"
-            + (f", {totals['err']} pages failed" if totals["err"] else ""),
-            flush=True,
-        )
-        print(
-            f"tokens: {client.usage.prompt_tokens:,} in / "
-            f"{client.usage.completion_tokens:,} out",
-            flush=True,
-        )
-    return 0
+    return run_extraction(
+        argv,
+        doc_type="minutes",
+        default_slug="sh99-grand-parkway",
+        prompt_version=PROMPT_VERSION,
+        system=PROMPT_PATH.read_text(),
+        schema=SCHEMA,
+        min_page_chars=MIN_PAGE_CHARS,
+        to_candidate=_to_candidate,
+        items_key="events",
+        noun=Noun("notes", "events"),
+    )
 
 
 if __name__ == "__main__":

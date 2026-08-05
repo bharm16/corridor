@@ -22,8 +22,23 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataclasses import dataclass
+
 from corridor.llm import DEFAULT_WORKERS, complete_many
 from corridor.models import Candidate, DocPage, Document
+
+
+@dataclass(frozen=True)
+class Noun:
+    """What this extractor calls its documents and what it finds in them.
+
+    The only thing that differed between the two runners besides the
+    document type and the schema — "agreements"/"obligations" against
+    "notes"/"events".
+    """
+
+    plural: str
+    items: str
 
 
 def already_extracted(
@@ -131,3 +146,126 @@ def extract_documents(
         run(group)
 
     return created
+
+
+def run_extraction(
+    argv: list[str],
+    *,
+    doc_type: str,
+    default_slug: str,
+    prompt_version: str,
+    system: str,
+    schema: dict,
+    min_page_chars: int,
+    to_candidate: Callable,
+    items_key: str,
+    noun: str,
+    client_factory: Callable | None = None,
+    session_factory: Callable | None = None,
+) -> int:
+    """`make <command> ARGS="<slug> [limit]"` for a pooled extractor.
+
+    This was written twice, 96 lines each, differing on six: the slug
+    default, the `doc_type` filter, the `items_key`, and the noun in three
+    print strings. Neither copy had a test — both modules' suites drove a
+    sequential `extract_document` that nothing in `src/` calls, so the
+    resume filtering, the limit, the per-document tally, the error count
+    and the `client.close()` in a `finally` were the untested half, and
+    they are the half where the real bugs live.
+
+    `client_factory` and `session_factory` exist so a test can drive the
+    whole runner without an API key or a committed database. Two adapters
+    justify each seam: the real client and the real session factory in
+    production, a stub and a transaction-scoped session in the suite.
+    """
+    import sys
+    import time
+
+    from corridor.db import Session as DefaultSessionFactory
+    from corridor.llm import OpenAIClient
+    from corridor.models import Project
+
+    slug = argv[0] if argv else default_slug
+    limit = int(argv[1]) if len(argv) > 1 else None
+
+    with (session_factory or DefaultSessionFactory)() as session:
+        project = session.scalars(
+            select(Project).where(Project.slug == slug)
+        ).first()
+        if project is None:
+            print(f"no project {slug!r}", file=sys.stderr)
+            return 1
+
+        documents = session.scalars(
+            select(Document)
+            .where(Document.project_id == project.id, Document.doc_type == doc_type)
+            .order_by(Document.doc_date)
+        ).all()
+
+        # Resume: a killed run leaves whole documents done, so skip those and
+        # pick up where it stopped instead of duplicating their candidates.
+        done = already_extracted(session, project.id, prompt_version)
+        skipped = [d for d in documents if d.id in done]
+        documents = [d for d in documents if d.id not in done]
+        if limit:
+            documents = documents[:limit]
+
+        if not documents:
+            print(
+                f"nothing to do: all {len(skipped)} already extracted "
+                f"at {prompt_version}"
+            )
+            return 0
+
+        client = (client_factory or OpenAIClient)()
+        started = time.time()
+        print(
+            f"{len(documents)} {noun.plural} at {client.max_workers}-way "
+            f"concurrency, model {client.model}"
+            + (f" ({len(skipped)} already done)" if skipped else ""),
+            flush=True,
+        )
+
+        totals = {"n": 0, "ok": 0, "err": 0}
+
+        def report(document, candidates, errors):
+            ok = sum(1 for c in candidates if c.citations_verified)
+            totals["n"] += len(candidates)
+            totals["ok"] += ok
+            totals["err"] += errors
+            print(
+                f"  {ok:>3}/{len(candidates):<3} verified"
+                + (f"  {errors} page errors" if errors else "")
+                + f"  {document.filename.split('/')[-1][:50]}",
+                flush=True,
+            )
+
+        try:
+            extract_documents(
+                session,
+                documents,
+                client=client,
+                system=system,
+                schema=schema,
+                min_page_chars=min_page_chars,
+                to_candidate=to_candidate,
+                items_key=items_key,
+                on_document=report,
+            )
+        finally:
+            client.close()
+
+        n, ok = totals["n"], totals["ok"]
+        pct = 100 * ok / n if n else 0.0
+        elapsed = time.time() - started
+        print(
+            f"{n} {noun.items}, {ok} verified ({pct:.1f}%) in {elapsed:.0f}s"
+            + (f", {totals['err']} pages failed" if totals["err"] else ""),
+            flush=True,
+        )
+        print(
+            f"tokens: {client.usage.prompt_tokens:,} in / "
+            f"{client.usage.completion_tokens:,} out",
+            flush=True,
+        )
+    return 0
