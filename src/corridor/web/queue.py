@@ -14,9 +14,9 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.docs import stored_pdf
 from corridor.merge import rank_matches
 from corridor.models import Candidate, DocPage, Document
+from corridor.storage import stored_pdf
 
 
 @dataclass

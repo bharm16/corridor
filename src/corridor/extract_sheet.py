@@ -30,7 +30,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.candidates import propose
-from corridor.docs import stored_file
 from corridor.geometry import dedupe_hint
 from corridor.models import Candidate, DocPage, Document
 from corridor.sheets import (
@@ -39,6 +38,7 @@ from corridor.sheets import (
     read_workbook,
     row_text,
 )
+from corridor.storage import stored_file
 from corridor.vocabulary import MIN_ROW_FIELDS, REQUIRED, is_retired_row
 from corridor.verify import quote_appears_on, threshold_for, unverified_fields
 

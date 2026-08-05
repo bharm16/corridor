@@ -47,10 +47,10 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.docs import stored_file
 from corridor.eval import REQUIRED_COLUMNS
 from corridor.geometry import page_tables, row_quote
 from corridor.models import Candidate, DocPage, Document, Project
+from corridor.storage import stored_file
 from corridor.verify import normalize
 
 # What the reviewer fills in. `critical` is not in the eval's required set

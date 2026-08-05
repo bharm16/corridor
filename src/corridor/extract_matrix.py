@@ -40,7 +40,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.candidates import propose
-from corridor.docs import stored_pdf
 from corridor.geometry import (
     MatrixRow,
     NoMatrixFound,
@@ -53,6 +52,7 @@ from corridor.geometry import (
 )
 from corridor.llm import OpenAIClient, StructuredClient, complete_many
 from corridor.models import ANSWER_SEPARATOR, Candidate, DocPage, Document
+from corridor.storage import stored_pdf
 from corridor.verify import quote_appears_on, unverified_fields
 
 # Re-exported deliberately. The canonical vocabulary moved out when a second

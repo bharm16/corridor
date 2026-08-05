@@ -13,9 +13,9 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from corridor.docs import stored_file
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.models import Candidate, Document
+from corridor.storage import stored_file
 
 
 def ingest_manifest(
