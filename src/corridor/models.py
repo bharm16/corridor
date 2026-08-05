@@ -49,6 +49,14 @@ DOC_TYPES = (
 )
 PARSE_STATUSES = ("pending", "parsed", "failed")
 EXTRACTION_OUTCOMES = ("completed", "failed", "unreadable", "no_matrix")
+REVISION_COMPARISON_STATES = (
+    "added",
+    "dropped",
+    "unchanged",
+    "changed",
+    "ambiguous",
+    "unmatched",
+)
 SUPPORT_ROLES = ("publication",)
 # Where a page's text came from, most reliable first. `cells` is a
 # spreadsheet source read natively (ADR-0005): its text was generated from
@@ -338,6 +346,9 @@ class ExtractionRun(Base):
     model: Mapped[str | None] = mapped_column(String(64))
     schema_version: Mapped[str | None] = mapped_column(String(64))
     error_detail: Mapped[str | None] = mapped_column(Text)
+    # The extractor-time Candidate payloads owned by this run. Candidate
+    # review state and edited payloads remain mutable; this snapshot does not.
+    candidate_inputs_json: Mapped[list | None] = mapped_column(JSONB)
     completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -361,6 +372,124 @@ class ActiveExtractionRun(Base):
     declared_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class RevisionComparisonRun(Base):
+    """An immutable receipt for comparing two exact Extraction Runs.
+
+    Input snapshots live on the receipt because a Candidate's review state and
+    edited payload may change later.  A reviewer reading this row must still
+    see exactly what the matcher saw when it produced its findings.
+    """
+
+    __tablename__ = "revision_comparison_runs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "predecessor_document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_revision_comparison_predecessor_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "successor_document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_revision_comparison_successor_project",
+        ),
+        ForeignKeyConstraint(
+            ["predecessor_document_id", "predecessor_extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+            name="fk_revision_comparison_predecessor_run",
+        ),
+        ForeignKeyConstraint(
+            ["successor_document_id", "successor_extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+            name="fk_revision_comparison_successor_run",
+        ),
+        CheckConstraint(
+            "predecessor_document_id <> successor_document_id",
+            name="ck_revision_comparison_distinct_documents",
+        ),
+        CheckConstraint(
+            "finding_count >= 0", name="ck_revision_comparison_finding_count"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    predecessor_document_id: Mapped[int] = mapped_column(BigInteger)
+    successor_document_id: Mapped[int] = mapped_column(BigInteger)
+    predecessor_extraction_run_id: Mapped[int] = mapped_column(BigInteger)
+    successor_extraction_run_id: Mapped[int] = mapped_column(BigInteger)
+    predecessor_schema_version: Mapped[str | None] = mapped_column(String(64))
+    successor_schema_version: Mapped[str | None] = mapped_column(String(64))
+    predecessor_prompt_version: Mapped[str] = mapped_column(String(64))
+    successor_prompt_version: Mapped[str] = mapped_column(String(64))
+    predecessor_model: Mapped[str | None] = mapped_column(String(64))
+    successor_model: Mapped[str | None] = mapped_column(String(64))
+    matcher_version: Mapped[str] = mapped_column(String(64))
+    matcher_config: Mapped[dict] = mapped_column(JSONB)
+    predecessor_inputs_json: Mapped[list] = mapped_column(JSONB)
+    successor_inputs_json: Mapped[list] = mapped_column(JSONB)
+    finding_count: Mapped[int] = mapped_column(Integer)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # Null only while the service inserts this receipt's findings inside the
+    # creating transaction.  The database permits exactly one transition to
+    # a value, after the stored count is exact, and rejects commit while null.
+    sealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RevisionComparisonFinding(Base):
+    """One partition of rows in a Revision Comparison receipt.
+
+    Most findings name one row on either side.  ``ambiguous`` deliberately
+    permits sets on both sides so uncertainty is persisted rather than forced
+    into a one-to-one claim the evidence cannot support. ``unmatched`` is a
+    side-specific row for which incomplete identity prevents an honest
+    added/dropped conclusion.
+    """
+
+    __tablename__ = "revision_comparison_findings"
+    __table_args__ = (
+        UniqueConstraint("revision_comparison_run_id", "ordinal"),
+        CheckConstraint(
+            "match_score is null or (match_score >= 0 and match_score <= 1)",
+            name="ck_revision_comparison_match_score",
+        ),
+        CheckConstraint(
+            "(state = 'added' and cardinality(predecessor_candidate_ids) = 0 "
+            "and cardinality(successor_candidate_ids) = 1) or "
+            "(state = 'dropped' and cardinality(predecessor_candidate_ids) = 1 "
+            "and cardinality(successor_candidate_ids) = 0) or "
+            "(state = 'unmatched' and "
+            "((cardinality(predecessor_candidate_ids) = 1 "
+            "and cardinality(successor_candidate_ids) = 0) or "
+            "(cardinality(predecessor_candidate_ids) = 0 "
+            "and cardinality(successor_candidate_ids) = 1))) or "
+            "(state in ('unchanged', 'changed') "
+            "and cardinality(predecessor_candidate_ids) = 1 "
+            "and cardinality(successor_candidate_ids) = 1) or "
+            "(state = 'ambiguous' "
+            "and cardinality(predecessor_candidate_ids) > 0 "
+            "and cardinality(successor_candidate_ids) > 0)",
+            name="ck_revision_comparison_finding_shape",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    revision_comparison_run_id: Mapped[int] = mapped_column(
+        ForeignKey("revision_comparison_runs.id")
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(
+        _enum(*REVISION_COMPARISON_STATES, name="revision_comparison_state")
+    )
+    predecessor_candidate_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))
+    successor_candidate_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))
+    match_score: Mapped[float | None] = mapped_column(Float)
+    field_changes: Mapped[list] = mapped_column(JSONB)
+    matcher_detail: Mapped[dict] = mapped_column(JSONB)
 
 
 class ExternalOrg(Base):

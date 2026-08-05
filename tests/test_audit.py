@@ -12,7 +12,6 @@ from corridor import audit
 from corridor.adjudicate import accept_candidate, merge_candidate, set_resolution_strategy
 from corridor.db import Session, engine
 from corridor.extraction_runs import (
-    active_run_for_document,
     declare_active_run,
     record_extraction_run,
 )
@@ -79,7 +78,7 @@ def document(session):
     return doc
 
 
-def make_candidate(session, document, *, utility_id="FOC1-1"):
+def make_candidate(session, document, *, utility_id="FOC1-1", activate=True):
     c = Candidate(
         project_id=document.project_id,
         kind="dependency",
@@ -103,8 +102,7 @@ def make_candidate(session, document, *, utility_id="FOC1-1"):
     )
     session.add(c)
     session.flush()
-    run = active_run_for_document(session, document.id)
-    if run is None:
+    if activate:
         run = record_extraction_run(
             session,
             document,
@@ -115,11 +113,6 @@ def make_candidate(session, document, *, utility_id="FOC1-1"):
             model=c.model,
         )
         declare_active_run(session, document.id, run.id)
-    else:
-        assert run.prompt_version == c.prompt_version
-        assert run.model == c.model
-        c.extraction_run_id = run.id
-        run.candidate_count += 1
     session.flush()
     return c
 
@@ -255,8 +248,20 @@ def test_the_edit_trail_appears_on_the_record_it_produced(session, document):
 
 def test_another_record_s_candidate_history_does_not_leak_in(session, document):
     """The join is the candidate id this Dependency actually resolved."""
-    mine = make_candidate(session, document)
-    theirs = make_candidate(session, document, utility_id="FOC9-9")
+    mine = make_candidate(session, document, activate=False)
+    theirs = make_candidate(
+        session, document, utility_id="FOC9-9", activate=False
+    )
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=mine.prompt_version,
+        candidate_count=2,
+        page_errors=0,
+        candidates=(mine, theirs),
+        model=mine.model,
+    )
+    declare_active_run(session, document.id, run.id)
     audit.record(
         session,
         actor="reviewer",

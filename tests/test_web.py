@@ -120,7 +120,6 @@ def make_candidate(
     prompt_version="txdot_ucm_v1",
     auto_active_run=True,
     model=None,
-    extraction_run_id=None,
 ):
     c = Candidate(
         project_id=project.id,
@@ -150,7 +149,6 @@ def make_candidate(
         source_pages=[1],
         confidence=1.0,
         prompt_version=prompt_version,
-        extraction_run_id=extraction_run_id,
         citations_verified=(
             verified and not unverified_fields and not low_confidence_tokens
         ),
@@ -159,7 +157,7 @@ def make_candidate(
     session.add(c)
     session.flush()
 
-    if extraction_run_id is None and auto_active_run:
+    if auto_active_run:
         run = record_extraction_run(
             session,
             document,
@@ -170,9 +168,6 @@ def make_candidate(
             model=model,
         )
         declare_active_run(session, document.id, run.id)
-    elif extraction_run_id is not None:
-        c.extraction_run_id = extraction_run_id
-
     return c
 
 
@@ -188,15 +183,32 @@ def test_unverified_candidates_sink_but_are_never_hidden(
     client, session, project, document
 ):
     """A quote that could not be found is a signal, not noise."""
-    bad = make_candidate(session, project, document, verified=False, uid="BAD-1")
+    bad = make_candidate(
+        session,
+        project,
+        document,
+        verified=False,
+        uid="BAD-1",
+        auto_active_run=False,
+    )
     good = make_candidate(
         session,
         project,
         document,
         verified=True,
         uid="GOOD-1",
-        extraction_run_id=bad.extraction_run_id,
+        auto_active_run=False,
     )
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=bad.prompt_version,
+        candidate_count=2,
+        page_errors=0,
+        candidates=(bad, good),
+        model=bad.model,
+    )
+    declare_active_run(session, document.id, run.id)
 
     assert next_candidate(session, project.id).id == good.id
 
@@ -227,14 +239,25 @@ def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
         station_from="1092+00",
         unverified_fields=["station_from"],
         low_confidence_tokens=["1092"],
+        auto_active_run=False,
     )
     good = make_candidate(
         session,
         project,
         document,
         uid="GOOD-1",
-        extraction_run_id=bad.extraction_run_id,
+        auto_active_run=False,
     )
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=bad.prompt_version,
+        candidate_count=2,
+        page_errors=0,
+        candidates=(bad, good),
+        model=bad.model,
+    )
+    declare_active_run(session, document.id, run.id)
 
     assert pending_counts(session, project.id) == (2, 1)
     assert next_candidate(session, project.id).id == good.id

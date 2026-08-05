@@ -34,6 +34,10 @@ class ExtractionRoute:
 
     effective_prompt_version: str
     extract: Extractor
+    # Configured independently of Candidate count so a model-backed zero-row
+    # run still identifies the model that read the document. Deterministic
+    # routes, such as native spreadsheet extraction, leave this null.
+    model: str | None = None
 
 
 def ingest_manifest(
@@ -202,13 +206,17 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
         PROMPT_VERSION as MATRIX_PROMPT_VERSION,
         extract_document as extract_matrix,
     )
+    from corridor.llm import OpenAIClient
+
+    matrix_client = client or OpenAIClient()
 
     def extract(session: Session, document: Document) -> list[Candidate]:
-        return extract_matrix(session, document, client=client)
+        return extract_matrix(session, document, client=matrix_client)
 
     return ExtractionRoute(
         effective_prompt_version=MATRIX_PROMPT_VERSION,
         extract=extract,
+        model=getattr(matrix_client, "model", None),
     )
 
 
@@ -231,9 +239,6 @@ def extract_any(
     try:
         with session.begin_nested():
             candidates = route.extract(session, document)
-            models = {candidate.model for candidate in candidates if candidate.model}
-            if len(models) > 1:
-                raise ValueError("one extraction run cannot contain multiple models")
             record_extraction_run(
                 session,
                 document,
@@ -242,7 +247,7 @@ def extract_any(
                 page_errors=0,
                 outcome="completed",
                 candidates=tuple(candidates),
-                model=next(iter(models), None),
+                model=_run_model(candidates, route.model),
                 schema_version=route.effective_prompt_version,
             )
     except NoMatrixFound as exc:
@@ -254,6 +259,7 @@ def extract_any(
             page_errors=1,
             outcome="no_matrix",
             schema_version=route.effective_prompt_version,
+            model=route.model,
             error_detail=str(exc),
         )
         raise
@@ -266,6 +272,7 @@ def extract_any(
             page_errors=1,
             outcome="failed",
             schema_version=route.effective_prompt_version,
+            model=route.model,
             error_detail=str(exc),
         )
         raise
@@ -278,10 +285,22 @@ def extract_any(
             page_errors=1,
             outcome="failed",
             schema_version=route.effective_prompt_version,
+            model=route.model,
             error_detail=f"{type(exc).__name__}: {exc}",
         )
         raise
     return candidates
+
+
+def _run_model(candidates: list[Candidate], configured_model: str | None) -> str | None:
+    """Resolve one configured/observed model without losing zero-row lineage."""
+
+    observed = {candidate.model for candidate in candidates if candidate.model}
+    if len(observed) > 1:
+        raise ValueError("one extraction run cannot contain multiple models")
+    if configured_model is not None and observed and observed != {configured_model}:
+        raise ValueError("Candidate model does not match the configured extraction model")
+    return configured_model or next(iter(observed), None)
 
 
 def _basename(url: str) -> str:

@@ -1,7 +1,8 @@
 """Extraction run lineage and Active Run declaration contracts."""
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
@@ -77,7 +78,7 @@ def test_active_run_declared_by_explicit_run_id(session, project):
         session,
         doc,
         prompt_version=f"{PROMPT_VERSION}.v2",
-        candidate_count=1,
+        candidate_count=0,
         page_errors=0,
     )
     session.flush()
@@ -95,7 +96,7 @@ def test_newer_runs_do_not_imply_active_run(session, project):
         session,
         doc,
         prompt_version=f"{PROMPT_VERSION}.v1",
-        candidate_count=1,
+        candidate_count=0,
         page_errors=0,
     )
     session.flush()
@@ -105,7 +106,7 @@ def test_newer_runs_do_not_imply_active_run(session, project):
         session,
         doc,
         prompt_version=f"{PROMPT_VERSION}.v2-experimental",
-        candidate_count=2,
+        candidate_count=0,
         page_errors=0,
     )
     _ = record_extraction_run(
@@ -186,6 +187,325 @@ def test_run_receipt_carries_provenance_and_owns_its_candidates(session, project
         "dependency-schema-v3",
         "completed",
     )
+    assert run.candidate_inputs_json == [
+        {
+            "candidate_id": candidate.id,
+            "project_id": project.id,
+            "kind": "dependency",
+            "source_document_id": doc.id,
+            "payload_json": {
+                "kind": "dependency",
+                "fields": {"utility_id": "E92"},
+            },
+            "source_pages": [1],
+            "confidence": 1.0,
+            "prompt_version": PROMPT_VERSION,
+            "model": "test-model",
+            "citations_verified": True,
+            "state": "pending",
+        }
+    ]
+
+
+def test_run_input_snapshot_precedes_later_candidate_edits(session, project):
+    doc = add_matrix(session, project, "snapshot.pdf", "9" * 64)
+    candidate = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={"kind": "dependency", "fields": {"utility_id": "ORIGINAL"}},
+        source_document_id=doc.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version=PROMPT_VERSION,
+        model="test-model",
+        citations_verified=True,
+    )
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model="test-model",
+        schema_version="dependency-schema-v3",
+    )
+
+    candidate.payload_json = {
+        "kind": "dependency",
+        "fields": {"utility_id": "EDITED"},
+    }
+    candidate.state = "rejected"
+    session.flush()
+
+    assert run.candidate_inputs_json[0]["payload_json"]["fields"] == {
+        "utility_id": "ORIGINAL"
+    }
+    assert run.candidate_inputs_json[0]["state"] == "pending"
+
+
+def test_run_receipt_rejects_missing_or_already_owned_candidate_inputs(
+    session, project
+):
+    doc = add_matrix(session, project, "ownership.pdf", "8" * 64)
+    candidate = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={"kind": "dependency", "fields": {"utility_id": "E92"}},
+        source_document_id=doc.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version=PROMPT_VERSION,
+        model="test-model",
+        citations_verified=True,
+    )
+
+    with pytest.raises(ValueError, match="candidate_count"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=1,
+            page_errors=0,
+            model="test-model",
+        )
+
+    first = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model="test-model",
+    )
+    session.flush()
+    assert candidate.extraction_run_id == first.id
+
+    with pytest.raises(ValueError, match="already belongs"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=1,
+            page_errors=0,
+            candidates=(candidate,),
+            model="test-model",
+        )
+
+
+def test_run_receipt_rejects_cross_project_or_duplicate_candidates(session, project):
+    doc = add_matrix(session, project, "input-integrity.pdf", "1" * 64)
+    other = Project(
+        slug="other-run-lineage-project",
+        name="Other Run Lineage Project",
+        is_synthetic=True,
+    )
+    session.add(other)
+    session.flush()
+    candidate = Candidate(
+        project_id=other.id,
+        kind="dependency",
+        payload_json={"kind": "dependency", "fields": {"utility_id": "E92"}},
+        source_document_id=doc.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version=PROMPT_VERSION,
+        model="test-model",
+        citations_verified=True,
+    )
+
+    with pytest.raises(ValueError, match="another project's"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=1,
+            page_errors=0,
+            candidates=(candidate,),
+            model="test-model",
+        )
+
+    candidate.project_id = project.id
+    with pytest.raises(ValueError, match="repeat a Candidate"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=2,
+            page_errors=0,
+            candidates=(candidate, candidate),
+            model="test-model",
+        )
+
+
+def test_real_run_receipts_reject_delete_and_truncate(session):
+    project = Project(
+        slug="real-run-lineage-test",
+        name="Real Run Lineage Test",
+        is_synthetic=False,
+    )
+    session.add(project)
+    session.flush()
+    doc = add_matrix(session, project, "durable.pdf", "7" * 64)
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+    )
+
+    with pytest.raises(IntegrityError, match="receipts are immutable"):
+        with session.begin_nested():
+            session.execute(delete(ExtractionRun).where(ExtractionRun.id == run.id))
+
+    with pytest.raises(IntegrityError, match="receipts are immutable"):
+        with session.begin_nested():
+            session.execute(text("truncate table extraction_runs cascade"))
+
+    assert session.get(ExtractionRun, run.id) is not None
+
+
+def test_attached_candidate_lineage_rejects_mutation_delete_and_truncate(session):
+    project = Project(
+        slug="real-candidate-lineage-test",
+        name="Real Candidate Lineage Test",
+        is_synthetic=False,
+    )
+    other = Project(
+        slug="other-real-candidate-lineage-test",
+        name="Other Real Candidate Lineage Test",
+        is_synthetic=False,
+    )
+    session.add_all([project, other])
+    session.flush()
+    doc = add_matrix(session, project, "candidate-lineage.pdf", "4" * 64)
+    other_doc = add_matrix(session, project, "other-document.pdf", "3" * 64)
+    candidate = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={"kind": "dependency", "fields": {"utility_id": "E92"}},
+        source_document_id=doc.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version=PROMPT_VERSION,
+        model="test-model",
+        citations_verified=True,
+    )
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model="test-model",
+    )
+    another_run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+        model="test-model",
+    )
+
+    for values in (
+        {"id": candidate.id + 1_000_000},
+        {"project_id": other.id},
+        {"source_document_id": other_doc.id},
+        {"extraction_run_id": None},
+        {"extraction_run_id": another_run.id},
+        {"kind": "event"},
+        {"source_pages": [2]},
+        {"confidence": 0.5},
+        {"prompt_version": "rewritten"},
+        {"model": "rewritten"},
+    ):
+        with pytest.raises(IntegrityError, match="Candidate run lineage is immutable"):
+            with session.begin_nested():
+                session.execute(
+                    update(Candidate)
+                    .where(Candidate.id == candidate.id)
+                    .values(**values)
+                    .execution_options(synchronize_session=False)
+                )
+
+    with pytest.raises(IntegrityError, match="Candidate run lineage is immutable"):
+        with session.begin_nested():
+            session.execute(delete(Candidate).where(Candidate.id == candidate.id))
+
+    with pytest.raises(IntegrityError, match="Candidate run lineage is immutable"):
+        with session.begin_nested():
+            session.execute(text("truncate table candidates cascade"))
+
+    with pytest.raises(IntegrityError, match="attach to its run after input capture"):
+        with session.begin_nested():
+            session.add(
+                Candidate(
+                    project_id=project.id,
+                    kind="dependency",
+                    payload_json={"kind": "dependency", "fields": {}},
+                    source_document_id=doc.id,
+                    extraction_run_id=run.id,
+                    source_pages=[1],
+                    confidence=1.0,
+                    prompt_version=PROMPT_VERSION,
+                    model="test-model",
+                    citations_verified=True,
+                )
+            )
+            session.flush()
+
+
+def test_non_demo_synthetic_run_receipts_still_reject_delete(session, project):
+    doc = add_matrix(session, project, "synthetic-eval.pdf", "6" * 64)
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+    )
+
+    with pytest.raises(IntegrityError, match="receipts are immutable"):
+        with session.begin_nested():
+            session.execute(delete(ExtractionRun).where(ExtractionRun.id == run.id))
+
+    assert session.get(ExtractionRun, run.id) is not None
+
+
+def test_demo_run_receipts_remain_deletable_for_reset(session):
+    demo = Project(slug="corridor-demo", name="Corridor Demo", is_synthetic=True)
+    session.add(demo)
+    session.flush()
+    doc = add_matrix(session, demo, "demo-reset.pdf", "5" * 64)
+    candidate = Candidate(
+        project_id=demo.id,
+        kind="dependency",
+        payload_json={"kind": "dependency", "fields": {"utility_id": "D1"}},
+        source_document_id=doc.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version=PROMPT_VERSION,
+        model="test-model",
+        citations_verified=True,
+    )
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+        model="test-model",
+    )
+
+    session.execute(delete(Candidate).where(Candidate.id == candidate.id))
+    session.execute(delete(ExtractionRun).where(ExtractionRun.id == run.id))
+
+    assert session.get(ExtractionRun, run.id, populate_existing=True) is None
 
 
 def test_failed_or_foreign_runs_cannot_be_declared_active(session, project):

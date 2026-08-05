@@ -8,6 +8,7 @@ reconstructing lineage from candidate existence, timestamps, or row order.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from copy import deepcopy
 import sys
 
 from sqlalchemy import and_, func, select, update
@@ -34,6 +35,12 @@ def completion_predicate():
     return and_(
         ExtractionRun.outcome == "completed", ExtractionRun.page_errors == 0
     )
+
+
+def is_completed_run(run: ExtractionRun) -> bool:
+    """Object-level form of the one extraction completion rule."""
+
+    return run.outcome == "completed" and run.page_errors == 0
 
 
 def completed_document_ids(
@@ -75,15 +82,37 @@ def record_extraction_run(
         raise ValueError("a non-completed extraction run cannot own Candidates")
     if outcome != "completed" and page_errors == 0:
         raise ValueError("a non-completed extraction run must record an error")
-    if candidates and candidate_count != len(candidates):
+    if candidate_count != len(candidates):
         raise ValueError("candidate_count does not match the attached candidates")
+    if len({id(candidate) for candidate in candidates}) != len(candidates):
+        raise ValueError("an Extraction Run cannot repeat a Candidate")
     for candidate in candidates:
+        if candidate.extraction_run_id is not None:
+            raise ValueError(
+                f"Candidate {candidate.id} already belongs to Extraction Run "
+                f"{candidate.extraction_run_id}"
+            )
         if candidate.source_document_id != document.id:
             raise ValueError("a run cannot own another document's Candidate")
+        if candidate.project_id != document.project_id:
+            raise ValueError("a run cannot own another project's Candidate")
         if candidate.prompt_version != prompt_version:
             raise ValueError("Candidate prompt_version does not match its run")
         if candidate.model != model:
             raise ValueError("Candidate model does not match its run")
+
+    if candidates:
+        session.add_all(candidates)
+        # Candidate ids are part of the immutable input identity. They can be
+        # assigned before the run because lineage is nullable only during this
+        # one in-transaction construction step.
+        session.flush(list(candidates))
+        candidate_ids = [candidate.id for candidate in candidates]
+        if len(set(candidate_ids)) != len(candidate_ids):
+            raise ValueError("an Extraction Run cannot repeat a Candidate")
+    candidate_inputs = [
+        candidate_input_snapshot(candidate) for candidate in candidates
+    ]
 
     run = ExtractionRun(
         document_id=document.id,
@@ -94,12 +123,37 @@ def record_extraction_run(
         model=model,
         schema_version=schema_version,
         error_detail=error_detail,
+        candidate_inputs_json=candidate_inputs,
     )
     session.add(run)
     session.flush([run])
     for candidate in candidates:
         candidate.extraction_run_id = run.id
     return run
+
+
+def candidate_input_snapshot(candidate: Candidate) -> dict:
+    """The immutable extractor-time input a run owns.
+
+    ``extraction_run_id`` is intentionally absent: the containing
+    ExtractionRun supplies that identity and does not exist until after this
+    snapshot is assembled. Every other value the comparison may later need is
+    copied before Adjudication can edit the live Candidate.
+    """
+
+    return {
+        "candidate_id": candidate.id,
+        "project_id": candidate.project_id,
+        "kind": candidate.kind,
+        "source_document_id": candidate.source_document_id,
+        "payload_json": deepcopy(candidate.payload_json),
+        "source_pages": list(candidate.source_pages or []),
+        "confidence": candidate.confidence,
+        "prompt_version": candidate.prompt_version,
+        "model": candidate.model,
+        "citations_verified": candidate.citations_verified,
+        "state": candidate.state,
+    }
 
 
 def declare_active_run(
