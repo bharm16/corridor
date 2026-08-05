@@ -45,7 +45,14 @@ def write_pdf(path, rows):
                 x0 + (c + 1) * width, y0 + (r + 1) * height,
             )
             page.draw_rect(rect, color=(0, 0, 0), width=0.6)
-            page.insert_textbox(rect + (3, 5, -3, -3), cell, fontsize=7)
+            # Shrink until it fits. `insert_textbox` returns a negative
+            # number and renders NOTHING when the text overflows, which
+            # made the spanning band read as an empty row and the anchor
+            # look broken when the fixture was at fault.
+            box = rect + (3, 5, -3, -3)
+            for size in (7, 6, 5, 4, 3):
+                if page.insert_textbox(box, cell, fontsize=size) >= 0:
+                    break
     doc.save(path)
     doc.close()
     return path
@@ -334,6 +341,10 @@ def test_position_annotates_a_row_it_never_classifies_it(
 
 
 WSDOT_SHAPE = [
+    # The spanning group band the family prints above its marked columns —
+    # what the authoring anchors on, since the column names differ between
+    # contracts (9424 names them after its route number, 9540 does not).
+    ["", "", "", "RECOMMENDED RESOLUTION", "", "", "", ""],
     ["Owner", "Conflict ID", "Facility Type", "509 Relocation Needed",
      "ST Relocation Needed", "Retain and Protect", "Abandon / Deactivate", "Notes"],
     # One mark on the critical side.
@@ -454,3 +465,142 @@ def test_machine_gold_round_trips_through_the_eval_loader(
     # unsettled row out of the ≥95% denominator. None would mean the gold
     # set labels no criticality at all, which this one does.
     assert critical["4"] is False
+
+
+def test_the_anchor_is_the_family_band_not_one_contracts_column(
+    session, project, tmp_path
+):
+    """The M7 cold run's second finding.
+
+    Authoring anchored on `509 Relocation Needed` and refused the holdout,
+    which is the same Appendix U with its columns named `RELOCATION` /
+    `PROTECTION IN PLACE` / `ABANDON/ DEACTIVATE/ REMOVE`. The refusal was
+    right and its reason was wrong: what this authoring needs is a marked
+    resolution group, not one contract's route number.
+    """
+    rows = [
+        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
+        ["UTILITY OWNER", "UTILITY ID", "FACILITY TYPE", "RELOCATION",
+         "PROTECTION IN PLACE", "ABANDON/ DEACTIVATE/ REMOVE", "NOTES"],
+        ["PSE", "PSEN-G-1001", "Gas Line", "X", "", "", ""],
+        ["City of Fife", "COFI-W-1003", "Water", "", "X", "", ""],
+        ["Comcast", "CMCS-C-1001", "Duct", "", "", "X", ""],
+        ["AT&T", "ATAT-F-1002", "Duct", "X", "X", "", ""],
+    ]
+    gold = authored(session, project, tmp_path, rows)
+    by_ref = {r.source_ref: r.critical for r in gold.rows}
+
+    assert by_ref["PSEN-G-1001"] == "yes"
+    assert by_ref["COFI-W-1003"] == "no"
+    assert by_ref["CMCS-C-1001"] == "yes"
+    # Marked on both sides: the document has not settled.
+    assert by_ref["ATAT-F-1002"] == ""
+
+
+def test_a_band_without_readable_marks_still_refuses(session, project, tmp_path):
+    """The band alone is not enough — a form that groups columns this
+    vocabulary cannot read is a human decision, not a fallback."""
+    from corridor.gold import LayoutAnchorMissing
+
+    rows = [
+        ["", "", "RECOMMENDED RESOLUTION", ""],
+        ["UTILITY OWNER", "UTILITY ID", "SOME NEW COLUMN", "NOTES"],
+        ["PSE", "X-1", "X", ""],
+    ]
+    with pytest.raises(LayoutAnchorMissing):
+        authored(session, project, tmp_path, rows)
+
+
+def make_multipage(session, project, tmp_path, pages_rows, sha="mp"):
+    """A Document of N real pages, so continuation pages are real."""
+    merged = pymupdf.open()
+    for i, rows in enumerate(pages_rows):
+        one = write_pdf(tmp_path / f"{sha}-{i}.pdf", rows)
+        with pymupdf.open(one) as opened:
+            merged.insert_pdf(opened)
+    path = tmp_path / f"{sha}.pdf"
+    merged.save(path)
+    merged.close()
+
+    doc = Document(
+        project_id=project.id, sha256=sha[0] * 64, filename=f"{sha}.pdf",
+        doc_type="matrix", parse_status="parsed", pages=len(pages_rows),
+    )
+    session.add(doc)
+    session.flush()
+    with pymupdf.open(path) as opened:
+        for i in range(len(pages_rows)):
+            session.add(
+                DocPage(
+                    document_id=doc.id, page_no=i + 1,
+                    text=opened[i].get_text(),
+                    image_path=str(tmp_path / f"{sha}-{i}.png"),
+                    text_source="text_layer",
+                )
+            )
+    session.flush()
+    doc._pdf_path = str(path)
+    return doc
+
+
+def test_a_continuation_page_is_read_not_skipped(session, project, tmp_path):
+    """The M7 cold run's third finding, and the one that mattered most.
+
+    9540's Power listing runs to two pages: page 1 prints the
+    `RECOMMENDED RESOLUTION` band, page 2 reprints the column headings
+    without it. Requiring the band on every page dropped page 2 whole —
+    ten conflicts absent from the denominator, which is a gold set that
+    does not cover its own document.
+
+    The band anchors the *document*; each page finds its header by the
+    resolution headings it prints.
+    """
+    from corridor.gold import author_machine_gold
+
+    headings = [
+        "UTILITY OWNER", "UTILITY ID", "FACILITY TYPE", "RELOCATION",
+        "PROTECTION IN PLACE", "ABANDON/ DEACTIVATE", "NOTES",
+    ]
+    first = [
+        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
+        headings,
+        ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
+    ]
+    # No band: the continuation page reprints only the headings.
+    second = [
+        headings,
+        ["TPU", "TCPR-P-1043", "Power", "X", "", "", ""],
+        ["TPU", "TCPR-P-1063", "Power", "", "", "X", ""],
+    ]
+    document = make_multipage(session, project, tmp_path, [first, second])
+
+    gold = author_machine_gold(session, project.id)
+    assert document.filename in gold.document
+
+    refs = {r.source_ref for r in gold.rows}
+    assert refs == {"PSEN-P-1001", "TCPR-P-1043", "TCPR-P-1063"}
+    assert {r.critical for r in gold.rows} == {"yes"}
+
+
+def test_a_document_that_never_prints_the_band_is_still_refused(
+    session, project, tmp_path
+):
+    """Anchoring per document, not per page, must not become anchoring
+    nowhere: a form that never groups its resolution columns is still a
+    human decision."""
+    from corridor.gold import LayoutAnchorMissing
+
+    headings = ["UTILITY OWNER", "UTILITY ID", "RELOCATION", "NOTES"]
+    pages = [
+        [headings, ["PSE", "P-1", "X", ""]],
+        [headings, ["TPU", "P-2", "X", ""]],
+    ]
+    # Bound: the identity map holds Documents weakly, and a dropped
+    # reference takes the fixture's `_pdf_path` with it.
+    document = make_multipage(session, project, tmp_path, pages, sha="nb")
+    assert document.pages == 2
+
+    with pytest.raises(LayoutAnchorMissing):
+        from corridor.gold import author_machine_gold
+
+        author_machine_gold(session, project.id)

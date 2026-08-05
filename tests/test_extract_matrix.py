@@ -1447,3 +1447,58 @@ def test_a_populated_row_carrying_the_phrase_is_kept(session, project, tmp_path)
     fields = candidates[0].payload_json["fields"]
     assert fields["utility_id"] == "210"
     assert fields["notes"] == "Not used"
+
+
+def test_an_empty_header_cell_does_not_crash_the_mapping():
+    """The M7 gate's cold run died here, on the holdout, mid-extraction.
+
+    PyMuPDF hands back `None` for a cell it read nothing in, and
+    `_column_mapping` read it before #105 through `normalize_header`,
+    which coerces None. The rewrite in #105 replaced that with a bare
+    `.strip()` and every test kept passing, because no fixture and no
+    already-extracted document happened to carry an empty cell in the row
+    the model named as the header.
+
+    The fix restores the coercion and nothing else: for a cell that is
+    already a string both forms are identical, so no document that
+    extracted before can read differently — the only changed path is the
+    one that used to raise.
+    """
+    from corridor.extract_matrix import _column_mapping
+
+    grid = [["Utility ID", None, "Utility Owner", ""]]
+    result = {
+        "header_row": 0,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": None},
+            {"index": 2, "canonical_field": "external_org"},
+            {"index": 3, "canonical_field": None},
+        ],
+    }
+
+    mapping = _column_mapping(grid, result)
+
+    assert mapping.fields == {0: "utility_id", 2: "external_org"}
+    # An empty heading is not a column a reviewer can be asked to rule on.
+    assert mapping.unmapped == []
+
+
+def test_a_populated_header_maps_identically_either_way():
+    """Pins the claim the fix rests on: coercion changes nothing for a
+    cell that is already text."""
+    from corridor.extract_matrix import _column_mapping
+
+    grid = [["Utility ID", "Parcel U-Number"]]
+    result = {
+        "header_row": 0,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": None},
+        ],
+    }
+
+    mapping = _column_mapping(grid, result)
+
+    assert mapping.fields == {0: "utility_id"}
+    assert mapping.unmapped == ["Parcel U-Number"]

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+from pathlib import Path
 import zipfile
 from datetime import date
 
@@ -122,16 +123,26 @@ def test_a_sealed_manifest_is_never_fetched(tmp_path, monkeypatch):
     assert not Path(tmp_path / "corpus" / "files").exists()
 
 
-def test_the_current_holdout_is_sealed():
-    """WSDOT 9540 is M7's holdout (#64), and nothing has read it.
+def test_the_spent_holdout_records_what_it_was():
+    """WSDOT 9540 was M7's holdout (#64). Its seal was lifted once, by a
+    deliberate human act, on 2026-08-04 (#88, ADR-0008).
 
-    Asserted against the real manifest rather than a fixture, because a
-    fixture proves the mechanism works and this proves it is switched on
-    for the document whose value depends on it.
+    This test used to assert `sealed is True` and was the tripwire that
+    made the spend impossible by accident. It fired, correctly, the moment
+    the seal came off — and rather than deleting it, it now asserts what
+    replaced the guarantee: the manifest still carries, verbatim, the
+    record of what the seal protected and why. A spent holdout whose
+    manifest reads like any other file is a project that has forgotten it
+    had one, and `corpus-acquisition-spec.md` §7.2 says a successor exists
+    to be sealed next.
     """
     manifest = load_manifest("corpus/wsdot-9540.yaml")
-    assert manifest.sealed is True
+    assert manifest.sealed is False
     assert manifest.sources
+
+    text = Path("corpus/wsdot-9540.yaml").read_text()
+    assert "SEAL LIFTED 2026-08-04" in text
+    assert "There is no second first run." in text
 
 
 def test_the_holdouts_development_sibling_is_open():
@@ -164,10 +175,20 @@ def test_a_real_corpus_run_skips_the_holdout_and_names_it(capsys, monkeypatch):
     monkeypatch.setattr(corpus_module, "fetch_all", record)
     assert corpus_module.main() == 0
 
-    assert "wsdot-9540" not in reached
+    # 9540's seal was spent on 2026-08-04, so it is fetched like any
+    # other project now. What this still proves is the loop: a sealed
+    # manifest is skipped and named, and the fixtures above exercise that
+    # mechanism against a manifest whose seal is on. The successor holdout
+    # inherits it.
     assert "wsdot-9424" in reached
-    assert "wsdot-9540: SEALED" in capsys.readouterr().out
-    assert not Path("corpus/wsdot-9540.lock.json").exists()
+    assert "wsdot-9540" in reached
+    # Every manifest reaches the fetcher and every one is named in the
+    # output — a corpus step that quietly does nothing must stay
+    # distinguishable from one that worked. The skipped-and-named half of
+    # this loop is exercised by the sealed-fixture tests above; the
+    # successor holdout switches it back on for a real document.
+    named = capsys.readouterr().out
+    assert all(f"{slug}:" in named for slug in ("wsdot-9424", "wsdot-9540"))
 
 
 def test_fetch_stores_content_addressed_and_records_provenance(tmp_path):

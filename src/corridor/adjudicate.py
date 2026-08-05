@@ -102,12 +102,33 @@ class ResolutionVocabulary:
 #
 # Written from 9424, which is the unsealed twin fetched for exactly this
 # purpose (ADR-0008), and never from the holdout.
+# Contract 9540 prints the same form with different column names, and the
+# M7 cold run found it: every one of its 192 rows read as None here,
+# because the phrases below were written from 9424 alone and 9424 names
+# its columns after its own route number. The structural machinery
+# generalised (the marked group, the multi-mark rows, the headings stored
+# instead of the marks); the vocabulary did not. Extended after the cold
+# run, which is why the gate's numbers do not depend on it — eval scores
+# row-finding against the gold labels and never reads this table.
+#
+# Each addition is the same ADR-0009 line the entries above follow:
+# relocation and abandonment commit the owner to work, protection in
+# place does not.
 WSDOT_APPENDIX_U = ResolutionVocabulary(
     phrases={
+        # Contract 9424 (SR 509 Completion Stage 1B).
         "509 relocation needed": "relocate",
         "st relocation needed": "relocate",
         "retain and protect": "protect_in_place",
         "abandon / deactivate": "abandon_in_place",
+        # Contract 9540 (SR 167 Completion Stage 1b). `Advance` names when
+        # the work happens, not what it is — ADR-0009 is explicit that
+        # criticality is about the kind of work and not about a date.
+        "relocation": "relocate",
+        "advance relocation": "relocate",
+        "protection in place": "protect_in_place",
+        "abandon/ deactivate": "abandon_in_place",
+        "abandon/ deactivate/ remove": "abandon_in_place",
     }
 )
 
@@ -165,6 +186,7 @@ RESOLUTION_VOCABULARIES: dict[str, ResolutionVocabulary] = {
     # time, which is the thing ADR-0008 says cannot be discovered
     # afterwards.
     "wsdot-9424": WSDOT_APPENDIX_U,
+    "wsdot-9540": WSDOT_APPENDIX_U,
 }
 
 

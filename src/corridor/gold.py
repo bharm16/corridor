@@ -493,13 +493,33 @@ def main(argv: list[str]) -> int:
 # (`is_critical`) that already encode ADR-0009, so the labelling rule and
 # the Ledger's derivation stay one sentence even here.
 
-# The heading this authoring refuses to run without. 9540 is expected to
-# print the twin's form; if it does not, a surprise layout is a decision
-# for a human, not a fallback for a script.
-_ANCHOR = "509 relocation needed"
+# The band this authoring refuses to run without: the spanning group cell
+# both WSDOT contracts print above their marked resolution columns.
+#
+# It anchored on `509 relocation needed` until the M7 cold run, and that
+# refused on the holdout — correctly, and for the wrong reason. 9540 is
+# the same Appendix U, but names its columns `RELOCATION` / `PROTECTION IN
+# PLACE` / `ABANDON/ DEACTIVATE/ REMOVE` where 9424 names them after its
+# own route number. Anchoring on the family's group header instead of one
+# contract's column is both more general and more honest about what this
+# authoring actually requires: a marked resolution group, whatever the
+# marks are called.
+_ANCHOR = "recommended resolution"
 
-_OWNER_HEADINGS = ("owner",)
-_ID_HEADINGS = ("conflict id", "id conflict")
+# The identity columns, both contracts' spellings. The M7 cold run turned
+# this into a rule rather than a list: **only the structure of this form is
+# stable across contracts — every name varies.** 9424 prints `Owner`,
+# `ID Conflict`, and names its marks after its route number; 9540 prints
+# `UTILITY OWNER`, `UTILITY ID`, and names its marks after the work. So
+# the anchor is the group band, the marks are read through a vocabulary,
+# and these are enumerated per contract rather than guessed at.
+# How deep a header can sit on a page. The band, a title row, and the
+# headings — nothing in this corpus goes deeper, and a "header" found
+# further down is a data row that happens to read like one.
+_HEADER_SEARCH_DEPTH = 6
+
+_OWNER_HEADINGS = ("owner", "utility owner")
+_ID_HEADINGS = ("conflict id", "id conflict", "utility id")
 _NOTES_HEADINGS = ("notes",)
 
 
@@ -528,10 +548,11 @@ class MachineGold:
 def author_machine_gold(session: Session, project_id: int) -> MachineGold:
     """A gold set from the independent grid reading (#81 as amended).
 
-    No model and no extractor column mapping: the header is found by its
-    own printed anchor, the marks are cells at those positions, and the
-    canonical reading of each marked heading goes through the same
-    vocabulary the Ledger uses — one sentence, both sides.
+    No model and no extractor column mapping: the resolution group is
+    found by the band both WSDOT contracts print above it, the marks are
+    cells at the columns beneath, and the canonical reading of each marked
+    heading goes through the same vocabulary the Ledger uses — one
+    sentence, both sides.
     """
     from corridor.adjudicate import WSDOT_APPENDIX_U
     from corridor.models import is_critical
@@ -539,105 +560,144 @@ def author_machine_gold(session: Session, project_id: int) -> MachineGold:
     project = session.get(Project, project_id)
     if project is None:
         raise LookupError(f"no project {project_id}")
-    document = session.scalars(
+    documents = session.scalars(
         select(Document)
         .where(Document.project_id == project_id, Document.doc_type == "matrix")
         .order_by(Document.doc_date, Document.id)
-    ).first()
-    if document is None:
+    ).all()
+    if not documents:
         raise LookupError(f"no matrix document in {project.slug}")
-    path = stored_file(document)
-    if path is None:
-        raise LookupError(f"no stored file for {document.filename}")
-
-    images = {
-        page.page_no: page.image_path
-        for page in session.scalars(
-            select(DocPage).where(DocPage.document_id == document.id)
-        )
-    }
 
     rows: list[MachineGoldRow] = []
     retired = empty_slots = 0
     anchored = False
+    images: dict[tuple[str, int], str | None] = {}
 
-    with pymupdf.open(Path(path)) as pdf:
-        for page_no, page in enumerate(pdf, start=1):
-            tables = page_tables(page)
-            if not tables:
+    # Every matrix in the project, not the first. 9424 published one
+    # document and 9540 publishes six — one per utility kind — so a
+    # `.first()` here authored a denominator covering a fourteenth of the
+    # project and would have scored the extractor against it. The M7 cold
+    # run found that; no fixture could, because every fixture had one.
+    for document in documents:
+        path = stored_file(document)
+        if path is None:
+            raise LookupError(f"no stored file for {document.filename}")
+        for page in session.scalars(
+            select(DocPage).where(DocPage.document_id == document.id)
+        ):
+            images[(document.filename, page.page_no)] = page.image_path
+
+        with pymupdf.open(Path(path)) as pdf:
+            grids = {}
+            for page_no, page in enumerate(pdf, start=1):
+                tables = page_tables(page)
+                if tables:
+                    grids[page_no] = max(tables, key=len)
+
+            # The band anchors the **document**, not each page: 9540's
+            # Power listing prints it on page 1 and its continuation page
+            # reprints only the column headings. Requiring it per page
+            # dropped that page whole — ten conflicts absent from the
+            # denominator, which is a gold set that does not cover its own
+            # document. Requiring it nowhere would accept any form that
+            # happened to use these words, so it is required once.
+            if not any(
+                _norm(c) == _ANCHOR for grid in grids.values() for row in grid for c in row
+            ):
                 continue
-            grid = max(tables, key=len)
 
-            header_index = next(
-                (
-                    i
-                    for i, row in enumerate(grid)
-                    if any(_norm(c) == _ANCHOR for c in row)
-                ),
-                None,
-            )
-            if header_index is None:
-                continue
-            anchored = True
-            headings = [_norm(c) for c in grid[header_index]]
-
-            owner_col = _column(headings, _OWNER_HEADINGS)
-            id_col = _column(headings, _ID_HEADINGS)
-            notes_col = _column(headings, _NOTES_HEADINGS)
-            # Every column whose heading the WSDOT vocabulary can read is a
-            # resolution mark column; the heading's canonical strategy is
-            # what a mark under it asserts.
-            mark_cols = {
-                index: WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
-                for index, heading in enumerate(headings)
-                if heading and WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
-            }
-
-            for raw in grid[header_index + 1 :]:
-                owner = (raw[owner_col] or "").strip() if owner_col is not None else ""
-                ref = (raw[id_col] or "").strip() if id_col is not None else ""
-                notes = (raw[notes_col] or "").strip() if notes_col is not None else ""
-
-                if not owner and not ref:
-                    continue  # furniture or a wholly empty line
-                if not owner:
-                    # An id and no facility: retired numbering when the
-                    # phrase says so, an empty slot when nothing does.
-                    # Neither names a facility; neither is counted
-                    # (ADR-0012).
-                    if is_retired_row({"utility_id": ref, "notes": notes}):
-                        retired += 1
-                    else:
-                        empty_slots += 1
-                    continue
-
-                strategies = {
-                    strategy
-                    for index, strategy in mark_cols.items()
-                    if index < len(raw) and (raw[index] or "").strip()
-                }
-                sides = {is_critical(s) for s in strategies}
-                critical = (
-                    ("yes" if sides == {True} else "no")
-                    if len(sides) == 1
-                    else ""  # unsettled or unmarked: out of the denominator
+            for page_no, grid in sorted(grids.items()):
+                # Each page finds its own header by the resolution
+                # headings it prints; a continuation page prints them too.
+                header_index = next(
+                    (
+                        i
+                        for i in range(min(len(grid), _HEADER_SEARCH_DEPTH))
+                        if any(WSDOT_APPENDIX_U.read(c or "") for c in grid[i])
+                    ),
+                    None,
                 )
-                rows.append(MachineGoldRow(source_ref=ref, page=page_no, critical=critical))
+                if header_index is None:
+                    continue
+                anchored = True
+                headings = [_norm(c) for c in grid[header_index]]
+
+                owner_col = _column(headings, _OWNER_HEADINGS)
+                id_col = _column(headings, _ID_HEADINGS)
+                notes_col = _column(headings, _NOTES_HEADINGS)
+                # Every column whose heading the vocabulary can read is a
+                # resolution mark column; the heading's canonical strategy
+                # is what a mark under it asserts.
+                mark_cols = {
+                    index: WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
+                    for index in range(len(headings))
+                    if WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
+                }
+
+                for raw in grid[header_index + 1 :]:
+                    owner = (
+                        (raw[owner_col] or "").strip()
+                        if owner_col is not None and owner_col < len(raw)
+                        else ""
+                    )
+                    ref = (
+                        (raw[id_col] or "").strip()
+                        if id_col is not None and id_col < len(raw)
+                        else ""
+                    )
+                    notes = (
+                        (raw[notes_col] or "").strip()
+                        if notes_col is not None and notes_col < len(raw)
+                        else ""
+                    )
+
+                    if not owner and not ref:
+                        continue  # furniture, or a wholly empty line
+                    if not owner:
+                        # An id and no facility: retired numbering when the
+                        # phrase says so, an empty slot when nothing does.
+                        # Neither names a facility; neither is counted
+                        # (ADR-0012).
+                        if is_retired_row({"utility_id": ref, "notes": notes}):
+                            retired += 1
+                        else:
+                            empty_slots += 1
+                        continue
+
+                    strategies = {
+                        strategy
+                        for index, strategy in mark_cols.items()
+                        if index < len(raw) and (raw[index] or "").strip()
+                    }
+                    sides = {is_critical(s) for s in strategies}
+                    critical = (
+                        ("yes" if sides == {True} else "no")
+                        if len(sides) == 1
+                        else ""  # unsettled or unmarked: out of the denominator
+                    )
+                    rows.append(
+                        MachineGoldRow(
+                            source_ref=ref, page=page_no, critical=critical
+                        )
+                    )
 
     if not anchored:
         raise LayoutAnchorMissing(
-            f"no page of {document.filename} prints the anchored header "
-            f"({_ANCHOR!r}). This authoring is written for the WSDOT form; "
-            "a different layout is a human decision, not a fallback."
+            f"no page of {documents[0].filename} prints the anchored band "
+            f"({_ANCHOR!r}) above headings this vocabulary can read. This "
+            "authoring is written for the WSDOT Appendix U form; a "
+            "different layout is a human decision, not a fallback."
         )
 
     return MachineGold(
         project=project.slug,
-        document=document.filename,
+        document=", ".join(d.filename for d in documents),
         rows=tuple(rows),
         retired=retired,
         empty_slots=empty_slots,
-        page_images=tuple(sorted(images.items())),
+        page_images=tuple(
+            (page_no, path) for (_, page_no), path in sorted(images.items())
+        ),
     )
 
 

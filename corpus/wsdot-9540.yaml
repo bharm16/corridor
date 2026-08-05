@@ -31,10 +31,16 @@
 #
 # corpus-acquisition-spec.md §7.2 records that WSDOT publishes 392
 # contracts this way, so a successor holdout exists when this one is spent.
+# SEAL LIFTED 2026-08-04 by the maintainer, deliberately and once, after
+# all five #88 preconditions were checked off and #81's criteria were
+# amended (machine-authored gold, a semi-independent ceiling). Everything
+# above this line describes the state that held until that decision and is
+# kept verbatim, because a record of what the seal protected is worth more
+# than a tidy file. There is no second first run.
 project: wsdot-9540
 name: SR 167 Completion Stage 1b (WSDOT 9540)
 agency: WSDOT
-sealed: true
+sealed: false
 
 sources:
   - url: https://ftp.wsdot.wa.gov/contracts/9540-I-5toSR509NewExpressway/RFP/Appendices/U/U3/U3-2021-02-05-167-1b-PE-UTL-UtilityListing-Gas.pdf

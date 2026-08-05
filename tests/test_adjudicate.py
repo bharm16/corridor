@@ -637,7 +637,11 @@ def test_the_shipped_vocabulary_covers_the_two_layouts_that_state_one(session):
     project absent here asserts no strategy at all, which is the right
     answer for a document that records none rather than a gap.
     """
-    assert set(RESOLUTION_VOCABULARIES) == {"fdot-sr789", "wsdot-9424"}
+    assert set(RESOLUTION_VOCABULARIES) == {
+        "fdot-sr789",
+        "wsdot-9424",
+        "wsdot-9540",
+    }
 
     vocabulary = RESOLUTION_VOCABULARIES["fdot-sr789"]
     assert vocabulary.read("To be removed") == "remove"
@@ -825,3 +829,34 @@ def test_three_of_wsdots_four_columns_are_critical_and_one_is_not():
         "Retain and Protect": False,
         "Abandon / Deactivate": True,
     }
+
+
+def test_the_wsdot_vocabulary_reads_both_contracts_columns():
+    """The M7 cold run's finding, pinned.
+
+    9540 prints the same Appendix U with its columns named after nothing
+    in particular — `RELOCATION`, `PROTECTION IN PLACE`, `ABANDON/
+    DEACTIVATE/ REMOVE` — where 9424 names them after its route number.
+    The vocabulary was written from 9424 alone, so all 192 of 9540's rows
+    read as None: the structural machinery generalised and the words did
+    not. One layout, one vocabulary, both contracts' spellings.
+    """
+    vocabulary = RESOLUTION_VOCABULARIES["wsdot-9540"]
+
+    assert vocabulary is RESOLUTION_VOCABULARIES["wsdot-9424"]
+    assert vocabulary.read("RELOCATION") == "relocate"
+    assert vocabulary.read("ADVANCE RELOCATION") == "relocate"
+    assert vocabulary.read("PROTECTION IN PLACE") == "protect_in_place"
+    assert vocabulary.read("ABANDON/ DEACTIVATE") == "abandon_in_place"
+    assert vocabulary.read("ABANDON/ DEACTIVATE/ REMOVE") == "abandon_in_place"
+
+
+def test_a_9540_row_marked_on_both_sides_still_settles_nothing():
+    """12 of its rows are marked RELOCATION *and* PROTECTION IN PLACE.
+    Two answers from opposite sides of ADR-0009's line: the document has
+    not settled, and the Ledger records none."""
+    vocabulary = RESOLUTION_VOCABULARIES["wsdot-9540"]
+
+    assert vocabulary.read("RELOCATION; PROTECTION IN PLACE") is None
+    # Two answers on the same side still settle.
+    assert vocabulary.read("RELOCATION; ABANDON/ DEACTIVATE/ REMOVE") is None
