@@ -357,10 +357,10 @@ class Dependency(Base):
     # two thousand feet apart on the ground.
     station_from: Mapped[str | None] = mapped_column(String(32))
     station_to: Mapped[str | None] = mapped_column(String(32))
-    # FKs arrive with external_orgs and milestones; those tables are not in
-    # the skeleton.
-    external_org_id: Mapped[int | None] = mapped_column(BigInteger)
-    milestone_id: Mapped[int | None] = mapped_column(BigInteger)
+    external_org_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_orgs.id")
+    )
+    milestone_id: Mapped[int | None] = mapped_column(ForeignKey("milestones.id"))
     external_contact: Mapped[str | None] = mapped_column(Text)
     internal_owner: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
