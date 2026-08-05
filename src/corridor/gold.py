@@ -410,6 +410,39 @@ def _rows(rows: list[UnreadRow]) -> list[str]:
     return out
 
 
+
+# The file-safety rules of a gate run, out of `main` so they can be
+# tested without driving the whole command. Both protect an artifact a
+# human made, and neither had a test.
+GOLD_DIR = Path("gold")
+WORKSHEET_DIR = Path("out/gold")
+
+
+def machine_gold_paths(slug: str, *, directory: Path = GOLD_DIR) -> tuple[Path, Path]:
+    """Where a machine-authored gold set and its sidecar are written.
+
+    `<slug>.machine.csv`, never `<slug>.csv`. The hand-authored name is
+    the stricter artifact and keeps it (#81 as amended): a machine gold
+    set is a ceiling, and letting it claim the name a person's labelling
+    would use is how a ceiling gets read as a floor.
+    """
+    return directory / f"{slug}.machine.csv", directory / f"{slug}.machine.md"
+
+
+def write_worksheet(path: Path) -> bool:
+    """Write a blank worksheet unless one is already there.
+
+    Returns False when it left an existing file alone. The worksheet is
+    hours of human labelling and this file is regenerable, so the
+    regenerable one yields.
+    """
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(worksheet())
+    return True
+
+
 def main(argv: list[str]) -> int:
     """`make gold ARGS="<slug>"`"""
     import sys
@@ -433,11 +466,9 @@ def main(argv: list[str]) -> int:
             # as the ceiling it is. Never overwrites a hand-authored
             # gold/<slug>.csv — the stricter artifact keeps its name.
             gold = author_machine_gold(session, project.id)
-            directory = Path("gold")
-            directory.mkdir(parents=True, exist_ok=True)
-            csv_path = directory / f"{slug}.machine.csv"
+            csv_path, sidecar = machine_gold_paths(slug)
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
             csv_path.write_text(gold_csv(gold))
-            sidecar = directory / f"{slug}.machine.md"
             sidecar.write_text(render_machine_gold(gold))
             labelled = sum(1 for r in gold.rows if r.critical)
             yes = sum(1 for r in gold.rows if r.critical == "yes")
@@ -458,12 +489,8 @@ def main(argv: list[str]) -> int:
         report.write_text(render(prep))
 
         sheet = out / f"{slug}-worksheet.csv"
-        if sheet.exists():
-            # Never overwrite labelling in progress: the worksheet is
-            # hours of human work and this file is regenerable.
+        if not write_worksheet(sheet):
             print(f"{sheet} exists — left alone", flush=True)
-        else:
-            sheet.write_text(worksheet())
 
         print(f"{prep.extracted_total} extracted, {len(prep.unread)} not")
         if prep.contested:

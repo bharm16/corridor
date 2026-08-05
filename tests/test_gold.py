@@ -604,3 +604,42 @@ def test_a_document_that_never_prints_the_band_is_still_refused(
         from corridor.gold import author_machine_gold
 
         author_machine_gold(session, project.id)
+
+
+# ------------------------------------------------- the file-safety rules
+
+
+def test_a_worksheet_in_progress_is_never_overwritten(tmp_path):
+    """Hours of human labelling against a regenerable file. The
+    regenerable one yields, and nothing tested that it did."""
+    from corridor.gold import write_worksheet
+
+    sheet = tmp_path / "wsdot-9540-worksheet.csv"
+
+    assert write_worksheet(sheet) is True
+    sheet.write_text("source_ref,critical\nPSEN-G-1001,yes\n")
+
+    assert write_worksheet(sheet) is False
+    assert "PSEN-G-1001,yes" in sheet.read_text()
+
+
+def test_a_blank_worksheet_is_blank(tmp_path):
+    from corridor.gold import worksheet, write_worksheet
+
+    sheet = tmp_path / "w.csv"
+    write_worksheet(sheet)
+
+    assert sheet.read_text() == worksheet()
+
+
+def test_machine_gold_never_claims_the_hand_authored_name(tmp_path):
+    """A machine gold set is a ceiling (#81 as amended). Letting it take
+    the name a person's labelling would use is how a ceiling gets read as
+    a floor."""
+    from corridor.gold import machine_gold_paths
+
+    csv_path, sidecar = machine_gold_paths("wsdot-9540", directory=tmp_path)
+
+    assert csv_path.name == "wsdot-9540.machine.csv"
+    assert sidecar.name == "wsdot-9540.machine.md"
+    assert csv_path.name != "wsdot-9540.csv"

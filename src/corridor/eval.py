@@ -661,6 +661,69 @@ def _critical_lines(result: EvalResult) -> list[str]:
     return lines
 
 
+def artifact(result: EvalResult, *, gold_source: str, ran_at: datetime) -> dict:
+    """The machine-readable record of one measurement.
+
+    The only thing a gate script consumes, and it lived inside `main`
+    beside `mkdir` and `print`, so it could only be exercised by driving
+    the whole command — which no test did. ADR-0008 makes this the
+    highest-consequence untested code here: the artifact is how a
+    measurement spent once is recorded.
+
+    The null-vs-zero rule is the reason it is worth naming. `precision`
+    and `critical_recall` are null rather than a number when the
+    measurement could not be made, so a script cannot mistake "nobody
+    labelled it" for "the extractor found none of them", or a
+    subset figure for a whole-document one. The properties on
+    `EvalResult` already encode that; stating it a second time here is
+    how the JSON and the rendered text drift.
+    """
+    return {
+        "project": result.project,
+        "gold_source": gold_source,
+        "ran_at": ran_at.isoformat(),
+        "recall": result.recall,
+        "gold_total": result.gold_total,
+        "extracted_total": result.extracted_total,
+        "matched": result.matched,
+        "missing": result.missing,
+        "spurious": result.spurious,
+        "field_failures": result.field_failures,
+        # Null under partial coverage. A whole-document precision does not
+        # exist when the enumeration could not read the whole document,
+        # and a gate script reading this key must not receive a subset
+        # figure by accident — the same rule `critical_recall` follows for
+        # an unlabelled gold set.
+        "precision": None if result.partial_coverage else result.precision,
+        "precision_over_recognized": result.precision_over_recognized,
+        "coverage": result.coverage,
+        "recognized_total": result.recognized_total,
+        "unrecognized": result.unrecognized,
+        # Null rather than 0.0 when unmeasurable, so a script reading this
+        # artifact cannot mistake "nobody labeled it" for "the extractor
+        # found none of them".
+        "critical_recall": (
+            None if result.critical_unmeasurable else result.critical_recall
+        ),
+        "critical_gold_total": result.critical_gold_total,
+        "critical_matched": result.critical_matched,
+        "critical_missing": result.critical_missing,
+        "critical_labeled": result.critical_labeled,
+        "prompt_versions": result.prompt_versions,
+        "models": result.models,
+        "coverage_note": result.coverage_note,
+    }
+
+
+def exit_code(result: EvalResult) -> int:
+    """A measurement that could not be made is not a pass.
+
+    Exiting zero on an empty enumeration would let a broken measurement
+    slide through `scripts/gate-run.sh` as a green run.
+    """
+    return 1 if result.unmeasurable else 0
+
+
 def main(argv: list[str]) -> int:
     """`eval <project-slug> [gold.csv] [--prompt-version=X]`.
 
@@ -759,51 +822,13 @@ def main(argv: list[str]) -> int:
     path = out / f"{stem}.json"
     path.write_text(
         json.dumps(
-            {
-                "project": result.project,
-                "gold_source": source,
-                "ran_at": datetime.now(timezone.utc).isoformat(),
-                "recall": result.recall,
-                "gold_total": result.gold_total,
-                "extracted_total": result.extracted_total,
-                "matched": result.matched,
-                "missing": result.missing,
-                "spurious": result.spurious,
-                "field_failures": result.field_failures,
-                # Null under partial coverage. A whole-document precision
-                # does not exist when the enumeration could not read the
-                # whole document, and a gate script reading this key must
-                # not receive a subset figure by accident — the same rule
-                # `critical_recall` follows for an unlabelled gold set.
-                "precision": (
-                    None if result.partial_coverage else result.precision
-                ),
-                "precision_over_recognized": result.precision_over_recognized,
-                "coverage": result.coverage,
-                "recognized_total": result.recognized_total,
-                "unrecognized": result.unrecognized,
-                # Null rather than 0.0 when unmeasurable, so a script
-                # reading this artifact cannot mistake "nobody labeled it"
-                # for "the extractor found none of them".
-                "critical_recall": (
-                    None if result.critical_unmeasurable else result.critical_recall
-                ),
-                "critical_gold_total": result.critical_gold_total,
-                "critical_matched": result.critical_matched,
-                "critical_missing": result.critical_missing,
-                "critical_labeled": result.critical_labeled,
-                "prompt_versions": result.prompt_versions,
-                "models": result.models,
-                "coverage_note": result.coverage_note,
-            },
+            artifact(result, gold_source=source, ran_at=datetime.now(timezone.utc)),
             indent=2,
         )
         + "\n"
     )
     print(f"\n{path}")
-    # A measurement that could not be made is not a pass. Exiting zero here
-    # would let a broken enumeration slide through a script as a green run.
-    return 1 if result.unmeasurable else 0
+    return exit_code(result)
 
 
 if __name__ == "__main__":

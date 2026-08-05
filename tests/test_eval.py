@@ -6,7 +6,9 @@ from corridor.eval import (
     GoldRecord,
     GoldSet,
     MalformedGoldSet,
+    artifact,
     evaluate,
+    exit_code,
     extracted_documents,
     gold_for_documents,
     gold_from_page_text,
@@ -904,3 +906,110 @@ def test_agreement_candidates_do_not_stamp_a_matrix_score(
     assert "agreement_v1" in pooled.prompt_versions
     assert matrices_only.prompt_versions == {"txdot_ucm_v1": 1}
     assert sum(matrices_only.prompt_versions.values()) == matrices_only.extracted_total
+
+
+# ------------------------------------------------------- the gate artifact
+
+
+def _artifact(result):
+    from datetime import datetime, timezone
+
+    return artifact(
+        result, gold_source="gold.csv", ran_at=datetime(2026, 8, 4, tzinfo=timezone.utc)
+    )
+
+
+def test_the_artifact_and_the_rendered_text_agree(session, project, document):
+    """They stated the null-vs-zero rule twice and could drift.
+
+    The artifact is the only thing a gate script consumes and it lived
+    inside `main` beside `mkdir` and `print`, so no test reached it.
+    """
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "C448")
+
+    result = evaluate(
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1"))
+    )
+    written = _artifact(result)
+    rendered = render(result)
+
+    assert written["precision"] is None
+    assert "NOT MEASURED as a whole-document figure" in rendered
+    assert written["precision_over_recognized"] == result.precision_over_recognized
+    assert written["recall"] == result.recall
+    assert written["coverage"] == result.coverage
+
+
+def test_a_whole_document_precision_is_written_only_at_full_coverage(
+    session, project, document
+):
+    make_candidate(session, project, document, "FOC1-1")
+    make_candidate(session, project, document, "FOC9-9")
+
+    result = evaluate(
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1"))
+    )
+
+    assert result.partial_coverage is False
+    assert _artifact(result)["precision"] == 0.5
+
+
+def test_an_unlabelled_gold_set_writes_null_critical_recall_not_zero(
+    session, project, document
+):
+    """A script reading this key must not mistake "nobody labelled it" for
+    "the extractor found none of them"."""
+    make_candidate(session, project, document, "FOC1-1")
+
+    result = evaluate(
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1"))
+    )
+
+    assert result.critical_labeled is False
+    assert _artifact(result)["critical_recall"] is None
+
+
+def test_a_genuine_critical_recall_of_zero_is_written_as_zero(
+    session, project, document
+):
+    """The distinction the null exists to preserve, from the other side."""
+    make_candidate(session, project, document, "FOC1-1")
+
+    result = evaluate(
+        session,
+        slug=project.slug,
+        gold=scanned(GoldRecord("FOC1-1"), GoldRecord("E92", critical=True)),
+    )
+
+    assert _artifact(result)["critical_recall"] == 0.0
+
+
+def test_a_measurement_that_could_not_be_made_is_not_a_pass(
+    session, project, document
+):
+    """Exiting zero would let a broken enumeration slide through
+    `scripts/gate-run.sh` as a green run."""
+    make_candidate(session, project, document, "FOC1-1")
+
+    empty = evaluate(session, slug=project.slug, gold=scanned())
+    real = evaluate(session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1")))
+
+    assert empty.unmeasurable is True
+    assert exit_code(empty) == 1
+    assert exit_code(real) == 0
+
+
+def test_the_artifact_records_where_the_enumeration_came_from(
+    session, project, document
+):
+    """ADR-0008: metrics recorded every run, including their provenance."""
+    make_candidate(session, project, document, "FOC1-1")
+    result = evaluate(
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1"))
+    )
+
+    written = _artifact(result)
+    assert written["gold_source"] == "gold.csv"
+    assert written["ran_at"] == "2026-08-04T00:00:00+00:00"
+    assert written["project"] == project.slug
