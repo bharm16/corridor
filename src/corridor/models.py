@@ -806,6 +806,42 @@ class Candidate(Base):
     )
 
 
+class ReconfirmationReceipt(Base):
+    """Immutable binding behind one human Reconfirmation audit entry.
+
+    Audit JSON remains the readable history. This sealed copy prevents a
+    malformed or edited JSON pointer from making the already-used successor
+    Candidate writable again or from inventing a different transferred scope.
+    """
+
+    __tablename__ = "reconfirmation_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "jsonb_typeof(before_json) = 'object'",
+            name="ck_reconfirmation_receipt_before_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(after_json) = 'object'",
+            name="ck_reconfirmation_receipt_after_object",
+        ),
+    )
+
+    audit_log_id: Mapped[int] = mapped_column(
+        ForeignKey("audit_log.id", ondelete="CASCADE"), primary_key=True
+    )
+    dependency_id: Mapped[int] = mapped_column(
+        ForeignKey("dependencies.id"), index=True
+    )
+    successor_candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id")
+    )
+    before_json: Mapped[dict] = mapped_column(JSONB)
+    after_json: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Assertion(Base):
     __tablename__ = "assertions"
 
