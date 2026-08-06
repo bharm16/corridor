@@ -55,14 +55,28 @@ Runs store neither tokens nor cost. Create the Revision Comparison pinned to tho
 exact runs, derive the cohort membership deterministically, persist it as a pinned set,
 and give the queue a bounded-cohort lane; today it has none.
 
-**2. Work Decisions end to end.** Settle the semantics first — the Action Due Date is
-optional, completion and cancellation append and never overwrite — then typed immutable
-receipts (recording principal, timestamp, exact before/after values, predecessor decision;
-the generic audit log is explicitly insufficient), queryable current values, owner/action/
-due-date surfaces in the queue detail and Ledger views, and the coordination-report section
-with field-exact provenance: every cell pins the exact Work Decision ids, Assertion, or
-Derivation behind it, replacing the record-level citation the report reuses across
-unrelated fields today.
+**2. Work Decisions end to end.** Semantics settled 2026-08-06: **completion** records the
+project's judgment the action was carried out — still not proof of external fact —
+and **cancellation** withdraws it as no-longer-intended; both append, both leave no current
+Next Action unless a successor is recorded. **Current values** are a projection of the
+latest receipt per field, recomputable from the chain; divergence is a defect caught by a
+consistency check. The **Internal Owner is a named-person string** in Phase 1 — registered-
+principal owners arrive with M9 — while the **recording principal meets Admission's bar**:
+an attributable human, always; no system principal may record a Work Decision. The **typed
+receipt is the record** (recording principal, timestamp, exact before/after values,
+predecessor decision); `audit_log` carries a pointer event naming the receipt id, payload
+never duplicated. **Mutation flows** through the queue detail and Ledger record forms, one
+Work Decision per submit, no bulk mutation in Phase 1. **Exceptions:** `MISSING_OWNER`
+redefined and `MISSING_ACTION` added as Derivations over the absence of a current Work
+Decision; `ACTION_DUE_SOON`/`ACTION_OVERDUE` over the Action Due Date with per-project
+thresholds, categories distinct from the document-date lanes so project-controlled dates
+never masquerade as external commitments. **Field-exact provenance is the whole report's
+end state** — the citation-reuse defect is a correctness defect wherever it occurs; the
+coordination section ships field-exact within the rehearsal, and the legacy-section
+retrofit is an explicit child of the slice-2 umbrella. On top of those semantics: the
+surfaces — owner/action/due-date in queue detail and Ledger views, and the coordination-
+report section pinning the exact Work Decision ids, Assertion, or Derivation behind every
+cell.
 
 **3. Run and measure.** Adjudicate the pinned cohort through the queue; record Work
 Decisions for owner and next action on the rows that warrant them; exercise at least one
