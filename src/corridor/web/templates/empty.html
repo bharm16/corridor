@@ -6,9 +6,44 @@
          place-items:center; height:100vh; color:#111; }
   div { text-align:center; }
   p { color:#666; }
+  nav { display:flex; gap:.5rem; justify-content:center; margin-bottom:2rem; }
+  nav a { color:#333; border:1px solid #ddd; border-radius:4px;
+          padding:.35rem .7rem; text-decoration:none; }
+  nav a[aria-current="page"] { background:#111; color:#fff; border-color:#111; }
+  .review { text-align:left; width:min(42rem, calc(100vw - 2rem)); border:1px solid #ddd;
+            border-radius:6px; padding:1rem; margin:.8rem auto; }
+  .review h2 { margin:0 0 .35rem; font-size:1rem; }
+  .review .status { color:#b54708; font-weight:600; }
+  .review .documents { color:#555; font-size:.9rem; }
+  .review .refusal { background:#f7f7f7; border-radius:4px; padding:.5rem .7rem; }
 </style>
 <div>
-  <h1>Queue empty</h1>
-  <p>No Candidates are actionable for <b>{{ project.name }}</b> in this lane.</p>
-  <p>Historical Candidates remain preserved and never return by fallback.</p>
+  <nav aria-label="Review lanes">
+    <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Candidate Adjudication ({{ candidate_count }})</a>
+    <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Reconfirmation ({{ reconfirmation_count }})</a>
+  </nav>
+  {% if lane == "candidate" and ordinary_reviews %}
+    <h1>Ordinary review</h1>
+    {% for view in ordinary_reviews %}
+      <section class="review">
+        <h2>{{ view.dependency.ref_code if view.dependency else "Dependency unavailable" }}</h2>
+        <div class="status">{{ view.status_label }}</div>
+        <p>{{ view.status_detail }}</p>
+        <p class="documents">
+          {{ view.predecessor.filename if view.predecessor else "unknown predecessor" }}
+          → {{ view.successor.filename if view.successor else "unknown successor" }}
+        </p>
+        <p class="refusal"><b>Reconfirmation unavailable.</b> {{ view.refusal_detail }}</p>
+      </section>
+    {% endfor %}
+  {% else %}
+    <h1>Queue empty</h1>
+    <p>No work is actionable for <b>{{ project.name }}</b> in this lane.</p>
+    {% if lane == "candidate" and reconfirmation_count %}
+      <p>{{ reconfirmation_count }} item(s) remain in Reconfirmation.</p>
+    {% elif lane == "reconfirmation" and candidate_count %}
+      <p>{{ candidate_count }} item(s) remain in Candidate Adjudication.</p>
+    {% endif %}
+    <p>Historical Candidates remain preserved and never return by fallback.</p>
+  {% endif %}
 </div>

@@ -291,6 +291,31 @@ def test_an_unknown_action_is_refused(session):
         )
 
 
+def test_reconfirmation_is_a_distinct_attributable_audit_action(
+    session, document
+):
+    """Moving support is a Ledger mutation, but it is not Admission."""
+
+    dependency = accept_candidate(
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
+    )
+    entry = audit.record(
+        session,
+        principal=REVIEWER_PRINCIPAL,
+        action=audit.RECONFIRM_OPERATIVE_SUPPORT,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={"comparison_id": 41, "finding_id": 7},
+    )
+
+    assert entry.action == "reconfirm_operative_support"
+    assert entry.human_principal == REVIEWER_PRINCIPAL.subject
+    assert entries(session, dependency.id) == [
+        "accept_candidate",
+        "reconfirm_operative_support",
+    ]
+
+
 def test_recording_makes_the_entry_readable_without_the_caller_flushing(
     session, document
 ):

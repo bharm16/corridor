@@ -37,6 +37,7 @@ from corridor.models import (
 )
 from corridor.operative_support import resolve_operative_support
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.project_lock import lock_project
 
 
 @dataclass
@@ -352,7 +353,17 @@ def mark_satisfies(
     Returns the resulting mark.
     """
     principal = require_human_principal(principal)
-    link = session.get(EvidenceLink, link_id)
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None:
+        raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
+    # Reconfirmation copies the current readiness judgment while holding the
+    # project lock. Readiness toggles must take the same lock so their serial
+    # order, rather than timing between two unlocked reads, decides whether
+    # the successor support satisfies the bar.
+    session.flush()
+    lock_project(session, dependency.project_id)
+    session.expire_all()
+    link = session.get(EvidenceLink, link_id, populate_existing=True)
     if link is None or link.dependency_id != dependency_id:
         raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
     if not link.verified:

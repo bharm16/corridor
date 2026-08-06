@@ -13,6 +13,11 @@
            padding:.7rem 1.2rem; border-bottom:1px solid var(--line);
            background:#fff; }
   header b { font-size: 1rem; }
+  header .identity { display:flex; align-items:center; gap:1rem; }
+  nav { display:flex; gap:.4rem; }
+  nav a { color:#333; border:1px solid var(--line); border-radius:4px;
+          padding:.25rem .55rem; text-decoration:none; font-size:.82rem; }
+  nav a[aria-current="page"] { background:#111; color:#fff; border-color:#111; }
   .counts { color: var(--muted); font-variant-numeric: tabular-nums; }
   main { display:grid; grid-template-columns: minmax(340px, 2fr) 3fr; height: calc(100vh - 52px); }
   .pane { overflow:auto; padding:1.2rem; }
@@ -26,6 +31,10 @@
   .banner { padding:.5rem .7rem; border-radius:4px; margin-bottom:1rem; font-size:.9rem; }
   .banner.bad { background:#fef3f2; color:var(--bad); border:1px solid #fecdca; }
   .banner.ok  { background:#ecfdf3; color:var(--ok); border:1px solid #abefc6; }
+  .ordinary-work { padding:.7rem; margin-bottom:1rem; border:1px solid #fedf89;
+                   border-radius:4px; background:#fffaeb; color:#7a2e0e; }
+  .ordinary-work ul { margin:.35rem 0 0; padding-left:1.25rem; }
+  .ordinary-work small { color:#8a4b20; }
   .quote { font-family: ui-monospace, monospace; font-size:.82rem; background:#fff;
            border:1px solid var(--line); border-radius:4px; padding:.5rem; margin:.6rem 0 1rem; }
   /* A worksheet's evidence is its text — there is no page to render. Rows
@@ -63,7 +72,13 @@
 </style>
 
 <header>
-  <b>{{ project.name }}</b>
+  <div class="identity">
+    <b>{{ project.name }}</b>
+    <nav aria-label="Review lanes">
+      <a href="/queue/{{ project.slug }}?lane=candidate" aria-current="page">Candidate Adjudication ({{ candidate_count }})</a>
+      <a href="/queue/{{ project.slug }}?lane=reconfirmation">Reconfirmation ({{ reconfirmation_count }})</a>
+    </nav>
+  </div>
   <span class="counts">
     {{ view.remaining }} pending
     {%- if view.remaining != view.verified_remaining %}
@@ -75,6 +90,20 @@
 <main>
   <section class="pane left">
    <div class="scroll">
+    {% if ordinary_reviews %}
+      <aside class="ordinary-work">
+        <b>Dependency-only work also remains in this lane.</b>
+        <ul>
+          {% for item in ordinary_reviews %}
+            <li>
+              <b>{{ item.dependency.ref_code if item.dependency else "Dependency unavailable" }}</b>
+              · {{ item.status_label }}<br>
+              <small>{{ item.status_detail }}</small>
+            </li>
+          {% endfor %}
+        </ul>
+      </aside>
+    {% endif %}
     {% if view.citations_verified %}
       <div class="banner ok">Citation verified — the quote appears on the cited page.</div>
     {% else %}
