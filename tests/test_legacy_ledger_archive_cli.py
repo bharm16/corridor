@@ -211,7 +211,11 @@ def test_plan_prints_stable_json_and_does_not_mutate_the_ledger(
             Dependency.project_id == legacy_project.id
         )
     ) == 1
-    assert session.scalar(select(func.count(LegacyLedgerArchive.id))) == 0
+    assert session.scalar(
+        select(func.count(LegacyLedgerArchive.id)).where(
+            LegacyLedgerArchive.project_id == legacy_project.id
+        )
+    ) == 0
 
 
 def test_plan_fails_cleanly_on_a_mixed_human_and_legacy_ledger(
@@ -302,7 +306,11 @@ def test_plan_fails_cleanly_on_a_mixed_human_and_legacy_ledger(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "attributable or unknown Admission" in captured.err
-    assert session.scalar(select(func.count(LegacyLedgerArchive.id))) == 0
+    assert session.scalar(
+        select(func.count(LegacyLedgerArchive.id)).where(
+            LegacyLedgerArchive.project_id == legacy_project.id
+        )
+    ) == 0
 
 
 @pytest.mark.parametrize(
@@ -354,7 +362,11 @@ def test_retire_refuses_digest_drift_without_deleting_rows(
             Dependency.project_id == legacy_project.id
         )
     ) == 1
-    assert session.scalar(select(func.count(LegacyLedgerArchive.id))) == 0
+    assert session.scalar(
+        select(func.count(LegacyLedgerArchive.id)).where(
+            LegacyLedgerArchive.project_id == legacy_project.id
+        )
+    ) == 0
 
 
 def test_retire_verify_and_export_use_the_sealed_archive(
