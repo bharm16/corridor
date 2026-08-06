@@ -36,7 +36,7 @@ from corridor.verify import normalize, unverified_fields
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
 from corridor.project_lock import lock_project
-from corridor.supersession import actionable_candidate
+from corridor.supersession_review import ordinary_candidate_for_update
 
 REJECT_REASONS = ("duplicate", "wrong", "irrelevant", "bad-citation")
 _REF_CODE = re.compile(r"DEP-(\d{5})$")
@@ -262,7 +262,7 @@ def _require_candidate_action_scope(
             "a Candidate without declared run lineage is not actionable"
         )
 
-    scoped = actionable_candidate(
+    scoped = ordinary_candidate_for_update(
         session,
         candidate.project_id,
         candidate.id,

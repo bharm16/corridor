@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from datetime import date
 from hashlib import sha256
@@ -16,6 +17,7 @@ from corridor.adjudicate import (
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
+from corridor.ledger import mark_satisfies
 from corridor.models import (
     Assertion,
     AuditLog,
@@ -28,7 +30,12 @@ from corridor.models import (
 )
 from corridor.operative_support import designate_publication_support
 from corridor.principals import HumanPrincipal
+from corridor.revision_comparison import (
+    create_revision_comparison,
+    read_revision_comparison,
+)
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+from corridor.supersession_review import build_reviewer_worklist
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.queue import build_view, next_candidate, pending_counts
 
@@ -177,6 +184,198 @@ def test_queue_shows_the_next_pending_candidate(client, session, project, docume
     assert r.status_code == 200
     assert "AT&amp;T Texas (SWBT)" in r.text
     assert "1149+00" in r.text
+
+
+def test_queue_rejects_an_unknown_review_lane(client, project):
+    r = client.get(f"/queue/{project.slug}?lane=not-a-review-lane")
+
+    assert r.status_code == 422
+
+
+def test_queue_exposes_two_counted_exclusive_review_lanes(client, project):
+    r = client.get(f"/queue/{project.slug}")
+
+    assert r.status_code == 200
+    assert (
+        f'href="/queue/{project.slug}?lane=candidate" aria-current="page"'
+        in r.text
+    )
+    assert f'href="/queue/{project.slug}?lane=reconfirmation"' in r.text
+    assert "Candidate Adjudication (0)" in r.text
+    assert "Reconfirmation (0)" in r.text
+
+
+def test_candidate_review_keeps_lane_navigation_visible(
+    client, session, project, document
+):
+    make_candidate(session, project, document)
+
+    r = client.get(f"/queue/{project.slug}?lane=candidate")
+
+    assert r.status_code == 200
+    assert "Candidate Adjudication (1)" in r.text
+    assert "Reconfirmation (0)" in r.text
+    assert (
+        f'href="/queue/{project.slug}?lane=candidate" '
+        'aria-current="page"' in r.text
+    )
+
+
+def _seed_waiting_supersession_review(session, project, predecessor):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-WAITING-REVISION",
+        dep_type="utility_relocation",
+        title="Telecom — waiting for current revision",
+        status="identified",
+    )
+    successor = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "successor-awaiting-extraction.pdf"),
+        filename="successor-awaiting-extraction.pdf",
+        doc_type="matrix",
+        parse_status="pending",
+        pages=1,
+        registry_id=f"web-successor-{predecessor.id}",
+    )
+    session.add_all([dependency, successor])
+    session.flush()
+
+    publication = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=predecessor.id,
+        page_no=1,
+        quote="FOC1-1 AT&T Texas (SWBT)",
+        verified=True,
+    )
+    session.add(publication)
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        publication.id,
+        principal=TEST_PRINCIPAL,
+    )
+
+    predecessor.registry_id = f"web-predecessor-{predecessor.id}"
+    session.flush()
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id=predecessor.registry_id,
+                successor_registry_id=successor.registry_id,
+                replacement_date=date.today(),
+                source_registry_id=predecessor.registry_id,
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
+    return dependency, successor
+
+
+def test_candidate_lane_surfaces_dependency_work_while_extraction_is_pending(
+    client, session, project, document
+):
+    dependency, successor = _seed_waiting_supersession_review(
+        session, project, document
+    )
+
+    r = client.get(f"/queue/{project.slug}?lane=candidate")
+
+    assert r.status_code == 200
+    assert "Queue empty" not in r.text
+    assert "Candidate Adjudication (1)" in r.text
+    assert "Reconfirmation (0)" in r.text
+    assert dependency.ref_code in r.text
+    assert document.filename in r.text
+    assert successor.filename in r.text
+    assert "Awaiting extraction" in r.text
+    assert "No successor extraction attempt exists" in r.text
+    assert "Reconfirmation unavailable" in r.text
+    assert ">Reconfirm<" not in r.text
+
+
+def test_candidate_lane_explains_a_durable_successor_extraction_failure(
+    client, session, project, document
+):
+    dependency, successor = _seed_waiting_supersession_review(
+        session, project, document
+    )
+    record_extraction_run(
+        session,
+        successor,
+        prompt_version="txdot_ucm_v1",
+        candidate_count=0,
+        page_errors=1,
+        outcome="failed",
+        error_detail="page could not be read",
+    )
+    session.flush()
+
+    r = client.get(f"/queue/{project.slug}?lane=candidate")
+
+    assert r.status_code == 200
+    assert dependency.ref_code in r.text
+    assert "Extraction failed" in r.text
+    assert "completed Active Run is required" in r.text
+    assert "Reconfirmation unavailable" in r.text
+    assert ">Reconfirm<" not in r.text
+
+
+def test_dependency_only_work_stays_visible_beside_an_ordinary_candidate(
+    client, session, project, document
+):
+    dependency, _successor = _seed_waiting_supersession_review(
+        session, project, document
+    )
+    current = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "current-independent-matrix.pdf"),
+        filename="current-independent-matrix.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(current)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=current.id,
+            page_no=1,
+            text="ORD-1 AT&T Texas (SWBT) 1149+00",
+        )
+    )
+    session.flush()
+    make_candidate(session, project, current, uid="ORD-1")
+
+    r = client.get(f"/queue/{project.slug}?lane=candidate")
+
+    assert r.status_code == 200
+    assert "Candidate Adjudication (2)" in r.text
+    assert "ORD-1" in r.text
+    assert dependency.ref_code in r.text
+    assert "Awaiting extraction" in r.text
+
+
+def test_empty_reconfirmation_lane_points_to_remaining_candidate_work(
+    client, session, project, document
+):
+    make_candidate(session, project, document)
+
+    r = client.get(f"/queue/{project.slug}?lane=reconfirmation")
+
+    assert r.status_code == 200
+    assert "Queue empty" in r.text
+    assert "Candidate Adjudication (1)" in r.text
+    assert "Reconfirmation (0)" in r.text
+    assert (
+        f'href="/queue/{project.slug}?lane=reconfirmation" '
+        'aria-current="page"' in r.text
+    )
+    assert "1 item(s) remain in Candidate Adjudication" in r.text
+    assert "AT&amp;T Texas (SWBT)" not in r.text
 
 
 def test_unverified_candidates_sink_but_are_never_hidden(
@@ -361,6 +560,8 @@ def _seed_supersession_chain(
     *,
     predecessor_registry_id="RID-100",
     successor_registry_id="RID-101",
+    predecessor_uid="PRE-ONLY",
+    successor_uid="SUCC-ONLY",
     include_successor_candidate=True,
     successor_failed=False,
     register=True,
@@ -401,12 +602,12 @@ def _seed_supersession_chain(
             DocPage(
                 document_id=predecessor.id,
                 page_no=1,
-                text="PRE-ONLY AT&T Texas (SWBT)",
+                text=f"{predecessor_uid} AT&T Texas (SWBT)",
             ),
             DocPage(
                 document_id=successor.id,
                 page_no=1,
-                text="SUCC-ONLY AT&T Texas (SWBT)",
+                text=f"{successor_uid} AT&T Texas (SWBT)",
             ),
         ]
     )
@@ -416,7 +617,7 @@ def _seed_supersession_chain(
         session,
         project,
         predecessor,
-        uid="PRE-ONLY",
+        uid=predecessor_uid,
         model="gpt-4o-mini",
         auto_active_run=False,
     )
@@ -449,7 +650,7 @@ def _seed_supersession_chain(
             session,
             project,
             successor,
-            uid="SUCC-ONLY",
+            uid=successor_uid,
             model="gpt-4o-mini",
             auto_active_run=False,
         )
@@ -501,6 +702,53 @@ def _seed_supersession_chain(
     }
 
 
+def _seed_reconfirmation_ready_chain(session, project):
+    chain = _seed_supersession_chain(
+        session,
+        project,
+        predecessor_uid="FOC1-1",
+        successor_uid="FOC1-1",
+    )
+    accept_candidate(
+        session,
+        chain["predecessor_candidate"],
+        principal=TEST_PRINCIPAL,
+        historical_document_id=chain["predecessor"].id,
+    )
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    publication = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+    designate_publication_support(
+        session,
+        dependency.id,
+        publication.id,
+        principal=TEST_PRINCIPAL,
+    )
+    mark_satisfies(
+        session,
+        dependency.id,
+        publication.id,
+        principal=TEST_PRINCIPAL,
+    )
+    chain["activate_successor"]()
+    comparison = create_revision_comparison(
+        session,
+        predecessor_extraction_run_id=chain["predecessor_candidate"].extraction_run_id,
+        successor_extraction_run_id=chain["successor_run"].id,
+        matcher_version="revision-correspondence-v2",
+    )
+    [finding] = read_revision_comparison(session, comparison.id).findings
+    [review] = build_reviewer_worklist(session, project.id).reconfirmation
+    chain["dependency"] = dependency
+    chain["comparison"] = comparison
+    chain["finding"] = finding
+    chain["review"] = review
+    return chain
+
+
 def test_queue_selection_changes_immediately_when_successor_is_registered(
     client, session, project
 ):
@@ -549,6 +797,193 @@ def test_queue_selects_successor_when_active_run_is_declared(client, session, pr
     assert r.status_code == 200
     assert "SUCC-ONLY" in r.text
     assert "PRE-ONLY" not in r.text
+
+
+def test_safe_unchanged_successor_moves_out_of_candidate_lane(client, session, project):
+    chain = _seed_reconfirmation_ready_chain(session, project)
+
+    candidate_lane = client.get(f"/queue/{project.slug}?lane=candidate")
+    reconfirm_lane = client.get(f"/queue/{project.slug}?lane=reconfirmation")
+
+    assert candidate_lane.status_code == 200
+    assert "FOC1-1" not in candidate_lane.text
+    assert "Queue empty" in candidate_lane.text
+    assert "Candidate Adjudication (0)" in candidate_lane.text
+    assert "Reconfirmation (1)" in candidate_lane.text
+    assert reconfirm_lane.status_code == 200
+    body = reconfirm_lane.text
+    assert chain["dependency"].ref_code in body
+    assert chain["predecessor"].filename in body
+    assert chain["successor"].filename in body
+    assert "Mechanically verified unchanged" in body
+    assert "<kbd>c</kbd> Reconfirm operative support" in body
+    assert (
+        f'action="/supersession-review/{chain["dependency"].id}/reconfirm"'
+        in body
+    )
+    assert (
+        f'name="predecessor_document_id" value="{chain["predecessor"].id}"'
+        in body
+    )
+    assert (
+        f'name="successor_candidate_id" value="{chain["successor_candidate"].id}"'
+        in body
+    )
+    assert (
+        f'name="comparison_id" value="{chain["comparison"].id}"' in body
+    )
+    assert 'name="finding_id" value="' in body
+    assert 'name="scope_fingerprint" value=' in body
+    assert ">accept<" not in body
+    assert ">reject<" not in body
+
+
+def test_direct_post_cannot_admit_a_reconfirmation_only_candidate(
+    client, session, project
+):
+    chain = _seed_reconfirmation_ready_chain(session, project)
+
+    response = client.post(
+        f"/candidates/{chain['successor_candidate'].id}/accept",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    assert chain["successor_candidate"].state == "pending"
+
+
+def test_reconfirmation_post_moves_support_and_redirects_back_to_that_lane(
+    client, session, project
+):
+    chain = _seed_reconfirmation_ready_chain(session, project)
+    before = client.get(
+        f"/ledger/{project.slug}/{chain['dependency'].id}"
+    )
+    assert "SUPERSEDED_CITATION" in before.text
+
+    response = client.post(
+        f"/supersession-review/{chain['dependency'].id}/reconfirm",
+        data={
+            "slug": project.slug,
+            "predecessor_document_id": str(chain["predecessor"].id),
+            "successor_candidate_id": str(chain["successor_candidate"].id),
+            "comparison_id": str(chain["comparison"].id),
+            "finding_id": str(chain["finding"].id),
+            "scope_fingerprint": json.dumps(
+                [list(item) for item in chain["review"].scope_fingerprint]
+            ),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/queue/{project.slug}?lane=reconfirmation"
+    refreshed = client.get(f"/queue/{project.slug}?lane=reconfirmation")
+    assert "Queue empty" in refreshed.text
+    ordinary_after = client.get(f"/queue/{project.slug}?lane=candidate")
+    assert "Queue empty" in ordinary_after.text
+    assert "Candidate Adjudication (0)" in ordinary_after.text
+    assert "FOC1-1" not in ordinary_after.text
+    detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+    assert "SUPERSEDED_CITATION" not in detail.text
+    assert chain["predecessor"].filename in detail.text
+    assert chain["successor"].filename in detail.text
+    assert "reconfirm_operative_support" in detail.text
+
+
+def test_stale_reconfirmation_form_is_409_and_leaves_review_work_open(
+    client, session, project
+):
+    chain = _seed_reconfirmation_ready_chain(session, project)
+
+    response = client.post(
+        f"/supersession-review/{chain['dependency'].id}/reconfirm",
+        data={
+            "slug": project.slug,
+            "predecessor_document_id": str(chain["predecessor"].id),
+            "successor_candidate_id": str(chain["successor_candidate"].id),
+            "comparison_id": str(chain["comparison"].id),
+            "finding_id": str(chain["finding"].id + 1_000_000),
+            "scope_fingerprint": json.dumps(
+                [list(item) for item in chain["review"].scope_fingerprint]
+            ),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    assert "stale or no longer safe" in response.json()["detail"]
+    review = client.get(f"/queue/{project.slug}?lane=reconfirmation")
+    assert "Reconfirm operative support" in review.text
+    detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+    assert "SUPERSEDED_CITATION" in detail.text
+    assert chain["predecessor"].filename in detail.text
+    assert chain["successor"].filename not in detail.text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("predecessor_document_id", "not-an-id"),
+        ("successor_candidate_id", ""),
+        ("comparison_id", "0"),
+        ("finding_id", "-1"),
+    ],
+)
+def test_malformed_reconfirmation_identity_is_400(
+    client, session, project, field, value
+):
+    chain = _seed_reconfirmation_ready_chain(session, project)
+    data = {
+        "slug": project.slug,
+        "predecessor_document_id": str(chain["predecessor"].id),
+        "successor_candidate_id": str(chain["successor_candidate"].id),
+        "comparison_id": str(chain["comparison"].id),
+        "finding_id": str(chain["finding"].id),
+        "scope_fingerprint": json.dumps(
+            [list(item) for item in chain["review"].scope_fingerprint]
+        ),
+    }
+    data[field] = value
+
+    response = client.post(
+        f"/supersession-review/{chain['dependency'].id}/reconfirm",
+        data=data,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("raw_scope_fingerprint", "expected_detail"),
+    [
+        ("", "scope_fingerprint must be present"),
+        ("not-json", "scope_fingerprint must be valid JSON"),
+    ],
+)
+def test_missing_or_malformed_scope_fingerprint_is_400(
+    client, session, project, raw_scope_fingerprint, expected_detail
+):
+    chain = _seed_reconfirmation_ready_chain(session, project)
+
+    response = client.post(
+        f"/supersession-review/{chain['dependency'].id}/reconfirm",
+        data={
+            "slug": project.slug,
+            "predecessor_document_id": str(chain["predecessor"].id),
+            "successor_candidate_id": str(chain["successor_candidate"].id),
+            "comparison_id": str(chain["comparison"].id),
+            "finding_id": str(chain["finding"].id),
+            "scope_fingerprint": raw_scope_fingerprint,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == expected_detail
+    assert chain["successor_candidate"].state == "pending"
 
 
 def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(

@@ -11,7 +11,9 @@ as unavailable rather than faked.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -53,9 +55,20 @@ from corridor.models import (
     ExternalOrg,
     Project,
 )
-from corridor.web.queue import build_view, next_candidate, pending_counts
+from corridor.web.queue import (
+    build_supersession_review_view,
+    build_view,
+    next_candidate,
+    pending_counts,
+)
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
-from corridor.supersession import actionable_candidate_for_update
+from corridor.supersession_review import (
+    ReconfirmationUnavailable,
+    build_reviewer_worklist,
+    normalize_scope_fingerprint,
+    ordinary_candidate_for_update,
+    reconfirm_operative_support,
+)
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Corridor — adjudication")
@@ -94,24 +107,65 @@ def root():
 def queue(
     request: Request,
     slug: str,
+    lane: Literal["candidate", "reconfirmation"] = "candidate",
     historical_document_id: int | None = None,
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    worklist = build_reviewer_worklist(session, project.id)
+    ordinary_candidate_ids = frozenset(
+        candidate_id
+        for review in worklist.ordinary
+        for candidate_id in review.successor_candidate_ids
+    )
+    allowed_candidate_ids = (
+        None if historical_document_id is not None else ordinary_candidate_ids
+    )
+    ordinary_reviews = [
+        build_supersession_review_view(session, review)
+        for review in worklist.ordinary
+        if not review.successor_candidate_ids
+    ]
+    total, _verified = pending_counts(
+        session,
+        project.id,
+        historical_document_id=historical_document_id,
+        allowed_candidate_ids=allowed_candidate_ids,
+    )
+    lane_context = {
+        "project": project,
+        "remaining": total,
+        "lane": lane,
+        "candidate_count": total + len(ordinary_reviews),
+        "reconfirmation_count": len(worklist.reconfirmation),
+        "ordinary_reviews": ordinary_reviews,
+    }
+    if lane == "reconfirmation" and not worklist.reconfirmation:
+        return TEMPLATES.TemplateResponse(request, "empty.html", lane_context)
+    if lane == "reconfirmation":
+        return TEMPLATES.TemplateResponse(
+            request,
+            "reconfirmation.html",
+            {
+                **lane_context,
+                "view": build_supersession_review_view(
+                    session, worklist.reconfirmation[0]
+                ),
+            },
+        )
+
     candidate = next_candidate(
         session,
         project.id,
         historical_document_id=historical_document_id,
+        allowed_candidate_ids=allowed_candidate_ids,
     )
 
     if candidate is None:
-        total, _verified = pending_counts(
-            session,
-            project.id,
-            historical_document_id=historical_document_id,
-        )
         return TEMPLATES.TemplateResponse(
-            request, "empty.html", {"project": project, "remaining": total}
+            request,
+            "empty.html",
+            lane_context,
         )
 
     return TEMPLATES.TemplateResponse(
@@ -123,8 +177,56 @@ def queue(
                 session,
                 candidate,
                 historical_document_id=historical_document_id,
+                allowed_candidate_ids=allowed_candidate_ids,
             ),
+            **lane_context,
         },
+    )
+
+
+@app.post("/supersession-review/{dependency_id}/reconfirm")
+async def reconfirm_support(
+    request: Request,
+    dependency_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Carry one exact reviewer decision into the fail-closed domain seam."""
+
+    form = await request.form()
+    slug = form.get("slug")
+    if not isinstance(slug, str) or not slug.strip():
+        raise HTTPException(400, "slug must be a non-empty string")
+    slug = slug.strip()
+    predecessor_document_id = _required_positive_form_id(
+        form, "predecessor_document_id"
+    )
+    successor_candidate_id = _required_positive_form_id(
+        form, "successor_candidate_id"
+    )
+    comparison_id = _required_positive_form_id(form, "comparison_id")
+    finding_id = _required_positive_form_id(form, "finding_id")
+    scope_fingerprint = _required_scope_fingerprint(form)
+
+    project = _project(session, slug)
+    _project_dependency(session, project, dependency_id)
+    try:
+        reconfirm_operative_support(
+            session,
+            project_id=project.id,
+            dependency_id=dependency_id,
+            predecessor_document_id=predecessor_document_id,
+            successor_candidate_id=successor_candidate_id,
+            comparison_id=comparison_id,
+            finding_id=finding_id,
+            scope_fingerprint=scope_fingerprint,
+            principal=principal,
+        )
+    except ReconfirmationUnavailable as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/queue/{slug}?lane=reconfirmation", status_code=303
     )
 
 
@@ -437,7 +539,7 @@ def _project_pending_candidate(
         # Two tabs, or a double submit. Adjudicating twice would create a
         # second Dependency from one source row.
         raise HTTPException(409, f"already {candidate.state}")
-    scoped = actionable_candidate_for_update(
+    scoped = ordinary_candidate_for_update(
         session,
         project.id,
         candidate_id,
@@ -458,6 +560,31 @@ def _parse_historical_document_id(value) -> int | None:
     if document_id <= 0:
         raise HTTPException(422, "historical_document_id must be positive")
     return document_id
+
+
+def _required_positive_form_id(form, name: str) -> int:
+    value = form.get(name)
+    try:
+        identifier = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{name} must be a positive integer") from exc
+    if identifier <= 0:
+        raise HTTPException(400, f"{name} must be a positive integer")
+    return identifier
+
+
+def _required_scope_fingerprint(form):
+    raw = form.get("scope_fingerprint")
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(400, "scope_fingerprint must be present")
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "scope_fingerprint must be valid JSON") from exc
+    try:
+        return normalize_scope_fingerprint(decoded)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _queue_location(slug: str, historical_document_id: int | None) -> str:

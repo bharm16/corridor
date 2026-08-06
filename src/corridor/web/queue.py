@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.merge import rank_matches
-from corridor.models import Candidate, DocPage, Document
+from corridor.models import Candidate, Dependency, DocPage, Document
 from corridor.storage import stored_pdf
 from corridor.supersession import actionable_candidate_query
 
@@ -72,16 +72,92 @@ class CandidateView:
     historical_document_id: int | None = None
 
 
+@dataclass(frozen=True)
+class SupersessionReviewView:
+    """Display data for ordinary work that has no actionable Candidate."""
+
+    review: object
+    dependency: Dependency | None
+    predecessor: Document | None
+    successor: Document | None
+    successor_candidate: Candidate | None
+    successor_candidate_id: int | None
+    status_label: str
+    status_detail: str
+    refusal_detail: str
+
+
+def build_supersession_review_view(
+    session: Session, review: object
+) -> SupersessionReviewView:
+    """Resolve names around a live worklist item without persisting UI state."""
+
+    status = str(getattr(review, "status", "blocked"))
+    details = {
+        "awaiting_extraction": "No successor extraction attempt exists.",
+        "extraction_failed": (
+            "The successor extraction failed; a completed Active Run is required "
+            "before this Dependency can be reviewed."
+        ),
+        "awaiting_active_run": (
+            "A successor extraction completed, but no Active Run is declared."
+        ),
+        "awaiting_comparison": (
+            "The successor has an Active Run, but its Revision Comparison is not ready."
+        ),
+        "blocked": "This Dependency cannot be routed safely from the current lineage.",
+    }
+    reason = getattr(review, "reason", None)
+    successor_candidate_ids = tuple(
+        getattr(review, "successor_candidate_ids", ())
+    )
+    successor_candidate_id = (
+        successor_candidate_ids[0]
+        if len(successor_candidate_ids) == 1
+        else None
+    )
+    refusal_detail = (
+        str(reason).replace("_", " ").capitalize()
+        if reason
+        else "The successor is not a mechanically verified unchanged match."
+    )
+    return SupersessionReviewView(
+        review=review,
+        dependency=session.get(Dependency, getattr(review, "dependency_id", None)),
+        predecessor=session.get(
+            Document, getattr(review, "predecessor_document_id", None)
+        ),
+        successor=session.get(
+            Document, getattr(review, "successor_document_id", None)
+        ),
+        successor_candidate=(
+            session.get(Candidate, successor_candidate_id)
+            if successor_candidate_id is not None
+            else None
+        ),
+        successor_candidate_id=successor_candidate_id,
+        status_label=status.replace("_", " ").capitalize(),
+        status_detail=details.get(
+            status,
+            "This revision needs ordinary Candidate Adjudication before support can move.",
+        ),
+        refusal_detail=refusal_detail,
+    )
+
+
 def pending_counts(
     session: Session,
     project_id: int,
     *,
     historical_document_id: int | None = None,
+    allowed_candidate_ids: frozenset[int] | None = None,
 ) -> tuple[int, int]:
     """(total pending, pending with verified citations)."""
     scoped = actionable_candidate_query(
         project_id, historical_document_id=historical_document_id
     )
+    if allowed_candidate_ids is not None:
+        scoped = scoped.where(Candidate.id.in_(allowed_candidate_ids))
     verified = session.scalar(
         scoped.with_only_columns(func.count())
         .where(Candidate.citations_verified.is_(True))
@@ -96,11 +172,15 @@ def next_candidate(
     project_id: int,
     *,
     historical_document_id: int | None = None,
+    allowed_candidate_ids: frozenset[int] | None = None,
 ) -> Candidate | None:
+    query = actionable_candidate_query(
+        project_id, historical_document_id=historical_document_id
+    )
+    if allowed_candidate_ids is not None:
+        query = query.where(Candidate.id.in_(allowed_candidate_ids))
     return session.scalars(
-        actionable_candidate_query(
-            project_id, historical_document_id=historical_document_id
-        )
+        query
         # Unverified citations sink. Never filtered out — a candidate whose
         # quote could not be found is a signal, not noise.
         .order_by(Candidate.citations_verified.desc(), Candidate.id)
@@ -113,6 +193,7 @@ def build_view(
     candidate: Candidate,
     *,
     historical_document_id: int | None = None,
+    allowed_candidate_ids: frozenset[int] | None = None,
 ) -> CandidateView:
     payload = candidate.payload_json or {}
     citation = (payload.get("citations") or [{}])[0]
@@ -131,6 +212,7 @@ def build_view(
         session,
         candidate.project_id,
         historical_document_id=historical_document_id,
+        allowed_candidate_ids=allowed_candidate_ids,
     )
 
     return CandidateView(
