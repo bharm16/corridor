@@ -1,30 +1,22 @@
-"""Recall and precision against an independent enumeration.
+"""Extraction Measurement over exact run receipts and declared references.
 
-The point of an eval is to compare the pipeline against something that did
-not come out of the pipeline. Scoring extracted candidates against the
-ledger they were accepted into measures the extractor against itself and
-will happily report 100%.
+Candidate membership comes only from explicit completed Extraction Run ids;
+prompt, document, Active Run, recency, and timestamps cannot select the
+population. A reference CSV may be independently authored, or it may be a
+machine reference whose author-time scope, bytes, method, provenance, shared
+blind spots, and stable document hashes travel in a required manifest.
 
-So a gold set is a CSV somebody or something else produced, listing the
-records a document should yield. `gold_from_page_text` builds one by
-scanning the page text stream for utility-ID patterns — a different code
-path from `find_tables()`, which is what makes it evidence rather than a
-restatement.
-
-What this cannot measure is what the source document itself leaves out. A
-matrix is not ground truth for its own omissions, so every number here is
-recall *against that enumeration* and is reported that way.
-
-A gold set may also label which of its rows are **critical**, which is the
-one number M7's gate turns on (≥95%). It is scored from those labels alone
-— the extractor classifies nothing — so it is independent of the
-Ledger-side criticality work. `gold_from_page_text` cannot know, and says
-so rather than reporting zero.
+The machine path replaced founder row labelling. It is a semi-independent
+ceiling, not semantic ground truth: a shared parser can miss the same region
+as the extractor, and the source matrix cannot reveal its own omissions.
+Every score is therefore reported against the named enumeration and never as
+unqualified recall or Ledger correctness.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 import sys
@@ -33,15 +25,30 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.db import Session as SessionFactory
-from corridor.extraction_runs import completed_document_ids, completion_predicate
+from corridor.extraction_runs import (
+    completed_document_ids,
+    completion_predicate,
+    is_completed_run,
+)
 from corridor.models import Candidate, Document, ExtractionRun, Project
 from corridor.verify import unverified_fields
 
 REQUIRED_COLUMNS = ("source_ref",)
+MACHINE_REFERENCE_SCOPE_SCHEMA = "corridor.machine-reference-scope.v2"
+MACHINE_REFERENCE_METHOD = "pymupdf-table-grid"
+MACHINE_REFERENCE_METHOD_VERSION = "1"
+MACHINE_REFERENCE_LIMITATIONS = (
+    "Semi-independent ceiling: the machine reference and extractor share "
+    "PyMuPDF table detection, so a region omitted by that library is invisible "
+    "to both.",
+)
+SPENT_MEASUREMENT_ARTIFACTS = {
+    "wsdot-9540": "out/eval-wsdot-9540-matrix_tiered_v3.json",
+}
 
 # The optional label M7's gate is scored on. Spelled out rather than
 # "anything non-empty is true", so a typo raises instead of silently
@@ -189,6 +196,8 @@ class EvalResult:
     # printed `precision 36.0%` and read as an extractor that invented two
     # thirds of a document.
     unrecognized: list[str] = field(default_factory=list)
+    reference_label: str = "reference"
+    reference_limitations: list[str] = field(default_factory=list)
 
     @property
     def recognized_total(self) -> int:
@@ -421,25 +430,14 @@ def evaluate(
     kind: str = "dependency",
     prompt_version: str | None = None,
     document_ids: set[int] | None = None,
+    extraction_run_ids: set[int] | None = None,
 ) -> EvalResult:
     """Score one extractor's output.
 
-    `prompt_version` scopes the run to a single extraction path. Two paths'
-    Candidates coexist on a project while a migration is undecided, and
-    pooled they are meaningless: every row appears twice, so recall reads
-    100% and precision reads 50% no matter how either extractor did.
-
-    `document_ids` is the population being scored. Without it the score
-    compares one enumeration against every Candidate in the project: a CSV
-    covering one matrix revision, scored against a project holding five,
-    puts every row of the other four in `spurious`.
-    `scripts/gate-run.sh` offers exactly that invocation as the stricter
-    alternative. `main` computed the document set and never passed it.
-
-    It is the caller's statement of the population, not a fact derived
-    from the gold set — a CSV cannot say which documents it enumerates,
-    because the format carries no document and `page` restarts at 1 in
-    every one. `measure` is where that gets decided.
+    When ``extraction_run_ids`` is present, it is the only lineage selector;
+    prompt and document filters are ignored. The lower-level legacy path keeps
+    those filters for direct scoring tests, but the public ``measure`` seam
+    requires exact completed run ids and validates its assertions first.
     """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -448,10 +446,15 @@ def evaluate(
     query = select(Candidate).where(
         Candidate.project_id == project.id, Candidate.kind == kind
     )
-    if prompt_version:
-        query = query.where(Candidate.prompt_version == prompt_version)
-    if document_ids is not None:
-        query = query.where(Candidate.source_document_id.in_(document_ids or {0}))
+    if extraction_run_ids is not None:
+        query = query.where(
+            Candidate.extraction_run_id.in_(extraction_run_ids or {0})
+        )
+    else:
+        if prompt_version:
+            query = query.where(Candidate.prompt_version == prompt_version)
+        if document_ids is not None:
+            query = query.where(Candidate.source_document_id.in_(document_ids or {0}))
     candidates = session.scalars(query).all()
 
     extracted = Counter()
@@ -471,7 +474,15 @@ def evaluate(
         if unverified_fields(candidate.payload_json.get("fields") or {}, text):
             field_failures += 1
 
-    if not versions and prompt_version is not None:
+    if not versions and extraction_run_ids is not None:
+        selected_runs = session.scalars(
+            select(ExtractionRun).where(
+                ExtractionRun.id.in_(extraction_run_ids or {0})
+            )
+        ).all()
+        versions.update({run.prompt_version: 0 for run in selected_runs})
+        models.update({(run.model or "deterministic"): 0 for run in selected_runs})
+    elif not versions and prompt_version is not None:
         versions.update(
             {
                 version: 0
@@ -569,15 +580,16 @@ def render(result: EvalResult) -> str:
     if result.unmeasurable:
         return "\n".join(
             [
-                f"{result.project} — NOT MEASURED: the gold set is empty",
+                f"{result.project} — NOT MEASURED: the reference is empty",
                 f"  {result.extracted_total} rows were extracted, and none of "
                 "them could be checked.",
                 "  This document's rows could not be enumerated from its page "
                 "text by any known",
                 "  layout, so there is nothing to score against. It is not a "
                 "recall of zero.",
-                "  Supply a hand-authored enumeration: "
-                f"make eval ARGS=\"{result.project} gold.csv\"",
+                "  Supply a reference enumeration and exact run id(s): "
+                f"make eval ARGS=\"{result.project} reference.csv "
+                "--extraction-run=<id>\"",
             ]
         )
 
@@ -593,7 +605,7 @@ def render(result: EvalResult) -> str:
             f"precision {result.precision:.1%}"
         ]
     lines.append(
-        f"  gold {result.gold_total}   extracted {result.extracted_total}   "
+        f"  reference {result.gold_total}   extracted {result.extracted_total}   "
         f"matched {result.matched}"
     )
     lines.extend(_coverage_lines(result))
@@ -621,6 +633,11 @@ def render(result: EvalResult) -> str:
     models = ", ".join(f"{k}×{v}" for k, v in sorted(result.models.items()))
     lines.append(f"  prompt_version: {versions or '—'}")
     lines.append(f"  model: {models or '—'}")
+    if result.reference_label != "reference":
+        lines.append(f"  reference: {result.reference_label}")
+    lines.extend(
+        f"  limitation: {limitation}" for limitation in result.reference_limitations
+    )
     lines.append(f"  note: {result.coverage_note}")
     return "\n".join(lines)
 
@@ -680,13 +697,13 @@ def _critical_lines(result: EvalResult) -> list[str]:
     """
     if not result.critical_labeled:
         return [
-            "  critical recall  NOT MEASURED: this gold set does not label "
+            "  critical recall  NOT MEASURED: this reference does not label "
             "criticality",
             "    Add a `critical` column to score the M7 gate's ≥95% bar.",
         ]
     if result.critical_gold_total == 0:
         return [
-            "  critical recall  NOT MEASURED: the gold set labels no row "
+            "  critical recall  NOT MEASURED: the reference labels no row "
             "critical",
             "    It is not a recall of zero — there was nothing to find.",
         ]
@@ -707,7 +724,14 @@ def _critical_lines(result: EvalResult) -> list[str]:
     return lines
 
 
-def artifact(result: EvalResult, *, gold_source: str, ran_at: datetime) -> dict:
+def artifact(
+    result: EvalResult,
+    *,
+    reference_description: str,
+    ran_at: datetime,
+    extraction_runs: tuple[ExtractionRunScope, ...] = (),
+    reference_scope: ReferenceScope | None = None,
+) -> dict:
     """The machine-readable record of one measurement.
 
     The only thing a gate script consumes, and it lived inside `main`
@@ -724,12 +748,25 @@ def artifact(result: EvalResult, *, gold_source: str, ran_at: datetime) -> dict:
     `EvalResult` already encode that; stating it a second time here is
     how the JSON and the rendered text drift.
     """
-    return {
+    written = {
         "project": result.project,
-        "gold_source": gold_source,
+        "reference_description": reference_description,
         "ran_at": ran_at.isoformat(),
+        "extraction_run_ids": [run.id for run in extraction_runs],
+        "extraction_runs": [run.as_dict() for run in extraction_runs],
+        "reference_scope": (
+            reference_scope.as_dict()
+            if reference_scope is not None
+            else {
+                "kind": "unspecified_reference",
+                "source": reference_description,
+                "sha256": None,
+                "documents": [],
+                "limitations": [result.coverage_note],
+            }
+        ),
         "recall": result.recall,
-        "gold_total": result.gold_total,
+        "reference_total": result.gold_total,
         "extracted_total": result.extracted_total,
         "matched": result.matched,
         "missing": result.missing,
@@ -751,7 +788,7 @@ def artifact(result: EvalResult, *, gold_source: str, ran_at: datetime) -> dict:
         "critical_recall": (
             None if result.critical_unmeasurable else result.critical_recall
         ),
-        "critical_gold_total": result.critical_gold_total,
+        "critical_reference_total": result.critical_gold_total,
         "critical_matched": result.critical_matched,
         "critical_missing": result.critical_missing,
         "critical_labeled": result.critical_labeled,
@@ -759,6 +796,21 @@ def artifact(result: EvalResult, *, gold_source: str, ran_at: datetime) -> dict:
         "models": result.models,
         "coverage_note": result.coverage_note,
     }
+    identity_material = dict(written)
+    identity_material.pop("ran_at")
+    identity_material.pop("reference_description")
+    identity_reference = dict(identity_material["reference_scope"])
+    identity_reference.pop("source")
+    identity_reference.pop("manifest_source", None)
+    identity_material["reference_scope"] = identity_reference
+    written["artifact_identity"] = hashlib.sha256(
+        json.dumps(
+            identity_material,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    return written
 
 
 def exit_code(result: EvalResult) -> int:
@@ -774,22 +826,256 @@ class NothingToMeasure(Exception):
     """There is no measurement to take, so a score would be a fiction."""
 
 
+class ArtifactCollision(Exception):
+    """An immutable measurement artifact already occupies this identity."""
+
+
+def assert_measurement_not_spent(slug: str) -> None:
+    """Protect one-shot holdouts from accidental regeneration or rescoring."""
+    historical = SPENT_MEASUREMENT_ARTIFACTS.get(slug)
+    if historical is not None:
+        raise NothingToMeasure(
+            f"{slug} is a spent holdout; preserve its historical measurement "
+            f"at {historical} and do not regenerate or rescore it"
+        )
+
+
+@dataclass(frozen=True)
+class ExtractionRunScope:
+    """Exact immutable receipt metadata for one measured population."""
+
+    id: int
+    document_id: int
+    document_sha256: str
+    prompt_version: str
+    model: str | None
+    schema_version: str | None
+    outcome: str
+    candidate_count: int
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "document": {
+                "id": self.document_id,
+                "sha256": self.document_sha256,
+            },
+            "prompt_version": self.prompt_version,
+            "model": self.model,
+            "schema_version": self.schema_version,
+            "outcome": self.outcome,
+            "candidate_count": self.candidate_count,
+        }
+
+
+@dataclass(frozen=True)
+class DocumentScope:
+    """One document identity within a measurement reference scope."""
+
+    id: int
+    sha256: str
+
+    def as_dict(self) -> dict:
+        return {"id": self.id, "sha256": self.sha256}
+
+
+@dataclass(frozen=True)
+class ReferenceScope:
+    """The independent or semi-independent instrument and its limits."""
+
+    kind: str
+    source: str
+    sha256: str
+    documents: tuple[DocumentScope, ...]
+    limitations: tuple[str, ...]
+    manifest_source: str | None = None
+    method: str | None = None
+    method_version: str | None = None
+    manifest_provenance: dict[str, str] | None = None
+
+    @property
+    def document_ids(self) -> tuple[int, ...]:
+        return tuple(document.id for document in self.documents)
+
+    @property
+    def document_sha256s(self) -> tuple[str, ...]:
+        return tuple(document.sha256 for document in self.documents)
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "source": self.source,
+            "sha256": self.sha256,
+            "manifest_source": self.manifest_source,
+            "method": self.method,
+            "method_version": self.method_version,
+            "manifest_provenance": self.manifest_provenance,
+            "documents": [document.as_dict() for document in self.documents],
+            "document_sha256s": list(self.document_sha256s),
+            "limitations": list(self.limitations),
+        }
+
+
+def verified_machine_reference_scope(
+    manifest_path: str | Path,
+    *,
+    reference_path: str | Path,
+    reference_bytes: bytes,
+    project_slug: str,
+    documents: tuple[Document, ...],
+) -> ReferenceScope:
+    """Load and verify an author-time machine-reference scope manifest."""
+    path = Path(manifest_path)
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise NothingToMeasure(
+            f"machine-reference scope manifest {path} is unreadable: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise NothingToMeasure(
+            f"machine-reference scope manifest {path} must be a JSON object"
+        )
+    if payload.get("schema_version") != MACHINE_REFERENCE_SCOPE_SCHEMA:
+        raise NothingToMeasure(
+            "machine-reference scope manifest has unsupported schema_version"
+        )
+    if payload.get("project") != project_slug:
+        raise NothingToMeasure(
+            "machine-reference scope manifest project does not match "
+            f"{project_slug!r}"
+        )
+    if (
+        payload.get("method") != MACHINE_REFERENCE_METHOD
+        or payload.get("method_version") != MACHINE_REFERENCE_METHOD_VERSION
+    ):
+        raise NothingToMeasure(
+            "machine-reference scope manifest has unsupported method/version"
+        )
+
+    actual_reference_sha256 = hashlib.sha256(reference_bytes).hexdigest()
+    if payload.get("reference_sha256") != actual_reference_sha256:
+        raise NothingToMeasure(
+            "machine-reference scope manifest reference SHA-256 does not match "
+            "the supplied reference bytes"
+        )
+
+    raw_documents = payload.get("documents")
+    if not isinstance(raw_documents, list) or not raw_documents:
+        raise NothingToMeasure(
+            "machine-reference scope manifest must name at least one document"
+        )
+    try:
+        manifest_hashes = tuple(
+            sorted(
+                entry["sha256"]
+                for entry in raw_documents
+                if isinstance(entry, dict)
+            )
+        )
+        manifest_filenames = tuple(
+            entry.get("filename")
+            for entry in raw_documents
+            if isinstance(entry, dict)
+        )
+    except (KeyError, TypeError) as exc:
+        raise NothingToMeasure(
+            "machine-reference scope manifest has malformed document hashes"
+        ) from exc
+    valid_documents = (
+        len(manifest_hashes) == len(raw_documents)
+        and len(set(manifest_hashes)) == len(manifest_hashes)
+        and all(
+            isinstance(document_sha256, str)
+            and re.fullmatch(r"[0-9a-f]{64}", document_sha256) is not None
+            for document_sha256 in manifest_hashes
+        )
+        and all(
+            filename is None or (isinstance(filename, str) and bool(filename))
+            for filename in manifest_filenames
+        )
+    )
+    if not valid_documents:
+        raise NothingToMeasure(
+            "machine-reference scope manifest has malformed or duplicate "
+            "document hashes"
+        )
+    runtime_documents = tuple(sorted(documents, key=lambda document: document.id))
+    selected_hashes = tuple(sorted(document.sha256 for document in runtime_documents))
+    if manifest_hashes != selected_hashes:
+        raise NothingToMeasure(
+            "machine-reference scope mismatch: the selected Extraction Runs "
+            "do not exactly match the manifest document hash set; "
+            f"selected {selected_hashes}, manifest {manifest_hashes}"
+        )
+
+    raw_limitations = payload.get("limitations")
+    limitations = (
+        tuple(raw_limitations) if isinstance(raw_limitations, list) else ()
+    )
+    if limitations != MACHINE_REFERENCE_LIMITATIONS:
+        raise NothingToMeasure(
+            "machine-reference scope manifest limitations are missing or changed"
+        )
+    raw_provenance = payload.get("manifest_provenance")
+    if not isinstance(raw_provenance, dict):
+        raise NothingToMeasure(
+            "machine-reference scope manifest provenance is missing or malformed"
+        )
+    provenance_kind = raw_provenance.get("kind")
+    if provenance_kind == "author_time":
+        valid_provenance = set(raw_provenance) == {"kind"}
+    elif provenance_kind == "backfill":
+        valid_provenance = (
+            set(raw_provenance) == {"kind", "reference_commit", "note"}
+            and isinstance(raw_provenance.get("reference_commit"), str)
+            and re.fullmatch(
+                r"[0-9a-f]{40}", raw_provenance["reference_commit"]
+            )
+            is not None
+            and isinstance(raw_provenance.get("note"), str)
+            and bool(raw_provenance["note"].strip())
+        )
+    else:
+        valid_provenance = False
+    if not valid_provenance:
+        raise NothingToMeasure(
+            "machine-reference scope manifest provenance is unsupported"
+        )
+    manifest_provenance = {
+        str(key): str(value) for key, value in sorted(raw_provenance.items())
+    }
+    return ReferenceScope(
+        kind="machine_reference",
+        source=str(reference_path),
+        sha256=actual_reference_sha256,
+        documents=tuple(
+            DocumentScope(id=document.id, sha256=document.sha256)
+            for document in runtime_documents
+        ),
+        limitations=limitations,
+        manifest_source=str(path),
+        method=MACHINE_REFERENCE_METHOD,
+        method_version=MACHINE_REFERENCE_METHOD_VERSION,
+        manifest_provenance=manifest_provenance,
+    )
+
+
 @dataclass(frozen=True)
 class Measurement:
     """One scoring run, with the provenance of the enumeration it scored.
 
-    `gold_source` is what the recorded artifact publishes as the origin of
-    the number, so it states every scope that was applied and not only
-    where the rows came from.
-
-    `skipped` is the ingested matrices this extraction never read. They are
-    excluded from the population rather than counted as misses, which is a
-    fact about the measurement and therefore belongs to it.
+    `reference_description` is the human-readable description of the
+    enumeration used; `reference_scope` is the structured, hashed authority.
+    `skipped` names project matrices outside the caller's exact run population.
     """
 
     result: EvalResult
-    gold_source: str
+    reference_description: str
     skipped: frozenset[int] = frozenset()
+    extraction_run_ids: tuple[int, ...] = ()
+    extraction_runs: tuple[ExtractionRunScope, ...] = ()
+    reference_scope: ReferenceScope | None = None
 
 
 def measure(
@@ -797,45 +1083,36 @@ def measure(
     slug: str,
     *,
     gold_path: str | Path | None = None,
+    reference_manifest_path: str | Path | None = None,
     prompt_version: str | None = None,
     document_ids: set[int] | None = None,
+    extraction_run_ids: set[int] | None = None,
 ) -> Measurement:
-    """Score one project's matrix extraction against an enumeration.
+    """Score exactly the completed Extraction Runs the caller names.
 
-    This is the whole measurement. It lived as an eleven-step sequence
-    inside `main`, where nothing drove it — every collaborator it calls has
-    tests, and the wiring between them had none. ADR-0008 makes that the
-    highest-consequence gap in this module: a holdout is spent once, and a
-    holdout scored by a broken measurement is a holdout wasted.
+    Run ids are the sole population selector. Prompt and document arguments
+    survive only as assertions for command compatibility; Active Run state,
+    timestamps and recency are deliberately absent. Candidate membership is
+    checked against each receipt count before scoring by run lineage.
 
-    The refusal is the reason it is worth naming. `document_ids` scopes the
-    scoring to the documents this extractor actually read, on *both* gold
-    paths — so when nothing was extracted, the population is empty and
-    every gold row reads as a miss. The page-text path checked for that;
-    the CSV path, which is the invocation `scripts/gate-run.sh` prints, did
-    not. A slug with nothing extracted at the given prompt version scored
-    `recall 0.0%` with `unmeasurable` false and exited 0: a green gate on a
-    spent holdout. The check now sits above the branch, where it covers
-    both.
-
-    Without `gold_path` the enumeration is built from the stored page text
-    of the project's matrices, which is independent of the table parser
-    under test.
-
-    `document_ids` narrows the population, and exists because a CSV cannot
-    narrow it for itself. `author_machine_gold` reads *every* matrix in
-    the project — deliberately, and its own comment says why — so a
-    machine-authored CSV is a whole-project enumeration and the full
-    extracted set is the right population for it. A hand-authored CSV
-    covering one revision is not, and nothing in the file distinguishes
-    the two: `source_ref,page,critical` names no document, and `page`
-    restarts at 1 in each. So the caller says, and `gold_source` records
-    the population either way — a whole-document precision must not be
-    readable off a run whose scope the reader cannot see.
+    Without a CSV, the reference is independently enumerated from the stored
+    page text of the selected runs' documents. Supplying a machine-reference
+    manifest verifies the author-time CSV hash, method, limitations and exact
+    stable document hash set. A filename alone never grants machine-reference
+    provenance.
     """
+    assert_measurement_not_spent(slug)
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
         raise NothingToMeasure(f"no project {slug!r}")
+    if not extraction_run_ids:
+        raise NothingToMeasure(
+            f"{slug}: one or more explicit Extraction Run ids are required"
+        )
+    if reference_manifest_path is not None and gold_path is None:
+        raise NothingToMeasure(
+            "a machine-reference scope manifest requires a reference CSV"
+        )
 
     matrices = set(
         session.scalars(
@@ -845,20 +1122,110 @@ def measure(
             )
         ).all()
     )
-    # The population being scored, on both paths. It was computed only for
-    # the page-text gold and never reached `evaluate`, which filtered on
-    # project and kind alone.
-    #
-    # Intersected with the matrices, because this measures matrix
-    # extraction. `extract_agreement` also emits `kind="dependency"`
-    # Candidates; they carry no `utility_id` so they never scored, but they
-    # were still counted into the prompt-version and model stamp and into
-    # `field_failures`, whose printed denominator is the matrix row count —
-    # a provenance stamp describing a different population than the number
-    # beside it.
-    extracted_docs = (
-        extracted_documents(session, project.id, prompt_version=prompt_version)
-        & matrices
+    selected_runs = session.scalars(
+        select(ExtractionRun)
+        .where(ExtractionRun.id.in_(extraction_run_ids))
+        .order_by(ExtractionRun.id)
+    ).all()
+    missing_run_ids = sorted(set(extraction_run_ids) - {run.id for run in selected_runs})
+    if missing_run_ids:
+        if len(missing_run_ids) == 1:
+            raise NothingToMeasure(
+                f"Extraction Run {missing_run_ids[0]} does not exist"
+            )
+        raise NothingToMeasure(
+            "Extraction Runs "
+            + ", ".join(str(run_id) for run_id in missing_run_ids)
+            + " do not exist"
+        )
+    incomplete = [run.id for run in selected_runs if not is_completed_run(run)]
+    if incomplete:
+        raise NothingToMeasure(
+            "Extraction Run(s) "
+            + ", ".join(str(run_id) for run_id in incomplete)
+            + " must be completed with zero page failures"
+        )
+    documents_by_id = {
+        document.id: document
+        for document in session.scalars(
+            select(Document).where(
+                Document.id.in_({run.document_id for run in selected_runs})
+            )
+        ).all()
+    }
+    wrong_project = [
+        run.id
+        for run in selected_runs
+        if documents_by_id[run.document_id].project_id != project.id
+    ]
+    if wrong_project:
+        raise NothingToMeasure(
+            "Extraction Run(s) "
+            + ", ".join(str(run_id) for run_id in wrong_project)
+            + f" does not belong to project {slug!r}"
+        )
+    non_matrix = [
+        run.id
+        for run in selected_runs
+        if documents_by_id[run.document_id].doc_type != "matrix"
+    ]
+    if non_matrix:
+        raise NothingToMeasure(
+            "Extraction Run(s) "
+            + ", ".join(str(run_id) for run_id in non_matrix)
+            + " must belong to a matrix document"
+        )
+    repeated_documents = sorted(
+        document_id
+        for document_id, count in Counter(
+            run.document_id for run in selected_runs
+        ).items()
+        if count > 1
+    )
+    if repeated_documents:
+        raise NothingToMeasure(
+            "Extraction Measurement accepts at most one run per document; "
+            "repeated document id(s): "
+            + ", ".join(str(document_id) for document_id in repeated_documents)
+        )
+    linked_counts = dict(
+        session.execute(
+            select(Candidate.extraction_run_id, func.count(Candidate.id))
+            .where(Candidate.extraction_run_id.in_(extraction_run_ids))
+            .group_by(Candidate.extraction_run_id)
+        ).all()
+    )
+    for run in selected_runs:
+        linked_count = linked_counts.get(run.id, 0)
+        if linked_count != run.candidate_count:
+            raise NothingToMeasure(
+                f"Extraction Run {run.id} records {run.candidate_count} "
+                f"Candidates but owns {linked_count}"
+            )
+    if prompt_version is not None:
+        mismatched_prompts = [
+            run.id for run in selected_runs if run.prompt_version != prompt_version
+        ]
+        if mismatched_prompts:
+            raise NothingToMeasure(
+                f"prompt assertion {prompt_version!r} does not match Extraction "
+                "Run(s) "
+                + ", ".join(str(run_id) for run_id in mismatched_prompts)
+            )
+    selected_run_ids = tuple(run.id for run in selected_runs)
+    extracted_docs = {run.document_id for run in selected_runs}
+    run_scope = tuple(
+        ExtractionRunScope(
+            id=run.id,
+            document_id=run.document_id,
+            document_sha256=documents_by_id[run.document_id].sha256,
+            prompt_version=run.prompt_version,
+            model=run.model,
+            schema_version=run.schema_version,
+            outcome=run.outcome,
+            candidate_count=run.candidate_count,
+        )
+        for run in selected_runs
     )
     if not extracted_docs:
         raise NothingToMeasure(
@@ -869,97 +1236,236 @@ def measure(
     skipped = matrices - extracted_docs
     named = None
     if document_ids is not None:
-        named = extracted_docs & set(document_ids)
-        if not named:
+        named = set(document_ids)
+        if named != extracted_docs:
             raise NothingToMeasure(
-                f"{slug}: none of the named documents completed extraction"
-                + (f" at {prompt_version}" if prompt_version else "")
-                + f"; extracted: {sorted(extracted_docs)}"
+                "document assertion does not match the exact Extraction Run "
+                f"scope; asserted {sorted(named)}, selected {sorted(extracted_docs)}"
             )
-        extracted_docs = named
 
     if gold_path is not None:
         gold = load_gold(gold_path)
         source = str(gold_path)
+        reference_bytes = Path(gold_path).read_bytes()
+        selected_documents = tuple(
+            documents_by_id[document_id] for document_id in sorted(extracted_docs)
+        )
+        if reference_manifest_path is not None:
+            reference_scope = verified_machine_reference_scope(
+                reference_manifest_path,
+                reference_path=gold_path,
+                reference_bytes=reference_bytes,
+                project_slug=slug,
+                documents=selected_documents,
+            )
+            source += f"; machine-reference scope {reference_manifest_path}"
+        else:
+            reference_scope = ReferenceScope(
+                kind="external_reference",
+                source=str(gold_path),
+                sha256=hashlib.sha256(reference_bytes).hexdigest(),
+                documents=tuple(
+                    DocumentScope(id=document.id, sha256=document.sha256)
+                    for document in selected_documents
+                ),
+                limitations=(
+                    "Recall is measured against this reference enumeration only; "
+                    "the source document is not ground truth for its own omissions.",
+                ),
+            )
     else:
         gold = gold_for_documents(session, extracted_docs)
         source = "page text (independent of the table parser)"
+        selected_document_scope = tuple(
+            (document_id, documents_by_id[document_id].sha256)
+            for document_id in sorted(extracted_docs)
+        )
+        reference_material = {
+            "documents": [item[1] for item in selected_document_scope],
+            "records": [
+                {
+                    "source_ref": record.source_ref,
+                    "page": record.page,
+                    "critical": record.critical,
+                }
+                for record in gold
+            ],
+        }
+        reference_scope = ReferenceScope(
+            kind="page_text_reference",
+            source=source,
+            sha256=hashlib.sha256(
+                json.dumps(
+                    reference_material,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+            documents=tuple(
+                DocumentScope(id=document_id, sha256=document_sha256)
+                for document_id, document_sha256 in selected_document_scope
+            ),
+            limitations=(
+                "Recall is measured against the stored page-text enumeration only; "
+                "the source document is not ground truth for its own omissions.",
+            ),
+        )
 
-    # Both scopes apply to both paths, because both pass `document_ids`.
-    # Stated on the page-text path only, a CSV measurement recorded the
-    # file it read and stayed silent about the population it was narrowed
-    # to — which is the half a reader of the artifact cannot reconstruct.
     if prompt_version:
         source += f"; scoped to {prompt_version}"
     if skipped:
-        source += f"; {len(skipped)} ingested matrix/matrices not extracted"
-    # The population, always. The enumeration is one thing and the rows it
-    # was scored against are another, and a CSV says nothing about the
-    # second — so a reader who sees only `gold/<slug>.machine.csv` cannot
-    # tell a whole-project measurement from a one-revision file scored
-    # against six.
+        source += f"; {len(skipped)} project matrix/matrices outside exact run scope"
     source += f"; scored over {len(extracted_docs)} extracted matrix/matrices"
     if named is not None:
         source += f" named by the caller ({', '.join(str(i) for i in sorted(named))})"
 
+    result = evaluate(
+        session,
+        slug=slug,
+        gold=gold,
+        prompt_version=prompt_version,
+        document_ids=extracted_docs,
+        extraction_run_ids=set(selected_run_ids),
+    )
+    result.reference_label = (
+        "machine reference — semi-independent ceiling"
+        if reference_scope.kind == "machine_reference"
+        else "reference"
+    )
+    result.reference_limitations = list(reference_scope.limitations)
+
     return Measurement(
-        result=evaluate(
-            session,
-            slug=slug,
-            gold=gold,
-            prompt_version=prompt_version,
-            document_ids=extracted_docs,
-        ),
-        gold_source=source,
+        result=result,
+        reference_description=source,
         skipped=frozenset(skipped),
+        extraction_run_ids=selected_run_ids,
+        extraction_runs=run_scope,
+        reference_scope=reference_scope,
     )
 
 
-def main(argv: list[str]) -> int:
-    """`eval <project-slug> [gold.csv] [--prompt-version=X] [--document=N ...]`.
+def write_measurement_artifact(path: Path, written: dict) -> bool:
+    """Create an immutable artifact, or accept an identical rerun.
+
+    Identity deliberately excludes ``ran_at`` so repeating the exact command
+    resolves to the same file. The first timestamp remains evidence; every
+    other field must agree or the collision fails closed.
+    """
+    serialized = json.dumps(written, indent=2) + "\n"
+    try:
+        with path.open("x") as handle:
+            handle.write(serialized)
+        return True
+    except FileExistsError:
+        try:
+            existing = json.loads(path.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArtifactCollision(
+                f"refusing to overwrite unreadable measurement artifact {path}: {exc}"
+            ) from exc
+        existing_comparable = dict(existing)
+        written_comparable = dict(written)
+        existing_comparable.pop("ran_at", None)
+        written_comparable.pop("ran_at", None)
+        if existing_comparable != written_comparable:
+            raise ArtifactCollision(
+                f"refusing divergent overwrite of immutable measurement artifact {path}"
+            )
+        return False
+
+
+def main(
+    argv: list[str],
+    *,
+    session_factory=None,
+    output_dir: Path | str | None = None,
+    ran_at: datetime | None = None,
+) -> int:
+    """`eval <project-slug> [reference.csv] --extraction-run=N [...]`.
 
     Argument parsing, printing and the artifact file. The measurement
     itself is `measure`.
 
-    `--prompt-version` scopes both the enumeration and the scoring to one
-    extraction path, which is what makes two paths on the same project
-    comparable rather than pooled.
-
-    `--document` names the population, repeatably. A hand-authored CSV
-    covering one revision has no other way to say so — the format carries
-    no document — and without it the file is scored against every matrix
-    the project extracted.
+    `--prompt-version` and `--document` are optional assertions about the
+    named runs; neither can select Candidates. `--reference-manifest`
+    explicitly identifies a machine reference and binds it to its author-time
+    bytes, method, limitations and stable document hash set.
     """
-    known = ("--prompt-version=", "--document=")
+    known = (
+        "--extraction-run=",
+        "--prompt-version=",
+        "--document=",
+        "--reference-manifest=",
+    )
     flags = [a for a in argv if a.startswith("--")]
     args = [a for a in argv if not a.startswith("--")]
     prompt_version = next(
         (f.split("=", 1)[1] for f in flags if f.startswith("--prompt-version=")), None
     )
     named = [f.split("=", 1)[1] for f in flags if f.startswith("--document=")]
-    if not args or any(not f.startswith(known) for f in flags):
+    named_runs = [
+        f.split("=", 1)[1]
+        for f in flags
+        if f.startswith("--extraction-run=")
+    ]
+    reference_manifests = [
+        f.split("=", 1)[1]
+        for f in flags
+        if f.startswith("--reference-manifest=")
+    ]
+    if (
+        not args
+        or len(args) > 2
+        or len(reference_manifests) > 1
+        or any(not f.startswith(known) for f in flags)
+    ):
         print(
-            "usage: eval <project-slug> [gold.csv] [--prompt-version=X] "
-            "[--document=N ...]",
+            "usage: eval <project-slug> [reference.csv] "
+            "--extraction-run=N [--extraction-run=N ...] "
+            "[--reference-manifest=scope.json] "
+            "[--prompt-version=X] [--document=N ...]",
             file=sys.stderr,
         )
         return 2
     try:
         document_ids = {int(n) for n in named} or None
+        parsed_run_ids = [int(n) for n in named_runs]
+        extraction_run_ids = set(parsed_run_ids)
     except ValueError:
-        print("--document takes a document id", file=sys.stderr)
+        print(
+            "--document and --extraction-run take integer ids",
+            file=sys.stderr,
+        )
+        return 2
+    if len(parsed_run_ids) != len(extraction_run_ids):
+        print(
+            "duplicate --extraction-run ids are not allowed",
+            file=sys.stderr,
+        )
+        return 2
+    if not extraction_run_ids or any(run_id <= 0 for run_id in extraction_run_ids):
+        print(
+            "one or more positive --extraction-run ids are required; prompt and "
+            "document selectors cannot choose a measurement population",
+            file=sys.stderr,
+        )
         return 2
 
     slug = args[0]
     gold_path = args[1] if len(args) > 1 else None
-    with SessionFactory() as session:
+    reference_manifest_path = (
+        reference_manifests[0] if reference_manifests else None
+    )
+    with (session_factory or SessionFactory)() as session:
         try:
             measurement = measure(
                 session,
                 slug,
                 gold_path=gold_path,
+                reference_manifest_path=reference_manifest_path,
                 prompt_version=prompt_version,
                 document_ids=document_ids,
+                extraction_run_ids=extraction_run_ids,
             )
         except NothingToMeasure as exc:
             print(str(exc), file=sys.stderr)
@@ -968,28 +1474,29 @@ def main(argv: list[str]) -> int:
     print(render(measurement.result))
     if gold_path is None and measurement.skipped:
         print(
-            f"  {len(measurement.skipped)} ingested matrix/matrices contributed no "
-            "candidates and are excluded from the enumeration, not counted as misses."
+            f"  {len(measurement.skipped)} project matrix/matrices are outside the "
+            "exact run scope and are not counted as misses."
         )
 
-    out = Path("out")
+    out = Path(output_dir) if output_dir is not None else Path("out")
     out.mkdir(exist_ok=True)
-    # One file per extraction path, so measuring the new one does not
-    # overwrite the baseline it is being compared against.
-    stem = f"eval-{slug}" + (f"-{prompt_version}" if prompt_version else "")
-    path = out / f"{stem}.json"
-    path.write_text(
-        json.dumps(
-            artifact(
-                measurement.result,
-                gold_source=measurement.gold_source,
-                ran_at=datetime.now(timezone.utc),
-            ),
-            indent=2,
-        )
-        + "\n"
+    written = artifact(
+        measurement.result,
+        reference_description=measurement.reference_description,
+        ran_at=ran_at or datetime.now(timezone.utc),
+        extraction_runs=measurement.extraction_runs,
+        reference_scope=measurement.reference_scope,
     )
-    print(f"\n{path}")
+    path = out / (
+        f"extraction-measurement-{slug}-{written['artifact_identity'][:16]}.json"
+    )
+    try:
+        created = write_measurement_artifact(path, written)
+    except ArtifactCollision as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    suffix = "" if created else " (existing immutable artifact preserved)"
+    print(f"\n{path}{suffix}")
     return exit_code(measurement.result)
 
 

@@ -1,8 +1,14 @@
+import hashlib
+import json
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.eval import (
+    ArtifactCollision,
+    DocumentScope,
     GoldRecord,
     GoldSet,
     MalformedGoldSet,
@@ -14,10 +20,14 @@ from corridor.eval import (
     gold_for_documents,
     gold_from_page_text,
     load_gold,
+    main,
     measure,
     render,
+    verified_machine_reference_scope,
+    write_measurement_artifact,
 )
 from corridor.eval import _SEQUENTIAL_ID, _UTILITY_ID
+from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
 
 
@@ -122,6 +132,63 @@ def mark_extracted(
     session.add(run)
     session.flush()
     return run
+
+
+def record_run(
+    session,
+    project,
+    document,
+    *uids,
+    prompt_version="txdot_ucm_v1",
+    model=None,
+):
+    candidates = [
+        make_candidate(
+            session,
+            project,
+            document,
+            uid,
+            prompt_version=prompt_version,
+        )
+        for uid in uids
+    ]
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=prompt_version,
+        candidate_count=len(candidates),
+        page_errors=0,
+        candidates=tuple(candidates),
+        model=model,
+        schema_version=prompt_version,
+    )
+    session.flush()
+    return run
+
+
+def write_machine_reference_scope(path, project, *documents, **overrides):
+    """Write the author-time contract a machine reference must carry."""
+    payload = {
+        "schema_version": "corridor.machine-reference-scope.v2",
+        "project": project.slug,
+        "method": "pymupdf-table-grid",
+        "method_version": "1",
+        "reference_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "documents": [
+            {"sha256": document.sha256, "filename": document.filename}
+            for document in sorted(documents, key=lambda item: item.sha256)
+        ],
+        "limitations": [
+            "Semi-independent ceiling: the machine reference and extractor "
+            "share PyMuPDF table detection, so a region omitted by that "
+            "library is invisible to both."
+        ],
+        "manifest_provenance": {"kind": "author_time"},
+    }
+    payload.update(overrides)
+    scope = path.with_suffix(".scope.json")
+    scope.write_text(json.dumps(payload))
+    return scope
 
 
 # ----------------------------------------------------------------- gold sets
@@ -985,7 +1052,9 @@ def _artifact(result):
     from datetime import datetime, timezone
 
     return artifact(
-        result, gold_source="gold.csv", ran_at=datetime(2026, 8, 4, tzinfo=timezone.utc)
+        result,
+        reference_description="reference.csv",
+        ran_at=datetime(2026, 8, 4, tzinfo=timezone.utc),
     )
 
 
@@ -1080,9 +1149,26 @@ def test_the_artifact_records_where_the_enumeration_came_from(
     )
 
     written = _artifact(result)
-    assert written["gold_source"] == "gold.csv"
+    assert written["reference_description"] == "reference.csv"
     assert written["ran_at"] == "2026-08-04T00:00:00+00:00"
     assert written["project"] == project.slug
+
+
+def test_new_measurement_artifacts_do_not_write_gold_named_keys(
+    session, project, document
+):
+    make_candidate(session, project, document, "FOC1-1")
+    result = evaluate(
+        session, slug=project.slug, gold=scanned(GoldRecord("FOC1-1", critical=True))
+    )
+
+    written = _artifact(result)
+
+    assert "gold_source" not in written
+    assert "gold_total" not in written
+    assert "critical_gold_total" not in written
+    assert written["reference_total"] == 1
+    assert written["critical_reference_total"] == 1
 
 
 def test_a_scoped_zero_row_run_still_reports_its_prompt_version(
@@ -1112,45 +1198,707 @@ def test_a_scoped_zero_row_run_still_reports_its_prompt_version(
 # --------------------------------------------------------------- measurement
 
 
-def test_a_csv_gold_set_is_refused_when_nothing_was_extracted(
+def test_command_requires_at_least_one_exact_run(capsys):
+    assert main(["eval-test"]) == 2
+    assert "--extraction-run" in capsys.readouterr().err
+
+
+def test_command_accepts_repeatable_exact_runs_and_writes_an_identity_artifact(
     session, project, document, tmp_path
 ):
-    """The gate's own invocation, on a project the extractor never ran over.
+    first = record_run(session, project, document, "FOC1-1")
+    other = _second_matrix(session, project)
+    second = record_run(session, project, other, "FOC2-1")
+    reference = tmp_path / "reference.csv"
+    reference.write_text("source_ref,page\nFOC1-1,1\nFOC2-1,1\n")
+    scope = write_machine_reference_scope(reference, project, document, other)
 
-    `document_ids` scopes the scoring to the documents this extractor read,
-    so an empty set makes every gold row a miss. The page-text path checked
-    for that; the CSV path — which is what `scripts/gate-run.sh` prints —
-    did not, and reported `recall 0.0%` with `unmeasurable` false and exit
-    code 0. ADR-0008 says a holdout is spent once; that combination spends
-    one on a green run that measured nothing.
-    """
-    add_page(session, document, 1, "FOC1-1 1149+00\n")
-    path = tmp_path / "gold.csv"
-    path.write_text(GOLD)
+    class OpenSession:
+        def __enter__(self):
+            return session
 
-    with pytest.raises(NothingToMeasure, match="nothing extracted"):
+        def __exit__(self, *_):
+            return False
+
+    status = main(
+        [
+            project.slug,
+            str(reference),
+            f"--reference-manifest={scope}",
+            f"--extraction-run={second.id}",
+            f"--extraction-run={first.id}",
+        ],
+        session_factory=OpenSession,
+        output_dir=tmp_path,
+        ran_at=datetime(2026, 8, 6, tzinfo=timezone.utc),
+    )
+
+    assert status == 0
+    artifacts = list(tmp_path.glob("extraction-measurement-eval-test-*.json"))
+    assert len(artifacts) == 1
+    written = json.loads(artifacts[0].read_text())
+    assert written["extraction_run_ids"] == sorted([first.id, second.id])
+    assert written["reference_scope"]["kind"] == "machine_reference"
+    assert written["reference_scope"]["manifest_provenance"] == {
+        "kind": "author_time"
+    }
+    assert written["artifact_identity"][:16] in artifacts[0].name
+
+
+def test_command_rejects_duplicate_exact_run_flags(
+    session, project, document, tmp_path, capsys
+):
+    run = record_run(session, project, document, "FOC1-1")
+    reference = tmp_path / "reference.csv"
+    reference.write_text("source_ref,page\nFOC1-1,1\n")
+
+    class OpenSession:
+        def __enter__(self):
+            return session
+
+        def __exit__(self, *_):
+            return False
+
+    status = main(
+        [
+            project.slug,
+            str(reference),
+            f"--extraction-run={run.id}",
+            f"--extraction-run={run.id}",
+        ],
+        session_factory=OpenSession,
+        output_dir=tmp_path,
+    )
+
+    assert status == 2
+    assert "duplicate --extraction-run" in capsys.readouterr().err
+    assert not list(tmp_path.glob("extraction-measurement-*.json"))
+
+
+def test_repeating_an_identical_command_preserves_the_first_artifact(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    reference = tmp_path / "reference.csv"
+    reference.write_text("source_ref,page\nFOC1-1,1\n")
+
+    class OpenSession:
+        def __enter__(self):
+            return session
+
+        def __exit__(self, *_):
+            return False
+
+    argv = [project.slug, str(reference), f"--extraction-run={run.id}"]
+    first_ran_at = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    later_ran_at = datetime(2026, 8, 7, tzinfo=timezone.utc)
+
+    assert main(
+        argv,
+        session_factory=OpenSession,
+        output_dir=tmp_path,
+        ran_at=first_ran_at,
+    ) == 0
+    artifact_path = next(
+        tmp_path.glob("extraction-measurement-eval-test-*.json")
+    )
+    first_bytes = artifact_path.read_bytes()
+
+    assert main(
+        argv,
+        session_factory=OpenSession,
+        output_dir=tmp_path,
+        ran_at=later_ran_at,
+    ) == 0
+    assert artifact_path.read_bytes() == first_bytes
+    assert json.loads(first_bytes)["ran_at"] == first_ran_at.isoformat()
+
+
+def test_an_identity_collision_can_never_overwrite_divergent_evidence(tmp_path):
+    path = tmp_path / "measurement.json"
+    first = {
+        "artifact_identity": "same-name",
+        "ran_at": "2026-08-06T00:00:00+00:00",
+        "matched": 1,
+    }
+    divergent = {
+        "artifact_identity": "same-name",
+        "ran_at": "2026-08-07T00:00:00+00:00",
+        "matched": 0,
+    }
+
+    assert write_measurement_artifact(path, first) is True
+    first_bytes = path.read_bytes()
+
+    with pytest.raises(ArtifactCollision, match="divergent overwrite"):
+        write_measurement_artifact(path, divergent)
+
+    assert path.read_bytes() == first_bytes
+
+
+def test_measurement_refuses_an_implicit_run_population(
+    session, project, document, tmp_path
+):
+    record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="explicit Extraction Run"):
         measure(session, project.slug, gold_path=path)
 
 
-def test_the_page_text_path_is_refused_the_same_way(session, project, document):
-    add_page(session, document, 1, "FOC1-1 1149+00\n")
-
-    with pytest.raises(NothingToMeasure, match="nothing extracted"):
-        measure(session, project.slug)
-
-
-def test_the_refusal_names_the_prompt_version_it_looked_for(
+def test_measurement_selects_one_exact_run_when_same_prompt_completed_twice(
     session, project, document, tmp_path
 ):
-    """Extraction ran, but not on the path being measured."""
-    add_page(session, document, 1, "FOC1-1 1149+00\n")
-    make_candidate(session, project, document, "FOC1-1")
-    path = tmp_path / "gold.csv"
-    path.write_text(GOLD)
+    """A redo is another population, even when document and prompt are equal."""
+    first = record_run(session, project, document, "FOC1-1")
+    second = record_run(session, project, document, "FOC9-9")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
 
-    with pytest.raises(NothingToMeasure, match="matrix_tiered_v3"):
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={first.id},
+    )
+
+    assert measured.result.extracted_total == 1
+    assert measured.result.matched == 1
+    assert measured.result.spurious == []
+    assert measured.extraction_run_ids == (first.id,)
+    assert second.id not in measured.extraction_run_ids
+
+
+def test_artifact_identity_and_provenance_name_the_exact_run_set(
+    session, project, document, tmp_path
+):
+    from datetime import datetime, timezone
+
+    first = record_run(session, project, document, "FOC1-1")
+    second = record_run(session, project, document, "FOC9-9")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    ran_at = datetime(2026, 8, 6, tzinfo=timezone.utc)
+
+    first_measurement = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={first.id},
+    )
+    second_measurement = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={second.id},
+    )
+    first_artifact = artifact(
+        first_measurement.result,
+        reference_description=first_measurement.reference_description,
+        ran_at=ran_at,
+        extraction_runs=first_measurement.extraction_runs,
+        reference_scope=first_measurement.reference_scope,
+    )
+    second_artifact = artifact(
+        second_measurement.result,
+        reference_description=second_measurement.reference_description,
+        ran_at=ran_at,
+        extraction_runs=second_measurement.extraction_runs,
+        reference_scope=second_measurement.reference_scope,
+    )
+
+    assert first_artifact["extraction_run_ids"] == [first.id]
+    assert first_artifact["extraction_runs"] == [
+        {
+            "id": first.id,
+            "document": {"id": document.id, "sha256": document.sha256},
+            "prompt_version": "txdot_ucm_v1",
+            "model": None,
+            "schema_version": "txdot_ucm_v1",
+            "outcome": "completed",
+            "candidate_count": 1,
+        }
+    ]
+    assert first_artifact["reference_scope"]["sha256"]
+    assert first_artifact["reference_scope"]["document_sha256s"] == [
+        document.sha256
+    ]
+    assert len(first_artifact["artifact_identity"]) == 64
+    assert first_artifact["artifact_identity"] != second_artifact["artifact_identity"]
+
+
+def test_measurement_uses_the_explicit_historical_run_not_the_active_run(
+    session, project, document, tmp_path
+):
+    active = record_run(session, project, document, "FOC1-1")
+    historical = record_run(session, project, document, "FOC9-9")
+    declare_active_run(session, document.id, active.id)
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC9-9,1\n")
+
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={historical.id},
+    )
+
+    assert measured.extraction_run_ids == (historical.id,)
+    assert measured.result.matched == 1
+    assert measured.result.missing == []
+
+
+def test_appending_an_unselected_same_prompt_run_cannot_change_a_measurement(
+    session, project, document, tmp_path
+):
+    selected = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    before = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={selected.id},
+    )
+
+    record_run(session, project, document, "FOC9-9")
+    after = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={selected.id},
+    )
+
+    assert (before.result.extracted_total, before.result.matched) == (1, 1)
+    assert (after.result.extracted_total, after.result.matched) == (1, 1)
+    assert after.extraction_run_ids == before.extraction_run_ids
+
+
+def test_measurement_refuses_when_any_named_run_is_missing(
+    session, project, document, tmp_path
+):
+    present = record_run(session, project, document, "FOC1-1")
+    missing = present.id + 10_000
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match=f"Extraction Run {missing} does not exist"):
         measure(
-            session, project.slug, gold_path=path, prompt_version="matrix_tiered_v3"
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={present.id, missing},
+        )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "page_errors"),
+    [("failed", 1), ("completed", 1)],
+)
+def test_measurement_refuses_an_incomplete_run(
+    session, project, document, tmp_path, outcome, page_errors
+):
+    run = ExtractionRun(
+        document_id=document.id,
+        prompt_version="txdot_ucm_v1",
+        outcome=outcome,
+        candidate_count=0,
+        page_errors=page_errors,
+    )
+    session.add(run)
+    session.flush()
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="completed with zero page failures"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_measurement_refuses_a_run_from_another_project(
+    session, project, document, tmp_path
+):
+    other_project = Project(slug="other-eval-project", name="Other Eval Project")
+    session.add(other_project)
+    session.flush()
+    other_document = Document(
+        project_id=other_project.id,
+        sha256="9" * 64,
+        filename="other-matrix.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(other_document)
+    session.flush()
+    run = record_run(session, other_project, other_document, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="does not belong to project"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_measurement_refuses_a_non_matrix_run(
+    session, project, tmp_path
+):
+    agreement = Document(
+        project_id=project.id,
+        sha256="8" * 64,
+        filename="agreement.pdf",
+        doc_type="agreement",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(agreement)
+    session.flush()
+    run = record_run(session, project, agreement, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="matrix document"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_measurement_refuses_two_runs_for_one_document(
+    session, project, document, tmp_path
+):
+    first = record_run(session, project, document, "FOC1-1")
+    second = record_run(session, project, document, "FOC1-2")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="one run per document"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={first.id, second.id},
+        )
+
+
+def test_measurement_refuses_a_run_whose_linked_count_disagrees(
+    session, project, document, tmp_path
+):
+    run = ExtractionRun(
+        document_id=document.id,
+        prompt_version="txdot_ucm_v1",
+        outcome="completed",
+        candidate_count=1,
+        page_errors=0,
+    )
+    session.add(run)
+    session.flush()
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="records 1 Candidates but owns 0"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_measurement_accepts_a_completed_zero_row_run_with_receipt_provenance(
+    session, project, document, tmp_path
+):
+    run = record_run(
+        session,
+        project,
+        document,
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+    )
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={run.id},
+    )
+
+    assert measured.result.extracted_total == 0
+    assert measured.result.prompt_versions == {"matrix_tiered_v3": 0}
+    assert measured.result.models == {"gpt-test": 0}
+
+
+def test_legacy_prompt_selector_can_only_assert_the_exact_run(
+    session, project, document, tmp_path
+):
+    run = record_run(
+        session,
+        project,
+        document,
+        "FOC1-1",
+        prompt_version="matrix_tiered_v3",
+    )
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="prompt assertion"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={run.id},
+            prompt_version="matrix_tiered_v2",
+        )
+
+
+def test_legacy_document_selector_can_only_assert_the_exact_run_scope(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    other = _second_matrix(session, project)
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    with pytest.raises(NothingToMeasure, match="document assertion"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            extraction_run_ids={run.id},
+            document_ids={document.id, other.id},
+        )
+
+
+def test_machine_reference_manifest_must_match_the_selected_run_documents(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    other = _second_matrix(session, project)
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    scope = write_machine_reference_scope(path, project, document, other)
+
+    with pytest.raises(NothingToMeasure, match="machine-reference scope mismatch"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            reference_manifest_path=scope,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_machine_reference_manifest_refuses_the_wrong_document_hash(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    scope = write_machine_reference_scope(
+        path,
+        project,
+        document,
+        documents=[{"sha256": "0" * 64, "filename": document.filename}],
+    )
+
+    with pytest.raises(NothingToMeasure, match="document hash set"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            reference_manifest_path=scope,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_machine_reference_manifest_binds_the_reference_bytes(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    scope = write_machine_reference_scope(path, project, document)
+    path.write_text("source_ref,page\nFOC9-9,1\n")
+
+    with pytest.raises(NothingToMeasure, match="reference SHA-256"):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            reference_manifest_path=scope,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_machine_reference_hash_identity_survives_different_database_ids(
+    project, document, tmp_path
+):
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    scope_path = write_machine_reference_scope(path, project, document)
+    clean_room_document = Document(
+        id=document.id + 1_000_000,
+        project_id=project.id + 1_000_000,
+        sha256=document.sha256,
+        filename=document.filename,
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=document.pages,
+    )
+
+    scope = verified_machine_reference_scope(
+        scope_path,
+        reference_path=path,
+        reference_bytes=path.read_bytes(),
+        project_slug=project.slug,
+        documents=(clean_room_document,),
+    )
+
+    assert scope.document_ids == (clean_room_document.id,)
+    assert scope.document_sha256s == (document.sha256,)
+
+
+def test_reference_scope_keeps_document_id_and_hash_paired():
+    scope = DocumentScope(id=7, sha256="a" * 64)
+
+    assert scope.as_dict() == {"id": 7, "sha256": "a" * 64}
+
+
+def test_machine_reference_receipt_preserves_backfill_provenance(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    provenance = {
+        "kind": "backfill",
+        "reference_commit": "a" * 40,
+        "note": "Scope reconstructed without regenerating the reference.",
+    }
+    scope = write_machine_reference_scope(
+        path,
+        project,
+        document,
+        manifest_provenance=provenance,
+    )
+
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        reference_manifest_path=scope,
+        extraction_run_ids={run.id},
+    )
+
+    assert measured.reference_scope.manifest_provenance == provenance
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"method_version": "2"}, "method/version"),
+        ({"limitations": []}, "limitations"),
+    ],
+)
+def test_machine_reference_manifest_cannot_weaken_its_method_or_limitations(
+    session, project, document, tmp_path, override, message
+):
+    run = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    scope = write_machine_reference_scope(path, project, document, **override)
+
+    with pytest.raises(NothingToMeasure, match=message):
+        measure(
+            session,
+            project.slug,
+            gold_path=path,
+            reference_manifest_path=scope,
+            extraction_run_ids={run.id},
+        )
+
+
+def test_machine_reference_uses_author_time_scope_not_current_project_matrices(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "renamed-reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    scope = write_machine_reference_scope(path, project, document)
+    _second_matrix(session, project)
+
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        reference_manifest_path=scope,
+        extraction_run_ids={run.id},
+    )
+
+    assert measured.reference_scope.kind == "machine_reference"
+    assert measured.reference_scope.document_sha256s == (document.sha256,)
+
+
+def test_machine_reference_is_published_as_a_semi_independent_ceiling(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "renamed-reference.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+    scope = write_machine_reference_scope(path, project, document)
+
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        reference_manifest_path=scope,
+        extraction_run_ids={run.id},
+    )
+    output = render(measured.result)
+
+    assert "machine reference — semi-independent ceiling" in output
+    assert "share PyMuPDF table detection" in output
+
+
+def test_a_machine_named_csv_without_a_manifest_is_only_an_external_reference(
+    session, project, document, tmp_path
+):
+    run = record_run(session, project, document, "FOC1-1")
+    path = tmp_path / "legacy.machine.csv"
+    path.write_text("source_ref,page\nFOC1-1,1\n")
+
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={run.id},
+    )
+
+    assert measured.reference_scope.kind == "external_reference"
+    assert "machine reference" not in render(measured.result)
+
+
+def test_spent_wsdot_9540_cannot_be_rescored(
+    session,
+):
+    with pytest.raises(NothingToMeasure, match="spent.*historical"):
+        measure(
+            session,
+            "wsdot-9540",
+            extraction_run_ids={1},
         )
 
 
@@ -1171,17 +1919,20 @@ def test_a_csv_measurement_records_the_scope_it_was_taken_at(
     page-text run beside it said so.
     """
     add_page(session, document, 1, "FOC1-1 1149+00\n")
-    make_candidate(session, project, document, "FOC1-1")
-    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
+    run = record_run(session, project, document, "FOC1-1")
     path = tmp_path / "gold.csv"
     path.write_text(GOLD)
 
     taken = measure(
-        session, project.slug, gold_path=path, prompt_version="txdot_ucm_v1"
+        session,
+        project.slug,
+        gold_path=path,
+        prompt_version="txdot_ucm_v1",
+        extraction_run_ids={run.id},
     )
 
-    assert str(path) in taken.gold_source
-    assert "scoped to txdot_ucm_v1" in taken.gold_source
+    assert str(path) in taken.reference_description
+    assert "scoped to txdot_ucm_v1" in taken.reference_description
 
 
 def test_the_measurement_names_the_matrices_it_did_not_read(
@@ -1189,8 +1940,7 @@ def test_the_measurement_names_the_matrices_it_did_not_read(
 ):
     """An ingested matrix nobody extracted is excluded, not counted missed."""
     add_page(session, document, 1, "FOC1-1 1149+00\n")
-    make_candidate(session, project, document, "FOC1-1")
-    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
+    run = record_run(session, project, document, "FOC1-1")
     unread = Document(
         project_id=project.id,
         sha256="e" * 64,
@@ -1204,10 +1954,18 @@ def test_the_measurement_names_the_matrices_it_did_not_read(
     path = tmp_path / "gold.csv"
     path.write_text(GOLD)
 
-    taken = measure(session, project.slug, gold_path=path)
+    taken = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={run.id},
+    )
 
     assert taken.skipped == frozenset({unread.id})
-    assert "1 ingested matrix/matrices not extracted" in taken.gold_source
+    assert (
+        "1 project matrix/matrices outside exact run scope"
+        in taken.reference_description
+    )
 
 
 def test_the_measurement_scores_only_the_documents_that_extractor_read(
@@ -1215,12 +1973,16 @@ def test_the_measurement_scores_only_the_documents_that_extractor_read(
 ):
     """The whole point of the sequence: gold, scope and score agree."""
     add_page(session, document, 1, "FOC1-1 1149+00\nFOC1-2 1150+00\n")
-    make_candidate(session, project, document, "FOC1-1")
-    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
+    run = record_run(session, project, document, "FOC1-1")
     path = tmp_path / "gold.csv"
     path.write_text("source_ref,page\nFOC1-1,1\nFOC1-2,1\n")
 
-    taken = measure(session, project.slug, gold_path=path)
+    taken = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={run.id},
+    )
 
     assert taken.result.gold_total == 2
     assert taken.result.matched == 1
@@ -1231,20 +1993,18 @@ def test_the_measurement_scores_only_the_documents_that_extractor_read(
 def _two_extracted_revisions(session, project, document, tmp_path):
     """One CSV enumerating revision 1, and two extracted revisions to score."""
     add_page(session, document, 1, "FOC1-1 1149+00\n")
-    make_candidate(session, project, document, "FOC1-1")
-    mark_extracted(session, document, prompt_version="txdot_ucm_v1")
+    first_run = record_run(session, project, document, "FOC1-1")
 
     other = _second_matrix(session, project)
     add_page(session, other, 1, "FOC2-1 2249+00\n")
-    make_candidate(session, project, other, "FOC2-1")
-    mark_extracted(session, other, prompt_version="txdot_ucm_v1")
+    second_run = record_run(session, project, other, "FOC2-1")
 
     path = tmp_path / "gold.csv"
     path.write_text("source_ref,page\nFOC1-1,1\n")
-    return other, path
+    return other, path, first_run, second_run
 
 
-def test_a_csv_is_scored_against_every_extracted_matrix_until_the_caller_narrows(
+def test_a_csv_is_scored_against_only_the_explicit_run_population(
     session, project, document, tmp_path
 ):
     """The scope `measure` passed was every extracted matrix, not the gold's.
@@ -1255,11 +2015,21 @@ def test_a_csv_is_scored_against_every_extracted_matrix_until_the_caller_narrows
     project on purpose. It is the wrong one for a hand-authored file
     covering one revision, and the file cannot say which it is.
     """
-    other, path = _two_extracted_revisions(session, project, document, tmp_path)
+    other, path, first_run, second_run = _two_extracted_revisions(
+        session, project, document, tmp_path
+    )
 
-    wide = measure(session, project.slug, gold_path=path)
+    wide = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={first_run.id, second_run.id},
+    )
     narrowed = measure(
-        session, project.slug, gold_path=path, document_ids={document.id}
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={first_run.id},
     )
 
     assert wide.result.spurious == ["FOC2-1"]
@@ -1274,32 +2044,28 @@ def test_the_measurement_records_the_population_it_was_scored_over(
 ):
     """A CSV names a file, and the file names no documents.
 
-    Without the population in `gold_source`, a reader of the artifact
+    Without the population in `reference_description`, a reader of the artifact
     cannot tell a whole-project measurement from a one-revision file
     scored against six — and `precision` is a real number in both.
     """
-    other, path = _two_extracted_revisions(session, project, document, tmp_path)
-
-    wide = measure(session, project.slug, gold_path=path)
-    narrowed = measure(
-        session, project.slug, gold_path=path, document_ids={document.id}
+    other, path, first_run, second_run = _two_extracted_revisions(
+        session, project, document, tmp_path
     )
 
-    assert "scored over 2 extracted matrix/matrices" in wide.gold_source
-    assert "named by the caller" not in wide.gold_source
-    assert "scored over 1 extracted matrix/matrices" in narrowed.gold_source
-    assert f"named by the caller ({document.id})" in narrowed.gold_source
+    wide = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={first_run.id, second_run.id},
+    )
+    narrowed = measure(
+        session,
+        project.slug,
+        gold_path=path,
+        extraction_run_ids={first_run.id},
+    )
 
-
-def test_naming_a_document_nothing_extracted_is_refused_not_scored_empty(
-    session, project, document, tmp_path
-):
-    """A population of none is not a measurement, on the named path too."""
-    other, path = _two_extracted_revisions(session, project, document, tmp_path)
-    unread = _second_matrix(session, project, sha="d" * 64, name="matrix-rev3.pdf")
-
-    with pytest.raises(NothingToMeasure) as raised:
-        measure(session, project.slug, gold_path=path, document_ids={unread.id})
-
-    assert "none of the named documents completed extraction" in str(raised.value)
-    assert str(document.id) in str(raised.value)
+    assert "scored over 2 extracted matrix/matrices" in wide.reference_description
+    assert "named by the caller" not in wide.reference_description
+    assert "scored over 1 extracted matrix/matrices" in narrowed.reference_description
+    assert "named by the caller" not in narrowed.reference_description

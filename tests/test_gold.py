@@ -1,4 +1,4 @@
-"""Preparing a hand-labelled gold set (#88, ADR-0008).
+"""Preparing diagnostic disagreement reports and machine references.
 
 This module never authors a gold set and never decides anything. It reads
 the document a second way, says where that reading and the extractor's
@@ -11,6 +11,8 @@ worksheet must come out blank, a row carrying a retirement phrase must be
 flagged rather than dropped, and the caveat must survive in the report.
 """
 
+import hashlib
+import json
 import pymupdf
 import pytest
 
@@ -467,6 +469,37 @@ def test_machine_gold_round_trips_through_the_eval_loader(
     assert critical["4"] is False
 
 
+def test_machine_reference_scope_manifest_binds_csv_method_and_documents(
+    session, project, tmp_path
+):
+    from corridor.gold import gold_csv, machine_reference_scope
+
+    gold = authored(session, project, tmp_path)
+    csv_text = gold_csv(gold)
+
+    scope = machine_reference_scope(gold, csv_text.encode())
+
+    assert scope == {
+        "schema_version": "corridor.machine-reference-scope.v2",
+        "project": project.slug,
+        "method": "pymupdf-table-grid",
+        "method_version": "1",
+        "reference_sha256": hashlib.sha256(csv_text.encode()).hexdigest(),
+        "documents": [
+            {
+                "sha256": gold.documents[0].sha256,
+                "filename": gold.documents[0].filename,
+            }
+        ],
+        "limitations": [
+            "Semi-independent ceiling: the machine reference and extractor "
+            "share PyMuPDF table detection, so a region omitted by that "
+            "library is invisible to both."
+        ],
+        "manifest_provenance": {"kind": "author_time"},
+    }
+
+
 def test_the_anchor_is_the_family_band_not_one_contracts_column(
     session, project, tmp_path
 ):
@@ -646,8 +679,7 @@ def test_a_document_that_never_prints_the_band_is_still_refused(
 
 
 def test_a_worksheet_in_progress_is_never_overwritten(tmp_path):
-    """Hours of human labelling against a regenerable file. The
-    regenerable one yields, and nothing tested that it did."""
+    """A regenerable helper yields to any existing operator artifact."""
     from corridor.gold import write_worksheet
 
     sheet = tmp_path / "wsdot-9540-worksheet.csv"
@@ -672,10 +704,144 @@ def test_machine_gold_never_claims_the_hand_authored_name(tmp_path):
     """A machine gold set is a ceiling (#81 as amended). Letting it take
     the name a person's labelling would use is how a ceiling gets read as
     a floor."""
-    from corridor.gold import machine_gold_paths
+    from corridor.gold import machine_gold_paths, machine_reference_scope_path
 
     csv_path, sidecar = machine_gold_paths("wsdot-9540", directory=tmp_path)
+    scope = machine_reference_scope_path(csv_path)
 
     assert csv_path.name == "wsdot-9540.machine.csv"
     assert sidecar.name == "wsdot-9540.machine.md"
+    assert scope.name == "wsdot-9540.machine.scope.json"
     assert csv_path.name != "wsdot-9540.csv"
+
+
+def test_spent_wsdot_9540_machine_reference_cannot_be_regenerated():
+    from corridor.gold import SpentHoldout, assert_machine_reference_authoring_allowed
+
+    with pytest.raises(SpentHoldout, match="spent.*historical"):
+        assert_machine_reference_authoring_allowed("wsdot-9540")
+
+
+def test_a_complete_machine_reference_cannot_be_reauthored(tmp_path):
+    from corridor.gold import (
+        SpentHoldout,
+        assert_machine_reference_authoring_allowed,
+        machine_gold_paths,
+        machine_reference_scope_path,
+    )
+
+    assert_machine_reference_authoring_allowed(
+        "unspent-project", directory=tmp_path
+    )
+    reference, sidecar = machine_gold_paths(
+        "unspent-project", directory=tmp_path
+    )
+    scope = machine_reference_scope_path(reference)
+    reference.write_text("first immutable reference\n")
+    sidecar.write_text("first immutable sidecar\n")
+    scope.write_text('{"schema_version":"corridor.machine-reference-scope.v2"}\n')
+
+    with pytest.raises(SpentHoldout, match="already authored"):
+        assert_machine_reference_authoring_allowed(
+            "unspent-project", directory=tmp_path
+        )
+    assert reference.read_text() == "first immutable reference\n"
+
+
+def test_partial_machine_reference_publication_is_recoverable(
+    session, project, tmp_path
+):
+    from corridor.gold import (
+        author_machine_gold,
+        machine_gold_paths,
+        machine_reference_scope_path,
+        publish_machine_reference,
+        render_machine_gold,
+        gold_csv,
+        machine_reference_scope,
+    )
+
+    rows = [
+        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
+        [
+            "UTILITY OWNER",
+            "UTILITY ID",
+            "FACILITY TYPE",
+            "RELOCATION",
+            "PROTECTION IN PLACE",
+            "ABANDON/ DEACTIVATE",
+            "NOTES",
+        ],
+        ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
+    ]
+    gold = authored(session, project, tmp_path, rows)
+
+    attempts = []
+
+    def fail_after_first(path, payload):
+        attempts.append(path.name)
+        if len(attempts) == 2:
+            raise RuntimeError("mid-publication failure")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as handle:
+            handle.write(payload)
+
+    with pytest.raises(RuntimeError, match="mid-publication failure"):
+        publish_machine_reference(
+            project.slug,
+            gold,
+            directory=tmp_path,
+            publisher=fail_after_first,
+        )
+
+    csv_path, sidecar = machine_gold_paths(project.slug, directory=tmp_path)
+    scope_path = machine_reference_scope_path(csv_path)
+    expected_csv = gold_csv(gold).encode()
+    expected_sidecar = render_machine_gold(gold).encode()
+    expected_scope = (
+        json.dumps(machine_reference_scope(gold, expected_csv), indent=2) + "\n"
+    ).encode()
+
+    assert csv_path.read_bytes() == expected_csv
+    assert not sidecar.exists()
+    assert not scope_path.exists()
+
+    publish_machine_reference(project.slug, gold, directory=tmp_path)
+
+    assert csv_path.read_bytes() == expected_csv
+    assert sidecar.read_bytes() == expected_sidecar
+    assert scope_path.read_bytes() == expected_scope
+
+
+def test_partial_machine_reference_publication_refuses_divergent_existing_bytes(
+    session, project, tmp_path
+):
+    from corridor.gold import (
+        SpentHoldout,
+        author_machine_gold,
+        machine_gold_paths,
+        publish_machine_reference,
+    )
+
+    rows = [
+        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
+        [
+            "UTILITY OWNER",
+            "UTILITY ID",
+            "FACILITY TYPE",
+            "RELOCATION",
+            "PROTECTION IN PLACE",
+            "ABANDON/ DEACTIVATE",
+            "NOTES",
+        ],
+        ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
+    ]
+    gold = authored(session, project, tmp_path, rows)
+    csv_path, _sidecar = machine_gold_paths(project.slug, directory=tmp_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path.write_text("divergent bytes\n")
+
+    with pytest.raises(SpentHoldout, match="diverges from the authored bytes"):
+        publish_machine_reference(project.slug, gold, directory=tmp_path)
+
+    assert csv_path.read_text() == "divergent bytes\n"

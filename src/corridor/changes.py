@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from corridor.exceptions import RULESET_VERSION, Evaluation
 from corridor.ledger import browse
-from corridor.models import ReportRun, is_critical
+from corridor.models import LegacyLedgerArchive, ReportRun, is_critical
 
 
 @dataclass
@@ -98,9 +98,16 @@ def snapshot(
 def diff_since_last(
     session: Session, project_id: int, *, evaluation: Evaluation
 ) -> Diff:
+    retirement_boundary = session.scalar(
+        select(LegacyLedgerArchive.retired_at).where(
+            LegacyLedgerArchive.project_id == project_id
+        )
+    )
+    previous_query = select(ReportRun).where(ReportRun.project_id == project_id)
+    if retirement_boundary is not None:
+        previous_query = previous_query.where(ReportRun.ts > retirement_boundary)
     previous = session.scalars(
-        select(ReportRun)
-        .where(ReportRun.project_id == project_id)
+        previous_query
         .order_by(ReportRun.ts.desc(), ReportRun.id.desc())
         .limit(1)
     ).first()

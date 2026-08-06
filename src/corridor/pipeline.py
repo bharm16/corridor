@@ -33,6 +33,7 @@ class ExtractionRoute:
     """Which reader will run for one document, and how to name that reading."""
 
     effective_prompt_version: str
+    schema_version: str
     extract: Extractor
     # Configured independently of Candidate count so a model-backed zero-row
     # run still identifies the model that read the document. Deterministic
@@ -194,16 +195,19 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
     if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
         from corridor.extract_sheet import (
             PROMPT_VERSION as SHEET_PROMPT_VERSION,
+            SCHEMA_VERSION as SHEET_SCHEMA_VERSION,
             extract_document as extract_sheet,
         )
 
         return ExtractionRoute(
             effective_prompt_version=SHEET_PROMPT_VERSION,
+            schema_version=SHEET_SCHEMA_VERSION,
             extract=extract_sheet,
         )
 
     from corridor.extract_matrix import (
         PROMPT_VERSION as MATRIX_PROMPT_VERSION,
+        SCHEMA_VERSION as MATRIX_SCHEMA_VERSION,
         extract_document as extract_matrix,
     )
     from corridor.llm import OpenAIClient
@@ -215,6 +219,7 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
 
     return ExtractionRoute(
         effective_prompt_version=MATRIX_PROMPT_VERSION,
+        schema_version=MATRIX_SCHEMA_VERSION,
         extract=extract,
         model=getattr(matrix_client, "model", None),
     )
@@ -248,7 +253,7 @@ def extract_any(
                 outcome="completed",
                 candidates=tuple(candidates),
                 model=_run_model(candidates, route.model),
-                schema_version=route.effective_prompt_version,
+                schema_version=route.schema_version,
             )
     except NoMatrixFound as exc:
         record_extraction_run(
@@ -258,7 +263,7 @@ def extract_any(
             candidate_count=0,
             page_errors=1,
             outcome="no_matrix",
-            schema_version=route.effective_prompt_version,
+            schema_version=route.schema_version,
             model=route.model,
             error_detail=str(exc),
         )
@@ -271,7 +276,7 @@ def extract_any(
             candidate_count=0,
             page_errors=1,
             outcome="failed",
-            schema_version=route.effective_prompt_version,
+            schema_version=route.schema_version,
             model=route.model,
             error_detail=str(exc),
         )
@@ -284,7 +289,7 @@ def extract_any(
             candidate_count=0,
             page_errors=1,
             outcome="failed",
-            schema_version=route.effective_prompt_version,
+            schema_version=route.schema_version,
             model=route.model,
             error_detail=f"{type(exc).__name__}: {exc}",
         )
@@ -352,7 +357,7 @@ def ingest_and_extract(
             candidate_count=0,
             page_errors=1,
             outcome="unreadable",
-            schema_version=route.effective_prompt_version,
+            schema_version=route.schema_version,
             error_detail=f"ingest parse_status is {document.parse_status!r}",
         )
         return document, []

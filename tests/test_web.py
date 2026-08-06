@@ -14,6 +14,7 @@ from corridor.adjudicate import (
     merge_candidate,
     reject_candidate,
 )
+from corridor.automatic_carry_forward import authorize_automatic_carry_forward
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -836,6 +837,57 @@ def test_safe_unchanged_successor_moves_out_of_candidate_lane(client, session, p
     assert 'name="scope_fingerprint" value=' in body
     assert ">accept<" not in body
     assert ">reject<" not in body
+
+
+def test_queue_shows_read_only_automatic_carry_forward_policy_status(
+    client, session, project
+):
+    _seed_reconfirmation_ready_chain(session, project)
+    authorize_automatic_carry_forward(
+        session,
+        project.id,
+        principal=TEST_PRINCIPAL,
+    )
+
+    response = client.get(f"/queue/{project.slug}?lane=reconfirmation")
+
+    assert response.status_code == 200
+    assert "Automatic Carry-Forward" in response.text
+    assert "automatic-carry-forward-v1" in response.text
+    assert TEST_PRINCIPAL.subject in response.text
+    assert "1 eligible" in response.text
+    assert "0 carried" in response.text
+    assert "automatic-carry-forward-abstentions-v1" in response.text
+
+
+def test_queue_shows_versioned_automatic_abstention_counts(
+    client, project, monkeypatch
+):
+    class Status:
+        enabled = True
+        policy_current = True
+        policy_approval_id = 12
+        policy_version = "automatic-carry-forward-v1"
+        policy_sha256 = "ab" * 32
+        approved_by = TEST_PRINCIPAL.subject
+        carried_count = 4
+        eligible_count = 0
+        abstention_reason_version = (
+            "automatic-carry-forward-abstentions-v1"
+        )
+        abstention_counts = {"comparison_changed": 3}
+
+    monkeypatch.setattr(
+        "corridor.web.app.automatic_carry_forward_status",
+        lambda _session, _project_id, **_kwargs: Status(),
+    )
+
+    response = client.get(f"/queue/{project.slug}")
+
+    assert response.status_code == 200
+    assert "3 comparison changed" in response.text
+    assert "4 carried" in response.text
+    assert "automatic-carry-forward-abstentions-v1" in response.text
 
 
 def test_direct_post_cannot_admit_a_reconfirmation_only_candidate(

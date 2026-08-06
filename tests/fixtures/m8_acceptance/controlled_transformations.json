@@ -1,0 +1,103 @@
+{
+  "schema_version": "corridor.m8.controlled-transformations.v1",
+  "test_precondition": {
+    "principal": "local:m8-acceptance-fixture",
+    "purpose": "Simulate attributable starting Admission and support in disposable state; this is not human review."
+  },
+  "policy": {
+    "name": "exact-unchanged-support",
+    "version": "1",
+    "matcher_version": "revision-correspondence-v2"
+  },
+  "cases": [
+    {
+      "case_id": "readiness-exact",
+      "expected_correspondence": "exact_unchanged",
+      "support_precondition": "readiness_inherited",
+      "successor": {"kind": "exact"}
+    },
+    {
+      "case_id": "publication-exact",
+      "expected_correspondence": "exact_unchanged",
+      "support_precondition": "publication_only",
+      "successor": {"kind": "exact"}
+    },
+    {
+      "case_id": "changed",
+      "expected_correspondence": "changed",
+      "support_precondition": "readiness_inherited",
+      "successor": {
+        "kind": "changed",
+        "field_updates": {"external_org": "Changed Power Company"}
+      }
+    },
+    {
+      "case_id": "dropped",
+      "expected_correspondence": "dropped",
+      "support_precondition": "readiness_inherited",
+      "successor": {"kind": "dropped", "rows": 0}
+    },
+    {
+      "case_id": "ambiguous",
+      "expected_correspondence": "ambiguous",
+      "support_precondition": "readiness_inherited",
+      "successor": {"kind": "ambiguous", "rows": 2}
+    },
+    {
+      "case_id": "fan-in-ambiguous",
+      "expected_correspondence": "ambiguous",
+      "support_precondition": "readiness_inherited",
+      "successor": {"kind": "fan_in_exact"}
+    },
+    {
+      "case_id": "fan-out-ambiguous",
+      "expected_correspondence": "ambiguous",
+      "support_precondition": "readiness_inherited",
+      "successor": {"kind": "fan_out_exact"}
+    },
+    {
+      "case_id": "unmatched",
+      "expected_correspondence": "unmatched",
+      "support_precondition": "readiness_inherited",
+      "predecessor": {"remove_identity": true},
+      "successor": {"kind": "unmatched", "rows": 1}
+    },
+    {
+      "case_id": "normalized-only",
+      "expected_correspondence": "normalized_only_unchanged",
+      "support_precondition": "readiness_inherited",
+      "successor": {
+        "kind": "normalized_only",
+        "station_format": "spaced"
+      }
+    },
+    {
+      "case_id": "unverified-citation",
+      "expected_correspondence": "exact_unchanged",
+      "support_precondition": "unverified_citation",
+      "successor": {
+        "kind": "exact",
+        "citation_shape": "unverified_single"
+      }
+    },
+    {
+      "case_id": "multiple-citations",
+      "expected_correspondence": "exact_unchanged",
+      "support_precondition": "multiple_citations",
+      "successor": {
+        "kind": "exact",
+        "citation_shape": "multiple"
+      }
+    },
+    {
+      "case_id": "human-edited",
+      "expected_correspondence": "exact_unchanged",
+      "support_precondition": "human_edited",
+      "human_edit": {
+        "field": "external_org",
+        "value": "Reviewer-normalized owner"
+      },
+      "successor": {"kind": "exact"}
+    }
+  ]
+}

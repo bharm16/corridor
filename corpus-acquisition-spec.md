@@ -42,7 +42,7 @@ Candidates meeting these criteria are identified in §7.1.
 **Hard requirements**
 
 - Project A: spine + stream, both publicly reachable.
-- Project B: spine + stream, **plus a filled Utility Conflict Matrix or equivalent professionally authored conflict enumeration.** This is the eval gold set; without it the M7 gate falls back to hand-labeling and Week 7 gets materially more expensive.
+- Project B: spine + stream, **plus a filled Utility Conflict Matrix or equivalent professionally authored conflict enumeration.** This supplies the declared machine-reference ceiling for an exact-run Extraction Measurement. If no such enumeration exists, M7 must use another authoritative structured record, downstream correction set, or independent audit; it never falls back to founder-authored row labels.
 
 **Strong preferences**
 

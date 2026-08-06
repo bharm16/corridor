@@ -1,5 +1,7 @@
 # A holdout is spent once, on a complete measurement, with labelling blind to extraction
 
+> The hand-labelling method in this decision is superseded by ADR-0023. The one-shot holdout, predeclared criteria, no-retake rule, and requirement to publish limitations remain in force.
+
 `phase-1-roadmap.md` makes M7 unskippable — *"the only objective measure that the core works"* — and defines it as done when there is **≥95% recall on labeled critical dependencies**, 100% citation validity, and metrics recorded every run.
 
 That gate cannot be run today, for two reasons that have nothing to do with the extractor and everything to do with missing preconditions nobody had named:

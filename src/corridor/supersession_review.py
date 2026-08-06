@@ -6,11 +6,12 @@ be reviewed?"  This module derives that answer from declared Supersession and
 current Operative Support, then enriches it only when one integrity-checked
 Comparison exists for the exact Active Runs.
 
-Reconfirmation is deliberately narrower than Admission.  It can move every
-role-scoped support designation for one unchanged row to verified evidence on
-the terminal successor revision; it cannot admit a Candidate, rewrite a
-Dependency conclusion, or infer which run, comparison, citation, or admission
-history the reviewer meant.
+Reconfirmation is deliberately narrower than Admission. It is the human-only
+write seam for moving every role-scoped support designation on one unchanged
+row to verified evidence on the terminal successor revision; it cannot admit a
+Candidate, rewrite a Dependency conclusion, or infer which run, comparison,
+citation, or admission history the reviewer meant. Mixed human and machine
+lineage is read back through actor-neutral support-transfer records.
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ from corridor.models import (
 from corridor.operative_support import (
     ResolvedSupport,
     SupersededOperativeScope,
-    designate_publication_support,
+    UnsafeSupportTransfer,
+    _transfer_operative_scopes_under_lock,
     readiness_frontier_before_audit,
     resolve_operative_support,
 )
@@ -179,7 +181,7 @@ class _Admission:
     origin: audit.AdmissionRecord
     candidate: Candidate
     admitted_fields: dict | None
-    latest_reconfirmation_audit_id: int | None = None
+    latest_support_transfer_audit_id: int | None = None
 
 
 def build_reviewer_worklist(
@@ -199,8 +201,10 @@ def build_reviewer_worklist(
     admissions_by_dependency = audit.admission_records_for_dependencies(
         session, dependency_ids
     )
-    reconfirmations_by_dependency = (
-        audit.reconfirmation_records_for_dependencies(session, dependency_ids)
+    support_transfers_by_dependency = (
+        audit.support_transfer_records_for_dependencies(
+            session, dependency_ids
+        )
     )
     actionable = {
         candidate.id: candidate
@@ -209,7 +213,7 @@ def build_reviewer_worklist(
         ).all()
     }
     already_reconfirmed = _reconfirmed_candidate_ids(
-        session, reconfirmations_by_dependency, actionable
+        session, support_transfers_by_dependency, actionable
     )
 
     ordinary: list[SupersessionReview] = []
@@ -238,7 +242,7 @@ def build_reviewer_worklist(
                 admission_records=admissions_by_dependency.get(
                     dependency.id, ()
                 ),
-                reconfirmation_records=reconfirmations_by_dependency.get(
+                support_transfer_records=support_transfers_by_dependency.get(
                     dependency.id, ()
                 ),
             )
@@ -354,7 +358,7 @@ def _demote_ambiguous_successor_links(
 def _reconfirmed_candidate_ids(
     session: Session,
     records_by_dependency: dict[
-        int, tuple[audit.ReconfirmationRecord, ...]
+        int, tuple[audit.SupportTransferRecord, ...]
     ],
     actionable: dict[int, Candidate],
 ) -> frozenset[int]:
@@ -373,7 +377,7 @@ def _reconfirmed_candidate_ids(
 
 def _recover_reconfirmed_candidate_ids(
     session: Session,
-    record: audit.ReconfirmationRecord,
+    record: audit.SupportTransferRecord,
     actionable: dict[int, Candidate],
 ) -> set[int]:
     """Bind a past act through durable facts, never pointer majority votes."""
@@ -438,7 +442,7 @@ def _recover_reconfirmed_candidate_ids(
 def _candidate_ids_bound_by_reconfirmation_sources(
     session: Session,
     *,
-    record: audit.ReconfirmationRecord,
+    record: audit.SupportTransferRecord,
     readbacks: tuple[RevisionComparisonReadback, ...],
 ) -> set[int]:
     """Join receipt sources to one-to-one immutable comparison findings."""
@@ -532,7 +536,7 @@ def _candidate_ids_for_reconfirmation_evidence(
 
 
 def _reconfirmation_readbacks(
-    session: Session, record: audit.ReconfirmationRecord
+    session: Session, record: audit.SupportTransferRecord
 ) -> tuple[RevisionComparisonReadback, ...]:
     comparison_ids: set[int] = set()
     if record.comparison_id is not None:
@@ -682,8 +686,8 @@ def reconfirm_operative_support(
         admission_records = audit.admission_records_for_dependencies(
             session, (dependency_id,)
         ).get(dependency_id, ())
-        reconfirmation_records = (
-            audit.reconfirmation_records_for_dependencies(
+        support_transfer_records = (
+            audit.support_transfer_records_for_dependencies(
                 session, (dependency_id,)
             ).get(dependency_id, ())
         )
@@ -692,7 +696,7 @@ def reconfirm_operative_support(
             dependency,
             predecessor_document_id,
             admission_records,
-            reconfirmation_records,
+            support_transfer_records,
         )
         if admission is None:
             raise ReconfirmationUnavailable(
@@ -719,65 +723,19 @@ def reconfirm_operative_support(
             successor_input, review.successor_document_id
         )
 
-        readiness_transferred = any(
-            scope.role == "readiness" for scope in review.superseded_scopes
-        )
-        new_evidence = EvidenceLink(
-            dependency_id=dependency_id,
-            document_id=review.successor_document_id,
-            page_no=citation["page"],
-            quote=citation["quote"],
-            verified=True,
-            satisfies_requirement=readiness_transferred,
-        )
-        session.add(new_evidence)
-        session.flush([new_evidence])
-
-        prior_scopes: list[dict[str, object]] = []
-        moved_scopes: list[dict[str, object]] = []
-        for scope in sorted(review.superseded_scopes, key=_scope_sort_key):
-            if scope.role == "publication":
-                designate_publication_support(
-                    session,
-                    dependency_id,
-                    new_evidence.id,
-                    principal=principal,
-                    field_name=scope.field_name,
-                )
-            elif scope.role == "readiness":
-                prior_readiness = session.get(
-                    EvidenceLink, scope.evidence.evidence_link_id
-                )
-                if (
-                    prior_readiness is None
-                    or prior_readiness.dependency_id != dependency_id
-                    or prior_readiness.satisfies_requirement is not True
-                ):
-                    raise ReconfirmationUnavailable(
-                        "the selected readiness support changed during "
-                        "Reconfirmation"
-                    )
-            else:
-                raise ReconfirmationUnavailable(
-                    f"unsupported operative support role {scope.role!r}"
-                )
-            prior_scopes.append(
-                {
-                    "role": scope.role,
-                    "field_name": scope.field_name,
-                    "evidence_link_id": scope.evidence.evidence_link_id,
-                }
+        try:
+            transfer = _transfer_operative_scopes_under_lock(
+                session,
+                dependency_id=dependency_id,
+                successor_document_id=review.successor_document_id,
+                citation=citation,
+                scopes=review.superseded_scopes,
+                designated_by=principal.subject,
             )
-            moved_scopes.append(
-                {
-                    "role": scope.role,
-                    "field_name": scope.field_name,
-                    "from_evidence_link_id": scope.evidence.evidence_link_id,
-                    "to_evidence_link_id": new_evidence.id,
-                }
-            )
-
-        before_receipt = {"operative_scopes": prior_scopes}
+        except UnsafeSupportTransfer as exc:
+            raise ReconfirmationUnavailable(str(exc)) from exc
+        new_evidence = transfer.evidence
+        before_receipt = transfer.before_json
         after_receipt = {
             "comparison_id": comparison_id,
             "finding_id": finding_id,
@@ -788,10 +746,13 @@ def reconfirm_operative_support(
                 list(item) for item in submitted_scope_fingerprint
             ],
             "origin_admission_audit_id": admission.origin.audit_id,
-            "predecessor_reconfirmation_audit_id": (
-                admission.latest_reconfirmation_audit_id
+            "predecessor_support_transfer_audit_id": (
+                admission.latest_support_transfer_audit_id
             ),
-            "moved_scopes": moved_scopes,
+            "predecessor_reconfirmation_audit_id": (
+                admission.latest_support_transfer_audit_id
+            ),
+            "moved_scopes": list(transfer.moved_scopes),
         }
         audit_entry = audit.record(
             session,
@@ -826,7 +787,7 @@ def _support_review(
     readiness_history_trusted: bool,
     actionable: dict[int, Candidate],
     admission_records: tuple[audit.AdmissionRecord, ...],
-    reconfirmation_records: tuple[audit.ReconfirmationRecord, ...],
+    support_transfer_records: tuple[audit.SupportTransferRecord, ...],
 ) -> SupersessionReview:
     predecessor = session.get(Document, predecessor_document_id)
     admission, predecessor_candidate_ids, admission_reason = _admission_for_scope(
@@ -834,7 +795,7 @@ def _support_review(
         dependency,
         predecessor_document_id,
         admission_records,
-        reconfirmation_records,
+        support_transfer_records,
     )
     base = dict(
         dependency_id=dependency.id,
@@ -1194,7 +1155,7 @@ def _reconfirmation_sources_match_receipt(
     predecessor_document_id: int,
     successor_document_id: int,
     predecessor_input: dict,
-    record: audit.ReconfirmationRecord,
+    record: audit.SupportTransferRecord,
 ) -> bool:
     """Validate every historical transfer source against durable facts."""
 
@@ -1259,7 +1220,7 @@ def _admission_for_scope(
     dependency: Dependency,
     predecessor_document_id: int,
     admission_records: tuple[audit.AdmissionRecord, ...],
-    reconfirmation_records: tuple[audit.ReconfirmationRecord, ...],
+    support_transfer_records: tuple[audit.SupportTransferRecord, ...],
 ) -> tuple[_Admission | None, tuple[int, ...], str | None]:
     candidate_ids: set[int] = set()
     admission_corrupt = False
@@ -1274,7 +1235,7 @@ def _admission_for_scope(
             continue
         if candidate.source_document_id == predecessor_document_id:
             candidate_ids.add(candidate.id)
-    for record in reconfirmation_records:
+    for record in support_transfer_records:
         if not record.identity_valid:
             reconfirmation_corrupt = True
         if record.successor_candidate_id is None:
@@ -1304,7 +1265,7 @@ def _admission_for_scope(
         candidate_id=ordered_candidate_ids[0],
         expected_document_id=predecessor_document_id,
         admission_records=admission_records,
-        reconfirmation_records=reconfirmation_records,
+        support_transfer_records=support_transfer_records,
         seen_reconfirmation_ids=frozenset(),
     )
     if admission is None:
@@ -1319,7 +1280,7 @@ def _candidate_lineage(
     candidate_id: int,
     expected_document_id: int,
     admission_records: tuple[audit.AdmissionRecord, ...],
-    reconfirmation_records: tuple[audit.ReconfirmationRecord, ...],
+    support_transfer_records: tuple[audit.SupportTransferRecord, ...],
     seen_reconfirmation_ids: frozenset[int],
 ) -> tuple[_Admission | None, str | None]:
     """Resolve one Candidate to an original Admission through exact receipts."""
@@ -1365,7 +1326,7 @@ def _candidate_lineage(
 
     prior = tuple(
         record
-        for record in reconfirmation_records
+        for record in support_transfer_records
         if record.successor_candidate_id == candidate_id
     )
     if len(prior) != 1:
@@ -1429,7 +1390,7 @@ def _candidate_lineage(
         candidate_id=reconfirmation.predecessor_candidate_id,
         expected_document_id=comparison.predecessor_document_id,
         admission_records=admission_records,
-        reconfirmation_records=reconfirmation_records,
+        support_transfer_records=support_transfer_records,
         seen_reconfirmation_ids=(
             seen_reconfirmation_ids | {reconfirmation.audit_id}
         ),
@@ -1439,7 +1400,7 @@ def _candidate_lineage(
     if (
         predecessor_lineage.origin.audit_id
         != reconfirmation.origin_admission_audit_id
-        or predecessor_lineage.latest_reconfirmation_audit_id
+        or predecessor_lineage.latest_support_transfer_audit_id
         != reconfirmation.predecessor_reconfirmation_audit_id
     ):
         return None, "reconfirmation_lineage_mismatch"
@@ -1470,9 +1431,14 @@ def _candidate_lineage(
     predecessor_fields = (predecessor_input.get("payload_json") or {}).get(
         "fields"
     )
+    if not isinstance(predecessor_fields, dict):
+        return None, "reconfirmation_history_corrupt"
+    predecessor_was_human_edited = (
+        predecessor_lineage.admitted_fields != predecessor_fields
+    )
     if (
-        not isinstance(predecessor_fields, dict)
-        or predecessor_lineage.admitted_fields != predecessor_fields
+        predecessor_was_human_edited
+        and reconfirmation.action != audit.AUTOMATIC_CARRY_FORWARD
     ):
         return None, "reconfirmation_lineage_changed"
     live_input = {
@@ -1503,12 +1469,17 @@ def _candidate_lineage(
     )
     if not isinstance(successor_fields, dict):
         return None, "reconfirmation_history_corrupt"
+    if (
+        reconfirmation.action == audit.AUTOMATIC_CARRY_FORWARD
+        and successor_fields != predecessor_lineage.admitted_fields
+    ):
+        return None, "reconfirmation_lineage_changed"
     return (
         _Admission(
             origin=predecessor_lineage.origin,
             candidate=candidate,
             admitted_fields=successor_fields,
-            latest_reconfirmation_audit_id=reconfirmation.audit_id,
+            latest_support_transfer_audit_id=reconfirmation.audit_id,
         ),
         None,
     )
@@ -1635,14 +1606,6 @@ def _scope_signatures(
             ],
             key=lambda item: (item[0], item[1] or "", item[2], item[3]),
         )
-    )
-
-
-def _scope_sort_key(scope: SupersededOperativeScope):
-    return (
-        scope.role,
-        scope.field_name or "",
-        scope.evidence.evidence_link_id,
     )
 
 

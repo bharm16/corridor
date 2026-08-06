@@ -1,45 +1,20 @@
-"""Preparing a hand-labelled gold set, without authoring one (#88).
+"""Prepare diagnostics or author an immutable machine reference.
 
-The M7 gate's denominator is a human count: a person reads the document
-and writes down what is in it, and the extractor's output is scored
-against that (ADR-0008, and the criteria on #81). The reason is not
-ceremony — a gold set derived from the extractor's own reading measures
-nothing, because it inherits the extractor's blind spots and comes back
-at 100%.
+The diagnostic path still emits a blank worksheet for projects that obtain
+independent review elsewhere. The automated path reads the printed grid with
+no model and no extractor column mapping, stamps the shared PyMuPDF blind spot,
+and writes a semi-independent machine-reference ceiling plus its exact scope
+manifest. It is not human gold and cannot prove semantic completeness.
 
-So this module deliberately does **not** produce a gold set. It reads the
-document a second way, says where that reading and the extractor's
-disagree, and attaches the document's own words to each disagreement. A
-reviewer confirms a claim here by looking at a page — not by trusting a
-count — and then authors the denominator themselves.
-
-Two restraints make that real, and both are pinned by tests:
-
-- **The worksheet comes out blank.** A sheet pre-filled with the
-  extractor's answers turns the labeller into a checker, and a checker
-  agrees. That is the anchoring #81 rules out.
-- **Nothing here decides.** A row carrying a retirement phrase is
-  *flagged*, never dropped — whether `Not Used` retires a row number or
-  describes an out-of-service facility was #128, decided by ADR-0012: a
-  blank row carrying the phrase is retired numbering, a populated one is
-  a conflict whose facility is out of service. This report still shows
-  the retired rows rather than hiding them — the labeller must count the
-  same set the rule names, because a gold set that counted retired
-  numbering as conflicts reads recall as 162/263, failing the gate on
-  bookkeeping rather than on extraction.
-
-**The independence is partial, and the report says so.** Rows are matched
-by quote containment, which borrows no column mapping from the extractor —
-validated on 9424, where it reproduces all 162 extracted rows exactly. But
-the enumeration still reads the page through PyMuPDF's table detection,
-the same library the extractor reads through, so a region that library
-drops is invisible to both readings. Only an eye on the rendered page
-image closes that, which is why the report ends with a per-page checklist
-rather than a conclusion.
+Machine-reference bytes are first-write-only. Once authored, the CSV,
+sidecar, and scope manifest are evidence and a later code or library version
+must not silently replace them.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,7 +22,14 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.eval import REQUIRED_COLUMNS
+from corridor.eval import (
+    MACHINE_REFERENCE_LIMITATIONS,
+    MACHINE_REFERENCE_METHOD,
+    MACHINE_REFERENCE_METHOD_VERSION,
+    MACHINE_REFERENCE_SCOPE_SCHEMA,
+    REQUIRED_COLUMNS,
+    SPENT_MEASUREMENT_ARTIFACTS,
+)
 from corridor.geometry import page_tables, row_quote
 from corridor.models import Candidate, DocPage, Document, Project
 from corridor.storage import stored_file
@@ -411,15 +393,14 @@ def _rows(rows: list[UnreadRow]) -> list[str]:
 
 
 
-# The file-safety rules of a gate run, out of `main` so they can be
-# tested without driving the whole command. Both protect an artifact a
-# human made, and neither had a test.
+# File-safety rules live outside `main` so first-write-only reference evidence
+# and any independently authored worksheet can be tested without the CLI.
 GOLD_DIR = Path("gold")
 WORKSHEET_DIR = Path("out/gold")
 
 
 def machine_gold_paths(slug: str, *, directory: Path = GOLD_DIR) -> tuple[Path, Path]:
-    """Where a machine-authored gold set and its sidecar are written.
+    """Where a machine reference and its limitations sidecar are written.
 
     `<slug>.machine.csv`, never `<slug>.csv`. The hand-authored name is
     the stricter artifact and keeps it (#81 as amended): a machine gold
@@ -429,12 +410,113 @@ def machine_gold_paths(slug: str, *, directory: Path = GOLD_DIR) -> tuple[Path, 
     return directory / f"{slug}.machine.csv", directory / f"{slug}.machine.md"
 
 
+def machine_reference_scope_path(reference_path: Path | str) -> Path:
+    """Canonical adjacent author-time scope for one machine reference."""
+    return Path(reference_path).with_suffix(".scope.json")
+
+
+class SpentHoldout(Exception):
+    """A one-shot reference or measurement must remain historical evidence."""
+
+
+def assert_machine_reference_authoring_allowed(
+    slug: str, *, directory: Path = GOLD_DIR
+) -> None:
+    """Refuse to regenerate a spent or complete machine reference.
+
+    Partial publication is allowed through so a retry can finish writing the
+    missing immutable artifacts after a mid-publication failure. The bytes
+    are checked at publication time, where the full deterministic payload is
+    available.
+    """
+    historical = SPENT_MEASUREMENT_ARTIFACTS.get(slug)
+    if historical is not None:
+        raise SpentHoldout(
+            f"{slug} is a spent holdout; preserve its historical measurement "
+            f"at {historical} and do not regenerate its machine reference"
+        )
+    csv_path, sidecar = machine_gold_paths(slug, directory=directory)
+    scope_path = machine_reference_scope_path(csv_path)
+    if all(path.exists() for path in (csv_path, sidecar, scope_path)):
+        raise SpentHoldout(
+            f"{slug} machine reference is already authored; preserve the "
+            f"existing evidence at {csv_path}, {sidecar}, {scope_path}"
+        )
+
+
+def _write_reference_bytes_once(path: Path, payload: bytes) -> bool:
+    """Create one immutable artifact, or accept identical recovery bytes.
+
+    This is not a multi-file atomic commit; the filesystem cannot make three
+    sibling files appear as one unit. The recoverability guarantee here is
+    operation-level: each artifact is created exclusively, any already-written
+    partial artifact must byte-match the deterministic payload, and a retry can
+    finish the missing siblings without overwriting historical evidence.
+    """
+
+    try:
+        with path.open("xb") as handle:
+            handle.write(payload)
+        return True
+    except FileExistsError as exc:
+        try:
+            existing = path.read_bytes()
+        except OSError as read_exc:
+            raise SpentHoldout(
+                f"machine reference artifact {path} already exists but is unreadable: "
+                f"{read_exc}"
+            ) from read_exc
+        if existing != payload:
+            raise SpentHoldout(
+                f"machine reference artifact {path} already exists and diverges "
+                "from the authored bytes; preserve the historical evidence"
+            ) from exc
+        return False
+
+
+def machine_reference_artifacts(
+    slug: str,
+    gold: "MachineGold",
+    *,
+    directory: Path = GOLD_DIR,
+) -> tuple[tuple[Path, bytes], ...]:
+    """Deterministic bytes for the three immutable machine-reference artifacts."""
+    csv_path, sidecar = machine_gold_paths(slug, directory=directory)
+    csv_bytes = gold_csv(gold).encode()
+    sidecar_bytes = render_machine_gold(gold).encode()
+    scope_bytes = (
+        json.dumps(machine_reference_scope(gold, csv_bytes), indent=2) + "\n"
+    ).encode()
+    return (
+        (csv_path, csv_bytes),
+        (sidecar, sidecar_bytes),
+        (machine_reference_scope_path(csv_path), scope_bytes),
+    )
+
+
+def publish_machine_reference(
+    slug: str,
+    gold: "MachineGold",
+    *,
+    directory: Path = GOLD_DIR,
+    publisher=None,
+) -> tuple[Path, Path, Path]:
+    """Publish immutable machine-reference artifacts with retry-safe recovery."""
+    assert_machine_reference_authoring_allowed(slug, directory=directory)
+    artifacts = machine_reference_artifacts(slug, gold, directory=directory)
+    for path, _payload in artifacts:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    writer = publisher or _write_reference_bytes_once
+    for path, payload in artifacts:
+        writer(path, payload)
+    return tuple(path for path, _payload in artifacts)
+
+
 def write_worksheet(path: Path) -> bool:
     """Write a blank worksheet unless one is already there.
 
-    Returns False when it left an existing file alone. The worksheet is
-    hours of human labelling and this file is regenerable, so the
-    regenerable one yields.
+    Returns False when it left an existing diagnostic artifact alone. This
+    helper is regenerable, so it always yields to operator work already there.
     """
     if path.exists():
         return False
@@ -465,20 +547,26 @@ def main(argv: list[str]) -> int:
             # The amended path (#81): a machine-authored gold set, stamped
             # as the ceiling it is. Never overwrites a hand-authored
             # gold/<slug>.csv — the stricter artifact keeps its name.
-            gold = author_machine_gold(session, project.id)
-            csv_path, sidecar = machine_gold_paths(slug)
-            csv_path.parent.mkdir(parents=True, exist_ok=True)
-            csv_path.write_text(gold_csv(gold))
-            sidecar.write_text(render_machine_gold(gold))
+            try:
+                gold = author_machine_gold(session, project.id)
+            except SpentHoldout as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            try:
+                csv_path, sidecar, scope_path = publish_machine_reference(slug, gold)
+            except SpentHoldout as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
             labelled = sum(1 for r in gold.rows if r.critical)
             yes = sum(1 for r in gold.rows if r.critical == "yes")
             print(
-                f"{len(gold.rows)} gold rows ({yes} yes / {labelled - yes} no / "
+                f"{len(gold.rows)} reference rows ({yes} yes / {labelled - yes} no / "
                 f"{len(gold.rows) - labelled} blank); excluded {gold.retired} "
                 f"retired, {gold.empty_slots} empty slots"
             )
-            print(f"gold:    {csv_path}")
+            print(f"reference: {csv_path}")
             print(f"sidecar: {sidecar} (the ceiling caveat travels with it)")
+            print(f"scope:   {scope_path} (required for machine-reference scoring)")
             return 0
 
         prep = prepare(session, project.id)
@@ -505,9 +593,8 @@ def main(argv: list[str]) -> int:
 # ---------------- machine-authored gold: the ceiling (#81 as amended)
 #
 # The original criterion — a wholly hand-authored denominator — was amended
-# by the maintainer on 2026-08-04, before the 9540 seal was lifted: "I'm
-# not hand labeling anything. find another way." This is the other way,
-# and everything it produces says what it is: a **semi-independent
+# before the 9540 seal was lifted. The replacement removes founder row
+# labelling, and everything it produces says what it is: a **semi-independent
 # ceiling**, not the full measurement the unamended criterion bought. The
 # enumeration and the extractor share PyMuPDF's table detection, so a
 # region that library drops is invisible to both; the page-image checklist
@@ -569,6 +656,12 @@ class MachineGoldPageImage:
 
 
 @dataclass(frozen=True)
+class MachineGoldDocument:
+    sha256: str
+    filename: str
+
+
+@dataclass(frozen=True)
 class MachineGold:
     project: str
     document: str
@@ -577,6 +670,7 @@ class MachineGold:
     retired: int
     empty_slots: int
     page_images: tuple[MachineGoldPageImage, ...]
+    documents: tuple[MachineGoldDocument, ...] = ()
 
 
 def author_machine_gold(session: Session, project_id: int) -> MachineGold:
@@ -737,6 +831,13 @@ def author_machine_gold(session: Session, project_id: int) -> MachineGold:
             )
             for (filename, page_no), path in sorted(images.items())
         ),
+        documents=tuple(
+            MachineGoldDocument(
+                sha256=document.sha256,
+                filename=document.filename,
+            )
+            for document in documents
+        ),
     )
 
 
@@ -757,11 +858,30 @@ def gold_csv(gold: MachineGold) -> str:
     return "\n".join(lines) + "\n"
 
 
+def machine_reference_scope(gold: MachineGold, reference_bytes: bytes) -> dict:
+    """Bind a machine reference to its author-time method and document set."""
+    if not gold.documents:
+        raise ValueError("machine reference scope requires document identities")
+    return {
+        "schema_version": MACHINE_REFERENCE_SCOPE_SCHEMA,
+        "project": gold.project,
+        "method": MACHINE_REFERENCE_METHOD,
+        "method_version": MACHINE_REFERENCE_METHOD_VERSION,
+        "reference_sha256": hashlib.sha256(reference_bytes).hexdigest(),
+        "documents": [
+            {"sha256": document.sha256, "filename": document.filename}
+            for document in sorted(gold.documents, key=lambda item: item.sha256)
+        ],
+        "limitations": list(MACHINE_REFERENCE_LIMITATIONS),
+        "manifest_provenance": {"kind": "author_time"},
+    }
+
+
 def render_machine_gold(gold: MachineGold) -> str:
     labelled = sum(1 for r in gold.rows if r.critical)
     yes = sum(1 for r in gold.rows if r.critical == "yes")
     lines = [
-        f"# Machine-authored gold set — {gold.project}",
+        f"# Machine reference — {gold.project}",
         "",
         f"Document: `{gold.document}`",
         "",
@@ -774,7 +894,7 @@ def render_machine_gold(gold: MachineGold) -> str:
         "the critical marks are grid cells read through the same vocabulary",
         "the Ledger uses (ADR-0009, ADR-0012).",
         "",
-        f"- gold rows: {len(gold.rows)}",
+        f"- reference rows: {len(gold.rows)}",
         f"- labelled for criticality: {labelled} ({yes} yes / {labelled - yes} no); "
         f"{len(gold.rows) - labelled} blank — unsettled or unmarked, out of the ≥95% denominator",
         f"- excluded: {gold.retired} retired rows, {gold.empty_slots} empty slots (ADR-0012)",

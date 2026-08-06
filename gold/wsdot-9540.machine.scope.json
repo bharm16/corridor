@@ -1,0 +1,41 @@
+{
+  "schema_version": "corridor.machine-reference-scope.v2",
+  "project": "wsdot-9540",
+  "method": "pymupdf-table-grid",
+  "method_version": "1",
+  "reference_sha256": "97323bebdedcf3bd6db2d43be3c55cdaa0e662b9125b5835a52962e0e18b5bd9",
+  "documents": [
+    {
+      "sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+      "filename": "U3-2021-02-05-167-1b-PE-UTL-UtilityListing-Gas.pdf"
+    },
+    {
+      "sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "filename": "U3-2021-04-08-167-1b-PE-UTL-UtilityListing-OPL.pdf"
+    },
+    {
+      "sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "filename": "U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Power.pdf"
+    },
+    {
+      "sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "filename": "U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Sewer.pdf"
+    },
+    {
+      "sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "filename": "U3-2021-04-08-167-1b-PE-UTL-UtilityListing-Water.pdf"
+    },
+    {
+      "sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "filename": "U3-2021-04-09-167-1b-PE-UTL-UtilityListing-Comm.pdf"
+    }
+  ],
+  "limitations": [
+    "Semi-independent ceiling: the machine reference and extractor share PyMuPDF table detection, so a region omitted by that library is invisible to both."
+  ],
+  "manifest_provenance": {
+    "kind": "backfill",
+    "reference_commit": "ceb822738b60cd4a8620900afdff42b25f82d5c4",
+    "note": "Bound from unchanged tracked reference bytes and the document identities already named by its sidecar; the reference and historical measurement were not regenerated or rescored."
+  }
+}

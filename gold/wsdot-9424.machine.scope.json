@@ -1,0 +1,21 @@
+{
+  "schema_version": "corridor.machine-reference-scope.v2",
+  "project": "wsdot-9424",
+  "method": "pymupdf-table-grid",
+  "method_version": "1",
+  "reference_sha256": "94720ed31bc66616479a5de0d2448774569c50b22cbdb4768d31090c1566a111",
+  "documents": [
+    {
+      "sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "filename": "U2-Existing%20Utility%20Listing.pdf"
+    }
+  ],
+  "limitations": [
+    "Semi-independent ceiling: the machine reference and extractor share PyMuPDF table detection, so a region omitted by that library is invisible to both."
+  ],
+  "manifest_provenance": {
+    "kind": "backfill",
+    "reference_commit": "8492680c5e9a815b2655832df00e13c34951ad74",
+    "note": "Bound from unchanged tracked reference bytes and the document identity already named by its sidecar; the reference was not regenerated or rescored."
+  }
+}

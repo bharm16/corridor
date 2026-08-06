@@ -68,19 +68,19 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 
 **Done when:** differences between projects are config only.
 
-### M7 — Quality gate and eval (1 wk)
+### M7 — Quality gate and Extraction Measurement (1 wk)
 
-- Gold set on a held-out project: that project's own filled Utility Conflict Matrix as the primary independent enumeration, plus one bounded hand-labeled slice covering permits, ROW, railroad, and events. A matrix cannot be ground truth for its own omissions — state that limit rather than papering over it.
-- Metrics per run: critical-dependency recall, overall recall/precision, citation validity, human correction rate.
+- Machine reference on a held-out project: read the project's own filled Utility Conflict Matrix through a meaningfully different path, stamp shared blind spots, and report the result as a semi-independent ceiling rather than human gold. Use authoritative structured records, downstream corrections, or independent audits when they exist; do not require founder-authored labels.
+- Metrics per exact Extraction Run: critical-dependency recall against the declared reference, overall recall/precision, citation validity, field-token failures, coverage, and the reference's limitations.
 
-**Done when:** ≥95% recall on labeled critical dependencies; 100% citation validity; metrics recorded automatically every run.
+**Done when:** ≥95% recall on reference-marked critical Dependencies; 100% citation validity; metrics and limitations are stored for every exact Extraction Run included in a declared Extraction Measurement.
 
 ### M8 — Document versioning and revisions (1-1.5 wk)
 
-- Document supersession (rev B → rev C), re-extraction diff: what changed, which ledger records are affected, which evidence went stale.
-- Design is decision-complete in ADR-0015 through ADR-0020: supersession registry, `SUPERSEDED_CITATION` on operative support, role-scoped resolver, Revision Comparison, fail-closed queue with declared Active Runs, and the human rebuild of the development Ledger. Vocabulary in `CONTEXT.md`.
+- Document Supersession (rev B → rev C), exact-run Revision Comparison, affected Ledger records, and Operative Support that cites a superseded revision.
+- Design is decision-complete in ADR-0015 through ADR-0023: supersession registry, `SUPERSEDED_CITATION` on operative support, role-scoped resolver, Revision Comparison, fail-closed queue with declared Active Runs, retirement of the noncompliant development Ledger, opt-in Automatic Carry-Forward for exact unchanged support, and machine-reference limits. Vocabulary in `CONTEXT.md`.
 
-**Done when:** registering a revised document yields a Revision Comparison and a Supersession Review worklist, reconfirmation moves operative support, and nothing is overwritten.
+**Done when:** registering a revised document yields a Revision Comparison and a Supersession Review worklist; Revision Processing read-verifies the Comparison before invoking any authorized policy; exact-run Extraction Measurement is reproducible; human Reconfirmation or policy-authorized Automatic Carry-Forward moves existing Operative Support; and uncertain cases produce durable versioned Abstentions. Production history and sealed receipts are never overwritten; identical automation reruns do not duplicate outcomes; ADR-0021's development-only retirement is explicit, immutable, and independently verifiable.
 
 ### M9 — Second user and write-back lite (1.5-2 wk)
 
