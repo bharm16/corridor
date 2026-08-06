@@ -549,6 +549,48 @@ def test_register_supersession_rejects_missing_target_or_invalid_metadata(
         )
 
 
+def test_a_document_cannot_be_the_authority_for_its_own_replacement(session, project):
+    """The predecessor is refused as its own source; the successor is not.
+
+    A revision claiming "I have been replaced, and the proof is on page 1
+    of me" is attesting to an event that postdates it, so the page a reader
+    would check predates the fact (ADR-0015). A successor stating what it
+    replaces is the ordinary way agencies declare a chain, and stays legal.
+    """
+    module = _supersession()
+    Declaration = module.SupersessionDeclaration
+    first = _document(session, project, registry_id="RID-SELF-1", filename="one.pdf")
+    second = _document(session, project, registry_id="RID-SELF-2", filename="two.pdf")
+    # Both carry the cited page, so a refusal can only be about who is
+    # attesting — not about a page that does not exist.
+    for document in (first, second):
+        session.add(
+            DocPage(document_id=document.id, page_no=1, text="Replaced on 2026-02-13")
+        )
+    session.flush()
+
+    def declaration(source):
+        return Declaration(
+            predecessor_registry_id=first.registry_id,
+            successor_registry_id=second.registry_id,
+            replacement_date=date(2026, 2, 13),
+            source_registry_id=source.registry_id,
+            source_page=1,
+        )
+
+    with pytest.raises(ValueError, match="source cannot be the predecessor"):
+        module.register_supersessions(session, [declaration(first)])
+
+    session.refresh(first)
+    assert first.superseded_by is None
+    assert first.supersession_source_document_id is None
+
+    module.register_supersessions(session, [declaration(second)])
+    session.refresh(first)
+    assert first.superseded_by == second.id
+    assert first.supersession_source_document_id == second.id
+
+
 def test_register_supersession_rejects_self_cycle_and_conflicting_edges(
     session, project
 ):

@@ -1,3 +1,4 @@
+import hashlib
 from datetime import date, timedelta
 
 import pytest
@@ -124,11 +125,28 @@ def codes(session, dep, today=TODAY):
 
 
 def register_chain(session, project, documents, replacement_dates):
-    """Declare a test revision chain from one authority-index page."""
+    """Declare a test revision chain from one authority-index page.
+
+    The index is a document of its own rather than the chain's first
+    revision: a predecessor cannot be the authority for its own
+    replacement, since the replacement postdates it.
+    """
     assert len(documents) == len(replacement_dates) + 1
     for document in documents:
         document.registry_id = f"exceptions-{project.id}-{document.id}"
-    source = documents[0]
+    source = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(
+            f"exceptions-index-{project.id}".encode()
+        ).hexdigest(),
+        filename="authority-index.pdf",
+        doc_type="other",
+        parse_status="parsed",
+        pages=1,
+        registry_id=f"exceptions-{project.id}-index",
+    )
+    session.add(source)
+    session.flush()
     session.add(
         DocPage(
             document_id=source.id,

@@ -260,6 +260,11 @@ def _seed_waiting_supersession_review(session, project, predecessor):
 
     predecessor.registry_id = f"web-predecessor-{predecessor.id}"
     session.flush()
+    # The successor states what it replaces, so it carries the cited page.
+    session.add(
+        DocPage(document_id=successor.id, page_no=1, text="Replaces the prior revision")
+    )
+    session.flush()
     register_supersessions(
         session,
         [
@@ -267,7 +272,7 @@ def _seed_waiting_supersession_review(session, project, predecessor):
                 predecessor_registry_id=predecessor.registry_id,
                 successor_registry_id=successor.registry_id,
                 replacement_date=date.today(),
-                source_registry_id=predecessor.registry_id,
+                source_registry_id=successor.registry_id,
                 source_page=1,
             )
         ],
@@ -2295,6 +2300,11 @@ def test_superseded_citation_is_visible_as_reconfirmation_work(
     document.registry_id = f"web-predecessor-{document.id}"
     successor.registry_id = f"web-successor-{successor.id}"
     session.flush()
+    # The successor states what it replaces, so it carries the cited page.
+    session.add(
+        DocPage(document_id=successor.id, page_no=1, text="Replaces the prior revision")
+    )
+    session.flush()
     register_supersessions(
         session,
         [
@@ -2302,7 +2312,7 @@ def test_superseded_citation_is_visible_as_reconfirmation_work(
                 predecessor_registry_id=document.registry_id,
                 successor_registry_id=successor.registry_id,
                 replacement_date=date.today(),
-                source_registry_id=document.registry_id,
+                source_registry_id=successor.registry_id,
                 source_page=1,
             )
         ],
