@@ -1,5 +1,7 @@
 # Every published number is an Assertion or a Derivation
 
+> ADR-0025 adds a third class: a **Work Decision** — what the project decided, attributed to a principal at a stated time. "No cell is bare" is unchanged; the classes are three.
+
 The weekly report's headline cells are aggregates — milestone rollups, counts by exception rule, "% with verified evidence". No document contains those numbers, so the rule "zero uncited assertions, enforced by the verifier" was unenforceable for exactly the figures an audience reads first. The rule would have had to be quietly exempted, leaving the Definition of Done stronger than what was actually checked.
 
 Every published cell now carries one of two provenance classes:

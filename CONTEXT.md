@@ -42,6 +42,18 @@ _Avoid_: required date, due date, deadline
 The date an External Party stated it would deliver. A claim by someone else, which may move, may be contradicted by another document, and may bear no relation to the Need Date.
 _Avoid_: promise date, agreed date, target date
 
+**Internal Owner**:
+The project-team member accountable for driving a Dependency's Next Action — established only by a Work Decision. The recording principal and the Internal Owner are distinct roles, not necessarily distinct people: self-assignment is a principal assigning themselves, recorded like any other assignment. The External Party owns the Dependency; the Internal Owner owns the project's follow-up.
+_Avoid_: owner (bare — ambiguous with the External Party), assignee, responsible party
+
+**Next Action**:
+The step the project has decided must happen next for a Dependency, with an Action Due Date when the project sets one. Set, completed, reassigned or cancelled only by Work Decisions, which append and never overwrite.
+_Avoid_: action item (meeting vocabulary — acceptable in UI copy, never in code), task, todo, follow-up
+
+**Action Due Date**:
+The date the project set for its own Next Action. A project-controlled date: neither the Need Date, which a Milestone derives, nor a Committed Date, which an External Party claimed.
+_Avoid_: due date (bare), deadline
+
 ### Claims and proof
 
 **Assertion**:
@@ -57,8 +69,12 @@ The Evidence doing current work for a Dependency **in a named role** — closing
 _Avoid_: active evidence, current evidence, live citation, operative support with no role named
 
 **Derivation**:
-A claim produced by computing over Dependencies rather than by reading a document — a count, a percentage, a rollup. Carries the ruleset version and the records it covered instead of a quote, and drills through to their Evidence. No published number is ever bare: it is an Assertion or a Derivation.
+A claim produced by computing over Dependencies rather than by reading a document — a count, a percentage, a rollup. Carries the ruleset version and the records it covered instead of a quote, and drills through to their Evidence. No published value is ever bare: it is an Assertion, a Derivation or a Work Decision.
 _Avoid_: aggregate, rollup, summary (when meaning the provenance class)
+
+**Work Decision**:
+An attributable project-team decision, recorded at a stated time, that establishes or changes project-controlled coordination state for a Dependency — its Internal Owner, Next Action or Action Due Date. It proves only what the project decided and when: it is not Evidence, states nothing about what a document or External Party said, and can never set Criticality, a Resolution Strategy, Ready, or an External Party's status or commitment. Later Work Decisions supersede but never erase earlier ones. What a report publishes is an Assertion (what a document said), a Derivation (what the rules computed) or a Work Decision (what the project decided).
+_Avoid_: workflow state, attribution, direction (carries contractual-authority weight in construction), audit entry
 
 **Document of Record**:
 When one document is published in several formats, the one Evidence cites. The structured original outranks anything printed from it: a spreadsheet states its values, a PDF of that spreadsheet only depicts them.

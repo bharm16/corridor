@@ -78,7 +78,7 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 ### M8 — Document versioning and revisions (1-1.5 wk)
 
 - Document Supersession (rev B → rev C), exact-run Revision Comparison, affected Ledger records, and Operative Support that cites a superseded revision.
-- Design is decision-complete in ADR-0015 through ADR-0023: supersession registry, `SUPERSEDED_CITATION` on operative support, role-scoped resolver, Revision Comparison, fail-closed queue with declared Active Runs, retirement of the noncompliant development Ledger, opt-in Automatic Carry-Forward for exact unchanged support, and machine-reference limits. Vocabulary in `CONTEXT.md`.
+- Design is decision-complete in ADR-0015 through ADR-0023: supersession registry, `SUPERSEDED_CITATION` on operative support, role-scoped resolver, Revision Comparison, fail-closed queue with declared Active Runs, retirement of the noncompliant development Ledger, opt-in Automatic Carry-Forward for exact unchanged support, and machine-reference limits; ADR-0024 adds that its acceptance captures are regression artifacts, never production run lineage. Vocabulary in `CONTEXT.md`.
 
 **Done when:** registering a revised document yields a Revision Comparison and a Supersession Review worklist; Revision Processing read-verifies the Comparison before invoking any authorized policy; exact-run Extraction Measurement is reproducible; human Reconfirmation or policy-authorized Automatic Carry-Forward moves existing Operative Support; and uncertain cases produce durable versioned Abstentions. Production history and sealed receipts are never overwritten; identical automation reruns do not duplicate outcomes; ADR-0021's development-only retirement is explicit, immutable, and independently verifiable.
 
@@ -113,4 +113,6 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 
 ## Phase 2 pointer (out of scope here)
 
-External link/email-based responses without accounts, action assignment and approvals, closure evidence requirements, schedule write-back, reusable owner templates, SSO and security package.
+Multi-user assignment, acknowledgment, approvals, and notifications; external link/email-based responses without accounts; closure evidence requirements; schedule write-back; reusable owner templates; SSO and security package.
+
+Phase 1 carries single-operator, attributable internal Work Decisions — assigning an Internal Owner, a Next Action, and an Action Due Date is in scope (ADR-0025); everything multi-user or external-party-facing about them is not.

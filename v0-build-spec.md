@@ -181,10 +181,11 @@ Thresholds (14 d, 30 d) are per-project config. The ruleset carries a version, r
 
 ## 10. Weekly readiness report
 
-HTML → PDF. **No cell is bare.** Every published cell carries one of two provenance classes (ADR-0003):
+HTML → PDF. **No cell is bare.** Every published cell carries one of three provenance classes (ADR-0003, ADR-0025):
 
 - an **Assertion** — citation marker `[D12 p.4]` linking to the verified quote
 - a **Derivation** — ruleset version plus the record IDs aggregated, drilling through to those records' evidence
+- a **Work Decision** — the exact decision ids displayed: recording principal, timestamp, and before/after values, field-exact
 
 Enforced by the verifier, not by convention.
 
@@ -239,7 +240,7 @@ Week 0 runs in parallel with everything and is specified in `corpus-acquisition-
 
 **Week 0 — corpus, in parallel.** Candidate project selection, records requests filed, manifest-driven fetcher, spine and stream documents downloaded for Project A. Exit: manifest resolves to files on disk with provenance.
 
-**Week 1 — walking skeleton.** One end-to-end slice on ~3 documents: fetch → ingest → minimal schema (`documents`, `dependencies`, `assertions`, `evidence_links`) → one hardcoded matrix extractor → accept via CLI → one ledger row → a one-page HTML report exercising both provenance classes. Exit: `make demo` produces a cited one-row report from raw files.
+**Week 1 — walking skeleton.** One end-to-end slice on ~3 documents: fetch → ingest → minimal schema (`documents`, `dependencies`, `assertions`, `evidence_links`) → one hardcoded matrix extractor → accept via CLI → one ledger row → a one-page HTML report exercising every provenance class. Exit: `make demo` produces a cited one-row report from raw files.
 
 The skeleton is not throwaway. Its purpose is to surface schema gaps while migrations are still free — two were already found by reading the report spec against the data model, and the third is cheaper to find in week 1 than in week 5.
 
@@ -251,7 +252,7 @@ The skeleton is not throwaway. Its purpose is to surface schema gaps while migra
 
 **Week 5 — M2 (hard half) + M4.** Agreement and email extractors, slip/non-response events, milestone CSV import, need-date linkage, exception engine. Exit: exception list matches your hand-check of Project A.
 
-**Week 6 — M5.** Report template, both provenance classes enforced, snapshot + changes-since-last diff, PDF render, XLSX export, demo path scripted end-to-end. Exit: report generates with no bare cells, in one command.
+**Week 6 — M5.** Report template, all provenance classes enforced, snapshot + changes-since-last diff, PDF render, XLSX export, demo path scripted end-to-end. Exit: report generates with no bare cells, in one command.
 
 **Week 7 — hardening + eval seed.** Ingest Project B, fix everything that breaks, assemble the gold set, first `make eval` run, iterate prompts once. Exit: definition of done below.
 
@@ -263,7 +264,7 @@ Nights-and-weekends pace roughly doubles the calendar.
 - [ ] All candidates adjudicated through the UI at ≥60/hour.
 - [ ] Merge suggestions rank the correct existing dependency first, with the reason visible.
 - [ ] Exception list matches a manual check on Project A.
-- [ ] Weekly report generates with no bare cells — every figure an Assertion or a Derivation.
+- [ ] Weekly report generates with no bare cells — every figure an Assertion, a Derivation or a Work Decision (ADR-0025).
 - [ ] Ready is reachable only by marking verified evidence; no status field can be set to it.
 - [ ] Entire pipeline runs on Project B with config-only changes.
 - [ ] First eval run recorded; critical recall measured (gate to hit in M7: ≥95%).
