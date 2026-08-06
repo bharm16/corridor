@@ -35,6 +35,7 @@ from corridor.adjudicate import (
     merge_candidate,
     reject_candidate,
 )
+from corridor.automatic_carry_forward import automatic_carry_forward_status
 from corridor.db import Session as SessionFactory
 from corridor.config import settings
 from corridor.exceptions import RULES, evaluate_project
@@ -139,6 +140,11 @@ def queue(
         "candidate_count": total + len(ordinary_reviews),
         "reconfirmation_count": len(worklist.reconfirmation),
         "ordinary_reviews": ordinary_reviews,
+        "automatic_carry_forward": automatic_carry_forward_status(
+            session,
+            project.id,
+            worklist=worklist,
+        ),
     }
     if lane == "reconfirmation" and not worklist.reconfirmation:
         return TEMPLATES.TemplateResponse(request, "empty.html", lane_context)

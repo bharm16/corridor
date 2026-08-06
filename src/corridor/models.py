@@ -233,6 +233,102 @@ class Project(Base):
     )
 
 
+class AutomaticCarryForwardPolicyApproval(Base):
+    """One immutable human authorization of the server-owned policy."""
+
+    __tablename__ = "automatic_carry_forward_policy_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "id",
+            name="uq_automatic_carry_forward_policy_project_id",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(policy_json) = 'object'",
+            name="ck_automatic_carry_forward_policy_object",
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_automatic_carry_forward_policy_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[str] = mapped_column(Text)
+    policy_json: Mapped[dict] = mapped_column(JSONB)
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ActiveAutomaticCarryForwardPolicy(Base):
+    """The explicitly selected project policy; absence means disabled."""
+
+    __tablename__ = "active_automatic_carry_forward_policies"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "policy_approval_id"],
+            [
+                "automatic_carry_forward_policy_approvals.project_id",
+                "automatic_carry_forward_policy_approvals.id",
+            ],
+            name="fk_active_automatic_carry_forward_policy_project",
+        ),
+    )
+
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id"), primary_key=True
+    )
+    policy_approval_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AutomaticCarryForwardRun(Base):
+    """One immutable batch receipt for an authorized machine-policy attempt."""
+
+    __tablename__ = "automatic_carry_forward_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "id",
+            name="uq_automatic_carry_forward_run_project_id",
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_automatic_carry_forward_run_sha256",
+        ),
+        CheckConstraint(
+            "carried_count >= 0 and abstained_count >= 0",
+            name="ck_automatic_carry_forward_run_counts",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "policy_approval_id"],
+            [
+                "automatic_carry_forward_policy_approvals.project_id",
+                "automatic_carry_forward_policy_approvals.id",
+            ],
+            name="fk_automatic_carry_forward_run_policy_project",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    abstention_reason_version: Mapped[str] = mapped_column(String(64))
+    carried_count: Mapped[int] = mapped_column(Integer)
+    abstained_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
@@ -331,7 +427,15 @@ class ExtractionRun(Base):
     """
 
     __tablename__ = "extraction_runs"
-    __table_args__ = (UniqueConstraint("document_id", "id"),)
+    __table_args__ = (
+        UniqueConstraint("document_id", "id"),
+        Index(
+            "ix_extraction_runs_completed_prompt_document",
+            "prompt_version",
+            "document_id",
+            postgresql_where=text("outcome = 'completed' and page_errors = 0"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
@@ -530,6 +634,52 @@ class ReportRun(Base):
     # One entry per dependency: the state the report was published against.
     snapshot_json: Mapped[dict] = mapped_column(JSONB)
     output_path: Mapped[str | None] = mapped_column(Text)
+
+
+class LegacyLedgerArchive(Base):
+    """One immutable receipt for retiring a development-era Ledger graph.
+
+    The JSON owns every row needed for standalone historical readback.  The
+    scalar counts and ref-code high-water mark make the destructive operation
+    auditable without asking active Ledger tables that are empty afterwards.
+    """
+
+    __tablename__ = "legacy_ledger_archives"
+    __table_args__ = (
+        UniqueConstraint("project_id"),
+        CheckConstraint(
+            "jsonb_typeof(content_json) = 'object'",
+            name="ck_legacy_ledger_archive_content_object",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_legacy_ledger_archive_sha256",
+        ),
+        CheckConstraint(
+            "dependency_count >= 0 and assertion_count >= 0 "
+            "and evidence_link_count >= 0 and audit_log_count >= 0",
+            name="ck_legacy_ledger_archive_counts",
+        ),
+        CheckConstraint(
+            "ref_code_high_watermark >= 0",
+            name="ck_legacy_ledger_archive_ref_high_watermark",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    format_version: Mapped[str] = mapped_column(String(64))
+    content_json: Mapped[dict] = mapped_column(JSONB)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    dependency_count: Mapped[int] = mapped_column(Integer)
+    assertion_count: Mapped[int] = mapped_column(Integer)
+    evidence_link_count: Mapped[int] = mapped_column(Integer)
+    audit_log_count: Mapped[int] = mapped_column(Integer)
+    ref_code_high_watermark: Mapped[int] = mapped_column(Integer)
+    retired_by: Mapped[str] = mapped_column(Text)
+    retired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class AuditLog(Base):
@@ -837,6 +987,165 @@ class ReconfirmationReceipt(Base):
     )
     before_json: Mapped[dict] = mapped_column(JSONB)
     after_json: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AutomaticCarryForwardReceipt(Base):
+    """Immutable machine-transfer identity bound to its readable audit row."""
+
+    __tablename__ = "automatic_carry_forward_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "dependency_id",
+            "successor_candidate_id",
+            name="uq_automatic_carry_forward_dependency_successor",
+        ),
+        UniqueConstraint(
+            "new_evidence_link_id",
+            name="uq_automatic_carry_forward_new_evidence",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(before_json) = 'object'",
+            name="ck_automatic_carry_forward_receipt_before_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(after_json) = 'object'",
+            name="ck_automatic_carry_forward_receipt_after_object",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "policy_approval_id"],
+            [
+                "automatic_carry_forward_policy_approvals.project_id",
+                "automatic_carry_forward_policy_approvals.id",
+            ],
+            name="fk_automatic_carry_forward_receipt_policy_project",
+        ),
+        ForeignKeyConstraint(
+            ["dependency_id", "new_evidence_link_id"],
+            ["evidence_links.dependency_id", "evidence_links.id"],
+            name="fk_automatic_carry_forward_receipt_dependency_evidence",
+        ),
+    )
+
+    audit_log_id: Mapped[int] = mapped_column(
+        ForeignKey("audit_log.id"), primary_key=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    dependency_id: Mapped[int] = mapped_column(
+        ForeignKey("dependencies.id"), index=True
+    )
+    comparison_id: Mapped[int] = mapped_column(
+        ForeignKey("revision_comparison_runs.id")
+    )
+    finding_id: Mapped[int] = mapped_column(
+        ForeignKey("revision_comparison_findings.id")
+    )
+    predecessor_candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id")
+    )
+    successor_candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id")
+    )
+    new_evidence_link_id: Mapped[int] = mapped_column(BigInteger)
+    origin_admission_audit_id: Mapped[int] = mapped_column(
+        ForeignKey("audit_log.id")
+    )
+    predecessor_support_transfer_audit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("audit_log.id")
+    )
+    before_json: Mapped[dict] = mapped_column(JSONB)
+    after_json: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AutomaticCarryForwardOutcome(Base):
+    """One immutable row outcome within a Carry-Forward batch receipt."""
+
+    __tablename__ = "automatic_carry_forward_outcomes"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "id",
+            name="uq_automatic_carry_forward_outcome_project_id",
+        ),
+        UniqueConstraint(
+            "receipt_audit_log_id",
+            name="uq_automatic_carry_forward_outcome_receipt_audit",
+        ),
+        CheckConstraint(
+            "outcome in ('carried', 'abstained')",
+            name="ck_automatic_carry_forward_outcome_value",
+        ),
+        CheckConstraint(
+            "("
+            "outcome = 'carried' and reason is null and reason_version is null "
+            "and receipt_audit_log_id is not null"
+            ") or ("
+            "outcome = 'abstained' and reason is not null "
+            "and reason_version is not null and receipt_audit_log_id is null"
+            ")",
+            name="ck_automatic_carry_forward_outcome_kind",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "run_id"],
+            [
+                "automatic_carry_forward_runs.project_id",
+                "automatic_carry_forward_runs.id",
+            ],
+            name="fk_automatic_carry_forward_outcome_run_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "policy_approval_id"],
+            [
+                "automatic_carry_forward_policy_approvals.project_id",
+                "automatic_carry_forward_policy_approvals.id",
+            ],
+            name="fk_automatic_carry_forward_outcome_policy_project",
+        ),
+        Index(
+            "uq_automatic_carry_forward_outcome_abstained_identity",
+            "project_id",
+            "policy_approval_id",
+            "dependency_id",
+            text("coalesce(comparison_id, -1)"),
+            text("coalesce(finding_id, -1)"),
+            text("coalesce(predecessor_candidate_id, -1)"),
+            text("coalesce(successor_candidate_id, -1)"),
+            "reason",
+            "reason_version",
+            unique=True,
+            postgresql_where=text("outcome = 'abstained'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[int] = mapped_column(BigInteger)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    outcome: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(String(128))
+    reason_version: Mapped[str | None] = mapped_column(String(64))
+    receipt_audit_log_id: Mapped[int | None] = mapped_column(
+        ForeignKey("automatic_carry_forward_receipts.audit_log_id")
+    )
+    comparison_id: Mapped[int | None] = mapped_column(
+        ForeignKey("revision_comparison_runs.id")
+    )
+    finding_id: Mapped[int | None] = mapped_column(
+        ForeignKey("revision_comparison_findings.id")
+    )
+    predecessor_candidate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("candidates.id")
+    )
+    successor_candidate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("candidates.id")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

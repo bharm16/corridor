@@ -11,7 +11,7 @@ Spelling does not discriminate: both spellings appear on retired rows — `Not U
 
 ## Decision
 
-**A row whose only content is a retirement phrase, at most beside an identifier, is a Retired Row** — the form's bookkeeping for numbering taken out of service. It is not a conflict. It enters neither the Ledger nor the hand-labelled gold denominator, and the exclusion is a stated rule in every reader — `vocabulary.is_retired_row`, applied by the structure tier, the transcription tier, and the spreadsheet path alike.
+**A row whose only content is a retirement phrase, at most beside an identifier, is a Retired Row** — the form's bookkeeping for numbering taken out of service. It is not a conflict. It enters neither the Ledger nor a declared reference enumeration, and the exclusion is a stated rule in every reader — `vocabulary.is_retired_row`, applied by the structure tier, the transcription tier, and the spreadsheet path alike.
 
 **A populated conflict row carrying the phrase is a conflict.** The phrase describes the facility, not the row, and it reaches the record verbatim in `notes` for Adjudication to judge. Nobody selects a resolution strategy for a number that was never used: row 210 was analysed, resolved `Retain and Protect`, and marked for a city permit. The reading has a home in the document's own lineage — TxDOT's published template, verified in `corpus/` since #60, carries `Out of service` in its `Operational Status` controlled vocabulary. Describing a facility, the phrase maps to a value the industry defines; describing a row, it maps to nothing.
 

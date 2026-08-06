@@ -49,6 +49,7 @@ from corridor.verify import quote_appears_on, threshold_for, unverified_fields
 # thing it means there: rows read before and after are different readings
 # of one document and must not be pooled.
 PROMPT_VERSION = "sheet_native_v1"
+SCHEMA_VERSION = "sheet_candidate_shape_v1"
 
 # Not a tier in ADR-0006's sense — those name how the model was used, and
 # this used no model. Recorded beside them so a run can say how each row

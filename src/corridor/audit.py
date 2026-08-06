@@ -30,7 +30,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import AuditLog, ReconfirmationReceipt
+from corridor.models import (
+    AuditLog,
+    AutomaticCarryForwardPolicyApproval,
+    AutomaticCarryForwardReceipt,
+    ReconfirmationReceipt,
+    RevisionComparisonFinding,
+)
 from corridor.principals import (
     HumanPrincipal,
     InvalidHumanPrincipal,
@@ -43,8 +49,9 @@ from corridor.principals import (
 DEPENDENCY = "dependency"
 CANDIDATE = "candidate"
 MILESTONE = "milestone"
+PROJECT = "project"
 
-ENTITY_TYPES = frozenset({DEPENDENCY, CANDIDATE, MILESTONE})
+ENTITY_TYPES = frozenset({DEPENDENCY, CANDIDATE, MILESTONE, PROJECT})
 
 # Every act this system records against the Ledger. `entity_type` was
 # checked against its three constants while `action` stayed free text, so
@@ -55,11 +62,17 @@ MERGE_CANDIDATE = "merge_candidate"
 EDIT_CANDIDATE = "edit_candidate"
 REJECT_CANDIDATE = "reject_candidate"
 RECONFIRM_OPERATIVE_SUPPORT = "reconfirm_operative_support"
+AUTOMATIC_CARRY_FORWARD = "automatic_carry_forward"
+AUTHORIZE_AUTOMATIC_CARRY_FORWARD = "authorize_automatic_carry_forward"
+DISABLE_AUTOMATIC_CARRY_FORWARD = "disable_automatic_carry_forward"
+RETIRE_LEGACY_LEDGER = "retire_legacy_ledger"
 SET_RESOLUTION_STRATEGY = "set_resolution_strategy"
 MARK_SATISFIES_REQUIREMENT = "mark_satisfies_requirement"
 LINK_MILESTONE = "link_milestone"
 CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
+
+AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 
 ACTIONS = frozenset(
     {
@@ -68,6 +81,10 @@ ACTIONS = frozenset(
         EDIT_CANDIDATE,
         REJECT_CANDIDATE,
         RECONFIRM_OPERATIVE_SUPPORT,
+        AUTOMATIC_CARRY_FORWARD,
+        AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
+        DISABLE_AUTOMATIC_CARRY_FORWARD,
+        RETIRE_LEGACY_LEDGER,
         SET_RESOLUTION_STRATEGY,
         MARK_SATISFIES_REQUIREMENT,
         LINK_MILESTONE,
@@ -84,6 +101,7 @@ class AdmissionRecord:
     audit_id: int
     dependency_id: int
     action: str
+    actor: str
     candidate_id: int | None
     fields: dict[str, Any] | None
     human_principal: str | None
@@ -98,7 +116,10 @@ class AdmissionRecord:
     def attributable(self) -> bool:
         """Whether the stored actor is a valid stable human subject."""
 
-        return _is_attributable_human_principal(self.human_principal)
+        return (
+            _is_attributable_human_principal(self.human_principal)
+            and self.actor == self.human_principal
+        )
 
 
 @dataclass(frozen=True)
@@ -127,19 +148,27 @@ class ReadinessAuditState:
 
 
 @dataclass(frozen=True)
-class ReconfirmationRecord:
-    """Typed identity of one attributable support Reconfirmation decision."""
+class SupportTransferRecord:
+    """Typed identity of one human or authorized-machine support transfer.
+
+    This is the canonical mixed-history read model. Human Reconfirmation
+    remains a distinct action at the write seam; Automatic Carry-Forward is a
+    separate machine action. Both can appear in one lineage, so the shared
+    readback type must stay actor-neutral.
+    """
 
     audit_id: int
     dependency_id: int
+    action: str
+    actor: str
     comparison_id: int | None
     finding_id: int | None
     predecessor_candidate_id: int | None
     successor_candidate_id: int | None
     new_evidence_link_id: int | None
     origin_admission_audit_id: int | None
-    predecessor_reconfirmation_audit_id: int | None
-    predecessor_reconfirmation_pointer_valid: bool
+    predecessor_support_transfer_audit_id: int | None
+    predecessor_support_transfer_pointer_valid: bool
     operative_scopes: tuple[ReconfirmationScope, ...]
     scope_fingerprint: tuple[ReconfirmationScope, ...]
     moved_scopes: tuple[ReconfirmationMove, ...]
@@ -147,6 +176,7 @@ class ReconfirmationRecord:
     durable_successor_candidate_id: int | None
     durable_receipt_present: bool
     durable_receipt_matches: bool
+    policy_approval_id: int | None
     human_principal: str | None
 
     @property
@@ -160,19 +190,50 @@ class ReconfirmationRecord:
             and self.successor_candidate_id is not None
             and self.new_evidence_link_id is not None
             and self.origin_admission_audit_id is not None
-            and self.predecessor_reconfirmation_pointer_valid
+            and self.predecessor_support_transfer_pointer_valid
             and self.transfer_receipt_valid
             and (
                 not self.durable_receipt_present
                 or self.durable_receipt_matches
             )
+            and (
+                self.action != AUTOMATIC_CARRY_FORWARD
+                or (
+                    self.durable_receipt_present
+                    and self.durable_receipt_matches
+                    and self.policy_approval_id is not None
+                )
+            )
         )
 
     @property
     def attributable(self) -> bool:
-        """Whether the stored actor is a valid stable human subject."""
+        """Whether the transfer has an honest human or machine identity."""
 
-        return _is_attributable_human_principal(self.human_principal)
+        if self.action == RECONFIRM_OPERATIVE_SUPPORT:
+            return (
+                _is_attributable_human_principal(self.human_principal)
+                and self.actor == self.human_principal
+            )
+        if self.action == AUTOMATIC_CARRY_FORWARD:
+            return (
+                self.actor == AUTOMATIC_CARRY_FORWARD_ACTOR
+                and self.human_principal is None
+                and self.durable_receipt_present
+                and self.durable_receipt_matches
+            )
+        return False
+
+    @property
+    def predecessor_reconfirmation_audit_id(self) -> int | None:
+        """Compatibility name for the generalized predecessor pointer."""
+
+        return self.predecessor_support_transfer_audit_id
+
+
+# Compatibility alias for older callers. New mixed-history consumers should use
+# `SupportTransferRecord`.
+ReconfirmationRecord = SupportTransferRecord
 
 
 def record(
@@ -291,6 +352,7 @@ def admission_records_for_dependencies(
                 audit_id=entry.id,
                 dependency_id=entry.entity_id,
                 action=entry.action,
+                actor=entry.actor,
                 candidate_id=_positive_id(after.get("candidate_id")),
                 fields=(
                     deepcopy(raw_fields) if isinstance(raw_fields, dict) else None
@@ -304,23 +366,24 @@ def admission_records_for_dependencies(
     }
 
 
-def reconfirmation_records_for_dependencies(
+def support_transfer_records_for_dependencies(
     session: Session, dependency_ids: Iterable[int]
-) -> dict[int, tuple[ReconfirmationRecord, ...]]:
-    """Read exact Reconfirmation identities for many Dependencies at once.
+) -> dict[int, tuple[SupportTransferRecord, ...]]:
+    """Read exact support-transfer identities for many Dependencies at once.
 
-    The nullable predecessor pointer is valid only when the key is explicitly
-    present.  That distinction makes pre-lineage or partially written audit
-    JSON fail closed instead of being mistaken for the first link in a chain.
+    Human Reconfirmation and Automatic Carry-Forward remain distinct acts and
+    durable receipt types.  They meet only in this read model because either
+    can be the predecessor of the other.  Legacy human receipts may use the
+    old pointer key; new records carry the actor-neutral key as well.
     """
 
     ids = _dependency_ids(dependency_ids)
     if not ids:
         return {}
-    grouped: dict[int, list[ReconfirmationRecord]] = {
+    grouped: dict[int, list[SupportTransferRecord]] = {
         dependency_id: [] for dependency_id in ids
     }
-    durable_receipts = tuple(
+    human_receipts = tuple(
         session.scalars(
             select(ReconfirmationReceipt)
             .where(ReconfirmationReceipt.dependency_id.in_(ids))
@@ -330,37 +393,74 @@ def reconfirmation_records_for_dependencies(
             )
         ).all()
     )
-    receipts_by_audit_id = {
-        receipt.audit_log_id: receipt for receipt in durable_receipts
+    automatic_receipts = tuple(
+        session.scalars(
+            select(AutomaticCarryForwardReceipt)
+            .where(AutomaticCarryForwardReceipt.dependency_id.in_(ids))
+            .order_by(
+                AutomaticCarryForwardReceipt.dependency_id,
+                AutomaticCarryForwardReceipt.audit_log_id,
+            )
+        ).all()
+    )
+    receipts_by_audit_id: dict[int, tuple[str, object] | None] = {
+        receipt.audit_log_id: ("human", receipt)
+        for receipt in human_receipts
     }
+    for receipt in automatic_receipts:
+        if receipt.audit_log_id in receipts_by_audit_id:
+            receipts_by_audit_id[receipt.audit_log_id] = None
+        else:
+            receipts_by_audit_id[receipt.audit_log_id] = (
+                "automatic",
+                receipt,
+            )
     normal_entries = tuple(
         session.scalars(
             select(AuditLog).where(
                 AuditLog.entity_type == DEPENDENCY,
                 AuditLog.entity_id.in_(ids),
-                AuditLog.action == RECONFIRM_OPERATIVE_SUPPORT,
+                AuditLog.action.in_(
+                    (
+                        RECONFIRM_OPERATIVE_SUPPORT,
+                        AUTOMATIC_CARRY_FORWARD,
+                    )
+                ),
             )
         ).all()
     )
-    entries_by_id = {entry.id: entry for entry in normal_entries}
     unresolved_receipt_ids = tuple(
         entry.id
         for entry in normal_entries
         if entry.id not in receipts_by_audit_id
     )
     if unresolved_receipt_ids:
-        receipts_by_audit_id.update(
-            {
-                receipt.audit_log_id: receipt
-                for receipt in session.scalars(
-                    select(ReconfirmationReceipt).where(
-                        ReconfirmationReceipt.audit_log_id.in_(
-                            unresolved_receipt_ids
-                        )
-                    )
-                ).all()
-            }
-        )
+        for receipt in session.scalars(
+            select(ReconfirmationReceipt).where(
+                ReconfirmationReceipt.audit_log_id.in_(
+                    unresolved_receipt_ids
+                )
+            )
+        ).all():
+            receipts_by_audit_id[receipt.audit_log_id] = (
+                "human",
+                receipt,
+            )
+        for receipt in session.scalars(
+            select(AutomaticCarryForwardReceipt).where(
+                AutomaticCarryForwardReceipt.audit_log_id.in_(
+                    unresolved_receipt_ids
+                )
+            )
+        ).all():
+            if receipt.audit_log_id in receipts_by_audit_id:
+                receipts_by_audit_id[receipt.audit_log_id] = None
+            else:
+                receipts_by_audit_id[receipt.audit_log_id] = (
+                    "automatic",
+                    receipt,
+                )
+    entries_by_id = {entry.id: entry for entry in normal_entries}
     receipt_audit_ids = tuple(receipts_by_audit_id)
     if receipt_audit_ids:
         entries_by_id.update(
@@ -375,15 +475,24 @@ def reconfirmation_records_for_dependencies(
         sorted(
             entries_by_id.values(),
             key=lambda entry: (
-                receipts_by_audit_id[entry.id].dependency_id
-                if entry.id in receipts_by_audit_id
+                receipts_by_audit_id[entry.id][1].dependency_id
+                if (
+                    entry.id in receipts_by_audit_id
+                    and receipts_by_audit_id[entry.id] is not None
+                )
                 else entry.entity_id,
                 entry.id,
             ),
         )
     )
     for entry in entries:
-        durable_receipt = receipts_by_audit_id.get(entry.id)
+        receipt_binding = receipts_by_audit_id.get(entry.id)
+        receipt_kind = (
+            receipt_binding[0] if receipt_binding is not None else None
+        )
+        durable_receipt = (
+            receipt_binding[1] if receipt_binding is not None else None
+        )
         dependency_id = (
             durable_receipt.dependency_id
             if durable_receipt is not None
@@ -412,20 +521,52 @@ def reconfirmation_records_for_dependencies(
             after,
             new_evidence_link_id=new_evidence_link_id,
         )
-        raw_predecessor_reconfirmation_id = after.get(
-            "predecessor_reconfirmation_audit_id"
+        (
+            predecessor_support_transfer_audit_id,
+            predecessor_pointer_valid,
+        ) = _support_transfer_predecessor_pointer(
+            after,
+            action=entry.action,
         )
-        predecessor_pointer_valid = (
-            "predecessor_reconfirmation_audit_id" in after
-            and (
-                raw_predecessor_reconfirmation_id is None
-                or _positive_id(raw_predecessor_reconfirmation_id) is not None
+        policy_approval_id = (
+            _positive_id(durable_receipt.policy_approval_id)
+            if receipt_kind == "automatic"
+            else None
+        )
+        durable_receipt_matches = False
+        if receipt_kind == "human":
+            durable_receipt_matches = (
+                entry.action == RECONFIRM_OPERATIVE_SUPPORT
+                and entry.entity_type == DEPENDENCY
+                and entry.entity_id == durable_receipt.dependency_id
+                and durable_receipt.before_json == entry.before_json
+                and durable_receipt.after_json == entry.after_json
+                and durable_successor_candidate_id
+                == _positive_id(after.get("successor_candidate_id"))
             )
-        )
+        elif receipt_kind == "automatic":
+            durable_receipt_matches = _automatic_receipt_matches(
+                session,
+                entry=entry,
+                receipt=durable_receipt,
+                predecessor_support_transfer_audit_id=(
+                    predecessor_support_transfer_audit_id
+                ),
+            )
+        elif entry.id in receipts_by_audit_id:
+            # One audit id bound to both durable receipt types is corrupt.
+            durable_receipt_matches = False
+
+        durable_receipt_present = entry.id in receipts_by_audit_id
+        if receipt_binding is None and durable_receipt_present:
+            durable_successor_candidate_id = None
+            policy_approval_id = None
         grouped[dependency_id].append(
-            ReconfirmationRecord(
+            SupportTransferRecord(
                 audit_id=entry.id,
                 dependency_id=dependency_id,
+                action=entry.action,
+                actor=entry.actor,
                 comparison_id=_positive_id(after.get("comparison_id")),
                 finding_id=_positive_id(after.get("finding_id")),
                 predecessor_candidate_id=_positive_id(
@@ -438,10 +579,10 @@ def reconfirmation_records_for_dependencies(
                 origin_admission_audit_id=_positive_id(
                     after.get("origin_admission_audit_id")
                 ),
-                predecessor_reconfirmation_audit_id=_positive_id(
-                    raw_predecessor_reconfirmation_id
+                predecessor_support_transfer_audit_id=(
+                    predecessor_support_transfer_audit_id
                 ),
-                predecessor_reconfirmation_pointer_valid=(
+                predecessor_support_transfer_pointer_valid=(
                     predecessor_pointer_valid
                 ),
                 operative_scopes=operative_scopes,
@@ -452,16 +593,8 @@ def reconfirmation_records_for_dependencies(
                     durable_successor_candidate_id
                 ),
                 durable_receipt_present=durable_receipt_present,
-                durable_receipt_matches=(
-                    durable_receipt is not None
-                    and entry.action == RECONFIRM_OPERATIVE_SUPPORT
-                    and entry.entity_type == DEPENDENCY
-                    and entry.entity_id == durable_receipt.dependency_id
-                    and durable_receipt.before_json == entry.before_json
-                    and durable_receipt.after_json == entry.after_json
-                    and durable_successor_candidate_id
-                    == _positive_id(after.get("successor_candidate_id"))
-                ),
+                durable_receipt_matches=durable_receipt_matches,
+                policy_approval_id=policy_approval_id,
                 human_principal=entry.human_principal,
             )
         )
@@ -471,12 +604,125 @@ def reconfirmation_records_for_dependencies(
     }
 
 
+def reconfirmation_records_for_dependencies(
+    session: Session, dependency_ids: Iterable[int]
+) -> dict[int, tuple[SupportTransferRecord, ...]]:
+    """Compatibility wrapper for the pre-generalization read model name."""
+
+    return support_transfer_records_for_dependencies(session, dependency_ids)
+
+
+def _support_transfer_predecessor_pointer(
+    after: dict,
+    *,
+    action: str,
+) -> tuple[int | None, bool]:
+    generic_key = "predecessor_support_transfer_audit_id"
+    legacy_key = "predecessor_reconfirmation_audit_id"
+    generic_present = generic_key in after
+    legacy_present = legacy_key in after
+    # A human receipt that carries the legacy key is interpreted by that key.
+    # This preserves exact readback of pre-generalization history. New sealed
+    # human receipts carry both values, and their durable JSON equality catches
+    # any later disagreement between them.
+    if action == RECONFIRM_OPERATIVE_SUPPORT and legacy_present:
+        raw_legacy = after.get(legacy_key)
+        legacy_id = _positive_id(raw_legacy)
+        return legacy_id, raw_legacy is None or legacy_id is not None
+    if generic_present:
+        raw_generic = after.get(generic_key)
+        generic_id = _positive_id(raw_generic)
+        valid = raw_generic is None or generic_id is not None
+        return generic_id, valid
+    return None, False
+
+
+def _automatic_receipt_matches(
+    session: Session,
+    *,
+    entry: AuditLog,
+    receipt: AutomaticCarryForwardReceipt,
+    predecessor_support_transfer_audit_id: int | None,
+) -> bool:
+    """Read back the durable machine binding without trusting audit JSON."""
+
+    before = entry.before_json if isinstance(entry.before_json, dict) else {}
+    after = entry.after_json if isinstance(entry.after_json, dict) else {}
+    approval = session.get(
+        AutomaticCarryForwardPolicyApproval,
+        receipt.policy_approval_id,
+    )
+    finding = session.get(
+        RevisionComparisonFinding,
+        receipt.finding_id,
+    )
+    authorization_matches: tuple[AuditLog, ...] = ()
+    if (
+        approval is not None
+        and _is_attributable_human_principal(approval.approved_by)
+    ):
+        expected_authorization = {
+            "policy_approval_id": approval.id,
+            "policy_version": approval.policy_version,
+            "policy_sha256": approval.policy_sha256,
+        }
+        authorization_matches = tuple(
+            entry
+            for entry in session.scalars(
+                select(AuditLog).where(
+                    AuditLog.entity_type == PROJECT,
+                    AuditLog.entity_id == approval.project_id,
+                    AuditLog.action
+                    == AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
+                )
+            ).all()
+            if (
+                entry.actor == approval.approved_by
+                and entry.human_principal == approval.approved_by
+                and entry.after_json == expected_authorization
+            )
+        )
+    return (
+        entry.action == AUTOMATIC_CARRY_FORWARD
+        and entry.entity_type == DEPENDENCY
+        and entry.entity_id == receipt.dependency_id
+        and entry.actor == AUTOMATIC_CARRY_FORWARD_ACTOR
+        and entry.human_principal is None
+        and receipt.before_json == before
+        and receipt.after_json == after
+        and approval is not None
+        and approval.project_id == receipt.project_id
+        and len(authorization_matches) == 1
+        and finding is not None
+        and finding.state == "unchanged"
+        and finding.predecessor_candidate_ids
+        == [receipt.predecessor_candidate_id]
+        and finding.successor_candidate_ids
+        == [receipt.successor_candidate_id]
+        and _positive_id(after.get("policy_approval_id"))
+        == receipt.policy_approval_id
+        and after.get("policy_sha256") == approval.policy_sha256
+        and _positive_id(after.get("comparison_id")) == receipt.comparison_id
+        and _positive_id(after.get("finding_id")) == receipt.finding_id
+        and _positive_id(after.get("predecessor_candidate_id"))
+        == receipt.predecessor_candidate_id
+        and _positive_id(after.get("successor_candidate_id"))
+        == receipt.successor_candidate_id
+        and _positive_id(after.get("new_evidence_link_id"))
+        == receipt.new_evidence_link_id
+        and _positive_id(after.get("origin_admission_audit_id"))
+        == receipt.origin_admission_audit_id
+        and predecessor_support_transfer_audit_id
+        == receipt.predecessor_support_transfer_audit_id
+    )
+
+
 def reconfirmed_successor_candidate_ids(
     records_by_dependency: Mapping[
-        int, tuple[ReconfirmationRecord, ...]
+        int, tuple[SupportTransferRecord, ...]
     ],
 ) -> frozenset[int]:
-    """Candidates named by a Reconfirmation, including corrupt old records.
+    """Candidates named by a support transfer, including corrupt old records.
 
     A malformed surrounding identity must not put an already-reconfirmed
     Candidate back into ordinary Admission.  The candidate id itself remains
@@ -567,6 +813,12 @@ def readiness_audit_states_for_dependencies(
     grouped: dict[int, list[AuditLog]] = {
         dependency_id: [] for dependency_id in ids
     }
+    transfers = support_transfer_records_for_dependencies(session, ids)
+    transfers_by_audit_id = {
+        record.audit_id: record
+        for records in transfers.values()
+        for record in records
+    }
     for entry in session.scalars(
         select(AuditLog)
         .where(
@@ -576,6 +828,7 @@ def readiness_audit_states_for_dependencies(
                 (
                     MARK_SATISFIES_REQUIREMENT,
                     RECONFIRM_OPERATIVE_SUPPORT,
+                    AUTOMATIC_CARRY_FORWARD,
                 )
             ),
         )
@@ -583,7 +836,10 @@ def readiness_audit_states_for_dependencies(
     ):
         grouped[entry.entity_id].append(entry)
     return {
-        dependency_id: _replay_readiness_entries(entries)
+        dependency_id: _replay_readiness_entries(
+            entries,
+            transfers_by_audit_id=transfers_by_audit_id,
+        )
         for dependency_id, entries in grouped.items()
     }
 
@@ -594,6 +850,12 @@ def _readiness_state_from_audit(
     *,
     before_audit_id: int | None,
 ) -> ReadinessAuditState | None:
+    transfers = support_transfer_records_for_dependencies(
+        session, (dependency_id,)
+    ).get(dependency_id, ())
+    transfers_by_audit_id = {
+        record.audit_id: record for record in transfers
+    }
     query = (
         select(AuditLog)
         .where(
@@ -603,6 +865,7 @@ def _readiness_state_from_audit(
                 (
                     MARK_SATISFIES_REQUIREMENT,
                     RECONFIRM_OPERATIVE_SUPPORT,
+                    AUTOMATIC_CARRY_FORWARD,
                 )
             ),
         )
@@ -610,20 +873,28 @@ def _readiness_state_from_audit(
     )
     if before_audit_id is not None:
         query = query.where(AuditLog.id < before_audit_id)
-    return _replay_readiness_entries(session.scalars(query).all())
+    return _replay_readiness_entries(
+        session.scalars(query).all(),
+        transfers_by_audit_id=transfers_by_audit_id,
+    )
 
 
 def _replay_readiness_entries(
     entries: Iterable[AuditLog],
+    *,
+    transfers_by_audit_id: Mapping[int, SupportTransferRecord],
 ) -> ReadinessAuditState | None:
     readiness_by_evidence: dict[int, bool] = {}
     ever_satisfying: set[int] = set()
     for entry in entries:
-        if not _is_attributable_human_principal(entry.human_principal):
-            return None
         before = entry.before_json if isinstance(entry.before_json, dict) else {}
         after = entry.after_json if isinstance(entry.after_json, dict) else {}
         if entry.action == MARK_SATISFIES_REQUIREMENT:
+            if (
+                not _is_attributable_human_principal(entry.human_principal)
+                or entry.actor != entry.human_principal
+            ):
+                return None
             expected_keys = {"evidence_link_id", "satisfies"}
             if set(before) != expected_keys or set(after) != expected_keys:
                 return None
@@ -645,6 +916,13 @@ def _replay_readiness_entries(
                 ever_satisfying.add(before_id)
             continue
 
+        transfer = transfers_by_audit_id.get(entry.id)
+        if (
+            transfer is None
+            or not transfer.identity_valid
+            or not transfer.attributable
+        ):
+            return None
         new_evidence_link_id = _positive_id(
             after.get("new_evidence_link_id")
         )
@@ -657,7 +935,17 @@ def _replay_readiness_entries(
         )
         if not receipt_valid or new_evidence_link_id is None:
             return None
-        if any(scope.role == "readiness" for scope in operative_scopes):
+        readiness_sources = tuple(
+            scope.evidence_link_id
+            for scope in operative_scopes
+            if scope.role == "readiness"
+        )
+        if readiness_sources:
+            if any(
+                readiness_by_evidence.get(evidence_link_id) is not True
+                for evidence_link_id in readiness_sources
+            ):
+                return None
             readiness_by_evidence[new_evidence_link_id] = True
             ever_satisfying.add(new_evidence_link_id)
 

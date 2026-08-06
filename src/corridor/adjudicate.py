@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
@@ -28,6 +28,7 @@ from corridor.models import (
     DocPage,
     EvidenceLink,
     ExternalOrg,
+    LegacyLedgerArchive,
     Project,
     is_claim,
     is_placeholder_party,
@@ -636,6 +637,13 @@ def _next_ref_code(session: Session, project_id: int) -> str:
         )
         if (match := _REF_CODE.fullmatch(ref_code or ""))
     ]
+    archived_high_watermark = session.scalar(
+        select(func.max(LegacyLedgerArchive.ref_code_high_watermark)).where(
+            LegacyLedgerArchive.project_id == project_id
+        )
+    )
+    if archived_high_watermark is not None:
+        used.append(archived_high_watermark)
     return f"DEP-{max(used, default=0) + 1:05d}"
 
 

@@ -77,6 +77,7 @@ from corridor.vocabulary import (  # noqa: F401
 # being a bare `X` — so v2 and v3 candidates are different readings of the
 # same page and pooling them would make every eval number meaningless.
 PROMPT_VERSION = "matrix_tiered_v3"
+SCHEMA_VERSION = "matrix_candidate_shape_v1"
 # Superseded prompts are kept beside the current one rather than edited:
 # their Candidates are still in the database, and a prompt that has been
 # overwritten cannot say what produced them (ADR-0003).

@@ -22,6 +22,7 @@
     <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Candidate Adjudication ({{ candidate_count }})</a>
     <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Reconfirmation ({{ reconfirmation_count }})</a>
   </nav>
+  {% include "_automatic_carry_forward_status.html" %}
   {% if lane == "candidate" and ordinary_reviews %}
     <h1>Ordinary review</h1>
     {% for view in ordinary_reviews %}

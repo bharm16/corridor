@@ -53,7 +53,7 @@ A quote from a specific page of a registered document, verified to actually appe
 _Avoid_: proof, backup, reference, source (when meaning the quote itself)
 
 **Operative Support**:
-The Evidence doing current work for a Dependency **in a named role** — closing the readiness bar, or backing what a report prints for the record or a field. The roles are distinct facts: proof that work closed does not prove every value printed. Historical Evidence is preserved forever; operative support is the subset the record presently stands on, and the only Evidence whose citing a superseded revision means anything is wrong.
+The Evidence doing current work for a Dependency **in a named role** — closing the readiness bar, or backing what a report prints for the record or a field. The roles are distinct facts: proof that work closed does not prove every value printed. Production Evidence is preserved; the sealed retirement of an explicitly noncompliant development Ledger is the narrow legacy exception (ADR-0021). Operative support is the subset the record presently stands on, and the only Evidence whose citing a superseded revision means anything is wrong.
 _Avoid_: active evidence, current evidence, live citation, operative support with no role named
 
 **Derivation**:
@@ -73,7 +73,7 @@ A document that lists utility conflicts *and* how each is to be resolved. The in
 _Avoid_: UCM (acceptable in filenames and UI copy, never in code), conflict list, utility matrix
 
 **Retired Row**:
-A row of a Utility Conflict Matrix whose only content is an identifier plus a retirement phrase (`Not Used`) — the form's bookkeeping for a number taken out of service, not a conflict. Excluded from the Ledger and from any gold denominator by stated rule, never by a guard's side effect. A **populated** row carrying the same phrase is a conflict whose facility may be out of service: the phrase describes the facility, reaches `notes` verbatim, and Adjudication judges it (ADR-0012).
+A row of a Utility Conflict Matrix whose only content is an identifier plus a retirement phrase (`Not Used`) — the form's bookkeeping for a number taken out of service, not a conflict. Excluded from the Ledger and from any reference enumeration by stated rule, never by a guard's side effect. A **populated** row carrying the same phrase is a conflict whose facility may be out of service: the phrase describes the facility, reaches `notes` verbatim, and Adjudication judges it (ADR-0012).
 _Avoid_: blank row (it has content: the id and the phrase), skipped row, empty slot
 
 **Utility Inventory**:
@@ -83,8 +83,8 @@ _Avoid_: matrix, inventory matrix (the phrase agencies print on the cover of bot
 ### States and signals
 
 **Ready**:
-A derived state, not a stored one: a Dependency is ready when a reviewer has marked a verified Evidence link as meeting the bar named in its `evidence_required`. The reviewer judges sufficiency; the system refuses readiness without the evidence. Nobody can set a Dependency to ready directly — readiness is proven or it does not hold.
-Proof also stands on the current revision: when every satisfying link cites a superseded document, readiness lapses until a reviewer re-confirms against the revision that replaced it — the old Evidence stays verified and preserved; only present readiness changes.
+A derived state, not a stored one: a Dependency is ready when verified Evidence meets the bar named in its `evidence_required`. A human judges that sufficiency; an authorized Automatic Carry-Forward may inherit the established judgment onto exact current Evidence but cannot originate it. Nobody can set a Dependency to ready directly — readiness is proven or it does not hold.
+Proof also stands on the current revision: when every satisfying link cites a superseded document, readiness lapses until existing sufficiency is moved to current Evidence by Reconfirmation or Automatic Carry-Forward — the old Evidence stays verified and preserved; only present readiness changes.
 _Avoid_: complete, done, cleared, resolved
 
 **Slip**:
@@ -99,6 +99,10 @@ _Avoid_: alert, flag, issue, risk, warning, severity (retired with the Exception
 One project's Exceptions as computed at one moment, carrying the date they were computed against, the thresholds applied and the ruleset version — so a published number and the fact beneath it cannot disagree about what day it is. A report, its export and its recorded run all describe one Evaluation.
 _Avoid_: run, scan, pass, snapshot (a snapshot is what a report was published against, and it records an Evaluation rather than being one)
 
+**Extraction Measurement**:
+A scored comparison of Candidates from explicitly named Extraction Runs against a declared reference enumeration, recording both the measured population and the reference's limits. It measures an extractor, never the Ledger or a project's Exceptions.
+_Avoid_: Evaluation (reserved for computed Exceptions), eval result, benchmark
+
 **Briefing**:
 A model-drafted narrative view of the record — one Dependency or one project, read across its Evidence, Assertions and Exceptions and rendered as prose. Cited sentence by sentence to the same bar as a report cell; floored by the computed Exceptions, which it may explain but never omit; stamped with the prompt version and model that drafted it and the evaluation time and ruleset version of the Exceptions it cites; regenerable and never itself the record. Anything it surfaces that should become record enters as a Candidate through Adjudication (ADR-0011).
 _Avoid_: summary, analysis, assessment, AI insights
@@ -106,7 +110,7 @@ _Avoid_: summary, analysis, assessment, AI insights
 ### The review pipeline
 
 **Active Run**:
-The one extraction run per document that reviewer work draws from — declared in the run lineage, never inferred as the newest by id or timestamp, so an experimental prompt run or a backfilled receipt can never silently become reviewer work. The queue reads it; a Revision Comparison pins exact run ids; an eval selects its runs explicitly — three readers, one definition, no implicit "latest."
+The one extraction run per document that reviewer work draws from — declared in the run lineage, never inferred as the newest by id or timestamp, so an experimental prompt run or a backfilled receipt can never silently become reviewer work. The queue reads it; a Revision Comparison pins exact run ids; an Extraction Measurement selects exact run ids independently — three readers, one definition, no implicit "latest."
 _Avoid_: latest run, newest run, current extraction
 
 **Revision Comparison**:
@@ -114,21 +118,41 @@ The immutable record of comparing two extraction runs — a document's and its s
 _Avoid_: revision diff (implies an exactness the matcher cannot promise), change report (Report is the published weekly artifact), delta
 
 **Supersession Review**:
-The live worklist derived from Supersession and the operative-support resolver: which Ledger records still stand on a superseded revision, what re-confirming each one requires, and where a successor has no usable extraction yet (`awaiting_extraction`, `extraction_failed`). A Revision Comparison enriches it when one exists; the worklist never waits for one. It changes as reviewers work; the Comparison beneath it never does.
+The live worklist derived from Supersession and the operative-support resolver: which Ledger records still stand on a superseded revision, what moving each one's support requires, and where the revision workflow is incomplete (`awaiting_extraction`, `extraction_failed`, `awaiting_active_run`, `awaiting_comparison`). A Revision Comparison enriches it when one exists; the worklist never waits for one. It changes through Reconfirmation or Automatic Carry-Forward; the Comparison beneath it never does.
 _Avoid_: re-review queue, stale list, migration list
 
 **Reconfirmation**:
 The human act of re-pointing a Dependency's operative support at the current revision after a supersession. It changes what the record stands on — never whether the record should exist, how it was merged, or what its fields conclude: those are Adjudication's questions, and a gesture that performs both records two distinct decisions.
 _Avoid_: re-adjudication, ratification, re-review
 
+**Automatic Carry-Forward**:
+The policy-authorized act of moving a Dependency's existing Operative Support to mechanically verified Evidence from an exact, unique, unchanged successor row. It preserves only support roles a human already established; it never performs Admission, changes the adjudicated conclusion, or originates readiness.
+_Avoid_: automatic Reconfirmation, machine Adjudication, auto-approval, ratification
+
+**Carry-Forward Policy**:
+The named, versioned eligibility rules an accountable project principal authorizes for Automatic Carry-Forward. Authorization covers the rules rather than individual rows, and a changed policy version requires new authorization.
+_Avoid_: blanket approval, silent default, reviewer bot
+
+**Carry-Forward Run**:
+The immutable receipt for one authorized policy evaluation over a project's current Supersession Review work. It records exact carried and abstained outcomes under one policy digest and reason-vocabulary version; an identical rerun may record a zero-new-outcome Run but cannot duplicate a prior outcome.
+_Avoid_: bot session, reviewer batch, transient log
+
+**Revision Processing**:
+The ordered service that creates and read-verifies one exact Revision Comparison before invoking an already-authorized Carry-Forward Policy. It grants no authority, does not activate a policy, and does not turn Revision Comparison into a Ledger writer.
+_Avoid_: automatic Adjudication, comparison write-back, implicit approval
+
 **Candidate**:
 A Dependency or event proposed by an extractor, with its citations, not yet part of the Ledger. Extractors produce only Candidates; they can never write to the Ledger.
 _Avoid_: suggestion, extraction, draft, proposal
+
+**Abstention**:
+The outcome when automation cannot prove affected supersession work eligible for Automatic Carry-Forward. Any successor Candidate and the Dependency's support remain unresolved; a dropped row may have no successor Candidate at all. The Ledger is left unchanged rather than forcing a conclusion.
+_Avoid_: rejection, failure, automatic Adjudication, low-confidence Admission
 
 **Adjudication**:
 The human act of resolving a Candidate — accept, edit then accept, merge into an existing Dependency, or reject. The only path into the Ledger.
 _Avoid_: review, triage, approval, curation
 
 **Admission**:
-The entry of a record into the Ledger — the outcome of an Adjudication accept, edit-then-accept, or merge, performed by an attributable human principal and recorded with their identity. Reconfirmation never admits; nothing else writes.
+The entry of a record into the Ledger — the outcome of an Adjudication accept, edit-then-accept, or merge, performed by an attributable human principal and recorded with their identity. Reconfirmation never admits; nothing else performs Admission.
 _Avoid_: creation, insertion, import, promotion

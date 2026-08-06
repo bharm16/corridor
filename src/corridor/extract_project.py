@@ -68,6 +68,9 @@ class Outcome:
     # stating: a document that disagreed with itself about what its own
     # columns mean is one whose mapping a reviewer should look at.
     header_disagreements: int = 0
+    # The exact terminal receipt produced by this attempt. A skip produces no
+    # new receipt and therefore leaves this unset.
+    extraction_run_id: int | None = None
 
 
 def extract_project(
@@ -95,6 +98,7 @@ def extract_project(
         def select_route(document: Document) -> ExtractionRoute:
             return ExtractionRoute(
                 effective_prompt_version=prompt_version,
+                schema_version=prompt_version,
                 extract=extract,
             )
 
@@ -135,14 +139,14 @@ def extract_project(
 
         if document.parse_status != "parsed":
             detail = f"ingest parse_status is {document.parse_status!r}"
-            record_extraction_run(
+            run = record_extraction_run(
                 session,
                 document,
                 prompt_version=effective_prompt_version,
                 candidate_count=0,
                 page_errors=1,
                 outcome="unreadable",
-                schema_version=effective_prompt_version,
+                schema_version=route.schema_version,
                 error_detail=detail,
             )
             if commit:
@@ -154,6 +158,7 @@ def extract_project(
                     "unreadable",
                     effective_prompt_version=effective_prompt_version,
                     detail=detail,
+                    extraction_run_id=run.id,
                 )
             )
             continue
@@ -164,7 +169,7 @@ def extract_project(
             # on the next run depends on being impossible.
             with session.begin_nested():
                 candidates = route.extract(session, document)
-                record_extraction_run(
+                run = record_extraction_run(
                     session,
                     document,
                     prompt_version=effective_prompt_version,
@@ -173,17 +178,17 @@ def extract_project(
                     outcome="completed",
                     candidates=tuple(candidates),
                     model=_run_model(candidates, route.model),
-                    schema_version=effective_prompt_version,
+                    schema_version=route.schema_version,
                 )
         except NoMatrixFound as exc:
-            record_extraction_run(
+            run = record_extraction_run(
                 session,
                 document,
                 prompt_version=effective_prompt_version,
                 candidate_count=0,
                 page_errors=1,
                 outcome="no_matrix",
-                schema_version=effective_prompt_version,
+                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -196,18 +201,19 @@ def extract_project(
                     "unreadable",
                     effective_prompt_version=effective_prompt_version,
                     detail=str(exc),
+                    extraction_run_id=run.id,
                 )
             )
             continue
         except ExtractionFailed as exc:
-            record_extraction_run(
+            run = record_extraction_run(
                 session,
                 document,
                 prompt_version=effective_prompt_version,
                 candidate_count=0,
                 page_errors=1,
                 outcome="failed",
-                schema_version=effective_prompt_version,
+                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -220,6 +226,7 @@ def extract_project(
                     "failed",
                     effective_prompt_version=effective_prompt_version,
                     detail=str(exc),
+                    extraction_run_id=run.id,
                 )
             )
             continue
@@ -231,7 +238,7 @@ def extract_project(
                 candidate_count=0,
                 page_errors=1,
                 outcome="failed",
-                schema_version=effective_prompt_version,
+                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=f"{type(exc).__name__}: {exc}",
             )
@@ -251,6 +258,7 @@ def extract_project(
                 unverified=sum(1 for c in candidates if not c.citations_verified),
                 tiers=dict(document.extraction_tiers or {}),
                 header_disagreements=document.header_disagreements or 0,
+                extraction_run_id=run.id,
             )
         )
 

@@ -1,5 +1,7 @@
 # Admission is a human act distinct from Reconfirmation, and the development Ledger is rebuilt, not ratified
 
+> The development-Ledger rebuild in this decision is superseded by ADR-0021. Human-only Admission and the distinction between Admission and Reconfirmation remain in force.
+
 The Ledger's constitution — nothing enters except by a human decision — stands as written. The live database does not: all 141 Dependencies were admitted by `accept_candidate` under actors `agent` (96) and `demo` (45), zero by a human. The machinery rule held — only Adjudication ever wrote, extractors never did — but the actor claim failed. The records yield, not the definition.
 
 Two enforcement holes made the drift possible, and they close first. The audit log records an actor *label*, not an identity: `actor` is unrestricted caller-supplied text and the web routes hard-code `reviewer`, so canonical accept/merge operations gain a required, stable human principal. And the demo path operates on the real NHHIP project — `demo._reset` deletes its Dependencies, Candidates and their audit entries, then auto-accepts as `demo` — contradicting human-only admission and append-only history at once. The demo isolates to its own project.

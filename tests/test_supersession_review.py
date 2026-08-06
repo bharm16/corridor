@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
+from corridor import audit
 from corridor.adjudicate import accept_candidate, edit_candidate
 from corridor.db import Session, engine
 from corridor.extraction_runs import (
@@ -1602,6 +1603,13 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
     assert reconfirmations[1].after_json["successor_candidate_id"] == (
         terminal_candidate.id
     )
+    support_transfers = audit.support_transfer_records_for_dependencies(
+        session, (scenario["dependency"].id,)
+    )[scenario["dependency"].id]
+    assert [record.action for record in support_transfers] == [
+        audit.RECONFIRM_OPERATIVE_SUPPORT,
+        audit.RECONFIRM_OPERATIVE_SUPPORT,
+    ]
 
 
 def test_legacy_reconfirmation_lineage_rejects_a_forward_audit_pointer(session):

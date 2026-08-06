@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
+from typing import Any, Iterable
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -23,6 +23,10 @@ from corridor.project_lock import lock_project
 
 class NoSuchSupportEvidence(ValueError):
     """The requested EvidenceLink does not belong to the Dependency."""
+
+
+class UnsafeSupportTransfer(ValueError):
+    """Current operative scopes no longer match an all-or-none transfer."""
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,15 @@ class SupersededOperativeScope:
         if self.role == "publication":
             return "record publication"
         return self.role
+
+
+@dataclass(frozen=True)
+class SupportTransferMutation:
+    """Shared mutation result before a human or machine seals its receipt."""
+
+    evidence: EvidenceLink
+    before_json: dict[str, Any]
+    moved_scopes: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -109,22 +122,57 @@ def designate_publication_support(
 ) -> OperativeSupport:
     """Set the human-adjudicated publication support for one record scope."""
     principal = require_human_principal(principal)
+    field_name = _validated_field_name(field_name)
+
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None:
+        raise NoSuchSupportEvidence(f"no dependency {dependency_id}")
+    # Every support-transfer path re-derives the operative scopes under this
+    # same lock. A direct designation must join that ordering or it can race
+    # the all-or-none transfer and silently overwrite the newer act.
+    session.flush()
+    lock_project(session, dependency.project_id)
+    session.expire_all()
+    return _designate_publication_support_under_lock(
+        session,
+        dependency_id,
+        evidence_link_id,
+        designated_by=principal.subject,
+        field_name=field_name,
+    )
+
+
+def _validated_field_name(field_name: str | None) -> str | None:
     if field_name is not None:
         field_name = field_name.strip()
         if not field_name:
             raise ValueError("field_name must be non-empty when provided")
         if len(field_name) > 64:
             raise ValueError("field_name is longer than 64 characters")
+    return field_name
 
+
+def _designate_publication_support_under_lock(
+    session: Session,
+    dependency_id: int,
+    evidence_link_id: int,
+    *,
+    designated_by: str,
+    field_name: str | None = None,
+) -> OperativeSupport:
+    """Change one publication owner after the caller serialized the project.
+
+    This is intentionally private.  The only machine caller is the sealed
+    all-scope transfer path; a general actor-based designation API would let
+    callers bypass the policy and receipt boundary.
+    """
+
+    field_name = _validated_field_name(field_name)
+    if not isinstance(designated_by, str) or not designated_by.strip():
+        raise ValueError("designated_by must be a non-empty actor")
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise NoSuchSupportEvidence(f"no dependency {dependency_id}")
-    # Reconfirmation re-derives every operative scope under this same lock.
-    # A direct designation must join that ordering or it can race the
-    # all-or-none transfer and silently overwrite the reviewer's newer act.
-    session.flush()
-    lock_project(session, dependency.project_id)
-    session.expire_all()
     link = session.scalar(
         select(EvidenceLink).where(
             EvidenceLink.id == evidence_link_id,
@@ -152,7 +200,7 @@ def designate_publication_support(
             evidence_link_id=evidence_link_id,
             role="publication",
             field_name=field_name,
-            designated_by=principal.subject,
+            designated_by=designated_by,
         )
         session.add(designation)
     else:
@@ -161,13 +209,114 @@ def designate_publication_support(
             .where(OperativeSupport.id == designation.id)
             .values(
                 evidence_link_id=evidence_link_id,
-                designated_by=principal.subject,
+                designated_by=designated_by,
                 designated_at=func.now(),
             )
         )
         session.expire(designation)
     session.flush()
     return designation
+
+
+def _transfer_operative_scopes_under_lock(
+    session: Session,
+    *,
+    dependency_id: int,
+    successor_document_id: int,
+    citation: dict[str, Any],
+    scopes: Iterable[SupersededOperativeScope],
+    designated_by: str,
+) -> SupportTransferMutation:
+    """Move one complete support set after the caller locks and re-derives it.
+
+    This stays private because an actor string is not authority. The only
+    callers are the human Reconfirmation boundary and the policy/receipt-bound
+    Automatic Carry-Forward boundary.
+    """
+
+    ordered = tuple(
+        sorted(
+            scopes,
+            key=lambda scope: (
+                scope.role,
+                scope.field_name or "",
+                scope.evidence.evidence_link_id,
+            ),
+        )
+    )
+    if not ordered:
+        raise UnsafeSupportTransfer("operative support scope is empty")
+    for scope in ordered:
+        if scope.role == "publication":
+            continue
+        if scope.role != "readiness":
+            raise UnsafeSupportTransfer(
+                f"unsupported operative support role {scope.role!r}"
+            )
+        prior_readiness = session.get(
+            EvidenceLink, scope.evidence.evidence_link_id
+        )
+        if (
+            prior_readiness is None
+            or prior_readiness.dependency_id != dependency_id
+            or prior_readiness.satisfies_requirement is not True
+        ):
+            raise UnsafeSupportTransfer("readiness support changed")
+
+    page_no = citation.get("page")
+    quote = citation.get("quote")
+    if (
+        isinstance(page_no, bool)
+        or not isinstance(page_no, int)
+        or page_no <= 0
+        or not isinstance(quote, str)
+        or not quote
+    ):
+        raise UnsafeSupportTransfer("successor citation is malformed")
+    new_evidence = EvidenceLink(
+        dependency_id=dependency_id,
+        document_id=successor_document_id,
+        page_no=page_no,
+        quote=quote,
+        verified=True,
+        satisfies_requirement=any(
+            scope.role == "readiness" for scope in ordered
+        ),
+    )
+    session.add(new_evidence)
+    session.flush([new_evidence])
+
+    prior_scopes: list[dict[str, Any]] = []
+    moved_scopes: list[dict[str, Any]] = []
+    for scope in ordered:
+        if scope.role == "publication":
+            _designate_publication_support_under_lock(
+                session,
+                dependency_id,
+                new_evidence.id,
+                designated_by=designated_by,
+                field_name=scope.field_name,
+            )
+        prior_scopes.append(
+            {
+                "role": scope.role,
+                "field_name": scope.field_name,
+                "evidence_link_id": scope.evidence.evidence_link_id,
+            }
+        )
+        moved_scopes.append(
+            {
+                "role": scope.role,
+                "field_name": scope.field_name,
+                "from_evidence_link_id": scope.evidence.evidence_link_id,
+                "to_evidence_link_id": new_evidence.id,
+            }
+        )
+    return SupportTransferMutation(
+        evidence=new_evidence,
+        before_json={"operative_scopes": prior_scopes},
+        moved_scopes=tuple(moved_scopes),
+    )
 
 
 def resolve_operative_support(
@@ -345,9 +494,9 @@ def readiness_frontier_before_audit(
 ) -> tuple[EvidenceSupport, ...] | None:
     """Rebuild the exact stale-readiness frontier before a human act.
 
-    The comparison successor was necessarily terminal when Reconfirmation
-    was offered.  Later registry edges may extend that document, so replay
-    truncates the graph there.  ``None`` means the attributable audit state
+    The comparison successor was necessarily terminal when the support move
+    was offered. Later registry edges may extend that document, so replay
+    truncates the graph there. ``None`` means the attributable audit state
     or registry reachability cannot be proven and callers must fail closed.
     """
 

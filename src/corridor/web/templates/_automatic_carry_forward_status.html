@@ -1,0 +1,23 @@
+<aside aria-label="Automatic Carry-Forward status"
+  style="margin:.8rem 1.2rem;padding:.65rem .8rem;border:1px solid #d0d5dd;border-radius:5px;background:#f8fafc;text-align:left">
+  <b>Automatic Carry-Forward</b>
+  {% if automatic_carry_forward.enabled %}
+    · {{ "enabled" if automatic_carry_forward.policy_current else "paused: policy drift" }}
+    · {{ automatic_carry_forward.policy_version }}
+    · approved by {{ automatic_carry_forward.approved_by }}
+  {% else %}
+    · disabled
+  {% endif %}
+  <br>
+  {{ automatic_carry_forward.eligible_count }} eligible ·
+  {{ automatic_carry_forward.carried_count }} carried
+  {% if automatic_carry_forward.abstention_counts %}
+    · Recorded durable Abstentions:
+    {% for reason, count in automatic_carry_forward.abstention_counts|dictsort %}
+      {{ count }} {{ reason|replace('_', ' ') }}{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  {% else %}
+    · 0 recorded durable Abstentions
+  {% endif %}
+  <br><small>Reason vocabulary: {{ automatic_carry_forward.abstention_reason_version }}</small>
+</aside>

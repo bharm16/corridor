@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run milestones exceptions gold minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance minutes report
 
 # One command from a clean clone.
 boot:
@@ -59,28 +59,52 @@ extract:
 active-run:
 	uv run python -m corridor.extraction_runs $(ARGS)
 
+# Run one exact predecessor-successor pair through comparison readback and
+# already-authorized Carry-Forward only. Never infers runs or accepts policy
+# identity flags:
+#   make revision-process ARGS="<predecessor-extraction-run-id> <successor-extraction-run-id>"
+revision-process:
+	uv run python -m corridor.revision_processing_cli $(ARGS)
+
 # Import a milestone CSV: make milestones ARGS="sh99-grand-parkway corpus/sh99-milestones.csv RELO-CONSTR"
 milestones:
 	uv run python -m corridor.milestones $(ARGS)
 
-# Current exception list: make exceptions ARGS="nhhip-3c2"
-# Recall and precision against an independent enumeration. Without a gold
-# CSV the enumeration is read off the stored page text, which is a
-# different code path from the table parser under test:
-#   make eval ARGS="nhhip-3c2"
-#   make eval ARGS="nhhip-3c2 gold/nhhip.csv"
+# Extraction Measurement over exact completed run receipts. Repeat
+# --extraction-run once per matrix. A machine reference must travel with its
+# author-time scope manifest; prompt/document flags are assertions only:
+#   make eval ARGS="wsdot-9424 gold/wsdot-9424.machine.csv --reference-manifest=gold/wsdot-9424.machine.scope.json --extraction-run=123"
 eval:
 	uv run python -m corridor.eval $(ARGS)
 
 exceptions:
 	uv run python -m corridor.exceptions $(ARGS)
 
-# Labelling preparation for a gate run: a second reading of the matrix,
-# diffed against the extractor's, plus a BLANK worksheet. Never a gold
-# set — the denominator is the reviewer's own count (#88).
-#   make gold ARGS="wsdot-9424"
+# Prepare a diagnostic disagreement report, or author the explicitly
+# semi-independent machine reference plus its required scope manifest:
+#   make gold ARGS="wsdot-9424 --author"
 gold:
 	uv run python -m corridor.gold $(ARGS)
+
+# One-time Development Ledger retirement. Always run `plan` first; `retire`
+# requires the exact digest and Dependency count printed by that plan:
+#   make ledger-archive ARGS="plan nhhip-3c2"
+#   make ledger-archive ARGS="retire nhhip-3c2 --expected-sha256=<sha> --expected-dependency-count=141"
+ledger-archive:
+	uv run python -m corridor.legacy_ledger_archive_cli $(ARGS)
+
+# Inspect, authorize, disable, or run project-level Automatic Carry-Forward.
+# Authorization requires an explicit stable HumanPrincipal subject:
+#   make carry-forward ARGS="authorize nhhip-3c2 --principal=local:<subject>"
+carry-forward:
+	uv run python -m corridor.automatic_carry_forward_cli $(ARGS)
+
+# Capture, replay, or verify the isolated mechanical M8 acceptance bundle.
+# Ordinary replay is model-free and requires exact fixture/transformation pins:
+#   make m8-acceptance ARGS="replay --fixture=<path> --transformations=<path> --output-dir=<path> --postgres-admin-url=<url> --expected-fixture-sha256=<sha> --expected-transformations-sha256=<sha>"
+#   make m8-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+m8-acceptance:
+	uv run python -m corridor.m8_acceptance_cli $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 minutes:

@@ -209,7 +209,7 @@ def test_unsupported_candidate_shape_fails_closed_without_a_partial_receipt(
 ):
     """The effective matcher refuses shapes without a correspondence contract."""
 
-    _, predecessor, successor = consecutive_nhhip_documents
+    project, predecessor, successor = consecutive_nhhip_documents
     predecessor.doc_type = doc_type
     successor.doc_type = doc_type
     predecessor_run, _ = _run(
@@ -245,7 +245,11 @@ def test_unsupported_candidate_shape_fails_closed_without_a_partial_receipt(
             matcher_version="  custom-correspondence-v9  ",
         )
 
-    assert session.scalars(select(RevisionComparisonRun)).all() == []
+    assert session.scalars(
+        select(RevisionComparisonRun).where(
+            RevisionComparisonRun.project_id == project.id
+        )
+    ).all() == []
 
 
 def test_completed_zero_row_runs_remain_comparable_without_a_row_shape(
@@ -1789,7 +1793,7 @@ def test_station_neighbor_chain_overflow_becomes_bounded_unmatched_rows():
 def test_failed_or_absent_successor_cannot_create_a_comparison(
     session, consecutive_nhhip_documents
 ):
-    _, predecessor, successor = consecutive_nhhip_documents
+    project, predecessor, successor = consecutive_nhhip_documents
     predecessor_run, _ = _run(
         session,
         predecessor,
@@ -1825,7 +1829,11 @@ def test_failed_or_absent_successor_cannot_create_a_comparison(
                 .values(outcome="completed", page_errors=0)
             )
 
-    assert session.scalars(select(RevisionComparisonRun)).all() == []
+    assert session.scalars(
+        select(RevisionComparisonRun).where(
+            RevisionComparisonRun.project_id == project.id
+        )
+    ).all() == []
 
 
 def test_completed_zero_row_successor_can_prove_predecessor_rows_dropped(

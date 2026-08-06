@@ -89,7 +89,17 @@ def route_selector(**by_filename):
     """An injected production-like route seam: version first, then extractor."""
 
     def select_route(document):
-        prompt_version, result = by_filename[document.filename]
+        schema_version = None
+        configured_model = None
+        item = by_filename[document.filename]
+        if len(item) == 2:
+            prompt_version, result = item
+        elif len(item) == 3:
+            prompt_version, schema_version, result = item
+        elif len(item) == 4:
+            prompt_version, schema_version, configured_model, result = item
+        else:
+            raise AssertionError("route selector test fixture is invalid")
 
         def extract(session, target):
             if isinstance(result, Exception):
@@ -101,7 +111,12 @@ def route_selector(**by_filename):
             session.flush()
             return candidates
 
-        return ExtractionRoute(prompt_version, extract)
+        return ExtractionRoute(
+            effective_prompt_version=prompt_version,
+            schema_version=schema_version or prompt_version,
+            extract=extract,
+            model=configured_model,
+        )
 
     return select_route
 
@@ -187,6 +202,32 @@ def test_terminal_outcomes_distinguish_extracted_failed_and_unreadable(session, 
     rendered = render(project, PROMPT_VERSION, outcomes)
     assert "FAILED" in rendered
     assert "UNREADABLE" in rendered
+
+
+def test_terminal_outcomes_name_the_exact_extraction_run_receipt(session, project):
+    completed = add_matrix(session, project, "completed.pdf", "1" * 64)
+    failed = add_matrix(session, project, "failed.pdf", "2" * 64)
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(
+            **{
+                "completed.pdf": [True],
+                "failed.pdf": ExtractionFailed("controlled failure"),
+            }
+        ),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    by_name = {outcome.filename: outcome for outcome in outcomes}
+    assert by_name["completed.pdf"].extraction_run_id == _runs(
+        session, completed
+    )[0].id
+    assert by_name["failed.pdf"].extraction_run_id == _runs(session, failed)[0].id
+
+
 def test_a_second_run_does_not_double_the_candidates(session, project):
     doc = add_matrix(session, project, "a.pdf", "a" * 64)
     extract = extractor(**{"a.pdf": [True, True]})
@@ -257,8 +298,9 @@ def test_a_model_backed_zero_row_run_keeps_the_configured_model(session, project
     def select_route(document):
         assert document.id == doc.id
         return ExtractionRoute(
-            PROMPT_VERSION,
-            lambda session, target: [],
+            effective_prompt_version=PROMPT_VERSION,
+            schema_version="schema-zero-row-v1",
+            extract=lambda session, target: [],
             model="gpt-zero-row",
         )
 
@@ -604,6 +646,24 @@ def test_a_transient_failure_does_not_block_a_clean_sibling(session, project):
     assert "1 failed, 0 unreadable" in report
 
 
+def test_a_route_records_schema_version_independently_from_prompt(session, project):
+    document = add_matrix(session, project, "a.pdf", "r" * 64)
+
+    extract_project(
+        session,
+        project,
+        select_route=route_selector(
+            **{"a.pdf": ("prompt-v3", "candidate-shape-v7", [True])}
+        ),
+        prompt_version="ignored_by_route",
+        commit=False,
+    )
+
+    [run] = _runs(session, document)
+    assert run.prompt_version == "prompt-v3"
+    assert run.schema_version == "candidate-shape-v7"
+
+
 def test_a_failed_document_writes_a_receipt_and_retries_on_the_next_run(
     session, project
 ):
@@ -631,7 +691,11 @@ def test_a_failed_document_writes_a_receipt_and_retries_on_the_next_run(
             session.flush()
             return candidates
 
-        return ExtractionRoute(PROMPT_VERSION, extract)
+        return ExtractionRoute(
+            effective_prompt_version=PROMPT_VERSION,
+            schema_version="schema-transient-v1",
+            extract=extract,
+        )
 
     first = extract_project(
         session,

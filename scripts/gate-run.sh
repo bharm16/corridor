@@ -14,13 +14,13 @@
 #   the one deliberate, irreversible human act (ADR-0008), and burying it
 #   in automation would make the spend possible by accident — the exact
 #   failure the seal exists to prevent.
-# - It does not run the eval. The gate's denominator is a human-authored
-#   gold set written AFTER this script finishes (#81), so the eval cannot
-#   run in the same breath. The script ends by printing what to do next.
+# - It does not run the Extraction Measurement. The machine reference is
+#   authored AFTER this script finishes (#81), so scoring cannot run in the
+#   same breath. The script ends by printing the exact-run command.
 # - It does not show any extracted row. The extract step prints tallies —
 #   counts, fallback rate, header agreement — and those were agreed
 #   printable; the rows themselves stay in the database unread until the
-#   labels exist.
+#   machine-reference receipt exists.
 #
 # Usage:            scripts/gate-run.sh wsdot-9540
 # Rehearsal (safe): scripts/gate-run.sh wsdot-9424
@@ -29,6 +29,16 @@ set -euo pipefail
 
 SLUG="${1:?usage: scripts/gate-run.sh <project-slug>}"
 MANIFEST="corpus/${SLUG}.yaml"
+
+if [ "$SLUG" = "wsdot-9540" ]; then
+  cat >&2 <<SPENT
+wsdot-9540 is spent. Preserve its historical measurement at:
+  out/eval-wsdot-9540-matrix_tiered_v3.json
+
+Do not fetch, extract, regenerate its machine reference, or rescore it.
+SPENT
+  exit 2
+fi
 
 [ -f "$MANIFEST" ] || { echo "no manifest ${MANIFEST}" >&2; exit 1; }
 
@@ -76,31 +86,34 @@ cat <<DONE
 
 == cold run complete ==
 
-The extractor's answers are committed. Human eyes may now touch the
-document — the run is already over, so reading it contaminates nothing.
+The extractor's answers are committed. No human reading or annotation is
+required; proceed with the machine-reference path below.
 
-Next, in order (#81 as amended 2026-08-04 — machine-authored gold, a
-semi-independent ceiling; the hand path below remains available and
-stricter):
+Next, in order (#81 as amended 2026-08-04 — machine reference, a
+semi-independent ceiling):
 
-  1. Author the gold set from the independent grid reading:
+  1. Author the machine reference from the independent grid reading:
          uv run python -m corridor.gold ${SLUG} --author
-     It writes gold/${SLUG}.machine.csv and a stamped sidecar carrying
-     the ceiling caveat and the page-image checklist. It refuses any
-     layout that does not print the WSDOT anchor.
+     It writes gold/${SLUG}.machine.csv, a stamped sidecar carrying the
+     ceiling caveat and page-image checklist, and the required author-time
+     scope manifest gold/${SLUG}.machine.scope.json. It refuses any layout
+     that does not print the WSDOT anchor.
 
-     (Hand alternative, unamended strength: gold/${SLUG}.csv with columns
-     source_ref,page,critical — 'critical' by ADR-0009's rule; blank when
-     the document has not settled. Blank reads as not-critical, out of
-     the >=95% denominator.)
+     Machine-reference scope comes from its manifest, never from current
+     project contents or the CSV filename.
 
-     A hand-authored file that covers fewer than all the project's
-     matrices must say so at step 2 with --document=<id>, repeated. The
-     machine set needs no such flag: it reads every matrix in the project,
-     so the whole extracted population is its own. Nothing in the CSV
-     distinguishes the two, which is why the caller states it.
+  2. Inspect the completed Extraction Run receipts and name exactly one run
+     for every matrix covered by the machine reference. Then score the exact
+     population (repeat the flag once per matrix):
 
-  2. Score:  uv run python -m corridor.eval ${SLUG} gold/${SLUG}.machine.csv --prompt-version=${PINNED}
+         uv run python -m corridor.eval ${SLUG} gold/${SLUG}.machine.csv \
+           --reference-manifest=gold/${SLUG}.machine.scope.json \
+           --extraction-run=<id> [--extraction-run=<id> ...] \
+           --prompt-version=${PINNED}
+
+     The prompt flag is only an assertion. It cannot select runs, and the
+     command refuses missing, incomplete, cross-project, duplicate-document,
+     or machine-reference scope-mismatched receipts.
 
   3. Record the result on #88 and against #22, whatever it says.
      Per #81: on a fail the score stands, and there is no retake.
