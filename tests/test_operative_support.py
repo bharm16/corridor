@@ -6,6 +6,7 @@ from sqlalchemy import select
 from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
+from corridor.ledger import mark_satisfies
 from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
 from corridor.operative_support import (
     designate_publication_support,
@@ -359,7 +360,12 @@ def test_superseded_support_lapses_readiness_and_names_each_affected_role(
         principal=TEST_PRINCIPAL,
     )
     [link] = _evidence_links(session, dependency.id)
-    link.satisfies_requirement = True
+    assert mark_satisfies(
+        session,
+        dependency.id,
+        link.id,
+        principal=TEST_PRINCIPAL,
+    ) is True
     predecessor.registry_id = "operative-matrix-old"
     successor.registry_id = "operative-matrix-new"
     session.flush()

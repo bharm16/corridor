@@ -30,12 +30,14 @@ from corridor.models import (
     Document,
     EvidenceLink,
     ExtractionRun,
+    ReconfirmationReceipt,
     RevisionComparisonFinding,
 )
 from corridor.operative_support import (
     ResolvedSupport,
     SupersededOperativeScope,
     designate_publication_support,
+    readiness_frontier_before_audit,
     resolve_operative_support,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
@@ -90,6 +92,15 @@ def normalize_scope_fingerprint(value: object) -> ScopeFingerprint:
         normalized.append((role, field_name, evidence_link_id))
     if len(set(normalized)) != len(normalized):
         raise ValueError("scope fingerprint contains duplicate entries")
+    publication_owners = [
+        (role, field_name)
+        for role, field_name, _ in normalized
+        if role == "publication"
+    ]
+    if len(publication_owners) != len(set(publication_owners)):
+        raise ValueError(
+            "scope fingerprint contains duplicate publication scopes"
+        )
     return tuple(
         sorted(
             normalized,
@@ -169,7 +180,6 @@ class _Admission:
     candidate: Candidate
     admitted_fields: dict | None
     latest_reconfirmation_audit_id: int | None = None
-    support_evidence_link_id: int | None = None
 
 
 def build_reviewer_worklist(
@@ -198,8 +208,8 @@ def build_reviewer_worklist(
             actionable_candidate_query(project_id).order_by(Candidate.id)
         ).all()
     }
-    already_reconfirmed = audit.reconfirmed_successor_candidate_ids(
-        reconfirmations_by_dependency
+    already_reconfirmed = _reconfirmed_candidate_ids(
+        session, reconfirmations_by_dependency, actionable
     )
 
     ordinary: list[SupersessionReview] = []
@@ -221,6 +231,9 @@ def build_reviewer_worklist(
                 predecessor_document_id=predecessor_document_id,
                 scopes=scopes,
                 all_scopes=all_scopes,
+                readiness_history_trusted=(
+                    resolved.readiness_history_trusted
+                ),
                 actionable=actionable,
                 admission_records=admissions_by_dependency.get(
                     dependency.id, ()
@@ -302,14 +315,32 @@ def _demote_ambiguous_successor_links(
     if not collisions:
         return ordinary, reconfirmation
 
+    owner_by_candidate = {
+        candidate_id: min(
+            (
+                index
+                for index, review in enumerate(reviews)
+                if candidate_id in review.successor_candidate_ids
+            ),
+            key=lambda index: (_review_sort_key(reviews[index]), index),
+        )
+        for candidate_id in collisions
+    }
+
     resolved_ordinary: list[SupersessionReview] = []
     resolved_reconfirmation: list[SupersessionReview] = []
-    for review in reviews:
+    for index, review in enumerate(reviews):
         if collisions.intersection(review.successor_candidate_ids):
             resolved_ordinary.append(
                 replace(
                     review,
                     route="ordinary",
+                    successor_candidate_ids=tuple(
+                        candidate_id
+                        for candidate_id in review.successor_candidate_ids
+                        if candidate_id not in collisions
+                        or owner_by_candidate[candidate_id] == index
+                    ),
                     reason="successor_candidate_link_ambiguous",
                 )
             )
@@ -318,6 +349,233 @@ def _demote_ambiguous_successor_links(
         else:
             resolved_ordinary.append(review)
     return resolved_ordinary, resolved_reconfirmation
+
+
+def _reconfirmed_candidate_ids(
+    session: Session,
+    records_by_dependency: dict[
+        int, tuple[audit.ReconfirmationRecord, ...]
+    ],
+    actionable: dict[int, Candidate],
+) -> frozenset[int]:
+    """Exclude Candidates bound to a Reconfirmation by independent facts."""
+
+    candidate_ids: set[int] = set()
+    for records in records_by_dependency.values():
+        for record in records:
+            candidate_ids.update(
+                _recover_reconfirmed_candidate_ids(
+                    session, record, actionable
+                )
+            )
+    return frozenset(candidate_ids)
+
+
+def _recover_reconfirmed_candidate_ids(
+    session: Session,
+    record: audit.ReconfirmationRecord,
+    actionable: dict[int, Candidate],
+) -> set[int]:
+    """Bind a past act through durable facts, never pointer majority votes."""
+
+    if record.durable_successor_candidate_id is not None:
+        durable_candidate = session.get(
+            Candidate, record.durable_successor_candidate_id
+        )
+        if durable_candidate is not None:
+            return {durable_candidate.id}
+
+    readbacks = _reconfirmation_readbacks(session, record)
+    source_bound_ids = _candidate_ids_bound_by_reconfirmation_sources(
+        session,
+        record=record,
+        readbacks=readbacks,
+    )
+
+    evidence_target_ids: list[int] = []
+    if record.new_evidence_link_id is not None:
+        evidence_target_ids.append(record.new_evidence_link_id)
+    evidence_target_ids.extend(
+        sorted(
+            {
+                move.to_evidence_link_id
+                for move in record.moved_scopes
+            }
+        )
+    )
+    target_bound_ids: set[int] = set()
+    for evidence_link_id in dict.fromkeys(evidence_target_ids):
+        target_bound_ids.update(
+            _candidate_ids_for_reconfirmation_evidence(
+                session,
+                evidence_link_id=evidence_link_id,
+                dependency_id=record.dependency_id,
+                readbacks=readbacks,
+                actionable=actionable,
+            )
+        )
+
+    # Exact source Evidence joined through an immutable 1:1 finding is the
+    # strongest recoverable binding. A matching target confirms a singleton;
+    # contradictory grounded bindings quarantine their union. We never let a
+    # raw JSON Candidate or finding pointer win a vote.
+    if source_bound_ids:
+        if len(source_bound_ids) == 1:
+            if not target_bound_ids or source_bound_ids == target_bound_ids:
+                return source_bound_ids
+        return source_bound_ids | target_bound_ids
+    if target_bound_ids:
+        return target_bound_ids
+
+    # If every durable hint is gone, the record cannot safely distinguish one
+    # current row in this project. A raw comparison pointer is part of the
+    # same mutable JSON claim family, so it cannot safely localize the blast
+    # radius. Broad quarantine is preferable to silently making the
+    # already-used Candidate writable again.
+    return set(actionable)
+
+
+def _candidate_ids_bound_by_reconfirmation_sources(
+    session: Session,
+    *,
+    record: audit.ReconfirmationRecord,
+    readbacks: tuple[RevisionComparisonReadback, ...],
+) -> set[int]:
+    """Join receipt sources to one-to-one immutable comparison findings."""
+
+    if not record.operative_scopes:
+        return set()
+    source_evidence: list[EvidenceLink] = []
+    for scope in record.operative_scopes:
+        evidence = session.get(EvidenceLink, scope.evidence_link_id)
+        if (
+            evidence is None
+            or evidence.dependency_id != record.dependency_id
+            or evidence.verified is not True
+        ):
+            return set()
+        source_evidence.append(evidence)
+
+    candidate_ids: set[int] = set()
+    for readback in readbacks:
+        predecessor_ids = {
+            candidate_id
+            for candidate_input in readback.predecessor_inputs
+            if (
+                (candidate_id := candidate_input.get("candidate_id"))
+                is not None
+                and not isinstance(candidate_id, bool)
+                and isinstance(candidate_id, int)
+                and candidate_id > 0
+                and all(
+                    evidence.document_id
+                    == readback.comparison.predecessor_document_id
+                    and _input_matches_evidence(candidate_input, evidence)
+                    for evidence in source_evidence
+                )
+            )
+        }
+        for finding in readback.findings:
+            candidate_id = _unchanged_successor_candidate_id(finding)
+            if (
+                candidate_id is not None
+                and finding.predecessor_candidate_ids
+                and set(finding.predecessor_candidate_ids).issubset(
+                    predecessor_ids
+                )
+                and session.get(Candidate, candidate_id) is not None
+            ):
+                candidate_ids.add(candidate_id)
+    return candidate_ids
+
+
+def _candidate_ids_for_reconfirmation_evidence(
+    session: Session,
+    *,
+    evidence_link_id: int,
+    dependency_id: int,
+    readbacks: tuple[RevisionComparisonReadback, ...],
+    actionable: dict[int, Candidate],
+) -> set[int]:
+    evidence = session.get(EvidenceLink, evidence_link_id)
+    if (
+        evidence is None
+        or evidence.dependency_id != dependency_id
+        or evidence.verified is not True
+    ):
+        return set()
+
+    comparison_matches: set[int] = set()
+    for readback in readbacks:
+        if readback.comparison.successor_document_id != evidence.document_id:
+            continue
+        for finding in readback.findings:
+            candidate_id = _unchanged_successor_candidate_id(finding)
+            if candidate_id is None:
+                continue
+            candidate_input = _input_by_candidate_id(
+                readback.successor_inputs, candidate_id
+            )
+            if candidate_input is not None and _input_matches_evidence(
+                candidate_input, evidence
+            ) and session.get(Candidate, candidate_id) is not None:
+                comparison_matches.add(candidate_id)
+    if comparison_matches:
+        return comparison_matches
+    return {
+        candidate_id
+        for candidate_id, candidate in actionable.items()
+        if _input_matches_evidence(
+            candidate_input_snapshot(candidate), evidence
+        )
+    }
+
+
+def _reconfirmation_readbacks(
+    session: Session, record: audit.ReconfirmationRecord
+) -> tuple[RevisionComparisonReadback, ...]:
+    comparison_ids: set[int] = set()
+    if record.comparison_id is not None:
+        comparison_ids.add(record.comparison_id)
+    if record.finding_id is not None:
+        finding = session.get(RevisionComparisonFinding, record.finding_id)
+        if finding is not None:
+            comparison_ids.add(finding.revision_comparison_run_id)
+
+    readbacks: list[RevisionComparisonReadback] = []
+    for comparison_id in sorted(comparison_ids):
+        try:
+            readbacks.append(read_revision_comparison(session, comparison_id))
+        except RevisionComparisonError:
+            continue
+    return tuple(readbacks)
+
+
+def _unchanged_successor_candidate_id(
+    finding: RevisionComparisonFinding,
+) -> int | None:
+    if (
+        finding.state != "unchanged"
+        or len(finding.predecessor_candidate_ids) != 1
+        or len(finding.successor_candidate_ids) != 1
+    ):
+        return None
+    [candidate_id] = finding.successor_candidate_ids
+    return candidate_id
+
+
+def _input_matches_evidence(
+    candidate_input: dict, evidence: EvidenceLink
+) -> bool:
+    return (
+        candidate_input.get("source_document_id") == evidence.document_id
+        and _has_one_verified_input_citation(
+            candidate_input,
+            document_id=evidence.document_id,
+            page_no=evidence.page_no,
+            quote=evidence.quote,
+        )
+    )
 
 
 def ordinary_candidate_ids(session: Session, project_id: int) -> frozenset[int]:
@@ -433,7 +691,6 @@ def reconfirm_operative_support(
             session,
             dependency,
             predecessor_document_id,
-            review.superseded_scopes,
             admission_records,
             reconfirmation_records,
         )
@@ -520,28 +777,39 @@ def reconfirm_operative_support(
                 }
             )
 
-        audit.record(
+        before_receipt = {"operative_scopes": prior_scopes}
+        after_receipt = {
+            "comparison_id": comparison_id,
+            "finding_id": finding_id,
+            "predecessor_candidate_id": review.predecessor_candidate_id,
+            "successor_candidate_id": successor_candidate_id,
+            "new_evidence_link_id": new_evidence.id,
+            "scope_fingerprint": [
+                list(item) for item in submitted_scope_fingerprint
+            ],
+            "origin_admission_audit_id": admission.origin.audit_id,
+            "predecessor_reconfirmation_audit_id": (
+                admission.latest_reconfirmation_audit_id
+            ),
+            "moved_scopes": moved_scopes,
+        }
+        audit_entry = audit.record(
             session,
             principal=principal,
             action=audit.RECONFIRM_OPERATIVE_SUPPORT,
             entity_type=audit.DEPENDENCY,
             entity_id=dependency_id,
-            before={"operative_scopes": prior_scopes},
-            after={
-                "comparison_id": comparison_id,
-                "finding_id": finding_id,
-                "predecessor_candidate_id": review.predecessor_candidate_id,
-                "successor_candidate_id": successor_candidate_id,
-                "new_evidence_link_id": new_evidence.id,
-                "scope_fingerprint": [
-                    list(item) for item in submitted_scope_fingerprint
-                ],
-                "origin_admission_audit_id": admission.origin.audit_id,
-                "predecessor_reconfirmation_audit_id": (
-                    admission.latest_reconfirmation_audit_id
-                ),
-                "moved_scopes": moved_scopes,
-            },
+            before=before_receipt,
+            after=after_receipt,
+        )
+        session.add(
+            ReconfirmationReceipt(
+                audit_log_id=audit_entry.id,
+                dependency_id=dependency_id,
+                successor_candidate_id=successor_candidate_id,
+                before_json=before_receipt,
+                after_json=after_receipt,
+            )
         )
         session.flush()
         return new_evidence
@@ -555,6 +823,7 @@ def _support_review(
     predecessor_document_id: int,
     scopes: tuple[SupersededOperativeScope, ...],
     all_scopes: tuple[SupersededOperativeScope, ...],
+    readiness_history_trusted: bool,
     actionable: dict[int, Candidate],
     admission_records: tuple[audit.AdmissionRecord, ...],
     reconfirmation_records: tuple[audit.ReconfirmationRecord, ...],
@@ -564,7 +833,6 @@ def _support_review(
         session,
         dependency,
         predecessor_document_id,
-        scopes,
         admission_records,
         reconfirmation_records,
     )
@@ -574,6 +842,11 @@ def _support_review(
         predecessor_candidate_ids=predecessor_candidate_ids,
         superseded_scopes=scopes,
     )
+    if (
+        admission_reason is None
+        and not readiness_history_trusted
+    ):
+        admission_reason = "readiness_history_untrusted"
     if (
         predecessor is None
         or predecessor.project_id != project_id
@@ -685,13 +958,45 @@ def _support_review(
             reason="comparison_integrity_failure",
         )
 
-    if admission is None:
+    known_predecessors = set(predecessor_candidate_ids)
+    evidence_predecessors = _predecessor_ids_matching_scopes(
+        scopes, readback.predecessor_inputs
+    )
+    admission_scope_conflict = (
+        admission is not None
+        and bool(evidence_predecessors)
+        and admission.candidate.id not in evidence_predecessors
+    )
+    if admission is None or admission_scope_conflict:
+        relevant_predecessors = (
+            evidence_predecessors or known_predecessors
+        )
+        finding_successors = tuple(
+            sorted(
+                {
+                    candidate_id
+                    for finding in readback.findings
+                    if (
+                        relevant_predecessors
+                        and relevant_predecessors.intersection(
+                            finding.predecessor_candidate_ids
+                        )
+                    )
+                    for candidate_id in finding.successor_candidate_ids
+                    if candidate_id in actionable
+                }
+            )
+        )
         return SupersessionReview(
             **base,
-            successor_candidate_ids=(),
+            successor_candidate_ids=finding_successors,
             status="comparison_ready",
             comparison_id=comparison.id,
-            reason=admission_reason or "admission_link_unavailable",
+            reason=(
+                "admission_scope_identity_mismatch"
+                if admission_scope_conflict
+                else admission_reason or "admission_link_unavailable"
+            ),
         )
     findings = tuple(
         finding
@@ -718,6 +1023,7 @@ def _support_review(
         admission=admission,
         scopes=scopes,
         all_scopes=all_scopes,
+        readiness_history_trusted=readiness_history_trusted,
         readback=readback,
         finding=finding,
         actionable=actionable,
@@ -748,10 +1054,13 @@ def _reconfirmation_refusal(
     admission: _Admission,
     scopes: tuple[SupersededOperativeScope, ...],
     all_scopes: tuple[SupersededOperativeScope, ...],
+    readiness_history_trusted: bool,
     readback: RevisionComparisonReadback,
     finding: RevisionComparisonFinding,
     actionable: dict[int, Candidate],
 ) -> str | None:
+    if not readiness_history_trusted:
+        return "readiness_history_untrusted"
     if successor.superseded_by is not None:
         return "multi_hop_supersession"
     if finding.state != "unchanged":
@@ -812,17 +1121,58 @@ def _reconfirmation_refusal(
     return None
 
 
+def _predecessor_ids_matching_scopes(
+    scopes: tuple[SupersededOperativeScope, ...],
+    predecessor_inputs: tuple[dict, ...],
+) -> set[int]:
+    """Recover plausible predecessor rows from exact operative citations."""
+
+    matches: set[int] = set()
+    for candidate_input in predecessor_inputs:
+        candidate_id = candidate_input.get("candidate_id")
+        if (
+            isinstance(candidate_id, bool)
+            or not isinstance(candidate_id, int)
+            or candidate_id <= 0
+        ):
+            continue
+        if scopes and all(
+            _scope_has_one_verified_input_citation(scope, candidate_input)
+            for scope in scopes
+        ):
+            matches.add(candidate_id)
+    return matches
+
+
 def _scope_has_one_verified_input_citation(
     scope: SupersededOperativeScope, candidate_input: dict
 ) -> bool:
     """Bind one moved support scope to one immutable Candidate citation."""
+
+    if scope.evidence.verified is not True:
+        return False
+    return _has_one_verified_input_citation(
+        candidate_input,
+        document_id=scope.evidence.document_id,
+        page_no=scope.evidence.page_no,
+        quote=scope.evidence.quote,
+    )
+
+
+def _has_one_verified_input_citation(
+    candidate_input: dict,
+    *,
+    document_id: int,
+    page_no: int,
+    quote: str,
+) -> bool:
+    """Match one Evidence identity to exactly one immutable citation."""
 
     payload = candidate_input.get("payload_json")
     if (
         candidate_input.get("citations_verified") is not True
         or not isinstance(payload, dict)
         or not isinstance(payload.get("citations"), list)
-        or scope.evidence.verified is not True
     ):
         return False
     matches = tuple(
@@ -830,46 +1180,116 @@ def _scope_has_one_verified_input_citation(
         for citation in payload["citations"]
         if isinstance(citation, dict)
         and citation.get("verified") is True
-        and citation.get("document_id") == scope.evidence.document_id
-        and citation.get("page") == scope.evidence.page_no
-        and citation.get("quote") == scope.evidence.quote
+        and citation.get("document_id") == document_id
+        and citation.get("page") == page_no
+        and citation.get("quote") == quote
     )
     return len(matches) == 1
+
+
+def _reconfirmation_sources_match_receipt(
+    session: Session,
+    *,
+    dependency_id: int,
+    predecessor_document_id: int,
+    successor_document_id: int,
+    predecessor_input: dict,
+    record: audit.ReconfirmationRecord,
+) -> bool:
+    """Validate every historical transfer source against durable facts."""
+
+    current_readiness_ids = (
+        audit.current_readiness_evidence_ids_from_audit(
+            session, dependency_id
+        )
+    )
+    stored_current_readiness_ids = frozenset(
+        session.scalars(
+            select(EvidenceLink.id).where(
+                EvidenceLink.dependency_id == dependency_id,
+                EvidenceLink.satisfies_requirement.is_(True),
+            )
+        ).all()
+    )
+    if (
+        current_readiness_ids is None
+        or current_readiness_ids != stored_current_readiness_ids
+    ):
+        return False
+
+    readiness_frontier = readiness_frontier_before_audit(
+        session,
+        dependency_id,
+        record.audit_id,
+        known_terminal_document_id=successor_document_id,
+    )
+    if readiness_frontier is None:
+        return False
+    expected_readiness_sources = {
+        support.evidence_link_id for support in readiness_frontier
+    }
+    receipt_readiness_sources = {
+        scope.evidence_link_id
+        for scope in record.operative_scopes
+        if scope.role == "readiness"
+    }
+    if receipt_readiness_sources != expected_readiness_sources:
+        return False
+
+    for scope in record.operative_scopes:
+        evidence = session.get(EvidenceLink, scope.evidence_link_id)
+        if (
+            evidence is None
+            or evidence.dependency_id != dependency_id
+            or evidence.document_id != predecessor_document_id
+            or evidence.verified is not True
+            or not _has_one_verified_input_citation(
+                predecessor_input,
+                document_id=evidence.document_id,
+                page_no=evidence.page_no,
+                quote=evidence.quote,
+            )
+        ):
+            return False
+    return True
 
 
 def _admission_for_scope(
     session: Session,
     dependency: Dependency,
     predecessor_document_id: int,
-    scopes: tuple[SupersededOperativeScope, ...],
     admission_records: tuple[audit.AdmissionRecord, ...],
     reconfirmation_records: tuple[audit.ReconfirmationRecord, ...],
 ) -> tuple[_Admission | None, tuple[int, ...], str | None]:
     candidate_ids: set[int] = set()
-    corrupt = False
+    admission_corrupt = False
+    reconfirmation_corrupt = False
     for record in admission_records:
         if not record.candidate_link_valid:
-            corrupt = True
+            admission_corrupt = True
             continue
         candidate = session.get(Candidate, record.candidate_id)
         if candidate is None:
-            corrupt = True
+            admission_corrupt = True
             continue
         if candidate.source_document_id == predecessor_document_id:
             candidate_ids.add(candidate.id)
     for record in reconfirmation_records:
         if not record.identity_valid:
-            corrupt = True
+            reconfirmation_corrupt = True
+        if record.successor_candidate_id is None:
             continue
         candidate = session.get(Candidate, record.successor_candidate_id)
         if candidate is None:
-            corrupt = True
+            reconfirmation_corrupt = True
             continue
         if candidate.source_document_id == predecessor_document_id:
             candidate_ids.add(candidate.id)
 
     ordered_candidate_ids = tuple(sorted(candidate_ids))
-    if corrupt:
+    if reconfirmation_corrupt:
+        return None, ordered_candidate_ids, "reconfirmation_history_corrupt"
+    if admission_corrupt:
         return None, ordered_candidate_ids, "admission_history_corrupt"
     if len(ordered_candidate_ids) != 1:
         return None, ordered_candidate_ids, (
@@ -889,10 +1309,6 @@ def _admission_for_scope(
     )
     if admission is None:
         return None, ordered_candidate_ids, reason
-    if admission.support_evidence_link_id is not None and {
-        scope.evidence.evidence_link_id for scope in scopes
-    } != {admission.support_evidence_link_id}:
-        return None, ordered_candidate_ids, "reconfirmation_support_mismatch"
     return admission, ordered_candidate_ids, None
 
 
@@ -958,7 +1374,7 @@ def _candidate_lineage(
         )
     reconfirmation = prior[0]
     if not reconfirmation.identity_valid:
-        return None, "admission_history_corrupt"
+        return None, "reconfirmation_history_corrupt"
     if reconfirmation.audit_id in seen_reconfirmation_ids:
         return None, "reconfirmation_lineage_cycle"
     if not reconfirmation.attributable:
@@ -972,6 +1388,16 @@ def _candidate_lineage(
     assert reconfirmation.successor_candidate_id is not None
     assert reconfirmation.new_evidence_link_id is not None
     assert reconfirmation.origin_admission_audit_id is not None
+    if (
+        reconfirmation.origin_admission_audit_id
+        >= reconfirmation.audit_id
+        or (
+            reconfirmation.predecessor_reconfirmation_audit_id is not None
+            and reconfirmation.predecessor_reconfirmation_audit_id
+            >= reconfirmation.audit_id
+        )
+    ):
+        return None, "reconfirmation_lineage_chronology_invalid"
     try:
         readback = read_revision_comparison(
             session, reconfirmation.comparison_id
@@ -1032,6 +1458,15 @@ def _candidate_lineage(
         comparison.predecessor_extraction_run_id
     ):
         return None, "reconfirmation_identity_mismatch"
+    if not _reconfirmation_sources_match_receipt(
+        session,
+        dependency_id=dependency.id,
+        predecessor_document_id=comparison.predecessor_document_id,
+        successor_document_id=comparison.successor_document_id,
+        predecessor_input=predecessor_input,
+        record=reconfirmation,
+    ):
+        return None, "reconfirmation_history_corrupt"
     predecessor_fields = (predecessor_input.get("payload_json") or {}).get(
         "fields"
     )
@@ -1074,7 +1509,6 @@ def _candidate_lineage(
             candidate=candidate,
             admitted_fields=successor_fields,
             latest_reconfirmation_audit_id=reconfirmation.audit_id,
-            support_evidence_link_id=reconfirmation.new_evidence_link_id,
         ),
         None,
     )

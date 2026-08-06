@@ -190,7 +190,9 @@ def browse(
         ).all()
     )
     contradicted = _contradicted_ids(session, ids)
-    support_by_dependency = resolve_operative_support(session, ids)
+    support_by_dependency = resolve_operative_support(
+        session, (dependency.id for dependency in dependencies)
+    )
 
     # Exceptions are computed, never stored (ADR-0002's reasoning), so they
     # are read off the evaluation the caller published rather than joined.

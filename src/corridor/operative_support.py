@@ -15,6 +15,7 @@ from typing import Iterable
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from corridor import audit
 from corridor.models import Dependency, Document, EvidenceLink, OperativeSupport
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
@@ -68,6 +69,7 @@ class ResolvedSupport:
     readiness: tuple[EvidenceSupport, ...]
     current_readiness: tuple[EvidenceSupport, ...]
     is_ready: bool
+    readiness_history_trusted: bool
     superseded_scopes: tuple[SupersededOperativeScope, ...]
     verified_evidence_count: int
     last_evidenced_at: date | None
@@ -90,6 +92,7 @@ class ResolvedSupport:
             readiness=(),
             current_readiness=(),
             is_ready=False,
+            readiness_history_trusted=True,
             superseded_scopes=(),
             verified_evidence_count=0,
             last_evidenced_at=None,
@@ -220,6 +223,9 @@ def resolve_operative_support(
             )
         ).all()
     ) if project_ids else {}
+    readiness_audit_states = audit.readiness_audit_states_for_dependencies(
+        session, ids
+    )
 
     designations: dict[int, list[OperativeSupport]] = {
         dependency_id: [] for dependency_id in ids
@@ -239,6 +245,34 @@ def resolve_operative_support(
             item for item in verified if item.satisfies_requirement
         )
         current_readiness = tuple(item for item in readiness if item.is_current)
+        readiness_frontier_basis = readiness
+        readiness_history_trusted = False
+        readiness_audit_state = readiness_audit_states.get(dependency_id)
+        stored_readiness_ids = {
+            support.evidence_link_id for support in readiness
+        }
+        if readiness_audit_state is not None:
+            basis_ids = (
+                readiness_audit_state.ever_satisfying_evidence_ids
+                | readiness_audit_state.current_evidence_ids
+                | stored_readiness_ids
+            )
+            historical_basis = tuple(
+                evidence_by_id[evidence_link_id]
+                for evidence_link_id in sorted(basis_ids)
+                if (
+                    evidence_link_id in evidence_by_id
+                    and evidence_by_id[evidence_link_id].dependency_id
+                    == dependency_id
+                    and evidence_by_id[evidence_link_id].verified
+                )
+            )
+            if len(historical_basis) == len(basis_ids):
+                readiness_frontier_basis = historical_basis
+                readiness_history_trusted = (
+                    readiness_audit_state.current_evidence_ids
+                    == stored_readiness_ids
+                )
 
         publication = None
         by_field: dict[str, EvidenceSupport] = {}
@@ -270,7 +304,7 @@ def resolve_operative_support(
                         )
                     )
 
-        if readiness and not current_readiness:
+        if readiness_frontier_basis and not current_readiness:
             superseded_scopes.extend(
                 SupersededOperativeScope(
                     role="readiness",
@@ -278,7 +312,12 @@ def resolve_operative_support(
                     evidence=support,
                 )
                 for support in _readiness_frontier(
-                    readiness, successor_by_document
+                    readiness_frontier_basis, successor_by_document
+                )
+                if (
+                    support.satisfies_requirement
+                    if readiness_history_trusted
+                    else not support.is_current
                 )
             )
         dates = tuple(item.evidence_date for item in verified if item.evidence_date)
@@ -289,11 +328,121 @@ def resolve_operative_support(
             readiness=readiness,
             current_readiness=current_readiness,
             is_ready=bool(current_readiness),
+            readiness_history_trusted=readiness_history_trusted,
             superseded_scopes=tuple(superseded_scopes),
             verified_evidence_count=len(verified),
             last_evidenced_at=max(dates) if dates else None,
         )
     return resolved
+
+
+def readiness_frontier_before_audit(
+    session: Session,
+    dependency_id: int,
+    audit_id: int,
+    *,
+    known_terminal_document_id: int,
+) -> tuple[EvidenceSupport, ...] | None:
+    """Rebuild the exact stale-readiness frontier before a human act.
+
+    The comparison successor was necessarily terminal when Reconfirmation
+    was offered.  Later registry edges may extend that document, so replay
+    truncates the graph there.  ``None`` means the attributable audit state
+    or registry reachability cannot be proven and callers must fail closed.
+    """
+
+    dependency = session.get(Dependency, dependency_id)
+    terminal = session.get(Document, known_terminal_document_id)
+    if (
+        dependency is None
+        or terminal is None
+        or terminal.project_id != dependency.project_id
+    ):
+        return None
+    readiness_state = audit.readiness_audit_state_before_audit(
+        session, dependency_id, audit_id
+    )
+    if readiness_state is None:
+        return None
+    readiness_ids = (
+        readiness_state.current_evidence_ids
+        | readiness_state.ever_satisfying_evidence_ids
+    )
+    if not readiness_ids:
+        return ()
+
+    rows = session.execute(
+        select(EvidenceLink, Document)
+        .join(Document, EvidenceLink.document_id == Document.id)
+        .where(
+            EvidenceLink.dependency_id == dependency_id,
+            EvidenceLink.id.in_(readiness_ids),
+        )
+        .order_by(EvidenceLink.id)
+    ).all()
+    if len(rows) != len(readiness_ids):
+        return None
+
+    readiness: list[EvidenceSupport] = []
+    for link, document in rows:
+        if (
+            document.project_id != dependency.project_id
+            or link.verified is not True
+        ):
+            return None
+        evidence_date = document.doc_date
+        if evidence_date is None and document.retrieved_at is not None:
+            evidence_date = document.retrieved_at.date()
+        readiness.append(
+            EvidenceSupport(
+                evidence_link_id=link.id,
+                dependency_id=link.dependency_id,
+                document_id=document.id,
+                filename=document.filename,
+                page_no=link.page_no,
+                quote=link.quote,
+                verified=True,
+                # Event replay, not today's mutable flag, establishes the
+                # as-of state. Ever-true false rows remain in the basis as
+                # tombstones so an older true ancestor cannot resurrect.
+                satisfies_requirement=(
+                    link.id in readiness_state.current_evidence_ids
+                ),
+                evidence_date=evidence_date,
+                superseded_by=document.superseded_by,
+                superseded_on=document.superseded_on,
+            )
+        )
+
+    successor_by_document = dict(
+        session.execute(
+            select(Document.id, Document.superseded_by).where(
+                Document.project_id == dependency.project_id
+            )
+        ).all()
+    )
+    if known_terminal_document_id not in successor_by_document:
+        return None
+    successor_by_document[known_terminal_document_id] = None
+    if any(
+        support.document_id not in successor_by_document
+        for support in readiness
+    ):
+        return None
+    if any(
+        support.satisfies_requirement
+        and successor_by_document[support.document_id] is None
+        for support in readiness
+    ):
+        return ()
+    frontier = _trusted_readiness_frontier(
+        tuple(readiness), successor_by_document
+    )
+    if frontier is None:
+        return None
+    return tuple(
+        support for support in frontier if support.satisfies_requirement
+    )
 
 
 def _readiness_frontier(
@@ -307,6 +456,16 @@ def _readiness_frontier(
     silently dropping review work.
     """
 
+    trusted = _trusted_readiness_frontier(readiness, successor_by_document)
+    return readiness if trusted is None else trusted
+
+
+def _trusted_readiness_frontier(
+    readiness: tuple[EvidenceSupport, ...],
+    successor_by_document: dict[int, int | None],
+) -> tuple[EvidenceSupport, ...] | None:
+    """Return the frontier, or ``None`` when reachability is unknowable."""
+
     satisfying_documents = {support.document_id for support in readiness}
     reachable_by_document: dict[int, frozenset[int]] = {}
     for source_document_id in satisfying_documents:
@@ -315,7 +474,7 @@ def _readiness_frontier(
         reachable: set[int] = set()
         while True:
             if current_document_id not in successor_by_document:
-                return readiness
+                return None
             successor_document_id = successor_by_document[current_document_id]
             if successor_document_id is None:
                 break
@@ -323,7 +482,7 @@ def _readiness_frontier(
                 successor_document_id in seen
                 or successor_document_id not in successor_by_document
             ):
-                return readiness
+                return None
             reachable.add(successor_document_id)
             seen.add(successor_document_id)
             current_document_id = successor_document_id
