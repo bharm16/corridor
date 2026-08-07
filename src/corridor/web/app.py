@@ -538,12 +538,14 @@ async def edit_accept(
         form.get("historical_document_id")
     )
     raw_cohort_receipt_id = form.get("cohort_receipt_id")
-    cohort_receipt_id = (
-        int(raw_cohort_receipt_id)
-        if isinstance(raw_cohort_receipt_id, str)
-        and raw_cohort_receipt_id.strip().isdigit()
-        else None
-    )
+    cohort_receipt_id = None
+    if raw_cohort_receipt_id is not None and str(raw_cohort_receipt_id).strip():
+        # A malformed scope refuses; silently dropping it would let a
+        # mangled form post mutate outside the boundary it claimed.
+        try:
+            cohort_receipt_id = int(str(raw_cohort_receipt_id).strip())
+        except ValueError:
+            raise HTTPException(400, "cohort_receipt_id must be an integer")
     project = _project(session, slug)
     _require_cohort_scope(session, cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
