@@ -50,6 +50,14 @@ Extractor = Callable[[Session, Document], list[Candidate]]
 RouteSelector = Callable[[Document], ExtractionRoute]
 
 
+class UnknownDocument(ValueError):
+    """The named registry id resolves to no document in this project."""
+
+
+class UnextractableDocument(ValueError):
+    """The named document exists but is not a type extraction reads."""
+
+
 @dataclass(frozen=True)
 class Outcome:
     document_id: int
@@ -82,8 +90,14 @@ def extract_project(
     prompt_version: str = PROMPT_VERSION,
     redo: bool = False,
     commit: bool = True,
+    document_registry_id: str | None = None,
 ) -> list[Outcome]:
     """Extract every matrix in the project, one Outcome per document.
+
+    ``document_registry_id`` names one document — by registry identity,
+    never database id — and extracts it alone: a two-document rehearsal
+    must not pay for five extractions. The named path refuses loudly where
+    the project sweep would silently cover zero documents.
 
     Committing each document's Candidates and ExtractionRun together makes
     resume safe: a killed run cannot expose a completion receipt without the
@@ -102,11 +116,30 @@ def extract_project(
                 extract=extract,
             )
 
-    documents = session.scalars(
-        select(Document)
-        .where(Document.project_id == project.id, Document.doc_type == "matrix")
-        .order_by(Document.doc_date, Document.id)
-    ).all()
+    if document_registry_id is not None:
+        named = session.scalars(
+            select(Document).where(
+                Document.project_id == project.id,
+                Document.registry_id == document_registry_id,
+            )
+        ).first()
+        if named is None:
+            raise UnknownDocument(
+                f"no document in {project.slug!r} carries registry id "
+                f"{document_registry_id!r}"
+            )
+        if named.doc_type != "matrix":
+            raise UnextractableDocument(
+                f"{document_registry_id!r} is {named.doc_type!r}; extraction "
+                "reads matrices"
+            )
+        documents = [named]
+    else:
+        documents = session.scalars(
+            select(Document)
+            .where(Document.project_id == project.id, Document.doc_type == "matrix")
+            .order_by(Document.doc_date, Document.id)
+        ).all()
 
     done_by_version: dict[str, set[int]] = {}
     outcomes = []
@@ -351,10 +384,16 @@ def main(argv: list[str]) -> int:
 
     args = [a for a in argv if not a.startswith("-")]
     flags = {a for a in argv if a.startswith("-")}
+    document_registry_id = None
+    for flag in sorted(flags):
+        if flag.startswith("--document="):
+            document_registry_id = flag.removeprefix("--document=")
+            flags.discard(flag)
+            break
     unknown = flags - {"--redo"}
-    if not args or unknown:
+    if not args or unknown or document_registry_id == "":
         print(
-            "usage: extract <project-slug> [--redo]"
+            "usage: extract <project-slug> [--document=<registry-id>] [--redo]"
             + (f"\nunknown flag(s): {', '.join(sorted(unknown))}" if unknown else ""),
             file=sys.stderr,
         )
@@ -382,6 +421,7 @@ def main(argv: list[str]) -> int:
                 # this command's (ADR-0005).
                 select_route=lambda document: extraction_route(document, client=client),
                 redo="--redo" in flags,
+                document_registry_id=document_registry_id,
             )
         finally:
             client.close()
