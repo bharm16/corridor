@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, aliased
 
 from corridor import audit
 from corridor.models import Dependency, WorkDecision
-from corridor.principals import require_human_principal
+from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 ASSIGN_INTERNAL_OWNER = "assign_internal_owner"
@@ -31,7 +31,7 @@ def assign_internal_owner(
     dependency_id: int,
     owner: str,
     *,
-    principal,
+    principal: HumanPrincipal,
 ) -> WorkDecision:
     """Record that the project holds ``owner`` accountable for follow-up.
 

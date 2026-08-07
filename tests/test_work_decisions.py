@@ -192,3 +192,13 @@ def test_receipts_are_immutable_below_the_service_boundary(session, dependency):
             session.execute(
                 delete(WorkDecision).where(WorkDecision.id == decision.id)
             )
+
+
+def test_a_role_label_cannot_record_a_work_decision(session, dependency):
+    """'system' and 'reviewer' are roles; the recorder is a person."""
+    for label in ("local:system", "local:reviewer"):
+        with pytest.raises(InvalidHumanPrincipal):
+            assign_internal_owner(
+                session, dependency.id, "Dana", principal=HumanPrincipal(label)
+            )
+    assert _decisions(session, dependency.id) == []
