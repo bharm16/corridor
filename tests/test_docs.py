@@ -209,6 +209,166 @@ def test_ingest_registers_structured_supersession_after_all_documents_exist(
     assert predecessor.supersession_source_page == 1
 
 
+@pytest.mark.parametrize(
+    ("omitted", "message"),
+    [
+        ("source_registry_id", "source_registry_id must be non-empty"),
+        ("source_page", "source_page must be positive"),
+    ],
+)
+def test_ingest_rejects_a_supersession_with_no_source_pointer(
+    session, project, tmp_path, omitted, message
+):
+    """The declaration names the index document and page, or it is refused.
+
+    The chain is checkable rather than cited (ADR-0015): the pointer is what
+    keeps the index one click away, so an edge that carries none is a guess
+    about lineage — the one thing supersession may never be.
+    """
+    first = make_pdf(tmp_path / "r1.pdf", ["Matrix revision one"])
+    declaration = {
+        "predecessor_registry_id": "matrix-r1",
+        "successor_registry_id": "matrix-r2",
+        "replacement_date": "2026-02-13",
+        "source_registry_id": "rid-index",
+        "source_page": 1,
+    }
+    del declaration[omitted]
+    lock_path = tmp_path / "uncited.lock.json"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "project": project.slug,
+                "sources": {
+                    "https://example.gov/r1.pdf": {
+                        "sha256": file_sha256(first),
+                        "local_path": str(first),
+                        "doc_type": "matrix",
+                        "registry_id": "matrix-r1",
+                        "supersession": declaration,
+                    }
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match=message):
+        ingest_manifest(
+            session,
+            project_id=project.id,
+            lock_path=lock_path,
+            images_dir=tmp_path / "images",
+        )
+
+
+def test_reingesting_an_unidentified_project_backfills_ids_and_the_chain(
+    session, project, tmp_path
+):
+    """The live case: documents ingested before the lockfile named them.
+
+    NHHIP's revisions were ingested when the lockfile carried no registry
+    ids and no chain, so the run that registers supersession is a re-run
+    over documents that already exist. It backfills the identities onto
+    those same rows, declares each edge once, and says the same thing again
+    on a third pass.
+    """
+    index = make_pdf(tmp_path / "index.pdf", ["R1 Replaced on 2026-02-13"])
+    first = make_pdf(tmp_path / "r1.pdf", ["Matrix revision one"])
+    second = make_pdf(tmp_path / "r2.pdf", ["Matrix revision two"])
+
+    def source(path, **extra):
+        return {
+            "sha256": file_sha256(path),
+            "local_path": str(path),
+            "doc_type": "matrix",
+            **extra,
+        }
+
+    unidentified = {
+        "project": project.slug,
+        "sources": {
+            "https://example.gov/index.pdf": source(index, doc_type="other"),
+            "https://example.gov/r1.pdf": source(first),
+            "https://example.gov/r2.pdf": source(second),
+        },
+    }
+    identified = {
+        "project": project.slug,
+        "sources": {
+            "https://example.gov/index.pdf": source(
+                index, doc_type="other", registry_id="rid-index"
+            ),
+            "https://example.gov/r1.pdf": source(
+                first,
+                registry_id="matrix-r1",
+                supersession={
+                    "predecessor_registry_id": "matrix-r1",
+                    "successor_registry_id": "matrix-r2",
+                    "replacement_date": "2026-02-13",
+                    "source_registry_id": "rid-index",
+                    "source_page": 1,
+                },
+            ),
+            "https://example.gov/r2.pdf": source(second, registry_id="matrix-r2"),
+        },
+    }
+
+    def ingest(lock, name):
+        lock_path = tmp_path / name
+        lock_path.write_text(json.dumps(lock))
+        return ingest_manifest(
+            session,
+            project_id=project.id,
+            lock_path=lock_path,
+            images_dir=tmp_path / "images",
+        )
+
+    def registry():
+        return [
+            (
+                row.id,
+                row.registry_id,
+                row.superseded_by,
+                row.superseded_on,
+                row.supersession_source_document_id,
+                row.supersession_source_page,
+            )
+            for row in session.execute(
+                select(
+                    Document.id,
+                    Document.registry_id,
+                    Document.superseded_by,
+                    Document.superseded_on,
+                    Document.supersession_source_document_id,
+                    Document.supersession_source_page,
+                )
+                .where(Document.project_id == project.id)
+                .order_by(Document.id)
+            ).all()
+        ]
+
+    before = ingest(unidentified, "unidentified.lock.json")
+    assert [document.registry_id for document in before] == [None, None, None]
+
+    ingest(identified, "identified.lock.json")
+    after = registry()
+
+    # The same three rows, now identified — a re-ingest never mints a second
+    # document for bytes already in the store.
+    assert [row[0] for row in after] == [document.id for document in before]
+    assert [row[1] for row in after] == ["rid-index", "matrix-r1", "matrix-r2"]
+    predecessor = next(row for row in after if row[1] == "matrix-r1")
+    successor = next(row for row in after if row[1] == "matrix-r2")
+    source_document = next(row for row in after if row[1] == "rid-index")
+    assert predecessor[2] == successor[0]
+    assert predecessor[3] == date(2026, 2, 13)
+    assert predecessor[4] == source_document[0]
+    assert predecessor[5] == 1
+
+    ingest(identified, "identified-again.lock.json")
+    assert registry() == after
+
+
 def test_missing_supersession_participant_defers_edges_without_losing_documents(
     session, project, tmp_path
 ):
