@@ -295,3 +295,123 @@ def locate_quote(document: Document, page_no: int, quote: str) -> list[Highlight
             ]
     except Exception:
         return []
+
+
+@dataclass
+class RailEntry:
+    """One cohort member in the rehearsal rail."""
+
+    candidate_id: int | None
+    utility_id: str
+    classification: str
+    station: str
+    utility_type: str
+    state: str
+    current: bool
+
+
+@dataclass
+class ChangeEntry:
+    """One field's December-to-February movement, from the pinned finding."""
+
+    field: str
+    before: str
+    after: str
+
+
+RAIL_GROUPS = (
+    ("conflict_flag_n_to_y", "Flipped N → Y"),
+    ("verification_blocked", "Verification blocked"),
+    ("newly_added", "Newly added"),
+)
+
+
+def build_cohort_rail(
+    session: Session, receipt, current_candidate_id: int | None
+) -> list[RailEntry]:
+    """Every member, grouped by why it is here, with its decision state.
+
+    The rail is navigation and progress, nothing more: membership stays
+    the receipt's fact, and the mutation boundary stays server-side at
+    accept/edit/merge. A member whose row cannot be resolved to a live
+    Candidate is still listed — silently dropping it would misreport the
+    cohort — with its state named `unresolved`.
+    """
+    candidates = session.scalars(
+        select(Candidate).where(
+            Candidate.extraction_run_id == receipt.successor_extraction_run_id
+        )
+    ).all()
+    by_utility: dict[str, Candidate] = {}
+    for candidate in candidates:
+        fields = (candidate.payload_json or {}).get("fields", {})
+        utility_id = fields.get("utility_id")
+        if utility_id is not None:
+            by_utility[str(utility_id)] = candidate
+
+    group_order = {key: index for index, (key, _) in enumerate(RAIL_GROUPS)}
+    entries = []
+    for member in receipt.members:
+        candidate = by_utility.get(member["utility_id"])
+        fields = (
+            (candidate.payload_json or {}).get("fields", {}) if candidate else {}
+        )
+        entries.append(
+            RailEntry(
+                candidate_id=candidate.id if candidate else None,
+                utility_id=member["utility_id"],
+                classification=member["classification"],
+                station=fields.get("station_from") or "—",
+                utility_type=fields.get("utility_type") or "—",
+                state=candidate.state if candidate else "unresolved",
+                current=(
+                    candidate is not None
+                    and candidate.id == current_candidate_id
+                ),
+            )
+        )
+    entries.sort(
+        key=lambda e: (group_order.get(e.classification, 99), e.utility_id)
+    )
+    return entries
+
+
+def change_strip(session, receipt, candidate: Candidate) -> list[ChangeEntry]:
+    """What moved between the revisions for this exact row.
+
+    Read from the pinned Comparison finding, never recomputed: the strip
+    shows the matcher's persisted before/after so the reviewer and the
+    receipt cannot disagree about what changed.
+    """
+    from corridor.models import RevisionComparisonFinding
+
+    finding = session.scalars(
+        select(RevisionComparisonFinding).where(
+            RevisionComparisonFinding.revision_comparison_run_id
+            == receipt.revision_comparison_run_id,
+            RevisionComparisonFinding.state == "changed",
+            RevisionComparisonFinding.successor_candidate_ids.contains(
+                [candidate.id]
+            ),
+        )
+    ).first()
+    if finding is None:
+        return []
+    return [
+        ChangeEntry(
+            field=str(change.get("field")),
+            before=str(change.get("before") if change.get("before") is not None else "—"),
+            after=str(change.get("after") if change.get("after") is not None else "—"),
+        )
+        for change in finding.field_changes
+    ]
+
+
+def member_classification(receipt, candidate: Candidate) -> str | None:
+    """Why this candidate is in the cohort, from the receipt itself."""
+    fields = (candidate.payload_json or {}).get("fields", {})
+    utility_id = str(fields.get("utility_id"))
+    for member in receipt.members:
+        if member["utility_id"] == utility_id:
+            return member["classification"]
+    return None

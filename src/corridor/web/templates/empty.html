@@ -16,13 +16,26 @@
   .review .status { color:#b54708; font-weight:600; }
   .review .documents { color:#555; font-size:.9rem; }
   .review .refusal { background:#f7f7f7; border-radius:4px; padding:.5rem .7rem; }
+  .coordinate { text-align:left; border:1px solid #abefc6; background:#ecfdf3;
+                border-radius:6px; padding:.7rem .9rem; margin:.8rem auto;
+                width:min(42rem, calc(100vw - 2rem)); }
+  .coordinate-head { display:flex; gap:.6rem; align-items:baseline; }
+  .coordinate-head .skip { margin-left:auto; color:#333; font-size:.82rem; }
+  .coordinate-forms { display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem; }
+  .coordinate-forms form { display:flex; gap:.4rem; }
+  .coordinate-forms input { font:inherit; padding:.25rem .4rem;
+                            border:1px solid #ddd; border-radius:3px; flex:1; }
+  .coordinate-forms input[type=date] { flex:0 0 auto; }
+  kbd { font:11px ui-monospace, monospace; background:#f0f0f0; border:1px solid #ddd;
+        border-bottom-width:2px; border-radius:3px; padding:0 .3rem; }
 </style>
 <div>
   <nav aria-label="Review lanes">
     <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Candidate Adjudication ({{ candidate_count }})</a>
     <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Reconfirmation ({{ reconfirmation_count }})</a>
   </nav>
-  {% include "_automatic_carry_forward_status.html" %}
+  {% if lane != "rehearsal" %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
+  {% include "_coordinate.html" %}
   {% if lane == "candidate" and ordinary_reviews %}
     <h1>Ordinary review</h1>
     {% for view in ordinary_reviews %}

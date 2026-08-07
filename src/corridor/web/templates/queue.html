@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <title>Adjudication — {{ project.name }}</title>
 <style>
-  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; }
+  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; --warn:#b54708; }
   * { box-sizing: border-box; }
   /* Explicit light canvas. Without a background the browser supplies a dark
      one under prefers-color-scheme: dark, and #111 text disappears into it.
@@ -19,9 +19,63 @@
           padding:.25rem .55rem; text-decoration:none; font-size:.82rem; }
   nav a[aria-current="page"] { background:#111; color:#fff; border-color:#111; }
   .counts { color: var(--muted); font-variant-numeric: tabular-nums; }
-  main { display:grid; grid-template-columns: minmax(340px, 2fr) 3fr; height: calc(100vh - 52px); }
+  main { display:grid; grid-template-columns: minmax(340px, 2fr) 3fr;
+         height: calc(100vh - 52px); }
+  main.with-rail { grid-template-columns: 250px minmax(320px, 2fr) 3fr; }
   .pane { overflow:auto; padding:1.2rem; }
-  .pane + .pane { border-left:1px solid var(--line); background:#fafafa; }
+  .pane + .pane { border-left:1px solid var(--line); }
+  .pane.evidence { background:#fafafa; }
+
+  /* --- The cohort rail: navigation and progress, nothing more. --- */
+  .rail { padding:0; background:#fcfcfc; border-right:1px solid var(--line);
+          overflow:auto; font-size:.82rem; }
+  .rail .railhead { padding:.7rem .8rem; border-bottom:1px solid var(--line); }
+  .rail .railhead b { font-size:.85rem; }
+  .rail .railhead .muted { color:var(--muted); font-size:.75rem; display:block;
+                           margin-top:.15rem; }
+  .rail h3 { margin:.8rem .8rem .2rem; font-size:.7rem; text-transform:uppercase;
+             letter-spacing:.05em; color:var(--muted); font-weight:600; }
+  .rail ol { list-style:none; margin:0; padding:0; }
+  .rail li a, .rail li span.done { display:flex; gap:.5rem; align-items:baseline;
+             padding:.28rem .8rem; text-decoration:none; color:#111; }
+  .rail li a:hover { background:#f0f0f0; }
+  .rail li a.current { background:#111; color:#fff; }
+  .rail li a.current .muted { color:#bbb; }
+  .rail .uid { font-weight:600; min-width:3.2rem;
+               font-variant-numeric:tabular-nums; }
+  .rail .muted { color:var(--muted); }
+  .rail span.done { color:var(--muted); }
+  .rail span.done .outcome { margin-left:auto; font-size:.72rem; }
+  .rail span.done .outcome.accepted, .rail span.done .outcome.merged { color:var(--ok); }
+  .rail span.done .outcome.rejected { color:var(--bad); }
+
+  /* --- The read view: judging is the job; the form is behind `e`. --- */
+  .rowcard { border:1px solid var(--line); border-radius:6px; padding:.8rem .9rem;
+             margin-bottom:.9rem; background:#fff; }
+  .rowcard .id-line { display:flex; align-items:baseline; gap:.6rem; }
+  .rowcard .uid { font-size:1.25rem; font-weight:700; }
+  .rowcard .badge { font-size:.7rem; padding:.1rem .45rem; border-radius:10px;
+                    border:1px solid; font-weight:600; }
+  .badge.flip { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
+  .badge.blocked { color:var(--bad); border-color:#fecdca; background:#fef3f2; }
+  .badge.new { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
+  .rowcard .facts { color:#333; margin-top:.25rem; }
+  .rowcard .facts b { font-weight:600; }
+  .rowcard .notes { margin-top:.4rem; color:var(--warn); font-size:.85rem; }
+  .changes { border:1px solid #fedf89; background:#fffaeb; border-radius:6px;
+             padding:.6rem .9rem; margin-bottom:.9rem; font-size:.88rem; }
+  .changes b.title { color:var(--warn); }
+  .changes table { border-collapse:collapse; margin-top:.25rem; }
+  .changes td { padding:.08rem .6rem .08rem 0; }
+  .changes .before { color:var(--muted); text-decoration:line-through; }
+  .changes .after { font-weight:600; }
+  details.allfields { margin:.6rem 0 .9rem; }
+  details.allfields summary { cursor:pointer; color:var(--muted); font-size:.82rem; }
+  dl.readfields { display:grid; grid-template-columns:max-content 1fr;
+                  gap:.05rem .8rem; margin:.5rem 0 0; font-size:.85rem; }
+  dl.readfields dt { color:var(--muted); }
+  dl.readfields dd { margin:0; }
+
   table.fields { width:100%; border-collapse:collapse; }
   table.fields th { text-align:left; color:var(--muted); font-weight:500;
                     width:11rem; padding:.3rem .5rem .3rem 0; vertical-align:top; }
@@ -47,16 +101,34 @@
   .imgwrap img { max-width:100%; display:block; border:1px solid var(--line); }
   .hl { position:absolute; background:rgba(255,214,0,.42); outline:1px solid rgba(180,140,0,.6);
         pointer-events:none; }
-  /* The actions stay on screen. A candidate with twenty fields scrolls the
-     accept button out of view, and 60 candidates an hour is not reachable
-     if every one needs a scroll first. */
+  .hl.band { background:rgba(255,214,0,.22); outline:1px solid rgba(180,140,0,.8); }
+  /* The page at its natural 200-DPI resolution, always — a fit-to-width
+     landscape table is unreadable at any pane width. The window is a
+     band scrolled to the cited row; expanding only makes the window
+     taller. Never shrink-to-fit. */
+  .crop { overflow:auto; height:230px; cursor:zoom-in;
+          border-radius:4px; border:1px solid var(--line); background:#fff; }
+  .crop .imgwrap { width:auto; }
+  .crop .imgwrap img { max-width:none; border:0; }
+  .crop.expanded { height:72vh; cursor:zoom-out; }
+  .crophint { color:var(--muted); font-size:.75rem; margin:.25rem 0 0; }
+
+  /* --- Post-accept coordination: one pass, not two. --- */
+  .coordinate { border:1px solid #abefc6; background:#ecfdf3; border-radius:6px;
+                padding:.7rem .9rem; margin-bottom:.9rem; }
+  .coordinate-head { display:flex; gap:.6rem; align-items:baseline; }
+  .coordinate-head .skip { margin-left:auto; color:#333; font-size:.82rem; }
+  .coordinate-forms { display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem; }
+  .coordinate-forms form { display:flex; gap:.4rem; }
+  .coordinate-forms input { font:inherit; padding:.25rem .4rem;
+                            border:1px solid var(--line); border-radius:3px; flex:1; }
+  .coordinate-forms input[type=date] { flex:0 0 auto; }
+
   .pane.left { display:flex; flex-direction:column; padding:0; overflow:hidden; }
   .pane.left .scroll { flex:1; overflow:auto; padding:1.2rem 1.2rem 0; }
   .sticky { border-top:1px solid var(--line); background:#fff; padding:.8rem 1.2rem; }
   .actions { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
   .actions + .actions { margin-top:.5rem; }
-  /* `display:flex` beats the user-agent `[hidden] { display:none }`, so the
-     reject reasons would sit open permanently without this. */
   [hidden] { display: none !important; }
   button { font:inherit; padding:.35rem .8rem; border:1px solid var(--line);
            background:#fff; border-radius:4px; cursor:pointer; }
@@ -64,6 +136,7 @@
   button[disabled] { opacity:.4; cursor:not-allowed; }
   kbd { font:11px ui-monospace, monospace; background:#f0f0f0; border:1px solid #ddd;
         border-bottom-width:2px; border-radius:3px; padding:0 .3rem; }
+  .rail a.current kbd, button.primary kbd { background:#333; color:#eee; border-color:#555; }
   .hint { color:var(--muted); font-size:.8rem; margin-top:.8rem; }
   form.inline { display:inline; }
   .mergerow { display:flex; align-items:center; gap:.6rem; padding:.15rem 0; }
@@ -71,12 +144,23 @@
   .mergerow .sig { color:var(--muted); font-size:.78rem; }
 </style>
 
+{% set fieldmap = dict(view.fields) %}
+{% set badge_labels = {
+     "conflict_flag_n_to_y": ("flip", "flipped N → Y"),
+     "verification_blocked": ("blocked", "verification blocked"),
+     "newly_added": ("new", "newly added"),
+   } %}
+
 <header>
   <div class="identity">
     <b>{{ project.name }}</b>
     <nav aria-label="Review lanes">
-      <a href="/queue/{{ project.slug }}?lane=candidate" aria-current="page">Candidate Adjudication ({{ candidate_count }})</a>
+      {% if rail %}<a href="/queue/{{ project.slug }}?lane=candidate">Candidate Adjudication ({{ candidate_count }})</a>
+      {% else %}<a href="/queue/{{ project.slug }}?lane=candidate" aria-current="page">Candidate Adjudication ({{ candidate_count }})</a>{% endif %}
       <a href="/queue/{{ project.slug }}?lane=reconfirmation">Reconfirmation ({{ reconfirmation_count }})</a>
+      {% if rail %}
+        <a href="{{ lane_url }}" aria-current="page">Rehearsal ({{ view.remaining }})</a>
+      {% endif %}
     </nav>
   </div>
   <span class="counts">
@@ -87,20 +171,53 @@
   </span>
 </header>
 
-{% include "_automatic_carry_forward_status.html" %}
+{# Machinery status is not review work: it stays off the rehearsal lane. #}
+{% if not rail %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
 
-<main>
-  {% if cohort_receipt %}
-  <p class="muted" style="border:1px solid #e2e2e2;border-radius:5px;padding:.4rem .6rem">
-    Rehearsal lane — cohort receipt #{{ cohort_receipt.id }}
-    ({{ cohort_receipt.rule_version }}, {{ cohort_receipt.external_org }},
-    {{ cohort_receipt.member_count }} members). Mutations outside this
-    pinned set refuse.
-  </p>
+<main{% if rail %} class="with-rail"{% endif %}>
+  {% if rail %}
+  <section class="rail" aria-label="Cohort">
+    {% set decided = rail|rejectattr("state", "equalto", "pending")|list %}
+    <div class="railhead">
+      <b>Cohort receipt #{{ cohort_receipt.id }}</b>
+      <span class="muted">{{ cohort_receipt.external_org }} ·
+        {{ decided|length }} of {{ rail|length }} decided ·
+        mutations outside this pinned set refuse</span>
+    </div>
+    {% for key, label in [("conflict_flag_n_to_y", "Flipped N → Y"),
+                          ("verification_blocked", "Verification blocked"),
+                          ("newly_added", "Newly added")] %}
+      {% set group = rail|selectattr("classification", "equalto", key)|list %}
+      {% if group %}
+        <h3>{{ label }} ({{ group|length }})</h3>
+        <ol>
+          {% for entry in group %}
+            <li>
+              {% if entry.state == "pending" and entry.candidate_id %}
+                <a href="{{ lane_url }}&candidate_id={{ entry.candidate_id }}"
+                   {% if entry.current %}class="current"{% endif %}
+                   data-rail-pending>
+                  <span class="uid">{{ entry.utility_id }}</span>
+                  <span class="muted">{{ entry.utility_type }} · {{ entry.station }}</span>
+                </a>
+              {% else %}
+                <span class="done">
+                  <span class="uid">{{ entry.utility_id }}</span>
+                  <span class="muted">{{ entry.utility_type }} · {{ entry.station }}</span>
+                  <span class="outcome {{ entry.state }}">{{ entry.state }}</span>
+                </span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% endif %}
+    {% endfor %}
+  </section>
   {% endif %}
 
   <section class="pane left">
    <div class="scroll">
+    {% include "_coordinate.html" %}
     {% if ordinary_reviews %}
       <aside class="ordinary-work">
         <b>Dependency-only work also remains in this lane.</b>
@@ -115,6 +232,52 @@
         </ul>
       </aside>
     {% endif %}
+
+    <div class="rowcard">
+      <div class="id-line">
+        <span class="uid">{{ fieldmap.get("utility_id") or "row" }}</span>
+        <span>{{ fieldmap.get("external_org") or "—" }}</span>
+        {% if classification %}
+          {% set css, label = badge_labels.get(classification, ("new", classification)) %}
+          <span class="badge {{ css }}">{{ label }}</span>
+        {% endif %}
+      </div>
+      <div class="facts">
+        <b>{{ fieldmap.get("utility_type") or "—" }}</b>
+        {%- if fieldmap.get("size") %} {{ fieldmap.get("size") }}″{% endif %}
+        {%- if fieldmap.get("material") %} {{ fieldmap.get("material") }}{% endif %}
+        {%- if fieldmap.get("oh_ug") %} {{ fieldmap.get("oh_ug") }}{% endif %}
+        · station {{ fieldmap.get("station_from") or "—" }}
+        {%- if fieldmap.get("station_to") %} → {{ fieldmap.get("station_to") }}{% endif %}
+        · conflict <b>{{ fieldmap.get("potential_conflict") or "—" }}</b>
+        · SUE {{ fieldmap.get("sue_level") or "—" }}
+      </div>
+      {% if fieldmap.get("notes") %}
+        <div class="notes">{{ fieldmap.get("notes") }}</div>
+      {% endif %}
+    </div>
+
+    {% if classification == "newly_added" %}
+      <div class="changes">
+        <b class="title">Not in the December revision</b> — this row is new
+        in February.
+      </div>
+    {% elif changes %}
+      <div class="changes">
+        <b class="title">Changed since December</b>
+        <table>
+          {% for change in changes %}
+            <tr>
+              <td>{{ change.field }}</td>
+              <td class="before">{{ change.before }}</td>
+              <td>→</td>
+              <td class="after">{{ change.after }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% endif %}
+
     {% if view.citations_verified %}
       <div class="banner ok">Citation verified — the quote appears on the cited page.</div>
     {% else %}
@@ -124,24 +287,8 @@
       </div>
     {% endif %}
 
-    <form method="post" action="/candidates/{{ view.candidate.id }}/edit-accept" id="candidate">
-      {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
-      <input type="hidden" name="slug" value="{{ project.slug }}">
-      {% if view.historical_document_id %}
-        <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
-      {% endif %}
-      <table class="fields">
-        {% for name, value in view.fields %}
-          <tr>
-            <th>{{ name }}</th>
-            <td><input name="field_{{ name }}" value="{{ value }}"></td>
-          </tr>
-        {% endfor %}
-      </table>
-    </form>
-
     {% if view.unverified_fields or view.low_confidence_tokens %}
-      <div class="banner bad" style="margin-top:1rem">
+      <div class="banner bad">
         <b>Values not found on the cited page:</b>
         {{ view.unverified_fields|join(', ') or '—' }}
         {%- if view.low_confidence_tokens %}
@@ -153,7 +300,7 @@
     {% endif %}
 
     {% if view.unmapped_columns %}
-      <div class="banner" style="margin-top:1rem;background:#fffaeb;
+      <div class="banner" style="background:#fffaeb;
            border:1px solid #fedf89;color:#b54708">
         <b>Printed columns with no canonical field:</b>
         {{ view.unmapped_columns|join(' · ') }}
@@ -162,6 +309,34 @@
         change, not an extractor's to make.</span>
       </div>
     {% endif %}
+
+    <details class="allfields">
+      <summary>All {{ view.fields|length }} extracted fields</summary>
+      <dl class="readfields">
+        {% for name, value in view.fields %}
+          <dt>{{ name }}</dt><dd>{{ value }}</dd>
+        {% endfor %}
+      </dl>
+    </details>
+
+    {# Reading is the job; the form appears behind `e`. #}
+    <div id="editwrap" hidden>
+      <form method="post" action="/candidates/{{ view.candidate.id }}/edit-accept" id="candidate">
+        {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
+        <input type="hidden" name="slug" value="{{ project.slug }}">
+        {% if view.historical_document_id %}
+          <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
+        {% endif %}
+        <table class="fields">
+          {% for name, value in view.fields %}
+            <tr>
+              <th>{{ name }}</th>
+              <td><input name="field_{{ name }}" value="{{ value }}"></td>
+            </tr>
+          {% endfor %}
+        </table>
+      </form>
+    </div>
 
     <p class="hint">
       candidate #{{ view.candidate.id }} ·
@@ -175,7 +350,7 @@
    <div class="sticky">
     <div class="actions">
       <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/accept">
-      {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
+        {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
         <input type="hidden" name="slug" value="{{ project.slug }}">
         {% if view.historical_document_id %}
           <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
@@ -194,6 +369,9 @@
         title="No existing dependency for this external party. Nothing to merge into."{% endif %}>
         <kbd>m</kbd> merge{% if view.matches %} ({{ view.matches|length }}){% endif %}
       </button>
+      {% if rail %}
+        <button id="next-pending" style="margin-left:auto"><kbd>n</kbd> next</button>
+      {% endif %}
     </div>
 
     <div id="merges" hidden>
@@ -203,7 +381,7 @@
       </p>
       {% for m in view.matches %}
         <form class="mergerow" method="post" action="/candidates/{{ view.candidate.id }}/merge">
-      {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
+          {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
           <input type="hidden" name="slug" value="{{ project.slug }}">
           {% if view.historical_document_id %}
             <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
@@ -224,6 +402,7 @@
     <div class="actions" id="reasons" hidden>
       {% for reason in ["duplicate", "wrong", "irrelevant", "bad-citation"] %}
         <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/reject">
+          {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
           <input type="hidden" name="slug" value="{{ project.slug }}">
           {% if view.historical_document_id %}
             <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
@@ -236,7 +415,7 @@
    </div>
   </section>
 
-  <section class="pane">
+  <section class="pane evidence">
     <div><b>{{ view.document.filename }}</b> ·
       {%- if view.page and view.page.text_source == 'cells' %} sheet {{ view.page_no }}
       {%- else %} page {{ view.page_no }}{% endif %}
@@ -252,14 +431,37 @@
     {% if view.page and not view.page.image_path %}
       <pre class="sheet">{{ view.page.text }}</pre>
     {% else %}
-      <div class="imgwrap">
-        <img src="/page-image/{{ view.document.id }}/{{ view.page_no }}" alt="page {{ view.page_no }}">
-        {% for h in view.highlights %}
-          <div class="hl" style="left:{{ (h.left*100)|round(3) }}%;top:{{ (h.top*100)|round(3) }}%;
-                                 width:{{ (h.width*100)|round(3) }}%;height:{{ (h.height*100)|round(3) }}%"></div>
-        {% endfor %}
+      {% set h0 = view.highlights[0] if view.highlights else None %}
+      <div class="crop{% if not h0 %} expanded{% endif %}" id="crop"
+           title="click to toggle a taller window">
+        <div class="imgwrap" id="imgwrap">
+          <img src="/page-image/{{ view.document.id }}/{{ view.page_no }}" alt="page {{ view.page_no }}">
+          {#
+            One band across the cited row, not per-word confetti: the spans
+            are word matches, and short tokens ("54", "Y") also match other
+            rows. The band is the row every matched word agrees on — the
+            median span's line — so a stray match cannot stretch it.
+          #}
+          {% if view.highlights %}
+            {% set tops = view.highlights|map(attribute="top")|sort|list %}
+            {% set anchor = tops[tops|length // 2] %}
+            {% set ns = namespace(top=1.0, bottom=0.0) %}
+            {% for h in view.highlights %}
+              {% if (h.top - anchor)|abs < 0.02 %}
+                {% set ns.top = [ns.top, h.top]|min %}
+                {% set ns.bottom = [ns.bottom, h.top + h.height]|max %}
+              {% endif %}
+            {% endfor %}
+            <div class="hl band" style="left:0;width:100%;
+                 top:{{ ((ns.top - 0.004)*100)|round(3) }}%;
+                 height:{{ ((ns.bottom - ns.top + 0.008)*100)|round(3) }}%"></div>
+          {% endif %}
+        </div>
       </div>
-      {% if not view.highlights %}
+      {% if h0 %}
+        <p class="crophint">Full resolution, scrolled to the cited row —
+          click for a taller window.</p>
+      {% else %}
         <p class="hint">No highlight: the quote has no searchable span on this page
           (OCR'd page, or a quote assembled from separate table cells).</p>
       {% endif %}
@@ -272,6 +474,8 @@
   // reachable with a mouse.
   const reasons = document.getElementById('reasons');
   const merges = document.getElementById('merges');
+  const editwrap = document.getElementById('editwrap');
+  const editButton = document.getElementById('edit');
 
   // Only one panel open at a time, so a digit is never ambiguous. Picking
   // the wrong merge target is the one unrecoverable mistake in this UI.
@@ -280,15 +484,48 @@
   };
   const closeAll = () => { for (const p of [reasons, merges]) if (p) p.hidden = true; };
 
+  // `e` opens the form first; a second press (or the button, once open)
+  // submits it. Reading stays the default; editing is the exception.
+  const editOrSubmit = () => {
+    if (editwrap.hidden) {
+      editwrap.hidden = false;
+      editButton.innerHTML = '<kbd>e</kbd> save &amp; accept';
+      const first = editwrap.querySelector('input[name^="field_"]');
+      if (first) { first.focus(); first.select(); }
+    } else {
+      document.getElementById('candidate').submit();
+    }
+  };
+
+  const nextPending = () => {
+    const links = [...document.querySelectorAll('[data-rail-pending]')];
+    if (!links.length) return;
+    const at = links.findIndex((l) => l.classList.contains('current'));
+    const target = links[(at + 1) % links.length] || links[0];
+    if (target && !target.classList.contains('current')) target.click();
+  };
+
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && e.key !== 'Escape') return;
+    if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
+      if (e.key === 'Escape') {
+        const skip = document.querySelector('.coordinate .skip');
+        if (skip) { e.preventDefault(); window.location = skip.href; return; }
+        document.activeElement.blur();
+      }
+      return;
+    }
     const k = e.key.toLowerCase();
     if (k === 'a') { e.preventDefault(); document.getElementById('accept').click(); }
-    else if (k === 'e') { e.preventDefault(); document.getElementById('edit').click(); }
+    else if (k === 'e') { e.preventDefault(); editOrSubmit(); }
     else if (k === 'r') { e.preventDefault(); open(reasons); }
     else if (k === 'm' && merges) { e.preventDefault(); open(merges); }
-    else if (k === 'escape') { closeAll(); document.activeElement.blur(); }
+    else if (k === 'n') { e.preventDefault(); nextPending(); }
+    else if (k === 'escape') {
+      const skip = document.querySelector('.coordinate .skip');
+      if (skip) { window.location = skip.href; return; }
+      closeAll(); document.activeElement.blur();
+    }
     else if (/^[1-9]$/.test(k)) {
       const panel = [merges, reasons].find((p) => p && !p.hidden);
       if (!panel) return;
@@ -299,8 +536,35 @@
   document.getElementById('reject-toggle').addEventListener('click', (e) => {
     e.preventDefault(); open(reasons);
   });
+  editButton.addEventListener('click', (e) => {
+    if (editwrap.hidden) { e.preventDefault(); editOrSubmit(); }
+  });
   const mergeToggle = document.getElementById('merge-toggle');
   if (mergeToggle && !mergeToggle.disabled) {
     mergeToggle.addEventListener('click', (e) => { e.preventDefault(); open(merges); });
+  }
+  const nextButton = document.getElementById('next-pending');
+  if (nextButton) {
+    nextButton.addEventListener('click', (e) => { e.preventDefault(); nextPending(); });
+  }
+  // Land the scroll on the highlighted row: the reader is following one
+  // row, not touring the page. Runs after the image has dimensions.
+  const crop = document.getElementById('crop');
+  const scrollToHighlight = () => {
+    const hl = crop && crop.querySelector('.hl');
+    if (!hl) return;
+    crop.scrollTo({
+      top: Math.max(0, hl.offsetTop - crop.clientHeight / 2.5),
+      left: Math.max(0, hl.offsetLeft - 40),
+    });
+  };
+  if (crop) {
+    const img = crop.querySelector('img');
+    if (img && img.complete) scrollToHighlight();
+    else if (img) img.addEventListener('load', scrollToHighlight);
+    crop.addEventListener('click', () => {
+      crop.classList.toggle('expanded');
+      scrollToHighlight();
+    });
   }
 </script>

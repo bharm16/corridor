@@ -2628,10 +2628,15 @@ def test_the_rehearsal_lane_reads_exactly_the_receipt(session, client, project):
     page = client.get(
         f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
     ).text
-    assert f"cohort receipt #{receipt.id}" in page
-    assert "1 members" in page
+    assert f"Cohort receipt #{receipt.id}" in page
+    assert "0 of 1 decided" in page
     assert "W4" in page
     assert 'name="cohort_receipt_id"' in page
+    # The redesign's contracts: the machinery banner stays off this lane,
+    # the reason-for-membership is stated, and the rail groups by it.
+    assert "Automatic Carry-Forward" not in page
+    assert "Newly added (1)" in page
+    assert "newly added" in page
 
 
 def test_the_boundary_refuses_a_non_member_mutation(session, client, project):
@@ -2658,3 +2663,79 @@ def test_the_boundary_refuses_a_non_member_mutation(session, client, project):
         follow_redirects=False,
     )
     assert accepted.status_code == 303
+
+
+def test_accept_flows_into_the_coordination_strip_and_back(
+    session, client, project
+):
+    """One pass: admit, assign, set the action, land on the next row."""
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    assert accepted.status_code == 303
+    location = accepted.headers["location"]
+    assert location.startswith(lane)
+    assert "coordinate=" in location
+
+    page = client.get(location).text
+    assert "Admitted" in page
+    assert "internal owner" in page
+
+    dependency_id = int(location.rsplit("coordinate=", 1)[1])
+    assigned = client.post(
+        f"/dependencies/{dependency_id}/owner",
+        data={
+            "slug": project.slug,
+            "owner": "Dana Fields",
+            "redirect_to": location,
+        },
+        follow_redirects=False,
+    )
+    assert assigned.status_code == 303
+    assert assigned.headers["location"] == location
+
+    acted = client.post(
+        f"/dependencies/{dependency_id}/action",
+        data={
+            "slug": project.slug,
+            "action": "Confirm the crossing schedule",
+            "due_date": "2026-09-01",
+            "redirect_to": lane,
+        },
+        follow_redirects=False,
+    )
+    assert acted.status_code == 303
+    assert acted.headers["location"] == lane
+
+    dep = session.get(Dependency, dependency_id)
+    session.refresh(dep)
+    assert dep.internal_owner == "Dana Fields"
+    assert dep.next_action == "Confirm the crossing schedule"
+
+
+def test_redirect_to_never_leaves_the_app(session, client, project):
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="WD-WEB-RD",
+        dep_type="utility_relocation",
+        title="Redirect test",
+        status="identified",
+    )
+    session.add(dep)
+    session.flush()
+
+    for evil in ("https://example.com/", "//example.com/x"):
+        response = client.post(
+            f"/dependencies/{dep.id}/owner",
+            data={"slug": project.slug, "owner": "Dana", "redirect_to": evil},
+            follow_redirects=False,
+        )
+        assert response.status_code == 400
