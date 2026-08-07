@@ -59,6 +59,28 @@
     {{ view.dependency.evidence_required or 'no closure bar recorded' }}
   </p>
 
+  <h2>Coordination</h2>
+  <p>
+    Internal Owner:
+    {% if view.dependency.internal_owner %}
+      <b>{{ view.dependency.internal_owner }}</b>
+      {% if owner_decision %}
+        <span class="muted" style="font-size:.8rem">
+          — a project decision by {{ owner_decision.recorded_by }},
+          {{ owner_decision.recorded_at.date() }}</span>
+      {% endif %}
+    {% else %}
+      <span class="muted">unassigned</span>
+    {% endif %}
+  </p>
+  <form class="inline" method="post"
+        action="/dependencies/{{ view.dependency.id }}/owner">
+    <input type="hidden" name="slug" value="{{ project.slug }}">
+    <input name="owner" placeholder="named person"
+           value="{{ view.dependency.internal_owner or '' }}">
+    <button type="submit">assign owner</button>
+  </form>
+
   <h2>Exceptions</h2>
   {% if view.exceptions %}
     <table>

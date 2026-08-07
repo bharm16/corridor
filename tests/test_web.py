@@ -2398,3 +2398,56 @@ def test_posting_accept_for_an_event_is_refused_not_a_server_error(
         model: session.scalar(select(func.count()).select_from(model))
         for model in before
     } == before
+
+
+# --- The first Work Decision surface: assign an Internal Owner (#169) -------
+
+
+def test_the_record_view_assigns_an_owner_as_a_visible_project_decision(
+    session, client, project
+):
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="WD-WEB-1",
+        dep_type="utility_relocation",
+        title="Water main at 1102+20",
+        status="identified",
+    )
+    session.add(dep)
+    session.flush()
+
+    page = client.get(f"/ledger/{project.slug}/{dep.id}").text
+    assert "unassigned" in page
+
+    response = client.post(
+        f"/dependencies/{dep.id}/owner",
+        data={"slug": project.slug, "owner": "Dana Fields"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    page = client.get(f"/ledger/{project.slug}/{dep.id}").text
+    assert "Dana Fields" in page
+    assert "a project decision by" in page
+    assert TEST_PRINCIPAL.subject in page
+
+
+def test_a_blank_owner_refuses_at_the_form_boundary(session, client, project):
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="WD-WEB-2",
+        dep_type="utility_relocation",
+        title="Duct bank at 1117+00",
+        status="identified",
+    )
+    session.add(dep)
+    session.flush()
+
+    response = client.post(
+        f"/dependencies/{dep.id}/owner",
+        data={"slug": project.slug, "owner": "   "},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    session.refresh(dep)
+    assert dep.internal_owner is None
