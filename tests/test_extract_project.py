@@ -995,3 +995,27 @@ def test_a_named_document_keeps_the_skip_receipt_semantics(session, project):
         select(ExtractionRun).where(ExtractionRun.document_id == doc.id)
     ).all()
     assert len(runs) == 1
+
+
+def test_a_named_document_records_failure_receipts_like_the_sweep(
+    session, project
+):
+    doc = add_matrix(session, project, "feb.pdf", "a" * 64)
+    doc.registry_id = "ucm-feb"
+    session.flush()
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"feb.pdf": ExtractionFailed("model unavailable")}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+        document_registry_id="ucm-feb",
+    )
+
+    assert [o.status for o in outcomes] == ["failed"]
+    run = session.scalars(
+        select(ExtractionRun).where(ExtractionRun.document_id == doc.id)
+    ).one()
+    assert run.outcome == "failed"
+    assert "model unavailable" in run.error_detail
