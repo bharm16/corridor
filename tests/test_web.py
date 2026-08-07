@@ -2739,3 +2739,303 @@ def test_redirect_to_never_leaves_the_app(session, client, project):
             follow_redirects=False,
         )
         assert response.status_code == 400
+
+
+# ── The event lane (#199): explicit revision choice, one gesture ─────────
+
+
+def _event_cohort_lane(session, project):
+    """A receipt derived through the real service: PL7 in (two matrix
+    revisions, one dated commitment), PL8 out (no dated event)."""
+    from corridor.cohort import derive_event_cohort_receipt
+    from corridor.extraction_runs import (
+        declare_single_run_documents,
+        record_extraction_run,
+    )
+
+    def doc(filename, doc_type, doc_date):
+        document = Document(
+            project_id=project.id,
+            sha256=_document_sha(project.id, filename),
+            filename=filename,
+            doc_type=doc_type,
+            parse_status="parsed",
+            pages=1,
+            doc_date=doc_date,
+        )
+        session.add(document)
+        session.flush()
+        session.add(
+            DocPage(document_id=document.id, page_no=1, text="event lane rows")
+        )
+        session.flush()
+        return document
+
+    def run(document, candidates):
+        for c in candidates:
+            session.add(c)
+        made = record_extraction_run(
+            session,
+            document,
+            prompt_version="minutes_v1",
+            candidate_count=len(candidates),
+            page_errors=0,
+            candidates=candidates,
+            model="gpt-test",
+            schema_version="matrix_candidate_shape_v1",
+        )
+        session.flush()
+        return made
+
+    def dep(document, uid):
+        return Candidate(
+            project_id=project.id,
+            kind="dependency",
+            payload_json={
+                "kind": "dependency",
+                "fields": {
+                    "utility_id": uid,
+                    "external_org": "Tejas Pipeline Co",
+                    "utility_type": "Petroleum and Gaseous Materials",
+                    "baseline": "SR-BL",
+                    "station_from": "1102+20",
+                    "station_to": "1102+80",
+                },
+                "citations": [
+                    {
+                        "document_id": document.id,
+                        "page": 1,
+                        "quote": "event lane rows",
+                        "verified": True,
+                        "whole_row": True,
+                    }
+                ],
+                "dedupe_hint": f"{uid}|{document.id}",
+                "text_source": "text_layer",
+            },
+            source_document_id=document.id,
+            source_pages=[1],
+            confidence=0.99,
+            prompt_version="minutes_v1",
+            model="gpt-test",
+            citations_verified=True,
+        )
+
+    def event(document, ref):
+        return Candidate(
+            project_id=project.id,
+            kind="event",
+            payload_json={
+                "kind": "event",
+                "fields": {
+                    "event_type": "commitment",
+                    "description": f"Tejas committed on {ref}",
+                    "external_org": "Tejas Pipeline Co",
+                    "event_date": "2025-01-16",
+                    "conflict_ref": ref,
+                },
+                "citations": [
+                    {
+                        "document_id": document.id,
+                        "page": 1,
+                        "quote": "event lane rows",
+                        "verified": True,
+                        "whole_row": True,
+                    }
+                ],
+                "dedupe_hint": f"event|{ref}",
+                "text_source": "text_layer",
+            },
+            source_document_id=document.id,
+            source_pages=[1],
+            confidence=0.99,
+            prompt_version="minutes_v1",
+            model="gpt-test",
+            citations_verified=True,
+        )
+
+    from datetime import date as _date
+
+    rev_a = doc("ucm-feb.pdf", "matrix", _date(2025, 2, 23))
+    rev_b = doc("ucm-may.pdf", "matrix", _date(2025, 5, 5))
+    minutes = doc("minutes-jan.pdf", "minutes", _date(2025, 1, 16))
+    pl7_a = dep(rev_a, "PL7")
+    pl7_b = dep(rev_b, "PL7")
+    pl8_b = dep(rev_b, "PL8")
+    run(rev_a, [pl7_a])
+    run(rev_b, [pl7_b, pl8_b])
+    run(minutes, [event(minutes, "PL7")])
+    declare_single_run_documents(
+        session, project.id, principal=TEST_PRINCIPAL
+    )
+    receipt = derive_event_cohort_receipt(session, project.id)
+    return receipt, {"pl7_a": pl7_a, "pl7_b": pl7_b, "pl8_b": pl8_b}
+
+
+def test_the_event_lane_reads_exactly_the_receipt(session, client, project):
+    receipt, c = _event_cohort_lane(session, project)
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=events"
+        f"&event_cohort_receipt_id={receipt.id}"
+        f"&candidate_id={c['pl7_b'].id}"
+    ).text
+    assert f"Event cohort receipt #{receipt.id}" in page
+    assert "PL7" in page
+    # The other revision of the same conflict is offered as a pre-checked
+    # merge inside the accept gesture, named by its document.
+    assert 'name="merge_sibling_ids"' in page
+    assert "ucm-feb.pdf" in page
+    assert 'name="event_cohort_receipt_id"' in page
+
+
+def test_the_event_lane_boundary_refuses_a_non_member_mutation(
+    session, client, project
+):
+    receipt, c = _event_cohort_lane(session, project)
+
+    refused = client.post(
+        f"/candidates/{c['pl8_b'].id}/accept",
+        data={
+            "slug": project.slug,
+            "event_cohort_receipt_id": str(receipt.id),
+        },
+        follow_redirects=False,
+    )
+    assert refused.status_code == 409
+    session.refresh(c["pl8_b"])
+    assert c["pl8_b"].state == "pending"
+
+    accepted = client.post(
+        f"/candidates/{c['pl7_b'].id}/accept",
+        data={
+            "slug": project.slug,
+            "event_cohort_receipt_id": str(receipt.id),
+        },
+        follow_redirects=False,
+    )
+    assert accepted.status_code == 303
+    assert (
+        f"lane=events&event_cohort_receipt_id={receipt.id}"
+        in accepted.headers["location"]
+    )
+
+
+def test_accept_merges_checked_siblings_in_one_gesture(
+    session, client, project
+):
+    receipt, c = _event_cohort_lane(session, project)
+
+    response = client.post(
+        f"/candidates/{c['pl7_b'].id}/accept",
+        data={
+            "slug": project.slug,
+            "event_cohort_receipt_id": str(receipt.id),
+            "merge_sibling_ids": [str(c["pl7_a"].id)],
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    session.refresh(c["pl7_b"])
+    session.refresh(c["pl7_a"])
+    assert c["pl7_b"].state == "accepted"
+    assert c["pl7_a"].state == "merged"
+    dependency_id = int(
+        response.headers["location"].rsplit("coordinate=", 1)[1]
+    )
+    assert c["pl7_a"].merged_into == dependency_id
+
+
+def test_a_sibling_outside_the_conflict_refuses_the_whole_gesture(
+    session, client, project
+):
+    receipt, c = _event_cohort_lane(session, project)
+
+    response = client.post(
+        f"/candidates/{c['pl7_b'].id}/accept",
+        data={
+            "slug": project.slug,
+            "event_cohort_receipt_id": str(receipt.id),
+            "merge_sibling_ids": [str(c["pl8_b"].id)],
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    session.refresh(c["pl7_b"])
+    session.refresh(c["pl8_b"])
+    assert c["pl7_b"].state == "pending"
+    assert c["pl8_b"].state == "pending"
+
+
+def test_every_mutation_route_holds_the_event_lane_boundary(
+    session, client, project
+):
+    """edit-accept, merge, and reject refuse a non-member exactly as
+    accept does — the keyboard shortcuts are not a side door."""
+    receipt, c = _event_cohort_lane(session, project)
+    non_member = c["pl8_b"].id
+    scope = {
+        "slug": project.slug,
+        "event_cohort_receipt_id": str(receipt.id),
+    }
+
+    edit = client.post(
+        f"/candidates/{non_member}/edit-accept",
+        data={**scope, "field_utility_id": "PL8"},
+        follow_redirects=False,
+    )
+    assert edit.status_code == 409
+
+    merge = client.post(
+        f"/candidates/{non_member}/merge",
+        data={**scope, "dependency_id": "1"},
+        follow_redirects=False,
+    )
+    assert merge.status_code == 409
+
+    reject = client.post(
+        f"/candidates/{non_member}/reject",
+        data={**scope, "reason": "duplicate"},
+        follow_redirects=False,
+    )
+    assert reject.status_code == 409
+
+    session.refresh(c["pl8_b"])
+    assert c["pl8_b"].state == "pending"
+
+
+def test_reject_holds_the_rehearsal_boundary_too(session, client, project):
+    """The pre-existing gap: reject carried the receipt id and ignored it."""
+    receipt, candidates = _rehearsal_receipt(session, project)
+    non_member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W1"
+    )
+    response = client.post(
+        f"/candidates/{non_member.id}/reject",
+        data={
+            "slug": project.slug,
+            "cohort_receipt_id": str(receipt.id),
+            "reason": "duplicate",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    session.refresh(non_member)
+    assert non_member.state == "pending"
+
+
+def test_a_self_or_duplicate_sibling_refuses_cleanly(session, client, project):
+    receipt, c = _event_cohort_lane(session, project)
+    response = client.post(
+        f"/candidates/{c['pl7_b'].id}/accept",
+        data={
+            "slug": project.slug,
+            "event_cohort_receipt_id": str(receipt.id),
+            "merge_sibling_ids": [str(c["pl7_b"].id), str(c["pl7_a"].id)],
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    session.refresh(c["pl7_b"])
+    assert c["pl7_b"].state == "pending"

@@ -3,9 +3,10 @@
   "configurations": [
     {
       "name": "queue",
-      "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "uvicorn", "corridor.web.app:app", "--port", "8412"],
-      "port": 8412
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "uv run uvicorn corridor.web.app:app --port ${PORT:-8412}"],
+      "port": 8412,
+      "autoPort": true
     }
   ]
 }

@@ -53,6 +53,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     DocPage,
+    Document,
     EvidenceLink,
     ExternalOrg,
     Project,
@@ -70,9 +71,11 @@ from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.cohort import (
     CohortScopeViolation,
     cohort_candidate_ids,
+    event_cohort_candidate_ids,
     require_cohort_member,
+    require_event_cohort_member,
 )
-from corridor.models import CohortReceipt
+from corridor.models import CohortReceipt, EventCohortReceipt
 from corridor.work_decisions import (
     assign_internal_owner,
     cancel_next_action,
@@ -125,6 +128,7 @@ def _decision_location(
     historical_document_id: int | None,
     cohort_receipt_id: int | None,
     *,
+    event_cohort_receipt_id: int | None = None,
     coordinate_dependency_id: int | None = None,
 ) -> str:
     """Where a decision lands next: the same lane it was made in.
@@ -133,6 +137,14 @@ def _decision_location(
     the record it just admitted — one pass, not two."""
     if cohort_receipt_id is not None:
         url = f"/queue/{slug}?lane=rehearsal&cohort_receipt_id={cohort_receipt_id}"
+        if coordinate_dependency_id is not None:
+            url += f"&coordinate={coordinate_dependency_id}"
+        return url
+    if event_cohort_receipt_id is not None:
+        url = (
+            f"/queue/{slug}?lane=events"
+            f"&event_cohort_receipt_id={event_cohort_receipt_id}"
+        )
         if coordinate_dependency_id is not None:
             url += f"&coordinate={coordinate_dependency_id}"
         return url
@@ -151,6 +163,73 @@ def _require_cohort_scope(
         raise HTTPException(409, str(exc))
 
 
+def _require_event_cohort_scope(
+    session: Session, event_cohort_receipt_id: int | None, candidate_id: int
+) -> None:
+    """The event lane's boundary, held at the same place: the mutation."""
+    if event_cohort_receipt_id is None:
+        return
+    try:
+        require_event_cohort_member(
+            session, event_cohort_receipt_id, candidate_id
+        )
+    except CohortScopeViolation as exc:
+        raise HTTPException(409, str(exc))
+
+
+def _event_lane_dependency_ids(
+    session: Session, receipt: EventCohortReceipt
+) -> frozenset[int]:
+    """The admission phase serves only dependency Candidates; events wait
+    for the ADR-0026 policy machinery."""
+    ids = event_cohort_candidate_ids(session, receipt)
+    if not ids:
+        return frozenset()
+    return frozenset(
+        session.scalars(
+            select(Candidate.id).where(
+                Candidate.id.in_(ids), Candidate.kind == "dependency"
+            )
+        )
+    )
+
+
+def _sibling_revisions(
+    session: Session,
+    allowed_ids: frozenset[int],
+    candidate: Candidate,
+) -> list[dict]:
+    """Other pending revisions of the same conflict, offered as merges.
+
+    The registry holds no supersession chain for these documents, so no
+    revision is machine-current; the reviewer's gesture is the explicit
+    choice (#199)."""
+    uid = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
+    if not uid:
+        return []
+    siblings = []
+    others = session.scalars(
+        select(Candidate).where(
+            Candidate.id.in_(allowed_ids),
+            Candidate.id != candidate.id,
+            Candidate.state == "pending",
+        )
+    ).all()
+    for other in others:
+        fields = (other.payload_json or {}).get("fields", {})
+        if str(fields.get("utility_id")) != str(uid):
+            continue
+        document = session.get(Document, other.source_document_id)
+        siblings.append(
+            {
+                "id": other.id,
+                "filename": document.filename if document else "?",
+                "doc_date": document.doc_date if document else None,
+            }
+        )
+    return sorted(siblings, key=lambda s: (s["doc_date"] or date.min))
+
+
 def _project(session: Session, slug: str) -> Project:
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -167,9 +246,10 @@ def root():
 def queue(
     request: Request,
     slug: str,
-    lane: Literal["candidate", "reconfirmation", "rehearsal"] = "candidate",
+    lane: Literal["candidate", "reconfirmation", "rehearsal", "events"] = "candidate",
     historical_document_id: int | None = None,
     cohort_receipt_id: int | None = None,
+    event_cohort_receipt_id: int | None = None,
     candidate_id: int | None = None,
     coordinate: int | None = None,
     session: Session = Depends(get_session),
@@ -182,6 +262,18 @@ def queue(
         cohort_receipt = session.get(CohortReceipt, cohort_receipt_id)
         if cohort_receipt is None or cohort_receipt.project_id != project.id:
             raise HTTPException(404, "no such cohort receipt in this project")
+    event_cohort_receipt = None
+    if lane == "events":
+        if event_cohort_receipt_id is None:
+            raise HTTPException(400, "the event lane names its cohort receipt")
+        event_cohort_receipt = session.get(
+            EventCohortReceipt, event_cohort_receipt_id
+        )
+        if (
+            event_cohort_receipt is None
+            or event_cohort_receipt.project_id != project.id
+        ):
+            raise HTTPException(404, "no such event cohort receipt in this project")
     worklist = build_reviewer_worklist(session, project.id)
     ordinary_candidate_ids = frozenset(
         candidate_id
@@ -197,6 +289,11 @@ def queue(
         allowed_candidate_ids = (
             ordinary_candidate_ids
             & cohort_candidate_ids(session, cohort_receipt)
+        )
+    if event_cohort_receipt is not None:
+        allowed_candidate_ids = (
+            ordinary_candidate_ids
+            & _event_lane_dependency_ids(session, event_cohort_receipt)
         )
     ordinary_reviews = [
         build_supersession_review_view(session, review)
@@ -261,7 +358,9 @@ def queue(
         )
 
     coordinate_dependency = None
-    if coordinate is not None and cohort_receipt is not None:
+    if coordinate is not None and (
+        cohort_receipt is not None or event_cohort_receipt is not None
+    ):
         coordinate_dependency = session.get(Dependency, coordinate)
         if (
             coordinate_dependency is None
@@ -273,6 +372,11 @@ def queue(
     if cohort_receipt is not None:
         lane_url = (
             f"/queue/{slug}?lane=rehearsal&cohort_receipt_id={cohort_receipt.id}"
+        )
+    if event_cohort_receipt is not None:
+        lane_url = (
+            f"/queue/{slug}?lane=events"
+            f"&event_cohort_receipt_id={event_cohort_receipt.id}"
         )
 
     if candidate is None and coordinate_dependency is None:
@@ -315,6 +419,14 @@ def queue(
                 candidate,
                 historical_document_id=historical_document_id,
                 allowed_candidate_ids=allowed_candidate_ids,
+            ),
+            "event_cohort_receipt": event_cohort_receipt,
+            "siblings": (
+                _sibling_revisions(
+                    session, allowed_candidate_ids or frozenset(), candidate
+                )
+                if event_cohort_receipt is not None
+                else []
             ),
             "rail": rail,
             "classification": (
@@ -579,29 +691,75 @@ def accept(
     slug: str = Form(...),
     historical_document_id: int | None = Form(None),
     cohort_receipt_id: int | None = Form(None),
+    event_cohort_receipt_id: int | None = Form(None),
+    merge_sibling_ids: list[int] = Form([]),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
     _require_cohort_scope(session, cohort_receipt_id, candidate_id)
+    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
         candidate_id,
         historical_document_id=historical_document_id,
     )
+
+    # The event lane's one-gesture form: siblings are validated in full
+    # before anything is accepted, so a refused sibling refuses the whole
+    # gesture and leaves every row pending (#199).
+    siblings = []
+    if merge_sibling_ids:
+        if event_cohort_receipt_id is None:
+            raise HTTPException(400, "sibling merges belong to the event lane")
+        uid = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
+        if candidate_id in merge_sibling_ids or len(
+            set(merge_sibling_ids)
+        ) != len(merge_sibling_ids):
+            raise HTTPException(
+                409,
+                "a sibling list may not repeat a candidate or name the "
+                "one being accepted",
+            )
+        for sibling_id in merge_sibling_ids:
+            _require_event_cohort_scope(
+                session, event_cohort_receipt_id, sibling_id
+            )
+            sibling = _project_pending_candidate(
+                session, project, sibling_id, historical_document_id=None
+            )
+            sibling_uid = (
+                (sibling.payload_json or {}).get("fields", {}).get("utility_id")
+            )
+            if str(sibling_uid) != str(uid):
+                raise HTTPException(
+                    409,
+                    f"candidate {sibling_id} is not a revision of the same "
+                    "conflict — one gesture covers one conflict",
+                )
+            siblings.append(sibling)
+
     dependency = _accept(
         session,
         candidate,
         principal,
         historical_document_id=historical_document_id,
     )
+    for sibling in siblings:
+        try:
+            merge_candidate(session, sibling, dependency, principal=principal)
+        except (AlreadyAdjudicated, InvalidCandidateScope) as exc:
+            raise HTTPException(409, str(exc))
+        except InvalidCandidateProvenance as exc:
+            raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
         _decision_location(
             slug,
             historical_document_id,
             cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
             coordinate_dependency_id=dependency.id,
         ),
         status_code=303,
@@ -661,8 +819,16 @@ async def edit_accept(
             cohort_receipt_id = int(str(raw_cohort_receipt_id).strip())
         except ValueError:
             raise HTTPException(400, "cohort_receipt_id must be an integer")
+    raw_event_receipt_id = form.get("event_cohort_receipt_id")
+    event_cohort_receipt_id = None
+    if raw_event_receipt_id is not None and str(raw_event_receipt_id).strip():
+        try:
+            event_cohort_receipt_id = int(str(raw_event_receipt_id).strip())
+        except ValueError:
+            raise HTTPException(400, "event_cohort_receipt_id must be an integer")
     project = _project(session, slug)
     _require_cohort_scope(session, cohort_receipt_id, candidate_id)
+    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -697,6 +863,7 @@ async def edit_accept(
             slug,
             historical_document_id,
             cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
             coordinate_dependency_id=dependency.id,
         ),
         status_code=303,
@@ -710,11 +877,13 @@ def merge(
     dependency_id: int = Form(...),
     historical_document_id: int | None = Form(None),
     cohort_receipt_id: int | None = Form(None),
+    event_cohort_receipt_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
     _require_cohort_scope(session, cohort_receipt_id, candidate_id)
+    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -741,6 +910,7 @@ def merge(
             slug,
             historical_document_id,
             cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
             coordinate_dependency_id=dependency.id,
         ),
         status_code=303,
@@ -754,10 +924,15 @@ def reject(
     reason: str = Form(...),
     historical_document_id: int | None = Form(None),
     cohort_receipt_id: int | None = Form(None),
+    event_cohort_receipt_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    # The receipt id arrived with every reject form and was ignored — the
+    # boundary holds at every mutation or it is not a boundary.
+    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
+    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -778,7 +953,12 @@ def reject(
         raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
-        _decision_location(slug, historical_document_id, cohort_receipt_id),
+        _decision_location(
+            slug,
+            historical_document_id,
+            cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
+        ),
         status_code=303,
     )
 
