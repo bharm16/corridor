@@ -45,6 +45,15 @@ due, whether it happened — remains unproven until the status evidence exists.
 
 ## Three vertical slices
 
+**The fresh runs exist (2026-08-07).** matrix_tiered_v3 / gpt-5.6-luna:
+December (run 33765) read 564 rows, 0 unverified, 26 pages all from the
+text layer; February (run 33766) read 707 rows, 3 unverified — the known
+City verification-blocked rows — 28 pages all text layer. Spend across
+both: 413,844 input tokens (113,620 cached) / 12,608 output, on the order
+of cents, consistent with ADR-0024's benchmark. Noted here because
+Extraction Runs store neither tokens nor cost. Declaring them Active is
+the operator's signature and remains open (#172).
+
 **1. A trusted, runnable City cohort.** Register document identities and the RID-sourced
 supersession chain from the live RID index (doc 237 today has no `registry_id`; no live
 supersession edge exists). Make Active Run declaration attributable and append-preserving —
