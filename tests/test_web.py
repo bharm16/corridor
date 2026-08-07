@@ -2451,3 +2451,47 @@ def test_a_blank_owner_refuses_at_the_form_boundary(session, client, project):
     assert response.status_code == 400
     session.refresh(dep)
     assert dep.internal_owner is None
+
+
+def test_the_action_lifecycle_runs_from_the_record_view(
+    session, client, project
+):
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="WD-WEB-3",
+        dep_type="utility_relocation",
+        title="Duct bank at 1117+00",
+        status="identified",
+    )
+    session.add(dep)
+    session.flush()
+
+    set_response = client.post(
+        f"/dependencies/{dep.id}/action",
+        data={
+            "slug": project.slug,
+            "action": "Request relocation schedule",
+            "due_date": "2026-09-01",
+        },
+        follow_redirects=False,
+    )
+    assert set_response.status_code == 303
+    page = client.get(f"/ledger/{project.slug}/{dep.id}").text
+    assert "Request relocation schedule" in page
+    assert "due 2026-09-01" in page
+
+    done = client.post(
+        f"/dependencies/{dep.id}/action/complete",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    assert done.status_code == 303
+    page = client.get(f"/ledger/{project.slug}/{dep.id}").text
+    assert "none recorded" in page
+
+    again = client.post(
+        f"/dependencies/{dep.id}/action/complete",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    assert again.status_code == 400

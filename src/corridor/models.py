@@ -927,6 +927,11 @@ class Dependency(Base):
     milestone_id: Mapped[int | None] = mapped_column(ForeignKey("milestones.id"))
     external_contact: Mapped[str | None] = mapped_column(Text)
     internal_owner: Mapped[str | None] = mapped_column(Text)
+    # The step the project decided must happen next, and the date the
+    # project set for it — both projections of Work Decision receipts
+    # (ADR-0025). Neither is a document claim.
+    next_action: Mapped[str | None] = mapped_column(Text)
+    action_due_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(
         _enum(*DEP_STATUSES, name="dep_status"),
         default="identified",

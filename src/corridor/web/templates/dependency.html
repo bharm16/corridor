@@ -80,6 +80,42 @@
            value="{{ view.dependency.internal_owner or '' }}">
     <button type="submit">assign owner</button>
   </form>
+  <p style="margin-top:.7rem">
+    Next Action:
+    {% if view.dependency.next_action %}
+      <b>{{ view.dependency.next_action }}</b>
+      {% if view.dependency.action_due_date %}
+        · due {{ view.dependency.action_due_date }}{% endif %}
+      {% if action_decision %}
+        <span class="muted" style="font-size:.8rem">
+          — a project decision by {{ action_decision.recorded_by }},
+          {{ action_decision.recorded_at.date() }}</span>
+      {% endif %}
+    {% else %}
+      <span class="muted">none recorded</span>
+    {% endif %}
+  </p>
+  <form class="inline" method="post"
+        action="/dependencies/{{ view.dependency.id }}/action">
+    <input type="hidden" name="slug" value="{{ project.slug }}">
+    <input name="action" placeholder="what happens next"
+           value="{{ view.dependency.next_action or '' }}">
+    <input name="due_date" type="date"
+           value="{{ view.dependency.action_due_date or '' }}">
+    <button type="submit">set action</button>
+  </form>
+  {% if view.dependency.next_action %}
+    <form class="inline" method="post"
+          action="/dependencies/{{ view.dependency.id }}/action/complete">
+      <input type="hidden" name="slug" value="{{ project.slug }}">
+      <button type="submit">completed</button>
+    </form>
+    <form class="inline" method="post"
+          action="/dependencies/{{ view.dependency.id }}/action/cancel">
+      <input type="hidden" name="slug" value="{{ project.slug }}">
+      <button type="submit">cancel action</button>
+    </form>
+  {% endif %}
 
   <h2>Exceptions</h2>
   {% if view.exceptions %}

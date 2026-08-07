@@ -12,6 +12,7 @@ as unavailable rather than faked.
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -65,7 +66,11 @@ from corridor.web.queue import (
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.work_decisions import (
     assign_internal_owner,
+    cancel_next_action,
+    complete_next_action,
     current_internal_owner_decision,
+    current_next_action_decision,
+    set_next_action,
 )
 from corridor.supersession_review import (
     ReconfirmationUnavailable,
@@ -302,10 +307,16 @@ def dependency_detail(
     if view.dependency.project_id != project.id:
         raise HTTPException(404, "no such dependency in this project")
     owner_decision = current_internal_owner_decision(session, dependency_id)
+    action_decision = current_next_action_decision(session, dependency_id)
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
-        {"project": project, "view": view, "owner_decision": owner_decision},
+        {
+            "project": project,
+            "view": view,
+            "owner_decision": owner_decision,
+            "action_decision": action_decision,
+        },
     )
 
 
@@ -326,6 +337,54 @@ def assign_owner(
     _project_dependency(session, project, dependency_id)
     try:
         assign_internal_owner(session, dependency_id, owner, principal=principal)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    session.commit()
+    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+
+
+@app.post("/dependencies/{dependency_id}/action")
+def record_next_action(
+    dependency_id: int,
+    slug: str = Form(...),
+    action: str = Form(...),
+    due_date: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """One submit, one Work Decision: the action and its date together."""
+    project = _project(session, slug)
+    _project_dependency(session, project, dependency_id)
+    parsed = None
+    if due_date.strip():
+        try:
+            parsed = date.fromisoformat(due_date.strip())
+        except ValueError:
+            raise HTTPException(400, "an Action Due Date must be a date")
+    try:
+        set_next_action(
+            session, dependency_id, action, due_date=parsed, principal=principal
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    session.commit()
+    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+
+
+@app.post("/dependencies/{dependency_id}/action/{outcome}")
+def close_next_action(
+    dependency_id: int,
+    outcome: Literal["complete", "cancel"],
+    slug: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Completion and cancellation are distinct decisions, never one button."""
+    project = _project(session, slug)
+    _project_dependency(session, project, dependency_id)
+    close = complete_next_action if outcome == "complete" else cancel_next_action
+    try:
+        close(session, dependency_id, principal=principal)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     session.commit()
