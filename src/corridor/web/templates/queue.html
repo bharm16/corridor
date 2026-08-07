@@ -90,6 +90,15 @@
 {% include "_automatic_carry_forward_status.html" %}
 
 <main>
+  {% if cohort_receipt %}
+  <p class="muted" style="border:1px solid #e2e2e2;border-radius:5px;padding:.4rem .6rem">
+    Rehearsal lane — cohort receipt #{{ cohort_receipt.id }}
+    ({{ cohort_receipt.rule_version }}, {{ cohort_receipt.external_org }},
+    {{ cohort_receipt.member_count }} members). Mutations outside this
+    pinned set refuse.
+  </p>
+  {% endif %}
+
   <section class="pane left">
    <div class="scroll">
     {% if ordinary_reviews %}
@@ -116,6 +125,7 @@
     {% endif %}
 
     <form method="post" action="/candidates/{{ view.candidate.id }}/edit-accept" id="candidate">
+      {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
       <input type="hidden" name="slug" value="{{ project.slug }}">
       {% if view.historical_document_id %}
         <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
@@ -165,6 +175,7 @@
    <div class="sticky">
     <div class="actions">
       <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/accept">
+      {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
         <input type="hidden" name="slug" value="{{ project.slug }}">
         {% if view.historical_document_id %}
           <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
@@ -192,6 +203,7 @@
       </p>
       {% for m in view.matches %}
         <form class="mergerow" method="post" action="/candidates/{{ view.candidate.id }}/merge">
+      {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
           <input type="hidden" name="slug" value="{{ project.slug }}">
           {% if view.historical_document_id %}
             <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">

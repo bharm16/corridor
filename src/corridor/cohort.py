@@ -220,3 +220,58 @@ def _digest(
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class CohortScopeViolation(ValueError):
+    """A mutation named the rehearsal cohort and a Candidate outside it."""
+
+
+def cohort_candidate_ids(
+    session: Session, receipt: CohortReceipt
+) -> frozenset[int]:
+    """The live Candidate ids the receipt's members resolve to.
+
+    Members are registry identities; execution maps them to the successor
+    Active Run's Candidates at read time. A member whose row has since been
+    adjudicated simply stops resolving to pending work — the receipt does
+    not change.
+    """
+    from corridor.models import Candidate
+
+    member_utility_ids = {member["utility_id"] for member in receipt.members}
+    candidates = session.scalars(
+        select(Candidate).where(
+            Candidate.extraction_run_id == receipt.successor_extraction_run_id
+        )
+    ).all()
+    return frozenset(
+        candidate.id
+        for candidate in candidates
+        if str(
+            (candidate.payload_json or {}).get("fields", {}).get("utility_id")
+        )
+        in member_utility_ids
+    )
+
+
+def require_cohort_member(
+    session: Session, cohort_receipt_id: int, candidate_id: int
+) -> CohortReceipt:
+    """Refuse a mutation on a Candidate outside the named cohort.
+
+    The cohort is a mutation boundary, not a view (#175): a display filter
+    lets a mistyped URL or a stale tab admit an out-of-scope row; this
+    check, at the moment of mutation, cannot.
+    """
+    receipt = session.get(CohortReceipt, cohort_receipt_id)
+    if receipt is None:
+        raise CohortScopeViolation(
+            f"cohort receipt {cohort_receipt_id} does not exist"
+        )
+    if candidate_id not in cohort_candidate_ids(session, receipt):
+        raise CohortScopeViolation(
+            f"candidate {candidate_id} is not a member of cohort receipt "
+            f"{receipt.id} — the rehearsal lane adjudicates only the pinned "
+            "set"
+        )
+    return receipt
