@@ -29,7 +29,8 @@ from corridor.exceptions import (
     format_exception_label,
     format_exception_name,
 )
-from corridor.ledger import Evidence, LedgerRow, browse, primary_evidence
+from corridor.operative_support import resolve_operative_support
+from corridor.ledger import Evidence, LedgerRow, browse
 from corridor.models import (
     Dependency,
     Document,
@@ -375,26 +376,41 @@ def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
             "strategy."
         ),
     )
-    cited_by_dependency = primary_evidence(
+    resolved = resolve_operative_support(
         session, [r.dependency.id for r in ranked]
     )
     for row in ranked:
-        # A critical record whose evidence is all unverified has nothing
-        # this section may quote — and it is precisely the record a reader
-        # most needs to see, so it cites the Ledger record instead. The
-        # fallback used to be `None`, which `assert_no_bare_cells` refuses
-        # by design: five bare cells here raised `BareCell` and `render`
-        # produced no report at all, rather than a report missing a row.
+        dependency_id = row.dependency.id
+        support = resolved.get(dependency_id)
+
+        # Field-exact provenance (#178): each cell carries what backs its
+        # own field, never a neighbour's citation. One record-level quote
+        # used to back five cells here — a value wearing a quote that says
+        # nothing about it, rendered identically to one that does.
         #
-        # A Derivation over the record's own id, which is what the
-        # Exceptions cell beside it, the Aging section and every Appendix
-        # row already carry. Falling back to the unverified quote was the
-        # other option and is the one to refuse: `cell_html` picks its
-        # class on `isinstance(p, Assertion)` alone, so a quote that is
-        # not on its page would render identically to one that is.
-        cited = _as_assertion(
-            cited_by_dependency.get(row.dependency.id)
-        ) or Derivation(RULESET_VERSION, (row.dependency.id,))
+        # A record whose evidence is all unverified still appears — it is
+        # precisely the record a reader most needs to see — falling back
+        # to a Derivation over the record's own id, never to `None`
+        # (assert_no_bare_cells refuses that by design) and never to the
+        # unverified quote (`cell_html` picks its class on isinstance
+        # alone, so a quote not on its page would render as one that is).
+        record_fallback = Derivation(RULESET_VERSION, (dependency_id,))
+
+        def cited_field(field_name: str | None) -> Assertion | Derivation:
+            designated = (
+                support.publication_for(field_name)
+                if support is not None
+                else None
+            )
+            if designated is not None and designated.verified:
+                return Assertion(
+                    designated.document_id,
+                    designated.filename,
+                    designated.page_no,
+                    designated.quote,
+                )
+            return record_fallback
+
         # The row's exceptions as facts, each with its own quantity — no
         # cross-rule "worst" pick, which is the device ADR-0010 forbids.
         listed = ", ".join(
@@ -403,27 +419,37 @@ def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
         )
         section.rows.append(
             [
-                Cell("Ref", row.dependency.ref_code, cited),
-                Cell("External party", row.org_name or "—", cited),
+                # The record's identity, backed by its designated record
+                # publication support: the quote that names the row.
+                Cell("Ref", row.dependency.ref_code, cited_field(None)),
+                Cell(
+                    "External party",
+                    row.org_name or "—",
+                    cited_field("external_org"),
+                ),
                 Cell(
                     "Committed",
                     row.dependency.committed_date.isoformat()
                     if row.dependency.committed_date
                     else "—",
-                    cited,
+                    cited_field("committed_date"),
                 ),
-                Cell(
+                # The Need Date is derived from the Milestone the record
+                # serves — a property of the project, never a document
+                # claim (CONTEXT.md) — so no quote may ever back it.
+                _derived(
                     "Need",
                     row.dependency.need_date.isoformat()
                     if row.dependency.need_date
                     else "—",
-                    cited,
+                    (dependency_id,),
                 ),
-                Cell("Status", row.dependency.status, cited),
+                # Adjudication workflow state: a record fact.
+                _derived("Status", row.dependency.status, (dependency_id,)),
                 _derived(
                     "Exceptions",
                     listed or "—",
-                    (row.dependency.id,),
+                    (dependency_id,),
                 ),
             ]
         )

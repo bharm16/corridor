@@ -1103,3 +1103,152 @@ def test_the_report_has_the_seven_documented_sections_now(
     titles = [s.title for s in report.sections]
     assert "Coordination" in titles
     assert titles.index("Critical items") < titles.index("Coordination")
+
+
+# --- Field-exact provenance in legacy sections (#178) ------------------------
+
+
+def test_a_field_value_never_wears_the_record_quote(session):
+    """The defect this ticket exists for, pinned.
+
+    A record-level publication quote names the row; it says nothing about
+    the committed date. The Committed cell therefore falls back to a
+    Derivation over the record — never the record quote — until a
+    field-scoped support is designated for it.
+    """
+    from corridor.report import Assertion as ReportAssertion
+
+    project, dependency = _critical_dependency(session)
+
+    report = build_report(session, project.id)
+    critical = section(report, "Critical items")
+    [row] = critical.rows
+    ref, party, committed, need, status, exceptions = row
+
+    assert isinstance(ref.provenance, ReportAssertion)
+    assert isinstance(committed.provenance, Derivation)
+    assert committed.provenance.record_ids == (dependency.id,)
+    assert isinstance(need.provenance, Derivation)
+    assert isinstance(status.provenance, Derivation)
+
+
+def test_a_designated_field_support_backs_exactly_its_own_cell(session):
+    from corridor.operative_support import designate_publication_support
+    from corridor.principals import HumanPrincipal
+    from corridor.report import Assertion as ReportAssertion
+
+    project, dependency = _critical_dependency(session)
+    field_link = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=session.scalars(
+            select(Document).where(Document.project_id == project.id)
+        ).first().id,
+        page_no=1,
+        quote="committed to relocate by 2026-06-01",
+        verified=True,
+    )
+    session.add(field_link)
+    session.flush()
+    designate_publication_support(
+        session,
+        dependency.id,
+        field_link.id,
+        field_name="committed_date",
+        principal=HumanPrincipal("local:field-exact-tester"),
+    )
+
+    report = build_report(session, project.id)
+    critical = section(report, "Critical items")
+    [row] = critical.rows
+    committed = row[2]
+    party = row[1]
+
+    assert isinstance(committed.provenance, ReportAssertion)
+    assert committed.provenance.quote == "committed to relocate by 2026-06-01"
+    # The neighbour keeps its own provenance: nothing borrowed sideways.
+    assert not (
+        isinstance(party.provenance, ReportAssertion)
+        and party.provenance.quote == committed.provenance.quote
+    )
+
+
+def _critical_dependency(session):
+    """One critical, not-ready record with record-level support only."""
+    from corridor.adjudicate import accept_candidate
+    from corridor.extraction_runs import (
+        declare_active_run,
+        record_extraction_run,
+    )
+    from corridor.principals import HumanPrincipal
+
+    principal = HumanPrincipal("local:field-exact-tester")
+    project = Project(
+        slug="field-exact-test", name="Field Exact", is_synthetic=True
+    )
+    session.add(project)
+    session.flush()
+    document = Document(
+        project_id=project.id,
+        sha256="fe" * 32,
+        filename="matrix.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(document)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=1,
+            text=(
+                "FE-1 Example Water Relocate 1102+20\n"
+                "committed to relocate by 2026-06-01"
+            ),
+        )
+    )
+    session.flush()
+    candidate = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": {
+                "utility_id": "FE-1",
+                "external_org": "Example Water",
+                "utility_type": "WW",
+                "resolution_strategy": "To be removed",
+                "committed_date": "2026-06-01",
+            },
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": "FE-1 Example Water Relocate 1102+20",
+                    "verified": True,
+                    "whole_row": True,
+                }
+            ],
+            "dedupe_hint": "FE-1",
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="fe_v1",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush()
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="fe_v1",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(candidate,),
+    )
+    declare_active_run(session, document.id, run.id, principal=principal)
+    dependency = accept_candidate(session, candidate, principal=principal)
+    dependency.resolution_strategy = "remove"
+    session.flush()
+    return project, dependency
