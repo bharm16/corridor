@@ -43,7 +43,41 @@ def upgrade() -> None:
             name="uq_event_cohort_receipts_one_per_rule",
         ),
     )
+    op.execute(
+        """
+        create function enforce_event_cohort_receipt()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            if tg_op = 'INSERT' then
+                return new;
+            end if;
+            raise exception 'Event cohort receipts are immutable'
+                using errcode = '23514';
+        end;
+        $$;
+
+        create trigger event_cohort_receipts_are_immutable
+        before update or delete
+        on event_cohort_receipts
+        for each row execute function enforce_event_cohort_receipt();
+
+        create trigger event_cohort_receipts_reject_truncate
+        before truncate on event_cohort_receipts
+        for each statement execute function enforce_event_cohort_receipt();
+        """
+    )
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        drop trigger event_cohort_receipts_reject_truncate
+            on event_cohort_receipts;
+        drop trigger event_cohort_receipts_are_immutable
+            on event_cohort_receipts;
+        drop function enforce_event_cohort_receipt();
+        """
+    )
     op.drop_table("event_cohort_receipts")

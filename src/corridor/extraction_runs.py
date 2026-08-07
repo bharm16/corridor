@@ -264,7 +264,11 @@ def declare_single_run_documents(
     registry_ids: dict[int, str] = {}
     for run, document in rows:
         runs_by_document.setdefault(document.id, []).append(run)
-        registry_ids[document.id] = document.registry_id
+        # registry_id is nullable for legacy and ad-hoc documents; the
+        # refusal must still name them.
+        registry_ids[document.id] = (
+            document.registry_id or f"document {document.id}"
+        )
 
     ambiguous = sorted(
         registry_ids[document_id]

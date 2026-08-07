@@ -14,6 +14,7 @@ import hashlib
 
 import pytest
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from corridor.cohort import (
     EVENT_COHORT_RULE_VERSION,
@@ -363,20 +364,94 @@ def test_members_are_a_pure_function_of_declared_runs(
     assert again.content_sha256 == receipt.content_sha256
 
 
-def test_existing_receipt_disagreement_refuses(session, project, corpus):
+def test_the_receipt_is_immutable_at_the_database(session, project, corpus):
     _declare_all(session, project)
     receipt = derive_event_cohort_receipt(session, project.id)
 
-    session.execute(
-        update(EventCohortReceipt)
-        .where(EventCohortReceipt.id == receipt.id)
-        .values(members=receipt.members[:1], member_count=1)
-    )
-    session.expire_all()
+    with pytest.raises(IntegrityError):
+        session.execute(
+            update(EventCohortReceipt)
+            .where(EventCohortReceipt.id == receipt.id)
+            .values(members=receipt.members[:1], member_count=1)
+        )
 
+
+def test_rule_drift_under_the_same_version_refuses(
+    session, project, corpus, monkeypatch
+):
+    from corridor import cohort as cohort_module
+
+    _declare_all(session, project)
+    derive_event_cohort_receipt(session, project.id)
+
+    # The rule quietly starts admitting responses without a version bump —
+    # the fresh derivation disagrees with the stored receipt and refuses.
+    monkeypatch.setattr(
+        cohort_module,
+        "_EVENT_COHORT_EVENT_TYPES",
+        frozenset({"commitment", "slip", "closure", "response"}),
+    )
     with pytest.raises(CohortDerivationError) as excinfo:
         derive_event_cohort_receipt(session, project.id)
     assert "version" in str(excinfo.value)
+
+
+def test_a_shared_utility_id_across_parties_refuses(session, project, corpus):
+    matrix2 = _document(
+        session, project, registry_id="EC-MATRIX-2", filename="matrix2.pdf"
+    )
+    _run(
+        session,
+        matrix2,
+        [
+            _candidate(
+                matrix2,
+                kind="dependency",
+                fields=_dep_fields("PL1", org=ELECTRIC),
+            )
+        ],
+    )
+    _declare_all(session, project)
+
+    with pytest.raises(CohortDerivationError) as excinfo:
+        derive_event_cohort_receipt(session, project.id)
+    assert "PL1" in str(excinfo.value)
+
+
+def test_ambiguity_refusal_names_a_document_without_registry_id(
+    session, project, corpus
+):
+    bare = Document(
+        project_id=project.id,
+        registry_id=None,
+        sha256=hashlib.sha256(b"bare-doc").hexdigest(),
+        filename="bare.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(bare)
+    session.flush()
+    for _ in range(2):
+        _run(
+            session,
+            bare,
+            [
+                _candidate(
+                    bare,
+                    kind="event",
+                    fields=_event_fields(
+                        event_type="commitment",
+                        conflict_ref="PL1",
+                        event_date="2025-01-16",
+                    ),
+                )
+            ],
+        )
+
+    with pytest.raises(MultipleRunsNeedExplicitChoice) as excinfo:
+        _declare_all(session, project)
+    assert f"document {bare.id}" in str(excinfo.value)
 
 
 # ── The mutation boundary ────────────────────────────────────────────────
