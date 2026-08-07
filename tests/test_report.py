@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from html import escape as escape_html
 
 import pytest
@@ -323,7 +323,7 @@ def test_striking_a_records_verification_removes_no_row_from_the_report(
     assert critical.ref_code in render(report)
 
 
-def test_the_report_has_the_six_documented_sections(
+def test_the_report_has_the_seven_documented_sections(
     session, project_with_two_dependencies
 ):
     report = build_report(session, project_with_two_dependencies.id)
@@ -331,6 +331,7 @@ def test_the_report_has_the_six_documented_sections(
     assert titles == [
         "Milestone readiness",
         "Critical items",
+        "Coordination",
         "Exceptions",
         "Changes since last report",
         "Aging",
@@ -1028,3 +1029,77 @@ def test_report_cites_designated_publication_support_not_the_first_link(
 
     assert isinstance(row[0].provenance, Assertion)
     assert row[0].provenance.quote == "human-designated publication quote"
+
+
+# --- The coordination section and the third provenance class (#177) ----------
+
+
+def test_coordination_prints_project_decisions_as_project_decisions(
+    session, project_with_two_dependencies
+):
+    from corridor.principals import HumanPrincipal
+    from corridor.report import WorkDecision as WorkDecisionProvenance
+    from corridor.work_decisions import assign_internal_owner, set_next_action
+
+    recorder = HumanPrincipal("local:coordination-reporter")
+    project = project_with_two_dependencies
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).first()
+    owner_decision = assign_internal_owner(
+        session, dependency.id, "Dana Fields", principal=recorder
+    )
+    action_decision = set_next_action(
+        session,
+        dependency.id,
+        "Request the relocation schedule",
+        due_date=date(2026, 9, 1),
+        principal=recorder,
+    )
+
+    report = build_report(session, project.id)
+    coordination = section(report, "Coordination")
+    [row] = coordination.rows
+    ref, owner, action, due = row
+
+    assert owner.value == "Dana Fields"
+    assert isinstance(owner.provenance, WorkDecisionProvenance)
+    assert owner.provenance.decision_ids == (owner_decision.id,)
+    assert action.provenance.decision_ids == (action_decision.id,)
+    assert due.value == "2026-09-01"
+    assert due.provenance.decision_ids == (action_decision.id,)
+    # Field-exact: the owner cell and the action cell pin different
+    # receipts — nothing borrows a neighbour's provenance.
+    assert owner.provenance.decision_ids != action.provenance.decision_ids
+
+    html_out = render(report)
+    assert 'class="decision"' in html_out
+    assert f"decided {recorder.subject}" in html_out
+    assert_no_bare_cells(report)
+
+
+def test_a_decision_cell_over_no_receipts_is_bare(session):
+    from corridor.report import WorkDecision as WorkDecisionProvenance
+
+    report = Report(
+        project_name="p",
+        generated_at=datetime.now(timezone.utc),
+        summary=[
+            Cell(
+                "Internal owner",
+                "Dana Fields",
+                WorkDecisionProvenance((), "local:x", date(2026, 8, 7)),
+            )
+        ],
+    )
+    with pytest.raises(BareCell):
+        assert_no_bare_cells(report)
+
+
+def test_the_report_has_the_seven_documented_sections_now(
+    session, project_with_two_dependencies
+):
+    report = build_report(session, project_with_two_dependencies.id)
+    titles = [s.title for s in report.sections]
+    assert "Coordination" in titles
+    assert titles.index("Critical items") < titles.index("Coordination")

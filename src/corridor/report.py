@@ -95,11 +95,40 @@ class Derivation:
         return f"covers: {self.scope}"
 
 
+@dataclass(frozen=True)
+class WorkDecision:
+    """What the project decided: the third provenance class (ADR-0025).
+
+    Rendered visibly as a project decision, never dressed as a document
+    claim: the marker names who decided and when, and pins the exact
+    receipt ids the cell stands on. Field-exact by construction — each
+    cell carries the decision that established its own field, never a
+    neighbour's.
+    """
+
+    decision_ids: tuple[int, ...]
+    recorded_by: str
+    recorded_at: date
+
+    @property
+    def resolves(self) -> bool:
+        return bool(self.decision_ids)
+
+    @property
+    def marker(self) -> str:
+        ids = ", ".join(f"WD{i}" for i in self.decision_ids)
+        return f"[decided {self.recorded_by} {self.recorded_at} · {ids}]"
+
+    @property
+    def drill(self) -> str:
+        return "decisions: " + ", ".join(str(i) for i in self.decision_ids)
+
+
 @dataclass
 class Cell:
     label: str
     value: str
-    provenance: Assertion | Derivation | None = None
+    provenance: Assertion | Derivation | WorkDecision | None = None
 
 
 @dataclass
@@ -190,6 +219,7 @@ def build_report(
     report.sections = [
         _milestone_rollup(session, project_id, rows),
         _critical_items(session, rows),
+        _coordination(session, rows),
         _exceptions_summary(evaluation),
         _changes_since_last(report.diff),
         _aging(rows),
@@ -487,6 +517,70 @@ def _changes_since_last(diff: Diff | None) -> Section:
     return section
 
 
+def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
+    """Who owns the follow-up and what happens next — project decisions.
+
+    The rehearsal's reporting surface: a Utility Inventory asserts no
+    Resolution Strategy, so nothing here can appear under Critical items
+    (ADR-0009), and the coordination facts are Work Decisions rather than
+    document claims. Field-exact: the owner cell pins the decision that
+    assigned the owner, the action and due cells pin the decision that set
+    them, and an absent value is a Derivation over the record it is absent
+    from — never a borrowed citation (#177).
+    """
+    from corridor.work_decisions import (
+        current_internal_owner_decision,
+        current_next_action_decision,
+    )
+
+    section = Section(
+        "Coordination",
+        note=(
+            "Project decisions (ADR-0025): decided by the project team, "
+            "attributed and dated — never asserted by a document."
+        ),
+        columns=["Ref", "Internal owner", "Next action", "Action due"],
+        empty_message="No coordination decisions recorded.",
+    )
+    for row in rows:
+        dependency = row.dependency
+        if not dependency.internal_owner and not dependency.next_action:
+            continue
+        owner_tail = current_internal_owner_decision(session, dependency.id)
+        action_tail = current_next_action_decision(session, dependency.id)
+
+        def decided(value, tail, absent_detail):
+            if value and tail is not None:
+                return Cell(
+                    absent_detail,
+                    value,
+                    WorkDecision(
+                        (tail.id,),
+                        tail.recorded_by,
+                        tail.recorded_at.date(),
+                    ),
+                )
+            return _derived(absent_detail, "—", (dependency.id,))
+
+        section.rows.append(
+            [
+                _derived("Ref", dependency.ref_code, (dependency.id,)),
+                decided(
+                    dependency.internal_owner, owner_tail, "Internal owner"
+                ),
+                decided(dependency.next_action, action_tail, "Next action"),
+                decided(
+                    dependency.action_due_date.isoformat()
+                    if dependency.action_due_date
+                    else None,
+                    action_tail,
+                    "Action due",
+                ),
+            ]
+        )
+    return section
+
+
 def _aging(rows: list[LedgerRow]) -> Section:
     """Days overdue as the engine counted them, not as the report recounts.
 
@@ -580,7 +674,10 @@ def assert_no_bare_cells(report: Report) -> None:
         c
         for c in report.cells
         if c.provenance is None
-        or (isinstance(c.provenance, Derivation) and not c.provenance.resolves)
+        or (
+            isinstance(c.provenance, (Derivation, WorkDecision))
+            and not c.provenance.resolves
+        )
     ]
     if bare:
         raise BareCell(
@@ -595,7 +692,12 @@ def render(report: Report) -> str:
 
     def cell_html(cell: Cell) -> str:
         p = cell.provenance
-        kind = "assertion" if isinstance(p, Assertion) else "derivation"
+        if isinstance(p, Assertion):
+            kind = "assertion"
+        elif isinstance(p, WorkDecision):
+            kind = "decision"
+        else:
+            kind = "derivation"
         title = html.escape(p.quote if isinstance(p, Assertion) else p.drill)
         return (
             f'<td class="{kind}">{html.escape(cell.value)}'
