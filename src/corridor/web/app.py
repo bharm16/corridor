@@ -714,6 +714,14 @@ def accept(
         if event_cohort_receipt_id is None:
             raise HTTPException(400, "sibling merges belong to the event lane")
         uid = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
+        if candidate_id in merge_sibling_ids or len(
+            set(merge_sibling_ids)
+        ) != len(merge_sibling_ids):
+            raise HTTPException(
+                409,
+                "a sibling list may not repeat a candidate or name the "
+                "one being accepted",
+            )
         for sibling_id in merge_sibling_ids:
             _require_event_cohort_scope(
                 session, event_cohort_receipt_id, sibling_id
@@ -741,7 +749,7 @@ def accept(
     for sibling in siblings:
         try:
             merge_candidate(session, sibling, dependency, principal=principal)
-        except InvalidCandidateScope as exc:
+        except (AlreadyAdjudicated, InvalidCandidateScope) as exc:
             raise HTTPException(409, str(exc))
         except InvalidCandidateProvenance as exc:
             raise HTTPException(400, str(exc))
@@ -811,8 +819,16 @@ async def edit_accept(
             cohort_receipt_id = int(str(raw_cohort_receipt_id).strip())
         except ValueError:
             raise HTTPException(400, "cohort_receipt_id must be an integer")
+    raw_event_receipt_id = form.get("event_cohort_receipt_id")
+    event_cohort_receipt_id = None
+    if raw_event_receipt_id is not None and str(raw_event_receipt_id).strip():
+        try:
+            event_cohort_receipt_id = int(str(raw_event_receipt_id).strip())
+        except ValueError:
+            raise HTTPException(400, "event_cohort_receipt_id must be an integer")
     project = _project(session, slug)
     _require_cohort_scope(session, cohort_receipt_id, candidate_id)
+    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -847,6 +863,7 @@ async def edit_accept(
             slug,
             historical_document_id,
             cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
             coordinate_dependency_id=dependency.id,
         ),
         status_code=303,
@@ -860,11 +877,13 @@ def merge(
     dependency_id: int = Form(...),
     historical_document_id: int | None = Form(None),
     cohort_receipt_id: int | None = Form(None),
+    event_cohort_receipt_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
     _require_cohort_scope(session, cohort_receipt_id, candidate_id)
+    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -891,6 +910,7 @@ def merge(
             slug,
             historical_document_id,
             cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
             coordinate_dependency_id=dependency.id,
         ),
         status_code=303,
@@ -904,10 +924,15 @@ def reject(
     reason: str = Form(...),
     historical_document_id: int | None = Form(None),
     cohort_receipt_id: int | None = Form(None),
+    event_cohort_receipt_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    # The receipt id arrived with every reject form and was ignored — the
+    # boundary holds at every mutation or it is not a boundary.
+    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
+    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -928,7 +953,12 @@ def reject(
         raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
-        _decision_location(slug, historical_document_id, cohort_receipt_id),
+        _decision_location(
+            slug,
+            historical_document_id,
+            cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
+        ),
         status_code=303,
     )
 

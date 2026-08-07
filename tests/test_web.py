@@ -2966,3 +2966,76 @@ def test_a_sibling_outside_the_conflict_refuses_the_whole_gesture(
     session.refresh(c["pl8_b"])
     assert c["pl7_b"].state == "pending"
     assert c["pl8_b"].state == "pending"
+
+
+def test_every_mutation_route_holds_the_event_lane_boundary(
+    session, client, project
+):
+    """edit-accept, merge, and reject refuse a non-member exactly as
+    accept does — the keyboard shortcuts are not a side door."""
+    receipt, c = _event_cohort_lane(session, project)
+    non_member = c["pl8_b"].id
+    scope = {
+        "slug": project.slug,
+        "event_cohort_receipt_id": str(receipt.id),
+    }
+
+    edit = client.post(
+        f"/candidates/{non_member}/edit-accept",
+        data={**scope, "field_utility_id": "PL8"},
+        follow_redirects=False,
+    )
+    assert edit.status_code == 409
+
+    merge = client.post(
+        f"/candidates/{non_member}/merge",
+        data={**scope, "dependency_id": "1"},
+        follow_redirects=False,
+    )
+    assert merge.status_code == 409
+
+    reject = client.post(
+        f"/candidates/{non_member}/reject",
+        data={**scope, "reason": "duplicate"},
+        follow_redirects=False,
+    )
+    assert reject.status_code == 409
+
+    session.refresh(c["pl8_b"])
+    assert c["pl8_b"].state == "pending"
+
+
+def test_reject_holds_the_rehearsal_boundary_too(session, client, project):
+    """The pre-existing gap: reject carried the receipt id and ignored it."""
+    receipt, candidates = _rehearsal_receipt(session, project)
+    non_member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W1"
+    )
+    response = client.post(
+        f"/candidates/{non_member.id}/reject",
+        data={
+            "slug": project.slug,
+            "cohort_receipt_id": str(receipt.id),
+            "reason": "duplicate",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    session.refresh(non_member)
+    assert non_member.state == "pending"
+
+
+def test_a_self_or_duplicate_sibling_refuses_cleanly(session, client, project):
+    receipt, c = _event_cohort_lane(session, project)
+    response = client.post(
+        f"/candidates/{c['pl7_b'].id}/accept",
+        data={
+            "slug": project.slug,
+            "event_cohort_receipt_id": str(receipt.id),
+            "merge_sibling_ids": [str(c["pl7_b"].id), str(c["pl7_a"].id)],
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    session.refresh(c["pl7_b"])
+    assert c["pl7_b"].state == "pending"

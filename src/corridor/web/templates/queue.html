@@ -332,6 +332,7 @@
     <div id="editwrap" hidden>
       <form method="post" action="/candidates/{{ view.candidate.id }}/edit-accept" id="candidate">
         {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
+        {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
         <input type="hidden" name="slug" value="{{ project.slug }}">
         {% if view.historical_document_id %}
           <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
@@ -406,6 +407,7 @@
       {% for m in view.matches %}
         <form class="mergerow" method="post" action="/candidates/{{ view.candidate.id }}/merge">
           {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
+        {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
           <input type="hidden" name="slug" value="{{ project.slug }}">
           {% if view.historical_document_id %}
             <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
@@ -427,6 +429,7 @@
       {% for reason in ["duplicate", "wrong", "irrelevant", "bad-citation"] %}
         <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/reject">
           {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
+        {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
           <input type="hidden" name="slug" value="{{ project.slug }}">
           {% if view.historical_document_id %}
             <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
