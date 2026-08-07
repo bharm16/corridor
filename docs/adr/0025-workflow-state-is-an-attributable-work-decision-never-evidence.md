@@ -1,0 +1,17 @@
+# Workflow state is an attributable Work Decision, never Evidence
+
+The pilot's coordination loop assigns an Internal Owner, sets a Next Action and an Action Due Date, and the report must print owner and action — the build spec promised those two and never built them; the Action Due Date is new with this decision — while ADR-0003 admitted exactly two provenance classes: an Assertion (what a document said) and a Derivation (what the rules computed). Decision: project-controlled coordination state is a third class, the **Work Decision** — an attributable project-team decision recorded at a stated time, proving only what the project decided and when. This amends ADR-0003 the way ADR-0003 amended the original zero-uncited-assertions rule: "no cell is bare" is unchanged in force and generalized in class — the verifier accepts exactly three classes, and the build spec's report section moves with it. Queryable current values live on the Dependency, and every change writes a typed, immutable Work Decision receipt carrying the recording principal, the timestamp, exact before/after values, and its predecessor decision — the generic audit log is not the record. Later decisions supersede, never erase.
+
+The boundaries are the decision. The recording principal and the Internal Owner are different facts on the receipt — who decided versus who is accountable — and one person may lawfully be both: self-assignment is recorded like any other assignment, never implied. The Action Due Date is neither the Need Date nor a Committed Date. A document saying who owns a conflict remains an Assertion; adopting that assignment operationally is a separate Work Decision. A missing owner or action is a Derivation over the absence of a current Work Decision, never a stored flag. A Work Decision can never set Criticality, a Resolution Strategy, Ready, or an External Party's status or commitment — attribution proves who decided, not that the work occurred. Evidence remains the only support for factual assertions about the world (`CONTEXT.md`, Evidence).
+
+Publication tightens with it rather than merely gaining three columns: a report cell carries field-exact provenance — the exact Work Decision ids it displays, the Assertion behind each document-sourced value, or the Derivation that computed it — replacing the record-level citation the report currently reuses across unrelated fields (`report.py`).
+
+## Considered options
+
+**Keep the record pure and workflow outside it.** Rejected: the Phase-1 exit criterion requires a practitioner to run the weekly meeting from the tool alone; a companion worklist outside the record makes the report a partial artifact and the build spec's owner and action columns a dead letter.
+
+**Route assignments through Assertions.** Rejected: honest only when a document actually names the owner; most assignments are made in Corridor itself and would have to invent a citing document.
+
+## Consequences
+
+The Phase 1/Phase 2 boundary is redrawn explicitly rather than dissolved: Phase 1 carries single-operator, attributable internal Work Decisions; Phase 2 carries multi-user assignment, acknowledgment, approvals, notifications, and external-party response flows (`phase-1-roadmap.md`, amended alongside this ADR). The M5 bar — zero uncited assertions — survives unchanged, because a Work Decision is provenance without being a source: nothing about the world is claimed, so nothing about the world needs a quote.
