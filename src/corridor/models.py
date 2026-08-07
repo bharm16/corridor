@@ -605,6 +605,39 @@ class CohortReceipt(Base):
     )
 
 
+class EventCohortReceipt(Base):
+    """The immutable membership of one derived event cohort.
+
+    A sibling of CohortReceipt for cohorts no Revision Comparison selects
+    (docs/sh99-date-rehearsal.md): membership is a pure function of the
+    declared Active Runs the rule reads and one rule version, derived from
+    the event Candidate stream. Members are document identities — conflict
+    refs — never database ids; the lane that reads the set resolves them
+    at read time against the pinned input runs, and mutations outside the
+    set refuse, exactly as the rehearsal receipt works (#173, #175).
+    """
+
+    __tablename__ = "event_cohort_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "rule_version",
+            name="uq_event_cohort_receipts_one_per_rule",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    rule_version: Mapped[str] = mapped_column(String(64))
+    input_run_ids: Mapped[list] = mapped_column(JSONB)
+    members: Mapped[list] = mapped_column(JSONB)
+    member_count: Mapped[int] = mapped_column(Integer)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class WorkDecision(Base):
     """One appended project decision about a Dependency's coordination state.
 

@@ -56,6 +56,10 @@ extract:
 
 # Explicitly select reviewer work; extraction never makes "newest" active:
 #   make active-run ARGS="<document-id> <extraction-run-id>"
+# Bulk form for the unambiguous case only — declares the single completed
+# run of every undeclared document, refusing whole if any document holds
+# several (docs/sh99-date-rehearsal.md):
+#   make active-run ARGS="--single-run-documents sh99-grand-parkway"
 active-run:
 	uv run python -m corridor.extraction_runs $(ARGS)
 
