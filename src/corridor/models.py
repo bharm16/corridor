@@ -48,7 +48,13 @@ DOC_TYPES = (
     "other",
 )
 PARSE_STATUSES = ("pending", "parsed", "failed")
-EXTRACTION_OUTCOMES = ("completed", "failed", "unreadable", "no_matrix")
+EXTRACTION_OUTCOMES = (
+    "completed",
+    "failed",
+    "unreadable",
+    "no_matrix",
+    "quarantined",
+)
 REVISION_COMPARISON_STATES = (
     "added",
     "dropped",
@@ -485,6 +491,26 @@ class ActiveExtractionRun(Base):
     extraction_run_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     declared_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DocumentQuarantine(Base):
+    """The durable project-level fact that a registered document is held out.
+
+    A document whose relationship semantics Corridor does not model — a
+    Utility Work Schedule's Dependent Activity chain (#149) — is registered,
+    visible, and deliberately unread. This row is why: durable, queryable,
+    and never only in an operator's memory or a process's logs.
+    """
+
+    __tablename__ = "document_quarantines"
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id"), primary_key=True
+    )
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

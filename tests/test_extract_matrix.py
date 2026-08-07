@@ -1533,3 +1533,26 @@ def test_a_populated_header_maps_identically_either_way():
 
     assert mapping.fields == {0: "utility_id"}
     assert mapping.unmapped == ["Parcel U-Number"]
+
+
+def test_a_sequencing_column_stops_the_read_before_any_row():
+    """A Dependent Activity column is a relationship Corridor cannot keep.
+
+    Reading the rows anyway would shunt the relationship into
+    `unmapped_columns` — rows ingested, sequencing dropped. Out of scope
+    must mean unsupported, not lossy (#149), so the read refuses whole.
+    """
+    from corridor.extract_matrix import SequencingSemanticsDetected, _column_mapping
+
+    grid = [["Utility ID", "Dependent Activity", "Utility Owner"]]
+    result = {
+        "header_row": 0,
+        "columns": [
+            {"index": 0, "canonical_field": "utility_id"},
+            {"index": 1, "canonical_field": None},
+            {"index": 2, "canonical_field": "external_org"},
+        ],
+    }
+
+    with pytest.raises(SequencingSemanticsDetected, match="Dependent Activity"):
+        _column_mapping(grid, result)

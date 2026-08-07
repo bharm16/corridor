@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from corridor.db import Session, engine
 from corridor.docs import get_page, list_documents
-from corridor.models import Document, Project
+from corridor.models import Document, DocumentQuarantine, Project
 from corridor.pipeline import ingest_manifest
 
 
@@ -802,3 +802,47 @@ def _doc(session, project, filename, sha, doc_date):
     session.add(document)
     session.flush()
     return document
+
+
+def test_a_registered_schedule_document_carries_a_durable_quarantine(
+    session, project, tmp_path
+):
+    """Out of scope means unsupported, never lossy (#149).
+
+    A Utility Work Schedule's rows relate to each other; Corridor has no
+    model for that relation, and the project record says so durably rather
+    than leaving the fact in an operator's memory.
+    """
+    schedule = make_pdf(tmp_path / "uws.pdf", ["Activity  Dependent Activity"])
+    lock_path = tmp_path / "schedule.lock.json"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "project": project.slug,
+                "sources": {
+                    "https://example.gov/uws.pdf": {
+                        "sha256": file_sha256(schedule),
+                        "local_path": str(schedule),
+                        "doc_type": "schedule",
+                    }
+                },
+            }
+        )
+    )
+
+    for _ in range(2):
+        documents = ingest_manifest(
+            session,
+            project_id=project.id,
+            lock_path=lock_path,
+            images_dir=tmp_path / "images",
+        )
+
+    [document] = documents
+    quarantines = session.scalars(
+        select(DocumentQuarantine).where(
+            DocumentQuarantine.document_id == document.id
+        )
+    ).all()
+    assert len(quarantines) == 1
+    assert "sequencing" in quarantines[0].reason

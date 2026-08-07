@@ -26,7 +26,7 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import DocPage, Document
+from corridor.models import DocPage, Document, DocumentQuarantine
 
 # 150 dpi: legible for reading a quote in context, and small enough that a
 # 700-row matrix does not turn into a gigabyte of PNGs.
@@ -114,6 +114,7 @@ def ingest_document(
         ):
             if value and getattr(existing, attribute) in (None, ""):
                 setattr(existing, attribute, value)
+        _quarantine_unmodeled_semantics(session, existing)
         session.flush()
         return existing
 
@@ -136,6 +137,7 @@ def ingest_document(
     )
     session.add(document)
     session.flush()
+    _quarantine_unmodeled_semantics(session, document)
 
     try:
         pages = _extract(path, Path(images_dir) / sha256)
@@ -242,3 +244,28 @@ def _as_datetime(value: str | datetime | None) -> datetime | None:
     if value is None or isinstance(value, datetime):
         return value
     return datetime.fromisoformat(value)
+
+
+def _quarantine_unmodeled_semantics(session, document) -> None:
+    """Record the durable outcome for a document Corridor must not read.
+
+    A schedule's rows relate to each other — one work item must complete
+    before another may start — and Corridor has no model for that relation
+    (#149). The document is registered and visible; this row is the
+    project-level fact that it is deliberately unread, surviving process
+    exit rather than living in an operator's memory. Idempotent, so
+    re-ingest never duplicates it.
+    """
+    if document.doc_type != "schedule":
+        return
+    if session.get(DocumentQuarantine, document.id) is None:
+        session.add(
+            DocumentQuarantine(
+                document_id=document.id,
+                reason=(
+                    "document-asserted work sequencing is not modeled; rows "
+                    "would keep their values and lose their relationships "
+                    "(#149)"
+                ),
+            )
+        )

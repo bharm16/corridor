@@ -15,6 +15,8 @@ One table, read from both ends.
 
 from __future__ import annotations
 
+from corridor.geometry import normalize_header
+
 # The canonical vocabulary, and where each field comes from.
 #
 # It was originally read off Project A, whose document is a Utility
@@ -239,3 +241,18 @@ def is_retired_row(fields: dict[str, str]) -> bool:
         any(phrase == value.casefold() for phrase in RETIREMENT_PHRASES)
         for value in values
     )
+
+
+# Column headings that assert document-asserted work sequencing — one work
+# item must complete before another may start. Corridor has no model for
+# that relation (#149), and reading rows past such a column would shunt the
+# relationship into `unmapped_columns`: rows ingested, sequencing dropped.
+# Out of scope must mean unsupported, never lossy, so a reader that meets
+# one of these refuses the document whole. Normalized form (see
+# `geometry.normalize_header`).
+SEQUENCING_HEADERS = frozenset({"DEPENDENT ACTIVITY"})
+
+
+def is_sequencing_header(printed: str | None) -> bool:
+    """Does this printed heading assert a work-sequencing relation?"""
+    return normalize_header(printed) in SEQUENCING_HEADERS

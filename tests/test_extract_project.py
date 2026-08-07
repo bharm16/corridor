@@ -22,7 +22,14 @@ from corridor.extract_project import (
     main,
     render,
 )
-from corridor.models import Candidate, Document, ExtractionRun, Project
+from corridor.extract_matrix import SequencingSemanticsDetected
+from corridor.models import (
+    Candidate,
+    Document,
+    DocumentQuarantine,
+    ExtractionRun,
+    Project,
+)
 from corridor.pipeline import ExtractionRoute
 
 PROMPT_VERSION = "test_v1"
@@ -1019,3 +1026,42 @@ def test_a_named_document_records_failure_receipts_like_the_sweep(
     ).one()
     assert run.outcome == "failed"
     assert "model unavailable" in run.error_detail
+
+
+# --- The sequencing quarantine boundary (#171) ------------------------------
+
+
+def test_detected_sequencing_semantics_quarantine_the_document_whole(
+    session, project
+):
+    doc = add_matrix(session, project, "uws-as-matrix.pdf", "d" * 64)
+
+    def refuse(inner_session, document):
+        raise SequencingSemanticsDetected(
+            "column 'Dependent Activity' asserts work sequencing"
+        )
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=refuse,
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+    )
+
+    assert [o.status for o in outcomes] == ["quarantined"]
+    run = session.scalars(
+        select(ExtractionRun).where(ExtractionRun.document_id == doc.id)
+    ).one()
+    assert run.outcome == "quarantined"
+    assert "Dependent Activity" in run.error_detail
+    assert (
+        session.scalars(
+            select(Candidate).where(Candidate.source_document_id == doc.id)
+        ).all()
+        == []
+    )
+    quarantine = session.get(DocumentQuarantine, doc.id)
+    assert quarantine is not None
+    assert "Dependent Activity" in quarantine.reason
+    assert "QUARANTINED" in render(project, PROMPT_VERSION, outcomes)
