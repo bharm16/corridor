@@ -689,6 +689,36 @@ def test_register_supersession_rejects_cross_project_edges(session, project):
         )
 
 
+def test_database_rejects_a_self_attested_supersession_below_the_service_boundary(
+    session, project
+):
+    """The invariant holds for a write that never passes registration.
+
+    `register_supersessions` already refuses this, but a rule about what
+    the record may contain belongs where the record lives — otherwise a
+    direct write, a backfill script or a future writer can still mint a
+    document that is the authority for its own replacement (ADR-0015).
+    """
+    predecessor = _document(
+        session, project, registry_id="RID-DB-SELF-PREV", filename="previous.pdf"
+    )
+    successor = _document(
+        session, project, registry_id="RID-DB-SELF-NEXT", filename="next.pdf"
+    )
+    session.add(
+        DocPage(document_id=predecessor.id, page_no=1, text="Replaced on 2026-02-13")
+    )
+    session.flush()
+
+    with pytest.raises(IntegrityError, match="ck_documents_no_self_attested"):
+        with session.begin_nested():
+            predecessor.superseded_by = successor.id
+            predecessor.superseded_on = date(2026, 2, 13)
+            predecessor.supersession_source_document_id = predecessor.id
+            predecessor.supersession_source_page = 1
+            session.flush()
+
+
 def test_database_rejects_cross_project_successor_below_the_service_boundary(
     session, project
 ):

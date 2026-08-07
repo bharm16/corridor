@@ -65,7 +65,7 @@ When one document is published in several formats, the one Evidence cites. The s
 _Avoid_: source of truth, master copy, canonical version, original
 
 **Supersession**:
-The registry relation that one document replaced another as the current revision. Declared by the source's own index (the RID index's "Replaced on" chain) and recorded when the document is registered — never inferred from dates or filenames, and never an Assertion: it is registry metadata like a document's date, with one authoritative source. A superseded document stays in the corpus and its pages still say what they said; supersession changes which revision is current, never what a page states.
+The registry relation that one document replaced another as the current revision. Declared by a registered authority document and an exact page — normally an agency index (the RID index's "Replaced on" chain) or the successor's own explicit replacement statement — and recorded when the document is registered. The predecessor can never attest its own replacement: the replacement postdates it, so the page a reader would check predates the fact. Never inferred from dates or filenames, and never an Assertion: it is registry metadata like a document's date. A superseded document stays in the corpus and its pages still say what they said; supersession changes which revision is current, never what a page states.
 _Avoid_: replaced (the index's own word — acceptable in UI copy, never in code), versioning, obsolete, archived
 
 **Utility Conflict Matrix**:
