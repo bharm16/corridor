@@ -172,7 +172,16 @@
 </header>
 
 {# Machinery status is not review work: it stays off the rehearsal lane. #}
-{% if not rail %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
+{% if not rail and not event_cohort_receipt %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
+
+{% if event_cohort_receipt %}
+  <p class="hint" style="margin:.4rem 1rem">
+    <b>Event cohort receipt #{{ event_cohort_receipt.id }}</b>
+    · {{ event_cohort_receipt.member_count }} member conflicts
+    · rule {{ event_cohort_receipt.rule_version }}
+    · mutations outside this pinned set refuse
+  </p>
+{% endif %}
 
 <main{% if rail %} class="with-rail"{% endif %}>
   {% if rail %}
@@ -351,9 +360,24 @@
     <div class="actions">
       <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/accept">
         {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
+        {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
         <input type="hidden" name="slug" value="{{ project.slug }}">
         {% if view.historical_document_id %}
           <input type="hidden" name="historical_document_id" value="{{ view.historical_document_id }}">
+        {% endif %}
+        {% if siblings %}
+          {# No supersession chain names a current revision, so the choice
+             is the reviewer's, made explicit: accepting this row merges
+             the checked revisions of the same conflict into it. #}
+          <div class="hint" style="margin:.3rem 0">
+            {% for s in siblings %}
+              <label style="display:block">
+                <input type="checkbox" name="merge_sibling_ids"
+                       value="{{ s.id }}" checked>
+                merge {{ s.filename }}{% if s.doc_date %} ({{ s.doc_date }}){% endif %}
+              </label>
+            {% endfor %}
+          </div>
         {% endif %}
         <button class="primary" id="accept"
           {% if view.accept_refused %}disabled title="{{ view.accept_refused }}"{% endif %}>
