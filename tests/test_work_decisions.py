@@ -6,6 +6,7 @@ Dependency + state change in, typed immutable receipt out, current value
 projected, audit holding a pointer and never the payload.
 """
 
+import json
 from datetime import date
 
 import pytest
@@ -18,7 +19,11 @@ from corridor.models import AuditLog, Dependency, Project, WorkDecision
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.work_decisions import (
     assign_internal_owner,
+    cancel_next_action,
+    complete_next_action,
     current_internal_owner_decision,
+    current_next_action_decision,
+    set_next_action,
 )
 
 RECORDER = HumanPrincipal("local:coordination-recorder")
@@ -202,3 +207,139 @@ def test_a_role_label_cannot_record_a_work_decision(session, dependency):
                 session, dependency.id, "Dana", principal=HumanPrincipal(label)
             )
     assert _decisions(session, dependency.id) == []
+
+
+# --- The Next Action lifecycle (#174) ---------------------------------------
+
+
+def test_setting_a_next_action_writes_one_receipt_for_action_and_date(
+    session, dependency
+):
+    decision = set_next_action(
+        session,
+        dependency.id,
+        "Request relocation schedule from the City",
+        due_date=date(2026, 9, 1),
+        principal=RECORDER,
+    )
+
+    assert decision.decision_type == "set_next_action"
+    assert decision.field == "next_action"
+    assert decision.before_value is None
+    assert json.loads(decision.after_value) == {
+        "action": "Request relocation schedule from the City",
+        "due_date": "2026-09-01",
+    }
+    session.refresh(dependency)
+    assert dependency.next_action == "Request relocation schedule from the City"
+    assert dependency.action_due_date == date(2026, 9, 1)
+
+
+def test_the_action_due_date_is_optional(session, dependency):
+    set_next_action(
+        session, dependency.id, "Walk the crossing", principal=RECORDER
+    )
+    session.refresh(dependency)
+    assert dependency.next_action == "Walk the crossing"
+    assert dependency.action_due_date is None
+
+
+def test_completion_clears_the_current_action_and_pins_its_predecessor(
+    session, dependency
+):
+    first = set_next_action(
+        session, dependency.id, "Walk the crossing", principal=RECORDER
+    )
+    done = complete_next_action(session, dependency.id, principal=RECORDER)
+
+    assert done.decision_type == "complete_next_action"
+    assert done.predecessor_decision_id == first.id
+    assert json.loads(done.before_value)["action"] == "Walk the crossing"
+    assert done.after_value is None
+    session.refresh(dependency)
+    assert dependency.next_action is None
+    assert dependency.action_due_date is None
+
+
+def test_cancellation_is_a_distinct_decision_type(session, dependency):
+    set_next_action(session, dependency.id, "Walk the crossing", principal=RECORDER)
+    withdrawn = cancel_next_action(session, dependency.id, principal=RECORDER)
+
+    assert withdrawn.decision_type == "cancel_next_action"
+    session.refresh(dependency)
+    assert dependency.next_action is None
+
+
+def test_completing_nothing_refuses(session, dependency):
+    with pytest.raises(ValueError, match="no current Next Action"):
+        complete_next_action(session, dependency.id, principal=RECORDER)
+    with pytest.raises(ValueError, match="no current Next Action"):
+        cancel_next_action(session, dependency.id, principal=RECORDER)
+
+
+def test_the_chain_reconstructs_in_order_across_the_lifecycle(
+    session, dependency
+):
+    first = set_next_action(
+        session, dependency.id, "Walk the crossing", principal=RECORDER
+    )
+    done = complete_next_action(session, dependency.id, principal=RECORDER)
+    second = set_next_action(
+        session, dependency.id, "Confirm as-builts received", principal=RECORDER
+    )
+
+    assert done.predecessor_decision_id == first.id
+    assert second.predecessor_decision_id == done.id
+    session.refresh(dependency)
+    assert dependency.next_action == "Confirm as-builts received"
+
+
+def test_setting_the_identical_action_again_records_nothing_new(
+    session, dependency
+):
+    set_next_action(
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date=date(2026, 9, 1),
+        principal=RECORDER,
+    )
+    set_next_action(
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date=date(2026, 9, 1),
+        principal=RECORDER,
+    )
+    actions = [
+        d for d in _decisions(session, dependency.id) if d.field == "next_action"
+    ]
+    assert len(actions) == 1
+
+
+def test_owner_and_action_chains_are_independent(session, dependency):
+    assign_internal_owner(session, dependency.id, "Dana Fields", principal=RECORDER)
+    set_next_action(session, dependency.id, "Walk the crossing", principal=RECORDER)
+
+    owner = current_internal_owner_decision(session, dependency.id)
+    action = current_next_action_decision(session, dependency.id)
+    assert owner is not None and owner.field == "internal_owner"
+    assert action is not None and action.field == "next_action"
+    assert owner.predecessor_decision_id is None
+    assert action.predecessor_decision_id is None
+
+
+def test_a_diverged_action_projection_refuses(session, dependency):
+    set_next_action(session, dependency.id, "Walk the crossing", principal=RECORDER)
+    dependency.next_action = "Tampered"
+    session.flush()
+
+    with pytest.raises(ValueError, match="diverged"):
+        set_next_action(
+            session, dependency.id, "Anything else", principal=RECORDER
+        )
+
+
+def test_a_blank_action_refuses(session, dependency):
+    with pytest.raises(ValueError, match="Next Action"):
+        set_next_action(session, dependency.id, "   ", principal=RECORDER)
