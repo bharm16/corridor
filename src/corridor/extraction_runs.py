@@ -231,6 +231,70 @@ def declare_active_run(
     return run
 
 
+class MultipleRunsNeedExplicitChoice(ValueError):
+    """A document holds several completed runs; bulk declaration refuses
+    to pick one — recency is exactly the inference Active Runs exist to
+    forbid."""
+
+
+def declare_single_run_documents(
+    session: Session, project_id: int, *, principal: HumanPrincipal
+) -> list[ExtractionRun]:
+    """Declare the only completed run of every undeclared document.
+
+    One operator command, one stated intent, one honest per-run receipt
+    (docs/sh99-date-rehearsal.md): the SH 99 event stream spans over a
+    hundred minutes documents with exactly one run each, where per-document
+    declaration is ceremony and inference is forbidden. Only the
+    unambiguous case is covered: a document with several completed runs
+    raises before anything is declared — all-or-nothing, so a partial
+    declaration can never masquerade as a reviewed one.
+    """
+    declarer = require_human_principal(principal)
+    lock_project(session, project_id)
+
+    rows = session.execute(
+        select(ExtractionRun, Document)
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(Document.project_id == project_id, completion_predicate())
+        .order_by(ExtractionRun.id)
+    ).all()
+
+    runs_by_document: dict[int, list[ExtractionRun]] = {}
+    registry_ids: dict[int, str] = {}
+    for run, document in rows:
+        runs_by_document.setdefault(document.id, []).append(run)
+        # registry_id is nullable for legacy and ad-hoc documents; the
+        # refusal must still name them.
+        registry_ids[document.id] = (
+            document.registry_id or f"document {document.id}"
+        )
+
+    ambiguous = sorted(
+        registry_ids[document_id]
+        for document_id, runs in runs_by_document.items()
+        if len(runs) > 1
+    )
+    if ambiguous:
+        raise MultipleRunsNeedExplicitChoice(
+            "these documents hold several completed runs and need an "
+            f"explicit human choice: {', '.join(ambiguous)} — nothing was "
+            "declared"
+        )
+
+    declared: list[ExtractionRun] = []
+    for document_id, runs in sorted(runs_by_document.items()):
+        [run] = runs
+        if session.get(ActiveExtractionRun, document_id) is not None:
+            continue
+        declared.append(
+            declare_active_run(
+                session, document_id, run.id, principal=declarer
+            )
+        )
+    return declared
+
+
 def current_active_run_declaration(
     session: Session, document_id: int
 ) -> ActiveRunDeclaration | None:
@@ -268,10 +332,21 @@ def main(argv: list[str], *, session_factory=None) -> int:
     """Declare an Active Run from explicit document and run identifiers.
 
     The declarer is the deployment-resolved principal, exactly as the web
-    ingress resolves it — never free text from the command line.
+    ingress resolves it — never free text from the command line. The
+    `--single-run-documents <project-slug>` form declares the only
+    completed run of every undeclared document in one command
+    (declare_single_run_documents); ambiguity refuses before declaring.
     """
+    if len(argv) == 2 and argv[0] == "--single-run-documents":
+        return _single_run_documents_main(
+            argv[1], session_factory=session_factory
+        )
     if len(argv) != 2:
-        print("usage: active-run <document-id> <extraction-run-id>", file=sys.stderr)
+        print(
+            "usage: active-run <document-id> <extraction-run-id>\n"
+            "       active-run --single-run-documents <project-slug>",
+            file=sys.stderr,
+        )
         return 2
     try:
         document_id, extraction_run_id = (int(value) for value in argv)
@@ -314,6 +389,52 @@ def main(argv: list[str], *, session_factory=None) -> int:
         f"document {document_id}: Active Run {run_id} "
         f"({prompt_version}, {outcome}) declared by {principal.subject}"
     )
+    return 0
+
+
+def _single_run_documents_main(slug: str, *, session_factory=None) -> int:
+    from corridor.config import settings
+    from corridor.principals import InvalidHumanPrincipal
+
+    try:
+        principal = HumanPrincipal(settings.human_principal)
+    except InvalidHumanPrincipal:
+        print(
+            "declaring Active Runs is an attributable act: set "
+            "CORRIDOR_HUMAN_PRINCIPAL to a namespaced subject such as "
+            "'local:alice'",
+            file=sys.stderr,
+        )
+        return 2
+
+    if session_factory is None:
+        from corridor.db import Session as session_factory
+
+    from corridor.models import Project
+
+    with session_factory() as session:
+        project_id = session.scalar(
+            select(Project.id).where(Project.slug == slug)
+        )
+        if project_id is None:
+            print(f"no project with slug {slug!r}", file=sys.stderr)
+            return 2
+        try:
+            declared = declare_single_run_documents(
+                session, project_id, principal=principal
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        summaries = [(run.document_id, run.id) for run in declared]
+        session.commit()
+
+    for document_id, run_id in summaries:
+        print(
+            f"document {document_id}: Active Run {run_id} declared "
+            f"by {principal.subject}"
+        )
+    print(f"{len(summaries)} declaration(s) for project {slug}")
     return 0
 
 

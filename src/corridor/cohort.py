@@ -27,12 +27,22 @@ from corridor.models import (
     Candidate,
     CohortReceipt,
     Document,
+    EventCohortReceipt,
     RevisionComparisonFinding,
     RevisionComparisonRun,
 )
 from corridor.project_lock import lock_project
 
 COHORT_RULE_VERSION = "newly-added-or-n-to-y-or-verification-blocked-v1"
+
+# The event cohort's stated rule (docs/sh99-date-rehearsal.md): a conflict
+# enters when at least one commitment, slip, or closure event carrying a
+# date references it and the reference matches a dependency Candidate's
+# utility_id. Other event types and undated events stay in the default
+# lanes; a reference matching nothing selects nothing.
+EVENT_COHORT_RULE_VERSION = "dated-commitment-slip-closure-refs-conflict-v1"
+
+_EVENT_COHORT_EVENT_TYPES = frozenset({"commitment", "slip", "closure"})
 
 NEWLY_ADDED = "newly_added"
 CONFLICT_FLAG_N_TO_Y = "conflict_flag_n_to_y"
@@ -223,6 +233,150 @@ def _digest(
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def derive_event_cohort_receipt(session: Session, project_id: int) -> EventCohortReceipt:
+    """Derive and persist the event cohort, or return the identical one.
+
+    A sibling of derive_cohort_receipt for cohorts no Revision Comparison
+    selects: the rule reads the project's Candidate stream as its declared
+    Active Runs hold it. Refuses when any document holding this project's
+    Candidates has no declared Active Run — the cohort stands only on
+    declared work — and when an existing receipt under the same rule
+    version disagrees with a fresh derivation.
+    """
+    lock_project(session, project_id)
+    runs = _declared_project_runs(session, project_id)
+
+    candidates = session.scalars(
+        select(Candidate)
+        .where(
+            Candidate.project_id == project_id,
+            Candidate.extraction_run_id.in_(runs.values()),
+        )
+        .order_by(Candidate.id)
+    ).all()
+
+    party_by_ref: dict[str, str] = {}
+    for candidate in candidates:
+        if candidate.kind != "dependency":
+            continue
+        fields = (candidate.payload_json or {}).get("fields", {})
+        utility_id = fields.get("utility_id")
+        if not utility_id:
+            continue
+        org = str(fields.get("external_org") or "")
+        known = party_by_ref.setdefault(str(utility_id), org)
+        if known != org:
+            # A real corpus condition, not a hypothetical: NHHIP's
+            # 2/13/2026 matrix carries two different conflicts both
+            # labelled FOC14-69. Picking either party silently would
+            # widen the pinned set past what any event referenced.
+            raise CohortDerivationError(
+                f"utility_id {utility_id!r} names two External Parties "
+                f"({known!r}, {org!r}) in the declared runs — the cohort "
+                "never adjudicates ambiguity by accident"
+            )
+
+    dated_counts: dict[str, int] = {}
+    for candidate in candidates:
+        if candidate.kind != "event":
+            continue
+        fields = (candidate.payload_json or {}).get("fields", {})
+        if fields.get("event_type") not in _EVENT_COHORT_EVENT_TYPES:
+            continue
+        if not (fields.get("event_date") or fields.get("committed_date")):
+            continue
+        ref = fields.get("conflict_ref")
+        if ref and str(ref) in party_by_ref:
+            dated_counts[str(ref)] = dated_counts.get(str(ref), 0) + 1
+
+    members = [
+        {
+            "conflict_ref": ref,
+            "external_org": party_by_ref[ref],
+            "dated_event_count": count,
+        }
+        for ref, count in sorted(dated_counts.items())
+    ]
+    input_run_ids = sorted(runs.values())
+    digest = _event_cohort_digest(project_id, input_run_ids, members)
+
+    existing = session.scalar(
+        select(EventCohortReceipt).where(
+            EventCohortReceipt.project_id == project_id,
+            EventCohortReceipt.rule_version == EVENT_COHORT_RULE_VERSION,
+        )
+    )
+    if existing is not None:
+        # The receipt is checked, never trusted: its stored digest must
+        # match its own stored content, and both must match the fresh
+        # derivation. The first catches an edit outside the derivation;
+        # the second catches a rule change hiding under an old version.
+        stored = _event_cohort_digest(
+            project_id, list(existing.input_run_ids), list(existing.members)
+        )
+        if stored != existing.content_sha256 or existing.content_sha256 != digest:
+            raise CohortDerivationError(
+                "an existing event-cohort receipt disagrees with a fresh "
+                "derivation under the same rule version — either the rule "
+                "changed without its version changing, or the receipt was "
+                "edited outside the derivation"
+            )
+        return existing
+
+    receipt = EventCohortReceipt(
+        project_id=project_id,
+        rule_version=EVENT_COHORT_RULE_VERSION,
+        input_run_ids=input_run_ids,
+        members=members,
+        member_count=len(members),
+        content_sha256=digest,
+    )
+    session.add(receipt)
+    session.flush([receipt])
+    return receipt
+
+
+def _declared_project_runs(session: Session, project_id: int) -> dict[int, int]:
+    """document_id → declared Active Run id for every document holding
+    this project's Candidates; refuses when any is undeclared."""
+    document_ids = session.scalars(
+        select(Candidate.source_document_id)
+        .where(Candidate.project_id == project_id)
+        .distinct()
+    ).all()
+    runs: dict[int, int] = {}
+    undeclared = 0
+    for document_id in document_ids:
+        active = session.get(ActiveExtractionRun, document_id)
+        if active is None:
+            undeclared += 1
+        else:
+            runs[document_id] = active.extraction_run_id
+    if undeclared:
+        raise CohortDerivationError(
+            f"{undeclared} document(s) holding this project's Candidates "
+            "have no declared Active Run — the cohort stands only on "
+            "declared work"
+        )
+    return runs
+
+
+def _event_cohort_digest(
+    project_id: int, input_run_ids: list[int], members: list[dict]
+) -> str:
+    canonical = json.dumps(
+        {
+            "rule_version": EVENT_COHORT_RULE_VERSION,
+            "project_id": project_id,
+            "input_run_ids": input_run_ids,
+            "members": members,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class CohortScopeViolation(ValueError):
     """A mutation named the rehearsal cohort and a Candidate outside it."""
 
@@ -251,6 +405,53 @@ def cohort_candidate_ids(
         )
         in member_utility_ids
     )
+
+
+def event_cohort_candidate_ids(
+    session: Session, receipt: EventCohortReceipt
+) -> frozenset[int]:
+    """The live Candidate ids the receipt's members resolve to.
+
+    Members are conflict refs; execution maps them to the pinned input
+    runs' Candidates at read time — the member dependencies, and every
+    event referencing a member ref. An adjudicated row simply stops
+    resolving to pending work; the receipt does not change.
+    """
+    member_refs = {member["conflict_ref"] for member in receipt.members}
+    candidates = session.scalars(
+        select(Candidate).where(
+            Candidate.extraction_run_id.in_(receipt.input_run_ids)
+        )
+    ).all()
+    resolved = set()
+    for candidate in candidates:
+        fields = (candidate.payload_json or {}).get("fields", {})
+        key = "utility_id" if candidate.kind == "dependency" else "conflict_ref"
+        if str(fields.get(key)) in member_refs:
+            resolved.add(candidate.id)
+    return frozenset(resolved)
+
+
+def require_event_cohort_member(
+    session: Session, event_cohort_receipt_id: int, candidate_id: int
+) -> EventCohortReceipt:
+    """Refuse a mutation on a Candidate outside the named event cohort.
+
+    The same boundary require_cohort_member holds for the rehearsal lane
+    (#175): the check lives at the moment of mutation, where a display
+    filter cannot protect anything.
+    """
+    receipt = session.get(EventCohortReceipt, event_cohort_receipt_id)
+    if receipt is None:
+        raise CohortScopeViolation(
+            f"event cohort receipt {event_cohort_receipt_id} does not exist"
+        )
+    if candidate_id not in event_cohort_candidate_ids(session, receipt):
+        raise CohortScopeViolation(
+            f"candidate {candidate_id} is not a member of event cohort "
+            f"receipt {receipt.id} — the lane adjudicates only the pinned set"
+        )
+    return receipt
 
 
 def require_cohort_member(
