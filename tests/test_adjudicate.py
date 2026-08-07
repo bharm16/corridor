@@ -2,11 +2,14 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from threading import Event
 from uuid import uuid4
 
+from datetime import date
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from corridor.adjudicate import (
+    MalformedCandidateShape,
     RESOLUTION_VOCABULARIES,
     _next_ref_code,
     AlreadyAdjudicated,
@@ -1786,3 +1789,199 @@ def test_accepting_an_event_is_refused_rather_than_faked(session, document):
         ).all()
         == []
     )
+
+
+# --- The agreement materializer (#170) --------------------------------------
+
+AGREEMENT_FIELDS = {
+    "title": "Signal maintenance at the IH 69 crossings",
+    "external_org": "City of Houston",
+    "obligation": "The City maintains the traffic signals listed in Exhibit A",
+    "committed_date": "1996-01-31",
+    "evidence_required": "executed amendment listing the affected signals",
+}
+
+
+@pytest.fixture
+def agreement_document(session, document):
+    doc = Document(
+        project_id=document.project_id,
+        sha256="b" * 64,
+        filename="city-of-houston-signal-agreement-1-31-1996-executed.pdf",
+        doc_type="agreement",
+        parse_status="parsed",
+        pages=25,
+    )
+    session.add(doc)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=doc.id,
+            page_no=1,
+            text="The City maintains the traffic signals listed in Exhibit A",
+        )
+    )
+    session.flush()
+    return doc
+
+
+def agreement_candidate(session, document, *, fields=None):
+    fields = AGREEMENT_FIELDS if fields is None else fields
+    candidate = Candidate(
+        project_id=document.project_id,
+        kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": fields,
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": "The City maintains the traffic signals",
+                    "verified": True,
+                    "whole_row": False,
+                }
+            ],
+            "confidence": 1.0,
+            "dedupe_hint": "City of Houston|agreement|signal maintenance",
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="agreement_v3",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush()
+    _activate_fixture_candidate(session, document, candidate)
+    return candidate
+
+
+def test_accepting_an_agreement_obligation_states_what_it_obligated(
+    session, agreement_document
+):
+    candidate = agreement_candidate(session, agreement_document)
+
+    dependency = accept_candidate(session, candidate, principal=BRYCE)
+
+    assert dependency.dep_type == "agreement"
+    assert dependency.title == AGREEMENT_FIELDS["title"]
+    assert dependency.committed_date == date(1996, 1, 31)
+    assert dependency.evidence_required == AGREEMENT_FIELDS["evidence_required"]
+    assert dependency.notes == AGREEMENT_FIELDS["obligation"]
+    assert dependency.station_from is None
+    assert dependency.station_to is None
+    assert dependency.source_ref is None
+    assert dependency.resolution_strategy is None
+    assert dependency.external_org_id is not None
+
+
+def test_a_matrix_candidate_still_materializes_as_a_relocation(
+    session, document
+):
+    candidate = make_candidate(session, document)
+    dependency = accept_candidate(session, candidate, principal=BRYCE)
+    assert dependency.dep_type == "utility_relocation"
+    assert dependency.source_ref == "FOC1-1"
+
+
+def test_an_agreement_shape_missing_its_obligation_refuses(
+    session, agreement_document
+):
+    fields = {k: v for k, v in AGREEMENT_FIELDS.items() if k != "obligation"}
+    candidate = agreement_candidate(session, agreement_document, fields=fields)
+
+    with pytest.raises(MalformedCandidateShape, match="obligation"):
+        accept_candidate(session, candidate, principal=BRYCE)
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+
+
+def test_an_unparseable_committed_date_refuses_rather_than_guessing(
+    session, agreement_document
+):
+    fields = dict(AGREEMENT_FIELDS, committed_date="next spring")
+    candidate = agreement_candidate(session, agreement_document, fields=fields)
+
+    with pytest.raises(MalformedCandidateShape, match="committed_date"):
+        accept_candidate(session, candidate, principal=BRYCE)
+
+
+def test_a_dependency_candidate_from_an_unmaterializable_source_refuses(
+    session, document
+):
+    plan = Document(
+        project_id=document.project_id,
+        sha256="c" * 64,
+        filename="sue-quality-level-a.pdf",
+        doc_type="plan",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(plan)
+    session.flush()
+    session.add(DocPage(document_id=plan.id, page_no=1, text="FOC1-1 AT&T"))
+    session.flush()
+    candidate = Candidate(
+        project_id=plan.project_id,
+        kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": dict(FIELDS),
+            "citations": [
+                {
+                    "document_id": plan.id,
+                    "page": 1,
+                    "quote": "FOC1-1 AT&T",
+                    "verified": True,
+                    "whole_row": True,
+                }
+            ],
+            "confidence": 1.0,
+            "dedupe_hint": "x",
+        },
+        source_document_id=plan.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="txdot_ucm_v1",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush()
+    _activate_fixture_candidate(session, plan, candidate)
+
+    with pytest.raises(MalformedCandidateShape, match="plan"):
+        accept_candidate(session, candidate, principal=BRYCE)
+
+
+def test_an_agreement_shape_missing_its_title_refuses(
+    session, agreement_document
+):
+    fields = {k: v for k, v in AGREEMENT_FIELDS.items() if k != "title"}
+    candidate = agreement_candidate(session, agreement_document, fields=fields)
+
+    with pytest.raises(MalformedCandidateShape, match="title"):
+        accept_candidate(session, candidate, principal=BRYCE)
+
+
+def test_agreement_acceptance_still_writes_assertions_and_evidence(
+    session, agreement_document
+):
+    """The typed columns are conclusions; the claims beneath them survive."""
+    candidate = agreement_candidate(session, agreement_document)
+
+    dependency = accept_candidate(session, candidate, principal=BRYCE)
+
+    links = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).all()
+    assert len(links) == 1
+    assert links[0].verified is True
+    asserted = {
+        assertion.field_name
+        for assertion in session.scalars(
+            select(Assertion).where(Assertion.dependency_id == dependency.id)
+        )
+    }
+    assert "obligation" in asserted
+    assert "committed_date" in asserted

@@ -10,7 +10,7 @@ sources instead of silently keeping whichever was written last.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import re
 
 from sqlalchemy import func, select
@@ -228,6 +228,15 @@ class InvalidCandidateScope(Exception):
     """This Candidate is not actionable in the selected declared scope."""
 
 
+class MalformedCandidateShape(Exception):
+    """This Candidate's payload does not fit its source document's shape.
+
+    New-record acceptance materializes typed columns from the payload, and
+    a shape it does not recognise refuses rather than guessing — a wrong
+    guess mints a Ledger row asserting things no document said (#170).
+    """
+
+
 def _require_candidate_action_scope(
     session: Session,
     candidate: Candidate,
@@ -322,26 +331,7 @@ def accept_candidate(
         )
 
     org = _resolve_org(session, fields.get("external_org"))
-    strategy = _asserted_strategy(session, candidate, fields)
-
-    dependency = Dependency(
-        project_id=candidate.project_id,
-        ref_code=_next_ref_code(session, candidate.project_id),
-        source_ref=fields.get("utility_id"),
-        # A utility conflict matrix row is a potential relocation. The
-        # candidate's `utility_type` is the kind of utility (Telecom, Gas),
-        # not the kind of dependency.
-        dep_type="utility_relocation",
-        title=_title(fields),
-        location_desc=_location(fields),
-        station_from=fields.get("station_from"),
-        station_to=fields.get("station_to"),
-        external_org_id=org.id if org else None,
-        status="identified",
-        # None when the document asserted no strategy this layout's
-        # vocabulary recognises (ADR-0009).
-        resolution_strategy=strategy,
-    )
+    dependency = _materialize(session, candidate, fields, org)
     session.add(dependency)
     session.flush()
 
@@ -878,6 +868,81 @@ def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
         session.add(org)
         session.flush()
     return org
+
+
+def _materialize(
+    session: Session,
+    candidate: Candidate,
+    fields: dict,
+    org: ExternalOrg | None,
+) -> Dependency:
+    """Build the typed Dependency the source document's shape asserts.
+
+    Materialization is chosen by the source document's type — the honest
+    discriminator — never by sniffing the payload. A shape acceptance does
+    not recognise refuses (MalformedCandidateShape) rather than minting a
+    mislabeled record; merge is untouched, because merge attaches claims to
+    a Dependency somebody already materialized.
+    """
+    doc_type = session.scalar(
+        select(Document.doc_type).where(Document.id == candidate.source_document_id)
+    )
+    common = {
+        "project_id": candidate.project_id,
+        "ref_code": _next_ref_code(session, candidate.project_id),
+        "external_org_id": org.id if org else None,
+        "status": "identified",
+    }
+
+    if doc_type == "matrix":
+        return Dependency(
+            source_ref=fields.get("utility_id"),
+            # A utility conflict matrix row is a potential relocation. The
+            # candidate's `utility_type` is the kind of utility (Telecom,
+            # Gas), not the kind of dependency.
+            dep_type="utility_relocation",
+            title=_title(fields),
+            location_desc=_location(fields),
+            station_from=fields.get("station_from"),
+            station_to=fields.get("station_to"),
+            # None when the document asserted no strategy this layout's
+            # vocabulary recognises (ADR-0009).
+            resolution_strategy=_asserted_strategy(session, candidate, fields),
+            **common,
+        )
+
+    if doc_type == "agreement":
+        title = (fields.get("title") or "").strip()
+        obligation = (fields.get("obligation") or "").strip()
+        if not title or not obligation:
+            missing = "title" if not title else "obligation"
+            raise MalformedCandidateShape(
+                f"candidate {candidate.id} is an agreement claim with no "
+                f"{missing} — acceptance will not guess what was obligated"
+            )
+        raw_date = fields.get("committed_date")
+        committed_date = None
+        if raw_date:
+            try:
+                committed_date = date.fromisoformat(str(raw_date))
+            except ValueError:
+                raise MalformedCandidateShape(
+                    f"candidate {candidate.id} carries committed_date "
+                    f"{raw_date!r}, which is not a date acceptance can type"
+                )
+        return Dependency(
+            dep_type="agreement",
+            title=title,
+            notes=obligation,
+            committed_date=committed_date,
+            evidence_required=fields.get("evidence_required"),
+            **common,
+        )
+
+    raise MalformedCandidateShape(
+        f"candidate {candidate.id} comes from a {doc_type!r} document, "
+        "which acceptance has no materializer for"
+    )
 
 
 def _title(fields: dict) -> str:
