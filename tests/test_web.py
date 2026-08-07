@@ -2495,3 +2495,166 @@ def test_the_action_lifecycle_runs_from_the_record_view(
         follow_redirects=False,
     )
     assert again.status_code == 400
+
+
+# --- The rehearsal queue lane (#175) ----------------------------------------
+
+
+def _rehearsal_receipt(session, project):
+    """A receipt derived through the real service: W4 in, W1 out."""
+    import hashlib as _hashlib
+    from datetime import date as _date
+
+    from corridor.cohort import derive_cohort_receipt
+    from corridor.revision_comparison import create_revision_comparison
+    from corridor.supersession import (
+        SupersessionDeclaration,
+        register_supersessions,
+    )
+
+    def doc(registry_id, filename):
+        document = Document(
+            project_id=project.id,
+            registry_id=registry_id,
+            sha256=_hashlib.sha256(registry_id.encode()).hexdigest(),
+            filename=filename,
+            doc_type="matrix",
+            parse_status="parsed",
+            pages=1,
+        )
+        session.add(document)
+        session.flush()
+        session.add(
+            DocPage(document_id=document.id, page_no=1, text="rehearsal rows")
+        )
+        session.flush()
+        return document
+
+    def run(document, rows, prompt_version):
+        made = []
+        for utility_id, station in rows:
+            candidate = Candidate(
+                project_id=project.id,
+                kind="dependency",
+                payload_json={
+                    "kind": "dependency",
+                    "fields": {
+                        "utility_id": utility_id,
+                        "external_org": "City of Houston",
+                        "utility_type": "WW",
+                        "baseline": "SR-BL",
+                        "potential_conflict": "Y",
+                        "station_from": station,
+                        "station_to": station,
+                    },
+                    "citations": [
+                        {
+                            "document_id": document.id,
+                            "page": 1,
+                            "quote": f"{utility_id} City of Houston",
+                            "verified": True,
+                            "whole_row": True,
+                        }
+                    ],
+                    "unverified_fields": [],
+                    "unmapped_columns": [],
+                    "low_confidence_tokens": [],
+                    "tier": "structure",
+                    "dedupe_hint": f"{utility_id}|{station}",
+                    "text_source": "text_layer",
+                },
+                source_document_id=document.id,
+                source_pages=[1],
+                confidence=0.99,
+                prompt_version=prompt_version,
+                model="gpt-test",
+                citations_verified=True,
+            )
+            session.add(candidate)
+            made.append(candidate)
+        recorded = record_extraction_run(
+            session,
+            document,
+            prompt_version=prompt_version,
+            candidate_count=len(made),
+            page_errors=0,
+            candidates=tuple(made),
+            model="gpt-test",
+            schema_version="matrix_candidate_shape_v1",
+        )
+        session.flush()
+        return recorded, made
+
+    december = doc("rehearsal-dec", "dec.pdf")
+    february = doc("rehearsal-feb", "feb.pdf")
+    index = doc("rehearsal-rid", "rid.pdf")
+    predecessor_run, _ = run(december, [("W1", "1102+20")], "rehearsal_v1.dec")
+    successor_run, candidates = run(
+        february,
+        [("W1", "1102+20"), ("W4", "1110+00")],
+        "rehearsal_v1.feb",
+    )
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id="rehearsal-dec",
+                successor_registry_id="rehearsal-feb",
+                replacement_date=_date(2026, 2, 13),
+                source_registry_id="rehearsal-rid",
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
+    declare_active_run(
+        session, december.id, predecessor_run.id, principal=TEST_PRINCIPAL
+    )
+    declare_active_run(
+        session, february.id, successor_run.id, principal=TEST_PRINCIPAL
+    )
+    comparison = create_revision_comparison(
+        session, predecessor_run.id, successor_run.id
+    )
+    receipt = derive_cohort_receipt(
+        session, comparison.id, external_org="City of Houston"
+    )
+    return receipt, candidates
+
+
+def test_the_rehearsal_lane_reads_exactly_the_receipt(session, client, project):
+    receipt, _ = _rehearsal_receipt(session, project)
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    ).text
+    assert f"cohort receipt #{receipt.id}" in page
+    assert "1 members" in page
+    assert "W4" in page
+    assert 'name="cohort_receipt_id"' in page
+
+
+def test_the_boundary_refuses_a_non_member_mutation(session, client, project):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    non_member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W1"
+    )
+
+    response = client.post(
+        f"/candidates/{non_member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    session.refresh(non_member)
+    assert non_member.state == "pending"
+
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    assert accepted.status_code == 303

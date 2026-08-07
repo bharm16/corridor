@@ -266,3 +266,51 @@ def test_receipts_are_immutable_below_the_service_boundary(
             session.execute(
                 delete(CohortReceipt).where(CohortReceipt.id == receipt.id)
             )
+
+
+# --- The cohort as a mutation boundary (#175) --------------------------------
+
+
+def test_members_resolve_to_the_successor_runs_candidates(
+    session, compared_chain
+):
+    from corridor.cohort import cohort_candidate_ids
+
+    comparison, _ = compared_chain
+    receipt = derive_cohort_receipt(session, comparison.id, external_org=CITY)
+
+    resolved = cohort_candidate_ids(session, receipt)
+    utility_ids = {
+        session.get(Candidate, cid).payload_json["fields"]["utility_id"]
+        for cid in resolved
+    }
+    assert utility_ids == {"W2", "W4", "W5"}
+
+
+def test_a_mutation_outside_the_cohort_refuses(session, compared_chain):
+    from corridor.cohort import CohortScopeViolation, require_cohort_member
+
+    comparison, _ = compared_chain
+    receipt = derive_cohort_receipt(session, comparison.id, external_org=CITY)
+    outsider = session.scalars(
+        select(Candidate).where(
+            Candidate.extraction_run_id == receipt.successor_extraction_run_id
+        )
+    ).all()
+    w1 = next(
+        c for c in outsider if c.payload_json["fields"]["utility_id"] == "W1"
+    )
+    member = next(
+        c for c in outsider if c.payload_json["fields"]["utility_id"] == "W2"
+    )
+
+    with pytest.raises(CohortScopeViolation, match="not a member"):
+        require_cohort_member(session, receipt.id, w1.id)
+    assert require_cohort_member(session, receipt.id, member.id).id == receipt.id
+
+
+def test_a_missing_receipt_refuses_rather_than_widening(session):
+    from corridor.cohort import CohortScopeViolation, require_cohort_member
+
+    with pytest.raises(CohortScopeViolation, match="does not exist"):
+        require_cohort_member(session, 999999999, 1)

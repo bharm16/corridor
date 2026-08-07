@@ -64,6 +64,12 @@ from corridor.web.queue import (
     pending_counts,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.cohort import (
+    CohortScopeViolation,
+    cohort_candidate_ids,
+    require_cohort_member,
+)
+from corridor.models import CohortReceipt
 from corridor.work_decisions import (
     assign_internal_owner,
     cancel_next_action,
@@ -101,6 +107,18 @@ def get_human_principal() -> HumanPrincipal:
         ) from exc
 
 
+def _require_cohort_scope(
+    session: Session, cohort_receipt_id: int | None, candidate_id: int
+) -> None:
+    """Server-side, at the mutation: the cohort is a boundary, not a view."""
+    if cohort_receipt_id is None:
+        return
+    try:
+        require_cohort_member(session, cohort_receipt_id, candidate_id)
+    except CohortScopeViolation as exc:
+        raise HTTPException(409, str(exc))
+
+
 def _project(session: Session, slug: str) -> Project:
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
@@ -117,11 +135,19 @@ def root():
 def queue(
     request: Request,
     slug: str,
-    lane: Literal["candidate", "reconfirmation"] = "candidate",
+    lane: Literal["candidate", "reconfirmation", "rehearsal"] = "candidate",
     historical_document_id: int | None = None,
+    cohort_receipt_id: int | None = None,
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    cohort_receipt = None
+    if lane == "rehearsal":
+        if cohort_receipt_id is None:
+            raise HTTPException(400, "the rehearsal lane names its cohort receipt")
+        cohort_receipt = session.get(CohortReceipt, cohort_receipt_id)
+        if cohort_receipt is None or cohort_receipt.project_id != project.id:
+            raise HTTPException(404, "no such cohort receipt in this project")
     worklist = build_reviewer_worklist(session, project.id)
     ordinary_candidate_ids = frozenset(
         candidate_id
@@ -131,6 +157,13 @@ def queue(
     allowed_candidate_ids = (
         None if historical_document_id is not None else ordinary_candidate_ids
     )
+    if cohort_receipt is not None:
+        # The lane presents exactly the receipt's members — the pinned set
+        # intersected with what is ordinarily actionable, never widened.
+        allowed_candidate_ids = (
+            ordinary_candidate_ids
+            & cohort_candidate_ids(session, cohort_receipt)
+        )
     ordinary_reviews = [
         build_supersession_review_view(session, review)
         for review in worklist.ordinary
@@ -146,6 +179,7 @@ def queue(
         "project": project,
         "remaining": total,
         "lane": lane,
+        "cohort_receipt": cohort_receipt,
         "candidate_count": total + len(ordinary_reviews),
         "reconfirmation_count": len(worklist.reconfirmation),
         "ordinary_reviews": ordinary_reviews,
@@ -435,10 +469,12 @@ def accept(
     candidate_id: int,
     slug: str = Form(...),
     historical_document_id: int | None = Form(None),
+    cohort_receipt_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -501,7 +537,15 @@ async def edit_accept(
     historical_document_id = _parse_historical_document_id(
         form.get("historical_document_id")
     )
+    raw_cohort_receipt_id = form.get("cohort_receipt_id")
+    cohort_receipt_id = (
+        int(raw_cohort_receipt_id)
+        if isinstance(raw_cohort_receipt_id, str)
+        and raw_cohort_receipt_id.strip().isdigit()
+        else None
+    )
     project = _project(session, slug)
+    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
@@ -542,10 +586,12 @@ def merge(
     slug: str = Form(...),
     dependency_id: int = Form(...),
     historical_document_id: int | None = Form(None),
+    cohort_receipt_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
+    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
     candidate = _project_pending_candidate(
         session,
         project,
