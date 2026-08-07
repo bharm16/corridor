@@ -36,9 +36,13 @@ from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
 from corridor.extraction_runs import record_extraction_run
-from corridor.extract_matrix import ExtractionFailed, PROMPT_VERSION
+from corridor.extract_matrix import (
+    ExtractionFailed,
+    PROMPT_VERSION,
+    SequencingSemanticsDetected,
+)
 from corridor.geometry import NoMatrixFound
-from corridor.models import Candidate, Document, Project
+from corridor.models import Candidate, Document, DocumentQuarantine, Project
 from corridor.pipeline import ExtractionRoute, extraction_route
 
 # An extractor reads one Document and returns the Candidates it produced,
@@ -213,6 +217,35 @@ def extract_project(
                     model=_run_model(candidates, route.model),
                     schema_version=route.schema_version,
                 )
+        except SequencingSemanticsDetected as exc:
+            run = record_extraction_run(
+                session,
+                document,
+                prompt_version=effective_prompt_version,
+                candidate_count=0,
+                page_errors=1,
+                outcome="quarantined",
+                schema_version=route.schema_version,
+                model=route.model,
+                error_detail=str(exc),
+            )
+            if session.get(DocumentQuarantine, document.id) is None:
+                session.add(
+                    DocumentQuarantine(document_id=document.id, reason=str(exc))
+                )
+            if commit:
+                session.commit()
+            outcomes.append(
+                Outcome(
+                    document.id,
+                    document.filename,
+                    "quarantined",
+                    effective_prompt_version=effective_prompt_version,
+                    detail=str(exc),
+                    extraction_run_id=run.id,
+                )
+            )
+            continue
         except NoMatrixFound as exc:
             run = record_extraction_run(
                 session,
@@ -329,6 +362,10 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
             lines.append(
                 f"  UNREADABLE                  {versioned_name}: {outcome.detail}"
             )
+        elif outcome.status == "quarantined":
+            lines.append(
+                f"  QUARANTINED                 {versioned_name}: {outcome.detail}"
+            )
         else:
             lines.append(
                 f"  skipped                     {versioned_name} ({outcome.detail})"
@@ -338,13 +375,21 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
     failed = [o for o in outcomes if o.status == "failed"]
     unreadable = [o for o in outcomes if o.status == "unreadable"]
     skipped = [o for o in outcomes if o.status == "skipped"]
+    quarantined = [o for o in outcomes if o.status == "quarantined"]
     lines.append(
         f"{len(outcomes)} matrices: {len(extracted)} extracted "
         f"({sum(o.rows for o in extracted):,} rows, "
         f"{sum(o.unverified for o in extracted):,} unverified), "
         f"{len(failed)} failed, {len(unreadable)} unreadable, "
         f"{len(skipped)} skipped"
+        + (f", {len(quarantined)} quarantined" if quarantined else "")
     )
+    if quarantined:
+        lines.append(
+            "  A quarantined document asserts relationships Corridor does "
+            "not model (#149). No row was read: out of scope means "
+            "unsupported, never lossy."
+        )
     if failed:
         lines.append(
             "  A failed document did not finish extraction. Retry it; do not "

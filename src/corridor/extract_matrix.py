@@ -61,6 +61,7 @@ from corridor.verify import quote_appears_on, unverified_fields
 # been rather than every caller learning a new home.
 from corridor.vocabulary import (  # noqa: F401
     DECLINED_COLUMNS,
+    is_sequencing_header,
     LOCAL_FIELDS,
     MIN_ROW_FIELDS,
     REQUIRED,
@@ -90,6 +91,14 @@ TIER_TRANSCRIBE = "transcribe"
 
 class ExtractionFailed(RuntimeError):
     """The extractor could not complete the read, but the layout is unknown."""
+
+
+class SequencingSemanticsDetected(RuntimeError):
+    """The document asserts work sequencing, which Corridor does not model.
+
+    Refusal is total: no row is read, because rows read past a sequencing
+    column keep their values and lose their relationships (#149).
+    """
 
 
 # The one canonical field several columns may claim at once, because it is
@@ -610,6 +619,14 @@ def _column_mapping(grid, result: dict) -> ColumnMapping:
     """
     header_row = result.get("header_row")
     headers = grid[header_row] if isinstance(header_row, int) and header_row < len(grid) else []
+
+    for printed in headers:
+        if is_sequencing_header(printed):
+            raise SequencingSemanticsDetected(
+                f"column {(printed or '').strip()!r} asserts work sequencing, "
+                "which Corridor does not model (#149); the document is "
+                "refused whole rather than read without its relationships"
+            )
 
     fields: dict[int, str] = {}
     unmapped: list[str] = []
