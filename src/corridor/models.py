@@ -539,6 +539,53 @@ class ActiveRunDeclaration(Base):
     predecessor_declaration_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
+class WorkDecision(Base):
+    """One appended project decision about a Dependency's coordination state.
+
+    A Work Decision proves only what the project decided and when
+    (ADR-0025): it is not Evidence, states nothing about what a document or
+    External Party said, and can never set Criticality, a Resolution
+    Strategy, Ready, or an External Party's status or commitment. The typed
+    receipt is the record — the audit log carries only a pointer event.
+    One linear chain per Dependency and field; the current value on the
+    Dependency is a projection of the chain tail.
+    """
+
+    __tablename__ = "work_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "dependency_id", "id", name="uq_work_decisions_dependency_id_id"
+        ),
+        ForeignKeyConstraint(
+            ["dependency_id", "predecessor_decision_id"],
+            ["work_decisions.dependency_id", "work_decisions.id"],
+            name="fk_work_decisions_predecessor",
+        ),
+        UniqueConstraint(
+            "predecessor_decision_id", name="uq_work_decisions_predecessor"
+        ),
+        Index(
+            "uq_work_decisions_one_root",
+            "dependency_id",
+            "field",
+            unique=True,
+            postgresql_where=text("predecessor_decision_id is null"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    decision_type: Mapped[str] = mapped_column(String(32))
+    field: Mapped[str] = mapped_column(String(32))
+    before_value: Mapped[str | None] = mapped_column(Text)
+    after_value: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    predecessor_decision_id: Mapped[int | None] = mapped_column(BigInteger)
+
+
 class RevisionComparisonRun(Base):
     """An immutable receipt for comparing two exact Extraction Runs.
 

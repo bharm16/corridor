@@ -63,6 +63,10 @@ from corridor.web.queue import (
     pending_counts,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.work_decisions import (
+    assign_internal_owner,
+    current_internal_owner_decision,
+)
 from corridor.supersession_review import (
     ReconfirmationUnavailable,
     build_reviewer_worklist,
@@ -297,9 +301,35 @@ def dependency_detail(
         raise HTTPException(404, "no such dependency")
     if view.dependency.project_id != project.id:
         raise HTTPException(404, "no such dependency in this project")
+    owner_decision = current_internal_owner_decision(session, dependency_id)
     return TEMPLATES.TemplateResponse(
-        request, "dependency.html", {"project": project, "view": view}
+        request,
+        "dependency.html",
+        {"project": project, "view": view, "owner_decision": owner_decision},
     )
+
+
+@app.post("/dependencies/{dependency_id}/owner")
+def assign_owner(
+    dependency_id: int,
+    slug: str = Form(...),
+    owner: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Record a Work Decision assigning the Internal Owner (ADR-0025).
+
+    One decision per submit. The rules belong to the Work Decision seam;
+    this route carries the HTTP.
+    """
+    project = _project(session, slug)
+    _project_dependency(session, project, dependency_id)
+    try:
+        assign_internal_owner(session, dependency_id, owner, principal=principal)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    session.commit()
+    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
 
 @app.post("/dependencies/{dependency_id}/evidence/{link_id}/satisfies")

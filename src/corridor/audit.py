@@ -67,6 +67,7 @@ AUTHORIZE_AUTOMATIC_CARRY_FORWARD = "authorize_automatic_carry_forward"
 DISABLE_AUTOMATIC_CARRY_FORWARD = "disable_automatic_carry_forward"
 RETIRE_LEGACY_LEDGER = "retire_legacy_ledger"
 SET_RESOLUTION_STRATEGY = "set_resolution_strategy"
+ASSIGN_INTERNAL_OWNER = "assign_internal_owner"
 MARK_SATISFIES_REQUIREMENT = "mark_satisfies_requirement"
 LINK_MILESTONE = "link_milestone"
 CREATE_MILESTONE = "create_milestone"
@@ -86,6 +87,7 @@ ACTIONS = frozenset(
         DISABLE_AUTOMATIC_CARRY_FORWARD,
         RETIRE_LEGACY_LEDGER,
         SET_RESOLUTION_STRATEGY,
+        ASSIGN_INTERNAL_OWNER,
         MARK_SATISFIES_REQUIREMENT,
         LINK_MILESTONE,
         CREATE_MILESTONE,
