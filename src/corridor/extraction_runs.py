@@ -12,15 +12,17 @@ from copy import deepcopy
 import sys
 
 from sqlalchemy import and_, func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from corridor.models import (
     EXTRACTION_OUTCOMES,
     ActiveExtractionRun,
+    ActiveRunDeclaration,
     Candidate,
     Document,
     ExtractionRun,
 )
+from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 
@@ -157,9 +159,21 @@ def candidate_input_snapshot(candidate: Candidate) -> dict:
 
 
 def declare_active_run(
-    session: Session, document_id: int, extraction_run_id: int
+    session: Session,
+    document_id: int,
+    extraction_run_id: int,
+    *,
+    principal: HumanPrincipal,
 ) -> ExtractionRun:
-    """Declare a completed run operative; never infer one from recency."""
+    """Declare a completed run operative; never infer one from recency.
+
+    The declaration is a human act at Admission's bar: the declarer is
+    recorded, declarations append rather than overwrite, and re-declaring
+    the run already current records nothing new — an identical rerun does
+    not duplicate an outcome. ``active_extraction_runs`` stays the one-row
+    projection readers join, maintained to equal the chain tail.
+    """
+    declarer = require_human_principal(principal)
     project_id = session.scalar(
         select(Document.project_id).where(Document.id == document_id)
     )
@@ -183,13 +197,31 @@ def declare_active_run(
         document_id,
         populate_existing=True,
     )
+    tail = current_active_run_declaration(session, document_id)
+    current_run_id = current.extraction_run_id if current is not None else None
+    tail_run_id = tail.extraction_run_id if tail is not None else None
+    if current_run_id != tail_run_id:
+        raise ValueError(
+            "the active run projection diverged from its declaration history"
+        )
+    if tail_run_id == extraction_run_id:
+        return run
+
+    session.add(
+        ActiveRunDeclaration(
+            document_id=document_id,
+            extraction_run_id=extraction_run_id,
+            declared_by=declarer.subject,
+            predecessor_declaration_id=tail.id if tail is not None else None,
+        )
+    )
     if current is None:
         session.add(
             ActiveExtractionRun(
                 document_id=document_id, extraction_run_id=extraction_run_id
             )
         )
-    elif current.extraction_run_id != extraction_run_id:
+    else:
         session.execute(
             update(ActiveExtractionRun)
             .where(ActiveExtractionRun.document_id == document_id)
@@ -197,6 +229,25 @@ def declare_active_run(
         )
         session.expire(current)
     return run
+
+
+def current_active_run_declaration(
+    session: Session, document_id: int
+) -> ActiveRunDeclaration | None:
+    """The declaration no later declaration has superseded.
+
+    A chain fact: the tail is the row nothing names as its predecessor,
+    never the greatest id or the newest timestamp.
+    """
+    successor = aliased(ActiveRunDeclaration)
+    return session.scalar(
+        select(ActiveRunDeclaration).where(
+            ActiveRunDeclaration.document_id == document_id,
+            ~select(successor.id)
+            .where(successor.predecessor_declaration_id == ActiveRunDeclaration.id)
+            .exists(),
+        )
+    )
 
 
 def active_run_for_document(
@@ -214,7 +265,11 @@ def active_run_for_document(
 
 
 def main(argv: list[str], *, session_factory=None) -> int:
-    """Declare an Active Run from explicit document and run identifiers."""
+    """Declare an Active Run from explicit document and run identifiers.
+
+    The declarer is the deployment-resolved principal, exactly as the web
+    ingress resolves it — never free text from the command line.
+    """
     if len(argv) != 2:
         print("usage: active-run <document-id> <extraction-run-id>", file=sys.stderr)
         return 2
@@ -227,12 +282,28 @@ def main(argv: list[str], *, session_factory=None) -> int:
         print("document-id and extraction-run-id must be positive", file=sys.stderr)
         return 2
 
+    from corridor.config import settings
+    from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+
+    try:
+        principal = HumanPrincipal(settings.human_principal)
+    except InvalidHumanPrincipal:
+        print(
+            "declaring an Active Run is an attributable act: set "
+            "CORRIDOR_HUMAN_PRINCIPAL to a namespaced subject such as "
+            "'local:alice'",
+            file=sys.stderr,
+        )
+        return 2
+
     if session_factory is None:
         from corridor.db import Session as session_factory
 
     with session_factory() as session:
         try:
-            run = declare_active_run(session, document_id, extraction_run_id)
+            run = declare_active_run(
+                session, document_id, extraction_run_id, principal=principal
+            )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -241,7 +312,7 @@ def main(argv: list[str], *, session_factory=None) -> int:
     run_id, prompt_version, outcome = run_summary
     print(
         f"document {document_id}: Active Run {run_id} "
-        f"({prompt_version}, {outcome})"
+        f"({prompt_version}, {outcome}) declared by {principal.subject}"
     )
     return 0
 

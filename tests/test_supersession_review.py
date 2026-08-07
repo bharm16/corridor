@@ -164,7 +164,7 @@ def _completed_run(session, document: Document, *candidates: Candidate):
         model="test-model",
         schema_version="candidate-v1",
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=REVIEWER)
     session.flush()
     return run
 

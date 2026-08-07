@@ -20,6 +20,8 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
+DECLARER = HumanPrincipal("local:human-principals-declarer")
+
 
 @pytest.fixture
 def session():
@@ -106,7 +108,7 @@ def make_candidate(session, project, document):
         candidates=(candidate,),
         model=candidate.model,
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=DECLARER)
     session.flush()
     return candidate
 

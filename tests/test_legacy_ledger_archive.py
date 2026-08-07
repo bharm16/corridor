@@ -42,6 +42,8 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal
 import corridor.legacy_ledger_archive as archive_module
 
+DECLARER = HumanPrincipal("local:legacy-ledger-archive-declarer")
+
 
 @pytest.fixture
 def session():
@@ -603,7 +605,7 @@ def test_retired_reference_codes_are_never_reused(session, legacy_ledger):
         model="test-model",
         schema_version="dependency-v1",
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=DECLARER)
 
     dependency = accept_candidate(
         session,

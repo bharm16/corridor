@@ -100,7 +100,7 @@ def project(session):
         model=candidate.model,
     )
     session.flush()
-    declare_active_run(session, doc.id, run.id)
+    declare_active_run(session, doc.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()
     accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
     return project

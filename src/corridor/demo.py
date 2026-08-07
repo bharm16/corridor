@@ -22,6 +22,7 @@ from corridor.extraction_runs import declare_active_run
 from corridor.models import (
     Assertion,
     ActiveExtractionRun,
+    ActiveRunDeclaration,
     AuditLog,
     Candidate,
     Dependency,
@@ -97,6 +98,14 @@ def _reset(session, project: Project) -> None:
             ActiveExtractionRun.document_id.in_(document_ids)
         )
     )
+    # Newest links first: declarations reference runs, so they go before
+    # the runs they name. The trigger permits this delete for the demo
+    # project alone.
+    session.execute(
+        delete(ActiveRunDeclaration).where(
+            ActiveRunDeclaration.document_id.in_(document_ids)
+        )
+    )
     session.execute(delete(Candidate).where(Candidate.project_id == project.id))
     session.execute(
         delete(ExtractionRun).where(ExtractionRun.document_id.in_(document_ids))
@@ -170,7 +179,9 @@ def main(limit: int | None = None) -> int:
             run_ids = {candidate.extraction_run_id for candidate in candidates}
             if len(run_ids) != 1 or None in run_ids:
                 raise RuntimeError("demo extraction did not produce one declared run")
-            declare_active_run(session, document.id, run_ids.pop())
+            declare_active_run(
+                session, document.id, run_ids.pop(), principal=principal
+            )
         for candidate in chosen:
             accept_candidate(session, candidate, principal=principal)
         print(f"adjudicated {len(chosen)} accepted")
