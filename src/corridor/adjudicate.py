@@ -870,7 +870,12 @@ def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
     return org
 
 
-def _materialize(session, candidate, fields, org) -> "Dependency":
+def _materialize(
+    session: Session,
+    candidate: Candidate,
+    fields: dict,
+    org: ExternalOrg | None,
+) -> Dependency:
     """Build the typed Dependency the source document's shape asserts.
 
     Materialization is chosen by the source document's type — the honest

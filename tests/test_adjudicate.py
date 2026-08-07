@@ -1952,3 +1952,36 @@ def test_a_dependency_candidate_from_an_unmaterializable_source_refuses(
 
     with pytest.raises(MalformedCandidateShape, match="plan"):
         accept_candidate(session, candidate, principal=BRYCE)
+
+
+def test_an_agreement_shape_missing_its_title_refuses(
+    session, agreement_document
+):
+    fields = {k: v for k, v in AGREEMENT_FIELDS.items() if k != "title"}
+    candidate = agreement_candidate(session, agreement_document, fields=fields)
+
+    with pytest.raises(MalformedCandidateShape, match="title"):
+        accept_candidate(session, candidate, principal=BRYCE)
+
+
+def test_agreement_acceptance_still_writes_assertions_and_evidence(
+    session, agreement_document
+):
+    """The typed columns are conclusions; the claims beneath them survive."""
+    candidate = agreement_candidate(session, agreement_document)
+
+    dependency = accept_candidate(session, candidate, principal=BRYCE)
+
+    links = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).all()
+    assert len(links) == 1
+    assert links[0].verified is True
+    asserted = {
+        assertion.field_name
+        for assertion in session.scalars(
+            select(Assertion).where(Assertion.dependency_id == dependency.id)
+        )
+    }
+    assert "obligation" in asserted
+    assert "committed_date" in asserted
