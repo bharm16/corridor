@@ -179,7 +179,7 @@ def register_chain(session, project, documents, replacement_dates):
 # --------------------------------------------------------------- the ruleset
 
 
-def test_the_ruleset_has_the_nine_documented_rules():
+def test_the_ruleset_has_the_twelve_documented_rules():
     assert set(RULES) == {
         "MISSING_OWNER",
         "MISSING_DATE",
@@ -190,6 +190,9 @@ def test_the_ruleset_has_the_nine_documented_rules():
         "CONTRADICTION",
         "ORPHAN",
         "SUPERSEDED_CITATION",
+        "MISSING_ACTION",
+        "ACTION_DUE_SOON",
+        "ACTION_OVERDUE",
     }
 
 
@@ -916,7 +919,7 @@ def test_absent_quantities_sort_after_present_ones_stably(
 
 def test_the_ruleset_version_is_pinned(session):
     """Adding a rule changes published counts and therefore the contract."""
-    assert RULESET_VERSION == "v0.3"
+    assert RULESET_VERSION == "v0.4"
 
 
 # ------------------------------------------------------------------ project
@@ -1034,3 +1037,73 @@ def test_an_evaluation_groups_by_dependency_so_no_consumer_regroups(
     assert [f.rule for f in evaluation.facets()] == [
         f.rule for f in facets(list(evaluation.found))
     ]
+
+
+# --- Coordination rules (#176) -----------------------------------------------
+
+
+def test_missing_action_is_an_absence_of_a_current_work_decision(
+    session, project, document
+):
+    from corridor.principals import HumanPrincipal
+    from corridor.work_decisions import complete_next_action, set_next_action
+
+    recorder = HumanPrincipal("local:coordination-tester")
+    dep = make_dep(session, project, ref="DEP-act")
+    add_evidence(session, dep, document)
+
+    assert "MISSING_ACTION" in codes(session, dep)
+
+    set_next_action(session, dep.id, "Walk the crossing", principal=recorder)
+    assert "MISSING_ACTION" not in codes(session, dep)
+
+    complete_next_action(session, dep.id, principal=recorder)
+    assert "MISSING_ACTION" in codes(session, dep)
+
+
+def test_missing_owner_clears_when_a_work_decision_records_one(
+    session, project, document
+):
+    from corridor.principals import HumanPrincipal
+    from corridor.work_decisions import assign_internal_owner
+
+    dep = make_dep(session, project, ref="DEP-own", internal_owner=None)
+    add_evidence(session, dep, document)
+    assert "MISSING_OWNER" in codes(session, dep)
+
+    assign_internal_owner(
+        session, dep.id, "Dana Fields",
+        principal=HumanPrincipal("local:coordination-tester"),
+    )
+    assert "MISSING_OWNER" not in codes(session, dep)
+
+
+def test_action_due_dates_have_their_own_lanes(session, project, document):
+    from datetime import timedelta
+
+    from corridor.principals import HumanPrincipal
+    from corridor.work_decisions import set_next_action
+
+    recorder = HumanPrincipal("local:coordination-tester")
+    soon = make_dep(session, project, ref="DEP-soon",
+                    need_date=TODAY + timedelta(days=10))
+    add_evidence(session, soon, document)
+    set_next_action(
+        session, soon.id, "Call the City",
+        due_date=TODAY + timedelta(days=3), principal=recorder,
+    )
+
+    fired = {e.rule: e for e in exceptions_for(session, soon.id, today=TODAY)}
+    assert "ACTION_DUE_SOON" in fired and fired["ACTION_DUE_SOON"].quantity_days == 3
+    # The Need Date lane fires beside it, never merged with it.
+    assert "DUE_SOON" in fired and fired["DUE_SOON"].quantity_days == 10
+
+    late = make_dep(session, project, ref="DEP-late")
+    add_evidence(session, late, document)
+    set_next_action(
+        session, late.id, "Chase the schedule",
+        due_date=TODAY - timedelta(days=4), principal=recorder,
+    )
+    fired = {e.rule: e for e in exceptions_for(session, late.id, today=TODAY)}
+    assert "ACTION_OVERDUE" in fired and fired["ACTION_OVERDUE"].quantity_days == 4
+    assert "OVERDUE" not in fired

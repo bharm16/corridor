@@ -32,10 +32,14 @@ from corridor.operative_support import (
     resolve_operative_support,
 )
 
-# v0.3 adds SUPERSEDED_CITATION as provenance-review work (ADR-0016, #145).
+# v0.4 adds the coordination rules (#176): MISSING_ACTION beside the
+# redefined MISSING_OWNER — both absences of a current Work Decision — and
+# ACTION_DUE_SOON/ACTION_OVERDUE over the Action Due Date, kept apart from
+# the Need Date and Committed Date lanes so a date the project set for
+# itself never masquerades as an External Party's commitment.
 # A ruleset change can move published counts without a data edit, which is
 # exactly what this version exists to make attributable.
-RULESET_VERSION = "v0.3"
+RULESET_VERSION = "v0.4"
 
 # Fixed by v0-build-spec.md §9. Overridable per project, but the defaults are
 # documented and a drift changes every count ever recorded.
@@ -45,6 +49,11 @@ RULESET_VERSION = "v0.3"
 # defined nothing but a position (ADR-0010).
 STALE_DAYS = 14
 DUE_SOON_DAYS = 30
+# The coordination cadence, not the schedule's: a Next Action due date
+# works on the weekly meeting cycle, so its warning horizon is one week
+# where the Need Date's is thirty days. Per-project overridable like the
+# rest (#176).
+ACTION_DUE_SOON_DAYS = 7
 
 # The nine rules. Names only — the weights that used to sit beside them
 # (5.0, 4.0, ×3 for criticality) had no source a reader could check, which
@@ -61,13 +70,23 @@ RULES: tuple[str, ...] = (
     "CONTRADICTION",
     "ORPHAN",
     "SUPERSEDED_CITATION",
+    "MISSING_ACTION",
+    "ACTION_DUE_SOON",
+    "ACTION_OVERDUE",
 )
 
 # The rules whose fact carries a number of days. The rest state absences,
 # and an absence has no quantity — inventing 0 or infinity for one would be
 # the scalar sneaking back in.
 QUANTITY_RULES = frozenset(
-    {"OVERDUE", "DUE_SOON", "STALE", "SUPERSEDED_CITATION"}
+    {
+        "OVERDUE",
+        "DUE_SOON",
+        "STALE",
+        "SUPERSEDED_CITATION",
+        "ACTION_DUE_SOON",
+        "ACTION_OVERDUE",
+    }
 )
 
 # Neither of these is "on track", so time-based rules stay quiet on them.
@@ -78,6 +97,7 @@ SETTLED_STATUSES = ("closed",)
 class Thresholds:
     stale_days: int = STALE_DAYS
     due_soon_days: int = DUE_SOON_DAYS
+    action_due_soon_days: int = ACTION_DUE_SOON_DAYS
 
 
 @dataclass(frozen=True)
@@ -375,8 +395,41 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
     # number, and None where the fact is an absence.
     found: list[tuple[str, str, int | None]] = []
 
+    # Both coordination absences read the projections the Work Decision
+    # seam maintains equal to its chain tails and defends with a divergence
+    # refusal (ADR-0025) — so each predicate is "no current Work Decision
+    # establishes this" without walking the chain per record. Queries,
+    # never stored flags.
     if not dependency.internal_owner and live:
-        found.append(("MISSING_OWNER", "no internal owner assigned", None))
+        found.append(
+            ("MISSING_OWNER", "no Work Decision assigns an internal owner", None)
+        )
+
+    if not dependency.next_action and live:
+        found.append(
+            ("MISSING_ACTION", "no Work Decision sets a next action", None)
+        )
+
+    if dependency.next_action and dependency.action_due_date and live:
+        days_until = (dependency.action_due_date - today).days
+        if days_until < 0:
+            found.append(
+                (
+                    "ACTION_OVERDUE",
+                    f"the project's own action was due "
+                    f"{dependency.action_due_date}, {-days_until} days ago",
+                    -days_until,
+                )
+            )
+        elif days_until <= thresholds.action_due_soon_days:
+            found.append(
+                (
+                    "ACTION_DUE_SOON",
+                    f"the project's own action is due in {days_until} days "
+                    f"({dependency.action_due_date})",
+                    days_until,
+                )
+            )
 
     if not dependency.committed_date and dependency.status in (
         "identified",
