@@ -123,6 +123,12 @@ def to_xlsx(
     meta.append(["Evaluated on", evaluation.today.isoformat()])
     meta.append(["STALE threshold (days)", evaluation.thresholds.stale_days])
     meta.append(["DUE_SOON threshold (days)", evaluation.thresholds.due_soon_days])
+    meta.append(
+        [
+            "ACTION_DUE_SOON threshold (days)",
+            evaluation.thresholds.action_due_soon_days,
+        ]
+    )
     meta.append(["Records", len(rows)])
     meta.append(
         ["Note", "Exception columns are derived from the passed evaluation, not stored."]

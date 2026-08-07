@@ -575,10 +575,10 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
         owner_tail = current_internal_owner_decision(session, dependency.id)
         action_tail = current_next_action_decision(session, dependency.id)
 
-        def decided(value, tail, absent_detail):
+        def decided(label, value, tail):
             if value and tail is not None:
                 return Cell(
-                    absent_detail,
+                    label,
                     value,
                     WorkDecision(
                         (tail.id,),
@@ -586,21 +586,21 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
                         tail.recorded_at.date(),
                     ),
                 )
-            return _derived(absent_detail, "—", (dependency.id,))
+            return _derived(label, "—", (dependency.id,))
 
         section.rows.append(
             [
                 _derived("Ref", dependency.ref_code, (dependency.id,)),
                 decided(
-                    dependency.internal_owner, owner_tail, "Internal owner"
+                    "Internal owner", dependency.internal_owner, owner_tail
                 ),
-                decided(dependency.next_action, action_tail, "Next action"),
+                decided("Next action", dependency.next_action, action_tail),
                 decided(
+                    "Action due",
                     dependency.action_due_date.isoformat()
                     if dependency.action_due_date
                     else None,
                     action_tail,
-                    "Action due",
                 ),
             ]
         )

@@ -314,3 +314,54 @@ def test_a_missing_receipt_refuses_rather_than_widening(session):
 
     with pytest.raises(CohortScopeViolation, match="does not exist"):
         require_cohort_member(session, 999999999, 1)
+
+
+def test_uncertain_correspondences_are_excluded_by_rule(session, project):
+    """Identical twins land `unmatched`, and the cohort leaves them out.
+
+    Two new rows sharing org, type, station and baseline give the matcher
+    no honest added/dropped conclusion, so it persists `unmatched` — and
+    the rule excludes uncertainty rather than adjudicating it by accident.
+    """
+    december = _document(session, project, registry_id="amb-dec", filename="d.pdf")
+    february = _document(session, project, registry_id="amb-feb", filename="f.pdf")
+    predecessor_run = _run(
+        session,
+        december,
+        [(_row("W1"), True), (_row("T0", station="1110+00"), True)],
+        prompt_version="amb.dec",
+    )
+    successor_run = _run(
+        session,
+        february,
+        [
+            (_row("W1"), True),
+            # Twins contending for one predecessor counterpart: the
+            # matcher cannot honestly say which of them T0 became, so
+            # neither is `added` and neither is `changed`.
+            (_row("T1", station="1110+00"), True),
+            (_row("T2", station="1110+00"), True),
+        ],
+        prompt_version="amb.feb",
+    )
+    _supersede(session, project, december, february, "amb-rid")
+    declare_active_run(session, december.id, predecessor_run.id, principal=DECLARER)
+    declare_active_run(session, february.id, successor_run.id, principal=DECLARER)
+    comparison = create_revision_comparison(
+        session, predecessor_run.id, successor_run.id
+    )
+
+    from corridor.models import RevisionComparisonFinding
+    states = set(
+        session.scalars(
+            select(RevisionComparisonFinding.state).where(
+                RevisionComparisonFinding.revision_comparison_run_id
+                == comparison.id
+            )
+        )
+    )
+    assert states & {"ambiguous", "unmatched"}, states
+
+    receipt = derive_cohort_receipt(session, comparison.id, external_org=CITY)
+
+    assert receipt.members == []

@@ -1107,3 +1107,38 @@ def test_action_due_dates_have_their_own_lanes(session, project, document):
     fired = {e.rule: e for e in exceptions_for(session, late.id, today=TODAY)}
     assert "ACTION_OVERDUE" in fired and fired["ACTION_OVERDUE"].quantity_days == 4
     assert "OVERDUE" not in fired
+
+
+def test_the_action_horizon_is_per_project_overridable(
+    session, project, document
+):
+    from datetime import timedelta
+
+    from corridor.principals import HumanPrincipal
+    from corridor.work_decisions import set_next_action
+
+    dep = make_dep(session, project, ref="DEP-horizon")
+    add_evidence(session, dep, document)
+    set_next_action(
+        session,
+        dep.id,
+        "Call the City",
+        due_date=TODAY + timedelta(days=10),
+        principal=HumanPrincipal("local:coordination-tester"),
+    )
+
+    default = {
+        e.rule for e in exceptions_for(session, dep.id, today=TODAY)
+    }
+    assert "ACTION_DUE_SOON" not in default
+
+    widened = {
+        e.rule
+        for e in exceptions_for(
+            session,
+            dep.id,
+            today=TODAY,
+            thresholds=Thresholds(action_due_soon_days=14),
+        )
+    }
+    assert "ACTION_DUE_SOON" in widened

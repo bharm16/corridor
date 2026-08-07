@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from corridor.models import (
     ActiveExtractionRun,
+    Candidate,
     CohortReceipt,
     Document,
     RevisionComparisonFinding,
@@ -236,8 +237,6 @@ def cohort_candidate_ids(
     adjudicated simply stops resolving to pending work — the receipt does
     not change.
     """
-    from corridor.models import Candidate
-
     member_utility_ids = {member["utility_id"] for member in receipt.members}
     candidates = session.scalars(
         select(Candidate).where(
