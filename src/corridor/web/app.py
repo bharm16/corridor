@@ -58,8 +58,11 @@ from corridor.models import (
     Project,
 )
 from corridor.web.queue import (
+    build_cohort_rail,
     build_supersession_review_view,
     build_view,
+    change_strip,
+    member_classification,
     next_candidate,
     pending_counts,
 )
@@ -107,6 +110,35 @@ def get_human_principal() -> HumanPrincipal:
         ) from exc
 
 
+def _safe_return(redirect_to: str, fallback: str) -> str:
+    """Only same-app paths: a form field must never become an open redirect."""
+    candidate = (redirect_to or "").strip()
+    if candidate.startswith("/") and not candidate.startswith("//"):
+        return candidate
+    if candidate:
+        raise HTTPException(400, "redirect_to must be a same-app path")
+    return fallback
+
+
+def _decision_location(
+    slug: str,
+    historical_document_id: int | None,
+    cohort_receipt_id: int | None,
+    *,
+    coordinate_dependency_id: int | None = None,
+) -> str:
+    """Where a decision lands next: the same lane it was made in.
+
+    In the rehearsal lane an accept flows into the coordination strip for
+    the record it just admitted — one pass, not two."""
+    if cohort_receipt_id is not None:
+        url = f"/queue/{slug}?lane=rehearsal&cohort_receipt_id={cohort_receipt_id}"
+        if coordinate_dependency_id is not None:
+            url += f"&coordinate={coordinate_dependency_id}"
+        return url
+    return _queue_location(slug, historical_document_id)
+
+
 def _require_cohort_scope(
     session: Session, cohort_receipt_id: int | None, candidate_id: int
 ) -> None:
@@ -138,6 +170,8 @@ def queue(
     lane: Literal["candidate", "reconfirmation", "rehearsal"] = "candidate",
     historical_document_id: int | None = None,
     cohort_receipt_id: int | None = None,
+    candidate_id: int | None = None,
+    coordinate: int | None = None,
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -203,18 +237,72 @@ def queue(
             },
         )
 
-    candidate = next_candidate(
-        session,
-        project.id,
-        historical_document_id=historical_document_id,
-        allowed_candidate_ids=allowed_candidate_ids,
-    )
-
+    candidate = None
+    if candidate_id is not None:
+        # Direct selection from the rail: still resolved through the same
+        # actionable scope the default pick uses — the rail is navigation,
+        # never a widening.
+        candidate = next_candidate(
+            session,
+            project.id,
+            historical_document_id=historical_document_id,
+            allowed_candidate_ids=(
+                (allowed_candidate_ids or frozenset()) & {candidate_id}
+                if allowed_candidate_ids is not None
+                else frozenset({candidate_id})
+            ),
+        )
     if candidate is None:
+        candidate = next_candidate(
+            session,
+            project.id,
+            historical_document_id=historical_document_id,
+            allowed_candidate_ids=allowed_candidate_ids,
+        )
+
+    coordinate_dependency = None
+    if coordinate is not None and cohort_receipt is not None:
+        coordinate_dependency = session.get(Dependency, coordinate)
+        if (
+            coordinate_dependency is None
+            or coordinate_dependency.project_id != project.id
+        ):
+            coordinate_dependency = None
+
+    lane_url = f"/queue/{slug}?lane=candidate"
+    if cohort_receipt is not None:
+        lane_url = (
+            f"/queue/{slug}?lane=rehearsal&cohort_receipt_id={cohort_receipt.id}"
+        )
+
+    if candidate is None and coordinate_dependency is None:
         return TEMPLATES.TemplateResponse(
             request,
             "empty.html",
             lane_context,
+        )
+
+    rail = (
+        build_cohort_rail(
+            session,
+            cohort_receipt,
+            candidate.id if candidate is not None else None,
+        )
+        if cohort_receipt is not None
+        else None
+    )
+    if candidate is None:
+        # Every member decided, but a coordination strip is still open for
+        # the last admitted record.
+        return TEMPLATES.TemplateResponse(
+            request,
+            "empty.html",
+            {
+                **lane_context,
+                "rail": rail,
+                "coordinate_dependency": coordinate_dependency,
+                "lane_url": lane_url,
+            },
         )
 
     return TEMPLATES.TemplateResponse(
@@ -228,6 +316,19 @@ def queue(
                 historical_document_id=historical_document_id,
                 allowed_candidate_ids=allowed_candidate_ids,
             ),
+            "rail": rail,
+            "classification": (
+                member_classification(cohort_receipt, candidate)
+                if cohort_receipt is not None
+                else None
+            ),
+            "changes": (
+                change_strip(session, cohort_receipt, candidate)
+                if cohort_receipt is not None
+                else []
+            ),
+            "coordinate_dependency": coordinate_dependency,
+            "lane_url": lane_url,
             **lane_context,
         },
     )
@@ -359,6 +460,7 @@ def assign_owner(
     dependency_id: int,
     slug: str = Form(...),
     owner: str = Form(...),
+    redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -374,7 +476,10 @@ def assign_owner(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     session.commit()
-    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    return RedirectResponse(
+        _safe_return(redirect_to, f"/ledger/{slug}/{dependency_id}"),
+        status_code=303,
+    )
 
 
 @app.post("/dependencies/{dependency_id}/action")
@@ -383,6 +488,7 @@ def record_next_action(
     slug: str = Form(...),
     action: str = Form(...),
     due_date: str = Form(""),
+    redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -402,7 +508,10 @@ def record_next_action(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     session.commit()
-    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    return RedirectResponse(
+        _safe_return(redirect_to, f"/ledger/{slug}/{dependency_id}"),
+        status_code=303,
+    )
 
 
 @app.post("/dependencies/{dependency_id}/action/{outcome}")
@@ -481,7 +590,7 @@ def accept(
         candidate_id,
         historical_document_id=historical_document_id,
     )
-    _accept(
+    dependency = _accept(
         session,
         candidate,
         principal,
@@ -489,7 +598,13 @@ def accept(
     )
     session.commit()
     return RedirectResponse(
-        _queue_location(slug, historical_document_id), status_code=303
+        _decision_location(
+            slug,
+            historical_document_id,
+            cohort_receipt_id,
+            coordinate_dependency_id=dependency.id,
+        ),
+        status_code=303,
     )
 
 
@@ -499,10 +614,10 @@ def _accept(
     principal: HumanPrincipal,
     *,
     historical_document_id: int | None = None,
-) -> None:
+) -> "Dependency":
     """The queue disables this button; a form post can still reach it."""
     try:
-        accept_candidate(
+        return accept_candidate(
             session,
             candidate,
             principal=principal,
@@ -570,7 +685,7 @@ async def edit_accept(
     except (AlreadyAdjudicated, InvalidCandidateScope) as exc:
         raise HTTPException(409, str(exc))
 
-    _accept(
+    dependency = _accept(
         session,
         candidate,
         principal,
@@ -578,7 +693,13 @@ async def edit_accept(
     )
     session.commit()
     return RedirectResponse(
-        _queue_location(slug, historical_document_id), status_code=303
+        _decision_location(
+            slug,
+            historical_document_id,
+            cohort_receipt_id,
+            coordinate_dependency_id=dependency.id,
+        ),
+        status_code=303,
     )
 
 
@@ -616,7 +737,13 @@ def merge(
         raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
-        _queue_location(slug, historical_document_id), status_code=303
+        _decision_location(
+            slug,
+            historical_document_id,
+            cohort_receipt_id,
+            coordinate_dependency_id=dependency.id,
+        ),
+        status_code=303,
     )
 
 
@@ -626,6 +753,7 @@ def reject(
     slug: str = Form(...),
     reason: str = Form(...),
     historical_document_id: int | None = Form(None),
+    cohort_receipt_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -650,7 +778,8 @@ def reject(
         raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
-        _queue_location(slug, historical_document_id), status_code=303
+        _decision_location(slug, historical_document_id, cohort_receipt_id),
+        status_code=303,
     )
 
 

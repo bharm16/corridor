@@ -1,0 +1,37 @@
+{#
+  The post-accept coordination strip: one pass, not two. The record was
+  just admitted; the owner box has focus so a name is one keystroke away,
+  and skipping is always allowed — the gaps stay visible as MISSING_OWNER
+  and MISSING_ACTION facts rather than falling through silently.
+  Each save is its own Work Decision (ADR-0025): two forms, two submits.
+#}
+{% if coordinate_dependency %}
+<div class="coordinate">
+  <div class="coordinate-head">
+    <b>Admitted {{ coordinate_dependency.ref_code }}</b>
+    — {{ coordinate_dependency.title }}
+    <a class="skip" href="{{ lane_url }}">skip → next <kbd>Esc</kbd></a>
+  </div>
+  <div class="coordinate-forms">
+    <form method="post"
+          action="/dependencies/{{ coordinate_dependency.id }}/owner">
+      <input type="hidden" name="slug" value="{{ project.slug }}">
+      <input type="hidden" name="redirect_to"
+             value="{{ lane_url }}&coordinate={{ coordinate_dependency.id }}">
+      <input name="owner" placeholder="internal owner (named person)"
+             value="{{ coordinate_dependency.internal_owner or '' }}" autofocus>
+      <button type="submit">assign</button>
+    </form>
+    <form method="post"
+          action="/dependencies/{{ coordinate_dependency.id }}/action">
+      <input type="hidden" name="slug" value="{{ project.slug }}">
+      <input type="hidden" name="redirect_to" value="{{ lane_url }}">
+      <input name="action" placeholder="next action"
+             value="{{ coordinate_dependency.next_action or '' }}">
+      <input name="due_date" type="date"
+             value="{{ coordinate_dependency.action_due_date or '' }}">
+      <button type="submit">set action</button>
+    </form>
+  </div>
+</div>
+{% endif %}
