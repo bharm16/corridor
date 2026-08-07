@@ -32,8 +32,6 @@ from sqlalchemy.orm import Session
 from corridor.extract_project import Extractor
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.principals import HumanPrincipal
-
-_ACCEPTANCE_PRINCIPAL = HumanPrincipal("local:m8-acceptance-fixture")
 from corridor.ingest import ingest_document
 from corridor.models import (
     Assertion,
@@ -83,6 +81,10 @@ from corridor.revision_comparison import (
     read_revision_comparison,
 )
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+
+# The acceptance fixture declares within its disposable database; the
+# subject matches the principal every m8 receipt already records.
+_ACCEPTANCE_PRINCIPAL = HumanPrincipal("local:m8-acceptance-fixture")
 
 
 RID_INDEX_ID = "nhhip-rid-index-2026-05-01"

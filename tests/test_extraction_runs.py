@@ -742,3 +742,16 @@ def test_declaration_history_is_immutable_below_the_service_boundary(
                     ActiveRunDeclaration.id == declaration.id
                 )
             )
+
+
+def test_a_role_label_is_not_a_declarer(session, project):
+    """'reviewer' and 'system' are roles; the declarer is a person."""
+    doc = add_matrix(session, project, "role.pdf", "3" * 64)
+    run = _completed_run(session, doc, "role")
+
+    for label in ("local:system", "local:reviewer"):
+        with pytest.raises(InvalidHumanPrincipal):
+            extraction_runs.declare_active_run(
+                session, doc.id, run.id, principal=HumanPrincipal(label)
+            )
+    assert extraction_runs.active_run_for_document(session, doc.id) is None

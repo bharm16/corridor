@@ -632,7 +632,12 @@ def _run_controlled_lane(
             model=_CONTROLLED_MODEL,
             schema_version=_CONTROLLED_PROMPT_VERSION,
         )
-        declare_active_run(session, predecessor.id, predecessor_run.id, principal=_SIMULATED_PRINCIPAL)
+        declare_active_run(
+            session,
+            predecessor.id,
+            predecessor_run.id,
+            principal=_SIMULATED_PRINCIPAL,
+        )
         if definition.get("human_edit"):
             edited = dict(predecessor_fields)
             edit = definition["human_edit"]
@@ -700,7 +705,12 @@ def _run_controlled_lane(
         model=_CONTROLLED_MODEL,
         schema_version=_CONTROLLED_PROMPT_VERSION,
     )
-    declare_active_run(session, sentinel_predecessor.id, sentinel_run.id, principal=_SIMULATED_PRINCIPAL)
+    declare_active_run(
+            session,
+            sentinel_predecessor.id,
+            sentinel_run.id,
+            principal=_SIMULATED_PRINCIPAL,
+        )
     _controlled_document(
         session,
         project,
@@ -862,7 +872,12 @@ def _run_controlled_lane(
     )
     assert readiness_case.successor_run is not None
     assert readiness_case.successor is not None
-    declare_active_run(session, readiness_case.successor.id, readiness_case.successor_run.id, principal=_SIMULATED_PRINCIPAL)
+    declare_active_run(
+            session,
+            readiness_case.successor.id,
+            readiness_case.successor_run.id,
+            principal=_SIMULATED_PRINCIPAL,
+        )
     lifecycle.append(
         _lifecycle_observation(
             session,
@@ -919,9 +934,12 @@ def _run_controlled_lane(
             )
         assert controlled_case.successor is not None
         assert controlled_case.successor_run is not None
-        declare_active_run(session,
+        declare_active_run(
+            session,
             controlled_case.successor.id,
-            controlled_case.successor_run.id, principal=_SIMULATED_PRINCIPAL)
+            controlled_case.successor_run.id,
+            principal=_SIMULATED_PRINCIPAL,
+        )
         try:
             _compare_controlled_case(session, controlled_case)
         except AcceptanceError as exc:
@@ -1884,7 +1902,12 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         model=_CONTROLLED_MODEL,
         schema_version=_CONTROLLED_PROMPT_VERSION,
     )
-    declare_active_run(session, predecessor.id, predecessor_run.id, principal=_SIMULATED_PRINCIPAL)
+    declare_active_run(
+            session,
+            predecessor.id,
+            predecessor_run.id,
+            principal=_SIMULATED_PRINCIPAL,
+        )
     dependency = accept_candidate(
         session,
         predecessor_candidate,
@@ -1923,7 +1946,12 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         model=_CONTROLLED_MODEL,
         schema_version=_CONTROLLED_PROMPT_VERSION,
     )
-    declare_active_run(session, successor.id, successor_run.id, principal=_SIMULATED_PRINCIPAL)
+    declare_active_run(
+            session,
+            successor.id,
+            successor_run.id,
+            principal=_SIMULATED_PRINCIPAL,
+        )
     comparison = create_revision_comparison(
         session,
         predecessor_run.id,

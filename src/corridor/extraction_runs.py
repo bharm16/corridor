@@ -22,7 +22,7 @@ from corridor.models import (
     Document,
     ExtractionRun,
 )
-from corridor.principals import require_human_principal
+from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 
@@ -163,7 +163,7 @@ def declare_active_run(
     document_id: int,
     extraction_run_id: int,
     *,
-    principal,
+    principal: HumanPrincipal,
 ) -> ExtractionRun:
     """Declare a completed run operative; never infer one from recency.
 
