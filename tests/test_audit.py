@@ -112,7 +112,7 @@ def make_candidate(session, document, *, utility_id="FOC1-1", activate=True):
             candidates=(c,),
             model=c.model,
         )
-        declare_active_run(session, document.id, run.id)
+        declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()
     return c
 
@@ -261,7 +261,7 @@ def test_another_record_s_candidate_history_does_not_leak_in(session, document):
         candidates=(mine, theirs),
         model=mine.model,
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     audit.record(
         session,
         actor="reviewer",

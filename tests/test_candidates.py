@@ -88,7 +88,7 @@ def _declare_candidate_active(session, document, candidate):
         candidates=(candidate,),
         model=candidate.model,
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()
 
 

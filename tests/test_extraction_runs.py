@@ -6,8 +6,10 @@ from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.models import (
     ActiveExtractionRun,
+    ActiveRunDeclaration,
     Candidate,
     Document,
     ExtractionRun,
@@ -17,6 +19,8 @@ from corridor.models import (
 extraction_runs = __import__("corridor.extraction_runs", fromlist=["*"])
 
 PROMPT_VERSION = "test_v1"
+DECLARER = HumanPrincipal("local:run-lineage-declarer")
+RELIEF_DECLARER = HumanPrincipal("local:run-lineage-relief")
 
 
 def _run_id(run):
@@ -83,7 +87,9 @@ def test_active_run_declared_by_explicit_run_id(session, project):
     )
     session.flush()
 
-    extraction_runs.declare_active_run(session, doc.id, first.id)
+    extraction_runs.declare_active_run(
+        session, doc.id, first.id, principal=DECLARER
+    )
     assert _run_id(extraction_runs.active_run_for_document(session, doc.id)) == first.id
 
     # A newer successful run is not automatically active.
@@ -100,7 +106,9 @@ def test_newer_runs_do_not_imply_active_run(session, project):
         page_errors=0,
     )
     session.flush()
-    extraction_runs.declare_active_run(session, doc.id, active.id)
+    extraction_runs.declare_active_run(
+        session, doc.id, active.id, principal=DECLARER
+    )
 
     _ = record_extraction_run(
         session,
@@ -121,7 +129,17 @@ def test_newer_runs_do_not_imply_active_run(session, project):
     assert _run_id(extraction_runs.active_run_for_document(session, doc.id)) == active.id
 
 
-def test_active_run_declaration_refreshes_a_prewarmed_identity_map(session, project):
+def test_a_projection_that_diverged_from_its_history_refuses_to_extend(
+    session, project
+):
+    """A tampered projection is corruption, not staleness.
+
+    This scenario used to be a stale-identity-map concern the service
+    papered over. With the declaration chain as the authority, a projection
+    row that disagrees with the chain tail can only be a write that went
+    around the service — extending the chain on top of it would launder the
+    tampering into history.
+    """
     doc = add_matrix(session, project, "prewarmed.pdf", "b" * 64)
     first = record_extraction_run(
         session,
@@ -137,20 +155,20 @@ def test_active_run_declaration_refreshes_a_prewarmed_identity_map(session, proj
         candidate_count=0,
         page_errors=0,
     )
-    extraction_runs.declare_active_run(session, doc.id, first.id)
-    stale = session.get(ActiveExtractionRun, doc.id)
-
+    extraction_runs.declare_active_run(
+        session, doc.id, first.id, principal=DECLARER
+    )
     session.execute(
         update(ActiveExtractionRun)
         .where(ActiveExtractionRun.document_id == doc.id)
         .values(extraction_run_id=second.id)
         .execution_options(synchronize_session=False)
     )
-    assert stale.extraction_run_id == first.id
 
-    extraction_runs.declare_active_run(session, doc.id, first.id)
-    session.expire(stale)
-    assert stale.extraction_run_id == first.id
+    with pytest.raises(ValueError, match="diverged"):
+        extraction_runs.declare_active_run(
+            session, doc.id, first.id, principal=DECLARER
+        )
 
 
 def test_run_receipt_carries_provenance_and_owns_its_candidates(session, project):
@@ -530,14 +548,21 @@ def test_failed_or_foreign_runs_cannot_be_declared_active(session, project):
     session.flush()
 
     with pytest.raises(ValueError, match="only a completed"):
-        extraction_runs.declare_active_run(session, first.id, failed.id)
+        extraction_runs.declare_active_run(
+            session, first.id, failed.id, principal=DECLARER
+        )
     with pytest.raises(ValueError, match="does not belong"):
-        extraction_runs.declare_active_run(session, first.id, completed.id)
+        extraction_runs.declare_active_run(
+            session, first.id, completed.id, principal=DECLARER
+        )
 
 
 def test_operator_entrypoint_declares_the_exact_active_run(
-    session, project, capsys
+    session, project, capsys, monkeypatch
 ):
+    from corridor.config import settings
+
+    monkeypatch.setattr(settings, "human_principal", "local:operator")
     doc = add_matrix(session, project, "operator.pdf", "f" * 64)
     run = record_extraction_run(
         session,
@@ -565,7 +590,9 @@ def test_operator_entrypoint_declares_the_exact_active_run(
         _run_id(extraction_runs.active_run_for_document(session, document_id))
         == extraction_run_id
     )
-    assert f"Active Run {extraction_run_id}" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"Active Run {extraction_run_id}" in out
+    assert "declared by local:operator" in out
 
 
 def test_null_or_ambiguous_lineage_is_not_active(session, project):
@@ -588,3 +615,130 @@ def test_null_or_ambiguous_lineage_is_not_active(session, project):
         select(ExtractionRun).where(ExtractionRun.document_id == doc.id)
     ).all()
     assert runs == []
+
+
+
+def _completed_run(session, doc, suffix):
+    return record_extraction_run(
+        session,
+        doc,
+        prompt_version=f"{PROMPT_VERSION}.{suffix}",
+        candidate_count=0,
+        page_errors=0,
+    )
+
+
+def test_declaring_an_active_run_requires_an_attributable_human(session, project):
+    """The one control every reader trusts is signed, like Admission."""
+    doc = add_matrix(session, project, "attributed.pdf", "d" * 64)
+    run = _completed_run(session, doc, "attributed")
+
+    with pytest.raises(InvalidHumanPrincipal):
+        extraction_runs.declare_active_run(
+            session, doc.id, run.id, principal="local:free-text"
+        )
+    assert extraction_runs.active_run_for_document(session, doc.id) is None
+
+
+def test_declarations_append_and_the_prior_one_survives_as_history(
+    session, project
+):
+    doc = add_matrix(session, project, "appended.pdf", "e" * 64)
+    first = _completed_run(session, doc, "first")
+    second = _completed_run(session, doc, "second")
+
+    extraction_runs.declare_active_run(session, doc.id, first.id, principal=DECLARER)
+    extraction_runs.declare_active_run(
+        session, doc.id, second.id, principal=RELIEF_DECLARER
+    )
+
+    declarations = session.scalars(
+        select(ActiveRunDeclaration)
+        .where(ActiveRunDeclaration.document_id == doc.id)
+        .order_by(ActiveRunDeclaration.id)
+    ).all()
+    assert [d.extraction_run_id for d in declarations] == [first.id, second.id]
+    assert [d.declared_by for d in declarations] == [
+        DECLARER.subject,
+        RELIEF_DECLARER.subject,
+    ]
+    assert declarations[0].predecessor_declaration_id is None
+    assert declarations[1].predecessor_declaration_id == declarations[0].id
+    assert (
+        _run_id(extraction_runs.active_run_for_document(session, doc.id))
+        == second.id
+    )
+
+
+def test_redeclaring_the_same_run_does_not_duplicate_history(session, project):
+    """An identical rerun records no new outcome."""
+    doc = add_matrix(session, project, "idempotent.pdf", "f" * 64)
+    run = _completed_run(session, doc, "only")
+
+    extraction_runs.declare_active_run(session, doc.id, run.id, principal=DECLARER)
+    extraction_runs.declare_active_run(
+        session, doc.id, run.id, principal=RELIEF_DECLARER
+    )
+
+    declarations = session.scalars(
+        select(ActiveRunDeclaration).where(
+            ActiveRunDeclaration.document_id == doc.id
+        )
+    ).all()
+    assert len(declarations) == 1
+    assert declarations[0].declared_by == DECLARER.subject
+
+
+def test_the_current_declaration_is_the_chain_tail_not_an_id_order(
+    session, project
+):
+    """Current is the declaration nothing has superseded — a chain fact."""
+    doc = add_matrix(session, project, "tail.pdf", "1" * 64)
+    first = _completed_run(session, doc, "one")
+    second = _completed_run(session, doc, "two")
+
+    extraction_runs.declare_active_run(session, doc.id, first.id, principal=DECLARER)
+    extraction_runs.declare_active_run(
+        session, doc.id, second.id, principal=DECLARER
+    )
+    extraction_runs.declare_active_run(session, doc.id, first.id, principal=DECLARER)
+
+    current = extraction_runs.current_active_run_declaration(session, doc.id)
+    assert current is not None
+    assert current.extraction_run_id == first.id
+    successors = session.scalars(
+        select(ActiveRunDeclaration).where(
+            ActiveRunDeclaration.predecessor_declaration_id == current.id
+        )
+    ).all()
+    assert successors == []
+    projection = session.get(ActiveExtractionRun, doc.id, populate_existing=True)
+    assert projection.extraction_run_id == current.extraction_run_id
+
+
+def test_declaration_history_is_immutable_below_the_service_boundary(
+    session, project
+):
+    doc = add_matrix(session, project, "sealed.pdf", "2" * 64)
+    run = _completed_run(session, doc, "sealed")
+    extraction_runs.declare_active_run(session, doc.id, run.id, principal=DECLARER)
+    declaration = session.scalars(
+        select(ActiveRunDeclaration).where(
+            ActiveRunDeclaration.document_id == doc.id
+        )
+    ).one()
+
+    with pytest.raises(IntegrityError):
+        with session.begin_nested():
+            session.execute(
+                update(ActiveRunDeclaration)
+                .where(ActiveRunDeclaration.id == declaration.id)
+                .values(declared_by="local:revisionist")
+            )
+    with pytest.raises(IntegrityError):
+        with session.begin_nested():
+            session.execute(
+                delete(ActiveRunDeclaration).where(
+                    ActiveRunDeclaration.id == declaration.id
+                )
+            )

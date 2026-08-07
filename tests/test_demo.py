@@ -10,6 +10,8 @@ from corridor.models import AuditLog, Candidate, Dependency, DocPage, Document, 
 from corridor.principals import HumanPrincipal
 from corridor.demo import DEMO_SLUG, DemoIsolationError
 
+DECLARER = HumanPrincipal("local:demo-declarer")
+
 
 @pytest.fixture
 def session():
@@ -107,7 +109,7 @@ def make_candidate(session, document):
         model=candidate.model,
     )
     session.flush()
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=DECLARER)
     session.flush()
     return candidate
 

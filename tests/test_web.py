@@ -175,7 +175,7 @@ def make_candidate(
             candidates=(c,),
             model=model,
         )
-        declare_active_run(session, document.id, run.id)
+        declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     return c
 
 
@@ -413,7 +413,7 @@ def test_unverified_candidates_sink_but_are_never_hidden(
         candidates=(bad, good),
         model=bad.model,
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
 
     assert next_candidate(session, project.id).id == good.id
 
@@ -462,7 +462,7 @@ def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
         candidates=(bad, good),
         model=bad.model,
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
 
     assert pending_counts(session, project.id) == (2, 1)
     assert next_candidate(session, project.id).id == good.id
@@ -636,7 +636,7 @@ def _seed_supersession_chain(
         candidates=(predecessor_candidate,),
         model="gpt-4o-mini",
     )
-    declare_active_run(session, predecessor.id, predecessor_run.id)
+    declare_active_run(session, predecessor.id, predecessor_run.id, principal=TEST_PRINCIPAL)
 
     successor_candidate = None
     if successor_failed:
@@ -702,9 +702,7 @@ def _seed_supersession_chain(
         else None,
         "successor_run": successor_run,
         "register_supersession": register_supersession,
-        "activate_successor": lambda: declare_active_run(
-            session, successor.id, successor_run.id
-        ),
+        "activate_successor": lambda: declare_active_run(session, successor.id, successor_run.id, principal=TEST_PRINCIPAL),
     }
 
 
@@ -2360,7 +2358,7 @@ def _event_candidate(session, project, document):
         page_errors=0,
         candidates=(c,),
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     return c
 
 

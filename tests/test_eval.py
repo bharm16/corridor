@@ -29,6 +29,9 @@ from corridor.eval import (
 from corridor.eval import _SEQUENTIAL_ID, _UTILITY_ID
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
+from corridor.principals import HumanPrincipal
+
+DECLARER = HumanPrincipal("local:eval-declarer")
 
 
 def scanned(*records):
@@ -1433,7 +1436,7 @@ def test_measurement_uses_the_explicit_historical_run_not_the_active_run(
 ):
     active = record_run(session, project, document, "FOC1-1")
     historical = record_run(session, project, document, "FOC9-9")
-    declare_active_run(session, document.id, active.id)
+    declare_active_run(session, document.id, active.id, principal=DECLARER)
     path = tmp_path / "reference.csv"
     path.write_text("source_ref,page\nFOC9-9,1\n")
 

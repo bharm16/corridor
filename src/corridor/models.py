@@ -488,6 +488,57 @@ class ActiveExtractionRun(Base):
     )
 
 
+class ActiveRunDeclaration(Base):
+    """One appended human act declaring a document's Active Run.
+
+    The chain is explicit: every declaration names its predecessor, exactly
+    one root exists per document, and the current declaration is the one no
+    later declaration has superseded — a chain fact, never an id or
+    timestamp order (ADR-0019). ``active_extraction_runs`` remains the
+    one-row projection every reader joins; this table is why that row is
+    what it is. History is immutable below the service boundary.
+    """
+
+    __tablename__ = "active_run_declarations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+        ),
+        # The predecessor must be a declaration for the same document, which
+        # needs the (document_id, id) identity to exist as an FK target.
+        UniqueConstraint(
+            "document_id", "id", name="uq_active_run_declarations_document_id_id"
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "predecessor_declaration_id"],
+            ["active_run_declarations.document_id", "active_run_declarations.id"],
+            name="fk_active_run_declarations_predecessor",
+        ),
+        # A declaration is superseded at most once, and a document has at
+        # most one root: together they make the history one linear chain.
+        UniqueConstraint(
+            "predecessor_declaration_id",
+            name="uq_active_run_declarations_predecessor",
+        ),
+        Index(
+            "uq_active_run_declarations_one_root",
+            "document_id",
+            unique=True,
+            postgresql_where=text("predecessor_declaration_id is null"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    extraction_run_id: Mapped[int] = mapped_column(BigInteger)
+    declared_by: Mapped[str] = mapped_column(String(128))
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    predecessor_declaration_id: Mapped[int | None] = mapped_column(BigInteger)
+
+
 class RevisionComparisonRun(Base):
     """An immutable receipt for comparing two exact Extraction Runs.
 

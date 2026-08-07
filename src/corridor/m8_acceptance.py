@@ -31,6 +31,9 @@ from sqlalchemy.orm import Session
 
 from corridor.extract_project import Extractor
 from corridor.extraction_runs import declare_active_run, record_extraction_run
+from corridor.principals import HumanPrincipal
+
+_ACCEPTANCE_PRINCIPAL = HumanPrincipal("local:m8-acceptance-fixture")
 from corridor.ingest import ingest_document
 from corridor.models import (
     Assertion,
@@ -554,7 +557,9 @@ def _capture_chain(
             raise AcceptanceError(
                 f"{source.registry_id} schema version does not match the pin"
             )
-        declare_active_run(session, document.id, run.id)
+        declare_active_run(
+            session, document.id, run.id, principal=_ACCEPTANCE_PRINCIPAL
+        )
         run_by_registry[source.registry_id] = run
         stable_inputs = _stable_capture_inputs(
             run.candidate_inputs_json,
@@ -1543,7 +1548,9 @@ def _replay_real_chain(
                 )
             key_by_candidate_id[candidate_id] = item["candidate_key"]
 
-        declare_active_run(session, document.id, run.id)
+        declare_active_run(
+            session, document.id, run.id, principal=_ACCEPTANCE_PRINCIPAL
+        )
         run_by_registry[source.registry_id] = run
         active_declarations.append(
             {

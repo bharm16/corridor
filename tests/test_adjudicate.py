@@ -156,7 +156,7 @@ def _activate_fixture_candidate(session, document, candidate):
         candidates=(candidate,),
         model=candidate.model,
     )
-    declare_active_run(session, document.id, run.id)
+    declare_active_run(session, document.id, run.id, principal=BRYCE)
     return candidate
 
 

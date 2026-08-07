@@ -121,7 +121,7 @@ def project_with_two_dependencies(session):
         candidates=tuple(candidates),
     )
     session.flush()
-    declare_active_run(session, doc.id, run.id)
+    declare_active_run(session, doc.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()
     for candidate in candidates:
         accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
