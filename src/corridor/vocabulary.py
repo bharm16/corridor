@@ -13,8 +13,9 @@ column holds each, because a printout does not carry the form's own names.
 One table, read from both ends.
 """
 
-from corridor.geometry import normalize_header
 from __future__ import annotations
+
+from corridor.geometry import normalize_header
 
 # The canonical vocabulary, and where each field comes from.
 #
