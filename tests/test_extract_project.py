@@ -14,7 +14,14 @@ from corridor.extract_matrix import ExtractionFailed
 from corridor.extract_sheet import PROMPT_VERSION as SHEET_PROMPT_VERSION
 from corridor.extraction_runs import active_run_for_document
 from corridor.geometry import NoMatrixFound
-from corridor.extract_project import Outcome, extract_project, main, render
+from corridor.extract_project import (
+    Outcome,
+    UnextractableDocument,
+    UnknownDocument,
+    extract_project,
+    main,
+    render,
+)
 from corridor.models import Candidate, Document, ExtractionRun, Project
 from corridor.pipeline import ExtractionRoute
 
@@ -893,3 +900,122 @@ def test_the_fallback_share_is_stated_even_when_nothing_fell_back(session, proje
     report = render(project, PROMPT_VERSION, outcomes)
     assert "4 read from the text layer, 0 transcribed (0.0% fell back)" in report
     assert "every page agreed" in report
+
+
+# --- Document-scoped extraction (#168) --------------------------------------
+
+
+def test_a_named_document_extracts_alone(session, project):
+    first = add_matrix(session, project, "feb.pdf", "a" * 64)
+    first.registry_id = "ucm-feb"
+    second = add_matrix(session, project, "dec.pdf", "b" * 64)
+    second.registry_id = "ucm-dec"
+    session.flush()
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"feb.pdf": [True, True]}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+        document_registry_id="ucm-feb",
+    )
+
+    assert [o.filename for o in outcomes] == ["feb.pdf"]
+    assert outcomes[0].status == "extracted"
+    runs = session.scalars(
+        select(ExtractionRun).where(
+            ExtractionRun.document_id.in_([first.id, second.id])
+        )
+    ).all()
+    assert [run.document_id for run in runs] == [first.id]
+
+
+def test_naming_an_unknown_document_refuses(session, project):
+    add_matrix(session, project, "feb.pdf", "a" * 64)
+
+    with pytest.raises(UnknownDocument, match="no-such-registry-id"):
+        extract_project(
+            session,
+            project,
+            extract=extractor(**{"feb.pdf": [True]}),
+            commit=False,
+            document_registry_id="no-such-registry-id",
+        )
+
+
+def test_naming_an_unextractable_document_refuses(session, project):
+    agreement = Document(
+        project_id=project.id,
+        sha256="c" * 64,
+        filename="mou.pdf",
+        doc_type="agreement",
+        parse_status="parsed",
+        pages=1,
+    )
+    agreement.registry_id = "coh-mou"
+    session.add(agreement)
+    session.flush()
+
+    with pytest.raises(UnextractableDocument, match="agreement"):
+        extract_project(
+            session,
+            project,
+            extract=extractor(),
+            commit=False,
+            document_registry_id="coh-mou",
+        )
+
+
+def test_a_named_document_keeps_the_skip_receipt_semantics(session, project):
+    doc = add_matrix(session, project, "feb.pdf", "a" * 64)
+    doc.registry_id = "ucm-feb"
+    session.flush()
+
+    first = extract_project(
+        session,
+        project,
+        extract=extractor(**{"feb.pdf": [True]}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+        document_registry_id="ucm-feb",
+    )
+    assert first[0].status == "extracted"
+
+    second = extract_project(
+        session,
+        project,
+        extract=extractor(**{"feb.pdf": [True]}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+        document_registry_id="ucm-feb",
+    )
+    assert second[0].status == "skipped"
+    runs = session.scalars(
+        select(ExtractionRun).where(ExtractionRun.document_id == doc.id)
+    ).all()
+    assert len(runs) == 1
+
+
+def test_a_named_document_records_failure_receipts_like_the_sweep(
+    session, project
+):
+    doc = add_matrix(session, project, "feb.pdf", "a" * 64)
+    doc.registry_id = "ucm-feb"
+    session.flush()
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"feb.pdf": ExtractionFailed("model unavailable")}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+        document_registry_id="ucm-feb",
+    )
+
+    assert [o.status for o in outcomes] == ["failed"]
+    run = session.scalars(
+        select(ExtractionRun).where(ExtractionRun.document_id == doc.id)
+    ).one()
+    assert run.outcome == "failed"
+    assert "model unavailable" in run.error_detail
