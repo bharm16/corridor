@@ -359,6 +359,16 @@ class Document(Base):
             "superseded_by is null or superseded_by <> id",
             name="ck_documents_no_self_supersession",
         ),
+        # A document cannot be the authority for its own replacement: the
+        # replacement postdates it, so the page a reader would check to
+        # confirm the edge predates the fact (ADR-0015). The successor is
+        # deliberately still lawful — a revision stating what it replaces
+        # is an ordinary way agencies declare a chain.
+        CheckConstraint(
+            "supersession_source_document_id is null "
+            "or supersession_source_document_id <> id",
+            name="ck_documents_no_self_attested_supersession",
+        ),
         CheckConstraint(
             "(superseded_by is null and superseded_on is null "
             "and supersession_source_document_id is null "

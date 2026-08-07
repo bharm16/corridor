@@ -549,6 +549,48 @@ def test_register_supersession_rejects_missing_target_or_invalid_metadata(
         )
 
 
+def test_a_document_cannot_be_the_authority_for_its_own_replacement(session, project):
+    """The predecessor is refused as its own source; the successor is not.
+
+    A revision claiming "I have been replaced, and the proof is on page 1
+    of me" is attesting to an event that postdates it, so the page a reader
+    would check predates the fact (ADR-0015). A successor stating what it
+    replaces is the ordinary way agencies declare a chain, and stays legal.
+    """
+    module = _supersession()
+    Declaration = module.SupersessionDeclaration
+    first = _document(session, project, registry_id="RID-SELF-1", filename="one.pdf")
+    second = _document(session, project, registry_id="RID-SELF-2", filename="two.pdf")
+    # Both carry the cited page, so a refusal can only be about who is
+    # attesting — not about a page that does not exist.
+    for document in (first, second):
+        session.add(
+            DocPage(document_id=document.id, page_no=1, text="Replaced on 2026-02-13")
+        )
+    session.flush()
+
+    def declaration(source):
+        return Declaration(
+            predecessor_registry_id=first.registry_id,
+            successor_registry_id=second.registry_id,
+            replacement_date=date(2026, 2, 13),
+            source_registry_id=source.registry_id,
+            source_page=1,
+        )
+
+    with pytest.raises(ValueError, match="source cannot be the predecessor"):
+        module.register_supersessions(session, [declaration(first)])
+
+    session.refresh(first)
+    assert first.superseded_by is None
+    assert first.supersession_source_document_id is None
+
+    module.register_supersessions(session, [declaration(second)])
+    session.refresh(first)
+    assert first.superseded_by == second.id
+    assert first.supersession_source_document_id == second.id
+
+
 def test_register_supersession_rejects_self_cycle_and_conflicting_edges(
     session, project
 ):
@@ -645,6 +687,36 @@ def test_register_supersession_rejects_cross_project_edges(session, project):
                 )
             ],
         )
+
+
+def test_database_rejects_a_self_attested_supersession_below_the_service_boundary(
+    session, project
+):
+    """The invariant holds for a write that never passes registration.
+
+    `register_supersessions` already refuses this, but a rule about what
+    the record may contain belongs where the record lives — otherwise a
+    direct write, a backfill script or a future writer can still mint a
+    document that is the authority for its own replacement (ADR-0015).
+    """
+    predecessor = _document(
+        session, project, registry_id="RID-DB-SELF-PREV", filename="previous.pdf"
+    )
+    successor = _document(
+        session, project, registry_id="RID-DB-SELF-NEXT", filename="next.pdf"
+    )
+    session.add(
+        DocPage(document_id=predecessor.id, page_no=1, text="Replaced on 2026-02-13")
+    )
+    session.flush()
+
+    with pytest.raises(IntegrityError, match="ck_documents_no_self_attested"):
+        with session.begin_nested():
+            predecessor.superseded_by = successor.id
+            predecessor.superseded_on = date(2026, 2, 13)
+            predecessor.supersession_source_document_id = predecessor.id
+            predecessor.supersession_source_page = 1
+            session.flush()
 
 
 def test_database_rejects_cross_project_successor_below_the_service_boundary(

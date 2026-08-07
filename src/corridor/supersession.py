@@ -173,6 +173,14 @@ def _validate_shapes(declarations: tuple[SupersessionDeclaration, ...]) -> None:
             raise ValueError("source_page must be a positive integer")
         if declaration.predecessor_registry_id == declaration.successor_registry_id:
             raise ValueError("a document cannot supersede itself")
+        # A document cannot be the authority for its own replacement: the
+        # replacement postdates it, so the page a reader would check to
+        # confirm the edge is a page that predates the fact (ADR-0015).
+        # The successor is deliberately still allowed — a new revision's
+        # cover sheet stating what it replaces is the ordinary way agencies
+        # declare a chain, and it is checkable exactly as the index is.
+        if declaration.source_registry_id == declaration.predecessor_registry_id:
+            raise ValueError("a supersession source cannot be the predecessor")
 
 
 def _resolve_project_id(

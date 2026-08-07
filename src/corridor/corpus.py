@@ -223,6 +223,10 @@ def _validate_manifest_registry(sources: tuple[Source, ...], *, path: Path) -> N
                 )
         if declaration.predecessor_registry_id == declaration.successor_registry_id:
             raise ValueError(f"{path}: a document cannot supersede itself")
+        if declaration.source_registry_id == declaration.predecessor_registry_id:
+            raise ValueError(
+                f"{path}: a supersession source cannot be the predecessor"
+            )
         graph[declaration.predecessor_registry_id] = declaration.successor_registry_id
     for start in graph:
         seen: set[str] = set()

@@ -376,7 +376,7 @@ def test_superseded_support_lapses_readiness_and_names_each_affected_role(
                 predecessor_registry_id=predecessor.registry_id,
                 successor_registry_id=successor.registry_id,
                 replacement_date=date(2026, 8, 5),
-                source_registry_id=predecessor.registry_id,
+                source_registry_id=successor.registry_id,
                 source_page=1,
             )
         ],
@@ -454,7 +454,7 @@ def test_superseded_publication_support_preserves_its_exact_field_scope(
                 predecessor_registry_id=predecessor.registry_id,
                 successor_registry_id=successor.registry_id,
                 replacement_date=replacement_date,
-                source_registry_id=predecessor.registry_id,
+                source_registry_id=successor.registry_id,
                 source_page=1,
             )
         ],
