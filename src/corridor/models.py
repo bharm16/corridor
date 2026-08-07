@@ -565,6 +565,46 @@ class ActiveRunDeclaration(Base):
     predecessor_declaration_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
+class CohortReceipt(Base):
+    """The immutable membership of one derived rehearsal cohort.
+
+    Membership is a pure function of a sealed Revision Comparison, the
+    verification state in its successor inputs snapshot, one External Party
+    name, and one rule version — so re-deriving yields identical members
+    and an identical digest, and the receipt can be checked rather than
+    trusted. Members are registry identities, never database ids. The
+    queue's rehearsal lane reads exactly this set, and mutations outside
+    it refuse (#173, #175).
+    """
+
+    __tablename__ = "cohort_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "revision_comparison_run_id",
+            "rule_version",
+            "external_org",
+            name="uq_cohort_receipts_one_per_rule",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    revision_comparison_run_id: Mapped[int] = mapped_column(
+        ForeignKey("revision_comparison_runs.id")
+    )
+    predecessor_extraction_run_id: Mapped[int] = mapped_column(BigInteger)
+    successor_extraction_run_id: Mapped[int] = mapped_column(BigInteger)
+    external_org: Mapped[str] = mapped_column(Text)
+    rule_version: Mapped[str] = mapped_column(String(64))
+    matcher_version: Mapped[str] = mapped_column(String(64))
+    members: Mapped[list] = mapped_column(JSONB)
+    member_count: Mapped[int] = mapped_column(Integer)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class WorkDecision(Base):
     """One appended project decision about a Dependency's coordination state.
 
