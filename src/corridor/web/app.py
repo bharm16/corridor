@@ -40,6 +40,14 @@ from corridor.automatic_carry_forward import automatic_carry_forward_status
 from corridor.db import Session as SessionFactory
 from corridor.config import settings
 from corridor.exceptions import RULES, evaluate_project
+from corridor.lane import (
+    LaneRefusal,
+    SiblingsNeedTheEventLane,
+    check_sibling_request,
+    check_sibling_set,
+    conflict_key,
+    same_conflict,
+)
 from corridor.ledger import (
     NoSuchEvidence,
     UnverifiedEvidence,
@@ -158,26 +166,46 @@ def _decision_location(
 
 
 def _require_cohort_scope(
-    session: Session, cohort_receipt_id: int | None, candidate_id: int
+    session: Session,
+    cohort_receipt_id: int | None,
+    candidate_id: int,
+    *,
+    project: Project | None = None,
 ) -> None:
-    """Server-side, at the mutation: the cohort is a boundary, not a view."""
+    """Server-side, at the mutation: the cohort is a boundary, not a view.
+
+    The project is passed because a receipt belonging to another project
+    was refused on the read path and accepted on every write path.
+    """
     if cohort_receipt_id is None:
         return
     try:
-        require_cohort_member(session, cohort_receipt_id, candidate_id)
+        require_cohort_member(
+            session,
+            cohort_receipt_id,
+            candidate_id,
+            project_id=project.id if project else None,
+        )
     except CohortScopeViolation as exc:
         raise HTTPException(409, str(exc))
 
 
 def _require_event_cohort_scope(
-    session: Session, event_cohort_receipt_id: int | None, candidate_id: int
+    session: Session,
+    event_cohort_receipt_id: int | None,
+    candidate_id: int,
+    *,
+    project: Project | None = None,
 ) -> None:
     """The event lane's boundary, held at the same place: the mutation."""
     if event_cohort_receipt_id is None:
         return
     try:
         require_event_cohort_member(
-            session, event_cohort_receipt_id, candidate_id
+            session,
+            event_cohort_receipt_id,
+            candidate_id,
+            project_id=project.id if project else None,
         )
     except CohortScopeViolation as exc:
         raise HTTPException(409, str(exc))
@@ -210,8 +238,7 @@ def _sibling_revisions(
     The registry holds no supersession chain for these documents, so no
     revision is machine-current; the reviewer's gesture is the explicit
     choice (#199)."""
-    uid = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
-    if not uid:
+    if conflict_key(candidate) is None:
         return []
     siblings = []
     others = session.scalars(
@@ -222,8 +249,9 @@ def _sibling_revisions(
         )
     ).all()
     for other in others:
-        fields = (other.payload_json or {}).get("fields", {})
-        if str(fields.get("utility_id")) != str(uid):
+        # The same predicate the accept path refuses on, so the lane never
+        # offers a merge the mutation would then reject.
+        if not same_conflict(candidate, other):
             continue
         document = session.get(Document, other.source_document_id)
         siblings.append(
@@ -803,8 +831,12 @@ def accept(
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
-    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
-    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
+    _require_cohort_scope(
+        session, cohort_receipt_id, candidate_id, project=project
+    )
+    _require_event_cohort_scope(
+        session, event_cohort_receipt_id, candidate_id, project=project
+    )
     candidate = _project_pending_candidate(
         session,
         project,
@@ -812,39 +844,34 @@ def accept(
         historical_document_id=historical_document_id,
     )
 
-    # The event lane's one-gesture form: siblings are validated in full
-    # before anything is accepted, so a refused sibling refuses the whole
-    # gesture and leaves every row pending (#199).
+    # Resolving is the route's job — project and receipt scope are what it
+    # knows. Whether the resolved set is one gesture over one conflict is
+    # the lane's, and is refused in full before anything is written (#199).
+    try:
+        check_sibling_request(
+            candidate,
+            merge_sibling_ids,
+            in_event_lane=event_cohort_receipt_id is not None,
+        )
+    except SiblingsNeedTheEventLane as exc:
+        raise HTTPException(400, str(exc))
+    except LaneRefusal as exc:
+        raise HTTPException(409, str(exc))
+
     siblings = []
-    if merge_sibling_ids:
-        if event_cohort_receipt_id is None:
-            raise HTTPException(400, "sibling merges belong to the event lane")
-        uid = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
-        if candidate_id in merge_sibling_ids or len(
-            set(merge_sibling_ids)
-        ) != len(merge_sibling_ids):
-            raise HTTPException(
-                409,
-                "a sibling list may not repeat a candidate or name the "
-                "one being accepted",
-            )
-        for sibling_id in merge_sibling_ids:
-            _require_event_cohort_scope(
-                session, event_cohort_receipt_id, sibling_id
-            )
-            sibling = _project_pending_candidate(
+    for sibling_id in merge_sibling_ids:
+        _require_event_cohort_scope(
+            session, event_cohort_receipt_id, sibling_id, project=project
+        )
+        siblings.append(
+            _project_pending_candidate(
                 session, project, sibling_id, historical_document_id=None
             )
-            sibling_uid = (
-                (sibling.payload_json or {}).get("fields", {}).get("utility_id")
-            )
-            if str(sibling_uid) != str(uid):
-                raise HTTPException(
-                    409,
-                    f"candidate {sibling_id} is not a revision of the same "
-                    "conflict — one gesture covers one conflict",
-                )
-            siblings.append(sibling)
+        )
+    try:
+        check_sibling_set(candidate, siblings)
+    except LaneRefusal as exc:
+        raise HTTPException(409, str(exc))
 
     dependency = _accept(
         session,
@@ -933,8 +960,12 @@ async def edit_accept(
         except ValueError:
             raise HTTPException(400, "event_cohort_receipt_id must be an integer")
     project = _project(session, slug)
-    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
-    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
+    _require_cohort_scope(
+        session, cohort_receipt_id, candidate_id, project=project
+    )
+    _require_event_cohort_scope(
+        session, event_cohort_receipt_id, candidate_id, project=project
+    )
     candidate = _project_pending_candidate(
         session,
         project,
@@ -988,8 +1019,12 @@ def merge(
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
-    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
-    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
+    _require_cohort_scope(
+        session, cohort_receipt_id, candidate_id, project=project
+    )
+    _require_event_cohort_scope(
+        session, event_cohort_receipt_id, candidate_id, project=project
+    )
     candidate = _project_pending_candidate(
         session,
         project,
@@ -1037,8 +1072,12 @@ def reject(
     project = _project(session, slug)
     # The receipt id arrived with every reject form and was ignored — the
     # boundary holds at every mutation or it is not a boundary.
-    _require_cohort_scope(session, cohort_receipt_id, candidate_id)
-    _require_event_cohort_scope(session, event_cohort_receipt_id, candidate_id)
+    _require_cohort_scope(
+        session, cohort_receipt_id, candidate_id, project=project
+    )
+    _require_event_cohort_scope(
+        session, event_cohort_receipt_id, candidate_id, project=project
+    )
     candidate = _project_pending_candidate(
         session,
         project,

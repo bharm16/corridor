@@ -436,7 +436,11 @@ def event_cohort_candidate_ids(
 
 
 def require_event_cohort_member(
-    session: Session, event_cohort_receipt_id: int, candidate_id: int
+    session: Session,
+    event_cohort_receipt_id: int,
+    candidate_id: int,
+    *,
+    project_id: int | None = None,
 ) -> EventCohortReceipt:
     """Refuse a mutation on a Candidate outside the named event cohort.
 
@@ -449,6 +453,10 @@ def require_event_cohort_member(
         raise CohortScopeViolation(
             f"event cohort receipt {event_cohort_receipt_id} does not exist"
         )
+    if project_id is not None and receipt.project_id != project_id:
+        raise CohortScopeViolation(
+            f"event cohort receipt {receipt.id} belongs to another project"
+        )
     if candidate_id not in event_cohort_candidate_ids(session, receipt):
         raise CohortScopeViolation(
             f"candidate {candidate_id} is not a member of event cohort "
@@ -458,7 +466,11 @@ def require_event_cohort_member(
 
 
 def require_cohort_member(
-    session: Session, cohort_receipt_id: int, candidate_id: int
+    session: Session,
+    cohort_receipt_id: int,
+    candidate_id: int,
+    *,
+    project_id: int | None = None,
 ) -> CohortReceipt:
     """Refuse a mutation on a Candidate outside the named cohort.
 
@@ -470,6 +482,10 @@ def require_cohort_member(
     if receipt is None:
         raise CohortScopeViolation(
             f"cohort receipt {cohort_receipt_id} does not exist"
+        )
+    if project_id is not None and receipt.project_id != project_id:
+        raise CohortScopeViolation(
+            f"cohort receipt {receipt.id} belongs to another project"
         )
     if candidate_id not in cohort_candidate_ids(session, receipt):
         raise CohortScopeViolation(
