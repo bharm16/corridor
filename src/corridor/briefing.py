@@ -35,7 +35,12 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.exceptions import RULESET_VERSION, exceptions_for
+from corridor.exceptions import (
+    Evaluation,
+    Thresholds,
+    evaluate_dependency,
+    evaluate_project,
+)
 from corridor.models import Assertion, Dependency, DocPage, EvidenceLink
 from corridor.verify import quote_appears_on, threshold_for
 
@@ -113,6 +118,10 @@ class Briefing:
     model: str | None
     evaluated_at: date
     ruleset_version: str
+    # The thresholds the Exception citations were computed under. The
+    # export published all three parts of the reading and the briefing
+    # published two, so one artifact could not be checked against another.
+    thresholds: Thresholds = field(default_factory=Thresholds)
     refused: bool = False
     refusal_reason: str = ""
 
@@ -133,7 +142,7 @@ def brief(
         [dependency],
         ref_code=dependency.ref_code,
         client=client,
-        today=today or date.today(),
+        evaluation=evaluate_dependency(session, dependency_id, today=today),
     )
 
 
@@ -170,7 +179,10 @@ def brief_project(
         dependencies,
         ref_code=f"{project.slug} — {len(dependencies)} records",
         client=client,
-        today=today or date.today(),
+        # One reading for the whole briefing. Every record used to take
+        # its own `exceptions_for`, so a project briefing spanning N
+        # records computed N clocks and stamped one of them.
+        evaluation=evaluate_project(session, project_id, today=today),
     )
 
 
@@ -180,9 +192,9 @@ def _brief(
     *,
     ref_code: str,
     client,
-    today: date,
+    evaluation: Evaluation,
 ) -> Briefing:
-    citables, floor = _assemble(session, dependencies, today)
+    citables, floor = _assemble(session, dependencies, evaluation)
     if not citables:
         # Nothing to cite means nothing a sentence could stand on: the
         # honest briefing is empty, and a model call would burn money to
@@ -195,8 +207,9 @@ def _brief(
             citables=(),
             prompt_version=PROMPT_VERSION,
             model=getattr(client, "model", None),
-            evaluated_at=today,
-            ruleset_version=RULESET_VERSION,
+            evaluated_at=evaluation.today,
+            ruleset_version=evaluation.ruleset_version,
+            thresholds=evaluation.thresholds,
         )
 
     result = client.complete(
@@ -217,8 +230,9 @@ def _brief(
         citables=tuple(citables),
         prompt_version=PROMPT_VERSION,
         model=getattr(client, "model", None),
-        evaluated_at=today,
-        ruleset_version=RULESET_VERSION,
+        evaluated_at=evaluation.today,
+        ruleset_version=evaluation.ruleset_version,
+        thresholds=evaluation.thresholds,
     )
 
     # The floor, judged on the sentences that survived: a fired Exception
@@ -242,7 +256,7 @@ def _brief(
 
 
 def _assemble(
-    session: Session, dependencies: list[Dependency], today: date
+    session: Session, dependencies: list[Dependency], evaluation: Evaluation
 ) -> tuple[list[Citable], tuple[str, ...]]:
     """Everything a sentence may stand on, and which refs are the floor.
 
@@ -306,7 +320,7 @@ def _assemble(
                 )
             )
 
-        for exception in exceptions_for(session, dependency.id, today=today):
+        for exception in evaluation.for_dependency(dependency.id):
             x = ref("X")
             floor.append(x)
             days = (

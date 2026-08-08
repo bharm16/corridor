@@ -20,7 +20,7 @@ from corridor import audit
 from corridor.exceptions import (
     Evaluation,
     contradicted_fields,
-    exceptions_for,
+    evaluate_dependency,
 )
 from corridor.models import (
     CRITICAL_STRATEGIES,
@@ -86,6 +86,9 @@ class DependencyView:
     events: list[DependencyEvent] = field(default_factory=list)
     audit: list[AuditLog] = field(default_factory=list)
     exceptions: list = field(default_factory=list)
+    # The reading these exceptions came from, so the page can stamp the
+    # quantities it prints with the clock that produced them (ADR-0003).
+    evaluation: Evaluation | None = None
 
     @property
     def contradictions(self) -> list[FieldView]:
@@ -263,10 +266,23 @@ def _contradicted_ids(session: Session, ids: list[int]) -> set[int]:
     return set(contradicted_fields(session, ids))
 
 
-def load_dependency(session: Session, dependency_id: int) -> DependencyView:
+def load_dependency(
+    session: Session,
+    dependency_id: int,
+    *,
+    evaluation: Evaluation | None = None,
+) -> DependencyView:
+    """The record, read against one stated Evaluation.
+
+    A caller that already holds one — a list page rendering a row, a test
+    stating its own clock — passes it, and the detail page then agrees
+    with the page the reader arrived from. Defaulted rather than required
+    so the many callers that only want `is_ready` stay one argument long.
+    """
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise LookupError(f"no dependency {dependency_id}")
+    evaluation = evaluation or evaluate_dependency(session, dependency_id)
 
     org_name = None
     if dependency.external_org_id:
@@ -318,7 +334,8 @@ def load_dependency(session: Session, dependency_id: int) -> DependencyView:
             .where(DependencyEvent.dependency_id == dependency_id)
             .order_by(DependencyEvent.event_date, DependencyEvent.id)
         ).all(),
-        exceptions=exceptions_for(session, dependency_id),
+        exceptions=evaluation.for_dependency(dependency_id),
+        evaluation=evaluation,
         # Including the Candidate's own entries. The reviewer edits before
         # the Dependency exists, so the record of what the extractor
         # originally said is written against the Candidate — and this view

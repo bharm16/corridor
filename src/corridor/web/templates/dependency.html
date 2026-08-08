@@ -133,6 +133,11 @@
   {% else %}
     <p class="muted">No exceptions. Computed at read time, never stored.</p>
   {% endif %}
+  {% if view.evaluation %}
+    <p class="muted">
+      Evaluated {{ view.evaluation.today }} · ruleset {{ view.evaluation.ruleset_version }}
+    </p>
+  {% endif %}
 
   <h2>Fields and what each source claimed</h2>
   {% for f in view.fields %}

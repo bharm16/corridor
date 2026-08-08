@@ -145,7 +145,6 @@ class Section:
 class Report:
     project_name: str
     generated_at: datetime
-    ruleset_version: str = RULESET_VERSION
     summary: list[Cell] = field(default_factory=list)
     sections: list[Section] = field(default_factory=list)
     diff: Diff | None = None
@@ -160,6 +159,20 @@ class Report:
             *self.summary,
             *(c for s in self.sections for row in s.rows for c in row),
         ]
+
+    @property
+    def ruleset_version(self) -> str:
+        """The version the evaluation ran under, not a second copy of it.
+
+        This was a field defaulting to the module constant while the
+        evaluation carried its own, so a Report could print one version in
+        its footer and hold another beside the facts it printed.
+        """
+        return (
+            self.evaluation.ruleset_version
+            if self.evaluation is not None
+            else RULESET_VERSION
+        )
 
 
 EMPTY_LEDGER = "an empty ledger"
