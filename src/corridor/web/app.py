@@ -260,7 +260,7 @@ def _admission_setup(session: Session, project: Project) -> dict | None:
             Document.project_id == project.id,
             Document.doc_type == "matrix",
         )
-        .order_by(Document.doc_date.asc().nulls_first())
+        .order_by(Document.doc_date.asc().nulls_first(), Document.id.asc())
     ).all()
 
     deps_current = (
