@@ -255,28 +255,7 @@ def derive_event_cohort_receipt(session: Session, project_id: int) -> EventCohor
         .order_by(Candidate.id)
     ).all()
 
-    party_by_ref: dict[str, str] = {}
-    for candidate in candidates:
-        if candidate.kind != "dependency":
-            continue
-        fields = (candidate.payload_json or {}).get("fields", {})
-        utility_id = fields.get("utility_id")
-        if not utility_id:
-            continue
-        org = str(fields.get("external_org") or "")
-        known = party_by_ref.setdefault(str(utility_id), org)
-        if known != org:
-            # A real corpus condition, not a hypothetical: NHHIP's
-            # 2/13/2026 matrix carries two different conflicts both
-            # labelled FOC14-69. Picking either party silently would
-            # widen the pinned set past what any event referenced.
-            raise CohortDerivationError(
-                f"utility_id {utility_id!r} names two External Parties "
-                f"({known!r}, {org!r}) in the declared runs — the cohort "
-                "never adjudicates ambiguity by accident"
-            )
-
-    dated_counts: dict[str, int] = {}
+    referenced_counts: dict[str, int] = {}
     for candidate in candidates:
         if candidate.kind != "event":
             continue
@@ -286,8 +265,31 @@ def derive_event_cohort_receipt(session: Session, project_id: int) -> EventCohor
         if not (fields.get("event_date") or fields.get("committed_date")):
             continue
         ref = fields.get("conflict_ref")
-        if ref and str(ref) in party_by_ref:
-            dated_counts[str(ref)] = dated_counts.get(str(ref), 0) + 1
+        if ref:
+            referenced_counts[str(ref)] = referenced_counts.get(str(ref), 0) + 1
+
+    # Party attribution matters only for refs a dated event references: a
+    # collision anywhere else cannot select a member, so it cannot block
+    # the receipt. A collision on a referenced ref — real in this corpus:
+    # SH 99's PL23 is re-attributed "Enterprise" → "UNK (former
+    # Enterprise)" across matrix revisions, and NHHIP's 2/13/2026 matrix
+    # carries two conflicts both labelled FOC14-69 — excludes that ref by
+    # rule, exactly as the rehearsal cohort excludes uncertain
+    # correspondences: the cohort never adjudicates ambiguity by accident,
+    # and the excluded conflict stays in the default lanes.
+    party_by_ref: dict[str, str] = {}
+    ambiguous_refs: set[str] = set()
+    for candidate in candidates:
+        if candidate.kind != "dependency":
+            continue
+        fields = (candidate.payload_json or {}).get("fields", {})
+        utility_id = fields.get("utility_id")
+        if not utility_id or str(utility_id) not in referenced_counts:
+            continue
+        org = str(fields.get("external_org") or "")
+        known = party_by_ref.setdefault(str(utility_id), org)
+        if known != org:
+            ambiguous_refs.add(str(utility_id))
 
     members = [
         {
@@ -295,7 +297,8 @@ def derive_event_cohort_receipt(session: Session, project_id: int) -> EventCohor
             "external_org": party_by_ref[ref],
             "dated_event_count": count,
         }
-        for ref, count in sorted(dated_counts.items())
+        for ref, count in sorted(referenced_counts.items())
+        if ref in party_by_ref and ref not in ambiguous_refs
     ]
     input_run_ids = sorted(runs.values())
     digest = _event_cohort_digest(project_id, input_run_ids, members)

@@ -396,7 +396,11 @@ def test_rule_drift_under_the_same_version_refuses(
     assert "version" in str(excinfo.value)
 
 
-def test_a_shared_utility_id_across_parties_refuses(session, project, corpus):
+def test_a_shared_utility_id_across_parties_is_excluded_by_rule(
+    session, project, corpus
+):
+    """The City precedent holds here: ambiguity is excluded, never
+    adjudicated by accident — and never allowed to block the receipt."""
     matrix2 = _document(
         session, project, registry_id="EC-MATRIX-2", filename="matrix2.pdf"
     )
@@ -413,9 +417,36 @@ def test_a_shared_utility_id_across_parties_refuses(session, project, corpus):
     )
     _declare_all(session, project)
 
-    with pytest.raises(CohortDerivationError) as excinfo:
-        derive_event_cohort_receipt(session, project.id)
-    assert "PL1" in str(excinfo.value)
+    receipt = derive_event_cohort_receipt(session, project.id)
+    assert [m["conflict_ref"] for m in receipt.members] == ["ET7"]
+
+
+def test_an_unreferenced_collision_is_irrelevant(session, project, corpus):
+    """A colliding utility_id no dated event references cannot select a
+    member, so it cannot block the derivation either."""
+    matrix2 = _document(
+        session, project, registry_id="EC-MATRIX-2", filename="matrix2.pdf"
+    )
+    _run(
+        session,
+        matrix2,
+        [
+            _candidate(
+                matrix2,
+                kind="dependency",
+                fields=_dep_fields("C9", org=PIPELINE),
+            ),
+            _candidate(
+                matrix2,
+                kind="dependency",
+                fields=_dep_fields("C9", org=ELECTRIC),
+            ),
+        ],
+    )
+    _declare_all(session, project)
+
+    receipt = derive_event_cohort_receipt(session, project.id)
+    assert [m["conflict_ref"] for m in receipt.members] == ["ET7", "PL1"]
 
 
 def test_ambiguity_refusal_names_a_document_without_registry_id(
