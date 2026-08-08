@@ -394,3 +394,96 @@ def test_a_stale_policy_version_refuses_until_reauthorized(
     )
     with pytest.raises(EventAdmissionNotAuthorized):
         run_event_admission(session, project.id)
+
+
+# ── The digest covers the rules themselves ───────────────────────────────
+
+
+def test_editing_a_check_pauses_the_policy_until_reauthorized(
+    session, project, admitted, tmp_path, monkeypatch
+):
+    """ADR-0022's guarantee, which this family inherits: the digest
+    covers the deployed bytes of the code that decides, not merely its
+    configuration. Changing a check without changing its version must
+    pause the policy, not run unreviewed."""
+    from corridor import event_admission as module
+
+    _minutes_with(session, project, [_event()])
+    authorize_event_admission(session, project.id, principal=OPERATOR)
+    assert module.current_event_admission_approval(session, project.id)
+
+    real = module._rule_source_bytes
+
+    def edited():
+        return tuple(
+            (name, source + b"\n# a check was edited\n")
+            for name, source in real()
+        )
+
+    monkeypatch.setattr(module, "_rule_source_bytes", edited)
+    assert module.current_event_admission_approval(session, project.id) is None
+    with pytest.raises(EventAdmissionNotAuthorized):
+        run_event_admission(session, project.id)
+
+
+def test_changing_the_project_side_parties_pauses_the_policy(
+    session, project, admitted
+):
+    """Who counts as the project's own side decides which events may
+    carry a commitment, so it is part of what was authorized."""
+    from corridor import event_admission as module
+
+    authorize_event_admission(session, project.id, principal=OPERATOR)
+    assert module.current_event_admission_approval(session, project.id)
+
+    project.project_side_parties = [PROJECT_SIDE, "Another Consultant"]
+    session.flush()
+    assert module.current_event_admission_approval(session, project.id) is None
+
+
+# ── The two dates stay two dates ─────────────────────────────────────────
+
+
+def test_a_promised_date_never_stands_in_for_the_date_it_was_said(
+    session, project, admitted
+):
+    """An event with no meeting date still records what was promised —
+    but its promised date must not be written as the date it was stated,
+    because that is the ordering the Committed Date projection trusts."""
+    _minutes_with(
+        session,
+        project,
+        [
+            _event(event_date="2025-02-01", committed_date="2025-09-01"),
+            _event(event_date=None, committed_date="2025-06-01"),
+        ],
+    )
+    authorize_event_admission(session, project.id, principal=OPERATOR)
+    result = run_event_admission(session, project.id)
+    assert result.admitted_count == 2
+
+    undated = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.committed_date == date(2025, 6, 1)
+        )
+    ).one()
+    assert undated.event_date is None
+
+    # The February statement is the only one that carries a date it was
+    # said on, so it holds the Committed Date — an undated statement
+    # cannot claim to be the most recent.
+    session.refresh(admitted)
+    assert admitted.committed_date == date(2025, 9, 1)
+
+
+def test_an_unparseable_date_abstains_rather_than_guessing(
+    session, project, admitted
+):
+    [candidate] = _minutes_with(
+        session, project, [_event(event_date="sometime in spring")]
+    )
+    authorize_event_admission(session, project.id, principal=OPERATOR)
+    result = run_event_admission(session, project.id)
+    assert [a.reason for a in result.abstentions] == ["unparseable_date"]
+    session.refresh(candidate)
+    assert candidate.state == "pending"

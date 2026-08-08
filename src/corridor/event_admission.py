@@ -21,7 +21,7 @@ rather than an afterthought.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import hashlib
 import json
 
@@ -177,7 +177,9 @@ def run_event_admission(
     # Every verdict first, then one receipt written with its final counts:
     # the receipt table is immutable, so a run row is never updated after
     # it exists — which is the property that makes it a receipt.
-    admissible: list[tuple[Candidate, Dependency, dict, date]] = []
+    admissible: list[
+        tuple[Candidate, Dependency, dict, date | None, date | None]
+    ] = []
     abstentions: list[EventAdmissionAbstention] = []
     for candidate in candidates:
         verdict = _evaluate(session, project, candidate)
@@ -188,8 +190,10 @@ def run_event_admission(
                 )
             )
         else:
-            dependency, fields, event_date = verdict
-            admissible.append((candidate, dependency, fields, event_date))
+            dependency, fields, event_date, committed_date = verdict
+            admissible.append(
+                (candidate, dependency, fields, event_date, committed_date)
+            )
 
     run = EventAdmissionRun(
         project_id=project_id,
@@ -214,12 +218,12 @@ def run_event_admission(
         )
 
     touched: set[int] = set()
-    for candidate, dependency, fields, event_date in admissible:
+    for candidate, dependency, fields, event_date, committed_date in admissible:
         event = DependencyEvent(
             dependency_id=dependency.id,
             event_type=fields["event_type"],
             event_date=event_date,
-            committed_date=_parse_date(fields.get("committed_date")),
+            committed_date=committed_date,
             description=str(fields.get("description") or ""),
             created_by=MACHINE_ACTOR,
         )
@@ -227,6 +231,7 @@ def run_event_admission(
         session.flush([event])
 
         candidate.state = "accepted"
+        candidate.adjudicated_at = datetime.now(timezone.utc)
         session.add(
             EventAdmissionOutcome(
                 event_admission_run_id=run.id,
@@ -264,7 +269,7 @@ def run_event_admission(
 
 def _evaluate(
     session: Session, project: Project, candidate: Candidate
-) -> str | tuple[Dependency, dict, date | None]:
+) -> str | tuple[Dependency, dict, date | None, date | None]:
     """Every check, in order. A string is the abstention reason."""
     if not candidate.citations_verified:
         return "citations_unverified"
@@ -273,11 +278,22 @@ def _evaluate(
     if fields.get("event_type") not in ADMISSIBLE_EVENT_TYPES:
         return "event_type_outside_policy"
 
-    raw_date = fields.get("event_date") or fields.get("committed_date")
-    if not raw_date:
+    # Two dates, kept two: when the party spoke, and what they promised.
+    # A missing meeting date is recorded as missing — never filled in
+    # from the promised date, because the promised date is not evidence
+    # of when anything was said, and the Committed Date projection
+    # orders by exactly that.
+    raw_event_date = fields.get("event_date")
+    raw_committed_date = fields.get("committed_date")
+    if not raw_event_date and not raw_committed_date:
         return "no_date"
-    event_date = _parse_date(raw_date)
-    if event_date is None:
+    event_date = _parse_date(raw_event_date) if raw_event_date else None
+    committed_date = (
+        _parse_date(raw_committed_date) if raw_committed_date else None
+    )
+    if (raw_event_date and event_date is None) or (
+        raw_committed_date and committed_date is None
+    ):
         return "unparseable_date"
 
     ref = fields.get("conflict_ref")
@@ -308,7 +324,7 @@ def _evaluate(
         # Alias resolution is Adjudication's judgment, not the policy's.
         return "party_mismatch"
 
-    return dependency, fields, event_date
+    return dependency, fields, event_date, committed_date
 
 
 def _is_project_side(project: Project, org: str) -> bool:
@@ -374,12 +390,50 @@ def _parse_date(value: object) -> date | None:
     return None
 
 
+def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
+    """The deployed bytes of the code that decides admission.
+
+    ADR-0022's guarantee, inherited here: a digest over configuration
+    alone would let someone loosen a check — widen a date format, relax
+    the party match — and keep running under an authorization no one
+    re-read. The authorization covers the rules, and the rules are code.
+    """
+    from pathlib import Path
+
+    from corridor import models as models_module
+    from corridor import principals as principals_module
+
+    paths = (
+        ("corridor.event_admission", Path(__file__)),
+        ("corridor.audit", Path(audit.__file__)),
+        ("corridor.models", Path(models_module.__file__)),
+        ("corridor.principals", Path(principals_module.__file__)),
+        (
+            "corridor.migrations.c7d2f5a83b46",
+            Path(__file__).parent
+            / "migrations/versions/c7d2f5a83b46_add_event_admission.py",
+        ),
+    )
+    return tuple((name, path.read_bytes()) for name, path in paths)
+
+
+def _rules_digest() -> str:
+    digest = hashlib.sha256()
+    for module_name, source_bytes in _rule_source_bytes():
+        digest.update(module_name.encode())
+        digest.update(b"\0")
+        digest.update(source_bytes)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _canonical_policy(project: Project) -> dict:
     """What the approval is approving — the rules, exactly.
 
-    The project's stated project-side parties are part of the policy: a
-    change to them changes which events can carry a commitment, so it
-    must invalidate the authorization rather than take effect silently.
+    Three things move this digest, and each must pause the policy until
+    a principal authorizes the replacement: the stated configuration,
+    the project's project-side parties (they decide which events may
+    carry a commitment), and the deployed bytes of the deciding code.
     """
     return {
         "policy_version": EVENT_ADMISSION_POLICY_VERSION,
@@ -397,6 +451,8 @@ def _canonical_policy(project: Project) -> dict:
             "party_stated_and_matching",
             "actor_is_not_project_side",
         ],
+        "rules_digest_method": "sha256-rule-source-files-v1",
+        "rules_digest": _rules_digest(),
     }
 
 
