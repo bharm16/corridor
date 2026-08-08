@@ -77,6 +77,8 @@ CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
 ADMIT_EVENT = "admit_event"
 AUTHORIZE_EVENT_ADMISSION = "authorize_event_admission"
+ADMIT_DEPENDENCY = "admit_dependency"
+AUTHORIZE_DEPENDENCY_ADMISSION = "authorize_dependency_admission"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 
@@ -102,6 +104,8 @@ ACTIONS = frozenset(
         REVISE_MILESTONE,
         ADMIT_EVENT,
         AUTHORIZE_EVENT_ADMISSION,
+        ADMIT_DEPENDENCY,
+        AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )
 

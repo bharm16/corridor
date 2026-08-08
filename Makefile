@@ -54,6 +54,16 @@ agreements:
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
 
+# The admission policies (ADR-0026 events, ADR-0027 dependencies).
+# Authorizing is the operator's attributable act; running an authorized
+# policy is the machine's, and everything unprovable abstains:
+#   make admission ARGS="authorize-dependencies sh99-grand-parkway 1310 1311"
+#   make admission ARGS="run-dependencies sh99-grand-parkway"
+#   make admission ARGS="authorize-events sh99-grand-parkway"
+#   make admission ARGS="run-events sh99-grand-parkway"
+admission:
+	uv run python -m corridor.admission_cli $(ARGS)
+
 # Explicitly select reviewer work; extraction never makes "newest" active:
 #   make active-run ARGS="<document-id> <extraction-run-id>"
 # Bulk form for the unambiguous case only — declares the single completed
