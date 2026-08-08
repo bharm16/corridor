@@ -384,6 +384,7 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
             "dependency_id": dependency.id,
             "event_type": "commitment",
             "event_date": "2026-08-02",
+            "committed_date": None,
             "description": "AT&T committed to relocate by August 15",
             "created_by": "agent",
             "created_at": plan.content["dependency_events"][0]["created_at"],
