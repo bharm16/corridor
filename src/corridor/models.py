@@ -754,6 +754,116 @@ class EventAdmissionOutcome(Base):
     )
 
 
+class DependencyAdmissionPolicyApproval(Base):
+    """One immutable human authorization of the dependency-admission policy.
+
+    ADR-0027: the eligibility proof is exact agreement between stated
+    revisions, so the approved policy pins the agreement documents by
+    content hash — a swapped file pauses the policy, exactly as an edited
+    check does.
+    """
+
+    __tablename__ = "dependency_admission_policy_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "id",
+            name="uq_dependency_admission_policy_project_id",
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_dependency_admission_policy_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[str] = mapped_column(Text)
+    policy_json: Mapped[dict] = mapped_column(JSONB)
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DependencyAdmissionRun(Base):
+    """One immutable batch receipt for an authorized admission pass."""
+
+    __tablename__ = "dependency_admission_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_dependency_admission_run_sha256",
+        ),
+        CheckConstraint(
+            "admitted_count >= 0 and abstained_count >= 0",
+            name="ck_dependency_admission_run_counts",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "policy_approval_id"],
+            [
+                "dependency_admission_policy_approvals.project_id",
+                "dependency_admission_policy_approvals.id",
+            ],
+            name="fk_dependency_admission_run_policy_project",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    abstention_reason_version: Mapped[str] = mapped_column(String(64))
+    admitted_count: Mapped[int] = mapped_column(Integer)
+    abstained_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DependencyAdmissionOutcome(Base):
+    """One immutable candidate outcome within an admission receipt.
+
+    `admitted` names the Dependency the primary candidate became;
+    `merged` names the Dependency an identical sibling corroborates;
+    `abstained` names the check that failed.
+    """
+
+    __tablename__ = "dependency_admission_outcomes"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome in ('admitted', 'merged', 'abstained')",
+            name="ck_dependency_admission_outcome_value",
+        ),
+        CheckConstraint(
+            "("
+            "outcome in ('admitted', 'merged') and reason is null "
+            "and dependency_id is not null"
+            ") or ("
+            "outcome = 'abstained' and reason is not null "
+            "and dependency_id is null"
+            ")",
+            name="ck_dependency_admission_outcome_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_admission_run_id: Mapped[int] = mapped_column(
+        ForeignKey("dependency_admission_runs.id"), index=True
+    )
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    outcome: Mapped[str] = mapped_column(String(9))
+    reason: Mapped[str | None] = mapped_column(String(64))
+    dependency_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependencies.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class WorkDecision(Base):
     """One appended project decision about a Dependency's coordination state.
 

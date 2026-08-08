@@ -29,6 +29,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
     LegacyLedgerArchive,
+    OperativeSupport,
     Project,
     is_claim,
     is_placeholder_party,
@@ -394,6 +395,94 @@ def accept_candidate(
             "fields": fields,
         },
     )
+    session.flush()
+    return dependency
+
+
+def admit_dependency_by_policy(
+    session: Session,
+    primary: Candidate,
+    siblings: list[Candidate],
+    *,
+    machine_actor: str,
+) -> Dependency:
+    """Admit one dependency under an authorized deterministic policy.
+
+    ADR-0027's write path. Eligibility — exact agreement between the
+    stated revisions — is the caller's proven premise, and this function
+    stays the Ledger's only writer by doing exactly what human acceptance
+    does with a machine actor the audit log names: the primary candidate
+    becomes the record, each identical sibling merges so its citation
+    attaches as corroboration, and publication support is designated
+    under the actor with the human authorization standing behind it in
+    the run receipt.
+    """
+    dependency: Dependency | None = None
+    for candidate in (primary, *siblings):
+        _require_candidate_action_scope(
+            session, candidate, historical_document_id=None
+        )
+        payload, fields, citations = _validate_candidate_provenance(
+            session, candidate
+        )
+        if candidate is primary:
+            if not any(is_claim(value) for value in fields.values()):
+                raise CandidateAssertsNothing(
+                    f"candidate {candidate.id} asserts nothing, and a Ledger "
+                    "row is what a document claims"
+                )
+            org = _resolve_org(session, fields.get("external_org"))
+            dependency = _materialize(session, candidate, fields, org)
+            session.add(dependency)
+            session.flush()
+
+        links = [
+            _evidence_link(session, dependency, citation)
+            for citation in citations
+        ]
+        primary_link = links[0]
+        if candidate is primary:
+            session.add(
+                OperativeSupport(
+                    dependency_id=dependency.id,
+                    evidence_link_id=primary_link.id,
+                    role="publication",
+                    designated_by=machine_actor,
+                )
+            )
+        for name, value in fields.items():
+            session.add(
+                Assertion(
+                    dependency_id=dependency.id,
+                    field_name=name,
+                    asserted_value=value,
+                    evidence_link_id=primary_link.id,
+                    doc_date=None,
+                )
+            )
+
+        if candidate is primary:
+            candidate.state = "accepted"
+        else:
+            candidate.state = "merged"
+            candidate.merged_into = dependency.id
+        candidate.adjudicated_at = datetime.now(timezone.utc)
+        candidate.citations_verified = citations_verified(payload)
+
+        audit.record(
+            session,
+            actor=machine_actor,
+            action=audit.ADMIT_DEPENDENCY,
+            entity_type=audit.DEPENDENCY,
+            entity_id=dependency.id,
+            after={
+                "candidate_id": candidate.id,
+                "ref_code": dependency.ref_code,
+                "source_ref": dependency.source_ref,
+                "role": "admitted" if candidate is primary else "sibling_merged",
+                "fields": fields,
+            },
+        )
     session.flush()
     return dependency
 

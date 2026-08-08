@@ -34,6 +34,7 @@ from corridor.models import (
     AuditLog,
     AutomaticCarryForwardPolicyApproval,
     AutomaticCarryForwardReceipt,
+    DependencyAdmissionOutcome,
     ReconfirmationReceipt,
     RevisionComparisonFinding,
 )
@@ -77,8 +78,11 @@ CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
 ADMIT_EVENT = "admit_event"
 AUTHORIZE_EVENT_ADMISSION = "authorize_event_admission"
+ADMIT_DEPENDENCY = "admit_dependency"
+AUTHORIZE_DEPENDENCY_ADMISSION = "authorize_dependency_admission"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
+DEPENDENCY_ADMISSION_ACTOR = "corridor:dependency-admission"
 
 ACTIONS = frozenset(
     {
@@ -102,6 +106,8 @@ ACTIONS = frozenset(
         REVISE_MILESTONE,
         ADMIT_EVENT,
         AUTHORIZE_EVENT_ADMISSION,
+        ADMIT_DEPENDENCY,
+        AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )
 
@@ -117,6 +123,10 @@ class AdmissionRecord:
     candidate_id: int | None
     fields: dict[str, Any] | None
     human_principal: str | None
+    # ADMIT_DEPENDENCY only: whether an immutable DependencyAdmissionOutcome
+    # names this exact (candidate, dependency) act. The machine identity is
+    # honest only while its durable receipt exists (mirrors Carry-Forward).
+    durable_receipt_present: bool = False
 
     @property
     def candidate_link_valid(self) -> bool:
@@ -126,8 +136,14 @@ class AdmissionRecord:
 
     @property
     def attributable(self) -> bool:
-        """Whether the stored actor is a valid stable human subject."""
+        """Whether the record has an honest human or machine identity."""
 
+        if self.action == ADMIT_DEPENDENCY:
+            return (
+                self.actor == DEPENDENCY_ADMISSION_ACTOR
+                and self.human_principal is None
+                and self.durable_receipt_present
+            )
         return (
             _is_attributable_human_principal(self.human_principal)
             and self.actor == self.human_principal
@@ -352,24 +368,41 @@ def admission_records_for_dependencies(
         .where(
             AuditLog.entity_type == DEPENDENCY,
             AuditLog.entity_id.in_(ids),
-            AuditLog.action.in_((ACCEPT_CANDIDATE, MERGE_CANDIDATE)),
+            AuditLog.action.in_(
+                (ACCEPT_CANDIDATE, MERGE_CANDIDATE, ADMIT_DEPENDENCY)
+            ),
         )
         .order_by(AuditLog.entity_id, AuditLog.id)
     ).all()
+    durable_pairs = {
+        (outcome.candidate_id, outcome.dependency_id)
+        for outcome in session.scalars(
+            select(DependencyAdmissionOutcome).where(
+                DependencyAdmissionOutcome.dependency_id.in_(ids),
+                DependencyAdmissionOutcome.outcome.in_(
+                    ("admitted", "merged")
+                ),
+            )
+        )
+    }
     for entry in entries:
         after = entry.after_json if isinstance(entry.after_json, dict) else {}
         raw_fields = after.get("fields")
+        candidate_id = _positive_id(after.get("candidate_id"))
         grouped[entry.entity_id].append(
             AdmissionRecord(
                 audit_id=entry.id,
                 dependency_id=entry.entity_id,
                 action=entry.action,
                 actor=entry.actor,
-                candidate_id=_positive_id(after.get("candidate_id")),
+                candidate_id=candidate_id,
                 fields=(
                     deepcopy(raw_fields) if isinstance(raw_fields, dict) else None
                 ),
                 human_principal=entry.human_principal,
+                durable_receipt_present=(
+                    (candidate_id, entry.entity_id) in durable_pairs
+                ),
             )
         )
     return {

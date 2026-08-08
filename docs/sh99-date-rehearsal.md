@@ -23,13 +23,24 @@ Three decisions, reached by grilling on 2026-08-07 and recorded before any build
    coordination lanes already enforce for dates extends to events' actors.
 3. **The cohort is selected by stated rule, and the rule was adopted, not each row.**
    A conflict enters if at least one dated commitment, slip, or closure event
-   references it. That selects 37 conflicts — pipeline parties almost entirely: Energy
+   references it. That selects 36 conflicts — pipeline parties almost entirely: Energy
    Transfer, Kinder Morgan Tejas, Enterprise, Denbury Green, Buckeye, Chevron, Air
    Products, Air Liquide, DOW, ExxonMobil, Equistar, Florida Gas Transmission, Shell,
    Phillips66, CenterPoint (electric) — carrying roughly 267 dated date-bearing events.
-   The operator adopted the rule's output in place of per-row review
+   (The rule first proposed 37; PL23 is excluded by the ambiguity rule — its matrix
+   revisions re-attribute it from Enterprise to "UNK (former Enterprise)", a real
+   ownership handoff that stays in the default lanes until resolved.) The operator
+   adopted the rule's output in place of per-row review
    (out/sh99-date-cohort-approval.txt records this; the per-row wizard at
    scripts/sh99-cohort-wizard.sh would supersede it if ever run).
+4. **Dependencies enter by policy when revisions agree exactly (ADR-0027,
+   2026-08-07, superseding the step where the operator admits the cohort through
+   the lane).** The operator rejected bulk clicking as the product's cold-start
+   shape — correctly: measured on this cohort, the February and May matrices state
+   byte-identical rows for 34 of the 36 conflicts. Those admit under an authorized
+   dependency-admission policy whose eligibility proof is exact agreement between
+   the stated revisions, pinned by content hash. The lane survives as the residue
+   flow: one changed row, one missing row, and whatever else the policy abstains on.
 
 ## What the data honestly holds
 
@@ -98,13 +109,17 @@ moving a date the project is holding.*
 
 ## Build order
 
-1. Register the cohort boundary: the 37 conflicts, the rule, and the adoption record,
-   as a pinned set the queue lane reads — the Cohort Receipt pattern, derived from a
-   stated rule over the event stream rather than a Revision Comparison; the glossary
-   entry lands with the build.
-2. Admit the 37 Dependencies through the queue's bounded lane, City-rehearsal style.
+1. Register the cohort boundary: the member conflicts, the rule, and the adoption
+   record, as a pinned set the queue lane reads — the Cohort Receipt pattern, derived
+   from a stated rule over the event stream rather than a Revision Comparison; the
+   glossary entry lands with the build. *(Built: receipt 82, 36 members.)*
+2. Admit the cohort Dependencies under the dependency-admission policy (ADR-0027):
+   the operator authorizes the agreement documents once, the policy admits every
+   conflict whose revisions agree exactly, and the lane presents only the residue.
+   *(Supersedes the original step 2 — the operator admitting each row by hand.)*
 3. Build the event-admission policy machinery: policy document, authorization,
    per-event outcome receipts, abstention; then run it over the cohort's events.
+   *(Built: ADR-0026 machinery, `make admission`.)*
 4. Adjudicate the residue in the queue — including attaching the three slips by hand.
 5. The Exceptions already read `committed_date` and closure events; verify OVERDUE
    and MISSING_DATE against the admitted record rather than building anything new.
