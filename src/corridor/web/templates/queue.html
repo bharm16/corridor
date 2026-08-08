@@ -174,6 +174,57 @@
 {# Machinery status is not review work: it stays off the rehearsal lane. #}
 {% if not rail and not event_cohort_receipt %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
 
+{% if admission_setup and admission_setup.needs_signoff %}
+  <div class="banner" style="margin:.8rem 1.2rem; background:#fffaeb; border:1px solid #fedf89; color:#7a2e0e">
+    <b>{% if admission_setup.dependencies_current or admission_setup.events_current %}One checklist needs{% else %}Two checklists need{% endif %} your sign-off before this project loads itself.</b>
+    {% if admission_setup.last_dependency_run %}
+      <div class="hint">Conflicts loaded:
+        {{ admission_setup.last_dependency_run.admitted_count }} admitted,
+        {{ admission_setup.last_dependency_run.abstained_count }} waiting for your review.</div>
+    {% endif %}
+    <div style="margin-top:.5rem; display:flex; flex-direction:column; gap:.6rem">
+      {% if not admission_setup.dependencies_current %}
+        <form method="post" action="/projects/{{ project.slug }}/admission/dependencies">
+          {# Default to the two most recent revisions: agreement across a
+             stale draft admits almost nothing. The operator can change
+             the set — the signature covers whatever is checked. #}
+          {% for d in admission_setup.matrix_documents %}
+            <label style="display:inline-block; margin-right:.8rem">
+              <input type="checkbox" name="agreement_document_ids"
+                     value="{{ d.id }}"
+                     {% if loop.index > admission_setup.matrix_documents|length - 2 %}checked{% endif %}>
+              {{ d.filename }}{% if d.doc_date %} ({{ d.doc_date }}){% endif %}
+            </label>
+          {% endfor %}
+          <div style="margin-top:.3rem">
+            <button class="primary">Sign & load the conflicts</button>
+            <span class="hint">Rows these revisions state identically become
+              records citing both pages. Disagreements wait for you here.</span>
+          </div>
+        </form>
+      {% endif %}
+      {% if not admission_setup.events_current %}
+        <form method="post" action="/projects/{{ project.slug }}/admission/events">
+          <button class="primary">Sign & attach the dated statements</button>
+          <span class="hint">Verified, dated commitments, slips and closures
+            attach to their records. Everything unprovable waits for you.</span>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+{% elif admission_setup %}
+  <p class="hint" style="margin:.4rem 1.2rem">
+    Loading policies signed and current
+    {%- if admission_setup.last_dependency_run %} ·
+      {{ admission_setup.last_dependency_run.admitted_count }} admitted,
+      {{ admission_setup.last_dependency_run.abstained_count }} waiting for review
+    {%- endif %}
+    {%- if admission_setup.last_event_run %} ·
+      {{ admission_setup.last_event_run.admitted_count }} statements attached
+    {%- endif %}
+  </p>
+{% endif %}
+
 {% if event_cohort_receipt %}
   <p class="hint" style="margin:.4rem 1rem">
     <b>Event cohort receipt #{{ event_cohort_receipt.id }}</b>

@@ -20,6 +20,7 @@ Ledger is never forced; no model verdict appears anywhere in the path.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 import hashlib
 import json
 
@@ -390,14 +391,23 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     return tuple((name, path.read_bytes()) for name, path in paths)
 
 
-def _rules_digest() -> str:
+@lru_cache(maxsize=4)
+def _digest_of_sources(source_fn) -> str:
     digest = hashlib.sha256()
-    for module_name, source_bytes in _rule_source_bytes():
+    for module_name, source_bytes in source_fn():
         digest.update(module_name.encode())
         digest.update(b"\0")
         digest.update(source_bytes)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _rules_digest() -> str:
+    # Cached per source function: the deployed bytes cannot change within
+    # a process, and the queue page checks policy currency on every
+    # render. A code change is a new process — and the drift tests swap
+    # the source function, which is a new cache key.
+    return _digest_of_sources(_rule_source_bytes)
 
 
 def _canonical_policy(
