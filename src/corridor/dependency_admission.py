@@ -27,7 +27,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.adjudicate import admit_dependency_by_policy
+from corridor.adjudicate import (
+    AlreadyAdjudicated,
+    CandidateAssertsNothing,
+    InvalidCandidateProvenance,
+    InvalidCandidateScope,
+    MalformedCandidateShape,
+    admit_dependency_by_policy,
+)
 from corridor.models import (
     ActiveExtractionRun,
     Candidate,
@@ -43,7 +50,7 @@ from corridor.project_lock import lock_project
 
 DEPENDENCY_ADMISSION_POLICY_VERSION = "dependency-admission-v1"
 ABSTENTION_REASON_VERSION = "dependency-admission-abstentions-v1"
-MACHINE_ACTOR = "corridor:dependency-admission"
+MACHINE_ACTOR = audit.DEPENDENCY_ADMISSION_ACTOR
 
 OUTCOME_ADMITTED = "admitted"
 OUTCOME_MERGED = "merged"
@@ -58,6 +65,7 @@ ABSTENTION_REASONS = frozenset(
         "revisions_disagree",
         "already_admitted",
         "asserts_nothing",
+        "write_refused",
     }
 )
 
@@ -113,6 +121,13 @@ def authorize_dependency_admission(
         if document is None or document.project_id != project_id:
             raise ValueError(
                 f"document {document_id} is not part of this project"
+            )
+        if document.doc_type != "matrix":
+            raise ValueError(
+                f"document {document_id} ({document.filename}) is a "
+                f"{document.doc_type} — the exact-agreement policy stands "
+                "on matrix revisions; other document types need their own "
+                "eligibility rule"
             )
         if session.get(ActiveExtractionRun, document_id) is None:
             raise ValueError(
@@ -276,13 +291,34 @@ def run_dependency_admission(
         # rest merge as corroboration.
         admissible.append((candidates[-1], candidates[:-1]))
 
+    # Writes are attempted before the receipt exists, inside savepoints,
+    # so a refused write abstains that conflict without sinking the batch
+    # and the immutable run row is written once, with true counts.
+    admitted: list[tuple[Candidate, list[Candidate], Dependency]] = []
+    for primary, siblings in admissible:
+        try:
+            with session.begin_nested():
+                dependency = admit_dependency_by_policy(
+                    session, primary, siblings, machine_actor=MACHINE_ACTOR
+                )
+        except (
+            AlreadyAdjudicated,
+            CandidateAssertsNothing,
+            InvalidCandidateProvenance,
+            InvalidCandidateScope,
+            MalformedCandidateShape,
+        ):
+            abstain([primary, *siblings], "write_refused")
+            continue
+        admitted.append((primary, siblings, dependency))
+
     run = DependencyAdmissionRun(
         project_id=project_id,
         policy_approval_id=approval.id,
         policy_version=approval.policy_version,
         policy_sha256=approval.policy_sha256,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
-        admitted_count=len(admissible),
+        admitted_count=len(admitted),
         abstained_count=len(abstentions),
     )
     session.add(run)
@@ -297,11 +333,7 @@ def run_dependency_admission(
                 reason=abstention.reason,
             )
         )
-
-    for primary, siblings in admissible:
-        dependency = admit_dependency_by_policy(
-            session, primary, siblings, machine_actor=MACHINE_ACTOR
-        )
+    for primary, siblings, dependency in admitted:
         session.add(
             DependencyAdmissionOutcome(
                 dependency_admission_run_id=run.id,
@@ -323,7 +355,7 @@ def run_dependency_admission(
     session.flush()
     return DependencyAdmissionResult(
         run_id=run.id,
-        admitted_count=len(admissible),
+        admitted_count=len(admitted),
         abstained_count=len(abstentions),
         abstentions=abstentions,
     )
@@ -384,8 +416,20 @@ def _canonical_policy(
             raise ValueError(
                 f"agreement document {document_id} is not part of this project"
             )
+        active = session.get(ActiveExtractionRun, document_id)
+        if active is None:
+            raise ValueError(
+                f"agreement document {document_id} has no declared Active Run"
+            )
+        # The run is pinned alongside the bytes: re-declaring a document's
+        # Active Run is a legitimate human act that changes what would
+        # admit, so it pauses the policy exactly as a swapped file does.
         pinned.append(
-            {"document_id": document.id, "sha256": document.sha256}
+            {
+                "document_id": document.id,
+                "sha256": document.sha256,
+                "active_extraction_run_id": active.extraction_run_id,
+            }
         )
     return {
         "policy_version": DEPENDENCY_ADMISSION_POLICY_VERSION,

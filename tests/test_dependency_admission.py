@@ -412,3 +412,108 @@ def test_a_swapped_agreement_document_pauses_the_policy(session, project):
         module.current_dependency_admission_approval(session, project.id)
         is None
     )
+
+
+# ── Review findings (#204): lineage, run pinning, doc types, batches ─────
+
+
+def test_policy_admitted_records_carry_attributable_lineage(session, project):
+    """Reconfirmation and Carry-Forward read admission lineage from the
+    audit log; a policy-admitted record must be as legible there as a
+    human-accepted one, backed by its durable receipt."""
+    from corridor import audit as audit_module
+
+    feb, may, feb_c, may_c = _corpus(
+        session, project, [_fields("PL1")], [_fields("PL1")]
+    )
+    _authorize(session, project, feb, may)
+    run_dependency_admission(session, project.id)
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    records = audit_module.admission_records_for_dependencies(
+        session, [dependency.id]
+    )[dependency.id]
+    assert len(records) == 2  # the primary and the merged sibling
+    assert {r.candidate_id for r in records} == {feb_c[0].id, may_c[0].id}
+    assert all(r.attributable for r in records)
+
+
+def test_a_redeclared_active_run_pauses_the_policy(session, project):
+    """The policy stands on declared work, so it pins WHICH declared work:
+    re-declaring a document's Active Run is a legitimate human act that
+    changes what would admit, and it must pause the policy."""
+    from corridor import dependency_admission as module
+    from corridor.extraction_runs import declare_active_run
+
+    feb, may, feb_c, may_c = _corpus(
+        session, project, [_fields("PL1")], [_fields("PL1")]
+    )
+    _authorize(session, project, feb, may)
+    assert module.current_dependency_admission_approval(session, project.id)
+
+    second = _run(session, feb, [_candidate(feb, _fields("PL1"))])
+    declare_active_run(session, feb.id, second.id, principal=OPERATOR)
+    assert (
+        module.current_dependency_admission_approval(session, project.id)
+        is None
+    )
+    with pytest.raises(DependencyAdmissionNotAuthorized):
+        run_dependency_admission(session, project.id)
+
+
+def test_only_matrix_documents_can_anchor_agreement(session, project):
+    feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
+    minutes = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(b"minutes").hexdigest(),
+        filename="minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(minutes)
+    session.flush()
+    with pytest.raises(ValueError) as excinfo:
+        authorize_dependency_admission(
+            session,
+            project.id,
+            principal=OPERATOR,
+            agreement_document_ids=[feb.id, minutes.id],
+        )
+    assert "matrix" in str(excinfo.value)
+
+
+def test_a_write_refusal_abstains_without_sinking_the_batch(
+    session, project, monkeypatch
+):
+    from corridor import dependency_admission as module
+    from corridor.adjudicate import CandidateAssertsNothing
+
+    feb, may, feb_c, may_c = _corpus(
+        session,
+        project,
+        [_fields("PL1"), _fields("PL2", station="1200+00")],
+        [_fields("PL1"), _fields("PL2", station="1200+00")],
+    )
+    _authorize(session, project, feb, may)
+
+    real = module.admit_dependency_by_policy
+
+    def refusing(session_, primary, siblings, *, machine_actor):
+        uid = (primary.payload_json or {}).get("fields", {}).get("utility_id")
+        if uid == "PL1":
+            raise CandidateAssertsNothing("synthetic refusal for the test")
+        return real(session_, primary, siblings, machine_actor=machine_actor)
+
+    monkeypatch.setattr(module, "admit_dependency_by_policy", refusing)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 1  # PL2 landed despite PL1's refusal
+    refused = [a for a in result.abstentions if a.reason == "write_refused"]
+    assert {a.candidate_id for a in refused} == {feb_c[0].id, may_c[0].id}
+
+    run = session.get(DependencyAdmissionRun, result.run_id)
+    assert run.admitted_count == 1
+    assert run.abstained_count == len(result.abstentions)
