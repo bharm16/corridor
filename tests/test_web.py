@@ -3039,3 +3039,89 @@ def test_a_self_or_duplicate_sibling_refuses_cleanly(session, client, project):
     assert response.status_code == 409
     session.refresh(c["pl7_b"])
     assert c["pl7_b"].state == "pending"
+
+
+# ── Authorization is a button (#206): sign and run from the queue ────────
+
+
+def test_the_queue_offers_authorization_when_policies_are_unsigned(
+    session, client, project
+):
+    _event_cohort_lane(session, project)
+
+    page = client.get(f"/queue/{project.slug}").text
+    assert "need your sign-off" in page
+    assert "ucm-feb.pdf" in page and "ucm-may.pdf" in page
+    assert f"/projects/{project.slug}/admission/dependencies" in page
+    assert f"/projects/{project.slug}/admission/events" in page
+
+
+def test_the_dependencies_button_signs_and_runs_in_one_click(
+    session, client, project
+):
+    from corridor.models import DependencyAdmissionPolicyApproval
+
+    receipt, c = _event_cohort_lane(session, project)
+    docs = sorted(
+        {c["pl7_a"].source_document_id, c["pl7_b"].source_document_id}
+    )
+
+    response = client.post(
+        f"/projects/{project.slug}/admission/dependencies",
+        data={"agreement_document_ids": [str(d) for d in docs]},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    approval = session.scalars(
+        select(DependencyAdmissionPolicyApproval).where(
+            DependencyAdmissionPolicyApproval.project_id == project.id
+        )
+    ).one()
+    assert approval.approved_by == TEST_PRINCIPAL.subject
+
+    # The identical PL7 pair admitted mechanically; PL8 (one revision
+    # only) stays pending for review in the queue.
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    assert dependency.source_ref == "PL7"
+    session.refresh(c["pl8_b"])
+    assert c["pl8_b"].state == "pending"
+
+    page = client.get(f"/queue/{project.slug}").text
+    assert "1 admitted" in page
+
+
+def test_the_events_button_signs_attaches_and_reports(
+    session, client, project
+):
+    from corridor.models import DependencyEvent
+
+    receipt, c = _event_cohort_lane(session, project)
+    docs = sorted(
+        {c["pl7_a"].source_document_id, c["pl7_b"].source_document_id}
+    )
+    client.post(
+        f"/projects/{project.slug}/admission/dependencies",
+        data={"agreement_document_ids": [str(d) for d in docs]},
+        follow_redirects=False,
+    )
+
+    response = client.post(
+        f"/projects/{project.slug}/admission/events",
+        data={},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    events = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.dependency_id == dependency.id
+        )
+    ).all()
+    assert len(events) == 1
+    assert events[0].event_type == "commitment"

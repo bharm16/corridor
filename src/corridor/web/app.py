@@ -91,6 +91,12 @@ from corridor.supersession_review import (
     ordinary_candidate_for_update,
     reconfirm_operative_support,
 )
+from corridor import dependency_admission, event_admission
+from corridor.models import (
+    ActiveExtractionRun,
+    DependencyAdmissionRun,
+    EventAdmissionRun,
+)
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Corridor — adjudication")
@@ -237,6 +243,105 @@ def _project(session: Session, slug: str) -> Project:
     return project
 
 
+def _admission_setup(session: Session, project: Project) -> dict | None:
+    """What the setup card shows: which policies still need a sign-off.
+
+    The default mode is the point (#206): the operator opens the queue,
+    the card names what needs one click, and everything mechanical
+    happens after the click. No commands.
+    """
+    matrix_documents = session.scalars(
+        select(Document)
+        .join(
+            ActiveExtractionRun,
+            ActiveExtractionRun.document_id == Document.id,
+        )
+        .where(
+            Document.project_id == project.id,
+            Document.doc_type == "matrix",
+        )
+        .order_by(Document.doc_date.asc().nulls_first())
+    ).all()
+
+    deps_current = (
+        dependency_admission.current_dependency_admission_approval(
+            session, project.id
+        )
+        is not None
+    )
+    events_current = (
+        event_admission.current_event_admission_approval(session, project.id)
+        is not None
+    )
+    last_dep_run = session.scalars(
+        select(DependencyAdmissionRun)
+        .where(DependencyAdmissionRun.project_id == project.id)
+        .order_by(DependencyAdmissionRun.id.desc())
+        .limit(1)
+    ).first()
+    last_event_run = session.scalars(
+        select(EventAdmissionRun)
+        .where(EventAdmissionRun.project_id == project.id)
+        .order_by(EventAdmissionRun.id.desc())
+        .limit(1)
+    ).first()
+
+    if not matrix_documents and not deps_current and not events_current:
+        return None
+    return {
+        "matrix_documents": matrix_documents,
+        "dependencies_current": deps_current,
+        "events_current": events_current,
+        "last_dependency_run": last_dep_run,
+        "last_event_run": last_event_run,
+        "needs_signoff": not (deps_current and events_current),
+    }
+
+
+@app.post("/projects/{slug}/admission/dependencies")
+def sign_and_run_dependency_admission(
+    slug: str,
+    agreement_document_ids: list[int] = Form([]),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """One click: the operator signs the checklist, the machine runs it."""
+    project = _project(session, slug)
+    try:
+        dependency_admission.authorize_dependency_admission(
+            session,
+            project.id,
+            principal=principal,
+            agreement_document_ids=agreement_document_ids,
+        )
+        dependency_admission.run_dependency_admission(session, project.id)
+    except (
+        ValueError,
+        dependency_admission.DependencyAdmissionNotAuthorized,
+    ) as exc:
+        raise HTTPException(400, str(exc))
+    session.commit()
+    return RedirectResponse(f"/queue/{slug}", status_code=303)
+
+
+@app.post("/projects/{slug}/admission/events")
+def sign_and_run_event_admission(
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    project = _project(session, slug)
+    try:
+        event_admission.authorize_event_admission(
+            session, project.id, principal=principal
+        )
+        event_admission.run_event_admission(session, project.id)
+    except (ValueError, event_admission.EventAdmissionNotAuthorized) as exc:
+        raise HTTPException(400, str(exc))
+    session.commit()
+    return RedirectResponse(f"/queue/{slug}", status_code=303)
+
+
 @app.get("/", response_class=HTMLResponse)
 def root():
     return RedirectResponse("/queue/nhhip-3c2", status_code=302)
@@ -308,6 +413,7 @@ def queue(
     )
     lane_context = {
         "project": project,
+        "admission_setup": _admission_setup(session, project),
         "remaining": total,
         "lane": lane,
         "cohort_receipt": cohort_receipt,
