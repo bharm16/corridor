@@ -20,14 +20,12 @@ Ledger is never forced; no model verdict appears anywhere in the path.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
-import hashlib
-import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor import policy
 from corridor.adjudicate import (
     AlreadyAdjudicated,
     CandidateAssertsNothing,
@@ -137,58 +135,42 @@ def authorize_dependency_admission(
                 "work"
             )
 
-    policy_json = _canonical_policy(session, project, agreement_document_ids)
-    approval = DependencyAdmissionPolicyApproval(
+    return policy.record_approval(
+        session,
+        DependencyAdmissionPolicyApproval,
         project_id=project_id,
         policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
-        approved_by=principal.subject,
-        policy_json=policy_json,
-        policy_sha256=_json_sha256(policy_json),
-    )
-    session.add(approval)
-    session.flush([approval])
-    audit.record(
-        session,
+        policy_json=_canonical_policy(session, project, agreement_document_ids),
         principal=principal,
         action=audit.AUTHORIZE_DEPENDENCY_ADMISSION,
-        entity_type=audit.PROJECT,
-        entity_id=project_id,
-        after={
-            "policy_approval_id": approval.id,
-            "policy_version": approval.policy_version,
-            "policy_sha256": approval.policy_sha256,
-            "agreement_document_ids": list(agreement_document_ids),
-        },
+        also_recorded={"agreement_document_ids": list(agreement_document_ids)},
     )
-    return approval
 
 
 def current_dependency_admission_approval(
     session: Session, project_id: int
 ) -> DependencyAdmissionPolicyApproval | None:
-    """The newest approval, and only if it still describes what would run."""
-    approval = session.scalars(
-        select(DependencyAdmissionPolicyApproval)
-        .where(DependencyAdmissionPolicyApproval.project_id == project_id)
-        .order_by(DependencyAdmissionPolicyApproval.id.desc())
-        .limit(1)
-    ).first()
-    if approval is None:
-        return None
-    if approval.policy_version != DEPENDENCY_ADMISSION_POLICY_VERSION:
-        return None
-    project = session.get(Project, project_id)
-    if project is None:
-        return None
-    stored = approval.policy_json.get("agreement_documents", [])
-    document_ids = [int(d["document_id"]) for d in stored]
-    try:
-        fresh = _canonical_policy(session, project, document_ids)
-    except ValueError:
-        return None
-    if approval.policy_sha256 != _json_sha256(fresh):
-        return None
-    return approval
+    """The newest approval, and only if it still describes what would run.
+
+    The named documents are re-read from the approval itself, so a
+    re-declared Active Run or a swapped file pauses the policy: the
+    recompute raises, and a policy that can no longer be described is not
+    a current one.
+    """
+
+    def recompute(project: Project, approval) -> dict:
+        stored = approval.policy_json.get("agreement_documents", [])
+        return _canonical_policy(
+            session, project, [int(d["document_id"]) for d in stored]
+        )
+
+    return policy.current_approval(
+        session,
+        DependencyAdmissionPolicyApproval,
+        project_id=project_id,
+        policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
+        recompute=recompute,
+    )
 
 
 def run_dependency_admission(
@@ -363,9 +345,7 @@ def run_dependency_admission(
 
 
 def _fields_digest(fields: dict) -> str:
-    return hashlib.sha256(
-        json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return policy.canonical_sha256(fields)
 
 
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
@@ -380,6 +360,7 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
         ("corridor.dependency_admission", Path(__file__)),
         ("corridor.adjudicate", Path(adjudicate_module.__file__)),
         ("corridor.audit", Path(audit.__file__)),
+        ("corridor.policy", Path(policy.__file__)),
         ("corridor.models", Path(models_module.__file__)),
         ("corridor.principals", Path(principals_module.__file__)),
         (
@@ -391,23 +372,10 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     return tuple((name, path.read_bytes()) for name, path in paths)
 
 
-@lru_cache(maxsize=4)
-def _digest_of_sources(source_fn) -> str:
-    digest = hashlib.sha256()
-    for module_name, source_bytes in source_fn():
-        digest.update(module_name.encode())
-        digest.update(b"\0")
-        digest.update(source_bytes)
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _rules_digest() -> str:
-    # Cached per source function: the deployed bytes cannot change within
-    # a process, and the queue page checks policy currency on every
-    # render. A code change is a new process — and the drift tests swap
-    # the source function, which is a new cache key.
-    return _digest_of_sources(_rule_source_bytes)
+    return policy.digest_of_sources(_rule_source_bytes)
 
 
 def _canonical_policy(
@@ -458,6 +426,3 @@ def _canonical_policy(
     }
 
 
-def _json_sha256(value: object) -> str:
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()

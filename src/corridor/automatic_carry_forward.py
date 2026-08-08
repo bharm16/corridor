@@ -13,14 +13,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-import hashlib
-import json
 from pathlib import Path
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor import policy
 from corridor import extraction_runs as extraction_runs_module
 from corridor import models as models_module
 from corridor import operative_support as operative_support_module
@@ -207,17 +206,11 @@ class AutomaticCarryForwardRuntime:
             "rules_digest": self.rules_digest(),
             "matcher_version": self.matcher_version,
             "matcher_config": matcher_config,
-            "matcher_config_sha256": _json_sha256(matcher_config),
+            "matcher_config_sha256": policy.canonical_sha256(matcher_config),
         }
 
     def rules_digest(self) -> str:
-        digest = hashlib.sha256()
-        for module_name, source_bytes in self.safety_sources:
-            digest.update(module_name.encode())
-            digest.update(b"\0")
-            digest.update(source_bytes)
-            digest.update(b"\0")
-        return digest.hexdigest()
+        return policy.source_digest(self.safety_sources)
 
     @classmethod
     def deployed(
@@ -275,7 +268,7 @@ def authorize_automatic_carry_forward(
             policy_version=POLICY_VERSION,
             approved_by=principal.subject,
             policy_json=policy_json,
-            policy_sha256=_json_sha256(policy_json),
+            policy_sha256=policy.canonical_sha256(policy_json),
         )
         session.add(approval)
         session.flush([approval])
@@ -603,7 +596,7 @@ def _carry_one(
     if (
         comparison.matcher_version
         != approval.policy_json.get("matcher_version")
-        or _json_sha256(comparison.matcher_config)
+        or policy.canonical_sha256(comparison.matcher_config)
         != approval.policy_json.get("matcher_config_sha256")
     ):
         return None, "comparison_policy_unapproved"
@@ -760,6 +753,7 @@ def _safety_source_paths() -> tuple[tuple[str, Path], ...]:
         ("corridor.extraction_runs", Path(extraction_runs_module.__file__)),
         ("corridor.models", Path(models_module.__file__)),
         ("corridor.operative_support", Path(operative_support_module.__file__)),
+        ("corridor.policy", Path(policy.__file__)),
         ("corridor.principals", Path(principals_module.__file__)),
         ("corridor.project_lock", Path(project_lock_module.__file__)),
         ("corridor.revision_comparison", Path(revision_comparison_module.__file__)),
@@ -787,7 +781,7 @@ def _approval_is_current_policy(
     if not (
         approval.policy_version == POLICY_VERSION
         and approval.policy_json == expected
-        and approval.policy_sha256 == _json_sha256(expected)
+        and approval.policy_sha256 == policy.canonical_sha256(expected)
     ):
         return False
     authorization_entries = tuple(
@@ -987,16 +981,6 @@ def _record_run_outcomes(
     return run
 
 
-def _json_sha256(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode()
-    ).hexdigest()
 
 
 def _current_review(

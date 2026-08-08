@@ -21,15 +21,13 @@ rather than an afterthought.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 from datetime import date, datetime, timezone
-import hashlib
-import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor import policy
 from corridor.models import (
     Candidate,
     Dependency,
@@ -99,29 +97,15 @@ def authorize_event_admission(
         raise ValueError(f"project {project_id} does not exist")
     lock_project(session, project_id)
 
-    policy_json = _canonical_policy(project)
-    approval = EventAdmissionPolicyApproval(
+    return policy.record_approval(
+        session,
+        EventAdmissionPolicyApproval,
         project_id=project_id,
         policy_version=EVENT_ADMISSION_POLICY_VERSION,
-        approved_by=principal.subject,
-        policy_json=policy_json,
-        policy_sha256=_json_sha256(policy_json),
-    )
-    session.add(approval)
-    session.flush([approval])
-    audit.record(
-        session,
+        policy_json=_canonical_policy(project),
         principal=principal,
         action=audit.AUTHORIZE_EVENT_ADMISSION,
-        entity_type=audit.PROJECT,
-        entity_id=project_id,
-        after={
-            "policy_approval_id": approval.id,
-            "policy_version": approval.policy_version,
-            "policy_sha256": approval.policy_sha256,
-        },
     )
-    return approval
 
 
 def current_event_admission_approval(
@@ -129,26 +113,16 @@ def current_event_admission_approval(
 ) -> EventAdmissionPolicyApproval | None:
     """The newest approval, and only if it covers the current policy.
 
-    A policy that changed without a new authorization is not authorized:
-    the approval names the version and the digest it approved, and both
-    must still describe what would run.
+    The project's project-side parties are part of the digest, so editing
+    them is a policy change like any other.
     """
-    approval = session.scalars(
-        select(EventAdmissionPolicyApproval)
-        .where(EventAdmissionPolicyApproval.project_id == project_id)
-        .order_by(EventAdmissionPolicyApproval.id.desc())
-        .limit(1)
-    ).first()
-    if approval is None:
-        return None
-    if approval.policy_version != EVENT_ADMISSION_POLICY_VERSION:
-        return None
-    project = session.get(Project, project_id)
-    if project is None:
-        return None
-    if approval.policy_sha256 != _json_sha256(_canonical_policy(project)):
-        return None
-    return approval
+    return policy.current_approval(
+        session,
+        EventAdmissionPolicyApproval,
+        project_id=project_id,
+        policy_version=EVENT_ADMISSION_POLICY_VERSION,
+        recompute=lambda project, _approval: _canonical_policy(project),
+    )
 
 
 def run_event_admission(
@@ -407,6 +381,7 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     paths = (
         ("corridor.event_admission", Path(__file__)),
         ("corridor.audit", Path(audit.__file__)),
+        ("corridor.policy", Path(policy.__file__)),
         ("corridor.models", Path(models_module.__file__)),
         ("corridor.principals", Path(principals_module.__file__)),
         (
@@ -418,23 +393,10 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     return tuple((name, path.read_bytes()) for name, path in paths)
 
 
-@lru_cache(maxsize=4)
-def _digest_of_sources(source_fn) -> str:
-    digest = hashlib.sha256()
-    for module_name, source_bytes in source_fn():
-        digest.update(module_name.encode())
-        digest.update(b"\0")
-        digest.update(source_bytes)
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _rules_digest() -> str:
-    # Cached per source function: the deployed bytes cannot change within
-    # a process, and the queue page checks policy currency on every
-    # render. A code change is a new process — and the drift tests swap
-    # the source function, which is a new cache key.
-    return _digest_of_sources(_rule_source_bytes)
+    return policy.digest_of_sources(_rule_source_bytes)
 
 
 def _canonical_policy(project: Project) -> dict:
@@ -466,6 +428,3 @@ def _canonical_policy(project: Project) -> dict:
     }
 
 
-def _json_sha256(value: object) -> str:
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
