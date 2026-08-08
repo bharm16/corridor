@@ -234,6 +234,14 @@ class Project(Base):
     is_synthetic: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
+    # The parties that are the project's own side — its engineer, its
+    # consultants. Stated configuration, never inferred: an event whose
+    # actor is one of these is the project taking an action item, and it
+    # can never carry an External Party's commitment (ADR-0026). SH 99's
+    # minutes are mostly LJA's own commitments, which is why this exists.
+    project_side_parties: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -638,6 +646,114 @@ class EventCohortReceipt(Base):
     )
 
 
+class EventAdmissionPolicyApproval(Base):
+    """One immutable human authorization of the event-admission policy.
+
+    Authorization covers the rules, never individual events (ADR-0026),
+    and a changed policy version requires a new approval — the same shape
+    the Carry-Forward Policy family established.
+    """
+
+    __tablename__ = "event_admission_policy_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_event_admission_policy_project_id"
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_event_admission_policy_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[str] = mapped_column(Text)
+    policy_json: Mapped[dict] = mapped_column(JSONB)
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EventAdmissionRun(Base):
+    """One immutable batch receipt for an authorized event-admission pass."""
+
+    __tablename__ = "event_admission_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_event_admission_run_sha256",
+        ),
+        CheckConstraint(
+            "admitted_count >= 0 and abstained_count >= 0",
+            name="ck_event_admission_run_counts",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "policy_approval_id"],
+            [
+                "event_admission_policy_approvals.project_id",
+                "event_admission_policy_approvals.id",
+            ],
+            name="fk_event_admission_run_policy_project",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    abstention_reason_version: Mapped[str] = mapped_column(String(64))
+    admitted_count: Mapped[int] = mapped_column(Integer)
+    abstained_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EventAdmissionOutcome(Base):
+    """One immutable event outcome within an event-admission receipt.
+
+    An admitted outcome names the DependencyEvent it created; an
+    abstention names the check that failed, under a stated reason
+    vocabulary. Neither carries a model's opinion — no model verdict can
+    appear in an admission path (ADR-0026).
+    """
+
+    __tablename__ = "event_admission_outcomes"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome in ('admitted', 'abstained')",
+            name="ck_event_admission_outcome_value",
+        ),
+        CheckConstraint(
+            "("
+            "outcome = 'admitted' and reason is null "
+            "and dependency_event_id is not null"
+            ") or ("
+            "outcome = 'abstained' and reason is not null "
+            "and dependency_event_id is null"
+            ")",
+            name="ck_event_admission_outcome_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_admission_run_id: Mapped[int] = mapped_column(
+        ForeignKey("event_admission_runs.id"), index=True
+    )
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    outcome: Mapped[str] = mapped_column(String(9))
+    reason: Mapped[str | None] = mapped_column(String(64))
+    dependency_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_events.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class WorkDecision(Base):
     """One appended project decision about a Dependency's coordination state.
 
@@ -1012,6 +1128,12 @@ class DependencyEvent(Base):
     event_type: Mapped[str] = mapped_column(_enum(*EVENT_TYPES, name="event_type"))
     # The date the event happened, which is not the date it was recorded.
     event_date: Mapped[date | None] = mapped_column(Date)
+    # What the External Party said it would deliver by, when the event
+    # states one. Distinct from `event_date`, which is when they said it:
+    # a commitment made at the January meeting to finish in June is two
+    # dates, and collapsing them would make every meeting look like a
+    # deadline. Only this one can project the Dependency's Committed Date.
+    committed_date: Mapped[date | None] = mapped_column(Date)
     description: Mapped[str] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

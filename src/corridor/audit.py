@@ -75,6 +75,8 @@ MARK_SATISFIES_REQUIREMENT = "mark_satisfies_requirement"
 LINK_MILESTONE = "link_milestone"
 CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
+ADMIT_EVENT = "admit_event"
+AUTHORIZE_EVENT_ADMISSION = "authorize_event_admission"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 
@@ -98,6 +100,8 @@ ACTIONS = frozenset(
         LINK_MILESTONE,
         CREATE_MILESTONE,
         REVISE_MILESTONE,
+        ADMIT_EVENT,
+        AUTHORIZE_EVENT_ADMISSION,
     }
 )
 
