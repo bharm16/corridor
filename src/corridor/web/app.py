@@ -68,6 +68,7 @@ from corridor.models import (
 )
 from corridor.web.queue import (
     build_cohort_rail,
+    build_evidence,
     build_supersession_review_view,
     build_view,
     change_strip,
@@ -100,7 +101,11 @@ from corridor.supersession_review import (
     reconfirm_operative_support,
 )
 from corridor import dependency_admission, event_admission
-from corridor.models import ActiveExtractionRun, PolicyRun
+from corridor.models import (
+    ActiveExtractionRun,
+    DependencyAdmissionOutcome,
+    PolicyRun,
+)
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Corridor — adjudication")
@@ -318,14 +323,138 @@ def _admission_setup(session: Session, project: Project) -> dict | None:
 
     if not matrix_documents and not deps_current and not events_current:
         return None
+    # The conflicts checklist proves agreement between revisions, so it is
+    # signable only where there are revisions to compare. A project with
+    # one matrix has nothing to sign there, and telling it to "load the
+    # project" would be an instruction it cannot follow — so the setup
+    # slot takes the screen only when it has something to offer.
+    signable = len(matrix_documents) >= 2
     return {
         "matrix_documents": matrix_documents,
         "dependencies_current": deps_current,
         "events_current": events_current,
         "last_dependency_run": last_dep_run,
         "last_event_run": last_event_run,
-        "needs_signoff": not (deps_current and events_current),
+        "needs_signoff": signable and not (deps_current and events_current),
     }
+
+
+def _review_reason(
+    session: Session, project: Project, candidate: Candidate
+) -> str | None:
+    """Why this row is in front of a human, in the machine's own words.
+
+    Under the admission policies a row reaches Adjudication only because
+    the machine refused to admit it, and the refusal is recorded with a
+    stated reason. Leading with that reason is the difference between
+    "judge this row" and "judge this row, and here is what to look at".
+    """
+    return session.scalar(
+        select(DependencyAdmissionOutcome.reason)
+        .join(
+            PolicyRun,
+            PolicyRun.id == DependencyAdmissionOutcome.policy_run_id,
+        )
+        .where(
+            PolicyRun.project_id == project.id,
+            DependencyAdmissionOutcome.candidate_id == candidate.id,
+            DependencyAdmissionOutcome.outcome == "abstained",
+        )
+        .order_by(DependencyAdmissionOutcome.id.desc())
+        .limit(1)
+    )
+
+
+# What each abstention means to the person now holding the row. The
+# machine's vocabulary is precise and the reviewer's question is
+# different: not "which check failed" but "what am I deciding".
+REVIEW_REASONS = {
+    "revisions_disagree": (
+        "The revisions disagree about this conflict.",
+        "Both pages are shown. Accept the revision that is right, or edit "
+        "the values before accepting.",
+    ),
+    "missing_from_agreement_document": (
+        "Only one revision has this conflict.",
+        "It was added or dropped between revisions. Accept it if the "
+        "record should carry it.",
+    ),
+    "multiple_rows_in_agreement_document": (
+        "One revision lists this conflict twice.",
+        "Two rows share an identifier. Accept the one that is right and "
+        "reject the other.",
+    ),
+    "citations_unverified": (
+        "The quote could not be found on the cited page.",
+        "Check the page before accepting anything from this row.",
+    ),
+    "already_admitted": (
+        "A record already carries this identifier.",
+        "Merge into the existing record rather than admitting a second one.",
+    ),
+    "asserts_nothing": (
+        "This row states nothing.",
+        "An identifier with no values is bookkeeping, not a conflict.",
+    ),
+    "write_refused": (
+        "The record could not be written from this row.",
+        "Something in the row's own shape stopped it. Read the fields "
+        "before deciding.",
+    ),
+    "no_utility_id": (
+        "This row has no identifier.",
+        "Nothing can name it in the record as it stands.",
+    ),
+}
+
+
+def _revision_panels(
+    session: Session, project: Project, candidate: Candidate
+) -> tuple[list, list[dict]]:
+    """The other pending revisions of this conflict, and the fields that
+    differ — the whole of a disagreement judgment, side by side."""
+    uid = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
+    if not uid:
+        return [], []
+    siblings = [
+        other
+        for other in session.scalars(
+            select(Candidate)
+            .join(
+                ActiveExtractionRun,
+                ActiveExtractionRun.extraction_run_id
+                == Candidate.extraction_run_id,
+            )
+            .where(
+                Candidate.project_id == project.id,
+                Candidate.kind == "dependency",
+                Candidate.state == "pending",
+                Candidate.id != candidate.id,
+            )
+            .order_by(Candidate.id)
+        ).all()
+        if str((other.payload_json or {}).get("fields", {}).get("utility_id"))
+        == str(uid)
+    ]
+    if not siblings:
+        return [], []
+
+    mine = (candidate.payload_json or {}).get("fields", {})
+    differences = []
+    for other in siblings:
+        theirs = (other.payload_json or {}).get("fields", {})
+        document = session.get(Document, other.source_document_id)
+        for name in sorted(set(mine) | set(theirs)):
+            if (mine.get(name) or "") != (theirs.get(name) or ""):
+                differences.append(
+                    {
+                        "field": name.replace("_", " "),
+                        "mine": mine.get(name) or "—",
+                        "theirs": theirs.get(name) or "—",
+                        "other_document": document.filename if document else "?",
+                    }
+                )
+    return siblings, differences
 
 
 @app.post("/projects/{slug}/admission/dependencies")
@@ -382,6 +511,7 @@ def queue(
     request: Request,
     slug: str,
     lane: Literal["candidate", "reconfirmation", "rehearsal", "events"] = "candidate",
+    mode: Literal["auto", "review"] = "auto",
     historical_document_id: int | None = None,
     cohort_receipt_id: int | None = None,
     event_cohort_receipt_id: int | None = None,
@@ -441,9 +571,31 @@ def queue(
         historical_document_id=historical_document_id,
         allowed_candidate_ids=allowed_candidate_ids,
     )
+    # The setup slot owns the screen only at the front door of a project
+    # the policies have never loaded. A named cohort lane, a historical
+    # document, a chosen row, or an explicit "review by hand" are all the
+    # operator saying what they want — and the screen does not argue.
+    admission_setup = _admission_setup(session, project)
+    has_loaded_once = (
+        admission_setup is not None
+        and admission_setup["last_dependency_run"] is not None
+    )
+    if admission_setup is not None and (
+        lane != "candidate"
+        or mode == "review"
+        or historical_document_id is not None
+        or candidate_id is not None
+        # Rows waiting are the thing blocking you, and a checklist still
+        # unsigned is smaller news — a line, not the screen. But rows are
+        # only waiting once a policy has run: before that every pending
+        # row is the policy's input, not human work, and calling it work
+        # is the bulk hand-adjudication this design exists to refuse.
+        or (has_loaded_once and total > 0)
+    ):
+        admission_setup = {**admission_setup, "needs_signoff": False}
     lane_context = {
         "project": project,
-        "admission_setup": _admission_setup(session, project),
+        "admission_setup": admission_setup,
         "remaining": total,
         "lane": lane,
         "cohort_receipt": cohort_receipt,
@@ -545,11 +697,31 @@ def queue(
             },
         )
 
+    reason = _review_reason(session, project, candidate)
+    headline, guidance = REVIEW_REASONS.get(reason or "", (None, None))
+    siblings, differences = (
+        _revision_panels(session, project, candidate)
+        if reason == "revisions_disagree"
+        else ([], [])
+    )
+    evidence_panels = [
+        build_evidence(
+            session,
+            other,
+            label="the other revision",
+        )
+        for other in siblings
+    ]
+
     return TEMPLATES.TemplateResponse(
         request,
         "queue.html",
         {
             "project": project,
+            "review_headline": headline,
+            "review_guidance": guidance,
+            "differences": differences,
+            "evidence_panels": evidence_panels,
             "view": build_view(
                 session,
                 candidate,

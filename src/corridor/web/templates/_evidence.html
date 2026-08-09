@@ -1,0 +1,62 @@
+{#
+  One document's page, as evidence for the claim beside it. Extracted so a
+  disagreement can show two of them: the whole judgment there is comparing
+  what two revisions print, and a toggle would make the reviewer hold one
+  value in their head while looking at the other.
+
+  Expects `ev`: document, page, page_no, quote, highlights.
+#}
+<div class="ev">
+  <div class="evhead">
+    <b>{{ ev.document.filename }}</b>
+    {%- if ev.label %} · <span class="evlabel">{{ ev.label }}</span>{% endif %}
+    ·
+    {%- if ev.page and ev.page.text_source == 'cells' %} sheet {{ ev.page_no }}
+    {%- else %} page {{ ev.page_no }}{% endif %}
+    {%- if ev.page and ev.page.text_source == 'ocr' %} · <span style="color:var(--bad)">read by OCR</span>{% endif %}
+    {%- if ev.page and ev.page.text_source == 'cells' %} · <span style="color:var(--ok)">read from cells</span>{% endif %}
+  </div>
+  <div class="quote">{{ ev.quote }}</div>
+  {#
+    A spreadsheet has no page to render, so the text generated from its
+    cells is the evidence (ADR-0005). Showing an image that 404s and
+    nothing else would leave a reviewer holding a quote with no way to
+    check it, which is the one thing this pane exists for.
+  #}
+  {% if ev.page and not ev.page.image_path %}
+    <pre class="sheet">{{ ev.page.text }}</pre>
+  {% else %}
+    {% set h0 = ev.highlights[0] if ev.highlights else None %}
+    <div class="crop{% if not h0 %} expanded{% endif %}"
+         title="click to toggle a taller window">
+      <div class="imgwrap">
+        <img src="/page-image/{{ ev.document.id }}/{{ ev.page_no }}"
+             alt="page {{ ev.page_no }}">
+        {#
+          One band across the cited row, not per-word confetti: the spans
+          are word matches, and short tokens ("54", "Y") also match other
+          rows. The band is the row every matched word agrees on — the
+          median span's line — so a stray match cannot stretch it.
+        #}
+        {% if ev.highlights %}
+          {% set tops = ev.highlights|map(attribute="top")|sort|list %}
+          {% set anchor = tops[tops|length // 2] %}
+          {% set ns = namespace(top=1.0, bottom=0.0) %}
+          {% for h in ev.highlights %}
+            {% if (h.top - anchor)|abs < 0.02 %}
+              {% set ns.top = [ns.top, h.top]|min %}
+              {% set ns.bottom = [ns.bottom, h.top + h.height]|max %}
+            {% endif %}
+          {% endfor %}
+          <div class="hl band" style="left:0;width:100%;
+               top:{{ ((ns.top - 0.004)*100)|round(3) }}%;
+               height:{{ ((ns.bottom - ns.top + 0.008)*100)|round(3) }}%"></div>
+        {% endif %}
+      </div>
+    </div>
+    {% if not h0 %}
+      <p class="hint">The quote has no searchable span on this page — an
+        OCR'd page, or a quote assembled from separate table cells.</p>
+    {% endif %}
+  {% endif %}
+</div>

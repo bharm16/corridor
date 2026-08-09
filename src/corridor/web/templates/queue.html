@@ -124,6 +124,48 @@
                             border:1px solid var(--line); border-radius:3px; flex:1; }
   .coordinate-forms input[type=date] { flex:0 0 auto; }
 
+  /* --- The one action slot. Nothing competes with it. --- */
+  main.single { display:block; height:auto; }
+  .slot { max-width:44rem; margin:3.5rem auto; padding:0 1.2rem; }
+  .slot h1 { font-size:1.5rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+  .slot .lead { color:var(--muted); margin:0 0 2rem; font-size:.95rem; }
+  .slot .done-note { background:#ecfdf3; border:1px solid #abefc6; color:#065f46;
+                     border-radius:6px; padding:.5rem .7rem; font-size:.88rem;
+                     margin:0 0 1.5rem; }
+  .check { border-top:1px solid var(--line); padding-top:1.4rem;
+           margin-bottom:1.8rem; }
+  .check h2 { font-size:1rem; margin:0 0 .3rem; }
+  .check p { color:var(--muted); margin:0 0 .9rem; font-size:.9rem; }
+  .check.signed { color:var(--ok); font-size:.9rem; }
+  ul.docs { list-style:none; margin:0 0 1rem; padding:0; }
+  ul.docs li { padding:.15rem 0; }
+  ul.docs label { display:flex; gap:.5rem; align-items:baseline; cursor:pointer; }
+  ul.docs .muted { color:var(--muted); font-size:.85rem; }
+  .bypass { border-top:1px solid var(--line); padding-top:1.2rem;
+            color:var(--muted); font-size:.85rem; }
+  .scope { margin:.4rem 1.2rem; color:var(--muted); font-size:.82rem; }
+  .linkish { font:inherit; color:#111; background:none; border:0;
+             padding:0; text-decoration:underline; cursor:pointer; }
+
+  /* --- Why this row is in front of you, before anything about the row. --- */
+  .why { margin-bottom:1rem; }
+  .why h2 { font-size:1.05rem; margin:0 0 .25rem; }
+  .why p { color:var(--muted); margin:0; font-size:.88rem; }
+  table.diff { width:100%; border-collapse:collapse; margin:.7rem 0 1rem;
+               font-size:.88rem; }
+  table.diff th { text-align:left; font-weight:600; color:var(--muted);
+                  font-size:.75rem; text-transform:uppercase;
+                  letter-spacing:.04em; padding:.2rem .6rem .2rem 0; }
+  table.diff td { padding:.2rem .6rem .2rem 0; vertical-align:top;
+                  border-top:1px solid var(--line); }
+  table.diff td.a { font-weight:600; }
+  table.diff td.b { color:var(--warn); }
+
+  .ev + .ev { margin-top:1.2rem; padding-top:1.2rem;
+              border-top:1px solid var(--line); }
+  .evhead { margin-bottom:.1rem; }
+  .evlabel { color:var(--warn); font-weight:600; }
+
   .pane.left { display:flex; flex-direction:column; padding:0; overflow:hidden; }
   .pane.left .scroll { flex:1; overflow:auto; padding:1.2rem 1.2rem 0; }
   .sticky { border-top:1px solid var(--line); background:#fff; padding:.8rem 1.2rem; }
@@ -154,86 +196,100 @@
 <header>
   <div class="identity">
     <b>{{ project.name }}</b>
-    <nav aria-label="Review lanes">
-      {% if rail %}<a href="/queue/{{ project.slug }}?lane=candidate">Candidate Adjudication ({{ candidate_count }})</a>
-      {% else %}<a href="/queue/{{ project.slug }}?lane=candidate" aria-current="page">Candidate Adjudication ({{ candidate_count }})</a>{% endif %}
-      <a href="/queue/{{ project.slug }}?lane=reconfirmation">Reconfirmation ({{ reconfirmation_count }})</a>
-      {% if rail %}
-        <a href="{{ lane_url }}" aria-current="page">Rehearsal ({{ view.remaining }})</a>
-      {% endif %}
-    </nav>
   </div>
   <span class="counts">
-    {{ view.remaining }} pending
-    {%- if view.remaining != view.verified_remaining %}
-      · {{ view.remaining - view.verified_remaining }} unverified
+    {%- if admission_setup and admission_setup.needs_signoff %}
+      not loaded yet
+    {%- else %}
+      {{ view.remaining }} waiting for you
     {%- endif %}
+    · <a href="/ledger/{{ project.slug }}">the record</a>
   </span>
 </header>
 
-{# Machinery status is not review work: it stays off the rehearsal lane. #}
-{% if not rail and not event_cohort_receipt %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
-
 {% if admission_setup and admission_setup.needs_signoff %}
-  <div class="banner" style="margin:.8rem 1.2rem; background:#fffaeb; border:1px solid #fedf89; color:#7a2e0e">
-    <b>{% if admission_setup.dependencies_current or admission_setup.events_current %}One checklist needs{% else %}Two checklists need{% endif %} your sign-off before this project loads itself.</b>
-    {% if admission_setup.last_dependency_run %}
-      <div class="hint">Conflicts loaded:
-        {{ admission_setup.last_dependency_run.applied_count }} admitted,
-        {{ admission_setup.last_dependency_run.abstained_count }} waiting for your review.</div>
-    {% endif %}
-    <div style="margin-top:.5rem; display:flex; flex-direction:column; gap:.6rem">
+  {# The one thing that needs you: nothing else is possible until the
+     record has something in it, so nothing else is on the screen. #}
+  <main class="single">
+    <section class="slot">
+      <h1>Load this project</h1>
+      <p class="lead">Two checklists. You sign each one; the machine then
+        does what the checklist proves, and brings you only what it
+        could not.</p>
+
+      {% if admission_setup.last_dependency_run %}
+        <p class="done-note">Conflicts already loaded:
+          <b>{{ admission_setup.last_dependency_run.applied_count }}</b> on the record,
+          <b>{{ admission_setup.last_dependency_run.abstained_count }}</b> waiting for you.</p>
+      {% endif %}
+
       {% if not admission_setup.dependencies_current %}
-        <form method="post" action="/projects/{{ project.slug }}/admission/dependencies">
-          {# Default to the two most recent revisions: agreement across a
-             stale draft admits almost nothing. The operator can change
-             the set — the signature covers whatever is checked. #}
-          {% for d in admission_setup.matrix_documents %}
-            <label style="display:inline-block; margin-right:.8rem">
-              <input type="checkbox" name="agreement_document_ids"
-                     value="{{ d.id }}"
-                     {% if loop.index > admission_setup.matrix_documents|length - 2 %}checked{% endif %}>
-              {{ d.filename }}{% if d.doc_date %} ({{ d.doc_date }}){% endif %}
-            </label>
-          {% endfor %}
-          <div style="margin-top:.3rem">
-            <button class="primary">Sign & load the conflicts</button>
-            <span class="hint">Rows these revisions state identically become
-              records citing both pages. Disagreements wait for you here.</span>
-          </div>
+        <form method="post" action="/projects/{{ project.slug }}/admission/dependencies"
+              class="check">
+          <h2>The conflicts</h2>
+          <p>A conflict goes on the record when these revisions state it
+            identically, word for word, and both pages are cited. Where they
+            disagree, it comes to you.</p>
+          {# Default to the two most recent revisions: agreement against a
+             stale draft admits almost nothing. The signature covers
+             whatever is checked. #}
+          <ul class="docs">
+            {% for d in admission_setup.matrix_documents %}
+              <li>
+                <label>
+                  <input type="checkbox" name="agreement_document_ids"
+                         value="{{ d.id }}"
+                         {% if loop.index > admission_setup.matrix_documents|length - 2 %}checked{% endif %}>
+                  {{ d.filename }}{% if d.doc_date %} <span class="muted">{{ d.doc_date }}</span>{% endif %}
+                </label>
+              </li>
+            {% endfor %}
+          </ul>
+          <button class="primary">Sign, and load the conflicts</button>
         </form>
+      {% else %}
+        <p class="check signed">The conflicts checklist is signed.</p>
       {% endif %}
+
       {% if not admission_setup.events_current %}
-        <form method="post" action="/projects/{{ project.slug }}/admission/events">
-          <button class="primary">Sign & attach the dated statements</button>
-          <span class="hint">Verified, dated commitments, slips and closures
-            attach to their records. Everything unprovable waits for you.</span>
+        <form method="post" action="/projects/{{ project.slug }}/admission/events"
+              class="check">
+          <h2>What people said</h2>
+          <p>A dated statement from the meeting minutes attaches to its
+            conflict when the quote is verified on its page and it names
+            exactly one record. Everything else comes to you.</p>
+          <button class="primary">Sign, and attach the statements</button>
         </form>
+      {% else %}
+        <p class="check signed">The statements checklist is signed.</p>
       {% endif %}
-    </div>
-  </div>
-{% elif admission_setup %}
-  <p class="hint" style="margin:.4rem 1.2rem">
-    Loading policies signed and current
-    {%- if admission_setup.last_dependency_run %} ·
-      {{ admission_setup.last_dependency_run.applied_count }} admitted,
-      {{ admission_setup.last_dependency_run.abstained_count }} waiting for review
-    {%- endif %}
-    {%- if admission_setup.last_event_run %} ·
-      {{ admission_setup.last_event_run.applied_count }} statements attached
-    {%- endif %}
+      <p class="bypass">
+        <a href="/queue/{{ project.slug }}?lane=candidate&amp;mode=review">Review the
+          rows by hand instead</a> — one at a time, without the checklists.
+      </p>
+    </section>
+  </main>
+</body>
+{% endif %}
+{% if not (admission_setup and admission_setup.needs_signoff) %}
+{% if admission_setup and not admission_setup.events_current
+      and not event_cohort_receipt and lane == "candidate" %}
+  <p class="scope">
+    The statements checklist is not signed, so nothing anyone said in the
+    minutes is on the record yet.
+    <form method="post" action="/projects/{{ project.slug }}/admission/events"
+          style="display:inline">
+      <button class="linkish">Sign it now</button>
+    </form>
   </p>
 {% endif %}
-
 {% if event_cohort_receipt %}
-  <p class="hint" style="margin:.4rem 1rem">
-    <b>Event cohort receipt #{{ event_cohort_receipt.id }}</b>
-    · {{ event_cohort_receipt.member_count }} member conflicts
-    · rule {{ event_cohort_receipt.rule_version }}
-    · mutations outside this pinned set refuse
+  <p class="scope">
+    <b>Event cohort receipt #{{ event_cohort_receipt.id }}</b> ·
+    {{ event_cohort_receipt.member_count }} conflicts ·
+    anything outside this set refuses
   </p>
 {% endif %}
-
 <main{% if rail %} class="with-rail"{% endif %}>
   {% if rail %}
   <section class="rail" aria-label="Cohort">
@@ -293,6 +349,30 @@
       </aside>
     {% endif %}
 
+    {% if review_headline %}
+      <div class="why">
+        <h2>{{ review_headline }}</h2>
+        <p>{{ review_guidance }}</p>
+      </div>
+    {% endif %}
+
+    {% if differences %}
+      <table class="diff">
+        <tr>
+          <th>field</th>
+          <th>this revision</th>
+          <th>the other</th>
+        </tr>
+        {% for d in differences %}
+          <tr>
+            <td>{{ d.field }}</td>
+            <td class="a">{{ d.mine }}</td>
+            <td class="b">{{ d.theirs }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% endif %}
+
     <div class="rowcard">
       <div class="id-line">
         <span class="uid">{{ fieldmap.get("utility_id") or "row" }}</span>
@@ -338,9 +418,7 @@
       </div>
     {% endif %}
 
-    {% if view.citations_verified %}
-      <div class="banner ok">Citation verified — the quote appears on the cited page.</div>
-    {% else %}
+    {% if not view.citations_verified %}
       <div class="banner bad">
         <b>Citation unverified.</b> The quote could not be found on the cited page.
         Not dropped, and sorted last — treat the extracted values as unsupported.
@@ -362,11 +440,8 @@
     {% if view.unmapped_columns %}
       <div class="banner" style="background:#fffaeb;
            border:1px solid #fedf89;color:#b54708">
-        <b>Printed columns with no canonical field:</b>
+        <b>The document prints columns the record has no field for:</b>
         {{ view.unmapped_columns|join(' · ') }}
-        <br><span style="font-weight:400">The document says something the
-        Ledger has no field for. Extending the vocabulary is a deliberate
-        change, not an extractor's to make.</span>
       </div>
     {% endif %}
 
@@ -399,13 +474,16 @@
       </form>
     </div>
 
-    <p class="hint">
-      candidate #{{ view.candidate.id }} ·
-      {{ view.candidate.prompt_version or 'n/a' }} ·
-      model {{ view.candidate.model or 'deterministic' }}
-      {%- if view.tier %} · read by <b>{{ view.tier }}</b>{% endif %}
-      {%- if view.text_source %} · text from {{ view.text_source }}{% endif %}
-    </p>
+    <details class="allfields">
+      <summary>How this row was read</summary>
+      <p class="hint">
+        candidate #{{ view.candidate.id }} ·
+        {{ view.candidate.prompt_version or 'n/a' }} ·
+        model {{ view.candidate.model or 'deterministic' }}
+        {%- if view.tier %} · read by <b>{{ view.tier }}</b>{% endif %}
+        {%- if view.text_source %} · text from {{ view.text_source }}{% endif %}
+      </p>
+    </details>
    </div>
 
    <div class="sticky">
@@ -494,56 +572,19 @@
   </section>
 
   <section class="pane evidence">
-    <div><b>{{ view.document.filename }}</b> ·
-      {%- if view.page and view.page.text_source == 'cells' %} sheet {{ view.page_no }}
-      {%- else %} page {{ view.page_no }}{% endif %}
-      {%- if view.page and view.page.text_source == 'ocr' %} · <span style="color:var(--bad)">OCR</span>{% endif %}
-      {%- if view.page and view.page.text_source == 'cells' %} · <span style="color:var(--ok)">read from cells</span>{% endif %}</div>
-    <div class="quote">{{ view.quote }}</div>
+    {% with ev = {"document": view.document, "page": view.page,
+                  "page_no": view.page_no, "quote": view.quote,
+                  "highlights": view.highlights, "label": ""} %}
+      {% include "_evidence.html" %}
+    {% endwith %}
     {#
-      A spreadsheet has no page to render, so the text generated from its
-      cells is the evidence (ADR-0005). Showing an image that 404s and
-      nothing else would leave a reviewer holding a quote with no way to
-      check it, which is the one thing this pane exists for.
+      A disagreement is two documents saying different things, and the
+      judgment is the comparison. A toggle would make the reviewer hold
+      one value in their head while looking at the other (#209).
     #}
-    {% if view.page and not view.page.image_path %}
-      <pre class="sheet">{{ view.page.text }}</pre>
-    {% else %}
-      {% set h0 = view.highlights[0] if view.highlights else None %}
-      <div class="crop{% if not h0 %} expanded{% endif %}" id="crop"
-           title="click to toggle a taller window">
-        <div class="imgwrap" id="imgwrap">
-          <img src="/page-image/{{ view.document.id }}/{{ view.page_no }}" alt="page {{ view.page_no }}">
-          {#
-            One band across the cited row, not per-word confetti: the spans
-            are word matches, and short tokens ("54", "Y") also match other
-            rows. The band is the row every matched word agrees on — the
-            median span's line — so a stray match cannot stretch it.
-          #}
-          {% if view.highlights %}
-            {% set tops = view.highlights|map(attribute="top")|sort|list %}
-            {% set anchor = tops[tops|length // 2] %}
-            {% set ns = namespace(top=1.0, bottom=0.0) %}
-            {% for h in view.highlights %}
-              {% if (h.top - anchor)|abs < 0.02 %}
-                {% set ns.top = [ns.top, h.top]|min %}
-                {% set ns.bottom = [ns.bottom, h.top + h.height]|max %}
-              {% endif %}
-            {% endfor %}
-            <div class="hl band" style="left:0;width:100%;
-                 top:{{ ((ns.top - 0.004)*100)|round(3) }}%;
-                 height:{{ ((ns.bottom - ns.top + 0.008)*100)|round(3) }}%"></div>
-          {% endif %}
-        </div>
-      </div>
-      {% if h0 %}
-        <p class="crophint">Full resolution, scrolled to the cited row —
-          click for a taller window.</p>
-      {% else %}
-        <p class="hint">No highlight: the quote has no searchable span on this page
-          (OCR'd page, or a quote assembled from separate table cells).</p>
-      {% endif %}
-    {% endif %}
+    {% for ev in evidence_panels %}
+      {% include "_evidence.html" %}
+    {% endfor %}
   </section>
 </main>
 
@@ -646,3 +687,4 @@
     });
   }
 </script>
+{% endif %}
