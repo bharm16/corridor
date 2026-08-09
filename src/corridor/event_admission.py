@@ -21,28 +21,27 @@ rather than an afterthought.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 from datetime import date, datetime, timezone
-import hashlib
-import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor import policy
 from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
     EventAdmissionOutcome,
-    EventAdmissionPolicyApproval,
-    EventAdmissionRun,
+    PolicyApproval,
+    PolicyRun,
     Project,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v1"
+FAMILY = "event-admission"
 ABSTENTION_REASON_VERSION = "event-admission-abstentions-v1"
 MACHINE_ACTOR = "corridor:event-admission"
 
@@ -91,7 +90,7 @@ class EventAdmissionResult:
 
 def authorize_event_admission(
     session: Session, project_id: int, *, principal: HumanPrincipal
-) -> EventAdmissionPolicyApproval:
+) -> PolicyApproval:
     """Append one human authorization of the current policy version."""
     principal = require_human_principal(principal)
     project = session.get(Project, project_id)
@@ -99,56 +98,32 @@ def authorize_event_admission(
         raise ValueError(f"project {project_id} does not exist")
     lock_project(session, project_id)
 
-    policy_json = _canonical_policy(project)
-    approval = EventAdmissionPolicyApproval(
+    return policy.record_approval(
+        session,
+        FAMILY,
         project_id=project_id,
         policy_version=EVENT_ADMISSION_POLICY_VERSION,
-        approved_by=principal.subject,
-        policy_json=policy_json,
-        policy_sha256=_json_sha256(policy_json),
-    )
-    session.add(approval)
-    session.flush([approval])
-    audit.record(
-        session,
+        policy_json=_canonical_policy(project),
         principal=principal,
         action=audit.AUTHORIZE_EVENT_ADMISSION,
-        entity_type=audit.PROJECT,
-        entity_id=project_id,
-        after={
-            "policy_approval_id": approval.id,
-            "policy_version": approval.policy_version,
-            "policy_sha256": approval.policy_sha256,
-        },
     )
-    return approval
 
 
 def current_event_admission_approval(
     session: Session, project_id: int
-) -> EventAdmissionPolicyApproval | None:
+) -> PolicyApproval | None:
     """The newest approval, and only if it covers the current policy.
 
-    A policy that changed without a new authorization is not authorized:
-    the approval names the version and the digest it approved, and both
-    must still describe what would run.
+    The project's project-side parties are part of the digest, so editing
+    them is a policy change like any other.
     """
-    approval = session.scalars(
-        select(EventAdmissionPolicyApproval)
-        .where(EventAdmissionPolicyApproval.project_id == project_id)
-        .order_by(EventAdmissionPolicyApproval.id.desc())
-        .limit(1)
-    ).first()
-    if approval is None:
-        return None
-    if approval.policy_version != EVENT_ADMISSION_POLICY_VERSION:
-        return None
-    project = session.get(Project, project_id)
-    if project is None:
-        return None
-    if approval.policy_sha256 != _json_sha256(_canonical_policy(project)):
-        return None
-    return approval
+    return policy.current_approval(
+        session,
+        FAMILY,
+        project_id=project_id,
+        policy_version=EVENT_ADMISSION_POLICY_VERSION,
+        recompute=lambda project, _approval: _canonical_policy(project),
+    )
 
 
 def run_event_admission(
@@ -196,13 +171,14 @@ def run_event_admission(
                 (candidate, dependency, fields, event_date, committed_date)
             )
 
-    run = EventAdmissionRun(
+    run = PolicyRun(
         project_id=project_id,
+        family=FAMILY,
         policy_approval_id=approval.id,
         policy_version=approval.policy_version,
         policy_sha256=approval.policy_sha256,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
-        admitted_count=len(admissible),
+        applied_count=len(admissible),
         abstained_count=len(abstentions),
     )
     session.add(run)
@@ -211,7 +187,7 @@ def run_event_admission(
     for abstention in abstentions:
         session.add(
             EventAdmissionOutcome(
-                event_admission_run_id=run.id,
+                policy_run_id=run.id,
                 candidate_id=abstention.candidate_id,
                 outcome=OUTCOME_ABSTAINED,
                 reason=abstention.reason,
@@ -235,7 +211,7 @@ def run_event_admission(
         candidate.adjudicated_at = datetime.now(timezone.utc)
         session.add(
             EventAdmissionOutcome(
-                event_admission_run_id=run.id,
+                policy_run_id=run.id,
                 candidate_id=candidate.id,
                 outcome=OUTCOME_ADMITTED,
                 dependency_event_id=event.id,
@@ -248,7 +224,7 @@ def run_event_admission(
             entity_type=audit.DEPENDENCY,
             entity_id=dependency.id,
             after={
-                "event_admission_run_id": run.id,
+                "policy_run_id": run.id,
                 "candidate_id": candidate.id,
                 "dependency_event_id": event.id,
                 "policy_sha256": approval.policy_sha256,
@@ -407,6 +383,7 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     paths = (
         ("corridor.event_admission", Path(__file__)),
         ("corridor.audit", Path(audit.__file__)),
+        ("corridor.policy", Path(policy.__file__)),
         ("corridor.models", Path(models_module.__file__)),
         ("corridor.principals", Path(principals_module.__file__)),
         (
@@ -418,23 +395,10 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     return tuple((name, path.read_bytes()) for name, path in paths)
 
 
-@lru_cache(maxsize=4)
-def _digest_of_sources(source_fn) -> str:
-    digest = hashlib.sha256()
-    for module_name, source_bytes in source_fn():
-        digest.update(module_name.encode())
-        digest.update(b"\0")
-        digest.update(source_bytes)
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _rules_digest() -> str:
-    # Cached per source function: the deployed bytes cannot change within
-    # a process, and the queue page checks policy currency on every
-    # render. A code change is a new process — and the drift tests swap
-    # the source function, which is a new cache key.
-    return _digest_of_sources(_rule_source_bytes)
+    return policy.digest_of_sources(_rule_source_bytes)
 
 
 def _canonical_policy(project: Project) -> dict:
@@ -466,6 +430,3 @@ def _canonical_policy(project: Project) -> dict:
     }
 
 
-def _json_sha256(value: object) -> str:
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()

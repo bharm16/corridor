@@ -236,7 +236,10 @@ def record_run(
     """Store the state this report was published against."""
     run = ReportRun(
         project_id=project_id,
-        ruleset_version=RULESET_VERSION,
+        # The evaluation's own version, not the module constant: the
+        # snapshot inside this same row already records the former, and
+        # a run that disagrees with its own snapshot is unreadable.
+        ruleset_version=evaluation.ruleset_version,
         snapshot_json=snapshot(session, project_id, evaluation=evaluation),
         output_path=output_path,
     )

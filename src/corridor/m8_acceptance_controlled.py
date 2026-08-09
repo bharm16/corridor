@@ -44,9 +44,9 @@ from corridor.models import (
     Assertion,
     AuditLog,
     AutomaticCarryForwardOutcome,
-    AutomaticCarryForwardPolicyApproval,
+    PolicyApproval,
     AutomaticCarryForwardReceipt,
-    AutomaticCarryForwardRun,
+    PolicyRun,
     Candidate,
     Dependency,
     DocPage,
@@ -173,9 +173,12 @@ def _automation_record_snapshot(
     )
     carry_runs = tuple(
         session.scalars(
-            select(AutomaticCarryForwardRun)
-            .where(AutomaticCarryForwardRun.project_id == project_id)
-            .order_by(AutomaticCarryForwardRun.id)
+            select(PolicyRun)
+            .where(
+                PolicyRun.project_id == project_id,
+                PolicyRun.family == "automatic-carry-forward",
+            )
+            .order_by(PolicyRun.id)
         ).all()
     )
     carry_outcomes = tuple(
@@ -275,7 +278,7 @@ def _automation_record_snapshot(
                 "policy_version": item.policy_version,
                 "policy_sha256": item.policy_sha256,
                 "abstention_reason_version": item.abstention_reason_version,
-                "carried_count": item.carried_count,
+                "carried_count": item.applied_count,
                 "abstained_count": item.abstained_count,
             }
             for item in carry_runs
@@ -2045,7 +2048,7 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
     assert resumed is not None
     assert idempotent is not None
     preserved = session.get(
-        AutomaticCarryForwardPolicyApproval,
+        PolicyApproval,
         initial_approval.id,
         populate_existing=True,
     )

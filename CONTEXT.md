@@ -137,6 +137,10 @@ _Avoid_: revision diff (implies an exactness the matcher cannot promise), change
 The immutable membership of one derived rehearsal cohort — the rows of a successor Active Run that a stated rule selects from a sealed Revision Comparison for one External Party. Pinned to exact runs, the Comparison, and both rule and matcher versions under a content digest, with members named by registry identity; re-deriving from the same inputs returns the identical receipt or refuses. The queue's rehearsal lane reads exactly this set, and the set is a mutation boundary: adjudicating outside it through the lane refuses. Uncertain correspondences are excluded by rule — the cohort never adjudicates ambiguity by accident.
 _Avoid_: cohort (bare, when the receipt is meant), sample, batch, worklist (Supersession Review's word)
 
+**Lane**:
+A scoped path through the queue: the set of Candidates a reviewer is working, and the gestures that set permits. The rehearsal lane reads a Cohort Receipt; the event lane reads an Event Cohort Receipt and permits accept-plus-merges as one gesture; the ordinary queue is the unscoped lane. A lane narrows what is offered *and* what a mutation will accept — the two are one rule, because a lane that offers a merge the mutation then refuses is worse than either alone.
+_Avoid_: tab, view, filter (a lane is a mutation boundary, not a display), mode
+
 **Supersession Review**:
 The live worklist derived from Supersession and the operative-support resolver: which Ledger records still stand on a superseded revision, what moving each one's support requires, and where the revision workflow is incomplete (`awaiting_extraction`, `extraction_failed`, `awaiting_active_run`, `awaiting_comparison`). A Revision Comparison enriches it when one exists; the worklist never waits for one. It changes through Reconfirmation or Automatic Carry-Forward; the Comparison beneath it never does.
 _Avoid_: re-review queue, stale list, migration list

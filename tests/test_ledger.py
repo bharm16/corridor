@@ -274,6 +274,37 @@ def test_the_detail_view_carries_events_and_audit(session, project, dependency):
     assert any(a.action == "accept_candidate" for a in view.audit)
 
 
+def test_the_detail_view_states_the_clock_it_was_read_against(
+    session, project, dependency
+):
+    """The page prints "40d overdue"; it must be able to say against what.
+
+    The view took its own `date.today()` inside, so nothing it published
+    could be checked later and no test could state a date.
+    """
+    view = load_dependency(session, dependency.id)
+
+    assert view.evaluation is not None
+    assert view.evaluation.today == date.today()
+    assert view.evaluation.ruleset_version
+
+
+def test_a_caller_may_read_the_record_against_a_stated_evaluation(
+    session, project, dependency
+):
+    """The clock is a parameter of the read, not a default inside it."""
+    dependency.committed_date = date(2026, 1, 1)
+    session.flush()
+
+    stated = evaluate_project(session, project.id, today=date(2026, 2, 10))
+    view = load_dependency(session, dependency.id, evaluation=stated)
+
+    assert view.evaluation is stated
+    overdue = [e for e in view.exceptions if e.rule == "OVERDUE"]
+    assert overdue, "a committed date 40 days past the stated clock is overdue"
+    assert overdue[0].quantity_days == 40
+
+
 # ---------------------------------------------------------------------- web
 
 

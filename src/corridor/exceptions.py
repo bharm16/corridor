@@ -185,10 +185,17 @@ def exceptions_for(
     today: date | None = None,
     thresholds: Thresholds | None = None,
 ) -> list[Exception_]:
-    dependency = session.get(Dependency, dependency_id)
-    if dependency is None:
-        raise LookupError(f"no dependency {dependency_id}")
-    return _apply(_gather(session, dependency), today or date.today(), thresholds or Thresholds())
+    """The bare list, for callers that state their own clock in the call.
+
+    A publisher wants `evaluate_dependency` instead: the same computation,
+    returned with the clock, thresholds and ruleset version that produced
+    it, so the page can stamp what it printed.
+    """
+    return list(
+        evaluate_dependency(
+            session, dependency_id, today=today, thresholds=thresholds
+        ).found
+    )
 
 
 def evaluate(
@@ -272,6 +279,34 @@ def evaluate_project(
         thresholds=thresholds,
         ruleset_version=RULESET_VERSION,
         found=tuple(evaluate(session, project_id, today=today, thresholds=thresholds)),
+    )
+
+
+def evaluate_dependency(
+    session: Session,
+    dependency_id: int,
+    *,
+    today: date | None = None,
+    thresholds: Thresholds | None = None,
+) -> Evaluation:
+    """One dependency's exceptions, computed once against a stated clock.
+
+    The detail view publishes "40 days overdue" exactly as the report and
+    the export do, and had no way to say which clock produced it: the
+    record page printed a quantity with no evaluated date and no ruleset
+    version beside it. Same stamp, one record's worth of facts.
+    """
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None:
+        raise LookupError(f"no dependency {dependency_id}")
+    today = today or date.today()
+    thresholds = thresholds or Thresholds()
+    return Evaluation(
+        project_id=dependency.project_id,
+        today=today,
+        thresholds=thresholds,
+        ruleset_version=RULESET_VERSION,
+        found=tuple(_apply(_gather(session, dependency), today, thresholds)),
     )
 
 

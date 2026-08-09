@@ -316,6 +316,48 @@ def test_a_missing_receipt_refuses_rather_than_widening(session):
         require_cohort_member(session, 999999999, 1)
 
 
+def test_a_receipt_from_another_project_refuses(session, compared_chain):
+    """The gap the read path had already closed and the write path had not.
+
+    The queue refused a receipt belonging to another project when it
+    rendered the lane, and every mutation route accepted one: the guard
+    checked that the receipt existed and that the row was a member, never
+    whose project the receipt was.
+    """
+    from corridor.cohort import CohortScopeViolation, require_cohort_member
+    from corridor.models import Project
+
+    comparison, _ = compared_chain
+    receipt = derive_cohort_receipt(session, comparison.id, external_org=CITY)
+    member = next(
+        c
+        for c in session.scalars(
+            select(Candidate).where(
+                Candidate.extraction_run_id
+                == receipt.successor_extraction_run_id
+            )
+        )
+        if c.payload_json["fields"]["utility_id"] == "W2"
+    )
+
+    stranger = Project(slug="somebody-elses-project", name="Somebody else's")
+    session.add(stranger)
+    session.flush()
+
+    with pytest.raises(CohortScopeViolation, match="another project"):
+        require_cohort_member(
+            session, receipt.id, member.id, project_id=stranger.id
+        )
+
+    # Named with its own project, the same call still admits the member.
+    assert (
+        require_cohort_member(
+            session, receipt.id, member.id, project_id=receipt.project_id
+        ).id
+        == receipt.id
+    )
+
+
 def test_uncertain_correspondences_are_excluded_by_rule(session, project):
     """Identical twins land `unmatched`, and the cohort leaves them out.
 

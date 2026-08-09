@@ -2665,6 +2665,40 @@ def test_the_boundary_refuses_a_non_member_mutation(session, client, project):
     assert accepted.status_code == 303
 
 
+def test_the_boundary_refuses_a_receipt_from_another_project(
+    session, client, project
+):
+    """The read path already refused this; every write path allowed it.
+
+    Rendering the lane checked that the named receipt belonged to the
+    project in the URL. The mutation routes checked only that the receipt
+    existed and that the row was one of its members — so a receipt id from
+    another project, posted against this project's slug, was honoured.
+    """
+    from corridor.models import Project
+
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+
+    stranger = Project(slug="a-different-project", name="A different project")
+    session.add(stranger)
+    session.flush()
+
+    # The member and the receipt are genuinely paired; only the project
+    # the request names is wrong.
+    response = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": stranger.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    assert "another project" in response.text
+    session.refresh(member)
+    assert member.state == "pending"
+
+
 def test_accept_flows_into_the_coordination_strip_and_back(
     session, client, project
 ):
@@ -3059,7 +3093,7 @@ def test_the_queue_offers_authorization_when_policies_are_unsigned(
 def test_the_dependencies_button_signs_and_runs_in_one_click(
     session, client, project
 ):
-    from corridor.models import DependencyAdmissionPolicyApproval
+    from corridor.models import PolicyApproval
 
     receipt, c = _event_cohort_lane(session, project)
     docs = sorted(
@@ -3074,8 +3108,8 @@ def test_the_dependencies_button_signs_and_runs_in_one_click(
     assert response.status_code == 303
 
     approval = session.scalars(
-        select(DependencyAdmissionPolicyApproval).where(
-            DependencyAdmissionPolicyApproval.project_id == project.id
+        select(PolicyApproval).where(
+            PolicyApproval.project_id == project.id
         )
     ).one()
     assert approval.approved_by == TEST_PRINCIPAL.subject

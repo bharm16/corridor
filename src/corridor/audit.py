@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from corridor.models import (
     AuditLog,
-    AutomaticCarryForwardPolicyApproval,
+    PolicyApproval,
     AutomaticCarryForwardReceipt,
     DependencyAdmissionOutcome,
     ReconfirmationReceipt,
@@ -694,7 +694,7 @@ def _automatic_receipt_matches(
     before = entry.before_json if isinstance(entry.before_json, dict) else {}
     after = entry.after_json if isinstance(entry.after_json, dict) else {}
     approval = session.get(
-        AutomaticCarryForwardPolicyApproval,
+        PolicyApproval,
         receipt.policy_approval_id,
     )
     finding = session.get(

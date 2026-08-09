@@ -41,7 +41,7 @@ from corridor.models import (
     DocPage,
     Document,
     EventAdmissionOutcome,
-    EventAdmissionRun,
+    PolicyRun,
     Project,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
@@ -350,15 +350,15 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(
     )
 
     result = run_event_admission(session, project.id)
-    run = session.get(EventAdmissionRun, result.run_id)
+    run = session.get(PolicyRun, result.run_id)
     assert run.policy_approval_id == approval.id
     assert run.policy_sha256 == approval.policy_sha256
     assert run.abstention_reason_version == ABSTENTION_REASON_VERSION
-    assert (run.admitted_count, run.abstained_count) == (1, 1)
+    assert (run.applied_count, run.abstained_count) == (1, 1)
 
     outcomes = session.scalars(
         select(EventAdmissionOutcome).where(
-            EventAdmissionOutcome.event_admission_run_id == run.id
+            EventAdmissionOutcome.policy_run_id == run.id
         )
     ).all()
     assert {o.outcome for o in outcomes} == {"admitted", "abstained"}
