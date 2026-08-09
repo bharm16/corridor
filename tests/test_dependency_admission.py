@@ -32,8 +32,8 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyAdmissionOutcome,
-    DependencyAdmissionPolicyApproval,
-    DependencyAdmissionRun,
+    PolicyApproval,
+    PolicyRun,
     DocPage,
     Document,
     Project,
@@ -341,14 +341,14 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(session, project):
     approval = _authorize(session, project, feb, may)
 
     result = run_dependency_admission(session, project.id)
-    run = session.get(DependencyAdmissionRun, result.run_id)
+    run = session.get(PolicyRun, result.run_id)
     assert run.policy_approval_id == approval.id
     assert run.policy_sha256 == approval.policy_sha256
-    assert (run.admitted_count, run.abstained_count) == (1, 2)
+    assert (run.applied_count, run.abstained_count) == (1, 2)
 
     outcomes = session.scalars(
         select(DependencyAdmissionOutcome).where(
-            DependencyAdmissionOutcome.dependency_admission_run_id == run.id
+            DependencyAdmissionOutcome.policy_run_id == run.id
         )
     ).all()
     by_outcome = {}
@@ -361,9 +361,9 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(session, project):
 
     with pytest.raises(IntegrityError):
         session.execute(
-            update(DependencyAdmissionRun)
-            .where(DependencyAdmissionRun.id == run.id)
-            .values(admitted_count=99)
+            update(PolicyRun)
+            .where(PolicyRun.id == run.id)
+            .values(applied_count=99)
         )
 
 
@@ -514,6 +514,6 @@ def test_a_write_refusal_abstains_without_sinking_the_batch(
     refused = [a for a in result.abstentions if a.reason == "write_refused"]
     assert {a.candidate_id for a in refused} == {feb_c[0].id, may_c[0].id}
 
-    run = session.get(DependencyAdmissionRun, result.run_id)
-    assert run.admitted_count == 1
+    run = session.get(PolicyRun, result.run_id)
+    assert run.applied_count == 1
     assert run.abstained_count == len(result.abstentions)

@@ -39,8 +39,8 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyAdmissionOutcome,
-    DependencyAdmissionPolicyApproval,
-    DependencyAdmissionRun,
+    PolicyApproval,
+    PolicyRun,
     Document,
     Project,
 )
@@ -48,6 +48,7 @@ from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 DEPENDENCY_ADMISSION_POLICY_VERSION = "dependency-admission-v1"
+FAMILY = "dependency-admission"
 ABSTENTION_REASON_VERSION = "dependency-admission-abstentions-v1"
 MACHINE_ACTOR = audit.DEPENDENCY_ADMISSION_ACTOR
 
@@ -96,7 +97,7 @@ def authorize_dependency_admission(
     *,
     principal: HumanPrincipal,
     agreement_document_ids: list[int],
-) -> DependencyAdmissionPolicyApproval:
+) -> PolicyApproval:
     """Append one human authorization naming the agreement documents.
 
     The named documents must belong to the project and hold declared
@@ -137,7 +138,7 @@ def authorize_dependency_admission(
 
     return policy.record_approval(
         session,
-        DependencyAdmissionPolicyApproval,
+        FAMILY,
         project_id=project_id,
         policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
         policy_json=_canonical_policy(session, project, agreement_document_ids),
@@ -149,7 +150,7 @@ def authorize_dependency_admission(
 
 def current_dependency_admission_approval(
     session: Session, project_id: int
-) -> DependencyAdmissionPolicyApproval | None:
+) -> PolicyApproval | None:
     """The newest approval, and only if it still describes what would run.
 
     The named documents are re-read from the approval itself, so a
@@ -166,7 +167,7 @@ def current_dependency_admission_approval(
 
     return policy.current_approval(
         session,
-        DependencyAdmissionPolicyApproval,
+        FAMILY,
         project_id=project_id,
         policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
         recompute=recompute,
@@ -295,13 +296,14 @@ def run_dependency_admission(
             continue
         admitted.append((primary, siblings, dependency))
 
-    run = DependencyAdmissionRun(
+    run = PolicyRun(
         project_id=project_id,
+        family=FAMILY,
         policy_approval_id=approval.id,
         policy_version=approval.policy_version,
         policy_sha256=approval.policy_sha256,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
-        admitted_count=len(admitted),
+        applied_count=len(admitted),
         abstained_count=len(abstentions),
     )
     session.add(run)
@@ -310,7 +312,7 @@ def run_dependency_admission(
     for abstention in abstentions:
         session.add(
             DependencyAdmissionOutcome(
-                dependency_admission_run_id=run.id,
+                policy_run_id=run.id,
                 candidate_id=abstention.candidate_id,
                 outcome=OUTCOME_ABSTAINED,
                 reason=abstention.reason,
@@ -319,7 +321,7 @@ def run_dependency_admission(
     for primary, siblings, dependency in admitted:
         session.add(
             DependencyAdmissionOutcome(
-                dependency_admission_run_id=run.id,
+                policy_run_id=run.id,
                 candidate_id=primary.id,
                 outcome=OUTCOME_ADMITTED,
                 dependency_id=dependency.id,
@@ -328,7 +330,7 @@ def run_dependency_admission(
         for sibling in siblings:
             session.add(
                 DependencyAdmissionOutcome(
-                    dependency_admission_run_id=run.id,
+                    policy_run_id=run.id,
                     candidate_id=sibling.id,
                     outcome=OUTCOME_MERGED,
                     dependency_id=dependency.id,

@@ -3093,7 +3093,7 @@ def test_the_queue_offers_authorization_when_policies_are_unsigned(
 def test_the_dependencies_button_signs_and_runs_in_one_click(
     session, client, project
 ):
-    from corridor.models import DependencyAdmissionPolicyApproval
+    from corridor.models import PolicyApproval
 
     receipt, c = _event_cohort_lane(session, project)
     docs = sorted(
@@ -3108,8 +3108,8 @@ def test_the_dependencies_button_signs_and_runs_in_one_click(
     assert response.status_code == 303
 
     approval = session.scalars(
-        select(DependencyAdmissionPolicyApproval).where(
-            DependencyAdmissionPolicyApproval.project_id == project.id
+        select(PolicyApproval).where(
+            PolicyApproval.project_id == project.id
         )
     ).one()
     assert approval.approved_by == TEST_PRINCIPAL.subject

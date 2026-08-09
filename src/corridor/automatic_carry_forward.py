@@ -33,9 +33,9 @@ from corridor.models import (
     ActiveAutomaticCarryForwardPolicy,
     AuditLog,
     AutomaticCarryForwardOutcome,
-    AutomaticCarryForwardPolicyApproval,
+    PolicyApproval,
     AutomaticCarryForwardReceipt,
-    AutomaticCarryForwardRun,
+    PolicyRun,
     Candidate,
     Dependency,
     EvidenceLink,
@@ -247,7 +247,7 @@ def authorize_automatic_carry_forward(
     principal: HumanPrincipal,
     *,
     _runtime: AutomaticCarryForwardRuntime | None = None,
-) -> AutomaticCarryForwardPolicyApproval:
+) -> PolicyApproval:
     """Append and activate the current server-owned policy for one project."""
 
     principal = require_human_principal(principal)
@@ -263,8 +263,9 @@ def authorize_automatic_carry_forward(
 
         runtime = _effective_runtime(_runtime)
         policy_json = _canonical_policy_json(runtime=runtime)
-        approval = AutomaticCarryForwardPolicyApproval(
+        approval = PolicyApproval(
             project_id=project_id,
+            family="automatic-carry-forward",
             policy_version=POLICY_VERSION,
             approved_by=principal.subject,
             policy_json=policy_json,
@@ -317,7 +318,7 @@ def disable_automatic_carry_forward(
     session: Session,
     project_id: int,
     principal: HumanPrincipal,
-) -> AutomaticCarryForwardPolicyApproval | None:
+) -> PolicyApproval | None:
     """Remove only the active pointer; approvals and receipts remain history."""
 
     principal = require_human_principal(principal)
@@ -336,7 +337,7 @@ def disable_automatic_carry_forward(
         if active is None:
             return None
         approval = session.get(
-            AutomaticCarryForwardPolicyApproval,
+            PolicyApproval,
             active.policy_approval_id,
         )
         session.execute(
@@ -361,19 +362,19 @@ def disable_automatic_carry_forward(
 def active_carry_forward_policy(
     session: Session,
     project_id: int,
-) -> AutomaticCarryForwardPolicyApproval | None:
+) -> PolicyApproval | None:
     """Return the explicitly active approval, never an inferred latest row."""
 
     return session.scalar(
-        select(AutomaticCarryForwardPolicyApproval)
+        select(PolicyApproval)
         .join(
             ActiveAutomaticCarryForwardPolicy,
             ActiveAutomaticCarryForwardPolicy.policy_approval_id
-            == AutomaticCarryForwardPolicyApproval.id,
+            == PolicyApproval.id,
         )
         .where(
             ActiveAutomaticCarryForwardPolicy.project_id == project_id,
-            AutomaticCarryForwardPolicyApproval.project_id == project_id,
+            PolicyApproval.project_id == project_id,
         )
     )
 
@@ -571,7 +572,7 @@ def _carry_one(
     session: Session,
     *,
     project_id: int,
-    approval: AutomaticCarryForwardPolicyApproval,
+    approval: PolicyApproval,
     review: SupersessionReview,
     assess_only: bool = False,
 ) -> tuple[AutomaticCarryForwardReceipt | None, str | None]:
@@ -769,7 +770,7 @@ def _safety_source_paths() -> tuple[tuple[str, Path], ...]:
 
 def _approval_is_current_policy(
     session: Session,
-    approval: AutomaticCarryForwardPolicyApproval,
+    approval: PolicyApproval,
     *,
     runtime: AutomaticCarryForwardRuntime,
 ) -> bool:
@@ -890,9 +891,9 @@ def _record_run_outcomes(
     session: Session,
     *,
     project_id: int,
-    approval: AutomaticCarryForwardPolicyApproval,
+    approval: PolicyApproval,
     result: AutomaticCarryForwardResult,
-) -> AutomaticCarryForwardRun:
+) -> PolicyRun:
     existing_carried_receipt_ids = frozenset(
         receipt_audit_log_id
         for receipt_audit_log_id in session.scalars(
@@ -932,13 +933,14 @@ def _record_run_outcomes(
         seen_abstention_identities.add(identity)
         new_abstentions_list.append(abstention)
     new_abstentions = tuple(new_abstentions_list)
-    run = AutomaticCarryForwardRun(
+    run = PolicyRun(
         project_id=project_id,
+        family="automatic-carry-forward",
         policy_approval_id=approval.id,
         policy_version=approval.policy_version,
         policy_sha256=approval.policy_sha256,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
-        carried_count=len(new_receipts),
+        applied_count=len(new_receipts),
         abstained_count=len(new_abstentions),
     )
     session.add(run)

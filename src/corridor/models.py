@@ -247,28 +247,60 @@ class Project(Base):
     )
 
 
-class AutomaticCarryForwardPolicyApproval(Base):
-    """One immutable human authorization of the server-owned policy."""
+# The three families that write records or move support under an
+# authorized policy (ADRs 0022, 0026, 0027). ADR-0028 joined their
+# approval and run tables — the shapes were identical, and copies drift —
+# while each family keeps its own outcome table, whose shape is the
+# receipt.
+POLICY_FAMILIES = (
+    "automatic-carry-forward",
+    "event-admission",
+    "dependency-admission",
+)
 
-    __tablename__ = "automatic_carry_forward_policy_approvals"
+_POLICY_FAMILY_CHECK = (
+    "family in ('automatic-carry-forward', 'event-admission', "
+    "'dependency-admission')"
+)
+
+
+class PolicyApproval(Base):
+    """One immutable human authorization of a policy family's rules.
+
+    ADR-0028: one table for every family's signatures, each row naming
+    its family. The family-carrying unique keys are what let each outcome
+    table keep its "my outcomes point only at my runs" rule in the
+    schema rather than in code review.
+    """
+
+    __tablename__ = "policy_approvals"
     __table_args__ = (
         UniqueConstraint(
-            "project_id",
-            "id",
-            name="uq_automatic_carry_forward_policy_project_id",
+            "project_id", "id", name="uq_policy_approvals_project_id"
         ),
+        UniqueConstraint(
+            "family", "id", name="uq_policy_approvals_family_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "family",
+            "id",
+            name="uq_policy_approvals_project_family_id",
+        ),
+        CheckConstraint(_POLICY_FAMILY_CHECK, name="ck_policy_approvals_family"),
         CheckConstraint(
             "jsonb_typeof(policy_json) = 'object'",
-            name="ck_automatic_carry_forward_policy_object",
+            name="ck_policy_approvals_object",
         ),
         CheckConstraint(
             "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_automatic_carry_forward_policy_sha256",
+            name="ck_policy_approvals_sha256",
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    family: Mapped[str] = mapped_column(String(32))
     policy_version: Mapped[str] = mapped_column(String(64))
     approved_by: Mapped[str] = mapped_column(Text)
     policy_json: Mapped[dict] = mapped_column(JSONB)
@@ -279,15 +311,26 @@ class AutomaticCarryForwardPolicyApproval(Base):
 
 
 class ActiveAutomaticCarryForwardPolicy(Base):
-    """The explicitly selected project policy; absence means disabled."""
+    """The explicitly selected project policy; absence means disabled.
+
+    Carry-Forward keeps its explicit pointer where the admission families
+    use newest-matching — a decision, not drift (ADR-0022 re-validates
+    against the audit log). The pointer's family column is pinned to its
+    literal so it can never elect another family's approval.
+    """
 
     __tablename__ = "active_automatic_carry_forward_policies"
     __table_args__ = (
+        CheckConstraint(
+            "family = 'automatic-carry-forward'",
+            name="ck_active_automatic_carry_forward_policy_family",
+        ),
         ForeignKeyConstraint(
-            ["project_id", "policy_approval_id"],
+            ["project_id", "family", "policy_approval_id"],
             [
-                "automatic_carry_forward_policy_approvals.project_id",
-                "automatic_carry_forward_policy_approvals.id",
+                "policy_approvals.project_id",
+                "policy_approvals.family",
+                "policy_approvals.id",
             ],
             name="fk_active_automatic_carry_forward_policy_project",
         ),
@@ -296,47 +339,62 @@ class ActiveAutomaticCarryForwardPolicy(Base):
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id"), primary_key=True
     )
+    family: Mapped[str] = mapped_column(
+        String(32), server_default="automatic-carry-forward"
+    )
     policy_approval_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     activated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
-class AutomaticCarryForwardRun(Base):
-    """One immutable batch receipt for an authorized machine-policy attempt."""
+class PolicyRun(Base):
+    """One immutable batch receipt for an authorized policy pass.
 
-    __tablename__ = "automatic_carry_forward_runs"
+    `applied_count` is the neutral name for what a family applied —
+    carried support, admitted events, admitted dependencies. A deferred
+    database trigger reconciles both counts against the family's own
+    outcome table at commit, for every family: the check Carry-Forward
+    alone used to carry (ADR-0028).
+    """
+
+    __tablename__ = "policy_runs"
     __table_args__ = (
+        UniqueConstraint("family", "id", name="uq_policy_runs_family_id"),
         UniqueConstraint(
             "project_id",
+            "family",
             "id",
-            name="uq_automatic_carry_forward_run_project_id",
+            name="uq_policy_runs_project_family_id",
         ),
+        CheckConstraint(_POLICY_FAMILY_CHECK, name="ck_policy_runs_family"),
         CheckConstraint(
             "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_automatic_carry_forward_run_sha256",
+            name="ck_policy_runs_sha256",
         ),
         CheckConstraint(
-            "carried_count >= 0 and abstained_count >= 0",
-            name="ck_automatic_carry_forward_run_counts",
+            "applied_count >= 0 and abstained_count >= 0",
+            name="ck_policy_runs_counts",
         ),
         ForeignKeyConstraint(
-            ["project_id", "policy_approval_id"],
+            ["project_id", "family", "policy_approval_id"],
             [
-                "automatic_carry_forward_policy_approvals.project_id",
-                "automatic_carry_forward_policy_approvals.id",
+                "policy_approvals.project_id",
+                "policy_approvals.family",
+                "policy_approvals.id",
             ],
-            name="fk_automatic_carry_forward_run_policy_project",
+            name="fk_policy_runs_approval_project_family",
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    family: Mapped[str] = mapped_column(String(32))
     policy_approval_id: Mapped[int] = mapped_column(BigInteger)
     policy_version: Mapped[str] = mapped_column(String(64))
     policy_sha256: Mapped[str] = mapped_column(String(64))
     abstention_reason_version: Mapped[str] = mapped_column(String(64))
-    carried_count: Mapped[int] = mapped_column(Integer)
+    applied_count: Mapped[int] = mapped_column(Integer)
     abstained_count: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -646,72 +704,6 @@ class EventCohortReceipt(Base):
     )
 
 
-class EventAdmissionPolicyApproval(Base):
-    """One immutable human authorization of the event-admission policy.
-
-    Authorization covers the rules, never individual events (ADR-0026),
-    and a changed policy version requires a new approval — the same shape
-    the Carry-Forward Policy family established.
-    """
-
-    __tablename__ = "event_admission_policy_approvals"
-    __table_args__ = (
-        UniqueConstraint(
-            "project_id", "id", name="uq_event_admission_policy_project_id"
-        ),
-        CheckConstraint(
-            "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_event_admission_policy_sha256",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    policy_version: Mapped[str] = mapped_column(String(64))
-    approved_by: Mapped[str] = mapped_column(Text)
-    policy_json: Mapped[dict] = mapped_column(JSONB)
-    policy_sha256: Mapped[str] = mapped_column(String(64))
-    approved_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class EventAdmissionRun(Base):
-    """One immutable batch receipt for an authorized event-admission pass."""
-
-    __tablename__ = "event_admission_runs"
-    __table_args__ = (
-        CheckConstraint(
-            "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_event_admission_run_sha256",
-        ),
-        CheckConstraint(
-            "admitted_count >= 0 and abstained_count >= 0",
-            name="ck_event_admission_run_counts",
-        ),
-        ForeignKeyConstraint(
-            ["project_id", "policy_approval_id"],
-            [
-                "event_admission_policy_approvals.project_id",
-                "event_admission_policy_approvals.id",
-            ],
-            name="fk_event_admission_run_policy_project",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
-    policy_version: Mapped[str] = mapped_column(String(64))
-    policy_sha256: Mapped[str] = mapped_column(String(64))
-    abstention_reason_version: Mapped[str] = mapped_column(String(64))
-    admitted_count: Mapped[int] = mapped_column(Integer)
-    abstained_count: Mapped[int] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
 class EventAdmissionOutcome(Base):
     """One immutable event outcome within an event-admission receipt.
 
@@ -737,11 +729,23 @@ class EventAdmissionOutcome(Base):
             ")",
             name="ck_event_admission_outcome_kind",
         ),
+        # The family rule stays in the schema (ADR-0028): this outcome
+        # can only ever point at an event-admission run.
+        CheckConstraint(
+            "family = 'event-admission'",
+            name="ck_event_admission_outcome_family",
+        ),
+        ForeignKeyConstraint(
+            ["family", "policy_run_id"],
+            ["policy_runs.family", "policy_runs.id"],
+            name="fk_event_admission_outcome_run_family",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    event_admission_run_id: Mapped[int] = mapped_column(
-        ForeignKey("event_admission_runs.id"), index=True
+    policy_run_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    family: Mapped[str] = mapped_column(
+        String(32), server_default="event-admission"
     )
     candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
     outcome: Mapped[str] = mapped_column(String(9))
@@ -749,75 +753,6 @@ class EventAdmissionOutcome(Base):
     dependency_event_id: Mapped[int | None] = mapped_column(
         ForeignKey("dependency_events.id")
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class DependencyAdmissionPolicyApproval(Base):
-    """One immutable human authorization of the dependency-admission policy.
-
-    ADR-0027: the eligibility proof is exact agreement between stated
-    revisions, so the approved policy pins the agreement documents by
-    content hash — a swapped file pauses the policy, exactly as an edited
-    check does.
-    """
-
-    __tablename__ = "dependency_admission_policy_approvals"
-    __table_args__ = (
-        UniqueConstraint(
-            "project_id",
-            "id",
-            name="uq_dependency_admission_policy_project_id",
-        ),
-        CheckConstraint(
-            "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_dependency_admission_policy_sha256",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    policy_version: Mapped[str] = mapped_column(String(64))
-    approved_by: Mapped[str] = mapped_column(Text)
-    policy_json: Mapped[dict] = mapped_column(JSONB)
-    policy_sha256: Mapped[str] = mapped_column(String(64))
-    approved_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class DependencyAdmissionRun(Base):
-    """One immutable batch receipt for an authorized admission pass."""
-
-    __tablename__ = "dependency_admission_runs"
-    __table_args__ = (
-        CheckConstraint(
-            "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_dependency_admission_run_sha256",
-        ),
-        CheckConstraint(
-            "admitted_count >= 0 and abstained_count >= 0",
-            name="ck_dependency_admission_run_counts",
-        ),
-        ForeignKeyConstraint(
-            ["project_id", "policy_approval_id"],
-            [
-                "dependency_admission_policy_approvals.project_id",
-                "dependency_admission_policy_approvals.id",
-            ],
-            name="fk_dependency_admission_run_policy_project",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
-    policy_version: Mapped[str] = mapped_column(String(64))
-    policy_sha256: Mapped[str] = mapped_column(String(64))
-    abstention_reason_version: Mapped[str] = mapped_column(String(64))
-    admitted_count: Mapped[int] = mapped_column(Integer)
-    abstained_count: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -847,11 +782,23 @@ class DependencyAdmissionOutcome(Base):
             ")",
             name="ck_dependency_admission_outcome_kind",
         ),
+        # The family rule stays in the schema (ADR-0028): this outcome
+        # can only ever point at a dependency-admission run.
+        CheckConstraint(
+            "family = 'dependency-admission'",
+            name="ck_dependency_admission_outcome_family",
+        ),
+        ForeignKeyConstraint(
+            ["family", "policy_run_id"],
+            ["policy_runs.family", "policy_runs.id"],
+            name="fk_dependency_admission_outcome_run_family",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    dependency_admission_run_id: Mapped[int] = mapped_column(
-        ForeignKey("dependency_admission_runs.id"), index=True
+    policy_run_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    family: Mapped[str] = mapped_column(
+        String(32), server_default="dependency-admission"
     )
     candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
     outcome: Mapped[str] = mapped_column(String(9))
@@ -1458,11 +1405,16 @@ class AutomaticCarryForwardReceipt(Base):
             "jsonb_typeof(after_json) = 'object'",
             name="ck_automatic_carry_forward_receipt_after_object",
         ),
+        CheckConstraint(
+            "family = 'automatic-carry-forward'",
+            name="ck_automatic_carry_forward_receipt_family",
+        ),
         ForeignKeyConstraint(
-            ["project_id", "policy_approval_id"],
+            ["project_id", "family", "policy_approval_id"],
             [
-                "automatic_carry_forward_policy_approvals.project_id",
-                "automatic_carry_forward_policy_approvals.id",
+                "policy_approvals.project_id",
+                "policy_approvals.family",
+                "policy_approvals.id",
             ],
             name="fk_automatic_carry_forward_receipt_policy_project",
         ),
@@ -1477,6 +1429,9 @@ class AutomaticCarryForwardReceipt(Base):
         ForeignKey("audit_log.id"), primary_key=True
     )
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    family: Mapped[str] = mapped_column(
+        String(32), server_default="automatic-carry-forward"
+    )
     policy_approval_id: Mapped[int] = mapped_column(BigInteger)
     dependency_id: Mapped[int] = mapped_column(
         ForeignKey("dependencies.id"), index=True
@@ -1535,19 +1490,25 @@ class AutomaticCarryForwardOutcome(Base):
             ")",
             name="ck_automatic_carry_forward_outcome_kind",
         ),
+        CheckConstraint(
+            "family = 'automatic-carry-forward'",
+            name="ck_automatic_carry_forward_outcome_family",
+        ),
         ForeignKeyConstraint(
-            ["project_id", "run_id"],
+            ["project_id", "family", "run_id"],
             [
-                "automatic_carry_forward_runs.project_id",
-                "automatic_carry_forward_runs.id",
+                "policy_runs.project_id",
+                "policy_runs.family",
+                "policy_runs.id",
             ],
             name="fk_automatic_carry_forward_outcome_run_project",
         ),
         ForeignKeyConstraint(
-            ["project_id", "policy_approval_id"],
+            ["project_id", "family", "policy_approval_id"],
             [
-                "automatic_carry_forward_policy_approvals.project_id",
-                "automatic_carry_forward_policy_approvals.id",
+                "policy_approvals.project_id",
+                "policy_approvals.family",
+                "policy_approvals.id",
             ],
             name="fk_automatic_carry_forward_outcome_policy_project",
         ),
@@ -1570,6 +1531,9 @@ class AutomaticCarryForwardOutcome(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     run_id: Mapped[int] = mapped_column(BigInteger)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    family: Mapped[str] = mapped_column(
+        String(32), server_default="automatic-carry-forward"
+    )
     policy_approval_id: Mapped[int] = mapped_column(BigInteger)
     dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
     outcome: Mapped[str] = mapped_column(String(32))

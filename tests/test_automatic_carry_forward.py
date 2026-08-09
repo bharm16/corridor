@@ -39,10 +39,10 @@ from corridor.models import (
     ActiveExtractionRun,
     Assertion,
     AuditLog,
-    AutomaticCarryForwardPolicyApproval,
+    PolicyApproval,
     AutomaticCarryForwardOutcome,
     AutomaticCarryForwardReceipt,
-    AutomaticCarryForwardRun,
+    PolicyRun,
     Candidate,
     Dependency,
     DocPage,
@@ -556,12 +556,12 @@ def _automatic_entries(session, dependency_id: int) -> tuple[AuditLog, ...]:
     )
 
 
-def _carry_runs(session, project_id: int) -> tuple[AutomaticCarryForwardRun, ...]:
+def _carry_runs(session, project_id: int) -> tuple[PolicyRun, ...]:
     return tuple(
         session.scalars(
-            select(AutomaticCarryForwardRun)
-            .where(AutomaticCarryForwardRun.project_id == project_id)
-            .order_by(AutomaticCarryForwardRun.id)
+            select(PolicyRun)
+            .where(PolicyRun.project_id == project_id)
+            .order_by(PolicyRun.id)
         ).all()
     )
 
@@ -622,8 +622,8 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
         )
         run_ids = tuple(
             cleanup.scalars(
-                select(AutomaticCarryForwardRun.id).where(
-                    AutomaticCarryForwardRun.project_id == project_id
+                select(PolicyRun.id).where(
+                    PolicyRun.project_id == project_id
                 )
             ).all()
         )
@@ -634,8 +634,8 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
             )
         )
         cleanup.execute(
-            delete(AutomaticCarryForwardRun).where(
-                AutomaticCarryForwardRun.id.in_(run_ids)
+            delete(PolicyRun).where(
+                PolicyRun.id.in_(run_ids)
             )
         )
         cleanup.execute(
@@ -654,8 +654,8 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
             )
         )
         cleanup.execute(
-            delete(AutomaticCarryForwardPolicyApproval).where(
-                AutomaticCarryForwardPolicyApproval.project_id == project_id
+            delete(PolicyApproval).where(
+                PolicyApproval.project_id == project_id
             )
         )
         cleanup.execute(
@@ -1316,7 +1316,7 @@ def test_policy_approvals_and_machine_receipts_are_immutable(session):
             session.execute(
                 text(
                     "set constraints "
-                    "automatic_carry_forward_runs_must_match_outcomes, "
+                    "policy_runs_must_match_outcomes, "
                     "automatic_carry_forward_outcomes_must_match_runs immediate"
                 )
             )
@@ -1345,7 +1345,7 @@ def test_policy_approvals_and_machine_receipts_are_immutable(session):
             session.execute(
                 text(
                     "set constraints "
-                    "automatic_carry_forward_runs_must_match_outcomes, "
+                    "policy_runs_must_match_outcomes, "
                     "automatic_carry_forward_outcomes_must_match_runs immediate"
                 )
             )
@@ -1559,9 +1559,9 @@ def test_authorized_runs_write_durable_run_and_outcome_receipts(session):
     abstain_result = run_automatic_carry_forward(session, abstain.project.id)
 
     [carry_run] = session.scalars(
-        select(AutomaticCarryForwardRun)
-        .where(AutomaticCarryForwardRun.project_id == carry.project.id)
-        .order_by(AutomaticCarryForwardRun.id)
+        select(PolicyRun)
+        .where(PolicyRun.project_id == carry.project.id)
+        .order_by(PolicyRun.id)
     ).all()
     [carry_outcome] = session.scalars(
         select(AutomaticCarryForwardOutcome)
@@ -1569,9 +1569,9 @@ def test_authorized_runs_write_durable_run_and_outcome_receipts(session):
         .order_by(AutomaticCarryForwardOutcome.id)
     ).all()
     [abstain_run] = session.scalars(
-        select(AutomaticCarryForwardRun)
-        .where(AutomaticCarryForwardRun.project_id == abstain.project.id)
-        .order_by(AutomaticCarryForwardRun.id)
+        select(PolicyRun)
+        .where(PolicyRun.project_id == abstain.project.id)
+        .order_by(PolicyRun.id)
     ).all()
     [abstain_outcome] = session.scalars(
         select(AutomaticCarryForwardOutcome)
@@ -1581,7 +1581,7 @@ def test_authorized_runs_write_durable_run_and_outcome_receipts(session):
 
     assert len(carry_result.carried) == 1
     assert carry_result.abstentions == ()
-    assert carry_run.carried_count == 1
+    assert carry_run.applied_count == 1
     assert carry_run.abstained_count == 0
     assert carry_outcome.run_id == carry_run.id
     assert carry_outcome.outcome == "carried"
@@ -1590,7 +1590,7 @@ def test_authorized_runs_write_durable_run_and_outcome_receipts(session):
 
     assert abstain_result.carried == ()
     assert len(abstain_result.abstentions) == 1
-    assert abstain_run.carried_count == 0
+    assert abstain_run.applied_count == 0
     assert abstain_run.abstained_count == 1
     assert abstain_outcome.run_id == abstain_run.id
     assert abstain_outcome.outcome == "abstained"
@@ -1625,8 +1625,8 @@ def test_rerunning_identical_dropped_abstention_does_not_duplicate_durable_outco
         "comparison_dropped"
     }
     assert len(runs) == 2
-    assert (runs[0].carried_count, runs[0].abstained_count) == (0, 1)
-    assert (runs[1].carried_count, runs[1].abstained_count) == (0, 0)
+    assert (runs[0].applied_count, runs[0].abstained_count) == (0, 1)
+    assert (runs[1].applied_count, runs[1].abstained_count) == (0, 0)
     assert len(outcomes) == 1
     assert outcomes[0].reason == "comparison_dropped"
     assert outcomes[0].successor_candidate_id is None
@@ -1876,13 +1876,14 @@ def test_database_rejects_an_abstained_outcome_with_unknown_reason_or_version(
 
     with pytest.raises(IntegrityError, match="binding is invalid"):
         with session.begin_nested():
-            run = AutomaticCarryForwardRun(
+            run = PolicyRun(
+                family="automatic-carry-forward",
                 project_id=scenario.project.id,
                 policy_approval_id=approval.id,
                 policy_version=approval.policy_version,
                 policy_sha256=approval.policy_sha256,
                 abstention_reason_version=ABSTENTION_REASON_VERSION,
-                carried_count=0,
+                applied_count=0,
                 abstained_count=1,
             )
             session.add(run)
@@ -1919,13 +1920,14 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
         IntegrityError, match="runs must reconcile their recorded outcomes"
     ):
         with session.begin_nested():
-            inflated = AutomaticCarryForwardRun(
+            inflated = PolicyRun(
+                family="automatic-carry-forward",
                 project_id=carry.project.id,
                 policy_approval_id=carry_approval.id,
                 policy_version=carry_approval.policy_version,
                 policy_sha256=carry_approval.policy_sha256,
                 abstention_reason_version=ABSTENTION_REASON_VERSION,
-                carried_count=2,
+                applied_count=2,
                 abstained_count=0,
             )
             session.add(inflated)
@@ -1933,7 +1935,7 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
             session.execute(
                 text(
                     "set constraints "
-                    "automatic_carry_forward_runs_must_match_outcomes, "
+                    "policy_runs_must_match_outcomes, "
                     "automatic_carry_forward_outcomes_must_match_runs immediate"
                 )
             )
@@ -1942,13 +1944,14 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
         IntegrityError, match="runs must reconcile their recorded outcomes"
     ):
         with session.begin_nested():
-            run = AutomaticCarryForwardRun(
+            run = PolicyRun(
+                family="automatic-carry-forward",
                 project_id=count_drift.project.id,
                 policy_approval_id=count_drift_approval.id,
                 policy_version=count_drift_approval.policy_version,
                 policy_sha256=count_drift_approval.policy_sha256,
                 abstention_reason_version=ABSTENTION_REASON_VERSION,
-                carried_count=0,
+                applied_count=0,
                 abstained_count=1,
             )
             session.add(run)
@@ -1989,7 +1992,7 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
             session.execute(
                 text(
                     "set constraints "
-                    "automatic_carry_forward_runs_must_match_outcomes, "
+                    "policy_runs_must_match_outcomes, "
                     "automatic_carry_forward_outcomes_must_match_runs immediate"
                 )
             )

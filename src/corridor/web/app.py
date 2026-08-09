@@ -100,11 +100,7 @@ from corridor.supersession_review import (
     reconfirm_operative_support,
 )
 from corridor import dependency_admission, event_admission
-from corridor.models import (
-    ActiveExtractionRun,
-    DependencyAdmissionRun,
-    EventAdmissionRun,
-)
+from corridor.models import ActiveExtractionRun, PolicyRun
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Corridor — adjudication")
@@ -302,15 +298,21 @@ def _admission_setup(session: Session, project: Project) -> dict | None:
         is not None
     )
     last_dep_run = session.scalars(
-        select(DependencyAdmissionRun)
-        .where(DependencyAdmissionRun.project_id == project.id)
-        .order_by(DependencyAdmissionRun.id.desc())
+        select(PolicyRun)
+        .where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.family == "dependency-admission",
+        )
+        .order_by(PolicyRun.id.desc())
         .limit(1)
     ).first()
     last_event_run = session.scalars(
-        select(EventAdmissionRun)
-        .where(EventAdmissionRun.project_id == project.id)
-        .order_by(EventAdmissionRun.id.desc())
+        select(PolicyRun)
+        .where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.family == "event-admission",
+        )
+        .order_by(PolicyRun.id.desc())
         .limit(1)
     ).first()
 

@@ -27,13 +27,11 @@ import hashlib
 import json
 from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import TypeVar
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.models import Project
+from corridor.models import PolicyApproval, Project
 from corridor.principals import HumanPrincipal
 
 __all__ = [
@@ -44,8 +42,6 @@ __all__ = [
     "record_approval",
     "source_digest",
 ]
-
-Approval = TypeVar("Approval")
 
 
 def canonical_json(value: object) -> str:
@@ -103,7 +99,7 @@ def digest_of_sources(source_fn) -> str:
 
 def record_approval(
     session: Session,
-    model: type[Approval],
+    family: str,
     *,
     project_id: int,
     policy_version: str,
@@ -111,7 +107,7 @@ def record_approval(
     principal: HumanPrincipal,
     action: str,
     also_recorded: dict | None = None,
-) -> Approval:
+) -> PolicyApproval:
     """Append one human authorization of a policy version, and audit it.
 
     Authorization covers the rules rather than the rows, so what is stored
@@ -123,8 +119,9 @@ def record_approval(
     a valid policy differs per family, and the lock belongs with the
     family's own reads.
     """
-    approval = model(
+    approval = PolicyApproval(
         project_id=project_id,
+        family=family,
         policy_version=policy_version,
         approved_by=principal.subject,
         policy_json=policy_json,
@@ -150,12 +147,12 @@ def record_approval(
 
 def current_approval(
     session: Session,
-    model: type[Approval],
+    family: str,
     *,
     project_id: int,
     policy_version: str,
-    recompute: Callable[[Project, Approval], dict],
-) -> Approval | None:
+    recompute: Callable[[Project, PolicyApproval], dict],
+) -> PolicyApproval | None:
     """The newest approval, and only if it still describes what would run.
 
     A policy that changed without a new authorization is not authorized:
@@ -170,9 +167,12 @@ def current_approval(
     this: that difference is a decision, not drift.
     """
     approval = session.scalars(
-        select(model)
-        .where(model.project_id == project_id)
-        .order_by(model.id.desc())
+        select(PolicyApproval)
+        .where(
+            PolicyApproval.project_id == project_id,
+            PolicyApproval.family == family,
+        )
+        .order_by(PolicyApproval.id.desc())
         .limit(1)
     ).first()
     if approval is None:

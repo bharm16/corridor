@@ -33,14 +33,15 @@ from corridor.models import (
     Dependency,
     DependencyEvent,
     EventAdmissionOutcome,
-    EventAdmissionPolicyApproval,
-    EventAdmissionRun,
+    PolicyApproval,
+    PolicyRun,
     Project,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v1"
+FAMILY = "event-admission"
 ABSTENTION_REASON_VERSION = "event-admission-abstentions-v1"
 MACHINE_ACTOR = "corridor:event-admission"
 
@@ -89,7 +90,7 @@ class EventAdmissionResult:
 
 def authorize_event_admission(
     session: Session, project_id: int, *, principal: HumanPrincipal
-) -> EventAdmissionPolicyApproval:
+) -> PolicyApproval:
     """Append one human authorization of the current policy version."""
     principal = require_human_principal(principal)
     project = session.get(Project, project_id)
@@ -99,7 +100,7 @@ def authorize_event_admission(
 
     return policy.record_approval(
         session,
-        EventAdmissionPolicyApproval,
+        FAMILY,
         project_id=project_id,
         policy_version=EVENT_ADMISSION_POLICY_VERSION,
         policy_json=_canonical_policy(project),
@@ -110,7 +111,7 @@ def authorize_event_admission(
 
 def current_event_admission_approval(
     session: Session, project_id: int
-) -> EventAdmissionPolicyApproval | None:
+) -> PolicyApproval | None:
     """The newest approval, and only if it covers the current policy.
 
     The project's project-side parties are part of the digest, so editing
@@ -118,7 +119,7 @@ def current_event_admission_approval(
     """
     return policy.current_approval(
         session,
-        EventAdmissionPolicyApproval,
+        FAMILY,
         project_id=project_id,
         policy_version=EVENT_ADMISSION_POLICY_VERSION,
         recompute=lambda project, _approval: _canonical_policy(project),
@@ -170,13 +171,14 @@ def run_event_admission(
                 (candidate, dependency, fields, event_date, committed_date)
             )
 
-    run = EventAdmissionRun(
+    run = PolicyRun(
         project_id=project_id,
+        family=FAMILY,
         policy_approval_id=approval.id,
         policy_version=approval.policy_version,
         policy_sha256=approval.policy_sha256,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
-        admitted_count=len(admissible),
+        applied_count=len(admissible),
         abstained_count=len(abstentions),
     )
     session.add(run)
@@ -185,7 +187,7 @@ def run_event_admission(
     for abstention in abstentions:
         session.add(
             EventAdmissionOutcome(
-                event_admission_run_id=run.id,
+                policy_run_id=run.id,
                 candidate_id=abstention.candidate_id,
                 outcome=OUTCOME_ABSTAINED,
                 reason=abstention.reason,
@@ -209,7 +211,7 @@ def run_event_admission(
         candidate.adjudicated_at = datetime.now(timezone.utc)
         session.add(
             EventAdmissionOutcome(
-                event_admission_run_id=run.id,
+                policy_run_id=run.id,
                 candidate_id=candidate.id,
                 outcome=OUTCOME_ADMITTED,
                 dependency_event_id=event.id,
@@ -222,7 +224,7 @@ def run_event_admission(
             entity_type=audit.DEPENDENCY,
             entity_id=dependency.id,
             after={
-                "event_admission_run_id": run.id,
+                "policy_run_id": run.id,
                 "candidate_id": candidate.id,
                 "dependency_event_id": event.id,
                 "policy_sha256": approval.policy_sha256,

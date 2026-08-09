@@ -25,7 +25,7 @@ from corridor.automatic_carry_forward import (
     disable_automatic_carry_forward,
     run_automatic_carry_forward,
 )
-from corridor.models import AutomaticCarryForwardPolicyApproval, Project
+from corridor.models import PolicyApproval, Project
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 
@@ -82,7 +82,7 @@ def _project_by_slug(session: Session, slug: str) -> Project:
 
 
 def _policy_payload(
-    approval: AutomaticCarryForwardPolicyApproval | None,
+    approval: PolicyApproval | None,
 ) -> dict[str, Any] | None:
     if approval is None:
         return None
