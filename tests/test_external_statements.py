@@ -275,6 +275,62 @@ def test_invalid_known_scope_refuses_before_writing_any_part_of_the_statement(
     assert session.scalars(select(DependencyEvent)).all() == []
 
 
+def test_month_timing_must_cover_that_calendar_month_exactly(
+    session, statement_record
+):
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, _ = statement_record
+    with pytest.raises(StatementRefusal, match="invalid calendar bounds"):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party="Equistar",
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=None,
+            description="Equistar will complete in January 2025.",
+            new_timing=StatementTiming(
+                "January 2025", "month", date(2025, 1, 1), date(2025, 1, 30)
+            ),
+            scope=StatementScope.unknown(),
+            created_by="corridor:event-admission",
+            evidence=CitedStatementEvidence(document.id, 1, "January 2025"),
+        )
+
+
+def test_shared_seam_refuses_incomplete_or_non_day_verbals(session, statement_record):
+    from corridor.external_statements import (
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, _, dependency = statement_record
+    with pytest.raises(StatementRefusal, match="conversation date"):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party="Equistar",
+            stated_external_org_id=party.id,
+            source_kind="verbal",
+            event_date=None,
+            description="Equistar said it will complete in January.",
+            new_timing=StatementTiming.month("January 2025", 2025, 1),
+            scope=StatementScope.selected((dependency.id,)),
+            created_by="local:recorder",
+        )
+
+
 def test_event_evidence_requires_an_explicit_dependency_sufficiency_judgment(
     session, statement_record
 ):
@@ -379,3 +435,83 @@ def test_database_rejects_scope_links_for_unknown_scope_and_empty_known_scope(
             )
             session.flush()
             session.execute(text("set constraints all immediate"))
+
+
+def test_database_requires_explicit_scope_mode_and_event_evidence_ownership(
+    session, statement_record
+):
+    project, party, document, dependency = statement_record
+    with pytest.raises(IntegrityError):
+        with session.begin_nested():
+            session.execute(
+                text(
+                    """
+                    insert into dependency_events
+                        (project_id, affected_external_org_id, stated_external_org_id,
+                         scope_mode, event_type, source_kind, stated_party,
+                         description, created_by)
+                    values
+                        (:project_id, :party_id, :party_id, null, 'commitment',
+                         'cited', 'Equistar', 'No declared scope.',
+                         'corridor:event-admission')
+                    """
+                ),
+                {"project_id": project.id, "party_id": party.id},
+            )
+
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_external_org_id=party.id,
+        scope_mode="unknown",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="Equistar",
+        description="Party-level statement.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    with pytest.raises(IntegrityError, match="ck_evidence_links_event_ownership"):
+        with session.begin_nested():
+            session.add(
+                EvidenceLink(
+                    dependency_id=dependency.id,
+                    event_id=event.id,
+                    document_id=document.id,
+                    page_no=1,
+                    quote="Party-level statement.",
+                    verified=True,
+                )
+            )
+            session.flush()
+
+
+def test_statement_facts_are_append_only(session, statement_record):
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete by June 1.",
+        new_timing=StatementTiming.day("June 1", date(2025, 6, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(document.id, 1, "Equistar will complete by June 1."),
+    )
+
+    with pytest.raises(IntegrityError, match="External Party statements are append-only"):
+        with session.begin_nested():
+            event.description = "Equistar will complete by July 1."
+            session.flush()

@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session
 
@@ -33,7 +33,6 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventScope,
     DependencyEventTiming,
-    DependencyEventScope,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -103,9 +102,7 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
     events = list(
         session.scalars(
             select(DependencyEvent)
-            .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
-            .where(DependencyEventScope.dependency_id.in_(dependency_ids or [0]))
-            .distinct()
+            .where(DependencyEvent.project_id == project_id)
             .order_by(DependencyEvent.id)
         ).all()
     )
@@ -365,6 +362,12 @@ def retire_legacy_ledger(
         # the object that was just added from the identity map.
         session.expire(archive)
         verify_archive(session, archive.id)
+        # Statement facts are append-only during normal work. Retirement is
+        # the one audited archival path that may remove the active graph after
+        # its canonical copy has been sealed above.
+        session.execute(
+            text("set local corridor.allow_statement_retirement = 'on'")
+        )
 
         dependency_ids = [row["id"] for row in plan.content["dependencies"]]
         session.execute(
@@ -387,9 +390,9 @@ def retire_legacy_ledger(
         )
         event_ids = list(
             session.scalars(
-                select(DependencyEventScope.event_id)
-                .where(DependencyEventScope.dependency_id.in_(dependency_ids))
-                .distinct()
+                select(DependencyEvent.id).where(
+                    DependencyEvent.project_id == project_id
+                )
             ).all()
         )
         session.execute(

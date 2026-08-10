@@ -141,9 +141,6 @@ EVENT_TYPES = (
     "commitment",
     "committed_date_change",
     "response",
-    # Historical rows and snapshots remain readable. New writers use
-    # ``committed_date_change`` when they can prove both timings.
-    "slip",
     "escalation",
     "status_change",
     "closure",
@@ -1297,7 +1294,10 @@ class DependencyEventTiming(Base):
         ),
         CheckConstraint(
             "(precision = 'day' and start_date is not null and end_date = start_date) "
-            "or (precision = 'month' and start_date is not null and end_date is not null) "
+            "or (precision = 'month' and start_date is not null and end_date is not null "
+            "and start_date = date_trunc('month', start_date::timestamp)::date "
+            "and end_date = (date_trunc('month', start_date::timestamp) "
+            "+ interval '1 month - 1 day')::date) "
             "or (precision in ('approximate', 'legacy_unknown') and start_date is null and end_date is null)",
             name="ck_dependency_event_timing_bounds",
         ),
@@ -1327,15 +1327,22 @@ class DependencyEventScope(Base):
 
 class EvidenceLink(Base):
     __tablename__ = "evidence_links"
-    __table_args__ = (UniqueConstraint("dependency_id", "id"),)
+    __table_args__ = (
+        UniqueConstraint("dependency_id", "id"),
+        CheckConstraint(
+            "(event_id is null and dependency_id is not null) or "
+            "(event_id is not null and dependency_id is null and satisfies_requirement is false)",
+            name="ck_evidence_links_event_ownership",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    # Always set, even when the evidence is really about an event: an
-    # event's evidence is also its dependency's evidence, and keeping this
-    # required means `is_ready` and `last_evidenced_at` stay simple queries
-    # over one column rather than a union.
-    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
-    # Set when this quote specifically supports an event rather than a field.
+    # Direct record evidence owns one Dependency.  Event evidence owns no
+    # fake Dependency; its scope links and separate sufficiency judgments
+    # make the record-specific relationship explicit.
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    # Set when this quote supports an External Party statement rather than a
+    # direct record assertion.
     event_id: Mapped[int | None] = mapped_column(ForeignKey("dependency_events.id"))
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
     page_no: Mapped[int] = mapped_column(Integer)

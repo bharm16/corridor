@@ -194,12 +194,12 @@ def corpus(session, project):
                     event_date="2025-01-16",
                 ),
             ),
-            # Qualifies: slip with only a committed date, second party.
+            # Qualifies: date change with a stated timing, second party.
             _candidate(
                 minutes,
                 kind="event",
                 fields=_event_fields(
-                    event_type="slip",
+                    event_type="committed_date_change",
                     conflict_ref="ET7",
                     committed_date="2026-03-31",
                     org=ELECTRIC,
@@ -389,7 +389,7 @@ def test_rule_drift_under_the_same_version_refuses(
     monkeypatch.setattr(
         cohort_module,
         "_EVENT_COHORT_EVENT_TYPES",
-        frozenset({"commitment", "slip", "closure", "response"}),
+        frozenset({"commitment", "committed_date_change", "closure", "response"}),
     )
     with pytest.raises(CohortDerivationError) as excinfo:
         derive_event_cohort_receipt(session, project.id)

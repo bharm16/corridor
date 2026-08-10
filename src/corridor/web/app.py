@@ -352,8 +352,8 @@ STATEMENT_REASONS = {
         "Check the page before placing it.",
     ),
     "event_type_outside_policy": (
-        "This is not a commitment, slip, or closure.",
-        "Only those three carry a date anyone is held to.",
+        "This is not a commitment or Committed Date Change.",
+        "Only those statement types carry an External Party timing.",
     ),
     "no_date": (
         "This statement carries no date.",
