@@ -12,6 +12,7 @@ from corridor.export import COLUMNS, to_pdf, to_xlsx
 from corridor.models import (
     Candidate,
     Dependency,
+    DependencyEvent,
     DocPage,
     Document,
     EvidenceLink,
@@ -180,6 +181,43 @@ def test_the_xlsx_carries_computed_exceptions(session, project, tmp_path):
     }
     assert format_exception_label(by_rule["OVERDUE"]) in (row["Exceptions"] or "")
     assert format_exception_label(by_rule["DUE_SOON"]) in (row["Exceptions"] or "")
+
+
+def test_the_xlsx_attributes_a_verbal_backed_committed_date(
+    session, project, tmp_path
+):
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.committed_date = date(2026, 8, 15)
+    session.add(
+        DependencyEvent(
+            dependency_id=dependency.id,
+            event_type="commitment",
+            source_kind="verbal",
+            stated_party="Export Test Utility",
+            event_date=date(2026, 5, 8),
+            committed_date=dependency.committed_date,
+            description="Export Test Utility said relocation will finish in August.",
+            created_by=TEST_PRINCIPAL.subject,
+        )
+    )
+    session.flush()
+
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "ledger.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: cell.value for header, cell in zip(headers, sheet[2])}
+
+    assert "Committed date source" in headers
+    assert row["Committed date source"] == (
+        "Verbal — Export Test Utility told local:tester on 2026-05-08"
+    )
 
 
 def test_the_pdf_renders(session, project, tmp_path):

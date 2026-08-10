@@ -75,3 +75,13 @@ def event_type_for_verbal(
     if previous is not None and committed_date > previous.committed_date:
         return "slip"
     return "commitment"
+
+
+def verbal_attribution(event: DependencyEvent | None) -> str | None:
+    """The source line that must travel with a verbal-backed date."""
+    if event is None or event.source_kind != "verbal":
+        return None
+    return (
+        f"Verbal — {event.stated_party} told {event.created_by} "
+        f"on {event.event_date}"
+    )
