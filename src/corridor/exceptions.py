@@ -14,6 +14,7 @@ worth hearing about loudly.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
@@ -211,6 +212,7 @@ def evaluate(
     *,
     today: date | None = None,
     thresholds: Thresholds | None = None,
+    committed_dates: Mapping[int, date | None] | None = None,
 ) -> list[Exception_]:
     """Every exception on every dependency in the project, worst first."""
     today = today or date.today()
@@ -227,7 +229,19 @@ def evaluate(
 
     found: list[Exception_] = []
     for dependency in dependencies:
-        found.extend(_apply(_gather(session, dependency), today, thresholds))
+        committed_date = (
+            dependency.committed_date
+            if committed_dates is None
+            else committed_dates.get(dependency.id, dependency.committed_date)
+        )
+        found.extend(
+            _apply(
+                _gather(session, dependency),
+                today,
+                thresholds,
+                committed_date=committed_date,
+            )
+        )
     # A filing order, not a verdict: stable so two runs render identically,
     # and claiming nothing — "worst first" belongs to the facet view, where
     # the ordering fact is named (ADR-0010).
@@ -281,6 +295,7 @@ def evaluate_project(
     *,
     today: date | None = None,
     thresholds: Thresholds | None = None,
+    committed_dates: Mapping[int, date | None] | None = None,
 ) -> Evaluation:
     """Evaluate a project once, and hand back the clock along with the facts."""
     today = today or date.today()
@@ -290,7 +305,15 @@ def evaluate_project(
         today=today,
         thresholds=thresholds,
         ruleset_version=RULESET_VERSION,
-        found=tuple(evaluate(session, project_id, today=today, thresholds=thresholds)),
+        found=tuple(
+            evaluate(
+                session,
+                project_id,
+                today=today,
+                thresholds=thresholds,
+                committed_dates=committed_dates,
+            )
+        ),
     )
 
 
@@ -321,7 +344,14 @@ def evaluate_dependency(
         found=(
             ()
             if _is_dismissed(session, dependency)
-            else tuple(_apply(_gather(session, dependency), today, thresholds))
+            else tuple(
+                _apply(
+                    _gather(session, dependency),
+                    today,
+                    thresholds,
+                    committed_date=dependency.committed_date,
+                )
+            )
         ),
     )
 
@@ -477,7 +507,13 @@ def _gather(session: Session, dependency: Dependency) -> _Facts:
     )
 
 
-def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception_]:
+def _apply(
+    facts: _Facts,
+    today: date,
+    thresholds: Thresholds,
+    *,
+    committed_date: date | None = None,
+) -> list[Exception_]:
     dependency = facts.dependency
     settled = dependency.status in SETTLED_STATUSES
     # "On track" for time-based rules means neither proven done nor closed.
@@ -527,7 +563,7 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
                 )
             )
 
-    if not dependency.committed_date and dependency.status in (
+    if not committed_date and dependency.status in (
         "identified",
         "in_progress",
         "committed",
@@ -563,13 +599,13 @@ def _apply(facts: _Facts, today: date, thresholds: Thresholds) -> list[Exception
                 ("DUE_SOON", f"needed in {days} days ({dependency.need_date})", days)
             )
 
-    if dependency.committed_date and dependency.committed_date < today:
+    if committed_date and committed_date < today:
         if not facts.has_closure:
-            days = (today - dependency.committed_date).days
+            days = (today - committed_date).days
             found.append(
                 (
                     "OVERDUE",
-                    f"committed {dependency.committed_date}, {days} days ago, "
+                    f"committed {committed_date}, {days} days ago, "
                     "with no closure event",
                     days,
                 )

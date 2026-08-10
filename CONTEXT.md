@@ -81,12 +81,16 @@ The Evidence doing current work for a Dependency **in a named role** — closing
 _Avoid_: active evidence, current evidence, live citation, operative support with no role named
 
 **Derivation**:
-A claim produced by computing over Dependencies rather than by reading a document — a count, a percentage, a rollup. Carries the ruleset version and the records it covered instead of a quote, and drills through to their Evidence. No published value is ever bare: it is an Assertion, a Derivation or a Work Decision.
+A claim produced by computing over Dependencies rather than by reading a document — a count, a percentage, a rollup. Carries the ruleset version and the records it covered instead of a quote, and drills through to their Evidence. No published value is ever bare: it is an Assertion, a Derivation, a Work Decision or a Verbal.
 _Avoid_: aggregate, rollup, summary (when meaning the provenance class)
 
 **Work Decision**:
-An attributable project-team decision, recorded at a stated time, that establishes or changes project-controlled coordination state for a Dependency — its Internal Owner, Next Action or Action Due Date. It proves only what the project decided and when: it is not Evidence, states nothing about what a document or External Party said, and can never set Criticality, a Resolution Strategy, Ready, or an External Party's status or commitment. Later Work Decisions supersede but never erase earlier ones. What a report publishes is an Assertion (what a document said), a Derivation (what the rules computed) or a Work Decision (what the project decided).
+An attributable project-team decision, recorded at a stated time, that establishes or changes project-controlled coordination state for a Dependency — its Internal Owner, Next Action or Action Due Date. It proves only what the project decided and when: it is not Evidence, states nothing about what a document or External Party said, and can never set Criticality, a Resolution Strategy, Ready, or an External Party's status or commitment. Later Work Decisions supersede but never erase earlier ones. What a report publishes is an Assertion (what a document said), a Derivation (what the rules computed), a Work Decision (what the project decided) or a Verbal (what an External Party told a recorder).
 _Avoid_: workflow state, attribution, direction (carries contractual-authority weight in construction), audit entry
+
+**Verbal**:
+An External Party's stated commitment, heard by a named project person on a stated date and recorded as an append-only DependencyEvent. It is neither Evidence nor a Work Decision: it can move the Committed Date because it says what the party said, but it can never render as a page quote or a computation. A report marks its recorder, conversation date and stated party; document-only reporting excludes it and falls back to verified cited events (ADR-0033).
+_Avoid_: phone citation, undocumented evidence, informal date, inferred commitment
 
 **Document of Record**:
 When one document is published in several formats, the one Evidence cites. The structured original outranks anything printed from it: a spreadsheet states its values, a PDF of that spreadsheet only depicts them.

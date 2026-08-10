@@ -15,7 +15,8 @@ rather than reporting rule-driven movement as project movement.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -59,7 +60,11 @@ class Diff:
 
 
 def snapshot(
-    session: Session, project_id: int, *, evaluation: Evaluation
+    session: Session,
+    project_id: int,
+    *,
+    evaluation: Evaluation,
+    committed_dates: Mapping[int, date | None] | None = None,
 ) -> dict:
     """The state a report was published against, one entry per dependency.
 
@@ -75,6 +80,11 @@ def snapshot(
         for dependency_id, found in evaluation.by_dependency().items()
     }
 
+    def published_committed_date(row) -> date | None:
+        if committed_dates is not None:
+            return committed_dates.get(row.dependency.id)
+        return row.dependency.committed_date
+
     return {
         "ruleset_version": evaluation.ruleset_version,
         "dependencies": {
@@ -83,8 +93,8 @@ def snapshot(
                 "status": row.dependency.status,
                 "resolution_strategy": row.dependency.resolution_strategy,
                 "committed_date": (
-                    row.dependency.committed_date.isoformat()
-                    if row.dependency.committed_date
+                    published_committed_date(row).isoformat()
+                    if published_committed_date(row)
                     else None
                 ),
                 "need_date": (
@@ -113,14 +123,22 @@ def _dismissal_of(session: Session, dependency_id: int | None):
 
 
 def diff_since_last(
-    session: Session, project_id: int, *, evaluation: Evaluation
+    session: Session,
+    project_id: int,
+    *,
+    evaluation: Evaluation,
+    committed_dates: Mapping[int, date | None] | None = None,
+    document_only: bool = False,
 ) -> Diff:
     retirement_boundary = session.scalar(
         select(LegacyLedgerArchive.retired_at).where(
             LegacyLedgerArchive.project_id == project_id
         )
     )
-    previous_query = select(ReportRun).where(ReportRun.project_id == project_id)
+    previous_query = select(ReportRun).where(
+        ReportRun.project_id == project_id,
+        ReportRun.document_only.is_(document_only),
+    )
     if retirement_boundary is not None:
         previous_query = previous_query.where(ReportRun.ts > retirement_boundary)
     previous = session.scalars(
@@ -129,7 +147,12 @@ def diff_since_last(
         .limit(1)
     ).first()
 
-    current = snapshot(session, project_id, evaluation=evaluation)
+    current = snapshot(
+        session,
+        project_id,
+        evaluation=evaluation,
+        committed_dates=committed_dates,
+    )
     if previous is None:
         # A first report has nothing to compare against, and saying "0
         # changes" would read as "nothing moved" rather than "we have not
@@ -266,6 +289,8 @@ def record_run(
     *,
     evaluation: Evaluation,
     output_path: str | None = None,
+    committed_dates: Mapping[int, date | None] | None = None,
+    document_only: bool = False,
 ) -> ReportRun:
     """Store the state this report was published against."""
     run = ReportRun(
@@ -274,8 +299,14 @@ def record_run(
         # snapshot inside this same row already records the former, and
         # a run that disagrees with its own snapshot is unreadable.
         ruleset_version=evaluation.ruleset_version,
-        snapshot_json=snapshot(session, project_id, evaluation=evaluation),
+        snapshot_json=snapshot(
+            session,
+            project_id,
+            evaluation=evaluation,
+            committed_dates=committed_dates,
+        ),
         output_path=output_path,
+        document_only=document_only,
     )
     session.add(run)
     session.flush()

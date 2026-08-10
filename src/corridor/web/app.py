@@ -91,6 +91,7 @@ from corridor.event_admission import (
     attach_statement,
     waiting_statements,
 )
+from corridor.verbal import VerbalRefusal, record_verbal
 from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.cohort import (
@@ -926,6 +927,38 @@ def dependency_detail(
             },
             "dismiss_reasons": DISMISS_REASONS,
         },
+    )
+
+
+@app.post("/ledger/{slug}/{dependency_id}/verbal")
+def record_dependency_verbal(
+    slug: str,
+    dependency_id: int,
+    stated_party: str = Form(...),
+    description: str = Form(...),
+    conversation_date: date = Form(...),
+    committed_date: date = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Record one attributable phone statement from this Dependency's page."""
+    project = _project(session, slug)
+    dependency = _project_dependency(session, project, dependency_id)
+    try:
+        record_verbal(
+            session,
+            dependency,
+            stated_party=stated_party,
+            description=description,
+            conversation_date=conversation_date,
+            committed_date=committed_date,
+            principal=principal,
+        )
+    except VerbalRefusal as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/ledger/{slug}/{dependency_id}", status_code=303
     )
 
 

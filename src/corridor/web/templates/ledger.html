@@ -121,6 +121,9 @@
           <td class="num">
             {%- if r.dependency.committed_date -%}
               <span class="{% if r.dependency.need_date and r.dependency.committed_date > r.dependency.need_date %}late{% endif %}">{{ r.dependency.committed_date }}</span>
+              {%- if r.committed_event and r.committed_event.source_kind == 'verbal' %}
+                <span class="pill contra">verbal · {{ r.committed_event.created_by }} {{ r.committed_event.event_date }}</span>
+              {%- endif -%}
             {%- else -%}—{%- endif -%}
           </td>
           <td class="num">{{ r.assertion_count }}a / {{ r.evidence_count }}e</td>
