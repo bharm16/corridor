@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_events import latest_committed_events, verbal_attribution
@@ -42,7 +42,13 @@ from corridor.exceptions import (
     evaluate_dependency,
     evaluate_project,
 )
-from corridor.models import Assertion, Dependency, DocPage, EvidenceLink
+from corridor.models import (
+    Assertion,
+    Dependency,
+    DependencyEventScope,
+    DocPage,
+    EvidenceLink,
+)
 from corridor.verify import quote_appears_on, threshold_for
 
 # Versioned like every extractor, and for the same reason (ADR-0003's
@@ -309,7 +315,16 @@ def _assemble(
                 (DocPage.document_id == EvidenceLink.document_id)
                 & (DocPage.page_no == EvidenceLink.page_no),
             )
-            .where(EvidenceLink.dependency_id == dependency.id)
+            .outerjoin(
+                DependencyEventScope,
+                DependencyEventScope.event_id == EvidenceLink.event_id,
+            )
+            .where(
+                or_(
+                    EvidenceLink.dependency_id == dependency.id,
+                    DependencyEventScope.dependency_id == dependency.id,
+                )
+            )
             .order_by(EvidenceLink.id)
         ).all()
         for link, page in links:

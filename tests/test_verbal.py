@@ -10,10 +10,18 @@ from sqlalchemy.exc import IntegrityError
 from corridor.changes import record_run
 from corridor.db import Session, engine
 from corridor.dependency_events import project_committed_date
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.models import (
     AuditLog,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
+    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
@@ -79,6 +87,68 @@ def client(session):
     app.dependency_overrides.clear()
 
 
+def _record_cited(
+    session,
+    dependency,
+    document,
+    *,
+    event_date,
+    committed_date,
+    description,
+    verified=True,
+):
+    """Create the exact-day cited compatibility fixture through #217's seam."""
+    project = session.get(Project, dependency.project_id)
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    if verified:
+        return record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party="AT&T",
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=event_date,
+            description=description,
+            new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
+            scope=StatementScope.selected((dependency.id,)),
+            created_by="corridor:event-admission",
+            evidence=CitedStatementEvidence(document.id, 1, "AT&T committed to June 15"),
+        )
+
+    # A reader must still fail closed when it reads an old incomplete cited
+    # event. Production writes cannot create this shape.
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_external_org_id=party.id,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="AT&T",
+        event_date=event_date,
+        description=description,
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text=committed_date.isoformat(),
+                precision="day",
+                start_date=committed_date,
+                end_date=committed_date,
+            ),
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+        )
+    )
+    session.flush()
+    return event
+
+
 def test_recording_a_verbal_projects_its_date_and_attributes_the_call(
     session, dependency
 ):
@@ -96,7 +166,7 @@ def test_recording_a_verbal_projects_its_date_and_attributes_the_call(
     assert event.stated_party == "AT&T"
     assert event.created_by == RECORDER.subject
     assert event.event_date == date(2026, 5, 8)
-    assert event.committed_date == date(2026, 8, 15)
+    assert event.new_timing.start_date == date(2026, 8, 15)
     assert event.event_type == "commitment"
     assert dependency.committed_date == date(2026, 8, 15)
     audit = session.scalars(
@@ -128,29 +198,22 @@ def test_a_verbal_cannot_be_rewritten_or_deleted(session, dependency):
             session.flush()
 
 
-def test_the_database_refuses_a_verbal_without_the_required_call_facts(
+def test_a_verbal_refuses_missing_required_call_facts(
     session, dependency
 ):
-    with pytest.raises(
-        IntegrityError, match="ck_verbal_events_require_call_facts"
-    ):
-        with session.begin_nested():
-            session.add(
-                DependencyEvent(
-                    dependency_id=dependency.id,
-                    event_type="commitment",
-                    source_kind="verbal",
-                    stated_party="AT&T",
-                    event_date=date(2026, 5, 8),
-                    committed_date=None,
-                    description="AT&T gave no date.",
-                    created_by=RECORDER.subject,
-                )
-            )
-            session.flush()
+    with pytest.raises(VerbalRefusal, match="date the party gave"):
+        record_verbal(
+            session,
+            dependency,
+            stated_party="AT&T",
+            description="AT&T gave no date.",
+            conversation_date=date(2026, 5, 8),
+            committed_date=None,
+            principal=RECORDER,
+        )
 
 
-def test_a_later_verbal_is_a_slip_without_rewriting_the_earlier_commitment(
+def test_a_later_verbal_is_another_commitment_without_inventing_a_change(
     session, dependency
 ):
     first = record_verbal(
@@ -172,10 +235,11 @@ def test_a_later_verbal_is_a_slip_without_rewriting_the_earlier_commitment(
         principal=RECORDER,
     )
 
-    assert (first.event_type, later.event_type) == ("commitment", "slip")
-    assert [event.committed_date for event in session.scalars(
+    assert (first.event_type, later.event_type) == ("commitment", "commitment")
+    assert [event.new_timing.start_date for event in session.scalars(
         select(DependencyEvent)
-        .where(DependencyEvent.dependency_id == dependency.id)
+        .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+        .where(DependencyEventScope.dependency_id == dependency.id)
         .order_by(DependencyEvent.event_date, DependencyEvent.id)
     )] == [date(2026, 6, 15), date(2026, 8, 15)]
     assert dependency.committed_date == date(2026, 8, 15)
@@ -255,18 +319,23 @@ def test_the_record_page_interleaves_cited_and_verbal_events_by_when_stated(
     project = session.get(Project, dependency.project_id)
     cited_description = "The party committed to finish in June in the minutes."
     verbal_description = "The party said relocation will finish in August."
-    session.add(
-        DependencyEvent(
-            dependency_id=dependency.id,
-            event_type="commitment",
-            source_kind="cited",
-            event_date=date(2026, 1, 8),
-            committed_date=date(2026, 6, 15),
-            description=cited_description,
-            created_by="corridor:event-admission",
-        )
+    document = Document(
+        project_id=project.id,
+        sha256="a" * 64,
+        filename="minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
     )
+    session.add(document)
     session.flush()
+    _record_cited(
+        session,
+        dependency,
+        document,
+        event_date=date(2026, 1, 8),
+        committed_date=date(2026, 6, 15),
+        description=cited_description,
+    )
     record_verbal(
         session,
         dependency,
@@ -300,43 +369,26 @@ def test_reports_mark_a_verbal_and_can_fall_back_to_a_cited_commitment(
     session.add(minutes)
     session.flush()
     session.add(DocPage(document_id=minutes.id, page_no=1, text="AT&T commitment"))
-    cited = DependencyEvent(
-        dependency_id=dependency.id,
-        event_type="commitment",
-        source_kind="cited",
+    _record_cited(
+        session,
+        dependency,
+        minutes,
         event_date=date(2026, 1, 8),
         committed_date=date(2026, 6, 15),
         description="AT&T committed in the minutes.",
-        created_by="corridor:event-admission",
     )
-    session.add(cited)
-    session.flush()
-    session.add(
-        EvidenceLink(
-            dependency_id=dependency.id,
-            event_id=cited.id,
-            document_id=minutes.id,
-            page_no=1,
-            quote="AT&T committed to June 15",
-            verified=True,
-        )
-    )
-    session.flush()
     # This is a newer cited event, but it has no verified event Evidence.
     # The document-only surface must skip it and retain the earlier cited
     # statement that it can actually show its reader.
-    session.add(
-        DependencyEvent(
-            dependency_id=dependency.id,
-            event_type="slip",
-            source_kind="cited",
-            event_date=date(2026, 4, 8),
-            committed_date=date(2026, 7, 15),
-            description="A later date appeared without verified support.",
-            created_by="corridor:event-admission",
-        )
+    _record_cited(
+        session,
+        dependency,
+        minutes,
+        event_date=date(2026, 4, 8),
+        committed_date=date(2026, 7, 15),
+        description="A later date appeared without verified support.",
+        verified=False,
     )
-    session.flush()
     project_committed_date(session, dependency.id)
     record_verbal(
         session,
@@ -384,18 +436,24 @@ def test_reports_mark_a_verbal_and_can_fall_back_to_a_cited_commitment(
 def test_reports_withhold_an_unverified_cited_event_date(session, dependency):
     project = session.get(Project, dependency.project_id)
     dependency.resolution_strategy = "relocate"
-    session.add(
-        DependencyEvent(
-            dependency_id=dependency.id,
-            event_type="commitment",
-            source_kind="cited",
-            event_date=date(2026, 1, 8),
-            committed_date=date(2026, 6, 15),
-            description="A date without verified event Evidence.",
-            created_by="corridor:event-admission",
-        )
+    document = Document(
+        project_id=project.id,
+        sha256="b" * 64,
+        filename="minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
     )
+    session.add(document)
     session.flush()
+    _record_cited(
+        session,
+        dependency,
+        document,
+        event_date=date(2026, 1, 8),
+        committed_date=date(2026, 6, 15),
+        description="A date without verified event Evidence.",
+        verified=False,
+    )
     project_committed_date(session, dependency.id)
 
     report = build_report(session, project.id, today=date(2026, 7, 1))
@@ -427,28 +485,14 @@ def test_document_only_reports_keep_their_own_cited_history(
     session.add(document)
     session.flush()
     session.add(DocPage(document_id=document.id, page_no=1, text="AT&T commitment"))
-    cited = DependencyEvent(
-        dependency_id=dependency.id,
-        event_type="commitment",
-        source_kind="cited",
+    _record_cited(
+        session,
+        dependency,
+        document,
         event_date=date(2026, 1, 8),
         committed_date=date(2026, 6, 15),
         description="AT&T committed in the minutes.",
-        created_by="corridor:event-admission",
     )
-    session.add(cited)
-    session.flush()
-    session.add(
-        EvidenceLink(
-            dependency_id=dependency.id,
-            event_id=cited.id,
-            document_id=document.id,
-            page_no=1,
-            quote="AT&T committed to June 15",
-            verified=True,
-        )
-    )
-    session.flush()
     record_verbal(
         session,
         dependency,
@@ -496,15 +540,6 @@ def test_document_only_reports_keep_their_own_cited_history(
 
 def test_normal_report_change_marks_a_new_verbal_date(session, dependency):
     project = session.get(Project, dependency.project_id)
-    cited = DependencyEvent(
-        dependency_id=dependency.id,
-        event_type="commitment",
-        source_kind="cited",
-        event_date=date(2026, 1, 8),
-        committed_date=date(2026, 6, 15),
-        description="AT&T committed in the minutes.",
-        created_by="corridor:event-admission",
-    )
     document = Document(
         project_id=project.id,
         sha256="1" * 64,
@@ -513,19 +548,16 @@ def test_normal_report_change_marks_a_new_verbal_date(session, dependency):
         parse_status="parsed",
         pages=1,
     )
-    session.add_all((document, cited))
+    session.add(document)
     session.flush()
-    session.add(
-        EvidenceLink(
-            dependency_id=dependency.id,
-            event_id=cited.id,
-            document_id=document.id,
-            page_no=1,
-            quote="AT&T committed to June 15",
-            verified=True,
-        )
+    _record_cited(
+        session,
+        dependency,
+        document,
+        event_date=date(2026, 1, 8),
+        committed_date=date(2026, 6, 15),
+        description="AT&T committed in the minutes.",
     )
-    session.flush()
     project_committed_date(session, dependency.id)
     first = build_report(session, project.id, today=date(2026, 7, 1))
     record_run(

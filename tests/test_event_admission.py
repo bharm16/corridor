@@ -36,6 +36,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
     DocPage,
     Document,
     EventAdmissionOutcome,
@@ -141,13 +142,15 @@ def _event(
     ref="PL1",
     org=PIPELINE,
     event_date="2025-01-16",
-    committed_date=None,
+    committed_date="2025-06-01",
     description=None,
+    stated_party=None,
 ):
     return {
         "event_type": event_type,
         "description": description or f"{org} spoke about {ref}",
         "external_org": org,
+        "stated_party": stated_party if stated_party is not None else org,
         "event_date": event_date,
         "committed_date": committed_date,
         "conflict_ref": ref,
@@ -190,6 +193,14 @@ def _minutes_with(session, project, event_fields_list, *, verified=True):
     return candidates
 
 
+def _events_on(session, dependency_id):
+    return session.scalars(
+        select(DependencyEvent)
+        .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+        .where(DependencyEventScope.dependency_id == dependency_id)
+    ).all()
+
+
 # ── The checks ───────────────────────────────────────────────────────────
 
 
@@ -202,11 +213,7 @@ def test_a_clean_event_is_admitted_onto_its_dependency(
     assert result.admitted_count == 1
     assert result.abstained_count == 0
 
-    event = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.dependency_id == admitted.id
-        )
-    ).one()
+    [event] = _events_on(session, admitted.id)
     assert event.event_type == "commitment"
     assert event.event_date == date(2025, 1, 16)
     session.refresh(candidate)
@@ -217,7 +224,7 @@ def test_a_clean_event_is_admitted_onto_its_dependency(
     "fields,reason,verified",
     [
         (_event(event_type="response"), "event_type_outside_policy", True),
-        (_event(event_date=None), "no_date", True),
+        (_event(event_date=None, committed_date=None), "no_date", True),
         (_event(ref="PL99"), "reference_resolves_to_no_dependency", True),
         (_event(ref=None), "no_conflict_reference", True),
         (_event(org="Some Other Co"), "party_mismatch", True),
@@ -274,7 +281,8 @@ def test_a_project_side_event_never_sets_a_committed_date(
         project,
         [
             _event(
-                org=PROJECT_SIDE,
+                org=PIPELINE,
+                stated_party=PROJECT_SIDE,
                 committed_date="2025-03-01",
                 description="LJA will send the cross sections",
             )
@@ -410,11 +418,11 @@ def test_a_promised_date_never_stands_in_for_the_date_it_was_said(
     result = run_event_admission(session, project.id)
     assert result.admitted_count == 2
 
-    undated = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.committed_date == date(2025, 6, 1)
-        )
-    ).one()
+    undated = next(
+        event
+        for event in session.scalars(select(DependencyEvent))
+        if event.new_timing.start_date == date(2025, 6, 1)
+    )
     assert undated.event_date is None
 
     # The February statement is the only one that carries a date it was
@@ -472,18 +480,10 @@ def test_a_shared_number_resolves_by_the_statements_party(
 
     result = run_event_admission(session, project.id)
     assert result.admitted_count == 1
-    [event] = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.dependency_id == other.id
-        )
-    ).all()
+    [event] = _events_on(session, other.id)
     assert event.event_type == "commitment"
     assert (
-        session.scalars(
-            select(DependencyEvent).where(
-                DependencyEvent.dependency_id == admitted.id
-            )
-        ).all()
+        _events_on(session, admitted.id)
         == []
     )
 
@@ -504,11 +504,7 @@ def test_narrowing_by_party_honors_the_recorded_aliases(
     assert result.admitted_count == 1
     assert (
         len(
-            session.scalars(
-                select(DependencyEvent).where(
-                    DependencyEvent.dependency_id == other.id
-                )
-            ).all()
+                _events_on(session, other.id)
         )
         == 1
     )
@@ -574,7 +570,9 @@ def test_attaching_holds_the_masquerade_boundary(session, project, admitted):
     from corridor.event_admission import StatementUnplaceable, attach_statement
 
     [candidate] = _minutes_with(
-        session, project, [_event(org=PROJECT_SIDE, ref="PL99")]
+        session,
+        project,
+        [_event(org=PIPELINE, stated_party=PROJECT_SIDE, ref="PL99")],
     )
     run_event_admission(session, project.id)
 
@@ -740,11 +738,7 @@ def test_the_machine_never_attaches_to_a_dismissed_record(
         "reference_resolves_to_no_dependency"
     }
     assert (
-        session.scalars(
-            select(DependencyEvent).where(
-                DependencyEvent.dependency_id == admitted.id
-            )
-        ).all()
+            _events_on(session, admitted.id)
         == []
     )
     session.refresh(admitted)

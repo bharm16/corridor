@@ -21,6 +21,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
     DocPage,
     Document,
     EvidenceLink,
@@ -257,15 +258,19 @@ def test_an_unverified_disagreement_is_not_a_contradiction(
 
 
 def test_the_detail_view_carries_events_and_audit(session, project, dependency):
-    session.add(
-        DependencyEvent(
-            dependency_id=dependency.id,
-            event_type="slip",
-            event_date=date(2026, 3, 4),
-            description="AT&T moved relocation from June to August",
-            created_by="tester",
-        )
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=dependency.external_org_id,
+        stated_external_org_id=dependency.external_org_id,
+        scope_mode="selected",
+        event_type="slip",
+        event_date=date(2026, 3, 4),
+        description="AT&T moved relocation from June to August",
+        created_by="tester",
     )
+    session.add(event)
+    session.flush()
+    session.add(DependencyEventScope(event_id=event.id, dependency_id=dependency.id))
     session.flush()
 
     view = load_dependency(session, dependency.id)
