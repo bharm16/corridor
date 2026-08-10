@@ -184,6 +184,8 @@
             <form method="post"
                   action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">
               <input type="hidden" name="field_name" value="{{ f.name }}">
+              <input type="hidden" name="saw_claim_id"
+                     value="{{ disputes[f.name].newest_claim_id }}">
               <input type="hidden" name="value" value="{{ value or '' }}">
               <button>{{ value or 'nothing' }}</button>
             </form>
@@ -191,6 +193,8 @@
           <form method="post"
                 action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">
             <input type="hidden" name="field_name" value="{{ f.name }}">
+            <input type="hidden" name="saw_claim_id"
+                   value="{{ disputes[f.name].newest_claim_id }}">
             <input type="text" name="value" placeholder="or type the right value">
             <button>settle</button>
           </form>

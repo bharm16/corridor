@@ -83,7 +83,7 @@ def test_under_a_per_party_scheme_the_name_is_the_party_and_the_number():
     schemes = {1: PER_PARTY}
     att = _candidate(1, "1", org="AT&T TCA")
 
-    assert conflict_key(att, schemes) == ("AT&T TCA", "1")
+    assert conflict_key(att, schemes) == ("at&t tca", "1")
     assert same_conflict(att, _candidate(2, "1", org="AT&T TCA"), schemes)
     assert not same_conflict(att, _candidate(3, "1", org="Comcast"), schemes)
 
@@ -91,6 +91,23 @@ def test_under_a_per_party_scheme_the_name_is_the_party_and_the_number():
 def test_a_per_party_row_with_no_party_states_no_conflict():
     schemes = {1: PER_PARTY}
     assert conflict_key(_candidate(1, "1"), schemes) is None
+
+
+def test_one_party_spelled_two_ways_is_one_conflict():
+    """Revisions of one form spell a company differently; keying on the
+    raw string made that two records with the same number."""
+    schemes = {1: PER_PARTY}
+    assert same_conflict(
+        _candidate(1, "1", org="AT&T Texas"),
+        _candidate(2, "1", org="AT&T  TEXAS"),
+        schemes,
+    )
+
+
+def test_a_party_the_document_declined_to_name_states_no_conflict():
+    """`N/A` on two rows is not one party twice."""
+    schemes = {1: PER_PARTY}
+    assert conflict_key(_candidate(1, "1", org="N/A"), schemes) is None
 
 
 def test_no_siblings_asked_for_is_always_coherent():

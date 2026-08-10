@@ -38,6 +38,11 @@ class NoSuchDispute(ValueError):
     """The field is not in dispute, so there is nothing to settle."""
 
 
+class DisputeMovedOn(ValueError):
+    """A claim arrived after the page was read; the judgment would cover
+    evidence the reviewer never saw."""
+
+
 @dataclass(frozen=True)
 class DisputedClaim:
     """One revision's claim about a disputed field, with its page."""
@@ -58,6 +63,17 @@ class Dispute:
     dependency_id: int
     field_name: str
     claims: tuple[DisputedClaim, ...]
+
+    @property
+    def newest_claim_id(self) -> int:
+        """The claim a reviewer looking at this page has seen up to.
+
+        Submitted with a settlement so the judgment covers exactly what
+        was compared. A claim that lands between render and submit makes
+        the two disagree, and the settlement is refused rather than
+        silently reaching over evidence nobody read.
+        """
+        return max(claim.assertion_id for claim in self.claims)
 
     @property
     def values(self) -> tuple[str | None, ...]:
@@ -81,13 +97,24 @@ def settled_field_names(
     if not dependency_ids:
         return {}
 
+    # Only the claims that could contradict anything. `contradicted_fields`
+    # counts verified, non-blank assertions; measuring a settlement's reach
+    # against every row let an unverified or blank assertion — a bad
+    # citation, not a source disagreeing — arrive with a higher id and
+    # un-settle a Dispute a reviewer had already decided.
     newest_claim = (
         select(
             Assertion.dependency_id.label("dependency_id"),
             Assertion.field_name.label("field_name"),
             func.max(Assertion.id).label("newest_assertion_id"),
         )
-        .where(Assertion.dependency_id.in_(dependency_ids))
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
+            Assertion.dependency_id.in_(dependency_ids),
+            EvidenceLink.verified.is_(True),
+            Assertion.asserted_value.is_not(None),
+            func.trim(Assertion.asserted_value) != "",
+        )
         .group_by(Assertion.dependency_id, Assertion.field_name)
         .subquery()
     )
@@ -166,6 +193,7 @@ def settle_dispute(
     *,
     value: str | None,
     principal: HumanPrincipal,
+    saw_claim_id: int | None = None,
 ) -> DisputeSettlement:
     """Record what the record concludes for one disputed field.
 
@@ -173,6 +201,12 @@ def settle_dispute(
     pages may conclude a third thing, which is the same latitude
     edit-then-accept has always given. What it may not be is unattributed
     — settling is a human act on the Ledger.
+
+    `saw_claim_id` is the newest claim the page showed. When it is given
+    and a newer claim has since arrived, the settlement is refused: the
+    reviewer compared two pages and a third has appeared, and recording
+    their judgment as covering it would settle a disagreement they were
+    never shown.
     """
     settler = require_human_principal(principal)
     dependency = session.get(Dependency, dependency_id)
@@ -192,11 +226,21 @@ def settle_dispute(
         )
 
     newest = session.scalar(
-        select(func.max(Assertion.id)).where(
+        select(func.max(Assertion.id))
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
             Assertion.dependency_id == dependency_id,
             Assertion.field_name == field_name,
+            EvidenceLink.verified.is_(True),
+            Assertion.asserted_value.is_not(None),
+            func.trim(Assertion.asserted_value) != "",
         )
     )
+    if saw_claim_id is not None and newest is not None and newest > saw_claim_id:
+        raise DisputeMovedOn(
+            "another revision stated this field while you were reading — "
+            "look again before settling it"
+        )
     settlement = DisputeSettlement(
         dependency_id=dependency_id,
         field_name=field_name,
@@ -210,7 +254,15 @@ def settle_dispute(
     # Where the record carries a column for the field, the conclusion is
     # projected onto it — the same shape the Committed Date projection
     # takes. Fields with no column live on in the settlement alone.
-    if hasattr(dependency, field_name) and field_name in _PROJECTED_FIELDS:
+    #
+    # `title` is NOT NULL, and settling a field as saying nothing is a
+    # legitimate conclusion, so the two meet at a 500 unless the
+    # projection declines. The settlement still records the conclusion;
+    # only the denormalized column keeps its last non-null value, which
+    # is what a column that cannot be empty means.
+    if field_name in _PROJECTED_FIELDS and not (
+        value is None and field_name in _NOT_NULL_COLUMNS
+    ):
         setattr(dependency, field_name, value)
 
     audit.record(
@@ -236,3 +288,6 @@ def settle_dispute(
 _PROJECTED_FIELDS = frozenset(
     {"station_from", "station_to", "title", "location_desc"}
 )
+
+# Of those, the ones the schema refuses to leave empty.
+_NOT_NULL_COLUMNS = frozenset({"title"})

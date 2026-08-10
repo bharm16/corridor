@@ -80,7 +80,12 @@ from corridor.web.queue import (
     next_candidate,
     pending_counts,
 )
-from corridor.disputes import NoSuchDispute, disputes_for, settle_dispute
+from corridor.disputes import (
+    DisputeMovedOn,
+    NoSuchDispute,
+    disputes_for,
+    settle_dispute,
+)
 from corridor.event_admission import (
     StatementUnplaceable,
     attach_statement,
@@ -397,6 +402,12 @@ REVIEW_REASONS = {
     "no_utility_id": (
         "This row has no identifier.",
         "Nothing can name it in the record as it stands.",
+    ),
+    "revisions_disagree_on_party": (
+        "The revisions name different parties for this conflict.",
+        "That asks whether these are one conflict at all, which is not "
+        "something the machine may answer. Read both pages and accept the "
+        "one that is right.",
     ),
     "no_row_identity": (
         "This row's number needs a party to name it.",
@@ -920,6 +931,7 @@ def settle(
     dependency_id: int,
     field_name: str = Form(...),
     value: str = Form(""),
+    saw_claim_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -940,8 +952,9 @@ def settle(
             field_name,
             value=value.strip() or None,
             principal=principal,
+            saw_claim_id=saw_claim_id,
         )
-    except NoSuchDispute as exc:
+    except (NoSuchDispute, DisputeMovedOn) as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))

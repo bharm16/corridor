@@ -686,3 +686,48 @@ def test_declaring_a_scheme_changes_the_digest_the_receipt_records(
     session.flush()
     after = run_dependency_admission(session, project.id)
     assert session.get(PolicyRun, after.run_id).policy_sha256 != before_sha
+
+
+def test_a_replaced_revision_is_not_read_at_all(session, project):
+    """Every other path refuses a replaced revision's rows, so including
+    one here did not corroborate — the write refused and took the current
+    revision's own row down with it. Measured on NHHIP: 211 admitted
+    where 688 should have been."""
+    from corridor.supersession import SupersessionDeclaration, register_supersessions
+    from datetime import date
+
+    feb = _document(session, project, filename="ucm-feb.pdf")
+    may = _document(session, project, filename="ucm-may.pdf")
+    feb.registry_id, may.registry_id = "ucm-feb", "ucm-may"
+    session.flush()
+    _run(session, feb, [_candidate(feb, _fields("SHARED")),
+                        _candidate(feb, _fields("FEBONLY", station="1200+00"))])
+    _run(session, may, [_candidate(may, _fields("SHARED")),
+                        _candidate(may, _fields("MAYONLY", station="1300+00"))])
+    declare_single_run_documents_by_policy(session, project.id)
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id="ucm-feb",
+                successor_registry_id="ucm-may",
+                replacement_date=date(2025, 5, 5),
+                source_registry_id="ucm-may",
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
+    session.flush()
+
+    result = run_dependency_admission(session, project.id)
+
+    # The current revision lands whole. Nothing is refused, and SHARED —
+    # which the replaced revision also states — is not dragged down.
+    assert result.abstained_count == 0
+    assert {
+        d.source_ref
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    } == {"SHARED", "MAYONLY"}

@@ -178,6 +178,13 @@ class _Facts:
     superseded_scopes: tuple[SupersededOperativeScope, ...]
 
 
+def _is_dismissed(session: Session, dependency: Dependency) -> bool:
+    """A record nobody is working raises no findings about nobody working
+    it (ADR-0032). The project-wide `evaluate` filters in SQL; the
+    per-record path has to ask the same question of its one row."""
+    return dependency.dismissed_at is not None
+
+
 def exceptions_for(
     session: Session,
     dependency_id: int,
@@ -311,7 +318,11 @@ def evaluate_dependency(
         today=today,
         thresholds=thresholds,
         ruleset_version=RULESET_VERSION,
-        found=tuple(_apply(_gather(session, dependency), today, thresholds)),
+        found=(
+            ()
+            if _is_dismissed(session, dependency)
+            else tuple(_apply(_gather(session, dependency), today, thresholds))
+        ),
     )
 
 
@@ -390,7 +401,16 @@ def contradicted_fields(
             # A null is an absent column, not a competing value — the
             # matrix revisions add and drop columns between editions.
             Assertion.asserted_value.is_not(None),
-            func.trim(Assertion.asserted_value) != "",
+            # Postgres `trim` strips spaces only; `is_claim` — the Python
+            # half of this one rule — strips every kind of whitespace. A
+            # value of "\t" counted as a competing claim here and did not
+            # on the detail page, so the two readers disagreed about one
+            # record, which is the failure this function was unified to
+            # abolish. `[:space:]` is the class Python strips.
+            func.regexp_replace(
+                Assertion.asserted_value, r"^[[:space:]]+|[[:space:]]+$", "", "g"
+            )
+            != "",
         )
         .group_by(Assertion.dependency_id, Assertion.field_name)
         .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
