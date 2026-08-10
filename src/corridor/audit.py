@@ -80,6 +80,7 @@ ADMIT_EVENT = "admit_event"
 ADMIT_DEPENDENCY = "admit_dependency"
 SETTLE_DISPUTE = "settle_dispute"
 ATTACH_STATEMENT = "attach_statement"
+RECORD_VERBAL = "record_verbal"
 DISMISS_DEPENDENCY = "dismiss_dependency"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
@@ -116,6 +117,7 @@ ACTIONS = frozenset(
         ADMIT_DEPENDENCY,
         SETTLE_DISPUTE,
         ATTACH_STATEMENT,
+        RECORD_VERBAL,
         DISMISS_DEPENDENCY,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
