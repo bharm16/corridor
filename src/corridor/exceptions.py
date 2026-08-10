@@ -361,6 +361,19 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
     return view
 
 
+# Exactly the characters Python's str.strip() removes. Postgres's
+# [[:space:]] is narrower — it misses the non-breaking space and its
+# Unicode relatives — so a value of a lone NBSP counted as a claim in SQL
+# and not in Python, re-opening the one-predicate rule from the side
+# nobody had checked. Spelled out rather than referenced, because the
+# whole defect was two systems each defining "whitespace" their own way.
+_PY_WHITESPACE = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008"
+    "\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
 def claim_predicates():
     """The SQL half of "does this assertion say anything".
 
@@ -376,7 +389,10 @@ def claim_predicates():
     return (
         Assertion.asserted_value.is_not(None),
         func.regexp_replace(
-            Assertion.asserted_value, r"^[[:space:]]+|[[:space:]]+$", "", "g"
+            Assertion.asserted_value,
+            f"^[{_PY_WHITESPACE}]+|[{_PY_WHITESPACE}]+$",
+            "",
+            "g",
         )
         != "",
     )

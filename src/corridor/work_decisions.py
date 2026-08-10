@@ -210,6 +210,15 @@ def _locked_dependency(session: Session, dependency_id: int) -> Dependency:
     if dependency is None:
         raise ValueError(f"dependency {dependency_id} does not exist")
     lock_project(session, dependency.project_id)
+    # Re-read under the lock, then refuse a dismissed record: assigning
+    # an owner or a next action to a row nobody is working contradicts
+    # the dismissal it would silently outlive (ADR-0032).
+    session.refresh(dependency)
+    if dependency.dismissed_at is not None:
+        raise ValueError(
+            f"{dependency.ref_code} was dismissed — no Work Decision can "
+            "be recorded on a record nobody is working"
+        )
     return dependency
 
 

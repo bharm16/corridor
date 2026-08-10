@@ -3936,3 +3936,71 @@ def test_a_dismissed_record_is_not_offered_as_someones_work(
 
     page = client.get(f"/ledger/{project.slug}?owner=Dana+Reyes").text
     assert "0 shown" in page
+
+
+# ── Dismissal holds at every door (re-review round) ──────────────────────
+
+
+def test_a_dismissed_record_refuses_a_merge(session, client, project, document):
+    """The offer list already excluded dismissed targets; the mutation
+    must too, or a stale form files a claim where nothing looks again."""
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+    candidate = make_candidate(
+        session, project, document, uid="FOC1-2", station_from="1150+00"
+    )
+
+    refused = client.post(
+        f"/candidates/{candidate.id}/merge",
+        data={"slug": project.slug, "dependency_id": str(dependency.id)},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 409
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+
+
+def test_a_dismissed_record_refuses_work_decisions(
+    session, client, project, document
+):
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "not-a-conflict"},
+        follow_redirects=False,
+    )
+
+    refused = client.post(
+        f"/dependencies/{dependency.id}/owner",
+        data={"slug": project.slug, "owner": "Dana Reyes"},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 400
+    session.refresh(dependency)
+    assert dependency.internal_owner is None
+
+
+def test_a_dismissed_record_leaves_the_reviewer_worklist(
+    session, client, project, document
+):
+    """A worklist must not offer work on a record that was thrown out."""
+    from corridor.supersession_review import build_reviewer_worklist
+
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+
+    worklist = build_reviewer_worklist(session, project.id)
+    named = {
+        review.dependency_id
+        for review in (*worklist.ordinary, *worklist.reconfirmation)
+        if getattr(review, "dependency_id", None)
+    }
+    assert dependency.id not in named

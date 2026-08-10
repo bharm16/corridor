@@ -170,7 +170,12 @@ def brief_project(
     dependencies = list(
         session.scalars(
             select(Dependency)
-            .where(Dependency.project_id == project_id)
+            .where(
+                Dependency.project_id == project_id,
+                # A briefing narrates the working list; a dismissed record
+                # left it, with its reason on file (ADR-0032).
+                Dependency.dismissed_at.is_(None),
+            )
             .order_by(Dependency.ref_code)
         )
     )

@@ -51,6 +51,7 @@ from corridor.models import (
     PolicyRun,
     Document,
     Project,
+    is_placeholder_party,
 )
 from corridor.project_lock import lock_project
 
@@ -242,21 +243,26 @@ def run_dependency_admission(
         # identity key above: `Zeta Cable Co` and `Zeta Cable Company` are
         # one company saying one thing, and reading them as two parties
         # would withhold a row over a spelling the registry already
-        # reconciles.
+        # reconciles. A blank or placeholder cell names nobody (ADR-0031
+        # withholds only where revisions name different External
+        # Parties), so `N/A` against `AT&T` is one named party and a
+        # gap, never a disagreement.
         parties = {
-            identity.canonical_party(
-                (c.payload_json or {}).get("fields", {}).get("external_org") or "",
-                aliases,
-            )
+            identity.canonical_party(org, aliases)
             for c in candidates
+            for org in [
+                (c.payload_json or {}).get("fields", {}).get("external_org")
+            ]
+            if str(org or "").strip() and not is_placeholder_party(org)
         }
         if len(parties) > 1:
             abstain(candidates, "revisions_disagree_on_party")
             continue
-        fields = (candidates[0].payload_json or {}).get("fields", {})
-        if not any(v for v in fields.values() if v):
-            abstain(candidates, "asserts_nothing")
-            continue
+        # No "asserts nothing" branch here: a group only exists because
+        # its rows carry an identity, and the identity's own fields are
+        # claims — the branch that used to sit here could never fire. The
+        # write boundary still enforces the rule (CandidateAssertsNothing
+        # → write_refused), where it is real rather than vacuous.
         party, uid = key
         carriers = session.scalars(
             select(Dependency).where(

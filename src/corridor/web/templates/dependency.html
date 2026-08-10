@@ -175,11 +175,14 @@
           <span class="q">{{ (a.quote or '')[:90] }}</span>
         </div>
       {% endfor %}
-      {% if f.contradicted %}
+      {% if f.name in disputes %}
         {# Both claims are listed directly above, so the choice is made
-           while looking at them rather than from memory. #}
+           while looking at them rather than from memory. A settled field
+           keeps its form because a mistaken settlement is corrected by
+           settling again (ADR-0031), never by editing history. #}
         <div class="settle">
-          <span class="lead">Which is right?</span>
+          <span class="lead">{% if f.settled %}Settled — change the
+            conclusion?{% else %}Which is right?{% endif %}</span>
           {% for value in disputes[f.name].values %}
             <form method="post"
                   action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">

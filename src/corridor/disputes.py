@@ -144,11 +144,41 @@ def settled_field_names(
     return settled
 
 
-def disputes_for(session: Session, dependency_id: int) -> list[Dispute]:
-    """Every standing Dispute on one record, with both pages to read."""
-    from corridor.exceptions import contradicted_fields
+def _disagreeing_field_names(session: Session, dependency_id: int) -> list[str]:
+    """Fields with two or more distinct verified claims, settled or not."""
+    return list(
+        session.scalars(
+            select(Assertion.field_name)
+            .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+            .where(
+                Assertion.dependency_id == dependency_id,
+                EvidenceLink.verified.is_(True),
+                *claim_predicates(),
+            )
+            .group_by(Assertion.field_name)
+            .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
+        ).all()
+    )
 
-    names = contradicted_fields(session, [dependency_id]).get(dependency_id, [])
+
+def disputes_for(
+    session: Session, dependency_id: int, *, include_settled: bool = False
+) -> list[Dispute]:
+    """Every standing Dispute on one record, with both pages to read.
+
+    `include_settled` also returns the disagreements a settlement has
+    answered — for the page that offers to change a conclusion, because a
+    mistaken settlement is corrected by settling again (ADR-0031), and
+    correcting one needs the claims in front of the reviewer.
+    """
+    if include_settled:
+        names = _disagreeing_field_names(session, dependency_id)
+    else:
+        from corridor.exceptions import contradicted_fields
+
+        names = contradicted_fields(session, [dependency_id]).get(
+            dependency_id, []
+        )
     if not names:
         return []
 
@@ -162,6 +192,10 @@ def disputes_for(session: Session, dependency_id: int) -> list[Dispute]:
                 Assertion.dependency_id == dependency_id,
                 Assertion.field_name == name,
                 EvidenceLink.verified.is_(True),
+                # The same claim rule everywhere: a blank assertion is an
+                # absent column, not a competing value, and rendering one
+                # as a claim would let the page disagree with the engine.
+                *claim_predicates(),
             )
             .order_by(Document.doc_date.asc().nulls_first(), Assertion.id.asc())
         ).all()
@@ -213,13 +247,18 @@ def settle_dispute(
     if dependency is None:
         raise ValueError(f"dependency {dependency_id} does not exist")
     lock_project(session, dependency.project_id)
+    session.refresh(dependency)
+    if dependency.dismissed_at is not None:
+        raise ValueError(
+            f"{dependency.ref_code} was dismissed — a Dispute on a record "
+            "nobody is working needs no verdict"
+        )
 
-    from corridor.exceptions import contradicted_fields
-
-    standing = contradicted_fields(session, [dependency_id]).get(
-        dependency_id, []
-    )
-    if field_name not in standing:
+    # The raw disagreement, ignoring settlements: a mistaken settlement
+    # is corrected by settling again (ADR-0031), so "already settled"
+    # must not read as "nothing to settle". What still refuses is a field
+    # the sources never disagreed about.
+    if field_name not in _disagreeing_field_names(session, dependency_id):
         raise NoSuchDispute(
             f"{field_name!r} is not in dispute on this record — nothing to "
             "settle"

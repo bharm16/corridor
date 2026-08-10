@@ -413,6 +413,11 @@ def mark_satisfies(
     session.flush()
     lock_project(session, dependency.project_id)
     session.expire_all()
+    if dependency.dismissed_at is not None:
+        raise ValueError(
+            f"{dependency.ref_code} was dismissed — readiness cannot move "
+            "on a record nobody is working"
+        )
     link = session.get(EvidenceLink, link_id, populate_existing=True)
     if link is None or link.dependency_id != dependency_id:
         raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
