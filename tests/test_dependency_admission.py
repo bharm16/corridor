@@ -731,3 +731,66 @@ def test_a_replaced_revision_is_not_read_at_all(session, project):
             select(Dependency).where(Dependency.project_id == project.id)
         )
     } == {"SHARED", "MAYONLY"}
+
+
+def test_one_party_under_two_registered_names_is_one_conflict(
+    session, project
+):
+    """An External Party is known by many names — that is what its
+    aliases are for. Keying on the stated spelling made one company's two
+    registered names two records with the same number, each invisible to
+    the other's already-admitted check, and split the disagreement
+    between them across both rows instead of raising it as a Dispute."""
+    from corridor.disputes import disputes_for
+    from corridor.models import ExternalOrg
+
+    org = ExternalOrg(
+        name="Zeta Cable Co TEST", aliases=["Zeta Cable Company TEST"]
+    )
+    session.add(org)
+    session.flush()
+
+    feb = _per_party_document(session, project, filename="alias-feb.pdf")
+    may = _per_party_document(session, project, filename="alias-may.pdf")
+    _run(session, feb, [_candidate(feb, _fields("1", org="Zeta Cable Co TEST"))])
+    _run(
+        session,
+        may,
+        [
+            _candidate(
+                may,
+                _fields("1", org="Zeta Cable Company TEST", station="9999+00"),
+            )
+        ],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == 1
+    assert result.abstained_count == 0
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    # And the station disagreement is a Dispute on that one row, not two
+    # records each holding half of it.
+    assert "station_from" in [
+        d.field_name for d in disputes_for(session, dependency.id)
+    ]
+
+
+def test_an_unregistered_spelling_stays_its_own_party(session, project):
+    """Nothing guesses. A spelling nobody has registered surfaces as a
+    row to look at rather than silently merging two companies."""
+    feb = _per_party_document(session, project, filename="unreg-feb.pdf")
+    may = _per_party_document(session, project, filename="unreg-may.pdf")
+    _run(session, feb, [_candidate(feb, _fields("1", org="Aardvark Gas TEST"))])
+    _run(
+        session,
+        may,
+        [_candidate(may, _fields("1", org="Aardvark Gas Company TEST"))],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 2  # two parties, as far as anyone knows

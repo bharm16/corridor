@@ -161,6 +161,7 @@ def run_dependency_admission(
     document_ids = declared_matrix_document_ids(session, project_id)
     policy_json = _canonical_policy(session, project, document_ids)
     schemes = identity.document_numbering_schemes(session, project_id)
+    aliases = identity.party_canonical_names(session)
 
     # Pending dependency candidates from each agreement document's
     # declared Active Run, grouped by document then by row identity under
@@ -185,7 +186,7 @@ def run_dependency_admission(
             .order_by(Candidate.id)
         ).all()
         for candidate in candidates:
-            key = identity.candidate_identity(candidate, schemes)
+            key = identity.candidate_identity(candidate, schemes, aliases)
             if key is not None:
                 rows.setdefault(key, []).append(candidate)
                 continue
@@ -237,9 +238,15 @@ def run_dependency_admission(
         # it asks whether these are one conflict at all, and merging two
         # parties' rows into one record would answer it by accident. That
         # question is Adjudication's (ADR-0031).
+        # Resolved through the party's registered aliases, like the
+        # identity key above: `Zeta Cable Co` and `Zeta Cable Company` are
+        # one company saying one thing, and reading them as two parties
+        # would withhold a row over a spelling the registry already
+        # reconciles.
         parties = {
-            identity.normalize_party(
-                (c.payload_json or {}).get("fields", {}).get("external_org") or ""
+            identity.canonical_party(
+                (c.payload_json or {}).get("fields", {}).get("external_org") or "",
+                aliases,
             )
             for c in candidates
         }
