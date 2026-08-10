@@ -527,3 +527,129 @@ def test_a_number_no_party_disambiguates_still_abstains(
     assert {a.reason for a in result.abstentions} == {
         "reference_resolves_to_many"
     }
+
+
+# ── The pile of statements the machine could not place (#213) ────────────
+
+
+def test_an_unplaceable_statement_is_kept_and_named(session, project, admitted):
+    """A dated promise is exactly what this product exists to catch;
+    losing one silently is worse than a short list."""
+    from corridor.event_admission import waiting_statements
+
+    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
+    result = run_event_admission(session, project.id)
+    assert result.admitted_count == 0
+
+    [waiting] = waiting_statements(session, project.id)
+    assert waiting["candidate"].id == candidate.id
+    assert waiting["reason"] == "reference_resolves_to_no_dependency"
+    assert waiting["external_org"] == PIPELINE
+    assert waiting["event_date"] == "2025-01-16"
+
+
+def test_attaching_places_the_statement_a_human_names(
+    session, project, admitted
+):
+    from corridor.event_admission import attach_statement, waiting_statements
+
+    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
+    run_event_admission(session, project.id)
+
+    event = attach_statement(
+        session, candidate, admitted, principal=OPERATOR
+    )
+
+    assert event.event_type == "commitment"
+    assert event.created_by == OPERATOR.subject
+    session.refresh(candidate)
+    assert candidate.state == "accepted"
+    assert waiting_statements(session, project.id) == []
+
+
+def test_attaching_holds_the_masquerade_boundary(session, project, admitted):
+    """A project-side actor stating a delivery date is an action item,
+    never an External Party's commitment — a human naming a record does
+    not change that (ADR-0026)."""
+    from corridor.event_admission import StatementUnplaceable, attach_statement
+
+    [candidate] = _minutes_with(
+        session, project, [_event(org=PROJECT_SIDE, ref="PL99")]
+    )
+    run_event_admission(session, project.id)
+
+    with pytest.raises(StatementUnplaceable, match="own side"):
+        attach_statement(session, candidate, admitted, principal=OPERATOR)
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+
+
+def test_attaching_refuses_an_unreadable_date(session, project, admitted):
+    from corridor.event_admission import StatementUnplaceable, attach_statement
+
+    [candidate] = _minutes_with(
+        session, project, [_event(event_date="the third of never", ref="PL99")]
+    )
+    run_event_admission(session, project.id)
+
+    with pytest.raises(StatementUnplaceable, match="date"):
+        attach_statement(session, candidate, admitted, principal=OPERATOR)
+
+
+def test_attaching_is_an_attributable_human_act(session, project, admitted):
+    from corridor.event_admission import attach_statement
+
+    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
+    run_event_admission(session, project.id)
+
+    with pytest.raises(InvalidHumanPrincipal):
+        attach_statement(
+            session, candidate, admitted, principal="system:batch"
+        )
+
+
+def test_an_attached_commitment_moves_the_committed_date(
+    session, project, admitted
+):
+    """The projection is the same one the policy path feeds."""
+    from corridor.event_admission import attach_statement
+
+    [candidate] = _minutes_with(
+        session,
+        project,
+        [_event(ref="PL99", committed_date="2025-06-03")],
+    )
+    run_event_admission(session, project.id)
+    attach_statement(session, candidate, admitted, principal=OPERATOR)
+
+    session.refresh(admitted)
+    assert admitted.committed_date == date(2025, 6, 3)
+
+
+def test_a_statement_cannot_attach_to_another_projects_record(
+    session, project, admitted
+):
+    from corridor.event_admission import StatementUnplaceable, attach_statement
+    from corridor.models import Project as ProjectModel
+
+    other = ProjectModel(
+        slug="statement-other", name="Other", is_synthetic=True
+    )
+    session.add(other)
+    session.flush()
+    stray = Dependency(
+        project_id=other.id,
+        ref_code="DEP-00001",
+        source_ref="PL99",
+        dep_type="utility_relocation",
+        title="elsewhere",
+        status="identified",
+    )
+    session.add(stray)
+    session.flush()
+
+    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
+    run_event_admission(session, project.id)
+
+    with pytest.raises(StatementUnplaceable, match="another project"):
+        attach_statement(session, candidate, stray, principal=OPERATOR)

@@ -64,6 +64,10 @@ _Avoid_: claim, statement, fact, value
 Two revisions of a document disagreeing about a field of one Dependency — a query over Assertions, never a stored flag. Both claims stay on the row with their pages; the row is workable while the Dispute stands, and settling it is Adjudication taken up when it matters (ADR-0031).
 _Avoid_: conflict (the industry word for a Dependency, never for documents disagreeing), contradiction (the Exception category that surfaces a Dispute), mismatch
 
+**Dismissal**:
+The human act of taking a junk record off the working list with a stated reason — a duplicate, or not a conflict at all. Never a delete: the row, its Evidence, its Assertions and its history stay, so the record keeps saying why it left (ADR-0032).
+_Avoid_: delete, remove, archive (the sealed retirement of the legacy Ledger is a different act), close (a Dependency closes when its work is done)
+
 **Settlement**:
 One human decision about what a disputed field concludes, recorded beside the claims rather than erasing the losing one. It names how far its judgment reaches — the claims that existed when it was made — so a later revision disagreeing again reopens the Dispute rather than inheriting a verdict nobody gave it.
 _Avoid_: resolution (Resolution Strategy is what the document asserts about the facility), override, correction
@@ -176,6 +180,10 @@ _Avoid_: bot session, reviewer batch, transient log
 **Revision Processing**:
 The ordered service that creates and read-verifies one exact Revision Comparison before invoking an already-authorized Carry-Forward Policy. It grants no authority, does not activate a policy, and does not turn Revision Comparison into a Ledger writer.
 _Avoid_: automatic Adjudication, comparison write-back, implicit approval
+
+**Unplaced Statement**:
+A statement from the minutes the event-admission policy could not attach to any Dependency — the reference names nothing, names several, or the party does not match. Kept and shown in one pile rather than dropped, because a dated promise is what the record most needs; a reviewer names the record it belongs to or tosses it (ADR-0032).
+_Avoid_: orphan event, unmatched event, statement queue (it is a pile a reviewer empties, never a lane)
 
 **Candidate**:
 A Dependency or event proposed by an extractor, with its citations, not yet part of the Ledger. Extractors produce only Candidates; they can never write to the Ledger.

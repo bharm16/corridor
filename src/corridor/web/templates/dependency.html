@@ -39,6 +39,10 @@
             cursor:pointer; }
   .settle .lead { color:#7a2e0e; }
   .pill.settled { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
+  .dismiss { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:1.2rem; }
+  .dismiss button { font:inherit; font-size:.82rem; padding:.2rem .6rem;
+                    border:1px solid var(--line); border-radius:4px;
+                    background:#fff; cursor:pointer; color:var(--muted); }
   table { border-collapse:collapse; width:100%; }
   th { text-align:left; color:var(--muted); font-weight:500; font-size:.8rem;
        border-bottom:1px solid var(--line); padding:.3rem .5rem; }
@@ -196,6 +200,22 @@
   {% else %}
     <p class="muted">No assertions recorded.</p>
   {% endfor %}
+
+  <h2>Not a real conflict?</h2>
+  <p class="muted">
+    Dismissing takes this off the working list. Nothing is deleted — the
+    page, the claims and the history stay, and this record keeps saying
+    why it left.
+  </p>
+  <div class="dismiss">
+    {% for reason in dismiss_reasons %}
+      <form method="post"
+            action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/dismiss">
+        <input type="hidden" name="reason" value="{{ reason }}">
+        <button>dismiss: {{ reason }}</button>
+      </form>
+    {% endfor %}
+  </div>
 
   <h2>Events</h2>
   {% if view.events %}

@@ -1189,6 +1189,13 @@ class Dependency(Base):
     # (ADR-0002).
     evidence_required: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Set when a reviewer dismisses this record as junk. A projection of
+    # the newest DependencyDismissal, which is the authority — readers
+    # filter on this rather than joining, the same way they read the
+    # projected Committed Date (ADR-0032). Never a delete.
+    dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -1579,6 +1586,38 @@ class AutomaticCarryForwardOutcome(Base):
         ForeignKey("candidates.id")
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DependencyDismissal(Base):
+    """One human decision that a record is junk, with the reason.
+
+    Append-only, like every other decision here. Dismissing does not
+    delete: the row, its Evidence, its Assertions and its history all
+    stay exactly where they are, and `dependencies.dismissed_at` is the
+    projection readers filter on — the shape the Committed Date
+    projection already takes (ADR-0032). Anyone asking why a conflict
+    left the list gets an answer with a name and a date on it.
+    """
+
+    __tablename__ = "dependency_dismissals"
+    __table_args__ = (
+        CheckConstraint(
+            "reason in ('duplicate', 'not-a-conflict', 'wrong')",
+            name="ck_dependency_dismissals_reason",
+        ),
+        CheckConstraint(
+            "length(trim(dismissed_by)) > 0",
+            name="ck_dependency_dismissals_attributable",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    reason: Mapped[str] = mapped_column(String(32))
+    dismissed_by: Mapped[str] = mapped_column(Text)
+    dismissed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

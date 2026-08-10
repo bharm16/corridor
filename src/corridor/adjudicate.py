@@ -24,6 +24,7 @@ from corridor.models import (
     Assertion,
     Candidate,
     Dependency,
+    DependencyDismissal,
     Document,
     DocPage,
     EvidenceLink,
@@ -1071,3 +1072,63 @@ def _location(fields: dict) -> str | None:
     ]
     joined = " / ".join(p for p in parts if p)
     return joined or None
+
+
+DISMISS_REASONS = ("duplicate", "not-a-conflict", "wrong")
+
+
+class InvalidDismissReason(Exception):
+    """The stated reason is not one this system records."""
+
+
+class AlreadyDismissed(Exception):
+    """This record has already left the working list."""
+
+
+def dismiss_dependency(
+    session: Session,
+    dependency: Dependency,
+    reason: str,
+    *,
+    principal: HumanPrincipal,
+) -> Dependency:
+    """Take a junk record off the working list, with a reason and a name.
+
+    Rows enter mechanically now (ADR-0029), so junk reaches the record —
+    a duplicate, a row that is not a conflict at all. Dismissing is how a
+    reviewer clears it, and it is not a delete: the row, its Evidence,
+    its Assertions and its history stay exactly where they are, so anyone
+    asking why a conflict left the list gets an answer with a name and a
+    date on it (ADR-0032).
+    """
+    dismisser = require_human_principal(principal)
+    if reason not in DISMISS_REASONS:
+        raise InvalidDismissReason(
+            f"{reason!r} is not a dismiss reason; expected one of "
+            f"{DISMISS_REASONS}"
+        )
+    lock_project(session, dependency.project_id)
+    if dependency.dismissed_at is not None:
+        raise AlreadyDismissed(
+            f"{dependency.ref_code} was already dismissed"
+        )
+
+    dismissal = DependencyDismissal(
+        dependency_id=dependency.id,
+        reason=reason,
+        dismissed_by=dismisser.subject,
+    )
+    session.add(dismissal)
+    session.flush([dismissal])
+    dependency.dismissed_at = dismissal.dismissed_at
+
+    audit.record(
+        session,
+        principal=dismisser,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={"reason": reason, "dependency_dismissal_id": dismissal.id},
+    )
+    session.flush()
+    return dependency
