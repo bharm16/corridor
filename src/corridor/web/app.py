@@ -25,6 +25,10 @@ from starlette.requests import Request
 
 from corridor.adjudicate import (
     AlreadyAdjudicated,
+    AlreadyDismissed,
+    InvalidDismissReason,
+    DISMISS_REASONS,
+    dismiss_dependency,
     CandidateAssertsNothing,
     InvalidCandidateProvenance,
     InvalidCandidateScope,
@@ -77,6 +81,11 @@ from corridor.web.queue import (
     pending_counts,
 )
 from corridor.disputes import NoSuchDispute, disputes_for, settle_dispute
+from corridor.event_admission import (
+    StatementUnplaceable,
+    attach_statement,
+    waiting_statements,
+)
 from corridor.identity import document_numbering_schemes
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.cohort import (
@@ -300,6 +309,55 @@ def _review_reason(
     )
 
 
+# What each unplaced statement means to the person now holding it. The
+# machine's vocabulary names the check; the reviewer needs the question.
+STATEMENT_REASONS = {
+    "reference_resolves_to_no_dependency": (
+        "This statement names a conflict the record does not have.",
+        "The number may be misread, or its conflict may not be loaded yet. "
+        "Name the right record, or toss it.",
+    ),
+    "reference_resolves_to_many": (
+        "Several records carry this number.",
+        "Name which one the party was talking about.",
+    ),
+    "no_conflict_reference": (
+        "This statement names no conflict.",
+        "Read the quote and name the record it belongs to.",
+    ),
+    "party_mismatch": (
+        "The speaker is not the party that owns this conflict.",
+        "It may be an alias nobody has recorded, or the wrong record. "
+        "Name the right one.",
+    ),
+    "party_unstated": (
+        "This statement names no party.",
+        "Read the quote and name the record it belongs to.",
+    ),
+    "project_side_actor": (
+        "The speaker is the project's own side.",
+        "An internal action item, never an External Party's commitment. "
+        "It cannot attach as a statement.",
+    ),
+    "citations_unverified": (
+        "The quote could not be found on its page.",
+        "Check the page before placing it.",
+    ),
+    "event_type_outside_policy": (
+        "This is not a commitment, slip, or closure.",
+        "Only those three carry a date anyone is held to.",
+    ),
+    "no_date": (
+        "This statement carries no date.",
+        "Without one there is nothing to hold anyone to.",
+    ),
+    "unparseable_date": (
+        "The stated date could not be read.",
+        "Check the page for what it actually says.",
+    ),
+}
+
+
 # What each abstention means to the person now holding the row. The
 # machine's vocabulary is precise and the reviewer's question is
 # different: not "which check failed" but "what am I deciding".
@@ -397,6 +455,89 @@ def _revision_panels(
     return siblings, differences
 
 
+@app.post("/projects/{slug}/statements/{candidate_id}/attach")
+def attach_waiting_statement(
+    slug: str,
+    candidate_id: int,
+    dependency_ref: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Put an unplaced statement on the record a human names."""
+    project = _project(session, slug)
+    candidate = session.get(Candidate, candidate_id)
+    if candidate is None or candidate.project_id != project.id:
+        raise HTTPException(404, "no such statement in this project")
+    dependency = session.scalars(
+        select(Dependency).where(
+            Dependency.project_id == project.id,
+            Dependency.ref_code == dependency_ref.strip(),
+        )
+    ).first()
+    if dependency is None:
+        raise HTTPException(
+            400, f"no record in this project called {dependency_ref!r}"
+        )
+    try:
+        attach_statement(session, candidate, dependency, principal=principal)
+    except StatementUnplaceable as exc:
+        raise HTTPException(409, str(exc))
+    session.commit()
+    return RedirectResponse(f"/statements/{slug}", status_code=303)
+
+
+@app.post("/ledger/{slug}/{dependency_id}/dismiss")
+def dismiss(
+    slug: str,
+    dependency_id: int,
+    reason: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Take a junk record off the working list, with a reason."""
+    project = _project(session, slug)
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None or dependency.project_id != project.id:
+        raise HTTPException(404, "no such dependency in this project")
+    try:
+        dismiss_dependency(session, dependency, reason, principal=principal)
+    except InvalidDismissReason as exc:
+        raise HTTPException(400, str(exc))
+    except AlreadyDismissed as exc:
+        raise HTTPException(409, str(exc))
+    session.commit()
+    return RedirectResponse(f"/ledger/{slug}", status_code=303)
+
+
+@app.get("/statements/{slug}", response_class=HTMLResponse)
+def statements(
+    request: Request,
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """The one pile: statements the machine could not place.
+
+    Not a lane and not a queue — a short list a reviewer empties when
+    they choose, because a dated promise from a meeting is exactly what
+    this product exists to catch and losing it silently is worse.
+    """
+    project = _project(session, slug)
+    waiting = waiting_statements(session, project.id)
+    for item in waiting:
+        item["headline"], item["guidance"] = STATEMENT_REASONS.get(
+            item["reason"],
+            (
+                "This statement could not be placed.",
+                "Name the record it belongs to, or toss it.",
+            ),
+        )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "statements.html",
+        {"project": project, "waiting": waiting},
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def root():
     return RedirectResponse("/queue/nhhip-3c2", status_code=302)
@@ -470,6 +611,9 @@ def queue(
     lane_context = {
         "project": project,
         "remaining": total,
+        # A count, not the pile itself: the queue points at it and never
+        # becomes a second place to work statements.
+        "waiting_statements": len(waiting_statements(session, project.id)),
         "lane": lane,
         "cohort_receipt": cohort_receipt,
         "candidate_count": total + len(ordinary_reviews),
@@ -747,6 +891,7 @@ def dependency_detail(
             "disputes": {
                 d.field_name: d for d in disputes_for(session, dependency_id)
             },
+            "dismiss_reasons": DISMISS_REASONS,
         },
     )
 
@@ -1155,6 +1300,7 @@ def reject(
     historical_document_id: int | None = Form(None),
     cohort_receipt_id: int | None = Form(None),
     event_cohort_receipt_id: int | None = Form(None),
+    redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -1187,11 +1333,14 @@ def reject(
         raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
-        _decision_location(
-            slug,
-            historical_document_id,
-            cohort_receipt_id,
-            event_cohort_receipt_id=event_cohort_receipt_id,
+        _safe_return(
+            redirect_to,
+            _decision_location(
+                slug,
+                historical_document_id,
+                cohort_receipt_id,
+                event_cohort_receipt_id=event_cohort_receipt_id,
+            ),
         ),
         status_code=303,
     )

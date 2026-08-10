@@ -151,7 +151,13 @@ def browse(
     an HTML report, an XLSX and a snapshot from three readings of one
     Ledger. A caller with no evaluation now has to say so.
     """
-    query = select(Dependency).where(Dependency.project_id == project_id)
+    # A dismissed record is off the working list and stays in history
+    # (ADR-0032). Filtered here rather than by every caller, because the
+    # list is what "the working list" means.
+    query = select(Dependency).where(
+        Dependency.project_id == project_id,
+        Dependency.dismissed_at.is_(None),
+    )
     if status:
         query = query.where(Dependency.status == status)
     if org_id:

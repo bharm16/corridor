@@ -176,6 +176,9 @@
   </div>
   <span class="counts">
     {{ view.remaining }} waiting for you
+    {%- if waiting_statements %}
+      · <a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to place</a>
+    {%- endif %}
     · <a href="/ledger/{{ project.slug }}">the record</a>
   </span>
 </header>
