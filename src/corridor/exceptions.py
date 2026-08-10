@@ -361,6 +361,27 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
     return view
 
 
+def claim_predicates():
+    """The SQL half of "does this assertion say anything".
+
+    Postgres `trim` strips spaces only; `is_claim` — the Python half of
+    this one rule — strips every kind of whitespace, so a value of a
+    single tab counted as a competing claim in the engine and did not on
+    the detail page, and the two readers disagreed about one record.
+    `[:space:]` is the class Python strips. Returned as predicates rather
+    than written twice, because every reader asking this question has to
+    ask it the same way — that is the whole reason this rule lives in one
+    function.
+    """
+    return (
+        Assertion.asserted_value.is_not(None),
+        func.regexp_replace(
+            Assertion.asserted_value, r"^[[:space:]]+|[[:space:]]+$", "", "g"
+        )
+        != "",
+    )
+
+
 def contradicted_fields(
     session: Session, dependency_ids: list[int]
 ) -> dict[int, list[str]]:
@@ -400,17 +421,7 @@ def contradicted_fields(
             EvidenceLink.verified.is_(True),
             # A null is an absent column, not a competing value — the
             # matrix revisions add and drop columns between editions.
-            Assertion.asserted_value.is_not(None),
-            # Postgres `trim` strips spaces only; `is_claim` — the Python
-            # half of this one rule — strips every kind of whitespace. A
-            # value of "\t" counted as a competing claim here and did not
-            # on the detail page, so the two readers disagreed about one
-            # record, which is the failure this function was unified to
-            # abolish. `[:space:]` is the class Python strips.
-            func.regexp_replace(
-                Assertion.asserted_value, r"^[[:space:]]+|[[:space:]]+$", "", "g"
-            )
-            != "",
+            *claim_predicates(),
         )
         .group_by(Assertion.dependency_id, Assertion.field_name)
         .having(func.count(func.distinct(Assertion.asserted_value)) > 1)

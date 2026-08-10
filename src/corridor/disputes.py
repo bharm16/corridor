@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.exceptions import claim_predicates
 from corridor.models import (
     Assertion,
     Dependency,
@@ -112,8 +113,7 @@ def settled_field_names(
         .where(
             Assertion.dependency_id.in_(dependency_ids),
             EvidenceLink.verified.is_(True),
-            Assertion.asserted_value.is_not(None),
-            func.trim(Assertion.asserted_value) != "",
+            *claim_predicates(),
         )
         .group_by(Assertion.dependency_id, Assertion.field_name)
         .subquery()
@@ -232,8 +232,7 @@ def settle_dispute(
             Assertion.dependency_id == dependency_id,
             Assertion.field_name == field_name,
             EvidenceLink.verified.is_(True),
-            Assertion.asserted_value.is_not(None),
-            func.trim(Assertion.asserted_value) != "",
+            *claim_predicates(),
         )
     )
     if saw_claim_id is not None and newest is not None and newest > saw_claim_id:
