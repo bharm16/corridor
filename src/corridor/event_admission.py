@@ -1,21 +1,19 @@
-"""Policy-authorized admission of extracted events onto the Ledger.
+"""Mechanical attachment of what the minutes say to the record.
 
-An event Candidate enters through a named, versioned policy an
-accountable human authorizes — or through Adjudication — and through
-nothing else (ADR-0026). Every check here is a replayable computation:
-the quote verified on its page, the type inside the policy, a parseable
-date, a reference resolving to exactly one Dependency, the party
-matching that Dependency's External Party, and the actor not being the
-project's own side. Nothing consults a model. A model may order the
+An event Candidate enters through a named, versioned policy — or through
+Adjudication — and through nothing else (ADR-0026, with the human
+authorization removed by ADR-0029). Every check here is a replayable
+computation: the quote verified on its page, the type inside the policy,
+a parseable date, a reference resolving to exactly one Dependency, the
+party matching that Dependency's External Party, and the actor not being
+the project's own side. Nothing consults a model. A model may order the
 residue or flag an event into it, and may never put one on the record.
 
-The shape is the Carry-Forward family's (ADR-0022), because the problem
-is the same one: a human authorizes rules rather than rows, the machine
-acts only where it can prove eligibility, and everything it cannot prove
-abstains — left pending for Adjudication rather than forced onto the
-record. What differs is the act: this writes a DependencyEvent, which
-carries an External Party's statement, so the actor boundary is a check
-rather than an afterthought.
+The machine acts only where it can prove eligibility, and everything it
+cannot prove abstains — left pending for Adjudication rather than forced
+onto the record. What differs from the dependency family is the act:
+this writes a DependencyEvent, which carries an External Party's
+statement, so the actor boundary is a check rather than an afterthought.
 """
 
 from __future__ import annotations
@@ -33,11 +31,9 @@ from corridor.models import (
     Dependency,
     DependencyEvent,
     EventAdmissionOutcome,
-    PolicyApproval,
     PolicyRun,
     Project,
 )
-from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v1"
@@ -69,10 +65,6 @@ ABSTENTION_REASONS = frozenset(
 )
 
 
-class EventAdmissionNotAuthorized(RuntimeError):
-    """No current approval covers this policy version for this project."""
-
-
 @dataclass(frozen=True)
 class EventAdmissionAbstention:
     candidate_id: int
@@ -88,57 +80,20 @@ class EventAdmissionResult:
     abstentions: list[EventAdmissionAbstention] = field(default_factory=list)
 
 
-def authorize_event_admission(
-    session: Session, project_id: int, *, principal: HumanPrincipal
-) -> PolicyApproval:
-    """Append one human authorization of the current policy version."""
-    principal = require_human_principal(principal)
+def run_event_admission(
+    session: Session, project_id: int
+) -> EventAdmissionResult:
+    """Attach what the minutes say to the conflicts they name.
+
+    No authorization stands in front of this (ADR-0029); the run records
+    the policy version, the project-side parties it read, and the
+    deployed bytes of these checks, so the receipt still says what ran.
+    """
     project = session.get(Project, project_id)
     if project is None:
         raise ValueError(f"project {project_id} does not exist")
     lock_project(session, project_id)
-
-    return policy.record_approval(
-        session,
-        FAMILY,
-        project_id=project_id,
-        policy_version=EVENT_ADMISSION_POLICY_VERSION,
-        policy_json=_canonical_policy(project),
-        principal=principal,
-        action=audit.AUTHORIZE_EVENT_ADMISSION,
-    )
-
-
-def current_event_admission_approval(
-    session: Session, project_id: int
-) -> PolicyApproval | None:
-    """The newest approval, and only if it covers the current policy.
-
-    The project's project-side parties are part of the digest, so editing
-    them is a policy change like any other.
-    """
-    return policy.current_approval(
-        session,
-        FAMILY,
-        project_id=project_id,
-        policy_version=EVENT_ADMISSION_POLICY_VERSION,
-        recompute=lambda project, _approval: _canonical_policy(project),
-    )
-
-
-def run_event_admission(
-    session: Session, project_id: int
-) -> EventAdmissionResult:
-    """Evaluate the authorized policy over the project's pending events."""
-    approval = current_event_admission_approval(session, project_id)
-    if approval is None:
-        raise EventAdmissionNotAuthorized(
-            "event admission requires a current authorization of "
-            f"{EVENT_ADMISSION_POLICY_VERSION} — authorization covers the "
-            "rules, and a changed policy needs a new one"
-        )
-    lock_project(session, project_id)
-    project = session.get(Project, project_id)
+    policy_json = _canonical_policy(project)
 
     candidates = session.scalars(
         select(Candidate)
@@ -174,9 +129,9 @@ def run_event_admission(
     run = PolicyRun(
         project_id=project_id,
         family=FAMILY,
-        policy_approval_id=approval.id,
-        policy_version=approval.policy_version,
-        policy_sha256=approval.policy_sha256,
+        policy_approval_id=None,
+        policy_version=EVENT_ADMISSION_POLICY_VERSION,
+        policy_sha256=policy.canonical_sha256(policy_json),
         abstention_reason_version=ABSTENTION_REASON_VERSION,
         applied_count=len(admissible),
         abstained_count=len(abstentions),
@@ -227,7 +182,7 @@ def run_event_admission(
                 "policy_run_id": run.id,
                 "candidate_id": candidate.id,
                 "dependency_event_id": event.id,
-                "policy_sha256": approval.policy_sha256,
+                "policy_sha256": run.policy_sha256,
             },
         )
         touched.add(dependency.id)

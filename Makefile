@@ -54,13 +54,11 @@ agreements:
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
 
-# The admission policies (ADR-0026 events, ADR-0027 dependencies).
-# Authorizing is the operator's attributable act; running an authorized
-# policy is the machine's, and everything unprovable abstains:
-#   make admission ARGS="authorize-dependencies sh99-grand-parkway 1310 1311"
-#   make admission ARGS="run-dependencies sh99-grand-parkway"
-#   make admission ARGS="authorize-events sh99-grand-parkway"
-#   make admission ARGS="run-events sh99-grand-parkway"
+# Load a project onto the record (ADR-0029). `make extract` and
+# `make minutes` do this on their way out, so this is the backfill for a
+# project read before that was true, and the way to finish a load after
+# declaring the Active Run of a document that held several readings:
+#   make admission ARGS="load sh99-grand-parkway"
 admission:
 	uv run python -m corridor.admission_cli $(ARGS)
 

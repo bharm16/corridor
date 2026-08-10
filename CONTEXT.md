@@ -1,6 +1,6 @@
 # Corridor
 
-A cited system of record for external-party readiness on highway projects. Every factual assertion it makes traces to a quote on a page of a source document.
+Corridor surfaces the Dependencies standing in front of a highway project — each with the evidence behind it — so the project team can chase them to resolution. Every factual assertion traces to a quote on a page of a source document.
 
 ## Language
 
@@ -15,7 +15,7 @@ The organization outside the project that owns a Dependency — a utility, railr
 _Avoid_: stakeholder, third party, vendor, utility (when meaning the organization rather than the asset)
 
 **Ledger**:
-The canonical set of adjudicated Dependencies for a project. Nothing enters it except by a human decision.
+The working set of Dependencies for a project — what the queue, Exceptions and Reports read. A row enters mechanically when extraction can anchor it, carrying its verification status on the row, or by human judgment; every entry names its path in a receipt (ADR-0029).
 _Avoid_: database, registry, tracker, list
 
 **Stationing**:
@@ -59,6 +59,10 @@ _Avoid_: due date (bare), deadline
 **Assertion**:
 A single claim by one source document about one field of one Dependency — "D12 p.4 says the committed date is June 3". Sources disagree; assertions preserve every claim, and the Dependency's own field values are the adjudicated conclusion drawn from them.
 _Avoid_: claim, statement, fact, value
+
+**Dispute**:
+Two revisions of a document disagreeing about a field of one Dependency. Both Assertions stay on the row with their pages; the row is workable while the Dispute stands, and settling it is Adjudication taken up when it matters.
+_Avoid_: conflict (the industry word for a Dependency, never for documents disagreeing), contradiction (the Exception category that surfaces a Dispute), mismatch
 
 **Evidence**:
 A quote from a specific page of a registered document, verified to actually appear on that page. Evidence is the only thing that can support a factual assertion in the ledger or a report.
@@ -174,9 +178,9 @@ The outcome when automation cannot prove affected supersession work eligible for
 _Avoid_: rejection, failure, automatic Adjudication, low-confidence Admission
 
 **Adjudication**:
-The human act of resolving a Candidate — accept, edit then accept, merge into an existing Dependency, or reject. The only path into the Ledger.
+The human act of settling what the machine could not — a Dispute, a flagged row, an unplaced statement — or dismissing junk with a reason. Chosen work on a live row, never a gate in front of the list (ADR-0029).
 _Avoid_: review, triage, approval, curation
 
 **Admission**:
-The entry of a record into the Ledger — the outcome of an Adjudication accept, edit-then-accept, or merge, performed by an attributable human principal and recorded with their identity. Reconfirmation never admits; nothing else performs Admission.
+The entry of a record into the Ledger — mechanical for what extraction can anchor, under a named versioned policy receipt, or human, through Adjudication. A model verdict never admits; Reconfirmation never admits (ADR-0029).
 _Avoid_: creation, insertion, import, promotion

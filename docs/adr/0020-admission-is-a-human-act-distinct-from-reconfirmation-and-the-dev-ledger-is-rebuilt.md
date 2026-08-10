@@ -1,6 +1,6 @@
 # Admission is a human act distinct from Reconfirmation, and the development Ledger is rebuilt, not ratified
 
-> The development-Ledger rebuild in this decision is superseded by ADR-0021. Human-only Admission and the distinction between Admission and Reconfirmation remain in force.
+> The development-Ledger rebuild in this decision is superseded by ADR-0021, and human-only Admission by ADR-0029. The distinction between Admission and Reconfirmation remains in force.
 
 The Ledger's constitution — nothing enters except by a human decision — stands as written. The live database does not: all 141 Dependencies were admitted by `accept_candidate` under actors `agent` (96) and `demo` (45), zero by a human. The machinery rule held — only Adjudication ever wrote, extractors never did — but the actor claim failed. The records yield, not the definition.
 

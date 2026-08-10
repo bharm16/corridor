@@ -162,11 +162,48 @@ def test_the_runner_extracts_and_closes_its_client(session, project, capsys):
         1,
         0,
     )
-    assert active_run_for_document(session, run.document_id) is None
     assert client.closed is True
     out = capsys.readouterr().out
     assert "1 notes at 2-way concurrency" in out
     assert "1 events, 1 verified (100.0%)" in out
+
+
+def test_reading_a_document_once_declares_that_reading(session, project):
+    """ADR-0029 puts the load in the pipeline, so a document with one
+    completed reading no longer waits for someone to name it. Naming the
+    only reading is a fact; choosing between several is not, and stays a
+    human act."""
+    add_note(session, project, "notes-a.pdf", "a" * 64)
+    _run(session, project, StubClient())
+
+    [run] = _runs(session, project)
+    declared = active_run_for_document(session, run.document_id)
+    assert declared is not None and declared.id == run.id
+
+
+def test_a_later_reading_never_takes_the_declaration_by_being_newer(
+    session, project
+):
+    """Choosing between completed readings is exactly the inference
+    Active Runs exist to forbid, and the pipeline stage does not do it."""
+    from corridor.admission import load_project
+    from corridor.extraction_runs import record_extraction_run
+
+    document = add_note(session, project, "notes-a.pdf", "a" * 64)
+    _run(session, project, StubClient())
+    [first] = _runs(session, project)
+
+    record_extraction_run(
+        session,
+        document,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+    )
+    session.flush()
+    load_project(session, project.id)
+
+    assert active_run_for_document(session, document.id).id == first.id
 
 
 def test_a_resumed_run_skips_documents_already_extracted(

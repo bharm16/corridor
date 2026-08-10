@@ -1,11 +1,11 @@
-"""Dependency admission: exact revision agreement under an authorized policy.
+"""Dependency admission: the conflicts a project's matrices can anchor.
 
-ADR-0027: a dependency Candidate may enter the Ledger under a named,
-versioned policy an accountable principal authorizes, and the eligibility
-proof is exact agreement between stated revisions. Two documents
-independently asserting the identical row is stronger evidence than one
-reviewer glancing at a card; everything else — the changed, the missing,
-the ambiguous — abstains and waits for Adjudication.
+ADR-0029: nothing is signed and nothing is unlocked. A conflict enters
+when the revisions that state it can anchor it — one matrix is enough —
+and where several state it identically the newest is admitted with the
+rest merged as corroboration. What the machine cannot anchor abstains
+and waits for Adjudication, which is the only thing a human is asked to
+do here.
 """
 
 from __future__ import annotations
@@ -19,12 +19,10 @@ from sqlalchemy.exc import IntegrityError
 from corridor.db import Session, engine
 from corridor.dependency_admission import (
     DEPENDENCY_ADMISSION_POLICY_VERSION,
-    DependencyAdmissionNotAuthorized,
-    authorize_dependency_admission,
     run_dependency_admission,
 )
 from corridor.extraction_runs import (
-    declare_single_run_documents,
+    declare_single_run_documents_by_policy,
     record_extraction_run,
 )
 from corridor.models import (
@@ -32,13 +30,12 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyAdmissionOutcome,
-    PolicyApproval,
     PolicyRun,
     DocPage,
     Document,
     Project,
 )
-from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.principals import HumanPrincipal
 
 OPERATOR = HumanPrincipal("local:dependency-admission-operator")
 PIPELINE = "Tejas Pipeline Co"
@@ -147,72 +144,97 @@ def _corpus(session, project, feb_rows, may_rows, *, verified=True):
     may_c = [_candidate(may, f, verified=verified) for f in may_rows]
     _run(session, feb, feb_c)
     _run(session, may, may_c)
-    declare_single_run_documents(session, project.id, principal=OPERATOR)
+    declare_single_run_documents_by_policy(session, project.id)
     return feb, may, feb_c, may_c
 
 
-def _authorize(session, project, feb, may):
-    return authorize_dependency_admission(
-        session,
-        project.id,
-        principal=OPERATOR,
-        agreement_document_ids=[feb.id, may.id],
-    )
+# ── One matrix is enough ─────────────────────────────────────────────────
 
 
-# ── Authorization ────────────────────────────────────────────────────────
+def test_a_single_matrix_puts_its_conflicts_on_the_record(session, project):
+    """The whole product, in one test: documents land, and the list is
+    there. No signature, no second revision, no unlock."""
+    only = _document(session, project, filename="ucm.pdf")
+    rows = [_fields("PL1"), _fields("PL2", station="1200+00")]
+    _run(session, only, [_candidate(only, f) for f in rows])
+    declare_single_run_documents_by_policy(session, project.id)
 
-
-def test_a_run_without_authorization_refuses(session, project):
-    feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
-    with pytest.raises(DependencyAdmissionNotAuthorized):
-        run_dependency_admission(session, project.id)
-
-
-def test_authorization_pins_the_agreement_documents_by_content(
-    session, project
-):
-    feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
-    approval = _authorize(session, project, feb, may)
-    assert approval.policy_version == DEPENDENCY_ADMISSION_POLICY_VERSION
-    assert approval.approved_by == OPERATOR.subject
-    pinned = {
-        d["document_id"]: d["sha256"]
-        for d in approval.policy_json["agreement_documents"]
-    }
-    assert pinned == {feb.id: feb.sha256, may.id: may.sha256}
-
-    with pytest.raises(InvalidHumanPrincipal):
-        authorize_dependency_admission(
-            session,
-            project.id,
-            principal="system:batch",
-            agreement_document_ids=[feb.id, may.id],
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 2
+    assert result.abstained_count == 0
+    assert {
+        d.source_ref
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
         )
+    } == {"PL1", "PL2"}
 
 
-def test_an_undeclared_agreement_document_cannot_be_authorized(
-    session, project
-):
+def test_a_row_only_one_revision_states_still_admits(session, project):
+    """A revision that never mentions a row does not withhold it."""
+    feb, may, *_ = _corpus(
+        session, project, [_fields("PL1"), _fields("PL2")], [_fields("PL1")]
+    )
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 2  # PL1 agrees, PL2 stands on February
+    assert result.abstained_count == 0
+
+
+def test_an_undeclared_document_contributes_nothing(session, project):
+    """The policy reads declared work only, so a document whose reading is
+    ambiguous is absent rather than guessed at."""
     feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
     stray = _document(session, project, filename="stray.pdf")
-    with pytest.raises(ValueError):
-        authorize_dependency_admission(
-            session,
-            project.id,
-            principal=OPERATOR,
-            agreement_document_ids=[feb.id, stray.id],
+    _run(session, stray, [_candidate(stray, _fields("PL9"))])
+    _run(session, stray, [_candidate(stray, _fields("PL9"))])
+
+    declarations = declare_single_run_documents_by_policy(session, project.id)
+    assert declarations.ambiguous == ["stray.pdf"]
+
+    result = run_dependency_admission(session, project.id)
+    assert {
+        d.source_ref
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
         )
+    } == {"PL1"}
+    assert result.abstained_count == 0
 
 
-# ── Admission ────────────────────────────────────────────────────────────
+def test_only_matrix_documents_are_read_for_conflicts(session, project):
+    """Minutes state what people said, never what the conflicts are."""
+    feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
+    minutes = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(b"minutes").hexdigest(),
+        filename="minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(minutes)
+    session.flush()
+    session.add(DocPage(document_id=minutes.id, page_no=1, text="rows"))
+    session.flush()
+    _run(session, minutes, [_candidate(minutes, _fields("PL7"))])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    run_dependency_admission(session, project.id)
+    assert {
+        d.source_ref
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    } == {"PL1"}
+
+
+# ── Agreement, disagreement, ambiguity ───────────────────────────────────
 
 
 def test_exact_agreement_admits_and_merges_the_sibling(session, project):
     feb, may, feb_c, may_c = _corpus(
         session, project, [_fields("PL1")], [_fields("PL1")]
     )
-    _authorize(session, project, feb, may)
 
     result = run_dependency_admission(session, project.id)
     assert result.admitted_count == 1
@@ -223,8 +245,8 @@ def test_exact_agreement_admits_and_merges_the_sibling(session, project):
     ).one()
     assert dependency.source_ref == "PL1"
 
-    # The primary comes from the last-named agreement document; the
-    # sibling merges so its citation attaches as corroboration.
+    # The primary comes from the newest revision; the sibling merges so
+    # its citation attaches as corroboration.
     session.refresh(feb_c[0])
     session.refresh(may_c[0])
     assert may_c[0].state == "accepted"
@@ -245,7 +267,6 @@ def test_disagreeing_revisions_abstain(session, project):
         [_fields("PL1", station="1102+20")],
         [_fields("PL1", station="1105+00")],
     )
-    _authorize(session, project, feb, may)
 
     result = run_dependency_admission(session, project.id)
     assert result.admitted_count == 0
@@ -267,18 +288,6 @@ def test_disagreeing_revisions_abstain(session, project):
     )
 
 
-def test_a_row_missing_from_a_revision_abstains(session, project):
-    feb, may, *_ = _corpus(
-        session, project, [_fields("PL1"), _fields("PL2")], [_fields("PL1")]
-    )
-    _authorize(session, project, feb, may)
-
-    result = run_dependency_admission(session, project.id)
-    assert result.admitted_count == 1  # PL1 agrees
-    reasons = {a.reason for a in result.abstentions}
-    assert reasons == {"missing_from_agreement_document"}
-
-
 def test_duplicate_rows_in_one_revision_abstain(session, project):
     feb, may, *_ = _corpus(
         session,
@@ -286,7 +295,6 @@ def test_duplicate_rows_in_one_revision_abstain(session, project):
         [_fields("PL1"), _fields("PL1")],
         [_fields("PL1")],
     )
-    _authorize(session, project, feb, may)
 
     result = run_dependency_admission(session, project.id)
     assert result.admitted_count == 0
@@ -295,16 +303,12 @@ def test_duplicate_rows_in_one_revision_abstain(session, project):
     }
 
 
-def test_an_already_admitted_reference_abstains(session, project):
+def test_an_already_admitted_reference_is_not_admitted_twice(session, project):
     feb, may, feb_c, may_c = _corpus(
         session, project, [_fields("PL1")], [_fields("PL1")]
     )
-    _authorize(session, project, feb, may)
     run_dependency_admission(session, project.id)
 
-    # New extraction of the same row later (same docs would refuse via
-    # single-run rule; use content check instead): a fresh identical
-    # candidate pair must not create a second PL1.
     result = run_dependency_admission(session, project.id)
     assert result.admitted_count == 0
     assert result.abstained_count == 0  # nothing pending — zero outcomes
@@ -322,7 +326,6 @@ def test_unverified_citations_abstain(session, project):
     feb, may, *_ = _corpus(
         session, project, [_fields("PL1")], [_fields("PL1")], verified=False
     )
-    _authorize(session, project, feb, may)
     result = run_dependency_admission(session, project.id)
     assert result.admitted_count == 0
     assert {a.reason for a in result.abstentions} == {"citations_unverified"}
@@ -338,12 +341,11 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(session, project):
         [_fields("PL1"), _fields("PL2", station="1200+00")],
         [_fields("PL1"), _fields("PL2", station="1201+00")],
     )
-    approval = _authorize(session, project, feb, may)
 
     result = run_dependency_admission(session, project.id)
     run = session.get(PolicyRun, result.run_id)
-    assert run.policy_approval_id == approval.id
-    assert run.policy_sha256 == approval.policy_sha256
+    assert run.policy_approval_id is None  # nothing was signed
+    assert run.policy_version == DEPENDENCY_ADMISSION_POLICY_VERSION
     assert (run.applied_count, run.abstained_count) == (1, 2)
 
     outcomes = session.scalars(
@@ -367,17 +369,37 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(session, project):
         )
 
 
-# ── The digest covers the rules and the documents ────────────────────────
+def test_the_receipt_pins_the_documents_and_the_deployed_checks(
+    session, project
+):
+    """Nothing is signed, so the receipt carries the whole replay claim:
+    which revisions were read, at which bytes, under which checks."""
+    from corridor import dependency_admission as module
+    from corridor import policy
+
+    feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
+    result = run_dependency_admission(session, project.id)
+    run = session.get(PolicyRun, result.run_id)
+
+    expected = module._canonical_policy(session, project, [feb.id, may.id])
+    assert {d["document_id"]: d["sha256"] for d in expected["agreement_documents"]} == {
+        feb.id: feb.sha256,
+        may.id: may.sha256,
+    }
+    assert run.policy_sha256 == policy.canonical_sha256(expected)
 
 
-def test_editing_a_check_pauses_the_policy_until_reauthorized(
+def test_an_edited_check_changes_the_digest_the_receipt_records(
     session, project, monkeypatch
 ):
+    """The authorization that used to pause on an edited check is gone;
+    what remains is that two runs under different checks can never claim
+    the same digest, so a replay reads honestly."""
     from corridor import dependency_admission as module
 
     feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
-    _authorize(session, project, feb, may)
-    assert module.current_dependency_admission_approval(session, project.id)
+    before = run_dependency_admission(session, project.id)
+    before_sha = session.get(PolicyRun, before.run_id).policy_sha256
 
     real = module._rule_source_bytes
 
@@ -387,34 +409,32 @@ def test_editing_a_check_pauses_the_policy_until_reauthorized(
         )
 
     monkeypatch.setattr(module, "_rule_source_bytes", edited)
-    assert (
-        module.current_dependency_admission_approval(session, project.id)
-        is None
-    )
-    with pytest.raises(DependencyAdmissionNotAuthorized):
-        run_dependency_admission(session, project.id)
+    after = run_dependency_admission(session, project.id)
+    assert session.get(PolicyRun, after.run_id).policy_sha256 != before_sha
 
 
-def test_a_swapped_agreement_document_pauses_the_policy(session, project):
-    from corridor import dependency_admission as module
+def test_the_run_reads_the_currently_declared_active_run(session, project):
+    """Re-declaring a document's Active Run changes what admits next —
+    the policy follows the declaration rather than pinning an old one."""
+    from corridor.extraction_runs import declare_active_run
 
     feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
-    _authorize(session, project, feb, may)
-    assert module.current_dependency_admission_approval(session, project.id)
+    second = _run(session, feb, [_candidate(feb, _fields("PL5"))])
+    declare_active_run(session, feb.id, second.id, principal=OPERATOR)
 
-    session.execute(
-        update(Document)
-        .where(Document.id == feb.id)
-        .values(sha256=hashlib.sha256(b"different bytes").hexdigest())
-    )
-    session.expire_all()
-    assert (
-        module.current_dependency_admission_approval(session, project.id)
-        is None
-    )
+    result = run_dependency_admission(session, project.id)
+    # February now reads PL5; May still reads PL1. Both stand alone, and
+    # both are on the record.
+    assert result.admitted_count == 2
+    assert {
+        d.source_ref
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    } == {"PL1", "PL5"}
 
 
-# ── Review findings (#204): lineage, run pinning, doc types, batches ─────
+# ── Lineage and failure ──────────────────────────────────────────────────
 
 
 def test_policy_admitted_records_carry_attributable_lineage(session, project):
@@ -426,7 +446,6 @@ def test_policy_admitted_records_carry_attributable_lineage(session, project):
     feb, may, feb_c, may_c = _corpus(
         session, project, [_fields("PL1")], [_fields("PL1")]
     )
-    _authorize(session, project, feb, may)
     run_dependency_admission(session, project.id)
 
     dependency = session.scalars(
@@ -438,51 +457,6 @@ def test_policy_admitted_records_carry_attributable_lineage(session, project):
     assert len(records) == 2  # the primary and the merged sibling
     assert {r.candidate_id for r in records} == {feb_c[0].id, may_c[0].id}
     assert all(r.attributable for r in records)
-
-
-def test_a_redeclared_active_run_pauses_the_policy(session, project):
-    """The policy stands on declared work, so it pins WHICH declared work:
-    re-declaring a document's Active Run is a legitimate human act that
-    changes what would admit, and it must pause the policy."""
-    from corridor import dependency_admission as module
-    from corridor.extraction_runs import declare_active_run
-
-    feb, may, feb_c, may_c = _corpus(
-        session, project, [_fields("PL1")], [_fields("PL1")]
-    )
-    _authorize(session, project, feb, may)
-    assert module.current_dependency_admission_approval(session, project.id)
-
-    second = _run(session, feb, [_candidate(feb, _fields("PL1"))])
-    declare_active_run(session, feb.id, second.id, principal=OPERATOR)
-    assert (
-        module.current_dependency_admission_approval(session, project.id)
-        is None
-    )
-    with pytest.raises(DependencyAdmissionNotAuthorized):
-        run_dependency_admission(session, project.id)
-
-
-def test_only_matrix_documents_can_anchor_agreement(session, project):
-    feb, may, *_ = _corpus(session, project, [_fields("PL1")], [_fields("PL1")])
-    minutes = Document(
-        project_id=project.id,
-        sha256=hashlib.sha256(b"minutes").hexdigest(),
-        filename="minutes.pdf",
-        doc_type="minutes",
-        parse_status="parsed",
-        pages=1,
-    )
-    session.add(minutes)
-    session.flush()
-    with pytest.raises(ValueError) as excinfo:
-        authorize_dependency_admission(
-            session,
-            project.id,
-            principal=OPERATOR,
-            agreement_document_ids=[feb.id, minutes.id],
-        )
-    assert "matrix" in str(excinfo.value)
 
 
 def test_a_write_refusal_abstains_without_sinking_the_batch(
@@ -497,7 +471,6 @@ def test_a_write_refusal_abstains_without_sinking_the_batch(
         [_fields("PL1"), _fields("PL2", station="1200+00")],
         [_fields("PL1"), _fields("PL2", station="1200+00")],
     )
-    _authorize(session, project, feb, may)
 
     real = module.admit_dependency_by_policy
 
