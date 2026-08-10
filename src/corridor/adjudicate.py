@@ -34,7 +34,7 @@ from corridor.models import (
     is_claim,
     is_placeholder_party,
 )
-from corridor.verify import normalize, unverified_fields
+from corridor.verify import normalize, quote_appears_on, unverified_fields
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
 from corridor.project_lock import lock_project
@@ -622,10 +622,21 @@ def set_resolution_strategy(
 
 def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> dict:
     updated = {**payload, "fields": dict(fields)}
+    page_text = _cited_page_text(session, payload)
+    # The quote is re-checked against the page it names, not taken on the
+    # reviewer's word. Without this a row flagged only on its quote could
+    # never be cleared by any gesture: the values re-verified and the
+    # citation's own flag stayed as extraction left it, so `edit & accept`
+    # was a way to sink a row and not a way to fix one (#212). Re-checking
+    # can lower a flag as well as lift one, which is the point.
+    updated["citations"] = [
+        {**citation, "verified": _quote_still_holds(citation, page_text)}
+        for citation in (payload.get("citations") or [])
+    ]
+
     if not _transcribes_cells(payload):
         return updated
 
-    page_text = _cited_page_text(session, payload)
     if page_text is None:
         updated["unverified_fields"] = sorted(fields)
     else:
@@ -634,6 +645,18 @@ def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> 
         payload, fields
     )
     return updated
+
+
+def _quote_still_holds(citation: dict, page_text: str | None) -> bool:
+    """Whether this citation's quote is on the page it names, now.
+
+    Fails closed on an unreadable page and on an absent quote: a citation
+    with nothing to check is not a citation that checks out.
+    """
+    quote = citation.get("quote")
+    if page_text is None or not quote:
+        return False
+    return quote_appears_on(quote, page_text)
 
 
 def _transcribes_cells(payload: dict) -> bool:
