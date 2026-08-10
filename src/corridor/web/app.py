@@ -826,6 +826,7 @@ def ledger(
     resolution_strategy: str | None = None,
     ready: str | None = None,
     rule: str | None = None,
+    owner: str | None = None,
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -841,8 +842,22 @@ def ledger(
         resolution_strategy=resolution_strategy or None,
         ready={"yes": True, "no": False}.get(ready or ""),
         rule=rule or None,
+        owner=owner or None,
     )
     orgs = session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
+    # Only the people this project has actually assigned work to. A list of
+    # every principal who ever touched anything would offer names that
+    # match nothing here.
+    owners = session.scalars(
+        select(Dependency.internal_owner)
+        .where(
+            Dependency.project_id == project.id,
+            Dependency.dismissed_at.is_(None),
+            Dependency.internal_owner.is_not(None),
+        )
+        .distinct()
+        .order_by(Dependency.internal_owner)
+    ).all()
     return TEMPLATES.TemplateResponse(
         request,
         "ledger.html",
@@ -856,10 +871,13 @@ def ledger(
                 "resolution_strategy": resolution_strategy or "",
                 "ready": ready or "",
                 "rule": rule or "",
+                "owner": owner or "",
             },
             "rules": sorted(RULES),
             "statuses": DEP_STATUSES,
             "strategies": RESOLUTION_STRATEGIES,
+            "owners": owners,
+            "today": date.today(),
         },
     )
 

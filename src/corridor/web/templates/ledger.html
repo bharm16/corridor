@@ -21,6 +21,10 @@
   td a { color:#06c; text-decoration:none; font-variant-numeric:tabular-nums; }
   .num { font-variant-numeric:tabular-nums; color:var(--muted); }
   .pill { font-size:.72rem; padding:.05rem .4rem; border-radius:10px; border:1px solid var(--line); }
+  /* A date past its mark reads as late without a second column saying so.
+     Colour is the only signal here and it never reorders anything. */
+  .due { color:var(--muted); font-size:.78rem; margin-left:.25rem; }
+  .late { color:var(--bad); font-weight:600; }
   .ready { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
   .notready { color:var(--muted); }
   .contra { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
@@ -65,6 +69,13 @@
     <option value="yes" {% if filters.ready == 'yes' %}selected{% endif %}>ready</option>
     <option value="no" {% if filters.ready == 'no' %}selected{% endif %}>not ready</option>
   </select>
+  <select name="owner">
+    <option value="">anyone's</option>
+    <option value="unassigned" {% if filters.owner == 'unassigned' %}selected{% endif %}>nobody's yet</option>
+    {% for o in owners %}
+      <option value="{{ o }}" {% if filters.owner == o %}selected{% endif %}>{{ o }}</option>
+    {% endfor %}
+  </select>
   <button>filter</button>
   <span class="count">{{ rows|length }} shown</span>
 </form>
@@ -75,6 +86,7 @@
       <tr>
         <th>Ref</th><th>Source ID</th><th>External party</th><th>Station</th>
         <th>Status</th><th>Resolution</th><th>Ready</th>
+        <th>Owner</th><th>Next action</th><th title="What the party said it would deliver">Promised</th>
         <th title="Assertions / evidence links behind this record">Backing</th>
         <th>Exceptions</th>
       </tr>
@@ -92,6 +104,24 @@
           <td>
             {% if r.is_ready %}<span class="pill ready">ready</span>
             {% else %}<span class="pill notready">no</span>{% endif %}
+          </td>
+          {# Who is chasing it, what happens next, and what the party
+             promised — the three things a coordinator opens a row to find
+             out. No invented urgency ranking: the filing order stays the
+             engine's, and urgency is a filter (ADR-0010). #}
+          <td>{{ r.dependency.internal_owner or '—' }}</td>
+          <td>
+            {%- if r.dependency.next_action -%}
+              {{ r.dependency.next_action }}
+              {%- if r.dependency.action_due_date %}
+                <span class="due {% if r.dependency.action_due_date < today %}late{% endif %}">by {{ r.dependency.action_due_date }}</span>
+              {%- endif -%}
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td class="num">
+            {%- if r.dependency.committed_date -%}
+              <span class="{% if r.dependency.need_date and r.dependency.committed_date > r.dependency.need_date %}late{% endif %}">{{ r.dependency.committed_date }}</span>
+            {%- else -%}—{%- endif -%}
           </td>
           <td class="num">{{ r.assertion_count }}a / {{ r.evidence_count }}e</td>
           <td>
