@@ -35,7 +35,12 @@ from corridor.models import (
     is_claim,
     is_placeholder_party,
 )
-from corridor.verify import normalize, quote_appears_on, unverified_fields
+from corridor.verify import (
+    normalize,
+    quote_appears_on,
+    threshold_for,
+    unverified_fields,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
 from corridor.project_lock import lock_project
@@ -631,7 +636,10 @@ def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> 
     # was a way to sink a row and not a way to fix one (#212). Re-checking
     # can lower a flag as well as lift one, which is the point.
     updated["citations"] = [
-        {**citation, "verified": _quote_still_holds(citation, page_text)}
+        {
+            **citation,
+            "verified": _quote_still_holds(session, citation, page_text),
+        }
         for citation in (payload.get("citations") or [])
     ]
 
@@ -648,8 +656,16 @@ def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> 
     return updated
 
 
-def _quote_still_holds(citation: dict, page_text: str | None) -> bool:
+def _quote_still_holds(
+    session: Session, citation: dict, page_text: str | None
+) -> bool:
     """Whether this citation's quote is on the page it names, now.
+
+    The threshold comes from where the page's text came from, exactly as
+    it does at extraction: a spreadsheet's cells are read losslessly, so
+    a near-miss there is a real disagreement rather than print damage and
+    nothing is spent on tolerance. Hardcoding the printed-page threshold
+    let an edit lift a flag the cells rule had correctly set.
 
     Fails closed on an unreadable page and on an absent quote: a citation
     with nothing to check is not a citation that checks out.
@@ -657,7 +673,29 @@ def _quote_still_holds(citation: dict, page_text: str | None) -> bool:
     quote = citation.get("quote")
     if page_text is None or not quote:
         return False
-    return quote_appears_on(quote, page_text)
+    return quote_appears_on(
+        quote, page_text, threshold_for(_citation_text_source(session, citation))
+    )
+
+
+def _citation_text_source(session: Session, citation: dict) -> str | None:
+    """How the cited page's text was obtained, or None when unknowable.
+
+    None takes the printed-page tolerance, which is the safe direction
+    for a page whose provenance cannot be read: it never *raises* the bar
+    a caller expected, and a stricter page still fails its own check when
+    the source is known.
+    """
+    document_id = citation.get("document_id")
+    page_no = citation.get("page")
+    if document_id is None or page_no is None:
+        return None
+    return session.scalar(
+        select(DocPage.text_source).where(
+            DocPage.document_id == document_id,
+            DocPage.page_no == page_no,
+        )
+    )
 
 
 def _transcribes_cells(payload: dict) -> bool:
@@ -1108,6 +1146,11 @@ def dismiss_dependency(
             f"{DISMISS_REASONS}"
         )
     lock_project(session, dependency.project_id)
+    # Re-read under the lock. The caller loaded this row before taking it,
+    # so two reviewers dismissing at once would both see a null and both
+    # write — leaving two immutable, contradictory reasons and a
+    # projection naming only one of them.
+    session.refresh(dependency)
     if dependency.dismissed_at is not None:
         raise AlreadyDismissed(
             f"{dependency.ref_code} was already dismissed"

@@ -415,13 +415,16 @@ def waiting_statements(session: Session, project_id: int) -> list[dict]:
             .order_by(EventAdmissionOutcome.id.asc())
         ).all()
     )
+    # Only what a human could actually place. The pile offers an attach
+    # button, and offering one the mutation then refuses is the failure
+    # the lane rule already names: a Candidate outside its document's
+    # declared Active Run, or on a replaced revision, is not actionable
+    # by anyone and does not belong on a worklist.
+    from corridor.supersession import actionable_candidate_query
+
     candidates = session.scalars(
-        select(Candidate)
-        .where(
-            Candidate.project_id == project_id,
-            Candidate.kind == "event",
-            Candidate.state == "pending",
-        )
+        actionable_candidate_query(project_id)
+        .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
     waiting = []
@@ -474,7 +477,36 @@ def attach_statement(
         raise StatementUnplaceable(
             "a statement cannot attach to another project's record"
         )
+    if dependency.dismissed_at is not None:
+        raise StatementUnplaceable(
+            f"{dependency.ref_code} was dismissed — a statement cannot "
+            "attach to a record nobody is working"
+        )
     lock_project(session, dependency.project_id)
+
+    # The same scope every other human write goes through: a Candidate
+    # outside its document's declared Active Run, or on a revision the
+    # registry has replaced, is not actionable by anyone. Attaching by
+    # hand was the one path that skipped it.
+    from corridor.adjudicate import _require_candidate_action_scope
+
+    try:
+        _require_candidate_action_scope(
+            session, candidate, historical_document_id=None
+        )
+    except Exception as exc:
+        raise StatementUnplaceable(str(exc)) from exc
+
+    # And the policy's own first refusal. Its docstring promises that
+    # everything the policy would still have refused is refused here, and
+    # a quote proved absent from its page was the gap: without this a
+    # Committed Date could be published from a citation the system had
+    # already disproved.
+    if not candidate.citations_verified:
+        raise StatementUnplaceable(
+            "this statement's quote was not found on its page — check the "
+            "page before placing it"
+        )
 
     project = session.get(Project, dependency.project_id)
     fields = (candidate.payload_json or {}).get("fields", {})

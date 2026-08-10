@@ -33,6 +33,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     Document,
+    is_placeholder_party,
 )
 
 PROJECT_UNIQUE = "project-unique"
@@ -45,7 +46,15 @@ def row_identity(scheme: str, fields: dict) -> tuple[str, str] | None:
     A tuple of (party, number) — party empty under a project-unique
     scheme, so identities from different schemes can never collide by
     accident. None means the fields do not carry what the scheme needs:
-    the number always, and under per-party the stated party too.
+    the number always, and under per-party a party that actually names
+    somebody.
+
+    The party half is normalized before it becomes a key. Two revisions
+    spelling one company `AT&T Texas` and `AT&T TEXAS` are stating the
+    same conflict, and keying on the raw string made them two records
+    with the same number — the exact duplication a declared scheme
+    exists to prevent. Normalizing here and nowhere else keeps the key
+    and the party-agreement check reading the same string.
     """
     if scheme not in NUMBERING_SCHEMES:
         raise ValueError(f"unknown numbering scheme {scheme!r}")
@@ -53,11 +62,27 @@ def row_identity(scheme: str, fields: dict) -> tuple[str, str] | None:
     if not uid:
         return None
     if scheme == PER_PARTY:
-        org = str(fields.get("external_org") or "").strip()
-        if not org:
+        org = fields.get("external_org")
+        # A document declining to name an owner names nothing, so it
+        # cannot be half of a name. `N/A` on two different rows is not
+        # one party twice, and treating it as one would merge unrelated
+        # conflicts — or, because no External Party ever resolves from
+        # it, admit the same row twice.
+        if not str(org or "").strip() or is_placeholder_party(org):
             return None
-        return (org, str(uid))
+        return (normalize_party(org), str(uid))
     return ("", str(uid))
+
+
+def normalize_party(name: str) -> str:
+    """One spelling of a party name, for use as a key.
+
+    Whitespace collapsed and case folded — the two ways one company's
+    name differs between revisions of the same form. Nothing looser:
+    matching a party by resemblance is Adjudication's judgment, and
+    alias resolution belongs to the External Party's own record.
+    """
+    return " ".join(str(name).split()).casefold()
 
 
 def document_numbering_schemes(
@@ -103,4 +128,5 @@ def party_matches(session: Session, dependency: Dependency, org: str) -> bool:
     if external is None:
         return False
     names = [external.name, *(external.aliases or [])]
-    return any(org.casefold() == str(n).casefold() for n in names if n)
+    wanted = normalize_party(org)
+    return any(normalize_party(n) == wanted for n in names if n)

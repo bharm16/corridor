@@ -109,12 +109,21 @@ class DependencyAdmissionResult:
 def declared_matrix_document_ids(
     session: Session, project_id: int
 ) -> list[int]:
-    """Every matrix revision the policy reads, oldest stated date first.
+    """Every current matrix revision the policy reads, oldest date first.
 
     Order is the record's own: the newest revision's row is the one
     admitted, and older revisions corroborate it. Nothing here elects a
     revision — corroboration only happens between rows that already
     state the same thing.
+
+    A revision the registry has declared replaced is not read at all.
+    Every other path into the Ledger already refuses its rows — that is
+    what `actionable_candidate_query` means by scope — so including one
+    here did not corroborate anything: the write refused, the savepoint
+    rolled back, and the *current* revision's own row was lost with it.
+    Measured on NHHIP, that was 211 conflicts admitted where 688 should
+    have been. Supersession already answers which revision is current
+    (ADR-0016); this reads the answer instead of re-deriving one.
     """
     return list(
         session.scalars(
@@ -126,6 +135,7 @@ def declared_matrix_document_ids(
             .where(
                 Document.project_id == project_id,
                 Document.doc_type == "matrix",
+                Document.superseded_by.is_(None),
             )
             .order_by(Document.doc_date.asc().nulls_first(), Document.id.asc())
         ).all()
@@ -228,9 +238,9 @@ def run_dependency_admission(
         # parties' rows into one record would answer it by accident. That
         # question is Adjudication's (ADR-0031).
         parties = {
-            str((c.payload_json or {}).get("fields", {}).get("external_org") or "")
-            .strip()
-            .casefold()
+            identity.normalize_party(
+                (c.payload_json or {}).get("fields", {}).get("external_org") or ""
+            )
             for c in candidates
         }
         if len(parties) > 1:

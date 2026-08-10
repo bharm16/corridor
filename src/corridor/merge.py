@@ -276,6 +276,10 @@ def rank_matches(
 
     dependencies = session.scalars(
         select(Dependency).where(
+            # A dismissed record is off the working list, and merging a
+            # claim into one would file it where neither the list nor the
+            # exception engine will ever look again (ADR-0032).
+            Dependency.dismissed_at.is_(None),
             Dependency.project_id == project_id,
             Dependency.external_org_id == org.id,
         )

@@ -653,3 +653,70 @@ def test_a_statement_cannot_attach_to_another_projects_record(
 
     with pytest.raises(StatementUnplaceable, match="another project"):
         attach_statement(session, candidate, stray, principal=OPERATOR)
+
+
+def test_attaching_refuses_a_quote_never_found_on_its_page(
+    session, project, admitted
+):
+    """The policy's first refusal. Without it a Committed Date could be
+    published from a citation the system had already disproved."""
+    from corridor.event_admission import StatementUnplaceable, attach_statement
+
+    [candidate] = _minutes_with(
+        session, project, [_event(ref="PL99")], verified=False
+    )
+    run_event_admission(session, project.id)
+
+    with pytest.raises(StatementUnplaceable, match="not found on its page"):
+        attach_statement(session, candidate, admitted, principal=OPERATOR)
+    session.refresh(admitted)
+    assert admitted.committed_date is None
+
+
+def test_attaching_refuses_a_candidate_outside_its_declared_run(
+    session, project, admitted
+):
+    """The scope every other human write goes through; attaching by hand
+    was the one path that skipped it."""
+    from corridor.event_admission import StatementUnplaceable, attach_statement
+
+    minutes = _document(
+        session, project, filename="stray-minutes.pdf", doc_type="minutes"
+    )
+    stray = _candidate(minutes, kind="event", fields=_event(ref="PL99"))
+    session.add(stray)
+    session.flush()  # never attached to an ExtractionRun
+
+    with pytest.raises(StatementUnplaceable):
+        attach_statement(session, stray, admitted, principal=OPERATOR)
+
+
+def test_attaching_refuses_a_dismissed_record(session, project, admitted):
+    from corridor.adjudicate import dismiss_dependency
+    from corridor.event_admission import StatementUnplaceable, attach_statement
+
+    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
+    run_event_admission(session, project.id)
+    dismiss_dependency(session, admitted, "duplicate", principal=OPERATOR)
+
+    with pytest.raises(StatementUnplaceable, match="dismissed"):
+        attach_statement(session, candidate, admitted, principal=OPERATOR)
+
+
+def test_the_pile_offers_only_what_can_actually_be_placed(
+    session, project, admitted
+):
+    """Offering an attach the mutation would refuse is the failure the
+    lane rule already names."""
+    from corridor.event_admission import waiting_statements
+
+    minutes = _document(
+        session, project, filename="undeclared.pdf", doc_type="minutes"
+    )
+    stray = _candidate(minutes, kind="event", fields=_event(ref="PL99"))
+    session.add(stray)
+    session.flush()
+
+    assert stray.id not in {
+        w["candidate"].id for w in waiting_statements(session, project.id)
+    }
