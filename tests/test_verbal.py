@@ -249,6 +249,41 @@ def test_a_coordinator_records_a_verbal_from_the_conflict_page(
     assert "OVERDUE" in list_page
 
 
+def test_the_record_page_interleaves_cited_and_verbal_events_by_when_stated(
+    session, client, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    cited_description = "The party committed to finish in June in the minutes."
+    verbal_description = "The party said relocation will finish in August."
+    session.add(
+        DependencyEvent(
+            dependency_id=dependency.id,
+            event_type="commitment",
+            source_kind="cited",
+            event_date=date(2026, 1, 8),
+            committed_date=date(2026, 6, 15),
+            description=cited_description,
+            created_by="corridor:event-admission",
+        )
+    )
+    session.flush()
+    record_verbal(
+        session,
+        dependency,
+        stated_party="AT&T",
+        description=verbal_description,
+        conversation_date=date(2026, 5, 8),
+        committed_date=date(2026, 8, 15),
+        principal=RECORDER,
+    )
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+    event_history = page[page.index("<h2>Events"):page.index("<h2>Evidence")]
+
+    assert page.index(cited_description) < page.index(verbal_description)
+    assert event_history.index("Cited statement") < event_history.index("Verbal")
+
+
 def test_reports_mark_a_verbal_and_can_fall_back_to_a_cited_commitment(
     session, dependency
 ):

@@ -21,6 +21,7 @@ from corridor.models import (
     AuditLog,
     Candidate,
     Dependency,
+    DependencyEvent,
     DocPage,
     Document,
     EvidenceLink,
@@ -293,6 +294,31 @@ def test_the_prompt_supplies_the_citables_by_reference(session, dependency):
     assert "A1" in user
     for ref in floor_refs(session, dependency):
         assert ref in user
+
+
+def test_the_prompt_attributes_a_verbal_backed_committed_date(session, dependency):
+    dependency.committed_date = TODAY + timedelta(days=60)
+    session.add(
+        DependencyEvent(
+            dependency_id=dependency.id,
+            event_type="commitment",
+            source_kind="verbal",
+            stated_party="CenterPoint Energy",
+            event_date=TODAY - timedelta(days=1),
+            committed_date=dependency.committed_date,
+            description="CenterPoint said the relocation will finish in June.",
+            created_by="local:phone-coordinator",
+        )
+    )
+    session.flush()
+    client = StubClient([drafted(*covering_sentences(session, dependency))])
+
+    brief(session, dependency.id, client=client, today=TODAY)
+
+    user = client.calls[0]["user"]
+    assert "[V1]" in user
+    assert "CenterPoint Energy told local:phone-coordinator" in user
+    assert f"on {TODAY - timedelta(days=1)}" in user
 
 
 # ------------------------------------------------------------- the render

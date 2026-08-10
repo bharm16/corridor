@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from corridor.dependency_events import verbal_attribution
 from corridor.exceptions import Evaluation, format_exception_label
 from corridor.ledger import browse, primary_evidence
 from corridor.models import Project
@@ -26,6 +27,7 @@ COLUMNS = [
     "Status",
     "Resolution strategy",
     "Committed date",
+    "Committed date source",
     "Need date",
     "Ready",
     "Exceptions",
@@ -100,6 +102,7 @@ def to_xlsx(
                 dependency.status,
                 dependency.resolution_strategy,
                 dependency.committed_date,
+                verbal_attribution(row.committed_event) or "Cited statement",
                 dependency.need_date,
                 "yes" if row.is_ready else "no",
                 ", ".join(sorted(by_dependency.get(dependency.id, ()))),
@@ -110,7 +113,7 @@ def to_xlsx(
         )
 
     widths = {"A": 12, "B": 12, "C": 24, "D": 18, "E": 30, "H": 12, "I": 11,
-              "J": 14, "K": 12, "M": 34, "N": 40, "P": 60}
+              "J": 14, "K": 58, "L": 12, "N": 34, "O": 40, "Q": 60}
     for column, width in widths.items():
         sheet.column_dimensions[column].width = width
     sheet.freeze_panes = "A2"
