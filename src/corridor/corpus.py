@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 import httpx
 import yaml
 
-from corridor.models import DOC_TYPES
+from corridor.models import DOC_TYPES, NUMBERING_SCHEMES
 from corridor.supersession import SupersessionDeclaration
 
 ROLES = ("spine", "stream", "schedule", "evidence")
@@ -68,6 +68,9 @@ class Source:
     # Optional for documents that do not participate in one.
     registry_id: str | None = None
     supersession: SupersessionDeclaration | None = None
+    # How a matrix names its rows (ADR-0030). None means the manifest is
+    # silent and the document keeps its default, project-unique.
+    numbering_scheme: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,13 @@ def load_manifest(path: Path | str) -> Manifest:
             )
         doc_date = entry.get("doc_date")
         registry_id = entry.get("registry_id")
+        numbering_scheme = entry.get("numbering_scheme")
+        if numbering_scheme is not None and numbering_scheme not in NUMBERING_SCHEMES:
+            raise ValueError(
+                f"source {i} ({url}): unknown numbering_scheme "
+                f"{numbering_scheme!r}; expected one of "
+                f"{', '.join(NUMBERING_SCHEMES)}"
+            )
         if registry_id is not None and (
             not isinstance(registry_id, str) or not registry_id.strip()
         ):
@@ -145,6 +155,7 @@ def load_manifest(path: Path | str) -> Manifest:
                 member=entry.get("member"),
                 registry_id=registry_id,
                 supersession=supersession,
+                numbering_scheme=numbering_scheme,
             )
         )
     _validate_manifest_registry(tuple(sources), path=manifest_path)
@@ -682,8 +693,11 @@ def _sync_registry_metadata(record: dict, source: Source) -> None:
     """Mirror curated declarations without making fetch recency meaningful."""
     record.pop("registry_id", None)
     record.pop("supersession", None)
+    record.pop("numbering_scheme", None)
     if source.registry_id is not None:
         record["registry_id"] = source.registry_id
+    if source.numbering_scheme is not None:
+        record["numbering_scheme"] = source.numbering_scheme
     declaration = source.supersession
     if declaration is not None:
         record["supersession"] = {

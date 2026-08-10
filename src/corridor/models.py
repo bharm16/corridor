@@ -48,6 +48,13 @@ DOC_TYPES = (
     "other",
 )
 PARSE_STATUSES = ("pending", "parsed", "failed")
+# How a matrix names its rows — declared at registration, like a
+# document's date, and never inferred from the data (ADR-0030).
+# `project-unique`: one number names one conflict across the project
+# (the TxDOT UCM form, whose retired rows exist to keep numbers stable).
+# `per-party`: each External Party's list counts from 1, so a row's name
+# is the party and the number together (the FDOT roundabout form).
+NUMBERING_SCHEMES = ("project-unique", "per-party")
 EXTRACTION_OUTCOMES = (
     "completed",
     "failed",
@@ -446,6 +453,10 @@ class Document(Base):
             name="ck_documents_no_self_attested_supersession",
         ),
         CheckConstraint(
+            "numbering_scheme in ('project-unique', 'per-party')",
+            name="ck_documents_numbering_scheme",
+        ),
+        CheckConstraint(
             "(superseded_by is null and superseded_on is null "
             "and supersession_source_document_id is null "
             "and supersession_source_page is null) or "
@@ -470,6 +481,15 @@ class Document(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     filename: Mapped[str] = mapped_column(Text)
     doc_type: Mapped[str] = mapped_column(_enum(*DOC_TYPES, name="doc_type"))
+    # How this matrix names its rows (ADR-0030) — declared registry
+    # metadata, meaningful for `doc_type == "matrix"` and left at its
+    # default elsewhere. Identity is derived under it in one place,
+    # corridor.identity, and never guessed from repeated numbers.
+    numbering_scheme: Mapped[str] = mapped_column(
+        String(32),
+        default="project-unique",
+        server_default="project-unique",
+    )
     # Corpus provenance. A citation that bottoms out at "a file on my
     # laptop" is not a citation.
     source_url: Mapped[str | None] = mapped_column(Text)
