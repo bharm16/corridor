@@ -77,12 +77,16 @@ LINK_MILESTONE = "link_milestone"
 CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
 ADMIT_EVENT = "admit_event"
-AUTHORIZE_EVENT_ADMISSION = "authorize_event_admission"
 ADMIT_DEPENDENCY = "admit_dependency"
+# Nothing records these any more: the admission policies stopped asking
+# for a signature (ADR-0029). They stay named because the audit log is
+# append-only and still holds entries that carry them.
+AUTHORIZE_EVENT_ADMISSION = "authorize_event_admission"
 AUTHORIZE_DEPENDENCY_ADMISSION = "authorize_dependency_admission"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 DEPENDENCY_ADMISSION_ACTOR = "corridor:dependency-admission"
+ACTIVE_RUN_DECLARATION_ACTOR = "corridor:active-run-declaration"
 
 ACTIONS = frozenset(
     {

@@ -26,8 +26,6 @@ from corridor.db import Session, engine
 from corridor.event_admission import (
     ABSTENTION_REASON_VERSION,
     EVENT_ADMISSION_POLICY_VERSION,
-    EventAdmissionNotAuthorized,
-    authorize_event_admission,
     run_event_admission,
 )
 from corridor.extraction_runs import (
@@ -192,27 +190,6 @@ def _minutes_with(session, project, event_fields_list, *, verified=True):
     return candidates
 
 
-# ── Authorization ────────────────────────────────────────────────────────
-
-
-def test_a_run_without_authorization_refuses(session, project, admitted):
-    _minutes_with(session, project, [_event()])
-    with pytest.raises(EventAdmissionNotAuthorized):
-        run_event_admission(session, project.id)
-
-
-def test_authorization_is_an_attributable_human_act(session, project):
-    approval = authorize_event_admission(session, project.id, principal=OPERATOR)
-    assert approval.policy_version == EVENT_ADMISSION_POLICY_VERSION
-    assert approval.approved_by == OPERATOR.subject
-    assert len(approval.policy_sha256) == 64
-
-    with pytest.raises(InvalidHumanPrincipal):
-        authorize_event_admission(
-            session, project.id, principal="system:batch"
-        )
-
-
 # ── The checks ───────────────────────────────────────────────────────────
 
 
@@ -220,7 +197,6 @@ def test_a_clean_event_is_admitted_onto_its_dependency(
     session, project, admitted
 ):
     [candidate] = _minutes_with(session, project, [_event()])
-    authorize_event_admission(session, project.id, principal=OPERATOR)
 
     result = run_event_admission(session, project.id)
     assert result.admitted_count == 1
@@ -253,7 +229,6 @@ def test_each_failed_check_abstains_and_leaves_the_candidate_pending(
     session, project, admitted, fields, reason, verified
 ):
     [candidate] = _minutes_with(session, project, [fields], verified=verified)
-    authorize_event_admission(session, project.id, principal=OPERATOR)
 
     result = run_event_admission(session, project.id)
     assert result.admitted_count == 0
@@ -281,7 +256,6 @@ def test_two_dependencies_for_one_reference_abstains(
     session.add(second)
     session.flush()
     _minutes_with(session, project, [_event()])
-    authorize_event_admission(session, project.id, principal=OPERATOR)
 
     result = run_event_admission(session, project.id)
     assert result.abstained_count == 1
@@ -306,7 +280,6 @@ def test_a_project_side_event_never_sets_a_committed_date(
             )
         ],
     )
-    authorize_event_admission(session, project.id, principal=OPERATOR)
 
     result = run_event_admission(session, project.id)
     assert result.admitted_count == 0
@@ -331,7 +304,6 @@ def test_an_external_commitment_projects_the_committed_date(
             _event(event_date="2025-02-20", committed_date="2025-09-15"),
         ],
     )
-    authorize_event_admission(session, project.id, principal=OPERATOR)
 
     run_event_admission(session, project.id)
     session.refresh(admitted)
@@ -345,14 +317,12 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(
     session, project, admitted
 ):
     _minutes_with(session, project, [_event(), _event(ref="PL99")])
-    approval = authorize_event_admission(
-        session, project.id, principal=OPERATOR
-    )
 
     result = run_event_admission(session, project.id)
     run = session.get(PolicyRun, result.run_id)
-    assert run.policy_approval_id == approval.id
-    assert run.policy_sha256 == approval.policy_sha256
+    assert run.policy_approval_id is None  # nothing was signed
+    assert run.policy_version == EVENT_ADMISSION_POLICY_VERSION
+    assert len(run.policy_sha256) == 64
     assert run.abstention_reason_version == ABSTENTION_REASON_VERSION
     assert (run.applied_count, run.abstained_count) == (1, 1)
 
@@ -369,7 +339,6 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(
 
 def test_an_identical_rerun_records_no_new_outcome(session, project, admitted):
     _minutes_with(session, project, [_event()])
-    authorize_event_admission(session, project.id, principal=OPERATOR)
 
     first = run_event_admission(session, project.id)
     assert first.admitted_count == 1
@@ -381,36 +350,17 @@ def test_an_identical_rerun_records_no_new_outcome(session, project, admitted):
     assert len(session.scalars(select(DependencyEvent)).all()) == 1
 
 
-def test_a_stale_policy_version_refuses_until_reauthorized(
+def test_the_receipt_records_the_deployed_checks_that_ran(
     session, project, admitted, monkeypatch
 ):
-    _minutes_with(session, project, [_event()])
-    authorize_event_admission(session, project.id, principal=OPERATOR)
-
-    from corridor import event_admission as module
-
-    monkeypatch.setattr(
-        module, "EVENT_ADMISSION_POLICY_VERSION", "event-admission-v2"
-    )
-    with pytest.raises(EventAdmissionNotAuthorized):
-        run_event_admission(session, project.id)
-
-
-# ── The digest covers the rules themselves ───────────────────────────────
-
-
-def test_editing_a_check_pauses_the_policy_until_reauthorized(
-    session, project, admitted, tmp_path, monkeypatch
-):
-    """ADR-0022's guarantee, which this family inherits: the digest
-    covers the deployed bytes of the code that decides, not merely its
-    configuration. Changing a check without changing its version must
-    pause the policy, not run unreviewed."""
+    """ADR-0022's digest discipline, which this family keeps without the
+    authorization ADR-0029 removed: two runs under different checks can
+    never claim the same digest, so a replay reads honestly."""
     from corridor import event_admission as module
 
     _minutes_with(session, project, [_event()])
-    authorize_event_admission(session, project.id, principal=OPERATOR)
-    assert module.current_event_admission_approval(session, project.id)
+    before = run_event_admission(session, project.id)
+    before_sha = session.get(PolicyRun, before.run_id).policy_sha256
 
     real = module._rule_source_bytes
 
@@ -421,24 +371,23 @@ def test_editing_a_check_pauses_the_policy_until_reauthorized(
         )
 
     monkeypatch.setattr(module, "_rule_source_bytes", edited)
-    assert module.current_event_admission_approval(session, project.id) is None
-    with pytest.raises(EventAdmissionNotAuthorized):
-        run_event_admission(session, project.id)
+    after = run_event_admission(session, project.id)
+    assert session.get(PolicyRun, after.run_id).policy_sha256 != before_sha
 
 
-def test_changing_the_project_side_parties_pauses_the_policy(
+def test_the_receipt_records_the_project_side_parties_that_ran(
     session, project, admitted
 ):
     """Who counts as the project's own side decides which events may
-    carry a commitment, so it is part of what was authorized."""
-    from corridor import event_admission as module
-
-    authorize_event_admission(session, project.id, principal=OPERATOR)
-    assert module.current_event_admission_approval(session, project.id)
+    carry a commitment, so it is part of what the receipt claims."""
+    _minutes_with(session, project, [_event()])
+    before = run_event_admission(session, project.id)
+    before_sha = session.get(PolicyRun, before.run_id).policy_sha256
 
     project.project_side_parties = [PROJECT_SIDE, "Another Consultant"]
     session.flush()
-    assert module.current_event_admission_approval(session, project.id) is None
+    after = run_event_admission(session, project.id)
+    assert session.get(PolicyRun, after.run_id).policy_sha256 != before_sha
 
 
 # ── The two dates stay two dates ─────────────────────────────────────────
@@ -458,7 +407,6 @@ def test_a_promised_date_never_stands_in_for_the_date_it_was_said(
             _event(event_date=None, committed_date="2025-06-01"),
         ],
     )
-    authorize_event_admission(session, project.id, principal=OPERATOR)
     result = run_event_admission(session, project.id)
     assert result.admitted_count == 2
 
@@ -482,7 +430,6 @@ def test_an_unparseable_date_abstains_rather_than_guessing(
     [candidate] = _minutes_with(
         session, project, [_event(event_date="sometime in spring")]
     )
-    authorize_event_admission(session, project.id, principal=OPERATOR)
     result = run_event_admission(session, project.id)
     assert [a.reason for a in result.abstentions] == ["unparseable_date"]
     session.refresh(candidate)

@@ -424,6 +424,7 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
 
 def main(argv: list[str]) -> int:
     """`make extract ARGS="<slug> [--redo]"`"""
+    from corridor.admission import load_and_report
     from corridor.db import Session as SessionFactory
     from corridor.llm import OpenAIClient
 
@@ -472,6 +473,7 @@ def main(argv: list[str]) -> int:
             client.close()
 
         print(render(project, PROMPT_VERSION, outcomes))
+        print(load_and_report(session, project))
 
         # Cached and reasoning are broken out because neither is recoverable
         # from the totals afterwards, and both move the bill: cached input

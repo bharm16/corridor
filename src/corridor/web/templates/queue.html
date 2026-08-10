@@ -124,29 +124,6 @@
                             border:1px solid var(--line); border-radius:3px; flex:1; }
   .coordinate-forms input[type=date] { flex:0 0 auto; }
 
-  /* --- The one action slot. Nothing competes with it. --- */
-  main.single { display:block; height:auto; }
-  .slot { max-width:44rem; margin:3.5rem auto; padding:0 1.2rem; }
-  .slot h1 { font-size:1.5rem; margin:0 0 .3rem; letter-spacing:-.01em; }
-  .slot .lead { color:var(--muted); margin:0 0 2rem; font-size:.95rem; }
-  .slot .done-note { background:#ecfdf3; border:1px solid #abefc6; color:#065f46;
-                     border-radius:6px; padding:.5rem .7rem; font-size:.88rem;
-                     margin:0 0 1.5rem; }
-  .check { border-top:1px solid var(--line); padding-top:1.4rem;
-           margin-bottom:1.8rem; }
-  .check h2 { font-size:1rem; margin:0 0 .3rem; }
-  .check p { color:var(--muted); margin:0 0 .9rem; font-size:.9rem; }
-  .check.signed { color:var(--ok); font-size:.9rem; }
-  ul.docs { list-style:none; margin:0 0 1rem; padding:0; }
-  ul.docs li { padding:.15rem 0; }
-  ul.docs label { display:flex; gap:.5rem; align-items:baseline; cursor:pointer; }
-  ul.docs .muted { color:var(--muted); font-size:.85rem; }
-  .bypass { border-top:1px solid var(--line); padding-top:1.2rem;
-            color:var(--muted); font-size:.85rem; }
-  .scope { margin:.4rem 1.2rem; color:var(--muted); font-size:.82rem; }
-  .linkish { font:inherit; color:#111; background:none; border:0;
-             padding:0; text-decoration:underline; cursor:pointer; }
-
   /* --- Why this row is in front of you, before anything about the row. --- */
   .why { margin-bottom:1rem; }
   .why h2 { font-size:1.05rem; margin:0 0 .25rem; }
@@ -198,91 +175,11 @@
     <b>{{ project.name }}</b>
   </div>
   <span class="counts">
-    {%- if admission_setup and admission_setup.needs_signoff %}
-      not loaded yet
-    {%- else %}
-      {{ view.remaining }} waiting for you
-    {%- endif %}
+    {{ view.remaining }} waiting for you
     · <a href="/ledger/{{ project.slug }}">the record</a>
   </span>
 </header>
 
-{% if admission_setup and admission_setup.needs_signoff %}
-  {# The one thing that needs you: nothing else is possible until the
-     record has something in it, so nothing else is on the screen. #}
-  <main class="single">
-    <section class="slot">
-      <h1>Load this project</h1>
-      <p class="lead">Two checklists. You sign each one; the machine then
-        does what the checklist proves, and brings you only what it
-        could not.</p>
-
-      {% if admission_setup.last_dependency_run %}
-        <p class="done-note">Conflicts already loaded:
-          <b>{{ admission_setup.last_dependency_run.applied_count }}</b> on the record,
-          <b>{{ admission_setup.last_dependency_run.abstained_count }}</b> waiting for you.</p>
-      {% endif %}
-
-      {% if not admission_setup.dependencies_current %}
-        <form method="post" action="/projects/{{ project.slug }}/admission/dependencies"
-              class="check">
-          <h2>The conflicts</h2>
-          <p>A conflict goes on the record when these revisions state it
-            identically, word for word, and both pages are cited. Where they
-            disagree, it comes to you.</p>
-          {# Default to the two most recent revisions: agreement against a
-             stale draft admits almost nothing. The signature covers
-             whatever is checked. #}
-          <ul class="docs">
-            {% for d in admission_setup.matrix_documents %}
-              <li>
-                <label>
-                  <input type="checkbox" name="agreement_document_ids"
-                         value="{{ d.id }}"
-                         {% if loop.index > admission_setup.matrix_documents|length - 2 %}checked{% endif %}>
-                  {{ d.filename }}{% if d.doc_date %} <span class="muted">{{ d.doc_date }}</span>{% endif %}
-                </label>
-              </li>
-            {% endfor %}
-          </ul>
-          <button class="primary">Sign, and load the conflicts</button>
-        </form>
-      {% else %}
-        <p class="check signed">The conflicts checklist is signed.</p>
-      {% endif %}
-
-      {% if not admission_setup.events_current %}
-        <form method="post" action="/projects/{{ project.slug }}/admission/events"
-              class="check">
-          <h2>What people said</h2>
-          <p>A dated statement from the meeting minutes attaches to its
-            conflict when the quote is verified on its page and it names
-            exactly one record. Everything else comes to you.</p>
-          <button class="primary">Sign, and attach the statements</button>
-        </form>
-      {% else %}
-        <p class="check signed">The statements checklist is signed.</p>
-      {% endif %}
-      <p class="bypass">
-        <a href="/queue/{{ project.slug }}?lane=candidate&amp;mode=review">Review the
-          rows by hand instead</a> — one at a time, without the checklists.
-      </p>
-    </section>
-  </main>
-</body>
-{% endif %}
-{% if not (admission_setup and admission_setup.needs_signoff) %}
-{% if admission_setup and not admission_setup.events_current
-      and not event_cohort_receipt and lane == "candidate" %}
-  <p class="scope">
-    The statements checklist is not signed, so nothing anyone said in the
-    minutes is on the record yet.
-    <form method="post" action="/projects/{{ project.slug }}/admission/events"
-          style="display:inline">
-      <button class="linkish">Sign it now</button>
-    </form>
-  </p>
-{% endif %}
 {% if event_cohort_receipt %}
   <p class="scope">
     <b>Event cohort receipt #{{ event_cohort_receipt.id }}</b> ·
@@ -687,4 +584,3 @@
     });
   }
 </script>
-{% endif %}

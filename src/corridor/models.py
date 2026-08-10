@@ -349,7 +349,7 @@ class ActiveAutomaticCarryForwardPolicy(Base):
 
 
 class PolicyRun(Base):
-    """One immutable batch receipt for an authorized policy pass.
+    """One immutable batch receipt for a policy pass.
 
     `applied_count` is the neutral name for what a family applied —
     carried support, admitted events, admitted dependencies. A deferred
@@ -390,7 +390,11 @@ class PolicyRun(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     family: Mapped[str] = mapped_column(String(32))
-    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    # Null for a policy that runs without a human authorization: the
+    # admission families run as a pipeline stage and stand on the version
+    # and digest recorded here beside them (ADR-0029). Carry-Forward
+    # still names its approval.
+    policy_approval_id: Mapped[int | None] = mapped_column(BigInteger)
     policy_version: Mapped[str] = mapped_column(String(64))
     policy_sha256: Mapped[str] = mapped_column(String(64))
     abstention_reason_version: Mapped[str] = mapped_column(String(64))

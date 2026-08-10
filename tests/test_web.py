@@ -14,6 +14,7 @@ from corridor.adjudicate import (
     merge_candidate,
     reject_candidate,
 )
+from corridor.admission import load_project
 from corridor.automatic_carry_forward import authorize_automatic_carry_forward
 from corridor.config import settings
 from corridor.db import Session, engine
@@ -3093,92 +3094,104 @@ def test_a_self_or_duplicate_sibling_refuses_cleanly(session, client, project):
     assert c["pl7_b"].state == "pending"
 
 
-# ── Authorization is a button (#206): sign and run from the queue ────────
+# ── The list builds itself (ADR-0029) ───────────────────────────────────
 
 
-def test_the_queue_offers_authorization_when_policies_are_unsigned(
+def test_the_queue_asks_for_no_signature_before_showing_the_list(
     session, client, project
 ):
+    """The load screen is gone. Opening a project shows work, not a
+    checklist and not "not loaded yet"."""
+    _event_cohort_lane(session, project)
+    load_project(session, project.id)
+
+    page = client.get(f"/queue/{project.slug}").text
+    assert "Load this project" not in page
+    assert "not loaded yet" not in page
+    assert f"/projects/{project.slug}/admission/dependencies" not in page
+    assert f"/projects/{project.slug}/admission/events" not in page
+
+
+def test_landing_documents_put_their_conflicts_on_the_record(
+    session, client, project
+):
+    """PL7 is stated identically by both revisions; PL8 by one. Both are
+    conflicts, and one matrix is enough to be one."""
     _event_cohort_lane(session, project)
 
-    page = client.get(f"/queue/{project.slug}").text
-    assert "Load this project" in page
-    assert "ucm-feb.pdf" in page and "ucm-may.pdf" in page
-    assert f"/projects/{project.slug}/admission/dependencies" in page
-    assert f"/projects/{project.slug}/admission/events" in page
+    result = load_project(session, project.id)
+    assert result.dependencies.admitted_count == 2
 
-
-def test_the_dependencies_button_signs_and_runs_in_one_click(
-    session, client, project
-):
-    from corridor.models import PolicyApproval
-
-    receipt, c = _event_cohort_lane(session, project)
-    docs = sorted(
-        {c["pl7_a"].source_document_id, c["pl7_b"].source_document_id}
-    )
-
-    response = client.post(
-        f"/projects/{project.slug}/admission/dependencies",
-        data={"agreement_document_ids": [str(d) for d in docs]},
-        follow_redirects=False,
-    )
-    assert response.status_code == 303
-
-    approval = session.scalars(
-        select(PolicyApproval).where(
-            PolicyApproval.project_id == project.id
+    assert {
+        d.source_ref
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
         )
-    ).one()
-    assert approval.approved_by == TEST_PRINCIPAL.subject
+    } == {"PL7", "PL8"}
 
-    # The identical PL7 pair admitted mechanically; PL8 (one revision
-    # only) stays pending for review in the queue.
-    dependency = session.scalars(
-        select(Dependency).where(Dependency.project_id == project.id)
-    ).one()
-    assert dependency.source_ref == "PL7"
-    session.refresh(c["pl8_b"])
-    assert c["pl8_b"].state == "pending"
-
-    # One conflict on the record, and PL8 — present in one revision only —
-    # is what is now waiting for a human.
-    page = client.get(f"/queue/{project.slug}").text
-    assert "1 waiting for you" in page
+    # Both are readable on the record without anyone having judged them.
+    record = client.get(f"/ledger/{project.slug}").text
+    assert "PL7" in record and "PL8" in record
 
 
-def test_the_events_button_signs_attaches_and_reports(
+def test_a_statement_attaches_to_its_conflict_in_the_same_pass(
     session, client, project
 ):
     from corridor.models import DependencyEvent
 
-    receipt, c = _event_cohort_lane(session, project)
-    docs = sorted(
-        {c["pl7_a"].source_document_id, c["pl7_b"].source_document_id}
-    )
-    client.post(
-        f"/projects/{project.slug}/admission/dependencies",
-        data={"agreement_document_ids": [str(d) for d in docs]},
-        follow_redirects=False,
-    )
-
-    response = client.post(
-        f"/projects/{project.slug}/admission/events",
-        data={},
-        follow_redirects=False,
-    )
-    assert response.status_code == 303
+    _event_cohort_lane(session, project)
+    result = load_project(session, project.id)
+    assert result.events.admitted_count == 1
 
     dependency = session.scalars(
-        select(Dependency).where(Dependency.project_id == project.id)
+        select(Dependency).where(
+            Dependency.project_id == project.id,
+            Dependency.source_ref == "PL7",
+        )
     ).one()
-    events = session.scalars(
+    [event] = session.scalars(
         select(DependencyEvent).where(
             DependencyEvent.dependency_id == dependency.id
         )
     ).all()
-    assert len(events) == 1
-    assert events[0].event_type == "commitment"
+    assert event.event_type == "commitment"
+
+
+def test_a_document_with_two_readings_waits_rather_than_being_guessed(
+    session, client, project
+):
+    """Choosing between completed runs stays a human act; the rest of the
+    project loads meanwhile rather than going dark behind it."""
+    from corridor.extraction_runs import record_extraction_run
+
+    _event_cohort_lane(session, project)
+    stray = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "ucm-draft.pdf"),
+        filename="ucm-draft.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(stray)
+    session.flush()
+    session.add(DocPage(document_id=stray.id, page_no=1, text="rows"))
+    session.flush()
+    for _ in range(2):
+        record_extraction_run(
+            session,
+            stray,
+            prompt_version="matrix_v1",
+            candidate_count=0,
+            page_errors=0,
+            model="gpt-test",
+            schema_version="matrix_candidate_shape_v1",
+        )
+    session.flush()
+
+    result = load_project(session, project.id)
+    assert result.ambiguous_documents == ["ucm-draft.pdf"]
+    assert result.dependencies.admitted_count == 2
 
 
 # ── The reason-led review card (#209) ────────────────────────────────────
@@ -3186,10 +3199,7 @@ def test_the_events_button_signs_attaches_and_reports(
 
 def _disagreeing_project(session, project):
     """Two revisions that disagree about one conflict, policy-run."""
-    from corridor.dependency_admission import (
-        authorize_dependency_admission,
-        run_dependency_admission,
-    )
+    from corridor.dependency_admission import run_dependency_admission
     from corridor.extraction_runs import (
         declare_single_run_documents,
         record_extraction_run,
@@ -3267,12 +3277,6 @@ def _disagreeing_project(session, project):
         )
         session.flush()
     declare_single_run_documents(session, project.id, principal=TEST_PRINCIPAL)
-    authorize_dependency_admission(
-        session,
-        project.id,
-        principal=TEST_PRINCIPAL,
-        agreement_document_ids=[feb.id, may.id],
-    )
     result = run_dependency_admission(session, project.id)
     assert result.admitted_count == 0
     return feb, may

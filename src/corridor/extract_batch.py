@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from dataclasses import dataclass
 
+from corridor.admission import load_and_report
 from corridor.extraction_runs import completed_document_ids, record_extraction_run
 from corridor.llm import DEFAULT_WORKERS, complete_many
 from corridor.models import Candidate, DocPage, Document
@@ -297,4 +298,5 @@ def run_extraction(
             f"{client.usage.completion_tokens:,} out",
             flush=True,
         )
+        print(load_and_report(session, project), flush=True)
     return 0
