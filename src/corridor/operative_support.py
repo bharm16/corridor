@@ -36,6 +36,42 @@ class UnsafeSupportTransfer(ValueError):
     """Current operative scopes no longer match an all-or-none transfer."""
 
 
+def evidence_is_scoped_to_dependency(
+    session: Session,
+    evidence: EvidenceLink | None,
+    dependency_id: int,
+    *,
+    require_sufficiency: bool = False,
+) -> bool:
+    """Whether one Evidence identity belongs to this record's stated scope.
+
+    Direct evidence owns a Dependency. Event evidence owns an event and is
+    visible only through its explicit scope; readiness additionally needs the
+    independent, per-Dependency sufficiency judgment.
+    """
+    if evidence is None:
+        return False
+    if evidence.dependency_id == dependency_id:
+        return not require_sufficiency or evidence.satisfies_requirement is True
+    if evidence.event_id is None:
+        return False
+    if session.scalar(
+        select(DependencyEventScope.id).where(
+            DependencyEventScope.event_id == evidence.event_id,
+            DependencyEventScope.dependency_id == dependency_id,
+        )
+    ) is None:
+        return False
+    if not require_sufficiency:
+        return True
+    return session.scalar(
+        select(DependencyEvidenceSufficiency.id).where(
+            DependencyEvidenceSufficiency.dependency_id == dependency_id,
+            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+        )
+    ) is not None
+
+
 @dataclass(frozen=True)
 class EvidenceSupport:
     evidence_link_id: int
@@ -266,10 +302,8 @@ def _transfer_operative_scopes_under_lock(
         prior_readiness = session.get(
             EvidenceLink, scope.evidence.evidence_link_id
         )
-        if (
-            prior_readiness is None
-            or prior_readiness.dependency_id != dependency_id
-            or prior_readiness.satisfies_requirement is not True
+        if not evidence_is_scoped_to_dependency(
+            session, prior_readiness, dependency_id, require_sufficiency=True
         ):
             raise UnsafeSupportTransfer("readiness support changed")
 

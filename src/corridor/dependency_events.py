@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from corridor.models import Dependency, DependencyEvent, DependencyEventScope, DependencyEventTiming
 
 
-COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change", "slip")
+COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change")
 
 
 def latest_committed_events(

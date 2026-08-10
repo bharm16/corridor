@@ -39,10 +39,12 @@ def event(**over):
         "description": "PL41 to be protected in place rather than relocated",
         "event_date": "2024-08-12",
         "external_org": "Air Liquide",
+        "stated_party": "Air Liquide",
         "conflict_ref": "PL41",
         "station_from": "6685+06",
         "station_to": "6686+08",
         "committed_date": None,
+        "previous_timing": None,
         "quote": "PL41 - protect-in-place.",
         "confidence": 0.9,
     }
@@ -92,6 +94,43 @@ def test_an_event_becomes_a_verified_candidate(session, document):
     assert candidate.citations_verified is True
     assert candidate.payload_json["fields"]["conflict_ref"] == "PL41"
     assert candidate.payload_json["fields"]["station_from"] == "6685+06"
+
+
+def test_statement_fields_preserve_actor_and_structured_timings(session, document):
+    client = StubClient(
+        [
+            {
+                "events": [
+                    event(
+                        event_type="committed_date_change",
+                        committed_date={
+                            "text": "May 16, 2026",
+                            "precision": "day",
+                            "start_date": "2026-05-16",
+                            "end_date": "2026-05-16",
+                        },
+                        previous_timing={
+                            "text": "March 2026",
+                            "precision": "month",
+                            "start_date": "2026-03-01",
+                            "end_date": "2026-03-31",
+                        },
+                    )
+                ]
+            }
+        ]
+    )
+
+    [candidate] = extract_document(session, document, client=client)
+
+    assert candidate.payload_json["fields"]["stated_party"] == "Air Liquide"
+    assert candidate.payload_json["fields"]["committed_date"] == {
+        "text": "May 16, 2026",
+        "precision": "day",
+        "start_date": "2026-05-16",
+        "end_date": "2026-05-16",
+    }
+    assert candidate.payload_json["fields"]["previous_timing"]["precision"] == "month"
 
 
 def test_minutes_produce_events_not_dependencies(session, document):
@@ -255,7 +294,7 @@ def test_batched_extraction_pools_pages_across_documents(session, document):
         to_candidate=_to_candidate,
         items_key="events",
         max_workers=4,
-        prompt_version="minutes_v1",
+        prompt_version=PROMPT_VERSION,
         commit=False,
     )
     # Both documents' pages went out in one pooled batch.

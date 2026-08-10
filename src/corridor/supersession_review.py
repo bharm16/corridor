@@ -28,6 +28,7 @@ from corridor.models import (
     ActiveExtractionRun,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
     Document,
     EvidenceLink,
     ExtractionRun,
@@ -39,6 +40,7 @@ from corridor.operative_support import (
     SupersededOperativeScope,
     UnsafeSupportTransfer,
     _transfer_operative_scopes_under_lock,
+    evidence_is_scoped_to_dependency,
     readiness_frontier_before_audit,
     resolve_operative_support,
 )
@@ -459,7 +461,9 @@ def _candidate_ids_bound_by_reconfirmation_sources(
         evidence = session.get(EvidenceLink, scope.evidence_link_id)
         if (
             evidence is None
-            or evidence.dependency_id != record.dependency_id
+            or not evidence_is_scoped_to_dependency(
+                session, evidence, record.dependency_id
+            )
             or evidence.verified is not True
         ):
             return set()
@@ -509,7 +513,7 @@ def _candidate_ids_for_reconfirmation_evidence(
     evidence = session.get(EvidenceLink, evidence_link_id)
     if (
         evidence is None
-        or evidence.dependency_id != dependency_id
+        or not evidence_is_scoped_to_dependency(session, evidence, dependency_id)
         or evidence.verified is not True
     ):
         return set()
@@ -1169,13 +1173,24 @@ def _reconfirmation_sources_match_receipt(
             session, dependency_id
         )
     )
+    # Audit history tracks the live sufficiency designation, not whether its
+    # document remains terminal.  Query both physical representations before
+    # applying frontier logic: direct Evidence keeps its flag, while event
+    # Evidence keeps one explicit per-Dependency sufficiency row.
     stored_current_readiness_ids = frozenset(
-        session.scalars(
-            select(EvidenceLink.id).where(
-                EvidenceLink.dependency_id == dependency_id,
-                EvidenceLink.satisfies_requirement.is_(True),
-            )
-        ).all()
+        {
+            *session.scalars(
+                select(EvidenceLink.id).where(
+                    EvidenceLink.dependency_id == dependency_id,
+                    EvidenceLink.satisfies_requirement.is_(True),
+                )
+            ).all(),
+            *session.scalars(
+                select(DependencyEvidenceSufficiency.evidence_link_id).where(
+                    DependencyEvidenceSufficiency.dependency_id == dependency_id
+                )
+            ).all(),
+        }
     )
     if (
         current_readiness_ids is None
@@ -1206,7 +1221,7 @@ def _reconfirmation_sources_match_receipt(
         evidence = session.get(EvidenceLink, scope.evidence_link_id)
         if (
             evidence is None
-            or evidence.dependency_id != dependency_id
+            or not evidence_is_scoped_to_dependency(session, evidence, dependency_id)
             or evidence.document_id != predecessor_document_id
             or evidence.verified is not True
             or not _has_one_verified_input_citation(

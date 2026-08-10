@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
@@ -26,6 +26,10 @@ from corridor.models import (
     AuditLog,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
+    DependencyEvent,
+    DependencyEventScope,
+    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
@@ -70,10 +74,27 @@ def _reset(session, project: Project) -> None:
     dep_ids = select(Dependency.id).where(Dependency.project_id == project.id)
     candidate_ids = select(Candidate.id).where(Candidate.project_id == project.id)
     document_ids = select(Document.id).where(Document.project_id == project.id)
+    session.execute(text("set local corridor.allow_statement_retirement = 'on'"))
     session.execute(delete(Assertion).where(Assertion.dependency_id.in_(dep_ids)))
     session.execute(
         delete(OperativeSupport).where(OperativeSupport.dependency_id.in_(dep_ids))
     )
+    event_ids = select(DependencyEvent.id).where(
+        DependencyEvent.project_id == project.id
+    )
+    session.execute(
+        delete(DependencyEvidenceSufficiency).where(
+            DependencyEvidenceSufficiency.dependency_id.in_(dep_ids)
+        )
+    )
+    session.execute(delete(EvidenceLink).where(EvidenceLink.event_id.in_(event_ids)))
+    session.execute(
+        delete(DependencyEventTiming).where(DependencyEventTiming.event_id.in_(event_ids))
+    )
+    session.execute(
+        delete(DependencyEventScope).where(DependencyEventScope.event_id.in_(event_ids))
+    )
+    session.execute(delete(DependencyEvent).where(DependencyEvent.id.in_(event_ids)))
     session.execute(
         delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dep_ids))
     )

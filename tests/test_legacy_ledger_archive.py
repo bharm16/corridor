@@ -362,7 +362,7 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
     ).one()
     ready_evidence.satisfies_requirement = True
     event_evidence = EvidenceLink(
-        dependency_id=dependency.id,
+        dependency_id=None,
         event_id=event.id,
         document_id=document.id,
         page_no=1,
@@ -438,6 +438,62 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
         select(func.count(EvidenceLink.id)).where(
             EvidenceLink.dependency_id == dependency.id
         )
+    ) == 0
+
+
+def test_retirement_archives_and_deletes_unknown_scope_statements(
+    session, legacy_ledger
+):
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+    from corridor.models import ExternalOrg
+
+    project, document, _, _ = legacy_ledger
+    party = ExternalOrg(name="AT&T Texas")
+    session.add(party)
+    session.flush()
+    statement = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="AT&T Texas",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=None,
+        description="AT&T Texas will provide its design package in January 2027.",
+        new_timing=StatementTiming.month("January 2027", 2027, 1),
+        scope=StatementScope.unknown(),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document_id=document.id,
+            page_no=1,
+            quote="AT&T Texas will provide its design package in January 2027.",
+        ),
+    )
+
+    plan = plan_retirement(session, project.id)
+    assert [event["id"] for event in plan.content["dependency_events"]] == [
+        statement.id
+    ]
+    assert plan.content["dependency_event_scopes"] == []
+    assert any(
+        row["event_id"] == statement.id for row in plan.content["evidence_links"]
+    )
+
+    retire_legacy_ledger(
+        session,
+        project.id,
+        expected_sha256=plan.content_sha256,
+        expected_dependency_count=1,
+    )
+
+    assert session.get(DependencyEvent, statement.id) is None
+    assert session.scalar(
+        select(func.count(EvidenceLink.id)).where(EvidenceLink.event_id == statement.id)
     ) == 0
 
 

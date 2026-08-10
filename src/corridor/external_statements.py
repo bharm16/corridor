@@ -152,6 +152,15 @@ def record_external_party_statement(
     _validate_timing(new_timing)
     if previous_timing is not None:
         _validate_timing(previous_timing)
+    if source_kind == "verbal":
+        if event_date is None:
+            raise StatementRefusal("a Verbal must preserve the conversation date")
+        if new_timing.precision != "day" or previous_timing is not None:
+            raise StatementRefusal(
+                "a Verbal records one exact-day commitment, not a date change"
+            )
+        if scope.mode != "selected" or len(scope.dependency_ids) != 1:
+            raise StatementRefusal("a Verbal must name exactly one Dependency")
     event_type = "committed_date_change" if previous_timing else "commitment"
     dependency_ids = _resolve_scope(
         session,
@@ -235,7 +244,12 @@ def _validate_timing(timing: StatementTiming) -> None:
     elif timing.precision == "month":
         if timing.start_date is None or timing.end_date is None:
             raise StatementRefusal("a month timing must retain its calendar bounds")
-        if timing.start_date.day != 1 or timing.start_date > timing.end_date:
+        expected_end = date(
+            timing.start_date.year,
+            timing.start_date.month,
+            monthrange(timing.start_date.year, timing.start_date.month)[1],
+        )
+        if timing.start_date.day != 1 or timing.end_date != expected_end:
             raise StatementRefusal("a month timing has invalid calendar bounds")
     elif timing.precision == "approximate":
         if timing.start_date is not None or timing.end_date is not None:

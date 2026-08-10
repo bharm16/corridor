@@ -22,6 +22,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # #216 already protects verbal rows.  This one transaction performs the
+    # conservative legacy shape conversion before installing the broader
+    # statement immutability guard below.
+    op.execute("select set_config('corridor.allow_statement_retirement', 'on', true)")
     op.add_column("dependency_events", sa.Column("project_id", sa.BigInteger()))
     op.add_column(
         "dependency_events", sa.Column("affected_external_org_id", sa.BigInteger())
@@ -47,6 +51,7 @@ def upgrade() -> None:
         """
     )
     op.alter_column("dependency_events", "project_id", nullable=False)
+    op.alter_column("dependency_events", "scope_mode", nullable=False)
     op.create_foreign_key(
         "fk_dependency_events_project", "dependency_events", "projects", ["project_id"], ["id"]
     )
@@ -75,6 +80,12 @@ def upgrade() -> None:
         "timing_direction is null or timing_direction in ('earlier', 'later', 'unknown')",
     )
     op.drop_constraint("event_type", "dependency_events", type_="check")
+    # A legacy scalar Slip does not prove both old and new source timings.
+    # It becomes the ordinary commitment its surviving source can support;
+    # historical report snapshots retain the old wording independently.
+    op.execute(
+        "update dependency_events set event_type = 'commitment' where event_type = 'slip'"
+    )
     op.alter_column(
         "dependency_events",
         "event_type",
@@ -84,7 +95,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         "event_type",
         "dependency_events",
-        "event_type in ('commitment', 'committed_date_change', 'response', 'slip', "
+        "event_type in ('commitment', 'committed_date_change', 'response', "
         "'escalation', 'status_change', 'closure')",
     )
 
@@ -118,7 +129,10 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(precision = 'day' and start_date is not null and end_date = start_date) "
-            "or (precision = 'month' and start_date is not null and end_date is not null) "
+            "or (precision = 'month' and start_date is not null and end_date is not null "
+            "and start_date = date_trunc('month', start_date::timestamp)::date "
+            "and end_date = (date_trunc('month', start_date::timestamp) "
+            "+ interval '1 month - 1 day')::date) "
             "or (precision in ('approximate', 'legacy_unknown') and start_date is null and end_date is null)",
             name="ck_dependency_event_timing_bounds",
         ),
@@ -174,6 +188,12 @@ def upgrade() -> None:
         set dependency_id = null, satisfies_requirement = false
         where event_id is not null
         """
+    )
+    op.create_check_constraint(
+        "ck_evidence_links_event_ownership",
+        "evidence_links",
+        "(event_id is null and dependency_id is not null) or "
+        "(event_id is not null and dependency_id is null and satisfies_requirement is false)",
     )
 
     op.drop_constraint(
@@ -237,14 +257,23 @@ def upgrade() -> None:
         declare
             target_event_id bigint;
             target_mode text;
+            target_source text;
+            target_event_date date;
             link_count integer;
+            new_precision text;
+            previous_count integer;
         begin
             if tg_table_name = 'dependency_events' then
                 target_event_id := case when tg_op = 'DELETE' then old.id else new.id end;
+            elsif tg_table_name = 'dependency_event_timings' then
+                target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
             else
                 target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
             end if;
-            select scope_mode into target_mode from dependency_events where id = target_event_id;
+            select scope_mode, source_kind, event_date
+            into target_mode, target_source, target_event_date
+            from dependency_events where id = target_event_id;
+            -- The row is gone during a permitted retirement delete.
             if target_mode is null then
                 return null;
             end if;
@@ -257,6 +286,22 @@ def upgrade() -> None:
             if target_mode in ('selected', 'all_active') and link_count = 0 then
                 raise exception 'known statement scope has no Dependency links'
                     using errcode = '23514';
+            end if;
+            if target_source = 'verbal' then
+                select precision into new_precision
+                from dependency_event_timings
+                where event_id = target_event_id and kind = 'new';
+                select count(*) into previous_count
+                from dependency_event_timings
+                where event_id = target_event_id and kind = 'previous';
+                if target_event_date is null
+                   or target_mode <> 'selected'
+                   or link_count <> 1
+                   or new_precision is distinct from 'day'
+                   or previous_count <> 0 then
+                    raise exception 'verbal statements require one exact-day commitment and one Dependency'
+                        using errcode = '23514';
+                end if;
             end if;
             return null;
         end;
@@ -271,11 +316,74 @@ def upgrade() -> None:
         after insert or update or delete on dependency_event_scopes
         deferrable initially deferred
         for each row execute function verify_dependency_event_scope_shape();
+
+        create constraint trigger dependency_event_timings_match_statement
+        after insert or update or delete on dependency_event_timings
+        deferrable initially deferred
+        for each row execute function verify_dependency_event_scope_shape();
+
+        create or replace function reject_verbal_dependency_event_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            if current_setting('corridor.allow_statement_retirement', true) = 'on' then
+                return case when tg_op = 'DELETE' then old else new end;
+            end if;
+            if tg_op = 'DELETE' and old.source_kind = 'verbal' then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            if tg_op = 'UPDATE' and (
+                old.source_kind = 'verbal' or new.source_kind = 'verbal'
+            ) then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
+
+        create function reject_external_party_statement_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            if current_setting('corridor.allow_statement_retirement', true) = 'on' then
+                return case when tg_op = 'DELETE' then old else new end;
+            end if;
+            raise exception 'External Party statements are append-only'
+                using errcode = '23514';
+        end;
+        $$;
+
+        create trigger external_party_statement_events_are_immutable
+        before update or delete on dependency_events
+        for each row execute function reject_external_party_statement_mutation();
+
+        create trigger external_party_statement_scopes_are_immutable
+        before update or delete on dependency_event_scopes
+        for each row execute function reject_external_party_statement_mutation();
+
+        create trigger external_party_statement_timings_are_immutable
+        before update or delete on dependency_event_timings
+        for each row execute function reject_external_party_statement_mutation();
+
+        create trigger external_party_statement_evidence_updates_are_immutable
+        before update on evidence_links
+        for each row when (old.event_id is not null or new.event_id is not null)
+        execute function reject_external_party_statement_mutation();
+
+        create trigger external_party_statement_evidence_deletes_are_immutable
+        before delete on evidence_links
+        for each row when (old.event_id is not null)
+        execute function reject_external_party_statement_mutation();
         """
     )
 
 
 def downgrade() -> None:
+    op.execute("select set_config('corridor.allow_statement_retirement', 'on', true)")
     bind = op.get_bind()
     invalid_scope = bind.execute(
         sa.text(
@@ -285,7 +393,9 @@ def downgrade() -> None:
                 from dependency_events event
                 left join dependency_event_scopes scope on scope.event_id = event.id
                 group by event.id, event.scope_mode
-                having event.scope_mode = 'unknown' or count(scope.id) <> 1
+                having event.scope_mode = 'unknown'
+                    or count(scope.id) <> 1
+                    or event.event_type = 'committed_date_change'
             )
             """
         )
@@ -308,7 +418,14 @@ def downgrade() -> None:
     op.execute(
         """
         drop trigger dependency_event_scope_links_match_shape on dependency_event_scopes;
+        drop trigger dependency_event_timings_match_statement on dependency_event_timings;
         drop trigger dependency_event_scope_shape_is_valid on dependency_events;
+        drop trigger external_party_statement_evidence_deletes_are_immutable on evidence_links;
+        drop trigger external_party_statement_evidence_updates_are_immutable on evidence_links;
+        drop trigger external_party_statement_timings_are_immutable on dependency_event_timings;
+        drop trigger external_party_statement_scopes_are_immutable on dependency_event_scopes;
+        drop trigger external_party_statement_events_are_immutable on dependency_events;
+        drop function reject_external_party_statement_mutation();
         drop function verify_dependency_event_scope_shape();
         drop trigger dependency_event_scope_link_is_valid on dependency_event_scopes;
         drop function validate_dependency_event_scope_link();
@@ -361,6 +478,9 @@ def downgrade() -> None:
         from dependency_event_scopes scope
         where link.event_id = scope.event_id
         """
+    )
+    op.drop_constraint(
+        "ck_evidence_links_event_ownership", "evidence_links", type_="check"
     )
     op.drop_constraint(
         "fk_operative_support_evidence_link",

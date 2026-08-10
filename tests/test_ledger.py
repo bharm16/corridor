@@ -263,7 +263,7 @@ def test_the_detail_view_carries_events_and_audit(session, project, dependency):
         affected_external_org_id=dependency.external_org_id,
         stated_external_org_id=dependency.external_org_id,
         scope_mode="selected",
-        event_type="slip",
+        event_type="committed_date_change",
         event_date=date(2026, 3, 4),
         description="AT&T moved relocation from June to August",
         created_by="tester",
@@ -274,7 +274,7 @@ def test_the_detail_view_carries_events_and_audit(session, project, dependency):
     session.flush()
 
     view = load_dependency(session, dependency.id)
-    assert [e.event_type for e in view.events] == ["slip"]
+    assert [e.event_type for e in view.events] == ["committed_date_change"]
     # Acceptance already wrote one audit entry.
     assert any(a.action == "accept_candidate" for a in view.audit)
 
