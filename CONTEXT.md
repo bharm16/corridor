@@ -61,8 +61,12 @@ A single claim by one source document about one field of one Dependency — "D12
 _Avoid_: claim, statement, fact, value
 
 **Dispute**:
-Two revisions of a document disagreeing about a field of one Dependency. Both Assertions stay on the row with their pages; the row is workable while the Dispute stands, and settling it is Adjudication taken up when it matters.
+Two revisions of a document disagreeing about a field of one Dependency — a query over Assertions, never a stored flag. Both claims stay on the row with their pages; the row is workable while the Dispute stands, and settling it is Adjudication taken up when it matters (ADR-0031).
 _Avoid_: conflict (the industry word for a Dependency, never for documents disagreeing), contradiction (the Exception category that surfaces a Dispute), mismatch
+
+**Settlement**:
+One human decision about what a disputed field concludes, recorded beside the claims rather than erasing the losing one. It names how far its judgment reaches — the claims that existed when it was made — so a later revision disagreeing again reopens the Dispute rather than inheriting a verdict nobody gave it.
+_Avoid_: resolution (Resolution Strategy is what the document asserts about the facility), override, correction
 
 **Evidence**:
 A quote from a specific page of a registered document, verified to actually appear on that page. Evidence is the only thing that can support a factual assertion in the ledger or a report.

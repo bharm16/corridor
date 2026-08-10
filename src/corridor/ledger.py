@@ -35,6 +35,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
 )
+from corridor.disputes import settled_field_names
 from corridor.operative_support import resolve_operative_support
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
@@ -55,6 +56,10 @@ class AssertionView:
 class FieldView:
     name: str
     assertions: list[AssertionView] = field(default_factory=list)
+    # Whether a reviewer has said what this field concludes, covering
+    # every claim made so far (ADR-0031). Set by the builder from the one
+    # settlement query, so this view and the engine cannot disagree.
+    settled: bool = False
 
     @property
     def values(self) -> list[str]:
@@ -67,8 +72,12 @@ class FieldView:
         Only verified assertions count: an unverified claim is not evidence
         of disagreement, it is evidence of a bad citation. `is_claim` is
         the same predicate the engine's query applies, so this view and
-        the list page's pill cannot disagree about one record again.
+        the list page's pill cannot disagree about one record again. A
+        settled field is not a disagreement either: the sources still say
+        what they said and the record has said what it concludes.
         """
+        if self.settled:
+            return False
         verified = {
             a.value for a in self.assertions if a.verified and is_claim(a.value)
         }
@@ -297,10 +306,14 @@ def load_dependency(
         .order_by(Assertion.field_name, Assertion.id)
     ).all()
 
+    settled = settled_field_names(session, [dependency_id]).get(
+        dependency_id, set()
+    )
     by_field: dict[str, FieldView] = {}
     for assertion, link, document in rows:
         view = by_field.setdefault(
-            assertion.field_name, FieldView(assertion.field_name)
+            assertion.field_name,
+            FieldView(assertion.field_name, settled=assertion.field_name in settled),
         )
         view.assertions.append(
             AssertionView(

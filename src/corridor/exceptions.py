@@ -368,6 +368,13 @@ def contradicted_fields(
     if not dependency_ids:
         return {}
 
+    # A settled field is not a source disagreeing: the sources still say
+    # what they said, and a reviewer has said what the record concludes
+    # (ADR-0031). Imported here because disputes reads this function.
+    from corridor.disputes import settled_field_names
+
+    settled = settled_field_names(session, dependency_ids)
+
     found: dict[int, list[str]] = {}
     for dependency_id, name in session.execute(
         select(Assertion.dependency_id, Assertion.field_name)
@@ -383,6 +390,8 @@ def contradicted_fields(
         .group_by(Assertion.dependency_id, Assertion.field_name)
         .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
     ).all():
+        if name in settled.get(dependency_id, ()):
+            continue
         found.setdefault(dependency_id, []).append(name)
     return found
 

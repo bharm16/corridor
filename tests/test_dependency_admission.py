@@ -260,7 +260,14 @@ def test_exact_agreement_admits_and_merges_the_sibling(session, project):
     assert len(links) == 2  # both documents stand behind the record
 
 
-def test_disagreeing_revisions_abstain(session, project):
+def test_disagreeing_revisions_admit_the_row_and_dispute_the_field(
+    session, project
+):
+    """A disagreement rides on the row rather than withholding it
+    (ADR-0031): both claims land cited to their own pages, and the field
+    is contradicted."""
+    from corridor.disputes import disputes_for
+
     feb, may, feb_c, may_c = _corpus(
         session,
         project,
@@ -269,23 +276,47 @@ def test_disagreeing_revisions_abstain(session, project):
     )
 
     result = run_dependency_admission(session, project.id)
-    assert result.admitted_count == 0
-    # One abstention per participating candidate: each pending row's
-    # disposition is recorded, not one rollup per conflict.
-    assert [a.reason for a in result.abstentions] == [
-        "revisions_disagree",
-        "revisions_disagree",
-    ]
+    assert result.admitted_count == 1
+    assert result.abstained_count == 0
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
     session.refresh(feb_c[0])
     session.refresh(may_c[0])
-    assert feb_c[0].state == "pending"
-    assert may_c[0].state == "pending"
-    assert (
-        session.scalars(
-            select(Dependency).where(Dependency.project_id == project.id)
-        ).all()
-        == []
+    assert may_c[0].state == "accepted"  # the newest is the primary
+    assert feb_c[0].state == "merged"
+
+    [dispute] = [
+        d
+        for d in disputes_for(session, dependency.id)
+        if d.field_name == "station_from"
+    ]
+    assert set(dispute.values) == {"1102+20", "1105+00"}
+    # Each claim is readable on the page that made it.
+    assert {c.document_filename for c in dispute.claims} == {
+        "ucm-feb.pdf",
+        "ucm-may.pdf",
+    }
+
+
+def test_revisions_naming_different_parties_still_abstain(session, project):
+    """Whether these are one conflict is not a field dispute; merging
+    two parties' rows would answer it by accident."""
+    feb, may, feb_c, may_c = _corpus(
+        session,
+        project,
+        [_fields("PL1", org=PIPELINE)],
+        [_fields("PL1", org="Someone Else Entirely")],
     )
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 0
+    assert {a.reason for a in result.abstentions} == {
+        "revisions_disagree_on_party"
+    }
+    session.refresh(feb_c[0])
+    assert feb_c[0].state == "pending"
 
 
 def test_duplicate_rows_in_one_revision_abstain(session, project):
@@ -335,10 +366,11 @@ def test_unverified_citations_abstain(session, project):
 
 
 def test_the_run_is_an_immutable_receipt_of_exact_outcomes(session, project):
+    nameless = dict(_fields("", station="1300+00"))
     feb, may, feb_c, may_c = _corpus(
         session,
         project,
-        [_fields("PL1"), _fields("PL2", station="1200+00")],
+        [_fields("PL1"), _fields("PL2", station="1200+00"), nameless],
         [_fields("PL1"), _fields("PL2", station="1201+00")],
     )
 
@@ -346,7 +378,9 @@ def test_the_run_is_an_immutable_receipt_of_exact_outcomes(session, project):
     run = session.get(PolicyRun, result.run_id)
     assert run.policy_approval_id is None  # nothing was signed
     assert run.policy_version == DEPENDENCY_ADMISSION_POLICY_VERSION
-    assert (run.applied_count, run.abstained_count) == (1, 2)
+    # PL1 agrees and PL2 disputes; both are on the record, and the row
+    # that could not be named at all is what abstains.
+    assert (run.applied_count, run.abstained_count) == (2, 1)
 
     outcomes = session.scalars(
         select(DependencyAdmissionOutcome).where(
