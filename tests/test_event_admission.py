@@ -434,3 +434,96 @@ def test_an_unparseable_date_abstains_rather_than_guessing(
     assert [a.reason for a in result.abstentions] == ["unparseable_date"]
     session.refresh(candidate)
     assert candidate.state == "pending"
+
+
+# ── Per-party references (ADR-0030) ──────────────────────────────────────
+
+
+def _second_party_dependency(session, project, *, ref, org_name, alias=None):
+    """Another party's Dependency carrying the same stated number."""
+    from corridor.models import ExternalOrg
+
+    org = ExternalOrg(name=org_name, aliases=[alias] if alias else [])
+    session.add(org)
+    session.flush()
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code=f"DEP-{org_name[:3].upper()}-{ref}",
+        source_ref=ref,
+        dep_type="utility_relocation",
+        title=f"{org_name} conflict {ref}",
+        status="identified",
+        external_org_id=org.id,
+    )
+    session.add(dependency)
+    session.flush()
+    return dependency
+
+
+def test_a_shared_number_resolves_by_the_statements_party(
+    session, project, admitted
+):
+    """Under a per-party scheme one number sits on several parties'
+    lists; the stated party is the other half of the name (ADR-0030)."""
+    other = _second_party_dependency(
+        session, project, ref="PL1", org_name="Synthetic Cable Co"
+    )
+    _minutes_with(session, project, [_event(org="Synthetic Cable Co")])
+
+    result = run_event_admission(session, project.id)
+    assert result.admitted_count == 1
+    [event] = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.dependency_id == other.id
+        )
+    ).all()
+    assert event.event_type == "commitment"
+    assert (
+        session.scalars(
+            select(DependencyEvent).where(
+                DependencyEvent.dependency_id == admitted.id
+            )
+        ).all()
+        == []
+    )
+
+
+def test_narrowing_by_party_honors_the_recorded_aliases(
+    session, project, admitted
+):
+    other = _second_party_dependency(
+        session,
+        project,
+        ref="PL1",
+        org_name="Synthetic Cable Communications LLC",
+        alias="SynCable",
+    )
+    _minutes_with(session, project, [_event(org="SynCable")])
+
+    result = run_event_admission(session, project.id)
+    assert result.admitted_count == 1
+    assert (
+        len(
+            session.scalars(
+                select(DependencyEvent).where(
+                    DependencyEvent.dependency_id == other.id
+                )
+            ).all()
+        )
+        == 1
+    )
+
+
+def test_a_number_no_party_disambiguates_still_abstains(
+    session, project, admitted
+):
+    """Two parties hold the number and the statement matches neither:
+    ambiguity stays ambiguous rather than being guessed."""
+    _second_party_dependency(session, project, ref="PL1", org_name="Synthetic Cable Co")
+    _minutes_with(session, project, [_event(org="Some Other Co")])
+
+    result = run_event_admission(session, project.id)
+    assert result.admitted_count == 0
+    assert {a.reason for a in result.abstentions} == {
+        "reference_resolves_to_many"
+    }

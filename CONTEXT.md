@@ -88,6 +88,10 @@ _Avoid_: source of truth, master copy, canonical version, original
 The registry relation that one document replaced another as the current revision. Declared by a registered authority document and an exact page — normally an agency index (the RID index's "Replaced on" chain) or the successor's own explicit replacement statement — and recorded when the document is registered. The predecessor can never attest its own replacement: the replacement postdates it, so the page a reader would check predates the fact. Never inferred from dates or filenames, and never an Assertion: it is registry metadata like a document's date. A superseded document stays in the corpus and its pages still say what they said; supersession changes which revision is current, never what a page states.
 _Avoid_: replaced (the index's own word — acceptable in UI copy, never in code), versioning, obsolete, archived
 
+**Numbering Scheme**:
+How a matrix names its rows — declared at registration like the document's date, never inferred from the data. Project-unique numbering names a conflict by its number alone (the TxDOT form, whose Retired Rows keep numbers stable); per-party numbering names it by the External Party and the number together (the FDOT form, where every party's list counts from 1). Identity under the declared scheme is what every reader groups by (ADR-0030).
+_Avoid_: id format, key strategy, numbering style (a scheme is declared, a style is observed)
+
 **Utility Conflict Matrix**:
 A document that lists utility conflicts *and* how each is to be resolved. The industry form, and the only kind that can assert a Resolution Strategy.
 _Avoid_: UCM (acceptable in filenames and UI copy, never in code), conflict list, utility matrix

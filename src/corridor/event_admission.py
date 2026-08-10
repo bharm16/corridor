@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor import identity
 from corridor import policy
 from corridor.models import (
     Candidate,
@@ -241,7 +242,19 @@ def _evaluate(
     if not matches:
         return "reference_resolves_to_no_dependency"
     if len(matches) > 1:
-        return "reference_resolves_to_many"
+        # Under a per-party numbering scheme (ADR-0030) one number names
+        # a row on several parties' lists, and the statement's stated
+        # party is the other half of the name. Narrowing by it is the
+        # same alias-bounded match the party check below applies — not a
+        # second, looser rule.
+        stated = str(fields.get("external_org") or "").strip()
+        matches = [
+            d
+            for d in matches
+            if stated and identity.party_matches(session, d, stated)
+        ]
+        if len(matches) != 1:
+            return "reference_resolves_to_many"
     [dependency] = matches
 
     org = str(fields.get("external_org") or "").strip()
@@ -252,7 +265,7 @@ def _evaluate(
         # Action's territory, never an External Party's commitment
         # (ADR-0026). Adjudication may still record it by hand.
         return "project_side_actor"
-    if not _party_matches(session, dependency, org):
+    if not identity.party_matches(session, dependency, org):
         # Alias resolution is Adjudication's judgment, not the policy's.
         return "party_mismatch"
 
@@ -262,20 +275,6 @@ def _evaluate(
 def _is_project_side(project: Project, org: str) -> bool:
     stated = project.project_side_parties or []
     return any(org.casefold() == str(p).casefold() for p in stated)
-
-
-def _party_matches(
-    session: Session, dependency: Dependency, org: str
-) -> bool:
-    if dependency.external_org_id is None:
-        return False
-    from corridor.models import ExternalOrg
-
-    external = session.get(ExternalOrg, dependency.external_org_id)
-    if external is None:
-        return False
-    names = [external.name, *(external.aliases or [])]
-    return any(org.casefold() == str(n).casefold() for n in names if n)
 
 
 def _project_committed_date(session: Session, dependency_id: int) -> None:
@@ -338,6 +337,7 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     paths = (
         ("corridor.event_admission", Path(__file__)),
         ("corridor.audit", Path(audit.__file__)),
+        ("corridor.identity", Path(identity.__file__)),
         ("corridor.policy", Path(policy.__file__)),
         ("corridor.models", Path(models_module.__file__)),
         ("corridor.principals", Path(principals_module.__file__)),

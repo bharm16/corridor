@@ -417,3 +417,49 @@ def test_a_workbook_that_cannot_be_read_fails_visibly(session, project, tmp_path
 
     assert document.parse_status == "failed"
     assert document.pages == 0
+
+
+# ── The declared numbering scheme (ADR-0030) ─────────────────────────────
+
+
+def test_the_default_scheme_is_project_unique(session, project, pdf, tmp_path):
+    doc = ingest(session, project, pdf, tmp_path / "img")
+    assert doc.numbering_scheme == "project-unique"
+
+
+def test_a_declared_scheme_is_registered_with_the_document(
+    session, project, pdf, tmp_path
+):
+    doc = ingest(
+        session, project, pdf, tmp_path / "img", numbering_scheme="per-party"
+    )
+    assert doc.numbering_scheme == "per-party"
+
+
+def test_an_unknown_scheme_is_refused(session, project, pdf, tmp_path):
+    with pytest.raises(ValueError, match="numbering_scheme"):
+        ingest(
+            session, project, pdf, tmp_path / "img", numbering_scheme="newest"
+        )
+
+
+def test_reingest_re_declares_the_scheme(session, project, pdf, tmp_path):
+    """Unlike provenance, which backfills nulls only, the scheme is a
+    declaration: re-registration is where a registry fact may change —
+    which is exactly how an already-ingested document gets corrected."""
+    first = ingest(session, project, pdf, tmp_path / "img")
+    assert first.numbering_scheme == "project-unique"
+
+    again = ingest(
+        session, project, pdf, tmp_path / "img", numbering_scheme="per-party"
+    )
+    assert again.id == first.id
+    assert again.numbering_scheme == "per-party"
+
+
+def test_a_silent_reingest_keeps_the_declared_scheme(
+    session, project, pdf, tmp_path
+):
+    ingest(session, project, pdf, tmp_path / "img", numbering_scheme="per-party")
+    again = ingest(session, project, pdf, tmp_path / "img")
+    assert again.numbering_scheme == "per-party"

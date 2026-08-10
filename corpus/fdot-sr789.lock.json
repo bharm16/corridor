@@ -11,6 +11,7 @@
       "history": [],
       "http_status": 200,
       "local_path": "corpus/files/5b/5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be.pdf",
+      "numbering_scheme": "per-party",
       "retrieved_at": "2026-08-03T21:07:40.075453+00:00",
       "role": "spine",
       "sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",

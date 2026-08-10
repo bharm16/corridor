@@ -76,6 +76,7 @@ from corridor.web.queue import (
     next_candidate,
     pending_counts,
 )
+from corridor.identity import document_numbering_schemes
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.cohort import (
     CohortScopeViolation,
@@ -238,7 +239,8 @@ def _sibling_revisions(
     The registry holds no supersession chain for these documents, so no
     revision is machine-current; the reviewer's gesture is the explicit
     choice (#199)."""
-    if conflict_key(candidate) is None:
+    schemes = document_numbering_schemes(session, candidate.project_id)
+    if conflict_key(candidate, schemes) is None:
         return []
     siblings = []
     others = session.scalars(
@@ -251,7 +253,7 @@ def _sibling_revisions(
     for other in others:
         # The same predicate the accept path refuses on, so the lane never
         # offers a merge the mutation would then reject.
-        if not same_conflict(candidate, other):
+        if not same_conflict(candidate, other, schemes):
             continue
         document = session.get(Document, other.source_document_id)
         siblings.append(
@@ -336,6 +338,11 @@ REVIEW_REASONS = {
     "no_utility_id": (
         "This row has no identifier.",
         "Nothing can name it in the record as it stands.",
+    ),
+    "no_row_identity": (
+        "This row's number needs a party to name it.",
+        "This document numbers each party's conflicts separately, and the "
+        "row states no party — check the page and fill in what it shows.",
     ),
 }
 
@@ -886,11 +893,13 @@ def accept(
     # Resolving is the route's job — project and receipt scope are what it
     # knows. Whether the resolved set is one gesture over one conflict is
     # the lane's, and is refused in full before anything is written (#199).
+    schemes = document_numbering_schemes(session, project.id)
     try:
         check_sibling_request(
             candidate,
             merge_sibling_ids,
             in_event_lane=event_cohort_receipt_id is not None,
+            schemes=schemes,
         )
     except SiblingsNeedTheEventLane as exc:
         raise HTTPException(400, str(exc))
@@ -908,7 +917,7 @@ def accept(
             )
         )
     try:
-        check_sibling_set(candidate, siblings)
+        check_sibling_set(candidate, siblings, schemes)
     except LaneRefusal as exc:
         raise HTTPException(409, str(exc))
 

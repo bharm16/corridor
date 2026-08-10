@@ -39,6 +39,9 @@ sources:
     doc_type: matrix
     role: spine
     title: "Utility Conflict Matrix (FPID 453730-1-52-01)"
+    # Each utility owner's conflicts count from 1 (ADR-0030): a row's
+    # name is the owner and the number together, never the number alone.
+    numbering_scheme: per-party
     notes: >-
       The gold set. 66 rows, 9 owners, fully populated, per §7.4 — a count
       taken during corpus verification, before the seal, and not re-checked

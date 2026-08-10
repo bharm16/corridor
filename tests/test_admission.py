@@ -293,3 +293,33 @@ def test_a_project_with_nothing_read_yet_loads_to_an_honest_zero(
     assert result.declared_documents == 0
     assert result.admitted_count == 0
     assert result.waiting_count == 0
+
+
+def test_a_per_party_matrix_loads_whole_once_its_scheme_is_declared(
+    session, project
+):
+    """The SR 789 shape: one matrix, nine parties, every party's list
+    counting from 1. Declared per-party, all of it lands (ADR-0030)."""
+    matrix = _document(session, project, "fdot-ucm.pdf")
+    matrix.numbering_scheme = "per-party"
+    session.flush()
+
+    rows = []
+    for org in ("AT&T TCA", "Synthetic Cable Co", "TECO Peoples Gas"):
+        for number in ("1", "2"):
+            candidate = _conflict(matrix, number)
+            candidate.payload_json["fields"]["external_org"] = org
+            candidate.payload_json["dedupe_hint"] = f"{org}|{number}"
+            rows.append(candidate)
+    _read(session, matrix, rows)
+
+    result = load_project(session, project.id)
+
+    assert result.admitted_count == 6
+    assert result.waiting_count == 0
+    admitted = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).all()
+    assert sorted(d.source_ref for d in admitted) == [
+        "1", "1", "1", "2", "2", "2",
+    ]

@@ -26,7 +26,7 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import DocPage, Document, DocumentQuarantine
+from corridor.models import NUMBERING_SCHEMES, DocPage, Document, DocumentQuarantine
 
 # 150 dpi: legible for reading a quote in context, and small enough that a
 # 700-row matrix does not turn into a gigabyte of PNGs.
@@ -59,6 +59,7 @@ def ingest_document(
     doc_date: date | None = None,
     registry_id: str | None = None,
     expected_sha256: str | None = None,
+    numbering_scheme: str | None = None,
 ) -> Document:
     # The content-addressed store names files by hash, so `path.name` is a
     # 64-character hex string. Callers pass the document's real name — the
@@ -74,6 +75,11 @@ def ingest_document(
         )
     if registry_id is not None and not registry_id.strip():
         raise ValueError("registry_id must be non-empty")
+    if numbering_scheme is not None and numbering_scheme not in NUMBERING_SCHEMES:
+        raise ValueError(
+            f"unknown numbering_scheme {numbering_scheme!r}; expected one "
+            f"of {', '.join(NUMBERING_SCHEMES)}"
+        )
 
     registered = None
     if registry_id is not None:
@@ -114,6 +120,13 @@ def ingest_document(
         ):
             if value and getattr(existing, attribute) in (None, ""):
                 setattr(existing, attribute, value)
+        # The numbering scheme is a declaration, not provenance: unlike
+        # the backfill-nulls-only facts above it always holds a value
+        # (the default), so a manifest that states one re-declares it —
+        # re-registration is exactly where a registry fact may change
+        # (ADR-0030).
+        if numbering_scheme is not None:
+            existing.numbering_scheme = numbering_scheme
         _quarantine_unmodeled_semantics(session, existing)
         session.flush()
         return existing
@@ -134,6 +147,7 @@ def ingest_document(
         doc_date=doc_date,
         pages=0,
         parse_status="pending",
+        numbering_scheme=numbering_scheme or "project-unique",
     )
     session.add(document)
     session.flush()
