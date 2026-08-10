@@ -76,6 +76,7 @@ from corridor.web.queue import (
     next_candidate,
     pending_counts,
 )
+from corridor.disputes import NoSuchDispute, disputes_for, settle_dispute
 from corridor.identity import document_numbering_schemes
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.cohort import (
@@ -743,7 +744,47 @@ def dependency_detail(
             "view": view,
             "owner_decision": owner_decision,
             "action_decision": action_decision,
+            "disputes": {
+                d.field_name: d for d in disputes_for(session, dependency_id)
+            },
         },
+    )
+
+
+@app.post("/ledger/{slug}/{dependency_id}/settle")
+def settle(
+    slug: str,
+    dependency_id: int,
+    field_name: str = Form(...),
+    value: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Say what the record concludes for one disputed field.
+
+    The claims stay where they are; this records the judgment beside
+    them (ADR-0031). A later revision disagreeing again reopens the
+    Dispute without anyone reopening it.
+    """
+    project = _project(session, slug)
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None or dependency.project_id != project.id:
+        raise HTTPException(404, "no such dependency in this project")
+    try:
+        settle_dispute(
+            session,
+            dependency_id,
+            field_name,
+            value=value.strip() or None,
+            principal=principal,
+        )
+    except NoSuchDispute as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    session.commit()
+    return RedirectResponse(
+        f"/ledger/{slug}/{dependency_id}", status_code=303
     )
 
 

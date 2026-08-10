@@ -1583,6 +1583,43 @@ class AutomaticCarryForwardOutcome(Base):
     )
 
 
+class DisputeSettlement(Base):
+    """One human decision about what a disputed field concludes.
+
+    A Dispute is a query, not a flag: two revisions asserting different
+    verified values for one field. Assertions are append-only, so a
+    settlement cannot erase the losing claim and does not try — it
+    records what the record concludes and how far its judgment reaches
+    (ADR-0031).
+
+    ``covers_assertion_id`` is the newest Assertion for the field at the
+    moment of settling. A later revision's claim carries a higher id, so
+    it postdates the judgment and the Dispute reopens on its own: a
+    reviewer settled the disagreement in front of them, never every
+    disagreement that field will ever have.
+    """
+
+    __tablename__ = "dispute_settlements"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(settled_by)) > 0",
+            name="ck_dispute_settlements_attributable",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    field_name: Mapped[str] = mapped_column(String(64))
+    # What the record concludes. Null is a legitimate conclusion: a
+    # reviewer may settle that the field says nothing.
+    settled_value: Mapped[str | None] = mapped_column(Text)
+    settled_by: Mapped[str] = mapped_column(Text)
+    covers_assertion_id: Mapped[int] = mapped_column(BigInteger)
+    settled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Assertion(Base):
     __tablename__ = "assertions"
 

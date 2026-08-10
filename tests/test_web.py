@@ -3278,33 +3278,35 @@ def _disagreeing_project(session, project):
         session.flush()
     declare_single_run_documents(session, project.id, principal=TEST_PRINCIPAL)
     result = run_dependency_admission(session, project.id)
-    assert result.admitted_count == 0
+    # The row lands with the Dispute on it (ADR-0031), not withheld.
+    assert result.admitted_count == 1
     return feb, may
 
 
-def test_the_card_leads_with_why_the_row_is_in_front_of_you(
+def _disputed_record(session, project):
+    _disagreeing_project(session, project)
+    return session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+
+
+def test_a_disagreement_lands_on_the_record_rather_than_waiting(
     session, client, project
 ):
-    """A row reaches a human only because a policy refused it, and the
-    refusal has a stated reason. Leading with the reason is the whole
-    difference between "judge this" and "judge this, here is what to
-    look at" (#209).
-    """
-    _disagreeing_project(session, project)
+    """A Dispute rides on the row (ADR-0031): the conflict is on the
+    record and workable, not held back in a queue."""
+    _disputed_record(session, project)
 
-    page = client.get(f"/queue/{project.slug}").text
-
-    assert "The revisions disagree about this conflict." in page
-    assert "Accept the revision that is right" in page
+    assert "sources disagree" in client.get(f"/ledger/{project.slug}").text
 
 
-def test_the_card_shows_the_disagreement_itself(session, client, project):
-    _disagreeing_project(session, project)
+def test_the_record_shows_the_disagreement_itself(session, client, project):
+    dependency = _disputed_record(session, project)
 
-    page = client.get(f"/queue/{project.slug}").text
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
 
     # The differing field, both values — the decision, not a hint of it.
-    assert "station from" in page
+    assert "station_from" in page
     assert "1102+20" in page
     assert "1105+00" in page
 
@@ -3312,10 +3314,104 @@ def test_the_card_shows_the_disagreement_itself(session, client, project):
 def test_a_disagreement_shows_both_pages(session, client, project):
     """One pane cannot hold a comparison; a toggle makes the reviewer
     hold one value in their head while looking at the other."""
-    feb, may = _disagreeing_project(session, project)
+    dependency = _disputed_record(session, project)
 
-    page = client.get(f"/queue/{project.slug}").text
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
 
     assert "ucm-feb.pdf" in page
     assert "ucm-may.pdf" in page
-    assert "the other revision" in page
+
+
+def test_settling_a_dispute_closes_it_and_is_attributable(
+    session, client, project
+):
+    dependency = _disputed_record(session, project)
+
+    # Both stations differ between the revisions, so both are disputed:
+    # settling one leaves the other standing, which is the point.
+    first = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/settle",
+        data={"field_name": "station_from", "value": "1105+00"},
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    assert "sources disagree on station_to" in client.get(
+        f"/ledger/{project.slug}/{dependency.id}"
+    ).text
+
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/settle",
+        data={"field_name": "station_to", "value": "1105+00"},
+        follow_redirects=False,
+    )
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+    assert "sources disagree" not in page
+    assert "settled" in page
+    # Both claims survive the settlement: nothing is erased.
+    assert "1102+20" in page and "1105+00" in page
+
+    entry = session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_type == "dependency",
+            AuditLog.entity_id == dependency.id,
+            AuditLog.action == "settle_dispute",
+        )
+        .order_by(AuditLog.id.desc())
+    ).first()
+    assert entry is not None
+    assert entry.actor == TEST_PRINCIPAL.subject
+
+
+def test_a_later_revision_disagreeing_again_reopens_the_dispute(
+    session, client, project
+):
+    """A reviewer settled the disagreement in front of them, not every
+    disagreement the field will ever have."""
+    from corridor.disputes import settle_dispute
+    from corridor.models import Assertion, EvidenceLink
+
+    dependency = _disputed_record(session, project)
+    for name in ("station_from", "station_to"):
+        settle_dispute(
+            session,
+            dependency.id,
+            name,
+            value="1105+00",
+            principal=TEST_PRINCIPAL,
+        )
+    assert "sources disagree" not in client.get(
+        f"/ledger/{project.slug}/{dependency.id}"
+    ).text
+
+    # A third revision states something else, cited and verified.
+    link = session.scalars(
+        select(EvidenceLink).where(
+            EvidenceLink.dependency_id == dependency.id
+        )
+    ).first()
+    session.add(
+        Assertion(
+            dependency_id=dependency.id,
+            field_name="station_from",
+            asserted_value="1108+40",
+            evidence_link_id=link.id,
+        )
+    )
+    session.flush()
+
+    assert "sources disagree" in client.get(
+        f"/ledger/{project.slug}/{dependency.id}"
+    ).text
+
+
+def test_settling_a_field_nobody_disputes_refuses(session, client, project):
+    dependency = _disputed_record(session, project)
+
+    refused = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/settle",
+        data={"field_name": "utility_type", "value": "anything"},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 409

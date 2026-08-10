@@ -11,10 +11,15 @@ claim the verified citation already carries.
 So a conflict admits when the revisions that state it can anchor it: the
 declared Active Run of each holds exactly one candidate for the
 identifier, the citation is verified, the row asserts something, and no
-record already carries the reference. One matrix is enough. Where
-several revisions state a row identically the newest is admitted and the
-rest merge as corroboration; where they disagree the row waits for
-judgment, and the reviewer is told which revisions differ.
+record already carries the reference. One matrix is enough. The newest
+revision is admitted and the rest merge, whether or not they agree: an
+agreement lands as corroboration, and a disagreement lands as a Dispute
+carried on the row, both claims cited to their own pages (ADR-0031).
+
+Only two disagreements still withhold a row, and neither is about what a
+conflict says: several rows in one revision sharing an identity, and
+revisions naming different External Parties — which asks whether these
+are one conflict at all.
 
 Abstention leaves the Candidate pending; the Ledger is never forced; no
 model verdict appears anywhere in the path.
@@ -51,17 +56,19 @@ from corridor.project_lock import lock_project
 
 DEPENDENCY_ADMISSION_POLICY_VERSION = "dependency-admission-v1"
 FAMILY = "dependency-admission"
-ABSTENTION_REASON_VERSION = "dependency-admission-abstentions-v2"
+ABSTENTION_REASON_VERSION = "dependency-admission-abstentions-v3"
 MACHINE_ACTOR = audit.DEPENDENCY_ADMISSION_ACTOR
 
 OUTCOME_ADMITTED = "admitted"
 OUTCOME_MERGED = "merged"
 OUTCOME_ABSTAINED = "abstained"
 
-# `missing_from_agreement_document` is no longer emitted — a revision
-# that never mentions a row stopped withholding it (ADR-0029) — but
-# receipts written before that decision still carry it, and this set
-# names what the column may hold across the family's history.
+# Two reasons are no longer emitted but stay named, because receipts
+# written before their decisions still carry them and this set names what
+# the column may hold across the family's history:
+# `missing_from_agreement_document` (a revision that never mentions a row
+# stopped withholding it, ADR-0029) and `revisions_disagree` (a
+# disagreement became a Dispute on the row, ADR-0031).
 ABSTENTION_REASONS = frozenset(
     {
         "citations_unverified",
@@ -72,6 +79,9 @@ ABSTENTION_REASONS = frozenset(
         "missing_from_agreement_document",
         "multiple_rows_in_agreement_document",
         "revisions_disagree",
+        # Whether these are one conflict, not what one conflict says
+        # (v3, ADR-0031).
+        "revisions_disagree_on_party",
         "already_admitted",
         "asserts_nothing",
         "write_refused",
@@ -213,12 +223,18 @@ def run_dependency_admission(
         if any(not c.citations_verified for c in candidates):
             abstain(candidates, "citations_unverified")
             continue
-        contents = {
-            _fields_digest((c.payload_json or {}).get("fields", {}))
+        # Revisions disagreeing about the *party* is not a field dispute:
+        # it asks whether these are one conflict at all, and merging two
+        # parties' rows into one record would answer it by accident. That
+        # question is Adjudication's (ADR-0031).
+        parties = {
+            str((c.payload_json or {}).get("fields", {}).get("external_org") or "")
+            .strip()
+            .casefold()
             for c in candidates
         }
-        if len(contents) > 1:
-            abstain(candidates, "revisions_disagree")
+        if len(parties) > 1:
+            abstain(candidates, "revisions_disagree_on_party")
             continue
         fields = (candidates[0].payload_json or {}).get("fields", {})
         if not any(v for v in fields.values() if v):
@@ -244,8 +260,13 @@ def run_dependency_admission(
             abstain(candidates, "already_admitted")
             continue
 
-        # The primary is the last-named agreement document's row; the
-        # rest merge as corroboration.
+        # The newest revision is the primary; the rest merge. Where they
+        # state the same values that merge is corroboration, and where
+        # they differ it is a Dispute: every revision's claim lands as an
+        # Assertion citing its own page, and CONTRADICTION names the
+        # fields they disagree about. Disagreement stopped withholding
+        # the row (ADR-0031) — the newest revision is the record's
+        # provisional reading, said out loud, until a human settles it.
         admissible.append((candidates[-1], candidates[:-1]))
 
     # Writes are attempted before the receipt exists, inside savepoints,
@@ -317,10 +338,6 @@ def run_dependency_admission(
         abstained_count=len(abstentions),
         abstentions=abstentions,
     )
-
-
-def _fields_digest(fields: dict) -> str:
-    return policy.canonical_sha256(fields)
 
 
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
@@ -397,8 +414,8 @@ def _canonical_policy(
         "checks": [
             "citations_verified",
             "exactly_one_row_per_agreement_document",
-            "fields_byte_identical_across_documents",
             "reference_not_already_admitted",
+            "revisions_agree_on_the_party",
             "row_asserts_something",
             "row_identity_under_declared_numbering_scheme",
         ],
