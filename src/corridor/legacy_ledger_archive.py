@@ -29,7 +29,11 @@ from corridor.models import (
     AutomaticCarryForwardReceipt,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
     DependencyEvent,
+    DependencyEventScope,
+    DependencyEventTiming,
+    DependencyEventScope,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -41,7 +45,8 @@ from corridor.models import (
 )
 from corridor.project_lock import lock_project
 
-ARCHIVE_FORMAT_VERSION = "legacy-ledger-v1"
+ARCHIVE_FORMAT_VERSION = "legacy-ledger-v2"
+_READABLE_ARCHIVE_FORMATS = frozenset({"legacy-ledger-v1", ARCHIVE_FORMAT_VERSION})
 RETIREMENT_ACTOR = "system:legacy-ledger-retirement/v1"
 LEGACY_ADMISSION_ACTORS = frozenset({"agent", "demo"})
 _REF_CODE = re.compile(r"DEP-(\d+)$")
@@ -95,7 +100,30 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
     dependency_ids = [dependency.id for dependency in dependencies]
     assertions = _for_dependencies(session, Assertion, dependency_ids)
     evidence_links = _for_dependencies(session, EvidenceLink, dependency_ids)
-    events = _for_dependencies(session, DependencyEvent, dependency_ids)
+    events = list(
+        session.scalars(
+            select(DependencyEvent)
+            .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+            .where(DependencyEventScope.dependency_id.in_(dependency_ids or [0]))
+            .distinct()
+            .order_by(DependencyEvent.id)
+        ).all()
+    )
+    event_ids = [event.id for event in events]
+    event_scopes = list(
+        session.scalars(
+            select(DependencyEventScope)
+            .where(DependencyEventScope.event_id.in_(event_ids or [0]))
+            .order_by(DependencyEventScope.id)
+        ).all()
+    )
+    event_timings = list(
+        session.scalars(
+            select(DependencyEventTiming)
+            .where(DependencyEventTiming.event_id.in_(event_ids or [0]))
+            .order_by(DependencyEventTiming.id)
+        ).all()
+    )
     operative_support = _for_dependencies(
         session, OperativeSupport, dependency_ids
     )
@@ -142,6 +170,21 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
         ).all()
     )
 
+    event_evidence = list(
+        session.scalars(
+            select(EvidenceLink)
+            .where(EvidenceLink.event_id.in_(event_ids or [0]))
+            .order_by(EvidenceLink.id)
+        ).all()
+    )
+    evidence_links = list({link.id: link for link in [*evidence_links, *event_evidence]}.values())
+    sufficiencies = list(
+        session.scalars(
+            select(DependencyEvidenceSufficiency)
+            .where(DependencyEvidenceSufficiency.dependency_id.in_(dependency_ids or [0]))
+            .order_by(DependencyEvidenceSufficiency.id)
+        ).all()
+    )
     document_ids = sorted(
         {
             *(link.document_id for link in evidence_links),
@@ -198,7 +241,12 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
             "dependencies": [_row_content(row) for row in dependencies],
             "assertions": [_row_content(row) for row in assertions],
             "evidence_links": [_row_content(row) for row in evidence_links],
+            "dependency_evidence_sufficiencies": [
+                _row_content(row) for row in sufficiencies
+            ],
             "dependency_events": [_row_content(row) for row in events],
+            "dependency_event_scopes": [_row_content(row) for row in event_scopes],
+            "dependency_event_timings": [_row_content(row) for row in event_timings],
             "operative_support": [_row_content(row) for row in operative_support],
             "audit_log": [_row_content(row) for row in audit_entries],
             "originating_candidates": [
@@ -328,13 +376,38 @@ def retire_legacy_ledger(
             )
         )
         session.execute(
+            delete(DependencyEvidenceSufficiency).where(
+                DependencyEvidenceSufficiency.dependency_id.in_(dependency_ids)
+            )
+        )
+        session.execute(
             delete(EvidenceLink).where(
                 EvidenceLink.dependency_id.in_(dependency_ids)
             )
         )
+        event_ids = list(
+            session.scalars(
+                select(DependencyEventScope.event_id)
+                .where(DependencyEventScope.dependency_id.in_(dependency_ids))
+                .distinct()
+            ).all()
+        )
+        session.execute(
+            delete(EvidenceLink).where(EvidenceLink.event_id.in_(event_ids or [0]))
+        )
+        session.execute(
+            delete(DependencyEventTiming).where(
+                DependencyEventTiming.event_id.in_(event_ids or [0])
+            )
+        )
+        session.execute(
+            delete(DependencyEventScope).where(
+                DependencyEventScope.event_id.in_(event_ids or [0])
+            )
+        )
         session.execute(
             delete(DependencyEvent).where(
-                DependencyEvent.dependency_id.in_(dependency_ids)
+                DependencyEvent.id.in_(event_ids or [0])
             )
         )
         session.execute(delete(Dependency).where(Dependency.id.in_(dependency_ids)))
@@ -378,7 +451,7 @@ def verify_archive(session: Session, archive_id: int) -> ArchiveReadback:
             f"legacy Ledger archive {archive_id} does not exist"
         )
     content = deepcopy(archive.content_json)
-    if archive.format_version != ARCHIVE_FORMAT_VERSION:
+    if archive.format_version not in _READABLE_ARCHIVE_FORMATS:
         raise CorruptLegacyLedgerArchive(
             f"unsupported archive format {archive.format_version!r}"
         )

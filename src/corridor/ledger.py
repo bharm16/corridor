@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlalchemy import false as sa_false, func, select
+from sqlalchemy import false as sa_false, func, or_, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
@@ -31,7 +31,9 @@ from corridor.models import (
     Assertion,
     AuditLog,
     Dependency,
+    DependencyEvidenceSufficiency,
     DependencyEvent,
+    DependencyEventScope,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -214,6 +216,17 @@ def browse(
             .group_by(EvidenceLink.dependency_id)
         ).all()
     )
+    event_evidence_counts = dict(
+        session.execute(
+            select(DependencyEventScope.dependency_id, func.count())
+            .join(
+                EvidenceLink,
+                EvidenceLink.event_id == DependencyEventScope.event_id,
+            )
+            .where(DependencyEventScope.dependency_id.in_(ids))
+            .group_by(DependencyEventScope.dependency_id)
+        ).all()
+    )
     assertion_counts = dict(
         session.execute(
             select(Assertion.dependency_id, func.count())
@@ -236,7 +249,9 @@ def browse(
             dependency=d,
             org_name=orgs.get(d.external_org_id),
             is_ready=support_by_dependency[d.id].is_ready,
-            evidence_count=evidence_counts.get(d.id, 0),
+            evidence_count=(
+                evidence_counts.get(d.id, 0) + event_evidence_counts.get(d.id, 0)
+            ),
             verified_evidence_count=(
                 support_by_dependency[d.id].verified_evidence_count
             ),
@@ -352,7 +367,16 @@ def load_dependency(
     evidence = session.execute(
         select(EvidenceLink, Document)
         .join(Document, EvidenceLink.document_id == Document.id)
-        .where(EvidenceLink.dependency_id == dependency_id)
+        .outerjoin(
+            DependencyEventScope,
+            DependencyEventScope.event_id == EvidenceLink.event_id,
+        )
+        .where(
+            or_(
+                EvidenceLink.dependency_id == dependency_id,
+                DependencyEventScope.dependency_id == dependency_id,
+            )
+        )
         .order_by(EvidenceLink.id)
     ).all()
 
@@ -366,7 +390,8 @@ def load_dependency(
         last_evidenced_at=support.last_evidenced_at,
         events=session.scalars(
             select(DependencyEvent)
-            .where(DependencyEvent.dependency_id == dependency_id)
+            .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+            .where(DependencyEventScope.dependency_id == dependency_id)
             .order_by(DependencyEvent.event_date, DependencyEvent.id)
         ).all(),
         exceptions=evaluation.for_dependency(dependency_id),
@@ -423,7 +448,18 @@ def mark_satisfies(
             "on a record nobody is working"
         )
     link = session.get(EvidenceLink, link_id, populate_existing=True)
-    if link is None or link.dependency_id != dependency_id:
+    event_scope = (
+        session.scalar(
+            select(DependencyEventScope.id)
+            .where(
+                DependencyEventScope.event_id == link.event_id,
+                DependencyEventScope.dependency_id == dependency_id,
+            )
+        )
+        if link is not None and link.event_id is not None
+        else None
+    )
+    if link is None or (link.dependency_id != dependency_id and event_scope is None):
         raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
     if not link.verified:
         raise UnverifiedEvidence(
@@ -431,8 +467,33 @@ def mark_satisfies(
             "quote that is not on the page"
         )
 
-    was = link.satisfies_requirement
-    link.satisfies_requirement = not was
+    designation = (
+        session.scalar(
+            select(DependencyEvidenceSufficiency).where(
+                DependencyEvidenceSufficiency.dependency_id == dependency_id,
+                DependencyEvidenceSufficiency.evidence_link_id == link_id,
+            )
+        )
+        if link.event_id is not None
+        else None
+    )
+    was = (
+        designation is not None
+        if link.event_id is not None
+        else bool(link.satisfies_requirement)
+    )
+    if link.event_id is not None:
+        if designation is None:
+            session.add(
+                DependencyEvidenceSufficiency(
+                    dependency_id=dependency_id,
+                    evidence_link_id=link_id,
+                )
+            )
+        else:
+            session.delete(designation)
+    else:
+        link.satisfies_requirement = not was
     audit.record(
         session,
         principal=principal,
@@ -442,11 +503,11 @@ def mark_satisfies(
         before={"evidence_link_id": link_id, "satisfies": was},
         after={
             "evidence_link_id": link_id,
-            "satisfies": link.satisfies_requirement,
+            "satisfies": not was,
         },
     )
     session.flush()
-    return link.satisfies_requirement
+    return not was
 
 
 def is_ready(session: Session, dependency_id: int) -> bool:

@@ -23,6 +23,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
     DocPage,
     Document,
     PolicyRun,
@@ -119,7 +120,9 @@ def _statement(document, ref):
                 "event_type": "commitment",
                 "description": f"Tejas committed on {ref}",
                 "external_org": PIPELINE,
+                "stated_party": PIPELINE,
                 "event_date": "2025-01-16",
+                "committed_date": "2025-06-01",
                 "conflict_ref": ref,
             },
             "citations": [
@@ -220,9 +223,9 @@ def test_statements_attach_to_the_conflicts_admitted_in_the_same_pass(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
     [event] = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.dependency_id == dependency.id
-        )
+        select(DependencyEvent)
+        .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+        .where(DependencyEventScope.dependency_id == dependency.id)
     ).all()
     assert event.event_type == "commitment"
 

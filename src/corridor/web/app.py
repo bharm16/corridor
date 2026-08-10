@@ -66,6 +66,7 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
+    DependencyEventScope,
     EvidenceLink,
     ExternalOrg,
     Project,
@@ -1516,6 +1517,16 @@ def _project_evidence(
     session: Session, dependency: Dependency, link_id: int
 ) -> EvidenceLink:
     link = session.get(EvidenceLink, link_id)
-    if link is None or link.dependency_id != dependency.id:
+    scoped_event = (
+        session.scalar(
+            select(DependencyEventScope.id).where(
+                DependencyEventScope.event_id == link.event_id,
+                DependencyEventScope.dependency_id == dependency.id,
+            )
+        )
+        if link is not None and link.event_id is not None
+        else None
+    )
+    if link is None or (link.dependency_id != dependency.id and scoped_event is None):
         raise HTTPException(404, "no such evidence")
     return link

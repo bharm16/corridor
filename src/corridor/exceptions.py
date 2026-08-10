@@ -25,6 +25,7 @@ from corridor.models import (
     Assertion,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
     EvidenceLink,
     is_critical,
 )
@@ -483,8 +484,10 @@ def _gather(session: Session, dependency: Dependency) -> _Facts:
 
     has_closure = (
         session.scalars(
-            select(DependencyEvent.id).where(
-                DependencyEvent.dependency_id == dependency.id,
+            select(DependencyEvent.id)
+            .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+            .where(
+                DependencyEventScope.dependency_id == dependency.id,
                 DependencyEvent.event_type == "closure",
             )
         ).first()

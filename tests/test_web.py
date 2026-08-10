@@ -2884,7 +2884,9 @@ def _event_cohort_lane(session, project):
                     "event_type": "commitment",
                     "description": f"Tejas committed on {ref}",
                     "external_org": "Tejas Pipeline Co",
+                    "stated_party": "Tejas Pipeline Co",
                     "event_date": "2025-01-16",
+                    "committed_date": "2025-06-01",
                     "conflict_ref": ref,
                 },
                 "citations": [
@@ -3137,7 +3139,7 @@ def test_landing_documents_put_their_conflicts_on_the_record(
 def test_a_statement_attaches_to_its_conflict_in_the_same_pass(
     session, client, project
 ):
-    from corridor.models import DependencyEvent
+    from corridor.models import DependencyEvent, DependencyEventScope
 
     _event_cohort_lane(session, project)
     result = load_project(session, project.id)
@@ -3150,9 +3152,9 @@ def test_a_statement_attaches_to_its_conflict_in_the_same_pass(
         )
     ).one()
     [event] = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.dependency_id == dependency.id
-        )
+        select(DependencyEvent)
+        .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+        .where(DependencyEventScope.dependency_id == dependency.id)
     ).all()
     assert event.event_type == "commitment"
 
@@ -3594,7 +3596,9 @@ def _unplaced_statement(session, project):
             "event_type": "commitment",
             "description": "Tejas committed on the crossing",
             "external_org": "Tejas Pipeline Co",
+            "stated_party": "Tejas Pipeline Co",
             "event_date": "2025-01-16",
+            "committed_date": "2025-06-01",
             "conflict_ref": "PL99",
         },
         "minutes_v1",
@@ -3642,7 +3646,7 @@ def test_the_queue_points_at_the_pile_without_becoming_it(
 def test_attaching_from_the_pile_puts_it_on_the_record(
     session, client, project
 ):
-    from corridor.models import DependencyEvent
+    from corridor.models import DependencyEvent, DependencyEventScope
 
     _unplaced_statement(session, project)
     dependency = session.scalars(
@@ -3663,9 +3667,9 @@ def test_attaching_from_the_pile_puts_it_on_the_record(
     assert response.status_code == 303
 
     [event] = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.dependency_id == dependency.id
-        )
+        select(DependencyEvent)
+        .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+        .where(DependencyEventScope.dependency_id == dependency.id)
     ).all()
     assert event.created_by == TEST_PRINCIPAL.subject
     assert "Nothing waiting" in client.get(f"/statements/{project.slug}").text
