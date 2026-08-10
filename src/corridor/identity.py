@@ -59,12 +59,18 @@ def party_canonical_names(session: Session) -> dict[str, str]:
     """
     from corridor.models import ExternalOrg
 
+    # Ordered, and first registration wins: a spelling the registry has
+    # (wrongly) recorded on two parties resolves to the older one every
+    # time, on every reader — the write path applies the same rule — so
+    # dirty registry data degrades to a deterministic answer instead of
+    # a scan-order gamble. The real fix for a collision is fixing the
+    # registry.
     canonical: dict[str, str] = {}
-    for org in session.scalars(select(ExternalOrg)):
-        target = normalize_party(org.name)
+    for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id)):
+        target = canonical.get(normalize_party(org.name), normalize_party(org.name))
         for spelling in (org.name, *(org.aliases or [])):
             if spelling:
-                canonical[normalize_party(spelling)] = target
+                canonical.setdefault(normalize_party(spelling), target)
     return canonical
 
 

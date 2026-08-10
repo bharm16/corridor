@@ -822,6 +822,14 @@ def merge_candidate(
     exists to prevent.
     """
     principal = require_human_principal(principal)
+    if dependency.dismissed_at is not None:
+        # The offer list already excludes dismissed targets; the mutation
+        # must too, or a stale form files a claim where neither the list
+        # nor the exception engine will ever look again (ADR-0032).
+        raise AlreadyDismissed(
+            f"{dependency.ref_code} was dismissed — a claim cannot merge "
+            "into a record nobody is working"
+        )
     _require_candidate_action_scope(
         session,
         candidate,
@@ -1008,16 +1016,38 @@ def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
     # party. The Assertion still records what the document printed.
     if not name or is_placeholder_party(name):
         return None
-    # Exact-name matching only in v0. Alias resolution — collapsing "AT&T"
-    # and "AT&T Texas (SWBT)" into one party — is M3's job, and doing it
-    # badly here would silently merge distinct owners.
     org = session.scalars(
         select(ExternalOrg).where(ExternalOrg.name == name)
     ).first()
-    if org is None:
-        org = ExternalOrg(name=name, org_type="utility", aliases=[])
-        session.add(org)
-        session.flush()
+    if org is not None:
+        return org
+    # A registered spelling resolves to its party rather than minting a
+    # duplicate. This is the registry's own sanctioned resolution — the
+    # aliases exist precisely because one company is named many ways —
+    # and it is the same rule `identity.party_matches` and the admission
+    # key apply, so the org a row binds to is the org the
+    # `already_admitted` check will look for. Anything looser stays
+    # forbidden: an unregistered spelling mints its own party below.
+    #
+    # Ordered by id so a spelling the registry has (wrongly) recorded on
+    # two parties resolves to the older registration every time — a
+    # deterministic answer to dirty data, matching
+    # `identity.party_canonical_names`, rather than a scan-order gamble.
+    from corridor.identity import normalize_party
+
+    wanted = normalize_party(name)
+    for candidate_org in session.scalars(
+        select(ExternalOrg).order_by(ExternalOrg.id)
+    ):
+        spellings = (candidate_org.name, *(candidate_org.aliases or []))
+        if any(
+            spelling and normalize_party(spelling) == wanted
+            for spelling in spellings
+        ):
+            return candidate_org
+    org = ExternalOrg(name=name, org_type="utility", aliases=[])
+    session.add(org)
+    session.flush()
     return org
 
 

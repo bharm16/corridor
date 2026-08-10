@@ -377,3 +377,96 @@ def test_settling_a_not_null_field_as_empty_does_not_break_the_record(
     assert settlement.settled_value is None
     session.refresh(disputed)
     assert disputed.title is not None  # the column keeps its last real value
+
+
+def test_a_mistaken_settlement_is_corrected_by_settling_again(
+    session, disputed
+):
+    """ADR-0031 rejects irreversibility: append-only history makes a
+    wrong verdict correctable for free. 'Already settled' must never
+    read as 'nothing to settle'."""
+    settle_dispute(
+        session, disputed.id, "station_from", value="1102+20", principal=REVIEWER
+    )
+    assert disputes_for(session, disputed.id) == []
+
+    corrected = settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+
+    assert corrected.settled_value == "1105+00"
+    session.refresh(disputed)
+    assert disputed.station_from == "1105+00"
+    # Both verdicts survive in order; nothing was edited.
+    settlements = session.scalars(
+        select(DisputeSettlement)
+        .where(DisputeSettlement.dependency_id == disputed.id)
+        .order_by(DisputeSettlement.id)
+    ).all()
+    assert [s.settled_value for s in settlements] == ["1102+20", "1105+00"]
+
+
+def test_a_settled_field_still_shows_its_claims_when_asked(
+    session, disputed
+):
+    """The page that offers to change a conclusion needs the claims in
+    front of the reviewer."""
+    settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+
+    assert disputes_for(session, disputed.id) == []
+    [dispute] = disputes_for(session, disputed.id, include_settled=True)
+    assert dispute.field_name == "station_from"
+    assert set(dispute.values) == {"1102+20", "1105+00"}
+
+
+def test_settling_a_dismissed_record_refuses(session, project, disputed):
+    from corridor.adjudicate import dismiss_dependency
+
+    dismiss_dependency(session, disputed, "duplicate", principal=REVIEWER)
+
+    with pytest.raises(ValueError, match="dismissed"):
+        settle_dispute(
+            session,
+            disputed.id,
+            "station_from",
+            value="1105+00",
+            principal=REVIEWER,
+        )
+
+
+def test_a_nonbreaking_space_is_not_a_claim_in_sql_either(
+    session, project, disputed
+):
+    """Postgres's [[:space:]] misses NBSP; Python's strip does not. The
+    one-predicate rule holds only if both strip the same characters."""
+    document = session.scalars(
+        select(Document).where(Document.project_id == project.id)
+    ).first()
+    link = EvidenceLink(
+        dependency_id=disputed.id,
+        document_id=document.id,
+        page_no=1,
+        quote="nbsp",
+        verified=True,
+    )
+    session.add(link)
+    session.flush()
+    session.add(
+        Assertion(
+            dependency_id=disputed.id,
+            field_name="station_from",
+            asserted_value=" ",  # a lone non-breaking space
+            evidence_link_id=link.id,
+        )
+    )
+    session.flush()
+
+    [dispute] = disputes_for(session, disputed.id)
+    assert " " not in dispute.values
+    # And it cannot un-settle a decided field by arriving later.
+    settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+    assert contradicted_fields(session, [disputed.id]) == {}

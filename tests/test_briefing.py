@@ -506,3 +506,27 @@ def test_an_empty_scope_briefs_empty_without_a_model_call(session, project):
     assert briefing.sentences == ()
     assert briefing.citables == ()
     assert client.calls == []
+
+
+def test_a_dismissed_record_is_not_narrated(session, project, dependency):
+    """A briefing narrates the working list; a dismissed record left it,
+    with its reason on file (ADR-0032). Narrating it — or refusing the
+    whole draft because its exceptions went uncited — would resurrect a
+    record a reviewer threw out."""
+    from corridor.adjudicate import dismiss_dependency
+    from corridor.briefing import brief_project
+    from corridor.principals import HumanPrincipal
+
+    dismiss_dependency(
+        session,
+        dependency,
+        "not-a-conflict",
+        principal=HumanPrincipal("local:briefing-tester"),
+    )
+
+    client = StubClient([])
+    briefing = brief_project(session, project.id, client=client, today=TODAY)
+
+    assert "0 records" in briefing.ref_code
+    assert briefing.sentences == ()
+    assert client.calls == []

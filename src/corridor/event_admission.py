@@ -97,13 +97,17 @@ def run_event_admission(
     lock_project(session, project_id)
     policy_json = _canonical_policy(project)
 
+    # Only candidates from declared Active Runs of current documents —
+    # the same scope the dependency policy, the pile, and the human
+    # attach all enforce. This was the one writer still reading every
+    # pending event, so a re-extracted or replaced minutes document had
+    # its stale candidates machine-admitted while every other door
+    # refused them.
+    from corridor.supersession import actionable_candidate_query
+
     candidates = session.scalars(
-        select(Candidate)
-        .where(
-            Candidate.project_id == project_id,
-            Candidate.kind == "event",
-            Candidate.state == "pending",
-        )
+        actionable_candidate_query(project_id)
+        .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
 
@@ -238,6 +242,11 @@ def _evaluate(
         select(Dependency).where(
             Dependency.project_id == project.id,
             Dependency.source_ref == str(ref),
+            # A record nobody is working takes no statements (ADR-0032).
+            # The human attach refuses this; the machine must not be the
+            # looser door — an event written here would be filed where
+            # the list, the engine, and the pile never look again.
+            Dependency.dismissed_at.is_(None),
         )
     ).all()
     if not matches:
@@ -427,6 +436,7 @@ def waiting_statements(session: Session, project_id: int) -> list[dict]:
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    project = session.get(Project, project_id)
     waiting = []
     for candidate in candidates:
         fields = (candidate.payload_json or {}).get("fields", {})
@@ -440,9 +450,37 @@ def waiting_statements(session: Session, project_id: int) -> list[dict]:
                 "committed_date": fields.get("committed_date"),
                 "conflict_ref": fields.get("conflict_ref"),
                 "description": fields.get("description"),
+                # Whether attach could possibly take it: the checks that
+                # depend on the statement alone, mirrored from
+                # attach_statement. An enabled button that 409s teaches a
+                # reviewer the pile is broken; a disabled one with the
+                # reason beside it teaches them what the statement lacks.
+                "attachable": _statement_attachable(project, candidate, fields),
             }
         )
     return waiting
+
+
+def _statement_attachable(
+    project: Project | None, candidate: Candidate, fields: dict
+) -> bool:
+    """The attach refusals answerable from the statement itself."""
+    if not candidate.citations_verified:
+        return False
+    if fields.get("event_type") not in ADMISSIBLE_EVENT_TYPES:
+        return False
+    raw_event_date = fields.get("event_date")
+    raw_committed_date = fields.get("committed_date")
+    if not raw_event_date and not raw_committed_date:
+        return False
+    if raw_event_date and _parse_date(raw_event_date) is None:
+        return False
+    if raw_committed_date and _parse_date(raw_committed_date) is None:
+        return False
+    org = str(fields.get("external_org") or "").strip()
+    if org and project is not None and _is_project_side(project, org):
+        return False
+    return True
 
 
 def attach_statement(
@@ -477,12 +515,16 @@ def attach_statement(
         raise StatementUnplaceable(
             "a statement cannot attach to another project's record"
         )
+    lock_project(session, dependency.project_id)
+    # Re-read under the lock — the caller loaded this row before taking
+    # it, and a dismissal committed in between must refuse this attach,
+    # not race it. The same stale-read the dismiss path re-reads for.
+    session.refresh(dependency)
     if dependency.dismissed_at is not None:
         raise StatementUnplaceable(
             f"{dependency.ref_code} was dismissed — a statement cannot "
             "attach to a record nobody is working"
         )
-    lock_project(session, dependency.project_id)
 
     # The same scope every other human write goes through: a Candidate
     # outside its document's declared Active Run, or on a revision the
