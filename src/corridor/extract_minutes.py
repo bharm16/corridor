@@ -23,22 +23,10 @@ from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import EVENT_TYPES, Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
 
-PROMPT_VERSION = "minutes_v2"
-PROMPT_PATH = Path("prompts/minutes_v2.md")
+PROMPT_VERSION = "minutes_v1"
+PROMPT_PATH = Path("prompts/minutes_v1.md")
 
 MIN_PAGE_CHARS = 200
-
-TIMING_SCHEMA = {
-    "type": ["object", "null"],
-    "additionalProperties": False,
-    "required": ["text", "precision", "start_date", "end_date"],
-    "properties": {
-        "text": {"type": "string"},
-        "precision": {"type": "string", "enum": ["day", "month", "approximate"]},
-        "start_date": {"type": ["string", "null"]},
-        "end_date": {"type": ["string", "null"]},
-    },
-}
 
 SCHEMA = {
     "type": "object",
@@ -55,12 +43,10 @@ SCHEMA = {
                     "description",
                     "event_date",
                     "external_org",
-                    "stated_party",
                     "conflict_ref",
                     "station_from",
                     "station_to",
                     "committed_date",
-                    "previous_timing",
                     "quote",
                     "confidence",
                 ],
@@ -69,12 +55,10 @@ SCHEMA = {
                     "description": {"type": "string"},
                     "event_date": {"type": ["string", "null"]},
                     "external_org": {"type": ["string", "null"]},
-                    "stated_party": {"type": ["string", "null"]},
                     "conflict_ref": {"type": ["string", "null"]},
                     "station_from": {"type": ["string", "null"]},
                     "station_to": {"type": ["string", "null"]},
-                    "committed_date": TIMING_SCHEMA,
-                    "previous_timing": TIMING_SCHEMA,
+                    "committed_date": {"type": ["string", "null"]},
                     "quote": {"type": "string"},
                     "confidence": {"type": "number"},
                 },
@@ -142,12 +126,10 @@ def _to_candidate(
             ("description", item.get("description")),
             ("event_date", item.get("event_date")),
             ("external_org", item.get("external_org")),
-            ("stated_party", item.get("stated_party")),
             ("conflict_ref", item.get("conflict_ref")),
             ("station_from", item.get("station_from")),
             ("station_to", item.get("station_to")),
             ("committed_date", item.get("committed_date")),
-            ("previous_timing", item.get("previous_timing")),
         )
         if value
     }
