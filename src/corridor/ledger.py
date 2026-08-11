@@ -17,7 +17,10 @@ from sqlalchemy import false as sa_false, func, or_, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.dependency_events import latest_committed_events
+from corridor.dependency_events import (
+    CurrentDependencyStatement,
+    current_dependency_statements,
+)
 from corridor.exceptions import (
     Evaluation,
     contradicted_fields,
@@ -101,6 +104,7 @@ class DependencyView:
     # The reading these exceptions came from, so the page can stamp the
     # quantities it prints with the clock that produced them (ADR-0003).
     evaluation: Evaluation | None = None
+    current_statement: CurrentDependencyStatement | None = None
 
     @property
     def contradictions(self) -> list[FieldView]:
@@ -127,8 +131,22 @@ class LedgerRow:
     verified_evidence_count: int
     assertion_count: int
     contradicted: bool
-    committed_event: DependencyEvent | None = None
+    committed_statement: CurrentDependencyStatement | None = None
     exceptions: list = field(default_factory=list)
+
+    @property
+    def committed_date(self) -> date | None:
+        """The one scalar-compatible date this Ledger row may render."""
+        return (
+            self.committed_statement.effective_date
+            if self.committed_statement is not None
+            else self.dependency.committed_date
+        )
+
+    @property
+    def committed_event(self) -> DependencyEvent | None:
+        """Retain the established Ledger provenance accessor."""
+        return self.committed_statement.event if self.committed_statement else None
 
 
 def browse(
@@ -238,7 +256,7 @@ def browse(
     support_by_dependency = resolve_operative_support(
         session, (dependency.id for dependency in dependencies)
     )
-    committed_events = latest_committed_events(session, ids)
+    current_statements = current_dependency_statements(session, ids)
 
     # Exceptions are computed, never stored (ADR-0002's reasoning), so they
     # are read off the evaluation the caller published rather than joined.
@@ -257,7 +275,7 @@ def browse(
             ),
             assertion_count=assertion_counts.get(d.id, 0),
             contradicted=d.id in contradicted,
-            committed_event=committed_events.get(d.id),
+            committed_statement=current_statements.get(d.id),
             exceptions=by_dependency.get(d.id, []),
         )
         for d in dependencies
@@ -381,6 +399,9 @@ def load_dependency(
     ).all()
 
     support = resolve_operative_support(session, [dependency_id])[dependency_id]
+    current_statement = current_dependency_statements(session, [dependency_id]).get(
+        dependency_id
+    )
     return DependencyView(
         dependency=dependency,
         org_name=org_name,
@@ -396,6 +417,7 @@ def load_dependency(
         ).all(),
         exceptions=evaluation.for_dependency(dependency_id),
         evaluation=evaluation,
+        current_statement=current_statement,
         # Including the Candidate's own entries. The reviewer edits before
         # the Dependency exists, so the record of what the extractor
         # originally said is written against the Candidate — and this view

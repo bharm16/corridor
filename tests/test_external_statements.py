@@ -170,6 +170,118 @@ def test_one_exact_day_statement_links_each_selected_dependency_once_and_project
     )
 
 
+def test_current_statement_projection_keeps_identity_date_provenance_and_closure(
+    session, statement_record
+):
+    """Compatibility readers receive one statement fact, not four queries."""
+    from corridor.dependency_events import (
+        current_dependency_statements,
+        project_committed_date,
+    )
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation."
+        ),
+    )
+    closure = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_external_org_id=party.id,
+        scope_mode="selected",
+        event_type="closure",
+        event_date=date(2025, 2, 1),
+        description="Relocation complete.",
+        created_by="local:reviewer",
+    )
+    session.add(closure)
+    session.flush()
+    session.add(DependencyEventScope(event_id=closure.id, dependency_id=dependency.id))
+    session.flush()
+
+    statement = current_dependency_statements(session, (dependency.id,))[dependency.id]
+
+    assert statement.event is event
+    assert statement.effective_date == date(2025, 6, 1)
+    assert statement.provenance_class == "cited"
+    assert statement.is_closed is True
+    dependency.committed_date = None
+    project_committed_date(session, dependency.id)
+    assert dependency.committed_date == statement.effective_date
+
+
+def test_current_statement_projection_clears_an_older_scalar_for_month_precision(
+    session, statement_record
+):
+    """A month statement is current, even though legacy readers cannot print it."""
+    from corridor.dependency_events import current_dependency_statements
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation."
+        ),
+    )
+    month_event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 2, 1),
+        description="Equistar will complete relocation in January 2026.",
+        new_timing=StatementTiming.month("January 2026", 2026, 1),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation in January 2026."
+        ),
+    )
+
+    statement = current_dependency_statements(session, (dependency.id,))[dependency.id]
+
+    assert statement.event is month_event
+    assert statement.provenance_class == "cited"
+    assert statement.effective_date is None
+    assert dependency.committed_date is None
+
+
 def test_all_active_scope_is_a_snapshot_and_change_keeps_both_timings(
     session, statement_record
 ):
