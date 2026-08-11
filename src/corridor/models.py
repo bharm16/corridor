@@ -147,6 +147,7 @@ EVENT_TYPES = (
 )
 EVENT_SOURCE_KINDS = ("cited", "verbal")
 TIMING_PRECISIONS = ("day", "month", "approximate", "legacy_unknown")
+STATEMENT_ATTRIBUTION_STATES = ("resolved", "unresolved")
 STATEMENT_SCOPE_MODES = ("unknown", "selected", "all_active")
 TIMING_CHANGE_DIRECTIONS = ("earlier", "later", "unknown")
 
@@ -225,6 +226,15 @@ def _enum(*values: str, name: str) -> Enum:
         native_enum=False,
         create_constraint=True,
         validate_strings=True,
+    )
+
+
+def _statement_attribution_state(context) -> str:
+    """Default direct ORM rows honestly from their resolved-party field."""
+    return (
+        "resolved"
+        if context.get_current_parameters().get("stated_external_org_id") is not None
+        else "unresolved"
     )
 
 
@@ -1233,6 +1243,14 @@ class DependencyEvent(Base):
     stated_external_org_id: Mapped[int | None] = mapped_column(
         ForeignKey("external_orgs.id")
     )
+    attribution_state: Mapped[str] = mapped_column(
+        _enum(
+            *STATEMENT_ATTRIBUTION_STATES,
+            name="statement_attribution_state",
+        ),
+        default=_statement_attribution_state,
+        server_default="unresolved",
+    )
     scope_mode: Mapped[str] = mapped_column(
         _enum(*STATEMENT_SCOPE_MODES, name="statement_scope_mode"),
         default="unknown",
@@ -1311,6 +1329,20 @@ class DependencyEventTiming(Base):
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
     event: Mapped[DependencyEvent] = relationship(back_populates="timings")
+
+
+class DependencyEventMigrationReceipt(Base):
+    """The exact legacy event row captured before statement expansion."""
+
+    __tablename__ = "dependency_event_migration_receipts"
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("dependency_events.id", ondelete="CASCADE"), primary_key=True
+    )
+    original_event: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class DependencyEventScope(Base):
