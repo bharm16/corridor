@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session
 
@@ -381,7 +381,7 @@ def retire_legacy_ledger(
                 EvidenceLink.dependency_id.in_(dependency_ids)
             )
         )
-        event_ids = list(
+        event_ids = set(
             session.scalars(
                 select(DependencyEvent.id).where(
                     DependencyEvent.project_id == project_id
@@ -389,23 +389,27 @@ def retire_legacy_ledger(
             ).all()
         )
         session.execute(
-            delete(EvidenceLink).where(EvidenceLink.event_id.in_(event_ids or [0]))
+            text(
+                "select public.purge_external_party_statement_rows("
+                ":project_id, 'retirement')"
+            ),
+            {"project_id": project_id},
         )
-        session.execute(
-            delete(DependencyEventTiming).where(
-                DependencyEventTiming.event_id.in_(event_ids or [0])
-            )
-        )
-        session.execute(
-            delete(DependencyEventScope).where(
-                DependencyEventScope.event_id.in_(event_ids or [0])
-            )
-        )
-        session.execute(
-            delete(DependencyEvent).where(
-                DependencyEvent.id.in_(event_ids or [0])
-            )
-        )
+        # The privileged procedure deleted rows outside SQLAlchemy's normal
+        # synchronize-session path.  Remove only those stale statement
+        # identities: archive callers may still need their live Dependency
+        # ids for immediate readback.
+        for row in list(session.identity_map.values()):
+            if isinstance(row, DependencyEvent):
+                is_statement_row = row.id in event_ids
+            elif isinstance(row, (DependencyEventScope, DependencyEventTiming)):
+                is_statement_row = row.event_id in event_ids
+            elif isinstance(row, EvidenceLink):
+                is_statement_row = row.event_id in event_ids
+            else:
+                is_statement_row = False
+            if is_statement_row:
+                session.expunge(row)
         session.execute(delete(Dependency).where(Dependency.id.in_(dependency_ids)))
         session.flush()
         remaining = session.scalar(
