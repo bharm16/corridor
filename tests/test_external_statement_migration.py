@@ -55,6 +55,52 @@ def _assert_rejected(session_factory, statement: str, parameters: dict[str, int]
         session.execute(text(statement), parameters)
 
 
+def _assert_unprivileged_writer_cannot_purge(database_url: str) -> None:
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    do $$
+                    begin
+                        if not exists (
+                            select 1 from pg_roles where rolname = 'a217_unprivileged_writer'
+                        ) then
+                            create role a217_unprivileged_writer nologin noinherit;
+                        end if;
+                    end;
+                    $$;
+                    grant usage on schema public to a217_unprivileged_writer;
+                    """
+                )
+            )
+            assert connection.scalar(
+                text(
+                    "select has_function_privilege("
+                    "'a217_unprivileged_writer', "
+                    "'public.purge_external_party_statement_rows(bigint, text)', "
+                    "'execute')"
+                )
+            ) is False
+        with engine.begin() as connection:
+            connection.execute(text("set local role a217_unprivileged_writer"))
+            with pytest.raises(DBAPIError, match="permission denied"):
+                connection.execute(
+                    text(
+                        "select public.purge_external_party_statement_rows("
+                        "0, 'retirement')"
+                    )
+                )
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text("revoke all privileges on schema public from a217_unprivileged_writer")
+            )
+            connection.execute(text("drop role if exists a217_unprivileged_writer"))
+        engine.dispose()
+
+
 def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_rows():
     """A safe #216 Verbal downgrades, upgrades, and remains append-only."""
     with provision_disposable_postgres(
@@ -67,6 +113,7 @@ def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_row
             database=database.name
         ).render_as_string(hide_password=False)
         session_factory = database.session_factory
+        _assert_unprivileged_writer_cannot_purge(database_url)
 
         with session_factory() as session:
             project = Project(
@@ -243,6 +290,16 @@ def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_row
             "update evidence_links set quote = 'rewritten' where id = :evidence_id",
             {"evidence_id": ids["evidence"]},
         )
+        _assert_rejected(
+            session_factory,
+            "update evidence_links set event_id = null, "
+            "dependency_id = :dependency_id, satisfies_requirement = false "
+            "where id = :evidence_id",
+            {
+                "dependency_id": ids["dependency"],
+                "evidence_id": ids["evidence"],
+            },
+        )
 
         with session_factory() as session:
             plan = plan_retirement(session, ids["project"])
@@ -252,6 +309,7 @@ def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_row
                 expected_sha256=plan.content_sha256,
                 expected_dependency_count=1,
             )
+            assert session.scalar(text("select current_user")) == "corridor"
             session.commit()
             assert session.scalars(
                 select(Dependency).where(Dependency.project_id == ids["project"])

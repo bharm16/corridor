@@ -323,7 +323,7 @@ def upgrade() -> None:
         revoke all on function public.purge_external_party_statement_rows(bigint, text)
             from public;
         grant execute on function public.purge_external_party_statement_rows(bigint, text)
-            to corridor;
+            to corridor_statement_retirement;
 
         create function validate_dependency_event_scope_link()
         returns trigger
@@ -489,7 +489,11 @@ def upgrade() -> None:
         declare
             target_event_id bigint;
         begin
-            target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
+            if tg_op = 'DELETE' then
+                target_event_id := old.event_id;
+            else
+                target_event_id := coalesce(old.event_id, new.event_id);
+            end if;
             if target_event_id is not null
                and current_user <> 'corridor_statement_retirement' then
                 raise exception 'External Party statement Evidence is append-only'
@@ -597,8 +601,9 @@ def downgrade() -> None:
         drop trigger dependency_event_scope_link_is_valid on dependency_event_scopes;
         drop function validate_dependency_event_scope_link();
         drop function public.purge_external_party_statement_rows(bigint, text);
-        revoke all on table projects, legacy_ledger_archives, dependency_events,
-            dependency_event_scopes, dependency_event_timings, evidence_links
+        revoke all privileges on all tables in schema public
+            from corridor_statement_retirement;
+        revoke all privileges on all sequences in schema public
             from corridor_statement_retirement;
         revoke usage on schema public from corridor_statement_retirement;
 
