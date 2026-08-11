@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,7 @@ from corridor.project_lock import lock_project
 ARCHIVE_FORMAT_VERSION = "legacy-ledger-v2"
 _READABLE_ARCHIVE_FORMATS = frozenset({"legacy-ledger-v1", ARCHIVE_FORMAT_VERSION})
 RETIREMENT_ACTOR = "system:legacy-ledger-retirement/v1"
+STATEMENT_RETIREMENT_ROLE = "corridor_statement_retirement"
 LEGACY_ADMISSION_ACTORS = frozenset({"agent", "demo"})
 _REF_CODE = re.compile(r"DEP-(\d+)$")
 
@@ -80,6 +82,37 @@ class RetirementTargetDrift(LegacyLedgerArchiveError):
 
 class CorruptLegacyLedgerArchive(LegacyLedgerArchiveError):
     """A stored archive no longer agrees with its immutable receipt."""
+
+
+def _assume_statement_retirement_role(session: Session) -> None:
+    """Assume the dedicated DB role for the one sealed statement purge."""
+
+    try:
+        session.execute(text(f"set local role {STATEMENT_RETIREMENT_ROLE}"))
+    except DBAPIError as exc:
+        raise LegacyLedgerArchiveError(
+            "legacy Ledger retirement requires the statement-retirement database role"
+        ) from exc
+
+
+def _purge_statement_rows(session: Session, project_id: int) -> None:
+    """Delete sealed statement rows without leaking the maintenance role."""
+
+    _assume_statement_retirement_role(session)
+    try:
+        session.execute(
+            text(
+                "select public.purge_external_party_statement_rows("
+                ":project_id, 'retirement')"
+            ),
+            {"project_id": project_id},
+        )
+    except Exception:
+        # A failing statement aborts this transaction; its eventual rollback
+        # also rolls the local role back to the caller.
+        raise
+    else:
+        session.execute(text("set local role none"))
 
 
 def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
@@ -388,13 +421,7 @@ def retire_legacy_ledger(
                 )
             ).all()
         )
-        session.execute(
-            text(
-                "select public.purge_external_party_statement_rows("
-                ":project_id, 'retirement')"
-            ),
-            {"project_id": project_id},
-        )
+        _purge_statement_rows(session, project_id)
         # The privileged procedure deleted rows outside SQLAlchemy's normal
         # synchronize-session path.  Remove only those stale statement
         # identities: archive callers may still need their live Dependency

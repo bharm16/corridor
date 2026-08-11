@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from sqlalchemy import delete, select, text
+from sqlalchemy.exc import DBAPIError
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
@@ -43,6 +44,7 @@ from corridor.config import settings
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 DEMO_SLUG = "corridor-demo"
+STATEMENT_RETIREMENT_ROLE = "corridor_statement_retirement"
 MEMBER = "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
 LOCK = Path("corpus/manifest.lock.json")
 OUT = Path("out/report.html")
@@ -80,13 +82,21 @@ def _reset(session, project: Project) -> None:
             DependencyEvidenceSufficiency.dependency_id.in_(dep_ids)
         )
     )
-    session.execute(
-        text(
-            "select public.purge_external_party_statement_rows("
-            ":project_id, 'demo_reset')"
-        ),
-        {"project_id": project.id},
-    )
+    try:
+        session.execute(text(f"set local role {STATEMENT_RETIREMENT_ROLE}"))
+        session.execute(
+            text(
+                "select public.purge_external_party_statement_rows("
+                ":project_id, 'demo_reset')"
+            ),
+            {"project_id": project.id},
+        )
+    except DBAPIError as exc:
+        raise DemoIsolationError(
+            "demo reset requires the statement-retirement database role"
+        ) from exc
+    else:
+        session.execute(text("set local role none"))
     session.execute(
         delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dep_ids))
     )
