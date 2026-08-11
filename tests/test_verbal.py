@@ -538,6 +538,74 @@ def test_reports_withhold_an_unverified_cited_event_date(session, dependency):
     assert_no_bare_cells(report)
 
 
+def test_reports_do_not_publish_a_stale_day_after_a_current_month_statement(
+    session, client, dependency
+):
+    """A current non-day statement still retires the older scalar projection."""
+    project = session.get(Project, dependency.project_id)
+    dependency.resolution_strategy = "relocate"
+    document = Document(
+        project_id=project.id,
+        sha256="8" * 64,
+        filename="minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    _record_cited(
+        session,
+        dependency,
+        document,
+        event_date=date(2026, 1, 8),
+        committed_date=date(2026, 6, 15),
+        description="AT&T committed to June 15.",
+    )
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="AT&T",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2026, 5, 8),
+        description="AT&T now expects completion in August 2026.",
+        new_timing=StatementTiming.month("August 2026", 2026, 8),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "AT&T now expects completion in August 2026."
+        ),
+    )
+    # Model an old import or interrupted projection refresh. The structured
+    # statement remains authoritative even while this scalar is stale.
+    dependency.committed_date = date(2026, 6, 15)
+    session.flush()
+
+    for document_only in (False, True):
+        report = build_report(
+            session,
+            project.id,
+            today=date(2026, 7, 1),
+            document_only=document_only,
+        )
+        committed = next(
+            row[2]
+            for report_section in report.sections
+            if report_section.title == "Critical items"
+            for row in report_section.rows
+        )
+
+        assert report.committed_dates[dependency.id] is None
+        assert committed.value == "—"
+        assert "2026-06-15" not in render(report)
+        assert_no_bare_cells(report)
+
+    ledger_page = client.get(f"/ledger/{project.slug}").text
+    assert "2026-06-15" not in ledger_page
+
+
 def test_document_only_reports_keep_their_own_cited_history(
     session, dependency
 ):
