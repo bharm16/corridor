@@ -26,6 +26,11 @@ class ProvisionedDatabase:
     postgres_version: str
     migration_head: str
 
+    @property
+    def current_revision(self) -> str:
+        """The exact revision applied, including a requested historical target."""
+        return self.migration_head
+
 
 DatabaseProvisioner = Callable[[str], Any]
 
@@ -37,8 +42,9 @@ def provision_disposable_postgres(
     repo_root: Path,
     error_cls: type[Exception],
     database_prefix: str,
+    migration_revision: str = "head",
 ) -> Iterator[ProvisionedDatabase]:
-    """Create, migrate, and finally destroy one guarded PostgreSQL database."""
+    """Create, migrate to one revision, and destroy a guarded PostgreSQL database."""
 
     parsed = make_url(admin_url)
     if parsed.get_backend_name() != "postgresql":
@@ -62,7 +68,12 @@ def provision_disposable_postgres(
             connection.execute(text(f'create database "{database_name}"'))
             database_created = True
         database_url = parsed.set(database=database_name)
-        _apply_schema_migrations(database_url, repo_root=repo_root, error_cls=error_cls)
+        _apply_schema_migrations(
+            database_url,
+            repo_root=repo_root,
+            error_cls=error_cls,
+            revision=migration_revision,
+        )
         database_engine = create_engine(
             database_url,
             poolclass=NullPool,
@@ -179,6 +190,7 @@ def _apply_schema_migrations(
     *,
     repo_root: Path,
     error_cls: type[Exception],
+    revision: str = "head",
 ) -> None:
     environment = {
         **os.environ,
@@ -192,7 +204,7 @@ def _apply_schema_migrations(
             "-c",
             str(repo_root / "alembic.ini"),
             "upgrade",
-            "head",
+            revision,
         ],
         cwd=repo_root,
         env=environment,
