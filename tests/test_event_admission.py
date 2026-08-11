@@ -19,7 +19,8 @@ import hashlib
 from datetime import date
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
@@ -33,12 +34,14 @@ from corridor.extraction_runs import (
     record_extraction_run,
 )
 from corridor.models import (
+    AuditLog,
     Candidate,
     Dependency,
     DependencyEvent,
     DependencyEventScope,
     DocPage,
     Document,
+    EvidenceLink,
     EventAdmissionOutcome,
     PolicyRun,
     Project,
@@ -218,6 +221,67 @@ def test_a_clean_event_is_admitted_onto_its_dependency(
     assert event.event_date == date(2025, 1, 16)
     session.refresh(candidate)
     assert candidate.state == "accepted"
+
+
+def test_refused_mechanical_admission_leaves_no_receipt_event_or_audit(
+    session, project, admitted
+):
+    """A database refusal unwinds the policy writer's entire admission act."""
+    [candidate] = _minutes_with(
+        session,
+        project,
+        [_event(description="refuse this mechanical statement")],
+    )
+    session.execute(
+        text(
+            """
+            create function refuse_test_mechanical_statement_write()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+                if new.description = 'refuse this mechanical statement' then
+                    raise exception 'mechanical statement write refused' using errcode = '23514';
+                end if;
+                return new;
+            end;
+            $$;
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            create trigger refuse_test_mechanical_statement_write
+            before insert on dependency_events
+            for each row execute function refuse_test_mechanical_statement_write();
+            """
+        )
+    )
+
+    with pytest.raises(IntegrityError, match="mechanical statement write refused"):
+        run_event_admission(session, project.id)
+
+    assert session.scalars(
+        select(PolicyRun).where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.family == "event-admission",
+        )
+    ).all() == []
+    assert _events_on(session, admitted.id) == []
+    assert session.scalars(
+        select(EvidenceLink).where(EvidenceLink.document_id == candidate.source_document_id)
+    ).all() == []
+    assert session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_id == admitted.id,
+            AuditLog.action == "admit_event",
+        )
+    ).all() == []
+    session.refresh(candidate)
+    session.refresh(admitted)
+    assert candidate.state == "pending"
+    assert admitted.committed_date is None
 
 
 @pytest.mark.parametrize(
@@ -561,6 +625,57 @@ def test_attaching_places_the_statement_a_human_names(
     session.refresh(candidate)
     assert candidate.state == "accepted"
     assert waiting_statements(session, project.id) == []
+
+
+def test_refused_statement_placement_leaves_the_candidate_and_event_unchanged(
+    session, project, admitted
+):
+    """An audit refusal must unwind the event a human placement just created."""
+    from corridor.event_admission import attach_statement
+
+    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
+    run_event_admission(session, project.id)
+    session.execute(
+        text(
+            """
+            create function refuse_test_statement_attachment_audit()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+                if new.action = 'attach_statement' then
+                    raise exception 'statement attachment audit refused' using errcode = '23514';
+                end if;
+                return new;
+            end;
+            $$;
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            create trigger refuse_test_statement_attachment_audit
+            before insert on audit_log
+            for each row execute function refuse_test_statement_attachment_audit();
+            """
+        )
+    )
+
+    with pytest.raises(IntegrityError, match="statement attachment audit refused"):
+        attach_statement(session, candidate, admitted, principal=OPERATOR)
+
+    assert _events_on(session, admitted.id) == []
+    assert session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_id == admitted.id,
+            AuditLog.action == "attach_statement",
+        )
+    ).all() == []
+    session.refresh(candidate)
+    session.refresh(admitted)
+    assert candidate.state == "pending"
+    assert admitted.committed_date is None
 
 
 def test_attaching_holds_the_masquerade_boundary(session, project, admitted):

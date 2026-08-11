@@ -275,6 +275,94 @@ def test_invalid_known_scope_refuses_before_writing_any_part_of_the_statement(
     assert session.scalars(select(DependencyEvent)).all() == []
 
 
+def test_database_refusal_leaves_no_partial_event_or_projection_and_keeps_the_write_transaction_usable(
+    session, statement_record
+):
+    """The shared writer is one atomic act, even after it begins persisting."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    session.execute(
+        text(
+            """
+            create function refuse_test_statement_write()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+                if new.description = 'refuse this statement' then
+                    raise exception 'statement write refused' using errcode = '23514';
+                end if;
+                return new;
+            end;
+            $$;
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            create trigger refuse_test_statement_write
+            before insert on dependency_events
+            for each row execute function refuse_test_statement_write();
+            """
+        )
+    )
+
+    with pytest.raises(IntegrityError, match="statement write refused"):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party="Equistar",
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=date(2025, 1, 16),
+            description="refuse this statement",
+            new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+            scope=StatementScope.selected((dependency.id,)),
+            created_by="corridor:event-admission",
+            evidence=CitedStatementEvidence(
+                document.id, 1, "Equistar will complete relocation."
+            ),
+        )
+
+    assert session.scalars(
+        select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+    ).all() == []
+    assert session.scalars(
+        select(EvidenceLink).where(EvidenceLink.document_id == document.id)
+    ).all() == []
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation."
+        ),
+    )
+
+    assert event.id is not None
+    session.refresh(dependency)
+    assert dependency.committed_date == date(2025, 6, 1)
+
+
 def test_month_timing_must_cover_that_calendar_month_exactly(
     session, statement_record
 ):

@@ -171,85 +171,90 @@ def run_event_admission(
                 )
             )
 
-    run = PolicyRun(
-        project_id=project_id,
-        family=FAMILY,
-        policy_approval_id=None,
-        policy_version=EVENT_ADMISSION_POLICY_VERSION,
-        policy_sha256=policy.canonical_sha256(policy_json),
-        abstention_reason_version=ABSTENTION_REASON_VERSION,
-        applied_count=len(admissible),
-        abstained_count=len(abstentions),
-    )
-    session.add(run)
-    session.flush([run])
-
-    for abstention in abstentions:
-        session.add(
-            EventAdmissionOutcome(
-                policy_run_id=run.id,
-                candidate_id=abstention.candidate_id,
-                outcome=OUTCOME_ABSTAINED,
-                reason=abstention.reason,
-            )
+    # A policy receipt, its outcomes, the accepted Candidate, the event, and
+    # its audit all name one machine act. Keep the whole act behind a
+    # savepoint so a late database refusal cannot leave a receipt for an event
+    # that never reached the Ledger.
+    with session.begin_nested():
+        run = PolicyRun(
+            project_id=project_id,
+            family=FAMILY,
+            policy_approval_id=None,
+            policy_version=EVENT_ADMISSION_POLICY_VERSION,
+            policy_sha256=policy.canonical_sha256(policy_json),
+            abstention_reason_version=ABSTENTION_REASON_VERSION,
+            applied_count=len(admissible),
+            abstained_count=len(abstentions),
         )
+        session.add(run)
+        session.flush([run])
 
-    for (
-        candidate,
-        dependency,
-        fields,
-        event_date,
-        new_timing,
-        previous_timing,
-        stated_party,
-        stated_external_org_id,
-        evidence,
-    ) in admissible:
-        try:
-            event = record_external_party_statement(
+        for abstention in abstentions:
+            session.add(
+                EventAdmissionOutcome(
+                    policy_run_id=run.id,
+                    candidate_id=abstention.candidate_id,
+                    outcome=OUTCOME_ABSTAINED,
+                    reason=abstention.reason,
+                )
+            )
+
+        for (
+            candidate,
+            dependency,
+            fields,
+            event_date,
+            new_timing,
+            previous_timing,
+            stated_party,
+            stated_external_org_id,
+            evidence,
+        ) in admissible:
+            try:
+                event = record_external_party_statement(
+                    session,
+                    project_id=project.id,
+                    affected_external_org_id=dependency.external_org_id,
+                    stated_party=stated_party,
+                    stated_external_org_id=stated_external_org_id,
+                    source_kind="cited",
+                    event_date=event_date,
+                    description=str(fields.get("description") or ""),
+                    new_timing=new_timing,
+                    previous_timing=previous_timing,
+                    scope=StatementScope.selected((dependency.id,)),
+                    created_by=MACHINE_ACTOR,
+                    evidence=evidence,
+                )
+            except StatementRefusal as exc:
+                raise RuntimeError(
+                    f"candidate {candidate.id} passed admission but statement recording refused: {exc}"
+                ) from exc
+
+            candidate.state = "accepted"
+            candidate.adjudicated_at = datetime.now(timezone.utc)
+            session.add(
+                EventAdmissionOutcome(
+                    policy_run_id=run.id,
+                    candidate_id=candidate.id,
+                    outcome=OUTCOME_ADMITTED,
+                    dependency_event_id=event.id,
+                )
+            )
+            audit.record(
                 session,
-                project_id=project.id,
-                affected_external_org_id=dependency.external_org_id,
-                stated_party=stated_party,
-                stated_external_org_id=stated_external_org_id,
-                source_kind="cited",
-                event_date=event_date,
-                description=str(fields.get("description") or ""),
-                new_timing=new_timing,
-                previous_timing=previous_timing,
-                scope=StatementScope.selected((dependency.id,)),
-                created_by=MACHINE_ACTOR,
-                evidence=evidence,
+                actor=MACHINE_ACTOR,
+                action=audit.ADMIT_EVENT,
+                entity_type=audit.DEPENDENCY,
+                entity_id=dependency.id,
+                after={
+                    "policy_run_id": run.id,
+                    "candidate_id": candidate.id,
+                    "dependency_event_id": event.id,
+                    "policy_sha256": run.policy_sha256,
+                },
             )
-        except StatementRefusal as exc:
-            raise RuntimeError(
-                f"candidate {candidate.id} passed admission but statement recording refused: {exc}"
-            ) from exc
-
-        candidate.state = "accepted"
-        candidate.adjudicated_at = datetime.now(timezone.utc)
-        session.add(
-            EventAdmissionOutcome(
-                policy_run_id=run.id,
-                candidate_id=candidate.id,
-                outcome=OUTCOME_ADMITTED,
-                dependency_event_id=event.id,
-            )
-        )
-        audit.record(
-            session,
-            actor=MACHINE_ACTOR,
-            action=audit.ADMIT_EVENT,
-            entity_type=audit.DEPENDENCY,
-            entity_id=dependency.id,
-            after={
-                "policy_run_id": run.id,
-                "candidate_id": candidate.id,
-                "dependency_event_id": event.id,
-                "policy_sha256": run.policy_sha256,
-            },
-        )
-    session.flush()
+        session.flush()
     return EventAdmissionResult(
         run_id=run.id,
         admitted_count=len(admissible),
@@ -702,37 +707,40 @@ def attach_statement(
         raise StatementUnplaceable("this record has no resolved External Party")
 
     try:
-        event = record_external_party_statement(
-            session,
-            project_id=project.id,
-            affected_external_org_id=dependency.external_org_id,
-            stated_party=stated_party,
-            stated_external_org_id=stated_external_org.id,
-            source_kind="cited",
-            event_date=event_date,
-            description=str(fields.get("description") or ""),
-            new_timing=new_timing,
-            previous_timing=previous_timing,
-            scope=StatementScope.selected((dependency.id,)),
-            created_by=attacher.subject,
-            evidence=evidence,
-        )
+        # The accepted Candidate and its audit receipt are one human act with
+        # the event. A late refusal must not preserve the event while leaving
+        # the source Candidate pending or unaudited.
+        with session.begin_nested():
+            event = record_external_party_statement(
+                session,
+                project_id=project.id,
+                affected_external_org_id=dependency.external_org_id,
+                stated_party=stated_party,
+                stated_external_org_id=stated_external_org.id,
+                source_kind="cited",
+                event_date=event_date,
+                description=str(fields.get("description") or ""),
+                new_timing=new_timing,
+                previous_timing=previous_timing,
+                scope=StatementScope.selected((dependency.id,)),
+                created_by=attacher.subject,
+                evidence=evidence,
+            )
+            candidate.state = "accepted"
+            candidate.adjudicated_at = datetime.now(timezone.utc)
+            audit.record(
+                session,
+                principal=attacher,
+                action=audit.ATTACH_STATEMENT,
+                entity_type=audit.DEPENDENCY,
+                entity_id=dependency.id,
+                after={
+                    "candidate_id": candidate.id,
+                    "dependency_event_id": event.id,
+                    "event_type": event_type,
+                },
+            )
+            session.flush()
     except StatementRefusal as exc:
         raise StatementUnplaceable(str(exc)) from exc
-
-    candidate.state = "accepted"
-    candidate.adjudicated_at = datetime.now(timezone.utc)
-    audit.record(
-        session,
-        principal=attacher,
-        action=audit.ATTACH_STATEMENT,
-        entity_type=audit.DEPENDENCY,
-        entity_id=dependency.id,
-        after={
-            "candidate_id": candidate.id,
-            "dependency_event_id": event.id,
-            "event_type": event_type,
-        },
-    )
-    session.flush()
     return event
