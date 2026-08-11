@@ -22,6 +22,7 @@ from corridor.models import (
     Dependency,
     DependencyEvent,
     DependencyEventScope,
+    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
@@ -232,6 +233,48 @@ def test_browse_flags_contradicted_records(session, project, document, dependenc
     )
     [row] = _browse(session, project)
     assert row.contradicted is True
+
+
+def test_browse_and_detail_read_the_current_statement_projection(
+    session, project, dependency
+):
+    """A current event stays visible even before its scalar refresh runs."""
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=dependency.external_org_id,
+        stated_external_org_id=dependency.external_org_id,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="verbal",
+        stated_party="LT AT&T Texas",
+        event_date=date(2026, 3, 4),
+        description="AT&T said relocation will finish in August.",
+        created_by="local:ledger-reviewer",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text="2026-08-15",
+                precision="day",
+                start_date=date(2026, 8, 15),
+                end_date=date(2026, 8, 15),
+            ),
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+        )
+    )
+    session.flush()
+    assert dependency.committed_date is None
+
+    [row] = _browse(session, project)
+    detail = load_dependency(session, dependency.id)
+
+    assert row.committed_date == date(2026, 8, 15)
+    assert row.committed_event is event
+    assert detail.current_statement.event is event
 
 
 def test_an_unverified_disagreement_is_not_a_contradiction(
