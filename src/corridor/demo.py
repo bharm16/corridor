@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
@@ -27,9 +27,6 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvidenceSufficiency,
-    DependencyEvent,
-    DependencyEventScope,
-    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
@@ -78,22 +75,18 @@ def _reset(session, project: Project) -> None:
     session.execute(
         delete(OperativeSupport).where(OperativeSupport.dependency_id.in_(dep_ids))
     )
-    event_ids = select(DependencyEvent.id).where(
-        DependencyEvent.project_id == project.id
-    )
     session.execute(
         delete(DependencyEvidenceSufficiency).where(
             DependencyEvidenceSufficiency.dependency_id.in_(dep_ids)
         )
     )
-    session.execute(delete(EvidenceLink).where(EvidenceLink.event_id.in_(event_ids)))
     session.execute(
-        delete(DependencyEventTiming).where(DependencyEventTiming.event_id.in_(event_ids))
+        text(
+            "select public.purge_external_party_statement_rows("
+            ":project_id, 'demo_reset')"
+        ),
+        {"project_id": project.id},
     )
-    session.execute(
-        delete(DependencyEventScope).where(DependencyEventScope.event_id.in_(event_ids))
-    )
-    session.execute(delete(DependencyEvent).where(DependencyEvent.id.in_(event_ids)))
     session.execute(
         delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dep_ids))
     )

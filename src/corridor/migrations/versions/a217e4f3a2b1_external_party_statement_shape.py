@@ -5,8 +5,9 @@ Revises: e216f5a4b3c2
 
 Existing event identities and EvidenceLink ids stay intact.  Their direct
 Dependency ownership becomes one selected scope link; old normalized dates are
-kept only as legacy-unknown timing, because the old scalar cannot prove what
-precision the source actually stated.
+kept only as legacy-unknown timing, except for an existing Verbal's explicit
+phone-entry day, because a cited scalar cannot prove what precision the source
+actually stated.
 """
 
 from typing import Sequence, Union
@@ -219,6 +220,111 @@ def upgrade() -> None:
 
     op.execute(
         """
+        do $$
+        begin
+            if not exists (
+                select 1 from pg_roles where rolname = 'corridor_statement_retirement'
+            ) then
+                create role corridor_statement_retirement nologin noinherit;
+            end if;
+        end;
+        $$;
+
+        grant usage on schema public to corridor_statement_retirement;
+        grant select, delete on table projects, legacy_ledger_archives,
+            dependency_events, dependency_event_scopes,
+            dependency_event_timings, evidence_links
+            to corridor_statement_retirement;
+
+        create or replace function reject_verbal_dependency_event_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            if current_user = 'corridor_statement_retirement' then
+                if tg_op = 'TRUNCATE' then
+                    return null;
+                end if;
+                return case when tg_op = 'DELETE' then old else new end;
+            end if;
+            if tg_op = 'TRUNCATE' then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            if tg_op = 'DELETE' and old.source_kind = 'verbal' then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            if tg_op = 'UPDATE' and (
+                old.source_kind = 'verbal' or new.source_kind = 'verbal'
+            ) then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
+
+        create function public.purge_external_party_statement_rows(
+            target_project_id bigint,
+            target_purpose text
+        )
+        returns void
+        language plpgsql
+        security definer
+        set search_path = pg_catalog, public
+        as $$
+        begin
+            if target_purpose = 'retirement' then
+                perform 1
+                from public.legacy_ledger_archives
+                where project_id = target_project_id;
+                if not found then
+                    raise exception 'statement retirement requires a sealed Legacy Ledger archive'
+                        using errcode = '23514';
+                end if;
+            elsif target_purpose = 'demo_reset' then
+                perform 1
+                from public.projects
+                where id = target_project_id
+                  and slug = 'corridor-demo'
+                  and is_synthetic is true;
+                if not found then
+                    raise exception 'statement reset is allowed only for the synthetic corridor-demo project'
+                        using errcode = '23514';
+                end if;
+            else
+                raise exception 'unrecognized statement retirement purpose'
+                    using errcode = '23514';
+            end if;
+
+            delete from public.evidence_links
+            where event_id in (
+                select id from public.dependency_events
+                where project_id = target_project_id
+            );
+            delete from public.dependency_event_timings
+            where event_id in (
+                select id from public.dependency_events
+                where project_id = target_project_id
+            );
+            delete from public.dependency_event_scopes
+            where event_id in (
+                select id from public.dependency_events
+                where project_id = target_project_id
+            );
+            delete from public.dependency_events
+            where project_id = target_project_id;
+        end;
+        $$;
+
+        alter function public.purge_external_party_statement_rows(bigint, text)
+            owner to corridor_statement_retirement;
+        revoke all on function public.purge_external_party_statement_rows(bigint, text)
+            from public;
+        grant execute on function public.purge_external_party_statement_rows(bigint, text)
+            to corridor;
+
         create function validate_dependency_event_scope_link()
         returns trigger
         language plpgsql
@@ -333,7 +439,7 @@ def upgrade() -> None:
         deferrable initially deferred
         for each row execute function verify_dependency_event_scope_shape();
 
-        create function reject_verbal_statement_child_mutation()
+        create function reject_external_party_statement_child_mutation()
         returns trigger
         language plpgsql
         as $$
@@ -341,24 +447,99 @@ def upgrade() -> None:
             target_event_id bigint;
             target_source text;
         begin
-            target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
-            select source_kind into target_source
-            from dependency_events where id = target_event_id;
-            if target_source = 'verbal' then
-                raise exception 'verbal dependency events are append-only'
+            if current_user <> 'corridor_statement_retirement' then
+                target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
+                select source_kind into target_source
+                from dependency_events where id = target_event_id;
+                if target_source = 'verbal' then
+                    raise exception 'verbal dependency events are append-only'
+                        using errcode = '23514';
+                end if;
+                raise exception 'External Party statements are append-only'
                     using errcode = '23514';
             end if;
             return case when tg_op = 'DELETE' then old else new end;
         end;
         $$;
 
-        create trigger verbal_dependency_event_scopes_are_immutable
-        before update or delete on dependency_event_scopes
-        for each row execute function reject_verbal_statement_child_mutation();
+        create function reject_external_party_statement_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            if current_user <> 'corridor_statement_retirement' then
+                if (tg_op = 'DELETE' and old.source_kind = 'verbal')
+                   or (tg_op = 'UPDATE' and (
+                       old.source_kind = 'verbal' or new.source_kind = 'verbal'
+                   )) then
+                    raise exception 'verbal dependency events are append-only'
+                        using errcode = '23514';
+                end if;
+                raise exception 'External Party statements are append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
 
-        create trigger verbal_dependency_event_timings_are_immutable
+        create function reject_external_party_statement_evidence_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        declare
+            target_event_id bigint;
+        begin
+            target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
+            if target_event_id is not null
+               and current_user <> 'corridor_statement_retirement' then
+                raise exception 'External Party statement Evidence is append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
+
+        create function reject_external_party_statement_truncate()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            raise exception 'External Party statements are append-only'
+                using errcode = '23514';
+        end;
+        $$;
+
+        create trigger external_party_statement_events_are_immutable
+        before update or delete on dependency_events
+        for each row execute function reject_external_party_statement_mutation();
+
+        create trigger external_party_statement_evidence_is_immutable
+        before update or delete on evidence_links
+        for each row execute function reject_external_party_statement_evidence_mutation();
+
+        create trigger external_party_statement_events_reject_truncate
+        before truncate on dependency_events
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_scopes_reject_truncate
+        before truncate on dependency_event_scopes
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_timings_reject_truncate
+        before truncate on dependency_event_timings
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_evidence_reject_truncate
+        before truncate on evidence_links
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_scopes_are_immutable
+        before update or delete on dependency_event_scopes
+        for each row execute function reject_external_party_statement_child_mutation();
+
+        create trigger external_party_statement_timings_are_immutable
         before update or delete on dependency_event_timings
-        for each row execute function reject_verbal_statement_child_mutation();
+        for each row execute function reject_external_party_statement_child_mutation();
         """
     )
 
@@ -400,26 +581,71 @@ def downgrade() -> None:
         drop trigger dependency_event_scope_links_match_shape on dependency_event_scopes;
         drop trigger dependency_event_timings_match_statement on dependency_event_timings;
         drop trigger dependency_event_scope_shape_is_valid on dependency_events;
-        drop trigger verbal_dependency_event_timings_are_immutable on dependency_event_timings;
-        drop trigger verbal_dependency_event_scopes_are_immutable on dependency_event_scopes;
-        drop function reject_verbal_statement_child_mutation();
+        drop trigger external_party_statement_evidence_reject_truncate on evidence_links;
+        drop trigger external_party_statement_timings_reject_truncate on dependency_event_timings;
+        drop trigger external_party_statement_scopes_reject_truncate on dependency_event_scopes;
+        drop trigger external_party_statement_events_reject_truncate on dependency_events;
+        drop trigger external_party_statement_evidence_is_immutable on evidence_links;
+        drop trigger external_party_statement_events_are_immutable on dependency_events;
+        drop trigger external_party_statement_timings_are_immutable on dependency_event_timings;
+        drop trigger external_party_statement_scopes_are_immutable on dependency_event_scopes;
+        drop function reject_external_party_statement_truncate();
+        drop function reject_external_party_statement_evidence_mutation();
+        drop function reject_external_party_statement_mutation();
+        drop function reject_external_party_statement_child_mutation();
         drop function verify_dependency_event_scope_shape();
         drop trigger dependency_event_scope_link_is_valid on dependency_event_scopes;
         drop function validate_dependency_event_scope_link();
+        drop function public.purge_external_party_statement_rows(bigint, text);
+        revoke all on table projects, legacy_ledger_archives, dependency_events,
+            dependency_event_scopes, dependency_event_timings, evidence_links
+            from corridor_statement_retirement;
+        revoke usage on schema public from corridor_statement_retirement;
+
+        create or replace function reject_verbal_dependency_event_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            if tg_op = 'TRUNCATE' then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            if tg_op = 'DELETE' and old.source_kind = 'verbal' then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            if tg_op = 'UPDATE' and (
+                old.source_kind = 'verbal' or new.source_kind = 'verbal'
+            ) then
+                raise exception 'verbal dependency events are append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
         """
     )
     op.add_column("dependency_events", sa.Column("dependency_id", sa.BigInteger()))
     op.add_column("dependency_events", sa.Column("committed_date", sa.Date()))
     op.execute(
+        "alter table dependency_events disable trigger verbal_dependency_events_are_immutable"
+    )
+    op.execute(
         """
         update dependency_events event
         set dependency_id = scope.dependency_id,
-            committed_date = timing.start_date
+            committed_date = (
+                select timing.start_date
+                from dependency_event_timings timing
+                where timing.event_id = event.id and timing.kind = 'new'
+            )
         from dependency_event_scopes scope
-        left join dependency_event_timings timing
-            on timing.event_id = event.id and timing.kind = 'new'
         where scope.event_id = event.id
         """
+    )
+    op.execute(
+        "alter table dependency_events enable trigger verbal_dependency_events_are_immutable"
     )
     op.alter_column("dependency_events", "dependency_id", nullable=False)
     op.create_foreign_key(
