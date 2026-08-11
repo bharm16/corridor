@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session
 
@@ -362,13 +362,6 @@ def retire_legacy_ledger(
         # the object that was just added from the identity map.
         session.expire(archive)
         verify_archive(session, archive.id)
-        # Statement facts are append-only during normal work. Retirement is
-        # the one audited archival path that may remove the active graph after
-        # its canonical copy has been sealed above.
-        session.execute(
-            text("set local corridor.allow_statement_retirement = 'on'")
-        )
-
         dependency_ids = [row["id"] for row in plan.content["dependencies"]]
         session.execute(
             delete(Assertion).where(Assertion.dependency_id.in_(dependency_ids))

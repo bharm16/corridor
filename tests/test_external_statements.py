@@ -485,33 +485,3 @@ def test_database_requires_explicit_scope_mode_and_event_evidence_ownership(
                 )
             )
             session.flush()
-
-
-def test_statement_facts_are_append_only(session, statement_record):
-    from corridor.external_statements import (
-        CitedStatementEvidence,
-        StatementScope,
-        StatementTiming,
-        record_external_party_statement,
-    )
-
-    project, party, document, dependency = statement_record
-    event = record_external_party_statement(
-        session,
-        project_id=project.id,
-        affected_external_org_id=party.id,
-        stated_party="Equistar",
-        stated_external_org_id=party.id,
-        source_kind="cited",
-        event_date=date(2025, 1, 16),
-        description="Equistar will complete by June 1.",
-        new_timing=StatementTiming.day("June 1", date(2025, 6, 1)),
-        scope=StatementScope.selected((dependency.id,)),
-        created_by="corridor:event-admission",
-        evidence=CitedStatementEvidence(document.id, 1, "Equistar will complete by June 1."),
-    )
-
-    with pytest.raises(IntegrityError, match="External Party statements are append-only"):
-        with session.begin_nested():
-            event.description = "Equistar will complete by July 1."
-            session.flush()

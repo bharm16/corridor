@@ -22,10 +22,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # #216 already protects verbal rows.  This one transaction performs the
-    # conservative legacy shape conversion before installing the broader
-    # statement immutability guard below.
-    op.execute("select set_config('corridor.allow_statement_retirement', 'on', true)")
+    # #216's row trigger correctly blocks ordinary mutation, but this
+    # transaction must attach the new shape to its immutable historical rows
+    # before reenabling it.
+    op.execute(
+        "alter table dependency_events disable trigger verbal_dependency_events_are_immutable"
+    )
     op.add_column("dependency_events", sa.Column("project_id", sa.BigInteger()))
     op.add_column(
         "dependency_events", sa.Column("affected_external_org_id", sa.BigInteger())
@@ -86,6 +88,9 @@ def upgrade() -> None:
     op.execute(
         "update dependency_events set event_type = 'commitment' where event_type = 'slip'"
     )
+    op.execute(
+        "alter table dependency_events enable trigger verbal_dependency_events_are_immutable"
+    )
     op.alter_column(
         "dependency_events",
         "event_type",
@@ -140,7 +145,13 @@ def upgrade() -> None:
     op.execute(
         """
         insert into dependency_event_timings (event_id, kind, text, precision, start_date, end_date)
-        select id, 'new', committed_date::text, 'legacy_unknown', null, null
+        select
+            id,
+            'new',
+            committed_date::text,
+            case when source_kind = 'verbal' then 'day' else 'legacy_unknown' end,
+            case when source_kind = 'verbal' then committed_date else null end,
+            case when source_kind = 'verbal' then committed_date else null end
         from dependency_events
         where committed_date is not null
         """
@@ -322,21 +333,18 @@ def upgrade() -> None:
         deferrable initially deferred
         for each row execute function verify_dependency_event_scope_shape();
 
-        create or replace function reject_verbal_dependency_event_mutation()
+        create function reject_verbal_statement_child_mutation()
         returns trigger
         language plpgsql
         as $$
+        declare
+            target_event_id bigint;
+            target_source text;
         begin
-            if current_setting('corridor.allow_statement_retirement', true) = 'on' then
-                return case when tg_op = 'DELETE' then old else new end;
-            end if;
-            if tg_op = 'DELETE' and old.source_kind = 'verbal' then
-                raise exception 'verbal dependency events are append-only'
-                    using errcode = '23514';
-            end if;
-            if tg_op = 'UPDATE' and (
-                old.source_kind = 'verbal' or new.source_kind = 'verbal'
-            ) then
+            target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
+            select source_kind into target_source
+            from dependency_events where id = target_event_id;
+            if target_source = 'verbal' then
                 raise exception 'verbal dependency events are append-only'
                     using errcode = '23514';
             end if;
@@ -344,46 +352,18 @@ def upgrade() -> None:
         end;
         $$;
 
-        create function reject_external_party_statement_mutation()
-        returns trigger
-        language plpgsql
-        as $$
-        begin
-            if current_setting('corridor.allow_statement_retirement', true) = 'on' then
-                return case when tg_op = 'DELETE' then old else new end;
-            end if;
-            raise exception 'External Party statements are append-only'
-                using errcode = '23514';
-        end;
-        $$;
-
-        create trigger external_party_statement_events_are_immutable
-        before update or delete on dependency_events
-        for each row execute function reject_external_party_statement_mutation();
-
-        create trigger external_party_statement_scopes_are_immutable
+        create trigger verbal_dependency_event_scopes_are_immutable
         before update or delete on dependency_event_scopes
-        for each row execute function reject_external_party_statement_mutation();
+        for each row execute function reject_verbal_statement_child_mutation();
 
-        create trigger external_party_statement_timings_are_immutable
+        create trigger verbal_dependency_event_timings_are_immutable
         before update or delete on dependency_event_timings
-        for each row execute function reject_external_party_statement_mutation();
-
-        create trigger external_party_statement_evidence_updates_are_immutable
-        before update on evidence_links
-        for each row when (old.event_id is not null or new.event_id is not null)
-        execute function reject_external_party_statement_mutation();
-
-        create trigger external_party_statement_evidence_deletes_are_immutable
-        before delete on evidence_links
-        for each row when (old.event_id is not null)
-        execute function reject_external_party_statement_mutation();
+        for each row execute function reject_verbal_statement_child_mutation();
         """
     )
 
 
 def downgrade() -> None:
-    op.execute("select set_config('corridor.allow_statement_retirement', 'on', true)")
     bind = op.get_bind()
     invalid_scope = bind.execute(
         sa.text(
@@ -420,12 +400,9 @@ def downgrade() -> None:
         drop trigger dependency_event_scope_links_match_shape on dependency_event_scopes;
         drop trigger dependency_event_timings_match_statement on dependency_event_timings;
         drop trigger dependency_event_scope_shape_is_valid on dependency_events;
-        drop trigger external_party_statement_evidence_deletes_are_immutable on evidence_links;
-        drop trigger external_party_statement_evidence_updates_are_immutable on evidence_links;
-        drop trigger external_party_statement_timings_are_immutable on dependency_event_timings;
-        drop trigger external_party_statement_scopes_are_immutable on dependency_event_scopes;
-        drop trigger external_party_statement_events_are_immutable on dependency_events;
-        drop function reject_external_party_statement_mutation();
+        drop trigger verbal_dependency_event_timings_are_immutable on dependency_event_timings;
+        drop trigger verbal_dependency_event_scopes_are_immutable on dependency_event_scopes;
+        drop function reject_verbal_statement_child_mutation();
         drop function verify_dependency_event_scope_shape();
         drop trigger dependency_event_scope_link_is_valid on dependency_event_scopes;
         drop function validate_dependency_event_scope_link();

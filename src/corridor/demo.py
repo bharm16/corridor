@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
@@ -74,7 +74,6 @@ def _reset(session, project: Project) -> None:
     dep_ids = select(Dependency.id).where(Dependency.project_id == project.id)
     candidate_ids = select(Candidate.id).where(Candidate.project_id == project.id)
     document_ids = select(Document.id).where(Document.project_id == project.id)
-    session.execute(text("set local corridor.allow_statement_retirement = 'on'"))
     session.execute(delete(Assertion).where(Assertion.dependency_id.in_(dep_ids)))
     session.execute(
         delete(OperativeSupport).where(OperativeSupport.dependency_id.in_(dep_ids))
