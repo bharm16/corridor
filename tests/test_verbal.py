@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from corridor.changes import record_run
@@ -174,6 +174,75 @@ def test_recording_a_verbal_projects_its_date_and_attributes_the_call(
     ).one()
     assert audit.action == "record_verbal"
     assert audit.actor == RECORDER.subject
+
+
+def test_refused_verbal_recording_leaves_no_event_or_audit(session, dependency):
+    """The Verbal adapter does not preserve an event when its receipt refuses."""
+    project = session.get(Project, dependency.project_id)
+    session.execute(
+        text(
+            """
+            create function refuse_test_verbal_audit()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+                if new.action = 'record_verbal'
+                   and new.after_json->>'committed_date' = '2026-08-15' then
+                    raise exception 'verbal audit refused' using errcode = '23514';
+                end if;
+                return new;
+            end;
+            $$;
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            create trigger refuse_test_verbal_audit
+            before insert on audit_log
+            for each row execute function refuse_test_verbal_audit();
+            """
+        )
+    )
+
+    with pytest.raises(IntegrityError, match="verbal audit refused"):
+        record_verbal(
+            session,
+            dependency,
+            stated_party="AT&T",
+            description="AT&T said relocation will finish in August.",
+            conversation_date=date(2026, 5, 8),
+            committed_date=date(2026, 8, 15),
+            principal=RECORDER,
+        )
+
+    assert session.scalars(
+        select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+    ).all() == []
+    assert session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_id == dependency.id,
+            AuditLog.action == "record_verbal",
+        )
+    ).all() == []
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+
+    event = record_verbal(
+        session,
+        dependency,
+        stated_party="AT&T",
+        description="AT&T said relocation will finish in September.",
+        conversation_date=date(2026, 5, 9),
+        committed_date=date(2026, 9, 15),
+        principal=RECORDER,
+    )
+
+    assert event.id is not None
+    session.refresh(dependency)
+    assert dependency.committed_date == date(2026, 9, 15)
 
 
 def test_a_verbal_cannot_be_rewritten_or_deleted(session, dependency):

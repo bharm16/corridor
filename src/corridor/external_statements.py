@@ -171,67 +171,74 @@ def record_external_party_statement(
     if evidence is not None:
         _validate_evidence(session, evidence, project.id)
 
-    event = DependencyEvent(
-        project_id=project.id,
-        affected_external_org_id=affected.id,
-        stated_external_org_id=stated.id,
-        stated_party=party,
-        event_type=event_type,
-        source_kind=source_kind,
-        scope_mode=scope.mode,
-        timing_direction=(
-            _timing_direction(previous_timing, new_timing)
-            if previous_timing is not None
-            else None
-        ),
-        event_date=event_date,
-        description=description.strip(),
-        created_by=created_by.strip(),
-    )
-    session.add(event)
-    session.flush([event])
-    session.add(
-        DependencyEventTiming(
-            event_id=event.id,
-            kind="new",
-            text=new_timing.text.strip(),
-            precision=new_timing.precision,
-            start_date=new_timing.start_date,
-            end_date=new_timing.end_date,
+    # This command is the one atomic writer for every statement path. A
+    # database refusal after the event row exists must not leave the caller
+    # with an unusable transaction or an event missing its timing, scope,
+    # Evidence, or projection.
+    with session.begin_nested():
+        event = DependencyEvent(
+            project_id=project.id,
+            affected_external_org_id=affected.id,
+            stated_external_org_id=stated.id,
+            stated_party=party,
+            event_type=event_type,
+            source_kind=source_kind,
+            scope_mode=scope.mode,
+            timing_direction=(
+                _timing_direction(previous_timing, new_timing)
+                if previous_timing is not None
+                else None
+            ),
+            event_date=event_date,
+            description=description.strip(),
+            created_by=created_by.strip(),
         )
-    )
-    if previous_timing is not None:
+        session.add(event)
+        session.flush([event])
         session.add(
             DependencyEventTiming(
                 event_id=event.id,
-                kind="previous",
-                text=previous_timing.text.strip(),
-                precision=previous_timing.precision,
-                start_date=previous_timing.start_date,
-                end_date=previous_timing.end_date,
+                kind="new",
+                text=new_timing.text.strip(),
+                precision=new_timing.precision,
+                start_date=new_timing.start_date,
+                end_date=new_timing.end_date,
             )
         )
-    for dependency_id in dependency_ids:
-        session.add(DependencyEventScope(event_id=event.id, dependency_id=dependency_id))
-    if evidence is not None:
-        session.add(
-            EvidenceLink(
-                dependency_id=None,
-                event_id=event.id,
-                document_id=evidence.document_id,
-                page_no=evidence.page_no,
-                quote=evidence.quote.strip(),
-                verified=True,
+        if previous_timing is not None:
+            session.add(
+                DependencyEventTiming(
+                    event_id=event.id,
+                    kind="previous",
+                    text=previous_timing.text.strip(),
+                    precision=previous_timing.precision,
+                    start_date=previous_timing.start_date,
+                    end_date=previous_timing.end_date,
+                )
             )
-        )
-    session.flush()
+        for dependency_id in dependency_ids:
+            session.add(
+                DependencyEventScope(event_id=event.id, dependency_id=dependency_id)
+            )
+        if evidence is not None:
+            session.add(
+                EvidenceLink(
+                    dependency_id=None,
+                    event_id=event.id,
+                    document_id=evidence.document_id,
+                    page_no=evidence.page_no,
+                    quote=evidence.quote.strip(),
+                    verified=True,
+                )
+            )
+        session.flush()
 
-    # Imported lazily: projections read the event representation but do not
-    # participate in its write validation.
-    from corridor.dependency_events import project_committed_dates
+        # Imported lazily: projections read the event representation but do
+        # not participate in its write validation.
+        from corridor.dependency_events import project_committed_dates
 
-    project_committed_dates(session, dependency_ids)
-    session.flush()
+        project_committed_dates(session, dependency_ids)
+        session.flush()
     return event
 
 
