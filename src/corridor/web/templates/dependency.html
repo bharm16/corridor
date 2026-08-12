@@ -26,6 +26,19 @@
            font-size:.85rem; align-items:baseline; }
   .claim .src { color:var(--muted); min-width:19rem; font-size:.78rem; }
   .claim .q { font-family:ui-monospace, monospace; font-size:.76rem; color:#333; }
+  /* Settling a Dispute is one gesture per claim, taken on the row while
+     both pages are visible above it — never a screen of its own. */
+  .settle { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;
+            padding:.45rem .6rem; border-top:1px solid #fedf89;
+            background:#fffaeb; font-size:.82rem; }
+  .settle form { display:inline-flex; gap:.35rem; align-items:center; }
+  .settle input[type=text] { font:inherit; padding:.15rem .35rem;
+            border:1px solid var(--line); border-radius:3px; }
+  .settle button { font:inherit; font-size:.8rem; padding:.15rem .5rem;
+            border:1px solid var(--line); border-radius:3px; background:#fff;
+            cursor:pointer; }
+  .settle .lead { color:#7a2e0e; }
+  .pill.settled { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
   table { border-collapse:collapse; width:100%; }
   th { text-align:left; color:var(--muted); font-weight:500; font-size:.8rem;
        border-bottom:1px solid var(--line); padding:.3rem .5rem; }
@@ -146,6 +159,7 @@
         <span class="name">{{ f.name }}</span>
         <span class="value">{{ f.values|join('  ·  ') or '—' }}</span>
         {% if f.contradicted %}<span class="pill contra">sources disagree</span>{% endif %}
+        {% if f.settled %}<span class="pill settled">settled</span>{% endif %}
       </div>
       {% for a in f.assertions %}
         <div class="claim">
@@ -157,6 +171,27 @@
           <span class="q">{{ (a.quote or '')[:90] }}</span>
         </div>
       {% endfor %}
+      {% if f.contradicted %}
+        {# Both claims are listed directly above, so the choice is made
+           while looking at them rather than from memory. #}
+        <div class="settle">
+          <span class="lead">Which is right?</span>
+          {% for value in disputes[f.name].values %}
+            <form method="post"
+                  action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">
+              <input type="hidden" name="field_name" value="{{ f.name }}">
+              <input type="hidden" name="value" value="{{ value or '' }}">
+              <button>{{ value or 'nothing' }}</button>
+            </form>
+          {% endfor %}
+          <form method="post"
+                action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">
+            <input type="hidden" name="field_name" value="{{ f.name }}">
+            <input type="text" name="value" placeholder="or type the right value">
+            <button>settle</button>
+          </form>
+        </div>
+      {% endif %}
     </div>
   {% else %}
     <p class="muted">No assertions recorded.</p>

@@ -78,6 +78,8 @@ CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
 ADMIT_EVENT = "admit_event"
 ADMIT_DEPENDENCY = "admit_dependency"
+SETTLE_DISPUTE = "settle_dispute"
+DISMISS_DEPENDENCY = "dismiss_dependency"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -111,6 +113,8 @@ ACTIONS = frozenset(
         ADMIT_EVENT,
         AUTHORIZE_EVENT_ADMISSION,
         ADMIT_DEPENDENCY,
+        SETTLE_DISPUTE,
+        DISMISS_DEPENDENCY,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )
