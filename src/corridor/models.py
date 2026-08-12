@@ -145,6 +145,7 @@ EVENT_TYPES = (
     "status_change",
     "closure",
 )
+EVENT_SOURCE_KINDS = ("cited", "verbal")
 
 
 def is_claim(value: str | None) -> bool:
@@ -1038,6 +1039,12 @@ class ReportRun(Base):
     # One entry per dependency: the state the report was published against.
     snapshot_json: Mapped[dict] = mapped_column(JSONB)
     output_path: Mapped[str | None] = mapped_column(Text)
+    # Document-only reports are a separate comparison lineage: comparing one
+    # against the ordinary report would leak a verbal date through its old
+    # snapshot into an otherwise citation-only surface.
+    document_only: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
 
 
 class LegacyLedgerArchive(Base):
@@ -1214,6 +1221,16 @@ class DependencyEvent(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
     event_type: Mapped[str] = mapped_column(_enum(*EVENT_TYPES, name="event_type"))
+    # A source is declared rather than inferred from an absent EvidenceLink:
+    # missing Evidence is how a defect looks, not how a verbal looks.
+    source_kind: Mapped[str] = mapped_column(
+        _enum(*EVENT_SOURCE_KINDS, name="event_source_kind"),
+        default="cited",
+        server_default="cited",
+    )
+    # The party as the recorder named it on the call. Cited events keep this
+    # null because their stated party remains in the source document.
+    stated_party: Mapped[str | None] = mapped_column(Text)
     # The date the event happened, which is not the date it was recorded.
     event_date: Mapped[date | None] = mapped_column(Date)
     # What the External Party said it would deliver by, when the event

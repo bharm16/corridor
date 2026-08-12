@@ -225,14 +225,34 @@
   </div>
 
   <h2>Events</h2>
+  <form method="post" action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/verbal">
+    <p class="muted" style="font-size:.85rem">
+      Record a verbal — what the party told you on a call. It is appended under your identity,
+      never cited as a document.
+    </p>
+    <input name="stated_party" value="{{ view.org_name or '' }}" placeholder="party you spoke to" required>
+    <input name="conversation_date" type="date" required>
+    <input name="committed_date" type="date" required>
+    <input name="description" placeholder="what they said" required>
+    <button type="submit">record verbal</button>
+  </form>
   {% if view.events %}
     <table>
-      <thead><tr><th>Date</th><th>Type</th><th>Description</th><th>By</th></tr></thead>
+      <thead><tr><th>Said</th><th>Type</th><th>Source</th><th>Party</th><th>Description</th><th>By</th></tr></thead>
       <tbody>
         {% for e in view.events %}
           <tr>
             <td>{{ e.event_date or '—' }}</td>
             <td>{{ e.event_type }}</td>
+            <td>
+              {% if e.source_kind == 'verbal' %}
+                <span class="pill contra">Verbal</span>
+                <span class="muted">heard by {{ e.created_by }} on {{ e.event_date }}</span>
+              {% else %}
+                <span class="muted">Cited statement</span>
+              {% endif %}
+            </td>
+            <td>{{ e.stated_party or view.org_name or '—' }}</td>
             <td>{{ e.description }}</td>
             <td class="muted">{{ e.created_by }}</td>
           </tr>

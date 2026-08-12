@@ -35,6 +35,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.dependency_events import latest_committed_events, verbal_attribution
 from corridor.exceptions import (
     Evaluation,
     Thresholds,
@@ -66,7 +67,8 @@ SENTENCE_SCHEMA = {
                 "properties": {
                     "text": {"type": "string"},
                     # References into the citables the prompt supplied —
-                    # E<n> evidence, A<n> assertions, X<n> exceptions.
+                    # E<n> evidence, A<n> assertions, V<n> verbals, X<n>
+                    # exceptions.
                     "cites": {"type": "array", "items": {"type": "string"}},
                 },
             },
@@ -90,6 +92,7 @@ class Citable:
     quote: str | None = None
     page_text: str | None = None
     text_source: str | None = None
+    dependency_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -276,13 +279,29 @@ def _assemble(
     """
     citables: list[Citable] = []
     floor: list[str] = []
-    counters = {"E": 0, "A": 0, "X": 0}
+    counters = {"E": 0, "A": 0, "V": 0, "X": 0}
+    committed_events = latest_committed_events(
+        session, (dependency.id for dependency in dependencies)
+    )
 
     def ref(prefix: str) -> str:
         counters[prefix] += 1
         return f"{prefix}{counters[prefix]}"
 
     for dependency in dependencies:
+        committed_event = committed_events.get(dependency.id)
+        if attribution := verbal_attribution(committed_event):
+            citables.append(
+                Citable(
+                    ref=ref("V"),
+                    kind="verbal",
+                    text=(
+                        f"{dependency.ref_code}: {attribution}. "
+                        f"{committed_event.description}"
+                    ),
+                    dependency_id=dependency.id,
+                )
+            )
         links = session.execute(
             select(EvidenceLink, DocPage)
             .outerjoin(
@@ -348,13 +367,21 @@ def _assemble(
 
 
 def _user_message(dependencies: list[Dependency], citables: list[Citable]) -> str:
+    verbal_sources = {
+        citable.dependency_id: citable
+        for citable in citables
+        if citable.kind == "verbal" and citable.dependency_id is not None
+    }
     lines = []
     for dependency in dependencies:
+        committed = str(dependency.committed_date or "—")
+        if verbal := verbal_sources.get(dependency.id):
+            committed = f"{committed} ({verbal.text}; cite [{verbal.ref}])"
         lines.append(f"Record {dependency.ref_code}: {dependency.title}.")
         lines.append(
             f"  Status {dependency.status};"
             f" resolution strategy {dependency.resolution_strategy or 'none asserted'};"
-            f" committed {dependency.committed_date or '—'};"
+            f" committed {committed};"
             f" needed {dependency.need_date or '—'}."
         )
     lines.append("")

@@ -1,6 +1,6 @@
 """The weekly readiness report, and the rule that no cell is bare.
 
-Every published figure is one of two things (ADR-0003):
+Every published figure is one of four things (ADR-0003, ADR-0033):
 
 - an **Assertion** — traced to a quote on a page, shown as `[D12 p.4]`
 - a **Derivation** — traced to a computation over cited records, carrying
@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
+from corridor.dependency_events import latest_committed_events
 from corridor.exceptions import (
     RULESET_VERSION,
     Evaluation,
@@ -33,6 +34,7 @@ from corridor.operative_support import resolve_operative_support
 from corridor.ledger import Evidence, LedgerRow, browse
 from corridor.models import (
     Dependency,
+    DependencyEvent,
     Document,
     EvidenceLink,
     Milestone,
@@ -125,11 +127,39 @@ class WorkDecision:
         return "decisions: " + ", ".join(str(i) for i in self.decision_ids)
 
 
+@dataclass(frozen=True)
+class Verbal:
+    """What an External Party told a named recorder, not a document claim."""
+
+    event_id: int
+    heard_by: str
+    heard_on: date
+    stated_party: str
+
+    @property
+    def resolves(self) -> bool:
+        return bool(self.event_id and self.heard_by and self.stated_party)
+
+    @property
+    def marker(self) -> str:
+        return (
+            f"[verbal: {self.stated_party} told {self.heard_by} "
+            f"{self.heard_on}]"
+        )
+
+    @property
+    def drill(self) -> str:
+        return (
+            f"verbal event {self.event_id}: {self.stated_party} told "
+            f"{self.heard_by} on {self.heard_on}"
+        )
+
+
 @dataclass
 class Cell:
     label: str
     value: str
-    provenance: Assertion | Derivation | WorkDecision | None = None
+    provenance: Assertion | Derivation | WorkDecision | Verbal | None = None
 
 
 @dataclass
@@ -149,6 +179,11 @@ class Report:
     sections: list[Section] = field(default_factory=list)
     diff: Diff | None = None
     coverage_note: str = ""
+    document_only: bool = False
+    # The exact date surface this report published. Its ReportRun snapshot
+    # must use this map too; reading the Dependency again can leak a verbal
+    # date into a document-only report's later change history.
+    committed_dates: dict[int, date | None] = field(default_factory=dict)
     # The evaluation this report published, so the export and the recorded
     # run describe the same reading rather than taking their own.
     evaluation: Evaluation | None = None
@@ -183,15 +218,74 @@ def _derived(label: str, value: str, records, *, scope: str = "") -> Cell:
 
 
 def build_report(
-    session: Session, project_id: int, *, today: date | None = None
+    session: Session,
+    project_id: int,
+    *,
+    today: date | None = None,
+    document_only: bool = False,
 ) -> Report:
     today = today or datetime.now(timezone.utc).date()
+    dependency_ids = session.scalars(
+        select(Dependency.id).where(
+            Dependency.project_id == project_id,
+            Dependency.dismissed_at.is_(None),
+        )
+    ).all()
+    latest_events = latest_committed_events(
+        session,
+        dependency_ids,
+    )
+    verified_cited_event_ids = _verified_cited_event_ids(session, dependency_ids)
+    if document_only:
+        # Filter before selecting the newest event, not afterwards: the
+        # newest cited statement may lack a verified event citation while an
+        # earlier cited commitment remains publishable.
+        committed_events = latest_committed_events(
+            session,
+            dependency_ids,
+            source_kind="cited",
+            event_ids=verified_cited_event_ids,
+        )
+    else:
+        # A cited event that cannot point to its own verified Evidence cannot
+        # lend its date to a report. A Verbal has its own explicit provenance.
+        committed_events = {
+            dependency_id: event
+            for dependency_id, event in latest_events.items()
+            if event.source_kind == "verbal" or event.id in verified_cited_event_ids
+        }
+    stored_committed_dates = dict(
+        session.execute(
+            select(Dependency.id, Dependency.committed_date).where(
+                Dependency.id.in_(dependency_ids)
+            )
+        ).all()
+    )
+    committed_dates = {
+        dependency_id: (
+            committed_events[dependency_id].committed_date
+            if dependency_id in committed_events
+            # A legacy projection with no event can retain its pre-event
+            # field provenance. A projection with an unsupported cited event
+            # cannot: it must wait for the event's own verified Evidence.
+            else None
+            if document_only or dependency_id in latest_events
+            else stored_committed_dates.get(dependency_id)
+        )
+        for dependency_id in dependency_ids
+    }
+    unsupported_committed_dependencies = set(latest_events) - set(committed_events)
     # One evaluation for the whole report. `today` used to reach two
     # sections while every exception in the same report was computed
     # against `date.today()` by a separate call, so a report built for a
     # stated date disagreed with itself about how many days overdue a
     # record was.
-    evaluation = evaluate_project(session, project_id, today=today)
+    evaluation = evaluate_project(
+        session,
+        project_id,
+        today=today,
+        committed_dates=committed_dates,
+    )
     project = session.get(Project, project_id)
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
     by_id = {r.dependency.id: r for r in rows}
@@ -225,18 +319,57 @@ def build_report(
                 "% with verified evidence", f"{pct:.1f}%", ids, scope=EMPTY_LEDGER
             ),
         ],
-        diff=diff_since_last(session, project_id, evaluation=evaluation),
+        diff=diff_since_last(
+            session,
+            project_id,
+            evaluation=evaluation,
+            committed_dates=committed_dates,
+            document_only=document_only,
+        ),
         coverage_note=_coverage_note(session, project_id, len(ids)),
+        document_only=document_only,
+        committed_dates=committed_dates,
         evaluation=evaluation,
     )
 
+    if not document_only:
+        dated_rows = [r for r in rows if committed_dates.get(r.dependency.id)]
+        verbal_rows = [
+            r
+            for r in dated_rows
+            if committed_events.get(r.dependency.id) is not None
+            and committed_events[r.dependency.id].source_kind == "verbal"
+        ]
+        report.summary.append(
+            _derived(
+                "Verbal-backed dates",
+                f"{len(verbal_rows)} of {len(dated_rows)} dates",
+                [r.dependency.id for r in verbal_rows]
+                or [r.dependency.id for r in dated_rows],
+                scope=EMPTY_LEDGER,
+            )
+        )
+
     report.sections = [
         _milestone_rollup(session, project_id, rows),
-        _critical_items(session, rows),
+        _critical_items(
+            session,
+            rows,
+            committed_events=committed_events,
+            committed_dates=committed_dates,
+            unsupported_committed_dependencies=unsupported_committed_dependencies,
+            document_only=document_only,
+        ),
         _coordination(session, rows),
         _exceptions_summary(evaluation),
-        _changes_since_last(report.diff),
-        _aging(rows),
+        _changes_since_last(report.diff, committed_events=committed_events),
+        _aging(
+            session,
+            rows,
+            committed_events=committed_events,
+            committed_dates=committed_dates,
+            document_only=document_only,
+        ),
         _appendix(rows),
     ]
     return report
@@ -336,7 +469,15 @@ def _milestone_rollup(
     return section
 
 
-def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
+def _critical_items(
+    session: Session,
+    rows: list[LedgerRow],
+    *,
+    committed_events: dict[int, DependencyEvent],
+    committed_dates: dict[int, date | None],
+    unsupported_committed_dependencies: set[int],
+    document_only: bool,
+) -> Section:
     """The critical records, nearest need first (ADR-0010, #116).
 
     Criticality is the filter that scopes the section, never a weight: a
@@ -392,9 +533,14 @@ def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
     resolved = resolve_operative_support(
         session, [r.dependency.id for r in ranked]
     )
+    citations = _event_citations(
+        session,
+        [committed_events[r.dependency.id] for r in ranked if r.dependency.id in committed_events],
+    )
     for row in ranked:
         dependency_id = row.dependency.id
         support = resolved.get(dependency_id)
+        committed_event = committed_events.get(dependency_id)
 
         # Field-exact provenance (#178): each cell carries what backs its
         # own field, never a neighbour's citation. One record-level quote
@@ -424,6 +570,44 @@ def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
                 )
             return record_fallback
 
+        def committed_cell() -> Cell:
+            committed_date = committed_dates.get(dependency_id)
+            if committed_date is None:
+                # A row that never had an event retains field-exact support
+                # for its empty legacy value. A date-bearing cited event
+                # without its own verified Evidence is different: it must
+                # not borrow that field support to look publishable.
+                provenance = (
+                    record_fallback
+                    if document_only
+                    or dependency_id in unsupported_committed_dependencies
+                    else cited_field("committed_date")
+                )
+                return Cell("Committed", "—", provenance)
+            if committed_event is None:
+                return Cell(
+                    "Committed", committed_date.isoformat(), cited_field("committed_date")
+                )
+            if committed_event.source_kind == "verbal":
+                return Cell(
+                    "Committed",
+                    committed_date.isoformat(),
+                    Verbal(
+                        committed_event.id,
+                        committed_event.created_by,
+                        committed_event.event_date,
+                        committed_event.stated_party or "unstated party",
+                    ),
+                )
+            citation = citations.get(committed_event.id)
+            if citation is None:
+                return Cell("Committed", "—", record_fallback)
+            return Cell(
+                "Committed",
+                committed_date.isoformat(),
+                citation,
+            )
+
         # The row's exceptions as facts, each with its own quantity — no
         # cross-rule "worst" pick, which is the device ADR-0010 forbids.
         listed = ", ".join(
@@ -440,13 +624,7 @@ def _critical_items(session: Session, rows: list[LedgerRow]) -> Section:
                     row.org_name or "—",
                     cited_field("external_org"),
                 ),
-                Cell(
-                    "Committed",
-                    row.dependency.committed_date.isoformat()
-                    if row.dependency.committed_date
-                    else "—",
-                    cited_field("committed_date"),
-                ),
+                committed_cell(),
                 # The Need Date is derived from the Milestone the record
                 # serves — a property of the project, never a document
                 # claim (CONTEXT.md) — so no quote may ever back it.
@@ -513,7 +691,11 @@ def _exceptions_summary(evaluation: Evaluation) -> Section:
     return section
 
 
-def _changes_since_last(diff: Diff | None) -> Section:
+def _changes_since_last(
+    diff: Diff | None,
+    *,
+    committed_events: dict[int, DependencyEvent],
+) -> Section:
     section = Section(
         "Changes since last report",
         columns=["Ref", "Change", "Detail"],
@@ -546,6 +728,17 @@ def _changes_since_last(diff: Diff | None) -> Section:
                 RULESET_VERSION, scope=f"report run {diff.previous_run_id}"
             )
         )
+        event = committed_events.get(change.dependency_id)
+        date_change = change.kind == "slipped" or change.detail.startswith(
+            "first committed date:"
+        )
+        if date_change and event is not None and event.source_kind == "verbal":
+            provenance = Verbal(
+                event.id,
+                event.created_by,
+                event.event_date,
+                event.stated_party or "unstated party",
+            )
         section.rows.append(
             [
                 Cell("Ref", change.ref_code, provenance),
@@ -620,7 +813,14 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
     return section
 
 
-def _aging(rows: list[LedgerRow]) -> Section:
+def _aging(
+    session: Session,
+    rows: list[LedgerRow],
+    *,
+    committed_events: dict[int, DependencyEvent],
+    committed_dates: dict[int, date | None],
+    document_only: bool,
+) -> Section:
     """Days overdue as the engine counted them, not as the report recounts.
 
     The number is the OVERDUE fact's own `quantity_days` (ADR-0010). It
@@ -628,28 +828,45 @@ def _aging(rows: list[LedgerRow]) -> Section:
     never saw — two numbers for one fact whenever the two clocks differed.
     """
     overdue = [
-        (r, e)
+        (r, e, committed_dates.get(r.dependency.id))
         for r in rows
         for e in r.exceptions
-        if e.rule == "OVERDUE" and r.dependency.committed_date
+        if e.rule == "OVERDUE"
+        and committed_dates.get(r.dependency.id)
     ]
-    overdue.sort(key=lambda pair: pair[0].dependency.committed_date)
+    overdue.sort(key=lambda pair: pair[2])
 
     section = Section(
         "Aging",
         columns=["Ref", "External party", "Committed", "Days overdue"],
         empty_message="Nothing is overdue.",
     )
-    for row, overdue_fact in overdue:
+    citations = _event_citations(session, list(committed_events.values()))
+    for row, overdue_fact, committed_date in overdue:
+        event = committed_events.get(row.dependency.id)
+        provenance = (
+            Verbal(
+                event.id,
+                event.created_by,
+                event.event_date,
+                event.stated_party or "unstated party",
+            )
+            if event is not None and event.source_kind == "verbal"
+            else citations.get(event.id)
+            if event is not None
+            else Derivation(RULESET_VERSION, (row.dependency.id,))
+        )
+        if provenance is None:
+            provenance = Derivation(RULESET_VERSION, (row.dependency.id,))
         days = overdue_fact.quantity_days
         section.rows.append(
             [
                 _derived("Ref", row.dependency.ref_code, (row.dependency.id,)),
                 _derived("External party", row.org_name or "—", (row.dependency.id,)),
-                _derived(
+                Cell(
                     "Committed",
-                    row.dependency.committed_date.isoformat(),
-                    (row.dependency.id,),
+                    committed_date.isoformat(),
+                    provenance,
                 ),
                 _derived("Days overdue", str(days), (row.dependency.id,)),
             ]
@@ -702,6 +919,50 @@ def _as_assertion(evidence: Evidence | None) -> Assertion | None:
     )
 
 
+def _event_citations(
+    session: Session, events: list[DependencyEvent]
+) -> dict[int, Assertion]:
+    """One verified page citation for each cited event a report prints."""
+    event_ids = [event.id for event in events if event.source_kind == "cited"]
+    if not event_ids:
+        return {}
+    citations: dict[int, Assertion] = {}
+    for link, document in session.execute(
+        select(EvidenceLink, Document)
+        .join(Document, EvidenceLink.document_id == Document.id)
+        .where(
+            EvidenceLink.event_id.in_(event_ids),
+            EvidenceLink.verified.is_(True),
+        )
+        .order_by(EvidenceLink.event_id, EvidenceLink.id)
+    ).all():
+        citations.setdefault(
+            link.event_id,
+            Assertion(document.id, document.filename, link.page_no, link.quote),
+        )
+    return citations
+
+
+def _verified_cited_event_ids(
+    session: Session, dependency_ids: list[int]
+) -> set[int]:
+    """Cited event ids whose own statement has verified Evidence."""
+    if not dependency_ids:
+        return set()
+    return set(
+        session.scalars(
+            select(EvidenceLink.event_id)
+            .join(DependencyEvent, EvidenceLink.event_id == DependencyEvent.id)
+            .where(
+                DependencyEvent.dependency_id.in_(dependency_ids),
+                DependencyEvent.source_kind == "cited",
+                EvidenceLink.verified.is_(True),
+            )
+            .distinct()
+        )
+    )
+
+
 def assert_no_bare_cells(report: Report) -> None:
     """No cell is bare, and no Derivation drills through to nothing.
 
@@ -714,7 +975,7 @@ def assert_no_bare_cells(report: Report) -> None:
         for c in report.cells
         if c.provenance is None
         or (
-            isinstance(c.provenance, (Derivation, WorkDecision))
+            isinstance(c.provenance, (Derivation, WorkDecision, Verbal))
             and not c.provenance.resolves
         )
     ]
@@ -735,6 +996,8 @@ def render(report: Report) -> str:
             kind = "assertion"
         elif isinstance(p, WorkDecision):
             kind = "decision"
+        elif isinstance(p, Verbal):
+            kind = "verbal"
         else:
             kind = "derivation"
         title = html.escape(p.quote if isinstance(p, Assertion) else p.drill)
@@ -771,6 +1034,12 @@ def render(report: Report) -> str:
         if report.coverage_note
         else ""
     )
+    document_only = (
+        '<p class="coverage">Document-only report: verbal statements are excluded; '
+        "Committed Dates and date-based exceptions use verified cited events only.</p>"
+        if report.document_only
+        else ""
+    )
     # The date the figures were counted from, not the moment the file was
     # written. They are usually the same day and the header said only the
     # second, so a report built for a stated date printed today's date over
@@ -797,6 +1066,7 @@ def render(report: Report) -> str:
  .stat .k {{ color: var(--muted); }}
  .coverage {{ background:#fffaeb; border:1px solid #fedf89; color: var(--warn);
              padding:.5rem .7rem; border-radius:4px; font-size:.85rem; }}
+ .verbal {{ background:#eff8ff; }}
  .note {{ color: var(--muted); font-size: .82rem; margin: .2rem 0 .6rem; }}
  .empty {{ color: var(--muted); font-style: italic; }}
  table {{ border-collapse: collapse; width: 100%; margin-bottom: .5rem; }}
@@ -814,12 +1084,14 @@ def render(report: Report) -> str:
 <h1>Readiness — {html.escape(report.project_name)}</h1>
 <p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC{evaluated} · ruleset {report.ruleset_version}</p>
 {coverage}
+{document_only}
 {summary}
 {"".join(section_html(s) for s in report.sections)}
 <footer>
-Every figure is an Assertion (a quote on a cited page) or a Derivation
-(a computation over cited records). Hover any marker for its source.
-No figure in this report is uncited.
+Every figure is an Assertion (a quote on a cited page), a Derivation
+(a computation over cited records), a Work Decision, or a Verbal heard by a
+named recorder on a stated date. Hover any marker for its source.
+No figure in this report is bare.
 </footer>
 """
 
@@ -829,7 +1101,7 @@ def today() -> date:
 
 
 def main(argv: list[str]) -> int:
-    """`make report ARGS="<slug>"` — build, export, and record a run."""
+    """`make report ARGS="<slug> [--document-only]"` — publish one report."""
     import sys
     from pathlib import Path
 
@@ -837,8 +1109,16 @@ def main(argv: list[str]) -> int:
     from corridor.db import Session as SessionFactory
     from corridor.export import to_pdf, to_xlsx
 
-    slug = argv[0] if argv else "nhhip-3c2"
-    out = Path("out/report.html")
+    arguments = list(argv)
+    document_only = "--document-only" in arguments
+    arguments = [argument for argument in arguments if argument != "--document-only"]
+    if len(arguments) > 1:
+        print("usage: report [<project-slug>] [--document-only]", file=sys.stderr)
+        return 2
+    slug = arguments[0] if arguments else "nhhip-3c2"
+    out = Path(
+        "out/report-document-only.html" if document_only else "out/report.html"
+    )
     with SessionFactory() as session:
         project = session.scalars(
             select(Project).where(Project.slug == slug)
@@ -847,15 +1127,20 @@ def main(argv: list[str]) -> int:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
-        report = build_report(session, project.id)
+        report = build_report(
+            session, project.id, document_only=document_only
+        )
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render(report))
-        to_xlsx(
-            session,
-            project.id,
-            Path("out/ledger.xlsx"),
-            evaluation=report.evaluation,
-        )
+        xlsx = ""
+        if not document_only:
+            to_xlsx(
+                session,
+                project.id,
+                Path("out/ledger.xlsx"),
+                evaluation=report.evaluation,
+            )
+            xlsx = " · out/ledger.xlsx"
         try:
             to_pdf(out.read_text(), Path("out/report.pdf"))
             pdf = " · out/report.pdf"
@@ -867,11 +1152,13 @@ def main(argv: list[str]) -> int:
             project.id,
             output_path=str(out),
             evaluation=report.evaluation,
+            committed_dates=report.committed_dates,
+            document_only=report.document_only,
         )
         session.commit()
 
-    print(f"{out}{pdf} · out/ledger.xlsx")
-    print(f"{len(report.cells)} cells, every one cited · ruleset {RULESET_VERSION}")
+    print(f"{out}{pdf}{xlsx}")
+    print(f"{len(report.cells)} cells, every one sourced · ruleset {RULESET_VERSION}")
     if report.coverage_note:
         print(f"note: {report.coverage_note}")
     return 0

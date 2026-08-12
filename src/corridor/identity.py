@@ -33,6 +33,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     Document,
+    Project,
     is_placeholder_party,
 )
 
@@ -183,3 +184,16 @@ def party_matches(session: Session, dependency: Dependency, org: str) -> bool:
     names = [external.name, *(external.aliases or [])]
     wanted = normalize_party(org)
     return any(normalize_party(n) == wanted for n in names if n)
+
+
+def is_project_side_party(project: Project, party: str) -> bool:
+    """Whether a stated party is declared to be the project's own side.
+
+    The configuration is an explicit boundary, not a resemblance check: an
+    internal action item cannot become an External Party commitment because a
+    human happened to type it into a phone-call form.
+    """
+    return any(
+        party.casefold() == str(own_party).casefold()
+        for own_party in (project.project_side_parties or [])
+    )

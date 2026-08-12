@@ -25,12 +25,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor import dependency_events
+from corridor.dependency_events import project_committed_date
 from corridor import identity
 from corridor import policy
 from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    EvidenceLink,
     EventAdmissionOutcome,
     PolicyRun,
     Project,
@@ -167,6 +170,7 @@ def run_event_admission(
         )
         session.add(event)
         session.flush([event])
+        _link_event_evidence(session, dependency, event, candidate)
 
         candidate.state = "accepted"
         candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -194,7 +198,7 @@ def run_event_admission(
         touched.add(dependency.id)
 
     for dependency_id in sorted(touched):
-        _project_committed_date(session, dependency_id)
+        project_committed_date(session, dependency_id)
 
     session.flush()
     return EventAdmissionResult(
@@ -270,7 +274,7 @@ def _evaluate(
     org = str(fields.get("external_org") or "").strip()
     if not org:
         return "party_unstated"
-    if _is_project_side(project, org):
+    if identity.is_project_side_party(project, org):
         # The project's own engineer taking an action item is a Next
         # Action's territory, never an External Party's commitment
         # (ADR-0026). Adjudication may still record it by hand.
@@ -280,43 +284,6 @@ def _evaluate(
         return "party_mismatch"
 
     return dependency, fields, event_date, committed_date
-
-
-def _is_project_side(project: Project, org: str) -> bool:
-    stated = project.project_side_parties or []
-    return any(org.casefold() == str(p).casefold() for p in stated)
-
-
-def _project_committed_date(session: Session, dependency_id: int) -> None:
-    """The Dependency's Committed Date, projected from its events.
-
-    The most recently *stated* commitment wins — ordered by when the
-    party said it, not by which promised date is furthest out, because a
-    party pulling a date earlier is as real as a party slipping it and
-    both are the same act: a newer statement replacing an older one. The
-    projection is the same shape a Work Decision's current values take:
-    queryable, recomputable from the appended events beneath it, so a
-    divergence is a defect a consistency check catches rather than a
-    second source of truth.
-    """
-    latest = session.scalars(
-        select(DependencyEvent)
-        .where(
-            DependencyEvent.dependency_id == dependency_id,
-            DependencyEvent.event_type.in_(("commitment", "slip")),
-            DependencyEvent.committed_date.is_not(None),
-        )
-        .order_by(
-            DependencyEvent.event_date.desc().nulls_last(),
-            DependencyEvent.id.desc(),
-        )
-        .limit(1)
-    ).first()
-    if latest is None:
-        return
-    dependency = session.get(Dependency, dependency_id)
-    if dependency is not None:
-        dependency.committed_date = latest.committed_date
 
 
 def _parse_date(value: object) -> date | None:
@@ -346,6 +313,7 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
 
     paths = (
         ("corridor.event_admission", Path(__file__)),
+        ("corridor.dependency_events", Path(dependency_events.__file__)),
         ("corridor.audit", Path(audit.__file__)),
         ("corridor.identity", Path(identity.__file__)),
         ("corridor.policy", Path(policy.__file__)),
@@ -478,7 +446,7 @@ def _statement_attachable(
     if raw_committed_date and _parse_date(raw_committed_date) is None:
         return False
     org = str(fields.get("external_org") or "").strip()
-    if org and project is not None and _is_project_side(project, org):
+    if org and project is not None and identity.is_project_side_party(project, org):
         return False
     return True
 
@@ -572,7 +540,7 @@ def attach_statement(
         raise StatementUnplaceable("a stated date could not be read")
 
     org = str(fields.get("external_org") or "").strip()
-    if org and _is_project_side(project, org):
+    if org and identity.is_project_side_party(project, org):
         raise StatementUnplaceable(
             f"{org} is the project's own side — an action item, never an "
             "External Party's commitment"
@@ -588,6 +556,7 @@ def attach_statement(
     )
     session.add(event)
     session.flush([event])
+    _link_event_evidence(session, dependency, event, candidate)
 
     candidate.state = "accepted"
     candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -603,6 +572,37 @@ def attach_statement(
             "event_type": event_type,
         },
     )
-    _project_committed_date(session, dependency.id)
+    project_committed_date(session, dependency.id)
     session.flush()
     return event
+
+
+def _link_event_evidence(
+    session: Session,
+    dependency: Dependency,
+    event: DependencyEvent,
+    candidate: Candidate,
+) -> None:
+    """Carry a cited event's verified page evidence onto the event itself."""
+    citations = (candidate.payload_json or {}).get("citations", [])
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        document_id = citation.get("document_id")
+        page_no = citation.get("page")
+        quote = citation.get("quote")
+        if not isinstance(document_id, int) or not isinstance(page_no, int):
+            continue
+        if not isinstance(quote, str) or not quote:
+            continue
+        session.add(
+            EvidenceLink(
+                dependency_id=dependency.id,
+                event_id=event.id,
+                document_id=document_id,
+                page_no=page_no,
+                quote=quote,
+                verified=bool(citation.get("verified")),
+            )
+        )
+    session.flush()

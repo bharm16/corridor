@@ -383,6 +383,8 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
             "id": event.id,
             "dependency_id": dependency.id,
             "event_type": "commitment",
+            "source_kind": "cited",
+            "stated_party": None,
             "event_date": "2026-08-02",
             "committed_date": None,
             "description": "AT&T committed to relocate by August 15",
