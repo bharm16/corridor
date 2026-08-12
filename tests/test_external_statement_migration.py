@@ -489,6 +489,9 @@ def _remove_late_a217_immutability_guard(connection) -> None:
             drop function if exists reject_external_party_statement_evidence_mutation();
             drop function if exists reject_external_party_statement_mutation();
             drop function if exists reject_external_party_statement_truncate();
+            revoke all privileges on table projects, legacy_ledger_archives,
+                dependency_events, dependency_event_scopes, dependency_event_timings,
+                evidence_links from corridor_statement_retirement;
             """
         )
     )
@@ -1181,6 +1184,13 @@ def test_attributable_storage_repairs_a217_applied_before_late_guards():
                     expected_revision=_ATTRIBUTABLE_STORAGE_REVISION,
                     expected_216_data=base_snapshot.content,
                 )
+                assert connection.scalar(
+                    text(
+                        "select has_table_privilege("
+                        "'corridor_statement_retirement', "
+                        "'dependency_events', 'delete')"
+                    )
+                ) is True
         finally:
             engine.dispose()
 

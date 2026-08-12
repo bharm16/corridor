@@ -224,6 +224,11 @@ def upgrade() -> None:
         create trigger external_party_statement_timings_are_immutable
         before update or delete on dependency_event_timings
         for each row execute function reject_external_party_statement_child_mutation();
+
+        grant usage on schema public to corridor_statement_retirement;
+        grant select, delete on table projects, legacy_ledger_archives,
+            dependency_events, dependency_event_scopes, dependency_event_timings,
+            evidence_links to corridor_statement_retirement;
         """
     )
     op.execute(
