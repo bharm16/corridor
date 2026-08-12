@@ -35,6 +35,7 @@ from corridor.models import (
     PolicyRun,
     Project,
 )
+from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v1"
@@ -385,3 +386,149 @@ def _canonical_policy(project: Project) -> dict:
     }
 
 
+
+
+class StatementUnplaceable(ValueError):
+    """This Candidate cannot become an event on the named record."""
+
+
+def waiting_statements(session: Session, project_id: int) -> list[dict]:
+    """The statements the machine could not place, and why.
+
+    One visible pile rather than a lane: a dated promise from a meeting
+    is exactly what this product exists to catch, and losing it silently
+    is worse than showing a short list (ADR-0032). The reason comes from
+    the newest run that abstained on the Candidate, in the machine's own
+    vocabulary — the caller renders it in the reviewer's.
+    """
+    reasons = dict(
+        session.execute(
+            select(
+                EventAdmissionOutcome.candidate_id,
+                EventAdmissionOutcome.reason,
+            )
+            .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+            .where(
+                PolicyRun.project_id == project_id,
+                EventAdmissionOutcome.outcome == OUTCOME_ABSTAINED,
+            )
+            .order_by(EventAdmissionOutcome.id.asc())
+        ).all()
+    )
+    candidates = session.scalars(
+        select(Candidate)
+        .where(
+            Candidate.project_id == project_id,
+            Candidate.kind == "event",
+            Candidate.state == "pending",
+        )
+        .order_by(Candidate.id)
+    ).all()
+    waiting = []
+    for candidate in candidates:
+        fields = (candidate.payload_json or {}).get("fields", {})
+        waiting.append(
+            {
+                "candidate": candidate,
+                "reason": reasons.get(candidate.id),
+                "event_type": fields.get("event_type"),
+                "external_org": fields.get("external_org"),
+                "event_date": fields.get("event_date"),
+                "committed_date": fields.get("committed_date"),
+                "conflict_ref": fields.get("conflict_ref"),
+                "description": fields.get("description"),
+            }
+        )
+    return waiting
+
+
+def attach_statement(
+    session: Session,
+    candidate: Candidate,
+    dependency: Dependency,
+    *,
+    principal: HumanPrincipal,
+) -> DependencyEvent:
+    """Put an unplaced statement on the record a human says it belongs to.
+
+    Acceptance builds a Dependency and refuses an event outright; this is
+    the gesture that message has always pointed at. What the policy could
+    not prove — which record the statement names — a human supplies by
+    naming it, and everything the policy would still have refused is
+    refused here too: an unparseable date, a type outside the policy, and
+    above all the masquerade boundary, because a project-side actor
+    stating a delivery date is an internal action item and never an
+    External Party's commitment (ADR-0026).
+    """
+    attacher = require_human_principal(principal)
+    if candidate.kind != "event":
+        raise StatementUnplaceable(
+            f"candidate {candidate.id} is a {candidate.kind}; only a "
+            "statement attaches to a record"
+        )
+    if candidate.state != "pending":
+        raise StatementUnplaceable(
+            f"candidate {candidate.id} was already {candidate.state}"
+        )
+    if candidate.project_id != dependency.project_id:
+        raise StatementUnplaceable(
+            "a statement cannot attach to another project's record"
+        )
+    lock_project(session, dependency.project_id)
+
+    project = session.get(Project, dependency.project_id)
+    fields = (candidate.payload_json or {}).get("fields", {})
+    event_type = fields.get("event_type")
+    if event_type not in ADMISSIBLE_EVENT_TYPES:
+        raise StatementUnplaceable(
+            f"{event_type!r} is not one of {', '.join(ADMISSIBLE_EVENT_TYPES)}"
+        )
+
+    raw_event_date = fields.get("event_date")
+    raw_committed_date = fields.get("committed_date")
+    if not raw_event_date and not raw_committed_date:
+        raise StatementUnplaceable("a statement must carry a date")
+    event_date = _parse_date(raw_event_date) if raw_event_date else None
+    committed_date = (
+        _parse_date(raw_committed_date) if raw_committed_date else None
+    )
+    if (raw_event_date and event_date is None) or (
+        raw_committed_date and committed_date is None
+    ):
+        raise StatementUnplaceable("a stated date could not be read")
+
+    org = str(fields.get("external_org") or "").strip()
+    if org and _is_project_side(project, org):
+        raise StatementUnplaceable(
+            f"{org} is the project's own side — an action item, never an "
+            "External Party's commitment"
+        )
+
+    event = DependencyEvent(
+        dependency_id=dependency.id,
+        event_type=event_type,
+        event_date=event_date,
+        committed_date=committed_date,
+        description=str(fields.get("description") or ""),
+        created_by=attacher.subject,
+    )
+    session.add(event)
+    session.flush([event])
+
+    candidate.state = "accepted"
+    candidate.adjudicated_at = datetime.now(timezone.utc)
+    audit.record(
+        session,
+        principal=attacher,
+        action=audit.ATTACH_STATEMENT,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={
+            "candidate_id": candidate.id,
+            "dependency_event_id": event.id,
+            "event_type": event_type,
+        },
+    )
+    _project_committed_date(session, dependency.id)
+    session.flush()
+    return event

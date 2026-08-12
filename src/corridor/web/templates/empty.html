@@ -53,6 +53,11 @@
   {% else %}
     <h1>Queue empty</h1>
     <p>No work is actionable for <b>{{ project.name }}</b> in this lane.</p>
+    {% if waiting_statements %}
+      {# An empty queue is not an empty desk: statements the machine could
+         not place are still waiting, and this is where a reviewer looks. #}
+      <p><a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to place</a></p>
+    {% endif %}
     {% if lane == "candidate" and reconfirmation_count %}
       <p>{{ reconfirmation_count }} item(s) remain in Reconfirmation.</p>
     {% elif lane == "reconfirmation" and candidate_count %}

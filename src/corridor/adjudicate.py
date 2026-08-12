@@ -24,6 +24,7 @@ from corridor.models import (
     Assertion,
     Candidate,
     Dependency,
+    DependencyDismissal,
     Document,
     DocPage,
     EvidenceLink,
@@ -34,7 +35,7 @@ from corridor.models import (
     is_claim,
     is_placeholder_party,
 )
-from corridor.verify import normalize, unverified_fields
+from corridor.verify import normalize, quote_appears_on, unverified_fields
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
 from corridor.project_lock import lock_project
@@ -622,10 +623,21 @@ def set_resolution_strategy(
 
 def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> dict:
     updated = {**payload, "fields": dict(fields)}
+    page_text = _cited_page_text(session, payload)
+    # The quote is re-checked against the page it names, not taken on the
+    # reviewer's word. Without this a row flagged only on its quote could
+    # never be cleared by any gesture: the values re-verified and the
+    # citation's own flag stayed as extraction left it, so `edit & accept`
+    # was a way to sink a row and not a way to fix one (#212). Re-checking
+    # can lower a flag as well as lift one, which is the point.
+    updated["citations"] = [
+        {**citation, "verified": _quote_still_holds(citation, page_text)}
+        for citation in (payload.get("citations") or [])
+    ]
+
     if not _transcribes_cells(payload):
         return updated
 
-    page_text = _cited_page_text(session, payload)
     if page_text is None:
         updated["unverified_fields"] = sorted(fields)
     else:
@@ -634,6 +646,18 @@ def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> 
         payload, fields
     )
     return updated
+
+
+def _quote_still_holds(citation: dict, page_text: str | None) -> bool:
+    """Whether this citation's quote is on the page it names, now.
+
+    Fails closed on an unreadable page and on an absent quote: a citation
+    with nothing to check is not a citation that checks out.
+    """
+    quote = citation.get("quote")
+    if page_text is None or not quote:
+        return False
+    return quote_appears_on(quote, page_text)
 
 
 def _transcribes_cells(payload: dict) -> bool:
@@ -1048,3 +1072,63 @@ def _location(fields: dict) -> str | None:
     ]
     joined = " / ".join(p for p in parts if p)
     return joined or None
+
+
+DISMISS_REASONS = ("duplicate", "not-a-conflict", "wrong")
+
+
+class InvalidDismissReason(Exception):
+    """The stated reason is not one this system records."""
+
+
+class AlreadyDismissed(Exception):
+    """This record has already left the working list."""
+
+
+def dismiss_dependency(
+    session: Session,
+    dependency: Dependency,
+    reason: str,
+    *,
+    principal: HumanPrincipal,
+) -> Dependency:
+    """Take a junk record off the working list, with a reason and a name.
+
+    Rows enter mechanically now (ADR-0029), so junk reaches the record —
+    a duplicate, a row that is not a conflict at all. Dismissing is how a
+    reviewer clears it, and it is not a delete: the row, its Evidence,
+    its Assertions and its history stay exactly where they are, so anyone
+    asking why a conflict left the list gets an answer with a name and a
+    date on it (ADR-0032).
+    """
+    dismisser = require_human_principal(principal)
+    if reason not in DISMISS_REASONS:
+        raise InvalidDismissReason(
+            f"{reason!r} is not a dismiss reason; expected one of "
+            f"{DISMISS_REASONS}"
+        )
+    lock_project(session, dependency.project_id)
+    if dependency.dismissed_at is not None:
+        raise AlreadyDismissed(
+            f"{dependency.ref_code} was already dismissed"
+        )
+
+    dismissal = DependencyDismissal(
+        dependency_id=dependency.id,
+        reason=reason,
+        dismissed_by=dismisser.subject,
+    )
+    session.add(dismissal)
+    session.flush([dismissal])
+    dependency.dismissed_at = dismissal.dismissed_at
+
+    audit.record(
+        session,
+        principal=dismisser,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after={"reason": reason, "dependency_dismissal_id": dismissal.id},
+    )
+    session.flush()
+    return dependency

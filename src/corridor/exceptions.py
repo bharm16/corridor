@@ -210,7 +210,12 @@ def evaluate(
     thresholds = thresholds or Thresholds()
 
     dependencies = session.scalars(
-        select(Dependency).where(Dependency.project_id == project_id)
+        select(Dependency).where(
+            Dependency.project_id == project_id,
+            # A record nobody is working raises no exceptions about
+            # nobody working it (ADR-0032).
+            Dependency.dismissed_at.is_(None),
+        )
     ).all()
 
     found: list[Exception_] = []

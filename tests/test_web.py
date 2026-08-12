@@ -3415,3 +3415,421 @@ def test_settling_a_field_nobody_disputes_refuses(session, client, project):
         follow_redirects=False,
     )
     assert refused.status_code == 409
+
+
+# ── Misread rows ride the same list, flagged and last (#212) ─────────────
+
+
+def test_an_unverifiable_row_is_offered_rather_than_withheld(
+    session, client, project, document
+):
+    """A quote that could not be found on its page is a signal, not
+    noise: the row reaches a human instead of disappearing."""
+    make_candidate(session, project, document, uid="BAD-1", verified=False)
+    load_project(session, project.id)
+
+    page = client.get(f"/queue/{project.slug}").text
+    assert "BAD-1" in page
+    assert "Citation unverified" in page
+
+
+def test_a_row_with_no_identifier_is_offered_with_its_reason(
+    session, client, project, document
+):
+    make_candidate(session, project, document, uid="", verified=True)
+    load_project(session, project.id)
+
+    page = client.get(f"/queue/{project.slug}").text
+    # The machine's vocabulary is `no_utility_id`; the reviewer is told
+    # what they are deciding instead.
+    assert "This row has no identifier." in page
+    assert "no_utility_id" not in page
+
+
+def test_flagged_rows_sink_below_clean_work(
+    session, client, project, document
+):
+    """A reviewer meets the rows they can act on first."""
+    # Both unverifiable, so both stay for a human; the one whose quote
+    # holds is served before the one whose does not.
+    make_candidate(
+        session,
+        project,
+        document,
+        uid="BAD-1",
+        verified=False,
+        auto_active_run=False,
+    )
+    make_candidate(
+        session, project, document, uid="GOOD-1", unverified_fields=["notes"]
+    )
+
+    served = next_candidate(session, project.id)
+    assert served.payload_json["fields"]["utility_id"] == "GOOD-1"
+
+
+def test_correcting_a_flagged_row_against_its_page_clears_the_flag(
+    session, client, project, document
+):
+    """The page says GOOD-1; the extractor read BAD-1. Correcting it
+    re-runs verification rather than taking the reviewer's word."""
+    candidate = make_candidate(
+        session, project, document, uid="BAD-1", verified=False
+    )
+    assert candidate.citations_verified is False
+
+    response = client.post(
+        f"/candidates/{candidate.id}/edit-accept",
+        data={
+            "slug": project.slug,
+            "field_utility_id": "GOOD-1",
+            "field_external_org": "AT&T Texas (SWBT)",
+            "field_station_from": "1149+00",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    session.refresh(candidate)
+    assert candidate.citations_verified is True
+    assert candidate.state == "accepted"
+
+    entry = session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_type == "candidate",
+            AuditLog.entity_id == candidate.id,
+            AuditLog.action == "edit_candidate",
+        )
+        .order_by(AuditLog.id.desc())
+    ).first()
+    assert entry is not None and entry.actor == TEST_PRINCIPAL.subject
+
+
+def test_no_separate_lane_holds_the_unverified(
+    session, client, project, document
+):
+    """One list. A flagged row is reachable from the ordinary queue with
+    no filter, tab, or mode to find first."""
+    make_candidate(session, project, document, uid="BAD-1", verified=False)
+    load_project(session, project.id)
+
+    assert "BAD-1" in client.get(f"/queue/{project.slug}").text
+
+
+# ── The pile of statements the machine could not place (#213) ────────────
+
+
+def _unplaced_statement(session, project):
+    """One conflict on the record and one statement naming another."""
+    from corridor.extraction_runs import record_extraction_run
+
+    matrix = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "ucm-statements.pdf"),
+        filename="ucm-statements.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    minutes = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "minutes-statements.pdf"),
+        filename="minutes-statements.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+        pages=1,
+    )
+    for document in (matrix, minutes):
+        session.add(document)
+        session.flush()
+        session.add(DocPage(document_id=document.id, page_no=1, text="rows"))
+    session.flush()
+
+    def candidate(document, kind, fields, prompt):
+        c = Candidate(
+            project_id=project.id,
+            kind=kind,
+            payload_json={
+                "kind": kind,
+                "fields": fields,
+                "citations": [
+                    {
+                        "document_id": document.id,
+                        "page": 1,
+                        "quote": "rows",
+                        "verified": True,
+                        "whole_row": True,
+                    }
+                ],
+                "dedupe_hint": f"{kind}|{fields.get('utility_id') or fields.get('conflict_ref')}",
+                "text_source": "text_layer",
+            },
+            source_document_id=document.id,
+            source_pages=[1],
+            confidence=0.99,
+            prompt_version=prompt,
+            model="gpt-test",
+            citations_verified=True,
+        )
+        session.add(c)
+        return c
+
+    conflict = candidate(
+        matrix,
+        "dependency",
+        {
+            "utility_id": "PL1",
+            "external_org": "Tejas Pipeline Co",
+            "utility_type": "Petroleum and Gaseous Materials",
+            "station_from": "1102+20",
+            "station_to": "1102+80",
+        },
+        "matrix_v1",
+    )
+    statement = candidate(
+        minutes,
+        "event",
+        {
+            "event_type": "commitment",
+            "description": "Tejas committed on the crossing",
+            "external_org": "Tejas Pipeline Co",
+            "event_date": "2025-01-16",
+            "conflict_ref": "PL99",
+        },
+        "minutes_v1",
+    )
+    session.flush()
+    for document, cs, prompt in (
+        (matrix, [conflict], "matrix_v1"),
+        (minutes, [statement], "minutes_v1"),
+    ):
+        record_extraction_run(
+            session,
+            document,
+            prompt_version=prompt,
+            candidate_count=len(cs),
+            page_errors=0,
+            candidates=cs,
+            model="gpt-test",
+            schema_version="matrix_candidate_shape_v1",
+        )
+    session.flush()
+    load_project(session, project.id)
+    return statement
+
+
+def test_the_pile_names_what_each_statement_needs(session, client, project):
+    _unplaced_statement(session, project)
+
+    page = client.get(f"/statements/{project.slug}").text
+    assert "This statement names a conflict the record does not have." in page
+    # The reviewer sees what was actually said, not a candidate id.
+    assert "Tejas committed on the crossing" in page
+    assert "2025-01-16" in page
+
+
+def test_the_queue_points_at_the_pile_without_becoming_it(
+    session, client, project
+):
+    _unplaced_statement(session, project)
+
+    page = client.get(f"/queue/{project.slug}").text
+    assert f"/statements/{project.slug}" in page
+    assert "1 statement to place" in page
+
+
+def test_attaching_from_the_pile_puts_it_on_the_record(
+    session, client, project
+):
+    from corridor.models import DependencyEvent
+
+    _unplaced_statement(session, project)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    candidate = session.scalars(
+        select(Candidate).where(
+            Candidate.project_id == project.id,
+            Candidate.kind == "event",
+        )
+    ).one()
+
+    response = client.post(
+        f"/projects/{project.slug}/statements/{candidate.id}/attach",
+        data={"dependency_ref": dependency.ref_code},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    [event] = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.dependency_id == dependency.id
+        )
+    ).all()
+    assert event.created_by == TEST_PRINCIPAL.subject
+    assert "Nothing waiting" in client.get(f"/statements/{project.slug}").text
+
+
+def test_naming_a_record_that_does_not_exist_refuses(
+    session, client, project
+):
+    _unplaced_statement(session, project)
+    candidate = session.scalars(
+        select(Candidate).where(
+            Candidate.project_id == project.id, Candidate.kind == "event"
+        )
+    ).one()
+
+    refused = client.post(
+        f"/projects/{project.slug}/statements/{candidate.id}/attach",
+        data={"dependency_ref": "DEP-99999"},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 400
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+
+
+def test_tossing_a_statement_returns_to_the_pile(session, client, project):
+    _unplaced_statement(session, project)
+    candidate = session.scalars(
+        select(Candidate).where(
+            Candidate.project_id == project.id, Candidate.kind == "event"
+        )
+    ).one()
+
+    response = client.post(
+        f"/candidates/{candidate.id}/reject",
+        data={
+            "slug": project.slug,
+            "reason": "irrelevant",
+            "redirect_to": f"/statements/{project.slug}",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/statements/{project.slug}"
+
+    session.refresh(candidate)
+    assert candidate.state == "rejected"
+    assert "Nothing waiting" in client.get(f"/statements/{project.slug}").text
+
+
+# ── Dismissing junk, kept in history (#214) ──────────────────────────────
+
+
+def _record_on_the_list(session, project, document):
+    candidate = make_candidate(session, project, document, uid="FOC1-1")
+    load_project(session, project.id)
+    return session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+
+
+def test_dismissing_takes_a_record_off_the_working_list(
+    session, client, project, document
+):
+    dependency = _record_on_the_list(session, project, document)
+    assert dependency.ref_code in client.get(f"/ledger/{project.slug}").text
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert dependency.ref_code not in client.get(f"/ledger/{project.slug}").text
+
+
+def test_a_dismissed_record_stops_raising_exceptions(
+    session, client, project, document
+):
+    """A record nobody is working raises no exceptions about nobody
+    working it."""
+    from corridor.exceptions import evaluate
+
+    dependency = _record_on_the_list(session, project, document)
+    assert evaluate(session, project.id) != []
+
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "not-a-conflict"},
+        follow_redirects=False,
+    )
+    assert evaluate(session, project.id) == []
+
+
+def test_dismissing_preserves_the_row_its_evidence_and_its_history(
+    session, client, project, document
+):
+    from corridor.models import DependencyDismissal
+
+    dependency = _record_on_the_list(session, project, document)
+    before = len(
+        session.scalars(
+            select(EvidenceLink).where(
+                EvidenceLink.dependency_id == dependency.id
+            )
+        ).all()
+    )
+
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "wrong"},
+        follow_redirects=False,
+    )
+
+    session.refresh(dependency)
+    assert dependency.dismissed_at is not None
+    assert (
+        len(
+            session.scalars(
+                select(EvidenceLink).where(
+                    EvidenceLink.dependency_id == dependency.id
+                )
+            ).all()
+        )
+        == before
+    )
+    # And the record still says why it left, with a name on it.
+    [dismissal] = session.scalars(
+        select(DependencyDismissal).where(
+            DependencyDismissal.dependency_id == dependency.id
+        )
+    ).all()
+    assert dismissal.reason == "wrong"
+    assert dismissal.dismissed_by == TEST_PRINCIPAL.subject
+    # The detail page is still reachable for anyone asking why.
+    assert client.get(f"/ledger/{project.slug}/{dependency.id}").status_code == 200
+
+
+def test_an_unknown_dismiss_reason_refuses(
+    session, client, project, document
+):
+    dependency = _record_on_the_list(session, project, document)
+
+    refused = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "because-i-said-so"},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 400
+    session.refresh(dependency)
+    assert dependency.dismissed_at is None
+
+
+def test_dismissing_twice_refuses(session, client, project, document):
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+
+    again = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+    assert again.status_code == 409

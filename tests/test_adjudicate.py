@@ -856,6 +856,15 @@ def test_editing_a_whole_row_candidate_fails_closed_when_any_cited_page_is_missi
 def test_editing_a_non_whole_row_candidate_does_not_start_verbatim_field_checks(
     session, document
 ):
+    """A prose extractor's fields are its phrasing of a paragraph and were
+    never expected on the page verbatim. Its *quote* still is, so the page
+    carries the sentence the candidate cites."""
+    page = session.scalars(
+        select(DocPage).where(DocPage.document_id == document.id)
+    ).first()
+    page.text = page.text + "\nAT&T confirmed relocation in August"
+    session.flush()
+
     candidate = make_candidate(
         session,
         document,
@@ -871,6 +880,40 @@ def test_editing_a_non_whole_row_candidate_does_not_start_verbatim_field_checks(
     assert candidate.payload_json["unverified_fields"] == []
     assert candidate.payload_json["low_confidence_tokens"] == []
     assert candidate.citations_verified is True
+
+
+def test_editing_re_checks_the_quote_against_the_page_it_names(
+    session, document
+):
+    """A row flagged only on its quote must be fixable, and a quote that
+    stops holding must stop claiming to (#212)."""
+    candidate = make_candidate(
+        session,
+        document,
+        fields={**FIELDS, "station_from": "9999+99"},
+        quote="FOC1-1 AT&T",
+        verified=False,
+    )
+    assert candidate.citations_verified is False
+
+    # The reviewer reads the page and corrects the station. The quote was
+    # always on the page; nothing but the extractor's flag said otherwise.
+    edit_candidate(session, candidate, dict(FIELDS), principal=REVIEWER)
+    assert candidate.citations_verified is True
+
+    page = session.scalars(
+        select(DocPage).where(DocPage.document_id == document.id)
+    ).first()
+    page.text = "nothing this candidate ever cited"
+    session.flush()
+
+    edit_candidate(
+        session,
+        candidate,
+        {**FIELDS, "station_from": "1150+00"},
+        principal=REVIEWER,
+    )
+    assert candidate.citations_verified is False
 
 
 def test_a_transcribed_row_is_revalidated_even_when_its_quote_was_not_whole():
