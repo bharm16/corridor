@@ -155,7 +155,7 @@ def pending_counts(
     """(total pending, pending with verified citations)."""
     scoped = actionable_candidate_query(
         project_id, historical_document_id=historical_document_id
-    )
+    ).where(Candidate.kind == "dependency")
     if allowed_candidate_ids is not None:
         scoped = scoped.where(Candidate.id.in_(allowed_candidate_ids))
     verified = session.scalar(
@@ -174,9 +174,13 @@ def next_candidate(
     historical_document_id: int | None = None,
     allowed_candidate_ids: frozenset[int] | None = None,
 ) -> Candidate | None:
+    # Dependency Candidates only. Adjudication refuses an event — it must
+    # attach to a Dependency instead — so serving one here offers a button
+    # that cannot work, and 1,629 of them stood in front of the rows that
+    # can (#209).
     query = actionable_candidate_query(
         project_id, historical_document_id=historical_document_id
-    )
+    ).where(Candidate.kind == "dependency")
     if allowed_candidate_ids is not None:
         query = query.where(Candidate.id.in_(allowed_candidate_ids))
     return session.scalars(
@@ -186,6 +190,33 @@ def next_candidate(
         .order_by(Candidate.citations_verified.desc(), Candidate.id)
         .limit(1)
     ).first()
+
+
+def build_evidence(session: Session, candidate: Candidate, *, label: str = "") -> dict:
+    """One document's page as evidence for one Candidate.
+
+    Separate from build_view because a disagreement needs two of these and
+    only one of them is the Candidate under judgment.
+    """
+    payload = candidate.payload_json or {}
+    citation = (payload.get("citations") or [{}])[0]
+    page_no = citation.get("page") or 1
+    quote = citation.get("quote") or ""
+    document = session.get(Document, candidate.source_document_id)
+    page = session.scalars(
+        select(DocPage).where(
+            DocPage.document_id == candidate.source_document_id,
+            DocPage.page_no == page_no,
+        )
+    ).first()
+    return {
+        "document": document,
+        "page": page,
+        "page_no": page_no,
+        "quote": quote,
+        "highlights": locate_quote(document, page_no, quote),
+        "label": label,
+    }
 
 
 def build_view(

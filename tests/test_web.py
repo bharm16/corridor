@@ -206,20 +206,23 @@ def test_queue_exposes_two_counted_exclusive_review_lanes(client, project):
     assert "Reconfirmation (0)" in r.text
 
 
-def test_candidate_review_keeps_lane_navigation_visible(
+def test_the_review_screen_states_what_is_left_and_reaches_the_record(
     client, session, project, document
 ):
+    """The header is one line: what is left, and the way to the record.
+
+    The lane bar is gone — a permanent row of counts for lanes the
+    operator is not in was three labels competing with the one thing on
+    the screen (#209).
+    """
     make_candidate(session, project, document)
 
     r = client.get(f"/queue/{project.slug}?lane=candidate")
 
     assert r.status_code == 200
-    assert "Candidate Adjudication (1)" in r.text
-    assert "Reconfirmation (0)" in r.text
-    assert (
-        f'href="/queue/{project.slug}?lane=candidate" '
-        'aria-current="page"' in r.text
-    )
+    assert "1 waiting for you" in r.text
+    assert f'href="/ledger/{project.slug}"' in r.text
+    assert "Candidate Adjudication (" not in r.text
 
 
 def _seed_waiting_supersession_review(session, project, predecessor):
@@ -293,7 +296,6 @@ def test_candidate_lane_surfaces_dependency_work_while_extraction_is_pending(
     assert r.status_code == 200
     assert "Queue empty" not in r.text
     assert "Candidate Adjudication (1)" in r.text
-    assert "Reconfirmation (0)" in r.text
     assert dependency.ref_code in r.text
     assert document.filename in r.text
     assert successor.filename in r.text
@@ -359,7 +361,6 @@ def test_dependency_only_work_stays_visible_beside_an_ordinary_candidate(
     r = client.get(f"/queue/{project.slug}?lane=candidate")
 
     assert r.status_code == 200
-    assert "Candidate Adjudication (2)" in r.text
     assert "ORD-1" in r.text
     assert dependency.ref_code in r.text
     assert "Awaiting extraction" in r.text
@@ -375,7 +376,6 @@ def test_empty_reconfirmation_lane_points_to_remaining_candidate_work(
     assert r.status_code == 200
     assert "Queue empty" in r.text
     assert "Candidate Adjudication (1)" in r.text
-    assert "Reconfirmation (0)" in r.text
     assert (
         f'href="/queue/{project.slug}?lane=reconfirmation" '
         'aria-current="page"' in r.text
@@ -487,11 +487,25 @@ def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
     assert view.low_confidence_tokens == []
 
 
-def test_a_verified_candidate_is_labelled_verified(client, session, project, document):
+def test_only_an_unverified_citation_is_announced(client, session, project, document):
+    """Verified is the default, so it is not news (#209).
+
+    A green banner on every row spends the reader's attention on the
+    absence of news. The failure keeps its banner, because that is the
+    one a reviewer must act on.
+    """
     make_candidate(session, project, document)
-    r = client.get(f"/queue/{project.slug}")
-    assert "Citation verified" in r.text
+    r = client.get(f"/queue/{project.slug}?mode=review")
+    assert "Citation verified" not in r.text
     assert "Citation unverified" not in r.text
+
+    unverified = make_candidate(
+        session, project, document, uid="FOC2-2", verified=False
+    )
+    r = client.get(
+        f"/queue/{project.slug}?mode=review&candidate_id={unverified.id}"
+    )
+    assert "Citation unverified" in r.text
 
 
 def test_merge_is_unavailable_when_there_is_nothing_to_merge_into(
@@ -499,7 +513,7 @@ def test_merge_is_unavailable_when_there_is_nothing_to_merge_into(
 ):
     """No existing dependency for this party means no merge, not a bad one."""
     make_candidate(session, project, document)
-    r = client.get(f"/queue/{project.slug}")
+    r = client.get(f"/queue/{project.slug}?mode=review")
     assert "disabled" in r.text
     assert "Nothing to merge into" in r.text
 
@@ -534,7 +548,7 @@ def test_merge_suggestions_appear_once_a_dependency_exists(
     session.flush()
     make_candidate(session, project, later, uid="FOC1-1")
 
-    r = client.get(f"/queue/{project.slug}")
+    r = client.get(f"/queue/{project.slug}?mode=review")
     assert "DEP-00001" in r.text
     # The reason is visible, not just the ranking.
     assert "station" in r.text and "text" in r.text
@@ -774,7 +788,7 @@ def test_queue_hides_predecessor_until_a_successor_active_run_is_declared(
     client, session, project
 ):
     _seed_supersession_chain(session, project)
-    r = client.get(f"/queue/{project.slug}")
+    r = client.get(f"/queue/{project.slug}?mode=review")
     assert r.status_code == 200
     assert "Queue empty" in r.text
 
@@ -787,7 +801,7 @@ def test_queue_stays_empty_when_successor_extraction_failed(client, session, pro
         successor_failed=True,
     )
 
-    r = client.get(f"/queue/{project.slug}")
+    r = client.get(f"/queue/{project.slug}?mode=review")
     assert r.status_code == 200
     assert "Queue empty" in r.text
     assert "PRE-ONLY" not in r.text
@@ -797,7 +811,7 @@ def test_queue_stays_empty_when_successor_extraction_failed(client, session, pro
 def test_queue_selects_successor_when_active_run_is_declared(client, session, project):
     chain = _seed_supersession_chain(session, project)
     chain["activate_successor"]()
-    r = client.get(f"/queue/{project.slug}")
+    r = client.get(f"/queue/{project.slug}?mode=review")
     assert r.status_code == 200
     assert "SUCC-ONLY" in r.text
     assert "PRE-ONLY" not in r.text
@@ -1065,7 +1079,7 @@ def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(
     )
     chain["activate_successor"]()
 
-    r = client.get(f"/queue/{project.slug}")
+    r = client.get(f"/queue/{project.slug}?mode=review")
     assert r.status_code == 200
     assert "SUCC-ONLY" in r.text
     assert "EXPERIMENTAL" not in r.text
@@ -1076,7 +1090,7 @@ def test_queue_prefers_historical_document_when_override_is_set(
 ):
     chain = _seed_supersession_chain(session, project)
     chain["activate_successor"]()
-    active = client.get(f"/queue/{project.slug}")
+    active = client.get(f"/queue/{project.slug}?mode=review")
     assert "SUCC-ONLY" in active.text
     assert "PRE-ONLY" not in active.text
 
@@ -2362,18 +2376,22 @@ def _event_candidate(session, project, document):
     return c
 
 
-def test_the_queue_refuses_to_offer_accept_on_an_event(session, project, document):
-    """The same treatment merge gets when there is nothing to merge into.
+def test_the_queue_never_offers_an_event_at_all(session, project, document):
+    """Stronger than a disabled button: the row is not served.
 
-    `make minutes` writes events into this queue; accepting one built a
-    Dependency out of fields it does not have.
+    `make minutes` writes events into the same table, and the queue used
+    to serve them — 1,629 of them stood in front of SH 99's 1,401
+    dependency rows, each drawn as a conflict row of dashes, each
+    offering an accept that Adjudication must refuse (#209).
     """
-    _event_candidate(session, project, document)
+    event = _event_candidate(session, project, document)
+    dependency = make_candidate(session, project, document, uid="FOC9-9")
 
-    view = build_view(session, next_candidate(session, project.id))
+    served = next_candidate(session, project.id)
 
-    assert "not a dependency" in view.accept_refused
-    assert "merging" in view.accept_refused
+    assert served is not None
+    assert served.id == dependency.id
+    assert served.id != event.id
 
 
 def test_posting_accept_for_an_event_is_refused_not_a_server_error(
@@ -3084,7 +3102,7 @@ def test_the_queue_offers_authorization_when_policies_are_unsigned(
     _event_cohort_lane(session, project)
 
     page = client.get(f"/queue/{project.slug}").text
-    assert "need your sign-off" in page
+    assert "Load this project" in page
     assert "ucm-feb.pdf" in page and "ucm-may.pdf" in page
     assert f"/projects/{project.slug}/admission/dependencies" in page
     assert f"/projects/{project.slug}/admission/events" in page
@@ -3123,8 +3141,10 @@ def test_the_dependencies_button_signs_and_runs_in_one_click(
     session.refresh(c["pl8_b"])
     assert c["pl8_b"].state == "pending"
 
+    # One conflict on the record, and PL8 — present in one revision only —
+    # is what is now waiting for a human.
     page = client.get(f"/queue/{project.slug}").text
-    assert "1 admitted" in page
+    assert "1 waiting for you" in page
 
 
 def test_the_events_button_signs_attaches_and_reports(
@@ -3159,3 +3179,139 @@ def test_the_events_button_signs_attaches_and_reports(
     ).all()
     assert len(events) == 1
     assert events[0].event_type == "commitment"
+
+
+# ── The reason-led review card (#209) ────────────────────────────────────
+
+
+def _disagreeing_project(session, project):
+    """Two revisions that disagree about one conflict, policy-run."""
+    from corridor.dependency_admission import (
+        authorize_dependency_admission,
+        run_dependency_admission,
+    )
+    from corridor.extraction_runs import (
+        declare_single_run_documents,
+        record_extraction_run,
+    )
+
+    def doc(filename, doc_date):
+        from datetime import date as _date
+
+        d = Document(
+            project_id=project.id,
+            sha256=_document_sha(project.id, filename),
+            filename=filename,
+            doc_type="matrix",
+            parse_status="parsed",
+            pages=1,
+            doc_date=doc_date,
+        )
+        session.add(d)
+        session.flush()
+        session.add(DocPage(document_id=d.id, page_no=1, text="rows"))
+        session.flush()
+        return d
+
+    def row(document, station):
+        fields = {
+            "utility_id": "PL7",
+            "external_org": "Tejas Pipeline Co",
+            "utility_type": "Petroleum and Gaseous Materials",
+            "station_from": station,
+            "station_to": station,
+        }
+        quote = " | ".join(fields.values())
+        return Candidate(
+            project_id=project.id,
+            kind="dependency",
+            payload_json={
+                "kind": "dependency",
+                "fields": fields,
+                "citations": [
+                    {
+                        "document_id": document.id,
+                        "page": 1,
+                        "quote": quote,
+                        "verified": True,
+                        "whole_row": True,
+                    }
+                ],
+                "dedupe_hint": quote,
+                "text_source": "text_layer",
+            },
+            source_document_id=document.id,
+            source_pages=[1],
+            confidence=0.99,
+            prompt_version="matrix_v1",
+            model="gpt-test",
+            citations_verified=True,
+        )
+
+    from datetime import date as _date
+
+    feb = doc("ucm-feb.pdf", _date(2025, 2, 23))
+    may = doc("ucm-may.pdf", _date(2025, 5, 5))
+    for document, station in ((feb, "1102+20"), (may, "1105+00")):
+        candidate = row(document, station)
+        session.add(candidate)
+        record_extraction_run(
+            session,
+            document,
+            prompt_version="matrix_v1",
+            candidate_count=1,
+            page_errors=0,
+            candidates=(candidate,),
+            model="gpt-test",
+            schema_version="matrix_candidate_shape_v1",
+        )
+        session.flush()
+    declare_single_run_documents(session, project.id, principal=TEST_PRINCIPAL)
+    authorize_dependency_admission(
+        session,
+        project.id,
+        principal=TEST_PRINCIPAL,
+        agreement_document_ids=[feb.id, may.id],
+    )
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 0
+    return feb, may
+
+
+def test_the_card_leads_with_why_the_row_is_in_front_of_you(
+    session, client, project
+):
+    """A row reaches a human only because a policy refused it, and the
+    refusal has a stated reason. Leading with the reason is the whole
+    difference between "judge this" and "judge this, here is what to
+    look at" (#209).
+    """
+    _disagreeing_project(session, project)
+
+    page = client.get(f"/queue/{project.slug}").text
+
+    assert "The revisions disagree about this conflict." in page
+    assert "Accept the revision that is right" in page
+
+
+def test_the_card_shows_the_disagreement_itself(session, client, project):
+    _disagreeing_project(session, project)
+
+    page = client.get(f"/queue/{project.slug}").text
+
+    # The differing field, both values — the decision, not a hint of it.
+    assert "station from" in page
+    assert "1102+20" in page
+    assert "1105+00" in page
+
+
+def test_a_disagreement_shows_both_pages(session, client, project):
+    """One pane cannot hold a comparison; a toggle makes the reviewer
+    hold one value in their head while looking at the other."""
+    feb, may = _disagreeing_project(session, project)
+
+    page = client.get(f"/queue/{project.slug}").text
+
+    assert "ucm-feb.pdf" in page
+    assert "ucm-may.pdf" in page
+    assert "the other revision" in page
