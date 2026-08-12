@@ -309,7 +309,7 @@ def test_the_detail_view_carries_events_and_audit(session, project, dependency):
         event_type="committed_date_change",
         event_date=date(2026, 3, 4),
         description="AT&T moved relocation from June to August",
-        created_by="tester",
+        created_by="local:detail-reader",
     )
     session.add(event)
     session.flush()

@@ -416,7 +416,7 @@ def test_retire_verify_and_export_use_the_sealed_archive(
             "dependencies": 1,
             "evidence_links": 1,
         },
-        "format_version": "legacy-ledger-v2",
+        "format_version": "legacy-ledger-v3",
         "project_id": legacy_project.id,
         "project_slug": archived_slug,
         "ref_code_high_watermark": 141,
