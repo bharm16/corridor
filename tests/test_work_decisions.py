@@ -371,6 +371,56 @@ def test_date_change_milestone_impact_has_its_own_chain_and_exact_links(
     ).one().milestone_id == milestone.id
 
 
+def test_date_change_successor_as_commitment_hides_historical_milestone_impact(
+    session, project, dependency, accepted_date_change
+):
+    """A re-derived Commitment does not retain a current date-change impact."""
+    from corridor.external_statements import (
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    subject = CoordinationSubject.statement(
+        accepted_date_change.commitment_lineage_id
+    )
+    milestone = Milestone(
+        project_id=project.id,
+        code="DATE-CHANGE-IMPACT",
+        name="Date change impact",
+        need_date=date(2026, 9, 1),
+    )
+    session.add(milestone)
+    session.flush()
+    set_milestone_impact(
+        session,
+        subject,
+        "affects",
+        milestone_ids=(milestone.id,),
+        principal=RECORDER,
+    )
+
+    successor = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=accepted_date_change.affected_external_org_id,
+        stated_party="Date Change Party",
+        stated_external_org_id=accepted_date_change.stated_external_org_id,
+        source_kind="verbal",
+        event_date=date(2026, 8, 13),
+        description="Date Change Party now commits to May 16.",
+        new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="local:statement-coordinator",
+        commitment_lineage_id=subject.commitment_lineage_id,
+    )
+
+    lineage = session.get(CommitmentLineage, subject.commitment_lineage_id)
+    assert successor.event_type == "commitment"
+    assert lineage.plan_needs_review is True
+    assert current_milestone_impact_decision(session, subject) is None
+
+
 def test_unknown_milestone_impact_remains_coordinated_work(
     session, accepted_date_change
 ):

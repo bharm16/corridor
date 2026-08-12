@@ -344,8 +344,22 @@ def current_next_action_decision(
 def current_milestone_impact_decision(
     session: Session, subject: CoordinationSubject
 ) -> WorkDecision | None:
-    """The Milestone Impact chain tail for a statement subject."""
-    return _tail(session, _coerce_subject(subject), MILESTONE_IMPACT)
+    """The current impact tail, only while the fact remains a Date Change.
+
+    A factual successor may correctly re-derive a former Committed Date
+    Change as a plain Commitment.  Its historical impact receipt remains
+    auditable, but it is not current coordination state for a fact that no
+    longer has a changed date.
+    """
+    coordination_subject = _coerce_subject(subject)
+    if coordination_subject.commitment_lineage_id is None:
+        return None
+    current_statement = _current_statement(
+        session, coordination_subject.commitment_lineage_id
+    )
+    if current_statement is None or current_statement.event_type != "committed_date_change":
+        return None
+    return _tail(session, coordination_subject, MILESTONE_IMPACT)
 
 
 def _close_next_action(
