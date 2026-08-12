@@ -63,14 +63,6 @@ CANCELLATION_REASONS = frozenset(
     {"no_longer_needed", "superseded", "recorded_in_error"}
 )
 
-# Existing callers predate structured reason capture.  Keeping the defaults
-# yields a durable explicit value rather than silently exempting their old
-# behavior from the new receipt contract.
-_LEGACY_UNKNOWN_DUE_DATE_REASON = "date_not_yet_known"
-_LEGACY_NO_FOLLOW_UP_REASON = "no_immediate_follow_up"
-_LEGACY_CANCELLATION_REASON = "no_longer_needed"
-
-
 @dataclass(frozen=True)
 class CoordinationSubject:
     """The single thing a Work Decision is about.
@@ -178,8 +170,7 @@ def set_next_action(
 
     projection.next_action = action.strip()
     projection.action_due_date = due_date
-    if isinstance(projection, CommitmentLineage):
-        projection.action_due_date_reason = reason
+    projection.action_due_date_reason = reason
     return _append(
         session,
         coordination_subject,
@@ -229,7 +220,7 @@ def cancel_next_action(
     successor_due_date: date | None = None,
     successor_due_date_unknown_reason: str | None = None,
     no_follow_up_reason: str | None = None,
-    cancellation_reason: str | None = _LEGACY_CANCELLATION_REASON,
+    cancellation_reason: str | None = None,
     note: str | None = None,
 ) -> WorkDecision:
     """Withdraw an action with a structured reason, never an external closure."""
@@ -287,10 +278,16 @@ def set_milestone_impact(
     ):
         raise ValueError("Milestone Impact must name registered project Milestones")
     if impact == "not_yet_known" and (
-        not projection.internal_owner or not projection.next_action
+        not projection.internal_owner
+        or not projection.next_action
+        or (
+            projection.action_due_date is None
+            and projection.action_due_date_reason is None
+        )
     ):
         raise ValueError(
-            "an unknown Milestone Impact remains coordinated work with an owner and action"
+            "an unknown Milestone Impact remains coordinated work with an owner, "
+            "action, and Action Due Date or unknown-date reason"
         )
 
     canonical_ids = tuple(sorted(ids))
@@ -383,12 +380,18 @@ def _close_next_action(
         raise ValueError("a successor Next Action is a stated step, not a blank")
     if has_successor and no_follow_up_reason is not None:
         raise ValueError("an action cannot have both a successor and no-follow-up reason")
+
+    tail = _consistent_tail(
+        session,
+        coordination_subject,
+        NEXT_ACTION,
+        _projected_composite(projection),
+    )
+    _assert_next_action_reason_consistent(projection, tail)
+    if tail is None or tail.after_value is None:
+        raise ValueError(f"{_subject_label(coordination_subject)} has no current Next Action")
+
     if not has_successor:
-        no_follow_up_reason = (
-            _LEGACY_NO_FOLLOW_UP_REASON
-            if no_follow_up_reason is None
-            else no_follow_up_reason
-        )
         no_follow_up_reason = _reason(
             no_follow_up_reason,
             NO_FOLLOW_UP_REASONS,
@@ -404,21 +407,10 @@ def _close_next_action(
         raise ValueError("only a cancelled action carries a cancellation reason")
     note = _note(note)
 
-    tail = _consistent_tail(
-        session,
-        coordination_subject,
-        NEXT_ACTION,
-        _projected_composite(projection),
-    )
-    _assert_next_action_reason_consistent(projection, tail)
-    if tail is None or tail.after_value is None:
-        raise ValueError(f"{_subject_label(coordination_subject)} has no current Next Action")
-
     with session.begin_nested():
         projection.next_action = None
         projection.action_due_date = None
-        if isinstance(projection, CommitmentLineage):
-            projection.action_due_date_reason = None
+        projection.action_due_date_reason = None
         decision = _append(
             session,
             coordination_subject,
@@ -592,8 +584,6 @@ def _append(
 def _assert_next_action_reason_consistent(
     projection: SubjectProjection, tail: WorkDecision | None
 ) -> None:
-    if not isinstance(projection, CommitmentLineage):
-        return
     projected_reason = projection.action_due_date_reason
     chained_reason = tail.action_due_date_reason if tail is not None else None
     if projected_reason != chained_reason:
@@ -607,8 +597,6 @@ def _due_date_reason(due_date: date | None, reason: str | None) -> str | None:
         if reason is not None:
             raise ValueError("a dated Next Action cannot also claim an unknown-date reason")
         return None
-    if reason is None:
-        return _LEGACY_UNKNOWN_DUE_DATE_REASON
     return _reason(
         reason,
         UNKNOWN_DUE_DATE_REASONS,

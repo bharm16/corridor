@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from corridor.audit import ASSIGN_INTERNAL_OWNER, DEPENDENCY
+from corridor.audit import ASSIGN_INTERNAL_OWNER, DEPENDENCY, trail_for_commitment_lineage
 from corridor.db import Session, engine
 from corridor.models import (
     AuditLog,
@@ -332,7 +332,12 @@ def test_statement_action_reason_projection_refuses_a_tampered_chain_tail(
     session.flush()
 
     with pytest.raises(ValueError, match="diverged"):
-        complete_next_action(session, subject, principal=RECORDER)
+        complete_next_action(
+            session,
+            subject,
+            no_follow_up_reason="return_condition_recorded",
+            principal=RECORDER,
+        )
 
 
 def test_date_change_milestone_impact_has_its_own_chain_and_exact_links(
@@ -427,7 +432,7 @@ def test_unknown_milestone_impact_remains_coordinated_work(
     subject = CoordinationSubject.statement(
         accepted_date_change.commitment_lineage_id
     )
-    with pytest.raises(ValueError, match="owner and action"):
+    with pytest.raises(ValueError, match="owner, action"):
         set_milestone_impact(
             session, subject, "not_yet_known", principal=RECORDER
         )
@@ -449,6 +454,30 @@ def test_unknown_milestone_impact_remains_coordinated_work(
     # appended atomically.  Force it here: empty links are valid for the
     # explicit unknown state, not an accidental missing-link exception.
     session.execute(text("set constraints all immediate"))
+
+
+def test_database_refuses_unknown_milestone_impact_without_current_plan(
+    session, accepted_date_change
+):
+    """Direct SQL cannot make unresolved Impact look like coordinated work."""
+    with pytest.raises(IntegrityError, match="Internal Owner and Next Action"):
+        with session.begin_nested():
+            session.add(
+                WorkDecision(
+                    commitment_lineage_id=accepted_date_change.commitment_lineage_id,
+                    decision_type="set_milestone_impact",
+                    field="milestone_impact",
+                    before_value=None,
+                    after_value=json.dumps(
+                        {"milestone_ids": [], "state": "not_yet_known"},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    recorded_by=RECORDER.subject,
+                )
+            )
+            session.flush()
+            session.execute(text("set constraints all immediate"))
 
 
 def test_database_refuses_a_milestone_from_another_project(
@@ -501,7 +530,13 @@ def test_action_closure_records_a_structured_reason_or_successor(
     subject = CoordinationSubject.statement(
         accepted_statement.commitment_lineage_id
     )
-    set_next_action(session, subject, "Call the party", principal=RECORDER)
+    set_next_action(
+        session,
+        subject,
+        "Call the party",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
     completed = complete_next_action(
         session,
         subject,
@@ -514,7 +549,13 @@ def test_action_closure_records_a_structured_reason_or_successor(
     assert completed.note == "Return when the schedule arrives."
     assert current_next_action_decision(session, subject).after_value is None
 
-    set_next_action(session, subject, "Check the estimate", principal=RECORDER)
+    set_next_action(
+        session,
+        subject,
+        "Check the estimate",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
     cancelled = cancel_next_action(
         session,
         subject,
@@ -529,6 +570,26 @@ def test_action_closure_records_a_structured_reason_or_successor(
     assert cancelled.cancellation_reason == "superseded"
     assert cancelled.no_follow_up_reason is None
     assert json.loads(current.after_value)["action"] == "Confirm the revised estimate"
+
+
+def test_action_closure_refuses_to_invent_structured_reasons(
+    session, accepted_statement
+):
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    set_next_action(
+        session,
+        subject,
+        "Call the party",
+        due_date=date(2026, 8, 20),
+        principal=RECORDER,
+    )
+
+    with pytest.raises(ValueError, match="no-follow-up reason"):
+        complete_next_action(session, subject, principal=RECORDER)
+    with pytest.raises(ValueError, match="no-follow-up reason"):
+        cancel_next_action(session, subject, principal=RECORDER)
 
 
 def test_changing_only_the_unknown_due_date_reason_appends_a_new_receipt(
@@ -704,22 +765,44 @@ def test_setting_a_next_action_writes_one_receipt_for_action_and_date(
     assert dependency.action_due_date == date(2026, 9, 1)
 
 
-def test_the_action_due_date_is_optional(session, dependency):
-    set_next_action(
-        session, dependency.id, "Walk the crossing", principal=RECORDER
+def test_an_undated_dependency_action_projects_its_structured_reason(
+    session, dependency
+):
+    decision = set_next_action(
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
     )
     session.refresh(dependency)
     assert dependency.next_action == "Walk the crossing"
     assert dependency.action_due_date is None
+    assert dependency.action_due_date_reason == "awaiting_external_information"
+    assert decision.action_due_date_reason == "awaiting_external_information"
+
+
+def test_an_undated_action_requires_a_human_selected_reason(session, dependency):
+    with pytest.raises(ValueError, match="unknown-date reason"):
+        set_next_action(session, dependency.id, "Walk the crossing", principal=RECORDER)
 
 
 def test_completion_clears_the_current_action_and_pins_its_predecessor(
     session, dependency
 ):
     first = set_next_action(
-        session, dependency.id, "Walk the crossing", principal=RECORDER
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
     )
-    done = complete_next_action(session, dependency.id, principal=RECORDER)
+    done = complete_next_action(
+        session,
+        dependency.id,
+        no_follow_up_reason="return_condition_recorded",
+        principal=RECORDER,
+    )
 
     assert done.decision_type == "complete_next_action"
     assert done.predecessor_decision_id == first.id
@@ -731,8 +814,20 @@ def test_completion_clears_the_current_action_and_pins_its_predecessor(
 
 
 def test_cancellation_is_a_distinct_decision_type(session, dependency):
-    set_next_action(session, dependency.id, "Walk the crossing", principal=RECORDER)
-    withdrawn = cancel_next_action(session, dependency.id, principal=RECORDER)
+    set_next_action(
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
+    withdrawn = cancel_next_action(
+        session,
+        dependency.id,
+        no_follow_up_reason="no_immediate_follow_up",
+        cancellation_reason="no_longer_needed",
+        principal=RECORDER,
+    )
 
     assert withdrawn.decision_type == "cancel_next_action"
     session.refresh(dependency)
@@ -750,11 +845,24 @@ def test_the_chain_reconstructs_in_order_across_the_lifecycle(
     session, dependency
 ):
     first = set_next_action(
-        session, dependency.id, "Walk the crossing", principal=RECORDER
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
     )
-    done = complete_next_action(session, dependency.id, principal=RECORDER)
+    done = complete_next_action(
+        session,
+        dependency.id,
+        no_follow_up_reason="return_condition_recorded",
+        principal=RECORDER,
+    )
     second = set_next_action(
-        session, dependency.id, "Confirm as-builts received", principal=RECORDER
+        session,
+        dependency.id,
+        "Confirm as-builts received",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
     )
 
     assert done.predecessor_decision_id == first.id
@@ -788,7 +896,13 @@ def test_setting_the_identical_action_again_records_nothing_new(
 
 def test_owner_and_action_chains_are_independent(session, dependency):
     assign_internal_owner(session, dependency.id, "Dana Fields", principal=RECORDER)
-    set_next_action(session, dependency.id, "Walk the crossing", principal=RECORDER)
+    set_next_action(
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
 
     owner = current_internal_owner_decision(session, dependency.id)
     action = current_next_action_decision(session, dependency.id)
@@ -799,16 +913,70 @@ def test_owner_and_action_chains_are_independent(session, dependency):
 
 
 def test_a_diverged_action_projection_refuses(session, dependency):
-    set_next_action(session, dependency.id, "Walk the crossing", principal=RECORDER)
+    set_next_action(
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
     dependency.next_action = "Tampered"
     session.flush()
 
     with pytest.raises(ValueError, match="diverged"):
         set_next_action(
-            session, dependency.id, "Anything else", principal=RECORDER
+            session,
+            dependency.id,
+            "Anything else",
+            due_date_unknown_reason="awaiting_external_information",
+            principal=RECORDER,
         )
 
 
 def test_a_blank_action_refuses(session, dependency):
     with pytest.raises(ValueError, match="Next Action"):
         set_next_action(session, dependency.id, "   ", principal=RECORDER)
+
+
+def test_dependency_action_reason_projection_refuses_a_tampered_chain_tail(
+    session, dependency
+):
+    set_next_action(
+        session,
+        dependency.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
+    dependency.action_due_date_reason = "awaiting_schedule_information"
+    session.flush()
+
+    with pytest.raises(ValueError, match="diverged"):
+        set_next_action(
+            session,
+            dependency.id,
+            "Confirm the crossing",
+            due_date_unknown_reason="awaiting_external_information",
+            principal=RECORDER,
+        )
+
+
+def test_statement_plan_audit_trail_is_readable(session, accepted_statement):
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    owner = assign_internal_owner(session, subject, "Dana Fields", principal=RECORDER)
+    action = set_next_action(
+        session,
+        subject,
+        "Call the party",
+        due_date=date(2026, 8, 20),
+        principal=RECORDER,
+    )
+
+    assert [entry.after_json for entry in trail_for_commitment_lineage(
+        session, subject.commitment_lineage_id
+    )] == [
+        {"commitment_lineage_id": subject.commitment_lineage_id, "work_decision_id": owner.id},
+        {"commitment_lineage_id": subject.commitment_lineage_id, "work_decision_id": action.id},
+    ]

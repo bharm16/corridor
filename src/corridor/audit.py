@@ -44,9 +44,10 @@ from corridor.principals import (
     require_human_principal,
 )
 
-# The two entities a ledger mutation is recorded against. A Candidate's
-# entries belong to the Dependency it becomes; `trail_for_dependency`
-# joins them.
+# Ledger mutations have a reader alongside their writer. A Candidate's entries
+# belong to the Dependency it becomes; `trail_for_dependency` joins them.
+# Statement-level Coordination Plans are read by their durable Commitment
+# Lineage instead; scope never makes them Dependency history.
 DEPENDENCY = "dependency"
 CANDIDATE = "candidate"
 MILESTONE = "milestone"
@@ -362,6 +363,28 @@ def trail_for_dependency(session: Session, dependency_id: int) -> list[AuditLog]
 
     entries.sort(key=lambda e: (e.ts, e.id))
     return entries
+
+
+def trail_for_commitment_lineage(
+    session: Session, commitment_lineage_id: int
+) -> list[AuditLog]:
+    """Read one statement-level Coordination Plan's appended decisions.
+
+    The lineage is the subject identity, so this deliberately does not follow
+    its Dependency scope links. Those describe the External Party fact's
+    application, not copied project-team decisions (ADR-0038).
+    """
+
+    return list(
+        session.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == COMMITMENT_LINEAGE,
+                AuditLog.entity_id == commitment_lineage_id,
+            )
+            .order_by(AuditLog.ts, AuditLog.id)
+        ).all()
+    )
 
 
 def admission_records_for_dependencies(

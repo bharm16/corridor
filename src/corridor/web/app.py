@@ -1035,6 +1035,7 @@ def record_next_action(
     slug: str = Form(...),
     action: str = Form(...),
     due_date: str = Form(""),
+    due_date_unknown_reason: str = Form(""),
     redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
@@ -1050,7 +1051,12 @@ def record_next_action(
             raise HTTPException(400, "an Action Due Date must be a date")
     try:
         set_next_action(
-            session, dependency_id, action, due_date=parsed, principal=principal
+            session,
+            dependency_id,
+            action,
+            due_date=parsed,
+            due_date_unknown_reason=due_date_unknown_reason.strip() or None,
+            principal=principal,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1066,15 +1072,30 @@ def close_next_action(
     dependency_id: int,
     outcome: Literal["complete", "cancel"],
     slug: str = Form(...),
+    no_follow_up_reason: str = Form(""),
+    cancellation_reason: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Completion and cancellation are distinct decisions, never one button."""
     project = _project(session, slug)
     _project_dependency(session, project, dependency_id)
-    close = complete_next_action if outcome == "complete" else cancel_next_action
     try:
-        close(session, dependency_id, principal=principal)
+        if outcome == "complete":
+            complete_next_action(
+                session,
+                dependency_id,
+                no_follow_up_reason=no_follow_up_reason.strip() or None,
+                principal=principal,
+            )
+        else:
+            cancel_next_action(
+                session,
+                dependency_id,
+                no_follow_up_reason=no_follow_up_reason.strip() or None,
+                cancellation_reason=cancellation_reason.strip() or None,
+                principal=principal,
+            )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     session.commit()

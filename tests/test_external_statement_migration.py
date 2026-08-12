@@ -70,7 +70,7 @@ _LEGACY_STATEMENT_BACKFILL_REVISION = "e226a8d4f3c2"
 _EVENT_EVIDENCE_MIGRATION_REVISION = "f227b9e4d3c2"
 _CONTRACT_STATEMENT_REVISION = "a230c4d3e2f1"
 _RETIREMENT_ROLE_REPAIR_REVISION = "b230e4f5a6b7"
-_WORK_DECISION_SUBJECT_REVISION = "b249c7e1d4f3"
+_WORK_DECISION_SUBJECT_REVISION = "c249d7e1f4a3"
 
 
 @dataclass(frozen=True)
@@ -1679,16 +1679,26 @@ def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
                 doc_type="minutes",
                 parse_status="parsed",
             )
-            dependency = Dependency(
-                project_id=project.id,
-                ref_code="DEP-A227-1",
-                dep_type="utility_relocation",
-                title="Equistar relocation",
-                external_org_id=party.id,
-                status="identified",
-            )
-            session.add_all((document, dependency))
+            session.add(document)
             session.flush()
+            # The current Dependency ORM maps post-#249's additive
+            # ``action_due_date_reason`` projection. This rehearsal pins the
+            # completed #224 schema, so seed that historical row through its
+            # actual columns instead of asking a current mapper to write a
+            # future one.
+            dependency_id = session.scalar(
+                text(
+                    """
+                    insert into dependencies
+                        (project_id, ref_code, dep_type, title, external_org_id, status)
+                    values
+                        (:project_id, 'DEP-A227-1', 'utility_relocation',
+                         'Equistar relocation', :party_id, 'identified')
+                    returning id
+                    """
+                ),
+                {"project_id": project.id, "party_id": party.id},
+            )
             # This fixture intentionally targets the completed #224 schema.
             # Current writers are already contracted, so seed the historical
             # dual representation directly rather than pretending modern code
@@ -1735,7 +1745,7 @@ def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
                 {
                     "event_id": event_id,
                     "decision_id": decision_id,
-                    "dependency_id": dependency.id,
+                    "dependency_id": dependency_id,
                 },
             )
             session.execute(
@@ -1767,7 +1777,7 @@ def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
                     "insert into dependency_evidence_sufficiencies "
                     "(dependency_id, evidence_link_id) values (:dependency_id, :link_id)"
                 ),
-                {"dependency_id": dependency.id, "link_id": evidence_id},
+                {"dependency_id": dependency_id, "link_id": evidence_id},
             )
             corrected_decision_id = session.scalar(
                 text(
@@ -1793,7 +1803,7 @@ def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
                 {
                     "event_id": event_id,
                     "decision_id": corrected_decision_id,
-                    "dependency_id": dependency.id,
+                        "dependency_id": dependency_id,
                 },
             )
             session.commit()

@@ -17,7 +17,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b230e4f5a6b7"
-HEAD = "b249c7e1d4f3"
+HEAD = "c249d7e1f4a3"
 
 
 def _upgrade(database_url: str, target: str) -> None:

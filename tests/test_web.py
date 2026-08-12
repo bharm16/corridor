@@ -2562,7 +2562,10 @@ def test_the_action_lifecycle_runs_from_the_record_view(
 
     done = client.post(
         f"/dependencies/{dep.id}/action/complete",
-        data={"slug": project.slug},
+        data={
+            "slug": project.slug,
+            "no_follow_up_reason": "return_condition_recorded",
+        },
         follow_redirects=False,
     )
     assert done.status_code == 303
@@ -2571,7 +2574,10 @@ def test_the_action_lifecycle_runs_from_the_record_view(
 
     again = client.post(
         f"/dependencies/{dep.id}/action/complete",
-        data={"slug": project.slug},
+        data={
+            "slug": project.slug,
+            "no_follow_up_reason": "return_condition_recorded",
+        },
         follow_redirects=False,
     )
     assert again.status_code == 400

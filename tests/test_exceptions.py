@@ -1196,10 +1196,21 @@ def test_missing_action_is_an_absence_of_a_current_work_decision(
 
     assert "MISSING_ACTION" in codes(session, dep)
 
-    set_next_action(session, dep.id, "Walk the crossing", principal=recorder)
+    set_next_action(
+        session,
+        dep.id,
+        "Walk the crossing",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=recorder,
+    )
     assert "MISSING_ACTION" not in codes(session, dep)
 
-    complete_next_action(session, dep.id, principal=recorder)
+    complete_next_action(
+        session,
+        dep.id,
+        no_follow_up_reason="return_condition_recorded",
+        principal=recorder,
+    )
     assert "MISSING_ACTION" in codes(session, dep)
 
 

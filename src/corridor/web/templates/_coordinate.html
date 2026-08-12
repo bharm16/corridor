@@ -30,6 +30,12 @@
              value="{{ coordinate_dependency.next_action or '' }}">
       <input name="due_date" type="date"
              value="{{ coordinate_dependency.action_due_date or '' }}">
+      <select name="due_date_unknown_reason">
+        <option value="">if no date, why?</option>
+        <option value="awaiting_external_information">awaiting external information</option>
+        <option value="awaiting_schedule_information">awaiting schedule information</option>
+        <option value="date_not_yet_known">date not yet known</option>
+      </select>
       <button type="submit">set action</button>
     </form>
   </div>

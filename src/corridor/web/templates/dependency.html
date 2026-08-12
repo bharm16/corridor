@@ -103,6 +103,8 @@
       <b>{{ view.dependency.next_action }}</b>
       {% if view.dependency.action_due_date %}
         · due {{ view.dependency.action_due_date }}{% endif %}
+      {% if view.dependency.action_due_date_reason %}
+        · date unknown: {{ view.dependency.action_due_date_reason }}{% endif %}
       {% if action_decision %}
         <span class="muted" style="font-size:.8rem">
           — a project decision by {{ action_decision.recorded_by }},
@@ -119,17 +121,41 @@
            value="{{ view.dependency.next_action or '' }}">
     <input name="due_date" type="date"
            value="{{ view.dependency.action_due_date or '' }}">
+    <select name="due_date_unknown_reason">
+      <option value="">if no date, why?</option>
+      <option value="awaiting_external_information">awaiting external information</option>
+      <option value="awaiting_schedule_information">awaiting schedule information</option>
+      <option value="date_not_yet_known">date not yet known</option>
+    </select>
     <button type="submit">set action</button>
   </form>
   {% if view.dependency.next_action %}
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/complete">
       <input type="hidden" name="slug" value="{{ project.slug }}">
+      <select name="no_follow_up_reason" required>
+        <option value="">why no immediate follow-up?</option>
+        <option value="awaiting_external_information">awaiting external information</option>
+        <option value="no_immediate_follow_up">no immediate follow-up</option>
+        <option value="return_condition_recorded">return condition recorded</option>
+      </select>
       <button type="submit">completed</button>
     </form>
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/cancel">
       <input type="hidden" name="slug" value="{{ project.slug }}">
+      <select name="no_follow_up_reason" required>
+        <option value="">why no immediate follow-up?</option>
+        <option value="awaiting_external_information">awaiting external information</option>
+        <option value="no_immediate_follow_up">no immediate follow-up</option>
+        <option value="return_condition_recorded">return condition recorded</option>
+      </select>
+      <select name="cancellation_reason" required>
+        <option value="">why cancel?</option>
+        <option value="no_longer_needed">no longer needed</option>
+        <option value="superseded">superseded</option>
+        <option value="recorded_in_error">recorded in error</option>
+      </select>
       <button type="submit">cancel action</button>
     </form>
   {% endif %}
