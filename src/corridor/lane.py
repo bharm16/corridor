@@ -18,6 +18,9 @@ is coherent.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from corridor.identity import candidate_identity
 from corridor.models import Candidate
 
 
@@ -41,25 +44,30 @@ class ConflictUnidentified(LaneRefusal):
     """Without an identifier there is no 'same conflict' to reason about."""
 
 
-def conflict_key(candidate: Candidate) -> str | None:
+def conflict_key(
+    candidate: Candidate, schemes: Mapping[int, str]
+) -> tuple[str, str] | None:
     """What makes two Candidates revisions of one conflict.
 
     The registry holds no supersession chain for these documents, so no
     revision is machine-current and the reviewer's gesture is the explicit
-    choice (#199). The identifier is what the revisions agree on when they
-    disagree about everything else.
+    choice (#199). The identity is what the revisions agree on when they
+    disagree about everything else — derived under each document's
+    declared numbering scheme (ADR-0030), because on a per-party form the
+    number alone would call nine different conflicts one.
 
     One definition, because the lane both offers merges and refuses them:
     a display that offers a sibling the mutation then rejects is a worse
     failure than either rule alone.
     """
-    value = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
-    return str(value) if value else None
+    return candidate_identity(candidate, schemes)
 
 
-def same_conflict(candidate: Candidate, other: Candidate) -> bool:
-    key = conflict_key(candidate)
-    return key is not None and conflict_key(other) == key
+def same_conflict(
+    candidate: Candidate, other: Candidate, schemes: Mapping[int, str]
+) -> bool:
+    key = conflict_key(candidate, schemes)
+    return key is not None and conflict_key(other, schemes) == key
 
 
 def check_sibling_request(
@@ -67,6 +75,7 @@ def check_sibling_request(
     sibling_ids: list[int],
     *,
     in_event_lane: bool,
+    schemes: Mapping[int, str],
 ) -> None:
     """Refuse an incoherent request before anything is even looked up.
 
@@ -88,14 +97,19 @@ def check_sibling_request(
             "being accepted"
         )
 
-    if conflict_key(candidate) is None:
+    if conflict_key(candidate, schemes) is None:
         raise ConflictUnidentified(
-            f"candidate {candidate.id} states no utility id — there is no "
-            "conflict for a sibling to be a revision of"
+            f"candidate {candidate.id} states no identity under its "
+            "document's numbering scheme — there is no conflict for a "
+            "sibling to be a revision of"
         )
 
 
-def check_sibling_set(candidate: Candidate, siblings: list[Candidate]) -> None:
+def check_sibling_set(
+    candidate: Candidate,
+    siblings: list[Candidate],
+    schemes: Mapping[int, str],
+) -> None:
     """Refuse the resolved set unless it is one gesture over one conflict.
 
     Checked in full before anything is written, so a refused sibling
@@ -103,7 +117,7 @@ def check_sibling_set(candidate: Candidate, siblings: list[Candidate]) -> None:
     than admitting the primary and stranding the rest.
     """
     for sibling in siblings:
-        if not same_conflict(candidate, sibling):
+        if not same_conflict(candidate, sibling, schemes):
             raise NotTheSameConflict(
                 f"candidate {sibling.id} is not a revision of the same "
                 "conflict — one gesture covers one conflict"

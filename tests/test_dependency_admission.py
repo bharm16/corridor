@@ -490,3 +490,165 @@ def test_a_write_refusal_abstains_without_sinking_the_batch(
     run = session.get(PolicyRun, result.run_id)
     assert run.applied_count == 1
     assert run.abstained_count == len(result.abstentions)
+
+
+# ── Row identity under a declared numbering scheme (ADR-0030) ────────────
+
+
+def _per_party_document(session, project, *, filename="fdot-ucm.pdf"):
+    document = _document(session, project, filename=filename)
+    document.numbering_scheme = "per-party"
+    session.flush()
+    return document
+
+
+def test_a_per_party_matrix_names_rows_by_party_and_number(session, project):
+    """Nine parties each correctly have a conflict 1. Declaring the
+    scheme puts them all on the record as nine conflicts."""
+    document = _per_party_document(session, project)
+    rows = [
+        _fields("1", org="AT&T TCA"),
+        _fields("1", org="Comcast", station="1200+00"),
+        _fields("1", org="TECO Peoples Gas", station="1300+00"),
+        _fields("2", org="AT&T TCA", station="1400+00"),
+    ]
+    _run(session, document, [_candidate(document, f) for f in rows])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 4
+    assert result.abstained_count == 0
+    admitted = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).all()
+    assert sorted(d.source_ref for d in admitted) == ["1", "1", "1", "2"]
+
+
+def test_the_same_party_repeating_a_number_still_abstains(session, project):
+    """A genuinely duplicated row must not become two conflicts."""
+    document = _per_party_document(session, project)
+    rows = [
+        _fields("1", org="AT&T TCA"),
+        _fields("1", org="AT&T TCA", station="1200+00"),
+    ]
+    _run(session, document, [_candidate(document, f) for f in rows])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 0
+    assert {a.reason for a in result.abstentions} == {
+        "multiple_rows_in_agreement_document"
+    }
+
+
+def test_an_undeclared_document_never_infers_the_scheme(session, project):
+    """Repeated numbers under the default abstain visibly; the machine
+    must never read repetition as a numbering style."""
+    document = _document(session, project, filename="undeclared.pdf")
+    rows = [
+        _fields("1", org="AT&T TCA"),
+        _fields("1", org="Comcast", station="1200+00"),
+    ]
+    _run(session, document, [_candidate(document, f) for f in rows])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 0
+    assert {a.reason for a in result.abstentions} == {
+        "multiple_rows_in_agreement_document"
+    }
+
+
+def test_a_per_party_row_with_no_stated_party_has_no_name(session, project):
+    document = _per_party_document(session, project)
+    fields = _fields("1", org="AT&T TCA")
+    nameless = dict(_fields("2", station="1200+00"), external_org="")
+    _run(
+        session,
+        document,
+        [_candidate(document, fields), _candidate(document, nameless)],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 1
+    assert {a.reason for a in result.abstentions} == {"no_row_identity"}
+
+
+def test_per_party_agreement_between_revisions_merges_by_the_pair(
+    session, project
+):
+    feb = _per_party_document(session, project, filename="ucm-feb.pdf")
+    may = _per_party_document(session, project, filename="ucm-may.pdf")
+    feb_c = [
+        _candidate(feb, _fields("1", org="AT&T TCA")),
+        _candidate(feb, _fields("1", org="Comcast", station="1200+00")),
+    ]
+    may_c = [
+        _candidate(may, _fields("1", org="AT&T TCA")),
+        _candidate(may, _fields("1", org="Comcast", station="1200+00")),
+    ]
+    _run(session, feb, feb_c)
+    _run(session, may, may_c)
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 2
+    assert result.abstained_count == 0
+    for candidate in feb_c:
+        session.refresh(candidate)
+        assert candidate.state == "merged"
+
+
+def test_the_record_blocks_a_second_admission_of_the_same_pair_only(
+    session, project
+):
+    """AT&T's 1 on the record does not block Comcast's 1 from entering —
+    and does block AT&T's 1 from entering twice."""
+    from corridor.models import ExternalOrg
+
+    first = _per_party_document(session, project, filename="first.pdf")
+    _run(session, first, [_candidate(first, _fields("1", org="AT&T TCA"))])
+    declare_single_run_documents_by_policy(session, project.id)
+    assert run_dependency_admission(session, project.id).admitted_count == 1
+
+    second = _per_party_document(session, project, filename="second.pdf")
+    _run(
+        session,
+        second,
+        [
+            _candidate(second, _fields("1", org="AT&T TCA")),
+            _candidate(second, _fields("1", org="Comcast", station="1200+00")),
+        ],
+    )
+    from corridor.extraction_runs import declare_single_run_documents_by_policy as declare
+    declare(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 1  # Comcast's 1
+    assert {a.reason for a in result.abstentions} == {"already_admitted"}
+    parties = {
+        session.get(ExternalOrg, d.external_org_id).name
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    }
+    assert parties == {"AT&T TCA", "Comcast"}
+
+
+def test_declaring_a_scheme_changes_the_digest_the_receipt_records(
+    session, project
+):
+    """The scheme decides what counts as one row, so it is part of what
+    the receipt claims ran."""
+    document = _document(session, project, filename="ucm.pdf")
+    _run(session, document, [_candidate(document, _fields("PL1"))])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    before = run_dependency_admission(session, project.id)
+    before_sha = session.get(PolicyRun, before.run_id).policy_sha256
+
+    document.numbering_scheme = "per-party"
+    session.flush()
+    after = run_dependency_admission(session, project.id)
+    assert session.get(PolicyRun, after.run_id).policy_sha256 != before_sha

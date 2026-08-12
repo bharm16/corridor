@@ -83,6 +83,7 @@ def ingest_manifest(
                 doc_date=parse_doc_date(record.get("doc_date")),
                 registry_id=record.get("registry_id"),
                 expected_sha256=record["sha256"],
+                numbering_scheme=record.get("numbering_scheme"),
             )
         )
 
