@@ -10,19 +10,34 @@ import json
 from datetime import date
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor.audit import ASSIGN_INTERNAL_OWNER, DEPENDENCY
 from corridor.db import Session, engine
-from corridor.models import AuditLog, Dependency, Project, WorkDecision
+from corridor.models import (
+    AuditLog,
+    CommitmentLineage,
+    Dependency,
+    DependencyEvent,
+    DocPage,
+    Document,
+    ExternalOrg,
+    Milestone,
+    Project,
+    WorkDecision,
+    WorkDecisionMilestoneImpact,
+)
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.work_decisions import (
+    CoordinationSubject,
     assign_internal_owner,
     cancel_next_action,
     complete_next_action,
     current_internal_owner_decision,
+    current_milestone_impact_decision,
     current_next_action_decision,
+    set_milestone_impact,
     set_next_action,
 )
 
@@ -64,6 +79,79 @@ def dependency(session, project):
     return d
 
 
+@pytest.fixture
+def accepted_statement(session, project, dependency):
+    """A real attributable Commitment that may own a Coordination Plan."""
+    from corridor.external_statements import (
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    party = ExternalOrg(name="Work Decisions Party")
+    session.add(party)
+    session.flush()
+    dependency.external_org_id = party.id
+    session.flush()
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="verbal",
+        event_date=date(2026, 8, 12),
+        description="Work Decisions Party will provide the relocation schedule.",
+        new_timing=StatementTiming.day("August 20, 2026", date(2026, 8, 20)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="local:statement-coordinator",
+    )
+    return event
+
+
+@pytest.fixture
+def accepted_date_change(session, project, dependency):
+    """An accepted date change is the only statement that carries impact."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    party = ExternalOrg(name="Date Change Party")
+    session.add(party)
+    session.flush()
+    dependency.external_org_id = party.id
+    document = Document(
+        project_id=project.id,
+        sha256="d" * 64,
+        filename="date-change-minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    quote = "Date Change Party moves completion from March to May 16."
+    session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+    session.flush()
+    return record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=None,
+        description=quote,
+        previous_timing=StatementTiming.month("March 2026", 2026, 3),
+        new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="local:statement-coordinator",
+        evidence=CitedStatementEvidence(document.id, 1, quote),
+    )
+
+
 def _decisions(session, dependency_id):
     return session.scalars(
         select(WorkDecision)
@@ -88,6 +176,316 @@ def test_assignment_writes_a_typed_receipt_and_projects_the_current_value(
     assert decision.predecessor_decision_id is None
     session.refresh(dependency)
     assert dependency.internal_owner == "Dana Fields"
+
+
+def test_a_commitment_lineage_can_own_an_independent_internal_owner_chain(
+    session, accepted_statement
+):
+    """The plan follows the accepted statement, never its scope Dependency."""
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+
+    decision = assign_internal_owner(
+        session, subject, "Dana Fields", principal=RECORDER
+    )
+
+    lineage = session.get(CommitmentLineage, subject.commitment_lineage_id)
+    assert decision.dependency_id is None
+    assert decision.commitment_lineage_id == lineage.id
+    assert lineage.internal_owner == "Dana Fields"
+
+
+def test_the_database_refuses_neither_or_both_coordination_subjects(
+    session, dependency, accepted_statement
+):
+    """XOR lives below the public service seam as well as above it."""
+    for values in (
+        {},
+        {
+            "dependency_id": dependency.id,
+            "commitment_lineage_id": accepted_statement.commitment_lineage_id,
+        },
+    ):
+        with pytest.raises(IntegrityError):
+            with session.begin_nested():
+                session.add(
+                    WorkDecision(
+                        **values,
+                        decision_type="assign_internal_owner",
+                        field="internal_owner",
+                        before_value=None,
+                        after_value="Dana Fields",
+                        recorded_by=RECORDER.subject,
+                    )
+                )
+                session.flush()
+
+
+def test_statement_plan_remains_on_its_lineage_after_a_factual_successor(
+    session, accepted_statement, dependency
+):
+    """A timing correction reviews one plan; scope does not copy it to a row."""
+    from corridor.external_statements import (
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    assign_internal_owner(session, subject, "Dana Fields", principal=RECORDER)
+    successor = record_external_party_statement(
+        session,
+        project_id=accepted_statement.project_id,
+        affected_external_org_id=accepted_statement.affected_external_org_id,
+        stated_party="Work Decisions Party",
+        stated_external_org_id=accepted_statement.stated_external_org_id,
+        source_kind="verbal",
+        event_date=date(2026, 8, 13),
+        description="Work Decisions Party will provide the revised schedule.",
+        new_timing=StatementTiming.day("August 21, 2026", date(2026, 8, 21)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="local:statement-coordinator",
+        commitment_lineage_id=subject.commitment_lineage_id,
+    )
+
+    lineage = session.get(CommitmentLineage, subject.commitment_lineage_id)
+    session.refresh(dependency)
+    assert successor.commitment_lineage_id == subject.commitment_lineage_id
+    assert successor.supersedes_event_id == accepted_statement.id
+    assert lineage.plan_needs_review is True
+    assert lineage.internal_owner == "Dana Fields"
+    assert dependency.internal_owner is None
+
+
+def test_scope_correction_never_copies_a_statement_plan_to_a_dependency(
+    session, accepted_statement, dependency
+):
+    """Scope names applicability, never an implicit Dependency plan."""
+    from corridor.external_statements import (
+        StatementScope,
+        record_statement_scope_decision,
+    )
+
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    assign_internal_owner(session, subject, "Dana Fields", principal=RECORDER)
+    record_statement_scope_decision(
+        session,
+        event_id=accepted_statement.id,
+        scope=StatementScope.selected((dependency.id,)),
+        actor=RECORDER,
+    )
+
+    lineage = session.get(CommitmentLineage, subject.commitment_lineage_id)
+    assert lineage.internal_owner == "Dana Fields"
+    assert lineage.plan_needs_review is False
+    assert _decisions(session, dependency.id) == []
+    assert dependency.internal_owner is None
+
+
+def test_statement_action_projection_refuses_a_tampered_chain_tail(
+    session, accepted_statement
+):
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    set_next_action(
+        session,
+        subject,
+        "Call the party",
+        due_date=date(2026, 8, 20),
+        principal=RECORDER,
+    )
+    lineage = session.get(CommitmentLineage, subject.commitment_lineage_id)
+    lineage.next_action = "Tampered"
+    session.flush()
+
+    with pytest.raises(ValueError, match="diverged"):
+        set_next_action(
+            session,
+            subject,
+            "Send the confirmation",
+            due_date=date(2026, 8, 21),
+            principal=RECORDER,
+        )
+
+
+def test_date_change_milestone_impact_has_its_own_chain_and_exact_links(
+    session, project, accepted_date_change
+):
+    subject = CoordinationSubject.statement(
+        accepted_date_change.commitment_lineage_id
+    )
+    milestone = Milestone(
+        project_id=project.id,
+        code="UTILITY-READY",
+        name="Utility ready for construction",
+        need_date=date(2026, 9, 1),
+    )
+    session.add(milestone)
+    session.flush()
+
+    decision = set_milestone_impact(
+        session,
+        subject,
+        "affects",
+        milestone_ids=(milestone.id,),
+        principal=RECORDER,
+    )
+
+    assert decision.field == "milestone_impact"
+    assert json.loads(decision.after_value) == {
+        "milestone_ids": [milestone.id],
+        "state": "affects",
+    }
+    assert current_milestone_impact_decision(session, subject).id == decision.id
+    assert session.scalars(
+        select(WorkDecisionMilestoneImpact).where(
+            WorkDecisionMilestoneImpact.work_decision_id == decision.id
+        )
+    ).one().milestone_id == milestone.id
+
+
+def test_unknown_milestone_impact_remains_coordinated_work(
+    session, accepted_date_change
+):
+    subject = CoordinationSubject.statement(
+        accepted_date_change.commitment_lineage_id
+    )
+    with pytest.raises(ValueError, match="owner and action"):
+        set_milestone_impact(
+            session, subject, "not_yet_known", principal=RECORDER
+        )
+
+    assign_internal_owner(session, subject, "Dana Fields", principal=RECORDER)
+    set_next_action(
+        session,
+        subject,
+        "Assess milestone impact",
+        due_date_unknown_reason="awaiting_schedule_information",
+        principal=RECORDER,
+    )
+    decision = set_milestone_impact(
+        session, subject, "not_yet_known", principal=RECORDER
+    )
+
+    assert json.loads(decision.after_value)["state"] == "not_yet_known"
+    # The trigger is deferred so the receipt and its exact links may be
+    # appended atomically.  Force it here: empty links are valid for the
+    # explicit unknown state, not an accidental missing-link exception.
+    session.execute(text("set constraints all immediate"))
+
+
+def test_database_refuses_a_milestone_from_another_project(
+    session, accepted_date_change
+):
+    """Exact impact links cannot cross the statement subject's project."""
+    other_project = Project(
+        slug="other-impact-project", name="Other impact project", is_synthetic=True
+    )
+    session.add(other_project)
+    session.flush()
+    foreign_milestone = Milestone(
+        project_id=other_project.id,
+        code="OTHER-MILESTONE",
+        name="A milestone in another project",
+        need_date=date(2026, 9, 1),
+    )
+    session.add(foreign_milestone)
+    session.flush()
+
+    with pytest.raises(IntegrityError, match="cannot cross projects"):
+        with session.begin_nested():
+            decision = WorkDecision(
+                commitment_lineage_id=accepted_date_change.commitment_lineage_id,
+                decision_type="set_milestone_impact",
+                field="milestone_impact",
+                before_value=None,
+                after_value=json.dumps(
+                    {"milestone_ids": [foreign_milestone.id], "state": "affects"},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                recorded_by=RECORDER.subject,
+            )
+            session.add(decision)
+            session.flush()
+            session.add(
+                WorkDecisionMilestoneImpact(
+                    work_decision_id=decision.id,
+                    milestone_id=foreign_milestone.id,
+                )
+            )
+            session.flush()
+            session.execute(text("set constraints all immediate"))
+
+
+def test_action_closure_records_a_structured_reason_or_successor(
+    session, accepted_statement
+):
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    set_next_action(session, subject, "Call the party", principal=RECORDER)
+    completed = complete_next_action(
+        session,
+        subject,
+        no_follow_up_reason="return_condition_recorded",
+        note="Return when the schedule arrives.",
+        principal=RECORDER,
+    )
+
+    assert completed.no_follow_up_reason == "return_condition_recorded"
+    assert completed.note == "Return when the schedule arrives."
+    assert current_next_action_decision(session, subject).after_value is None
+
+    set_next_action(session, subject, "Check the estimate", principal=RECORDER)
+    cancelled = cancel_next_action(
+        session,
+        subject,
+        successor_action="Confirm the revised estimate",
+        successor_due_date=date(2026, 8, 22),
+        cancellation_reason="superseded",
+        no_follow_up_reason=None,
+        principal=RECORDER,
+    )
+    current = current_next_action_decision(session, subject)
+
+    assert cancelled.cancellation_reason == "superseded"
+    assert cancelled.no_follow_up_reason is None
+    assert json.loads(current.after_value)["action"] == "Confirm the revised estimate"
+
+
+def test_changing_only_the_unknown_due_date_reason_appends_a_new_receipt(
+    session, accepted_statement
+):
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    first = set_next_action(
+        session,
+        subject,
+        "Call the party",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
+
+    second = set_next_action(
+        session,
+        subject,
+        "Call the party",
+        due_date_unknown_reason="awaiting_schedule_information",
+        principal=RECORDER,
+    )
+
+    assert second.id != first.id
+    assert second.predecessor_decision_id == first.id
+    assert second.action_due_date_reason == "awaiting_schedule_information"
+    assert current_next_action_decision(session, subject).id == second.id
 
 
 def test_reassignment_appends_and_pins_its_predecessor(session, dependency):

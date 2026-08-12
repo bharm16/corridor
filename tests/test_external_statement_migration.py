@@ -23,7 +23,6 @@ from corridor.external_statements import (
     StatementScope,
     StatementTiming,
     record_external_party_statement,
-    record_statement_scope_decision,
 )
 from corridor.legacy_ledger_archive import plan_retirement, retire_legacy_ledger
 from corridor.m8_acceptance_database import provision_disposable_postgres
@@ -42,7 +41,6 @@ from corridor.models import (
     ExternalOrg,
     Project,
 )
-from corridor.principals import HumanPrincipal
 import corridor.adjudicate as adjudicate_module
 import corridor.models as models_module
 
@@ -72,6 +70,7 @@ _LEGACY_STATEMENT_BACKFILL_REVISION = "e226a8d4f3c2"
 _EVENT_EVIDENCE_MIGRATION_REVISION = "f227b9e4d3c2"
 _CONTRACT_STATEMENT_REVISION = "a230c4d3e2f1"
 _RETIREMENT_ROLE_REPAIR_REVISION = "b230e4f5a6b7"
+_WORK_DECISION_SUBJECT_REVISION = "b249c7e1d4f3"
 
 
 @dataclass(frozen=True)
@@ -635,10 +634,10 @@ def _remove_late_a217_immutability_guard(connection) -> None:
 def _statement_revision_path() -> tuple[str, ...]:
     config = Config(str(_ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    heads = scripts.get_heads()
-    assert len(heads) == 1, (
-        f"statement migration rehearsal requires one head: {heads}"
-    )
+    # This rehearsal deliberately ends at the statement-contract repair.  A
+    # later independent migration must not turn a historical statement
+    # migration test into a broad current-head schema oracle.
+    heads = (_RETIREMENT_ROLE_REPAIR_REVISION,)
 
     ordered = list(
         reversed(list(scripts.iterate_revisions(heads[0], _PRE_STATEMENT_REVISION)))
@@ -1770,11 +1769,32 @@ def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
                 ),
                 {"dependency_id": dependency.id, "link_id": evidence_id},
             )
-            record_statement_scope_decision(
-                session,
-                event_id=event_id,
-                scope=StatementScope.selected((dependency.id,)),
-                actor=HumanPrincipal("local:scope-corrector"),
+            corrected_decision_id = session.scalar(
+                text(
+                    """
+                    insert into dependency_event_scope_decisions
+                        (event_id, scope_mode, supersedes_scope_decision_id, decided_by)
+                    values (:event_id, 'selected', :predecessor_id,
+                            'local:scope-corrector')
+                    returning id
+                    """
+                ),
+                {"event_id": event_id, "predecessor_id": decision_id},
+            )
+            session.execute(
+                text(
+                    """
+                    insert into dependency_event_scopes
+                        (event_id, scope_decision_id, dependency_id, recorded_by)
+                    values (:event_id, :decision_id, :dependency_id,
+                            'local:scope-corrector')
+                    """
+                ),
+                {
+                    "event_id": event_id,
+                    "decision_id": corrected_decision_id,
+                    "dependency_id": dependency.id,
+                },
             )
             session.commit()
 
@@ -1953,7 +1973,7 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _RETIREMENT_ROLE_REPAIR_REVISION
+                    _WORK_DECISION_SUBJECT_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (
@@ -2153,7 +2173,7 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _RETIREMENT_ROLE_REPAIR_REVISION
+                    _WORK_DECISION_SUBJECT_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (

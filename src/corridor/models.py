@@ -855,15 +855,17 @@ class DependencyAdmissionOutcome(Base):
 
 
 class WorkDecision(Base):
-    """One appended project decision about a Dependency's coordination state.
+    """One appended project decision about exactly one Coordination Subject.
 
     A Work Decision proves only what the project decided and when
     (ADR-0025): it is not Evidence, states nothing about what a document or
     External Party said, and can never set Criticality, a Resolution
     Strategy, Ready, or an External Party's status or commitment. The typed
     receipt is the record — the audit log carries only a pointer event.
-    One linear chain per Dependency and field; the current value on the
-    Dependency is a projection of the chain tail.
+    One linear chain per Dependency or Commitment Lineage and field; their
+    current values are projections of the chain tails.  A statement-level
+    plan belongs to durable factual lineage, never to a Dependency selected
+    later by a scope decision (ADR-0038).
     """
 
     __tablename__ = "work_decisions"
@@ -871,13 +873,32 @@ class WorkDecision(Base):
         UniqueConstraint(
             "dependency_id", "id", name="uq_work_decisions_dependency_id_id"
         ),
+        UniqueConstraint(
+            "commitment_lineage_id",
+            "id",
+            name="uq_work_decisions_commitment_lineage_id_id",
+        ),
         ForeignKeyConstraint(
             ["dependency_id", "predecessor_decision_id"],
             ["work_decisions.dependency_id", "work_decisions.id"],
             name="fk_work_decisions_predecessor",
         ),
+        ForeignKeyConstraint(
+            ["commitment_lineage_id", "predecessor_decision_id"],
+            ["work_decisions.commitment_lineage_id", "work_decisions.id"],
+            name="fk_work_decisions_commitment_lineage_predecessor",
+        ),
         UniqueConstraint(
             "predecessor_decision_id", name="uq_work_decisions_predecessor"
+        ),
+        CheckConstraint(
+            "(dependency_id is not null and commitment_lineage_id is null) "
+            "or (dependency_id is null and commitment_lineage_id is not null)",
+            name="ck_work_decisions_exactly_one_subject",
+        ),
+        CheckConstraint(
+            "field in ('internal_owner', 'next_action', 'milestone_impact')",
+            name="ck_work_decisions_field",
         ),
         Index(
             "uq_work_decisions_one_root",
@@ -886,10 +907,20 @@ class WorkDecision(Base):
             unique=True,
             postgresql_where=text("predecessor_decision_id is null"),
         ),
+        Index(
+            "uq_work_decisions_commitment_lineage_one_root",
+            "commitment_lineage_id",
+            "field",
+            unique=True,
+            postgresql_where=text("predecessor_decision_id is null"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    commitment_lineage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("commitment_lineages.id"), server_default=text("null")
+    )
     decision_type: Mapped[str] = mapped_column(String(32))
     field: Mapped[str] = mapped_column(String(32))
     before_value: Mapped[str | None] = mapped_column(Text)
@@ -899,6 +930,16 @@ class WorkDecision(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     predecessor_decision_id: Mapped[int | None] = mapped_column(BigInteger)
+    action_due_date_reason: Mapped[str | None] = mapped_column(
+        String(64), server_default=text("null")
+    )
+    no_follow_up_reason: Mapped[str | None] = mapped_column(
+        String(64), server_default=text("null")
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(
+        String(64), server_default=text("null")
+    )
+    note: Mapped[str | None] = mapped_column(Text, server_default=text("null"))
 
 
 class RevisionComparisonRun(Base):
@@ -1226,6 +1267,37 @@ class Dependency(Base):
     )
 
 
+class CommitmentLineage(Base):
+    """The durable identity of one accepted External Party commitment.
+
+    A correction to attribution or timing appends a successor statement, but
+    it does not create another Coordination Plan.  The projections here are
+    therefore deliberately internal project decisions, never External Party
+    facts or substitutions for the statement receipts (ADR-0038).
+    """
+
+    __tablename__ = "commitment_lineages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    internal_owner: Mapped[str | None] = mapped_column(Text)
+    next_action: Mapped[str | None] = mapped_column(Text)
+    action_due_date: Mapped[date | None] = mapped_column(Date)
+    action_due_date_reason: Mapped[str | None] = mapped_column(String(64))
+    milestone_impact: Mapped[str | None] = mapped_column(String(32))
+    milestone_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), default=list, server_default="{}"
+    )
+    # A factual successor changes the fact to which a plan responds.  It
+    # preserves the plan history while refusing to silently call it current.
+    plan_needs_review: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DependencyEvent(Base):
     """One attributable External Party statement, with scope kept separately.
 
@@ -1236,10 +1308,25 @@ class DependencyEvent(Base):
     """
 
     __tablename__ = "dependency_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "supersedes_event_id",
+            name="uq_dependency_events_supersedes_event",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     event_type: Mapped[str] = mapped_column(_enum(*EVENT_TYPES, name="event_type"))
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    # Only accepted Commitments and Committed Date Changes carry this
+    # durable subject identity.  Closure is a distinct External Party fact;
+    # it cannot become a Coordination Subject by borrowing this key.
+    commitment_lineage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("commitment_lineages.id"), server_default=text("null")
+    )
+    supersedes_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_events.id"), server_default=text("null")
+    )
     affected_external_org_id: Mapped[int | None] = mapped_column(
         ForeignKey("external_orgs.id")
     )
@@ -1571,6 +1658,23 @@ class Milestone(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class WorkDecisionMilestoneImpact(Base):
+    """One exact registered Milestone named by an ``affects`` decision."""
+
+    __tablename__ = "work_decision_milestone_impacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "work_decision_id",
+            "milestone_id",
+            name="uq_work_decision_milestone_impact",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    work_decision_id: Mapped[int] = mapped_column(ForeignKey("work_decisions.id"))
+    milestone_id: Mapped[int] = mapped_column(ForeignKey("milestones.id"))
 
 
 class Candidate(Base):

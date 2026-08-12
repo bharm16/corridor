@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from corridor.identity import is_project_side_party, normalize_party
 from corridor.models import (
+    CommitmentLineage,
     Dependency,
     DependencyEvent,
     DependencyEventEvidence,
@@ -117,6 +118,7 @@ def record_external_party_statement(
     created_by: str,
     previous_timing: StatementTiming | None = None,
     evidence: CitedStatementEvidence | None = None,
+    commitment_lineage_id: int | None = None,
 ) -> DependencyEvent:
     """Append one attributable External Party Commitment or Date Change.
 
@@ -167,8 +169,17 @@ def record_external_party_statement(
     # with an unusable transaction or an event missing its timing, scope,
     # Evidence, or projection.
     with session.begin_nested():
+        lineage, predecessor = _commitment_lineage_for_append(
+            session,
+            project_id=project.id,
+            commitment_lineage_id=commitment_lineage_id,
+            affected_external_org_id=affected.id,
+            stated_external_org_id=stated.id,
+        )
         event = DependencyEvent(
             project_id=project.id,
+            commitment_lineage_id=lineage.id,
+            supersedes_event_id=predecessor.id if predecessor is not None else None,
             affected_external_org_id=affected.id,
             stated_external_org_id=stated.id,
             attribution_state="resolved",
@@ -187,6 +198,10 @@ def record_external_party_statement(
         )
         session.add(event)
         session.flush([event])
+        if predecessor is not None and _lineage_has_coordination_plan(session, lineage.id):
+            # The receipts remain current history, but changed attribution or
+            # timing is not permission to silently call their response apt.
+            lineage.plan_needs_review = True
         scope_decision = session.scalar(
             select(DependencyEventScopeDecision).where(
                 DependencyEventScopeDecision.event_id == event.id
@@ -250,6 +265,63 @@ def record_external_party_statement(
         project_committed_dates(session, dependency_ids)
         session.flush()
     return event
+
+
+def _commitment_lineage_for_append(
+    session: Session,
+    *,
+    project_id: int,
+    commitment_lineage_id: int | None,
+    affected_external_org_id: int,
+    stated_external_org_id: int,
+) -> tuple[CommitmentLineage, DependencyEvent | None]:
+    """Return the durable statement subject and its current factual tail."""
+    if commitment_lineage_id is None:
+        lineage = CommitmentLineage(project_id=project_id)
+        session.add(lineage)
+        session.flush([lineage])
+        return lineage, None
+
+    lineage = session.get(CommitmentLineage, commitment_lineage_id)
+    if lineage is None or lineage.project_id != project_id:
+        raise StatementRefusal("Commitment Lineage belongs to another project")
+    predecessor = _current_commitment_event(session, lineage.id)
+    if predecessor is None:
+        raise StatementRefusal("Commitment Lineage has no accepted statement to correct")
+    if (
+        predecessor.affected_external_org_id != affected_external_org_id
+        or predecessor.stated_external_org_id != stated_external_org_id
+    ):
+        raise StatementRefusal(
+            "Commitment Lineage corrections must keep the same External Parties"
+        )
+    return lineage, predecessor
+
+
+def _current_commitment_event(
+    session: Session, commitment_lineage_id: int
+) -> DependencyEvent | None:
+    superseding = DependencyEvent.__table__.alias("superseding")
+    return session.scalar(
+        select(DependencyEvent)
+        .where(
+            DependencyEvent.commitment_lineage_id == commitment_lineage_id,
+            ~select(superseding.c.id)
+            .where(superseding.c.supersedes_event_id == DependencyEvent.id)
+            .exists(),
+        )
+        .order_by(DependencyEvent.id)
+    )
+
+
+def _lineage_has_coordination_plan(session: Session, commitment_lineage_id: int) -> bool:
+    from corridor.models import WorkDecision
+
+    return session.scalar(
+        select(WorkDecision.id)
+        .where(WorkDecision.commitment_lineage_id == commitment_lineage_id)
+        .limit(1)
+    ) is not None
 
 
 def validate_external_party_statement_draft(
