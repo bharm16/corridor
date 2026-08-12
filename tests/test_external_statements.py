@@ -105,7 +105,7 @@ def test_human_recorded_candidate_7129_preserves_month_timing_and_unknown_scope(
         record_external_party_statement,
     )
 
-    project, party, document, _dependency = statement_record
+    project, party, document, dependency = statement_record
     event = record_external_party_statement(
         session,
         project_id=project.id,
