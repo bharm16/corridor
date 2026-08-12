@@ -396,6 +396,7 @@ def _close_next_action(
         NEXT_ACTION,
         _projected_composite(projection),
     )
+    _assert_next_action_reason_consistent(projection, tail)
     if tail is None or tail.after_value is None:
         raise ValueError(f"{_subject_label(coordination_subject)} has no current Next Action")
 

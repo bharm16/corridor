@@ -314,6 +314,27 @@ def test_statement_action_projection_refuses_a_tampered_chain_tail(
         )
 
 
+def test_statement_action_reason_projection_refuses_a_tampered_chain_tail(
+    session, accepted_statement
+):
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    set_next_action(
+        session,
+        subject,
+        "Call the party",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=RECORDER,
+    )
+    lineage = session.get(CommitmentLineage, subject.commitment_lineage_id)
+    lineage.action_due_date_reason = "awaiting_schedule_information"
+    session.flush()
+
+    with pytest.raises(ValueError, match="diverged"):
+        complete_next_action(session, subject, principal=RECORDER)
+
+
 def test_date_change_milestone_impact_has_its_own_chain_and_exact_links(
     session, project, accepted_date_change
 ):
