@@ -22,7 +22,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.dependency_events import current_dependency_statements
+from corridor.dependency_events import (
+    current_dependency_statements,
+    verified_cited_statement_event_ids,
+)
 from corridor.exceptions import (
     RULESET_VERSION,
     Evaluation,
@@ -236,7 +239,9 @@ def build_report(
         )
     ).all()
     current_statements = current_dependency_statements(session, dependency_ids)
-    verified_cited_event_ids = _verified_cited_event_ids(session, dependency_ids)
+    verified_cited_event_ids = verified_cited_statement_event_ids(
+        session, dependency_ids
+    )
     if document_only:
         # Filter before selecting the newest event, not afterwards: the
         # newest cited statement may lack a verified event citation while an
@@ -745,11 +750,16 @@ def _changes_since_last(
         section.rows.append(
             [
                 Cell("Ref", change.ref_code, provenance),
-                Cell("Change", change.kind, provenance),
+                Cell("Change", _customer_change_name(change.kind), provenance),
                 Cell("Detail", change.detail, provenance),
             ]
         )
     return section
+
+
+def _customer_change_name(kind: str) -> str:
+    """Render the current domain term without rewriting historical records."""
+    return "Committed Date Change" if kind == "slipped" else kind
 
 
 def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
@@ -948,43 +958,6 @@ def _event_citations(
             Assertion(document.id, document.filename, link.page_no, link.quote),
         )
     return citations
-
-
-def _verified_cited_event_ids(
-    session: Session, dependency_ids: list[int]
-) -> set[int]:
-    """Cited event ids whose own statement has verified Evidence."""
-    if not dependency_ids:
-        return set()
-    return set(
-        session.scalars(
-            select(DependencyEventEvidence.event_id)
-            .join(
-                EvidenceLink,
-                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
-            )
-            .join(
-                DependencyEvent,
-                DependencyEventEvidence.event_id == DependencyEvent.id,
-            )
-            .join(
-                DependencyEventScope,
-                DependencyEventScope.event_id == DependencyEventEvidence.event_id,
-            )
-            .join(
-                DependencyEventScopeDecision,
-                DependencyEventScope.scope_decision_id
-                == DependencyEventScopeDecision.id,
-            )
-            .where(
-                DependencyEventScope.dependency_id.in_(dependency_ids),
-                current_scope_decision_filter(),
-                DependencyEvent.source_kind == "cited",
-                EvidenceLink.verified.is_(True),
-            )
-            .distinct()
-        )
-    )
 
 
 def assert_no_bare_cells(report: Report) -> None:

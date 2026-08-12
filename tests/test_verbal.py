@@ -721,7 +721,7 @@ def test_normal_report_change_marks_a_new_verbal_date(session, dependency):
         for section in report.sections
         if section.title == "Changes since last report"
         for row in section.rows
-        if row[1].value == "slipped"
+        if row[1].value == "Committed Date Change"
     )
     assert isinstance(change[1].provenance, Verbal)
     assert isinstance(change[2].provenance, Verbal)
