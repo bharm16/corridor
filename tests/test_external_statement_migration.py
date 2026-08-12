@@ -70,6 +70,7 @@ _EVENT_EVIDENCE_ROLE_REVISION = "d225a7c4e3f2"
 _LEGACY_STATEMENT_BACKFILL_REVISION = "e226a8d4f3c2"
 _EVENT_EVIDENCE_MIGRATION_REVISION = "f227b9e4d3c2"
 _CONTRACT_STATEMENT_REVISION = "a230c4d3e2f1"
+_RETIREMENT_ROLE_REPAIR_REVISION = "b230e4f5a6b7"
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,9 @@ _REVISION_SCHEMA_EXPECTATIONS[_CONTRACT_STATEMENT_REVISION] = (
             )
         ),
     )
+)
+_REVISION_SCHEMA_EXPECTATIONS[_RETIREMENT_ROLE_REPAIR_REVISION] = (
+    _REVISION_SCHEMA_EXPECTATIONS[_CONTRACT_STATEMENT_REVISION]
 )
 
 
@@ -1248,7 +1252,10 @@ def _assert_statement_data_at_revision(
     if expected_revision == _EVENT_EVIDENCE_MIGRATION_REVISION:
         _assert_event_evidence_migration(connection, expected_216_data)
         return
-    if expected_revision == _CONTRACT_STATEMENT_REVISION:
+    if expected_revision in {
+        _CONTRACT_STATEMENT_REVISION,
+        _RETIREMENT_ROLE_REPAIR_REVISION,
+    }:
         _assert_contracted_statement_data(connection, expected_216_data)
         return
     raise AssertionError(
@@ -1275,6 +1282,7 @@ def _assert_migration_state(
                 _LEGACY_STATEMENT_BACKFILL_REVISION,
                 _EVENT_EVIDENCE_MIGRATION_REVISION,
                 _CONTRACT_STATEMENT_REVISION,
+                _RETIREMENT_ROLE_REPAIR_REVISION,
             }
         ):
             legacy_dependency_ids = {
@@ -1937,7 +1945,7 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _CONTRACT_STATEMENT_REVISION
+                    _RETIREMENT_ROLE_REPAIR_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (
@@ -2137,7 +2145,7 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _CONTRACT_STATEMENT_REVISION
+                    _RETIREMENT_ROLE_REPAIR_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (
