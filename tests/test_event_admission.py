@@ -43,6 +43,7 @@ from corridor.models import (
     Document,
     EvidenceLink,
     EventAdmissionOutcome,
+    ExternalOrg,
     PolicyRun,
     Project,
 )
@@ -334,6 +335,62 @@ def test_two_dependencies_for_one_reference_abstains(
 
 
 # ── The actor boundary (ADR-0026) ────────────────────────────────────────
+
+
+def test_candidate_7587_abstains_when_affected_party_does_not_prove_stated_actor(
+    session, project, admitted
+):
+    """An invitation for Air Products is not an Air Products Commitment."""
+    air_products = ExternalOrg(name="Air Products")
+    session.add(air_products)
+    session.flush()
+    air_products_dependency = Dependency(
+        project_id=project.id,
+        ref_code="AIR-PRODUCTS-PL35",
+        source_ref="PL35",
+        dep_type="utility_relocation",
+        title="Air Products PL35 relocation",
+        external_org_id=air_products.id,
+        status="identified",
+    )
+    session.add(air_products_dependency)
+    session.flush()
+    candidate_7587 = _event(
+        org="Air Products",
+        ref="PL35",
+        committed_date="2025-05-08",
+        description=(
+            "Air Products will be invited to the "
+            "TxDOT-Utility Owners-DB Proposers Workshop on May 8th, 2025."
+        ),
+    )
+    candidate_7587.pop("stated_party")
+    [candidate] = _minutes_with(session, project, [candidate_7587])
+
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    assert [
+        (abstention.candidate_id, abstention.reason)
+        for abstention in result.abstentions
+    ] == [(candidate.id, "party_unstated")]
+    outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == result.run_id,
+            EventAdmissionOutcome.candidate_id == candidate.id,
+        )
+    )
+    assert outcome is not None
+    assert (outcome.outcome, outcome.reason, outcome.dependency_event_id) == (
+        "abstained",
+        "party_unstated",
+        None,
+    )
+    session.refresh(candidate)
+    session.refresh(air_products_dependency)
+    assert candidate.state == "pending"
+    assert air_products_dependency.committed_date is None
+    assert _events_on(session, air_products_dependency.id) == []
 
 
 def test_a_project_side_event_never_sets_a_committed_date(

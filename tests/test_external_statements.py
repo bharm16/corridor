@@ -70,7 +70,7 @@ def statement_record(session):
     return project, party, document, dependency
 
 
-def test_unknown_scope_preserves_month_timing_without_a_dependency_projection(
+def test_human_recorded_candidate_7129_preserves_month_timing_and_unknown_scope(
     session, statement_record
 ):
     """Candidate 7129's January 2025 is not an invented January 1 date."""
@@ -93,7 +93,7 @@ def test_unknown_scope_preserves_month_timing_without_a_dependency_projection(
         description="Equistar to provide a chain of title (Due date of 01/2025).",
         new_timing=StatementTiming.month("01/2025", 2025, 1),
         scope=StatementScope.unknown(),
-        created_by="corridor:event-admission",
+        created_by="local:statement-coordinator",
         evidence=CitedStatementEvidence(
             document_id=document.id,
             page_no=1,
@@ -111,6 +111,70 @@ def test_unknown_scope_preserves_month_timing_without_a_dependency_projection(
     assert event.new_timing.precision == "month"
     assert event.new_timing.start_date == date(2025, 1, 1)
     assert event.new_timing.end_date == date(2025, 1, 31)
+    assert session.scalars(
+        select(DependencyEventScope).where(DependencyEventScope.event_id == event.id)
+    ).all() == []
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+
+
+def test_human_recorded_candidate_7296_preserves_both_timings_direction_and_unknown_scope(
+    session, statement_record
+):
+    """The coordinator preserves the party-level change without choosing a row."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, _, document, dependency = statement_record
+    kinder_morgan = ExternalOrg(name="Kinder Morgan")
+    session.add(kinder_morgan)
+    session.flush()
+
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=kinder_morgan.id,
+        stated_party="Kinder Morgan",
+        stated_external_org_id=kinder_morgan.id,
+        source_kind="cited",
+        event_date=None,
+        description=(
+            "The March 2026 completion timeline seems unattainable. "
+            "Propose extending to May 16th."
+        ),
+        previous_timing=StatementTiming.month("March 2026", 2026, 3),
+        new_timing=StatementTiming.day("May 16th", date(2026, 5, 16)),
+        scope=StatementScope.unknown(),
+        created_by="local:statement-coordinator",
+        evidence=CitedStatementEvidence(
+            document_id=document.id,
+            page_no=1,
+            quote=(
+                "The March 2026 completion timeline seems unattainable. "
+                "Propose extending to May 16th."
+            ),
+        ),
+    )
+
+    assert event.event_type == "committed_date_change"
+    assert event.timing_direction == "later"
+    assert (
+        event.previous_timing.text,
+        event.previous_timing.precision,
+        event.previous_timing.start_date,
+        event.previous_timing.end_date,
+    ) == ("March 2026", "month", date(2026, 3, 1), date(2026, 3, 31))
+    assert (
+        event.new_timing.text,
+        event.new_timing.precision,
+        event.new_timing.start_date,
+        event.new_timing.end_date,
+    ) == ("May 16th", "day", date(2026, 5, 16), date(2026, 5, 16))
+    assert event.scope_mode == "unknown"
     assert session.scalars(
         select(DependencyEventScope).where(DependencyEventScope.event_id == event.id)
     ).all() == []
@@ -515,6 +579,12 @@ def test_all_active_scope_is_a_snapshot_and_change_keeps_both_timings(
             )
         )
     ) == {first.id, second.id}
+    session.refresh(first)
+    session.refresh(second)
+    assert (first.committed_date, second.committed_date) == (
+        date(2026, 5, 16),
+        date(2026, 5, 16),
+    )
 
 
 def test_invalid_known_scope_refuses_before_writing_any_part_of_the_statement(
@@ -576,12 +646,12 @@ def test_database_refusal_leaves_no_partial_event_or_projection_and_keeps_the_wr
     session.execute(
         text(
             """
-            create function refuse_test_statement_write()
+            create function refuse_test_statement_evidence_write()
             returns trigger
             language plpgsql
             as $$
             begin
-                if new.description = 'refuse this statement' then
+                if new.quote = 'refuse this statement evidence' then
                     raise exception 'statement write refused' using errcode = '23514';
                 end if;
                 return new;
@@ -593,9 +663,9 @@ def test_database_refusal_leaves_no_partial_event_or_projection_and_keeps_the_wr
     session.execute(
         text(
             """
-            create trigger refuse_test_statement_write
-            before insert on dependency_events
-            for each row execute function refuse_test_statement_write();
+            create trigger refuse_test_statement_evidence_write
+            before insert on evidence_links
+            for each row execute function refuse_test_statement_evidence_write();
             """
         )
     )
@@ -609,12 +679,12 @@ def test_database_refusal_leaves_no_partial_event_or_projection_and_keeps_the_wr
             stated_external_org_id=party.id,
             source_kind="cited",
             event_date=date(2025, 1, 16),
-            description="refuse this statement",
+            description="Equistar will complete relocation by 2025-06-01.",
             new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
             scope=StatementScope.selected((dependency.id,)),
             created_by="corridor:event-admission",
             evidence=CitedStatementEvidence(
-                document.id, 1, "Equistar will complete relocation."
+                document.id, 1, "refuse this statement evidence"
             ),
         )
 

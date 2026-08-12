@@ -339,6 +339,148 @@ def test_the_prompt_attributes_a_verbal_backed_committed_date(session, dependenc
     assert f"on {TODAY - timedelta(days=1)}" in user
 
 
+def test_the_prompt_uses_the_current_exact_day_statement_over_a_stale_scalar(
+    session, dependency
+):
+    """The model receives the same Committed Date that readers publish."""
+    committed_date = TODAY + timedelta(days=60)
+    event = DependencyEvent(
+        project_id=dependency.project_id,
+        affected_external_org_id=None,
+        stated_external_org_id=None,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="CenterPoint Energy",
+        event_date=TODAY - timedelta(days=1),
+        description="CenterPoint will finish relocation in October.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text=committed_date.isoformat(),
+                precision="day",
+                start_date=committed_date,
+                end_date=committed_date,
+            ),
+        )
+    )
+    session.flush()
+    direct_evidence = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+    session.add(
+        EvidenceLink(
+            event_id=event.id,
+            document_id=direct_evidence.document_id,
+            page_no=direct_evidence.page_no,
+            quote="CenterPoint will finish relocation in October.",
+            verified=True,
+        )
+    )
+    session.flush()
+    stale_date = dependency.committed_date
+    client = StubClient([drafted(*covering_sentences(session, dependency))])
+
+    brief(session, dependency.id, client=client, today=TODAY)
+
+    user = client.calls[0]["user"]
+    assert f"committed {committed_date};" in user
+    assert f"committed {stale_date};" not in user
+
+
+def test_the_prompt_suppresses_a_stale_scalar_after_a_month_statement(
+    session, dependency
+):
+    """Month precision is not a fabricated day in the model's source record."""
+    event = DependencyEvent(
+        project_id=dependency.project_id,
+        affected_external_org_id=None,
+        stated_external_org_id=None,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="CenterPoint Energy",
+        event_date=TODAY - timedelta(days=1),
+        description="CenterPoint now expects completion in October 2026.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text="October 2026",
+                precision="month",
+                start_date=date(2026, 10, 1),
+                end_date=date(2026, 10, 31),
+            ),
+        )
+    )
+    session.flush()
+    stale_date = dependency.committed_date
+    client = StubClient([drafted(*covering_sentences(session, dependency))])
+
+    brief(session, dependency.id, client=client, today=TODAY)
+
+    user = client.calls[0]["user"]
+    assert "committed —;" in user
+    assert f"committed {stale_date};" not in user
+
+
+def test_the_prompt_withholds_an_unverified_cited_statement_date(
+    session, dependency
+):
+    """A cited date needs the event's own verified Evidence to be publishable."""
+    committed_date = TODAY + timedelta(days=60)
+    event = DependencyEvent(
+        project_id=dependency.project_id,
+        affected_external_org_id=None,
+        stated_external_org_id=None,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="CenterPoint Energy",
+        event_date=TODAY - timedelta(days=1),
+        description="CenterPoint will finish relocation in October.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text=committed_date.isoformat(),
+                precision="day",
+                start_date=committed_date,
+                end_date=committed_date,
+            ),
+        )
+    )
+    session.flush()
+    stale_date = dependency.committed_date
+    client = StubClient([drafted(*covering_sentences(session, dependency))])
+
+    brief(session, dependency.id, client=client, today=TODAY)
+
+    user = client.calls[0]["user"]
+    assert "committed —;" in user
+    assert f"committed {stale_date};" not in user
+    assert f"committed {committed_date};" not in user
+
+
 # ------------------------------------------------------------- the render
 
 
