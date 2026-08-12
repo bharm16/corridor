@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
 from corridor.disputes import (
+    DisputeMovedOn,
     NoSuchDispute,
     disputes_for,
     settle_dispute,
@@ -264,3 +265,208 @@ def test_an_unverified_claim_is_a_bad_citation_not_a_disagreement(
     assert [d.field_name for d in disputes_for(session, disputed.id)] == [
         "station_from"
     ]
+
+
+def test_a_claim_arriving_while_you_read_refuses_the_settlement(
+    session, disputed
+):
+    """The reviewer compared two pages; a third arrived. Recording their
+    judgment as covering it would settle what they never saw."""
+    saw = disputes_for(session, disputed.id)[0].newest_claim_id
+
+    link = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == disputed.id)
+    ).first()
+    session.add(
+        Assertion(
+            dependency_id=disputed.id,
+            field_name="station_from",
+            asserted_value="1300+00",
+            evidence_link_id=link.id,
+        )
+    )
+    session.flush()
+
+    with pytest.raises(DisputeMovedOn):
+        settle_dispute(
+            session,
+            disputed.id,
+            "station_from",
+            value="1105+00",
+            principal=REVIEWER,
+            saw_claim_id=saw,
+        )
+    assert disputes_for(session, disputed.id) != []
+
+
+def test_settling_what_you_actually_saw_is_accepted(session, disputed):
+    saw = disputes_for(session, disputed.id)[0].newest_claim_id
+
+    settle_dispute(
+        session,
+        disputed.id,
+        "station_from",
+        value="1105+00",
+        principal=REVIEWER,
+        saw_claim_id=saw,
+    )
+    assert disputes_for(session, disputed.id) == []
+
+
+def test_an_unverified_claim_never_unsettles_a_decided_field(
+    session, project, disputed
+):
+    """A bad citation is not a source disagreeing, so it cannot reopen
+    what a reviewer already decided."""
+    settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+    assert disputes_for(session, disputed.id) == []
+
+    document = session.scalars(
+        select(Document).where(Document.project_id == project.id)
+    ).first()
+    bad = EvidenceLink(
+        dependency_id=disputed.id,
+        document_id=document.id,
+        page_no=1,
+        quote="not on the page",
+        verified=False,
+    )
+    session.add(bad)
+    session.flush()
+    session.add(
+        Assertion(
+            dependency_id=disputed.id,
+            field_name="station_from",
+            asserted_value="9999+99",
+            evidence_link_id=bad.id,
+        )
+    )
+    session.flush()
+
+    assert disputes_for(session, disputed.id) == []
+    assert settled_field_names(session, [disputed.id]) == {
+        disputed.id: {"station_from"}
+    }
+
+
+def test_settling_a_not_null_field_as_empty_does_not_break_the_record(
+    session, project, disputed
+):
+    """Concluding that a field says nothing is legitimate; a column that
+    cannot be empty must not turn that into a 500."""
+    link = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == disputed.id)
+    ).all()
+    for value, evidence in zip(("Water main", "Gas main"), link):
+        session.add(
+            Assertion(
+                dependency_id=disputed.id,
+                field_name="title",
+                asserted_value=value,
+                evidence_link_id=evidence.id,
+            )
+        )
+    session.flush()
+    assert "title" in [d.field_name for d in disputes_for(session, disputed.id)]
+
+    settlement = settle_dispute(
+        session, disputed.id, "title", value=None, principal=REVIEWER
+    )
+    assert settlement.settled_value is None
+    session.refresh(disputed)
+    assert disputed.title is not None  # the column keeps its last real value
+
+
+def test_a_mistaken_settlement_is_corrected_by_settling_again(
+    session, disputed
+):
+    """ADR-0031 rejects irreversibility: append-only history makes a
+    wrong verdict correctable for free. 'Already settled' must never
+    read as 'nothing to settle'."""
+    settle_dispute(
+        session, disputed.id, "station_from", value="1102+20", principal=REVIEWER
+    )
+    assert disputes_for(session, disputed.id) == []
+
+    corrected = settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+
+    assert corrected.settled_value == "1105+00"
+    session.refresh(disputed)
+    assert disputed.station_from == "1105+00"
+    # Both verdicts survive in order; nothing was edited.
+    settlements = session.scalars(
+        select(DisputeSettlement)
+        .where(DisputeSettlement.dependency_id == disputed.id)
+        .order_by(DisputeSettlement.id)
+    ).all()
+    assert [s.settled_value for s in settlements] == ["1102+20", "1105+00"]
+
+
+def test_a_settled_field_still_shows_its_claims_when_asked(
+    session, disputed
+):
+    """The page that offers to change a conclusion needs the claims in
+    front of the reviewer."""
+    settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+
+    assert disputes_for(session, disputed.id) == []
+    [dispute] = disputes_for(session, disputed.id, include_settled=True)
+    assert dispute.field_name == "station_from"
+    assert set(dispute.values) == {"1102+20", "1105+00"}
+
+
+def test_settling_a_dismissed_record_refuses(session, project, disputed):
+    from corridor.adjudicate import dismiss_dependency
+
+    dismiss_dependency(session, disputed, "duplicate", principal=REVIEWER)
+
+    with pytest.raises(ValueError, match="dismissed"):
+        settle_dispute(
+            session,
+            disputed.id,
+            "station_from",
+            value="1105+00",
+            principal=REVIEWER,
+        )
+
+
+def test_a_nonbreaking_space_is_not_a_claim_in_sql_either(
+    session, project, disputed
+):
+    """Postgres's [[:space:]] misses NBSP; Python's strip does not. The
+    one-predicate rule holds only if both strip the same characters."""
+    document = session.scalars(
+        select(Document).where(Document.project_id == project.id)
+    ).first()
+    link = EvidenceLink(
+        dependency_id=disputed.id,
+        document_id=document.id,
+        page_no=1,
+        quote="nbsp",
+        verified=True,
+    )
+    session.add(link)
+    session.flush()
+    session.add(
+        Assertion(
+            dependency_id=disputed.id,
+            field_name="station_from",
+            asserted_value=" ",  # a lone non-breaking space
+            evidence_link_id=link.id,
+        )
+    )
+    session.flush()
+
+    [dispute] = disputes_for(session, disputed.id)
+    assert " " not in dispute.values
+    # And it cannot un-settle a decided field by arriving later.
+    settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+    assert contradicted_fields(session, [disputed.id]) == {}

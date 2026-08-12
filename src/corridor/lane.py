@@ -45,7 +45,9 @@ class ConflictUnidentified(LaneRefusal):
 
 
 def conflict_key(
-    candidate: Candidate, schemes: Mapping[int, str]
+    candidate: Candidate,
+    schemes: Mapping[int, str],
+    aliases: Mapping[str, str] | None = None,
 ) -> tuple[str, str] | None:
     """What makes two Candidates revisions of one conflict.
 
@@ -60,14 +62,17 @@ def conflict_key(
     a display that offers a sibling the mutation then rejects is a worse
     failure than either rule alone.
     """
-    return candidate_identity(candidate, schemes)
+    return candidate_identity(candidate, schemes, aliases)
 
 
 def same_conflict(
-    candidate: Candidate, other: Candidate, schemes: Mapping[int, str]
+    candidate: Candidate,
+    other: Candidate,
+    schemes: Mapping[int, str],
+    aliases: Mapping[str, str] | None = None,
 ) -> bool:
-    key = conflict_key(candidate, schemes)
-    return key is not None and conflict_key(other, schemes) == key
+    key = conflict_key(candidate, schemes, aliases)
+    return key is not None and conflict_key(other, schemes, aliases) == key
 
 
 def check_sibling_request(
@@ -76,6 +81,7 @@ def check_sibling_request(
     *,
     in_event_lane: bool,
     schemes: Mapping[int, str],
+    aliases: Mapping[str, str] | None = None,
 ) -> None:
     """Refuse an incoherent request before anything is even looked up.
 
@@ -97,7 +103,7 @@ def check_sibling_request(
             "being accepted"
         )
 
-    if conflict_key(candidate, schemes) is None:
+    if conflict_key(candidate, schemes, aliases) is None:
         raise ConflictUnidentified(
             f"candidate {candidate.id} states no identity under its "
             "document's numbering scheme — there is no conflict for a "
@@ -109,6 +115,7 @@ def check_sibling_set(
     candidate: Candidate,
     siblings: list[Candidate],
     schemes: Mapping[int, str],
+    aliases: Mapping[str, str] | None = None,
 ) -> None:
     """Refuse the resolved set unless it is one gesture over one conflict.
 
@@ -117,7 +124,7 @@ def check_sibling_set(
     than admitting the primary and stranding the rest.
     """
     for sibling in siblings:
-        if not same_conflict(candidate, sibling, schemes):
+        if not same_conflict(candidate, sibling, schemes, aliases):
             raise NotTheSameConflict(
                 f"candidate {sibling.id} is not a revision of the same "
                 "conflict — one gesture covers one conflict"

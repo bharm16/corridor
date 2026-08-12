@@ -33,19 +33,77 @@ from corridor.models import (
     Candidate,
     Dependency,
     Document,
+    is_placeholder_party,
 )
 
 PROJECT_UNIQUE = "project-unique"
 PER_PARTY = "per-party"
 
 
-def row_identity(scheme: str, fields: dict) -> tuple[str, str] | None:
+def party_canonical_names(session: Session) -> dict[str, str]:
+    """Every registered spelling of a party, mapped to one canonical one.
+
+    An External Party is known by many names across documents — that is
+    what its aliases are for — and under a per-party scheme the party is
+    half of a conflict's name. Keying on the stated spelling made one
+    company's two registered names two different conflicts with the same
+    number, each invisible to the other's `already_admitted` check, so
+    one conflict entered the record twice with the disagreement between
+    them split across both rows instead of raised as a Dispute.
+
+    Resolution is exact against a recorded name or alias, casefolded and
+    whitespace-collapsed. Nothing here guesses: a spelling nobody has
+    registered stays its own party, which is the safe direction — it
+    surfaces as a row to look at rather than silently merging two
+    companies.
+    """
+    from corridor.models import ExternalOrg
+
+    # Ordered, and first registration wins: a spelling the registry has
+    # (wrongly) recorded on two parties resolves to the older one every
+    # time, on every reader — the write path applies the same rule — so
+    # dirty registry data degrades to a deterministic answer instead of
+    # a scan-order gamble. The real fix for a collision is fixing the
+    # registry.
+    canonical: dict[str, str] = {}
+    for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id)):
+        target = canonical.get(normalize_party(org.name), normalize_party(org.name))
+        for spelling in (org.name, *(org.aliases or [])):
+            if spelling:
+                canonical.setdefault(normalize_party(spelling), target)
+    return canonical
+
+
+def canonical_party(
+    name: str, aliases: Mapping[str, str] | None = None
+) -> str:
+    """One party's name, resolved through its registered spellings.
+
+    The single place a stated party becomes a comparable value, so the
+    identity key and the party-agreement check can never read one
+    company's two names differently again.
+    """
+    stated = normalize_party(name)
+    return (aliases or {}).get(stated, stated)
+
+
+def row_identity(
+    scheme: str, fields: dict, aliases: Mapping[str, str] | None = None
+) -> tuple[str, str] | None:
     """The name one row answers to, or None when it cannot be named.
 
     A tuple of (party, number) — party empty under a project-unique
     scheme, so identities from different schemes can never collide by
     accident. None means the fields do not carry what the scheme needs:
-    the number always, and under per-party the stated party too.
+    the number always, and under per-party a party that actually names
+    somebody.
+
+    The party half is normalized before it becomes a key. Two revisions
+    spelling one company `AT&T Texas` and `AT&T TEXAS` are stating the
+    same conflict, and keying on the raw string made them two records
+    with the same number — the exact duplication a declared scheme
+    exists to prevent. Normalizing here and nowhere else keeps the key
+    and the party-agreement check reading the same string.
     """
     if scheme not in NUMBERING_SCHEMES:
         raise ValueError(f"unknown numbering scheme {scheme!r}")
@@ -53,11 +111,27 @@ def row_identity(scheme: str, fields: dict) -> tuple[str, str] | None:
     if not uid:
         return None
     if scheme == PER_PARTY:
-        org = str(fields.get("external_org") or "").strip()
-        if not org:
+        org = fields.get("external_org")
+        # A document declining to name an owner names nothing, so it
+        # cannot be half of a name. `N/A` on two different rows is not
+        # one party twice, and treating it as one would merge unrelated
+        # conflicts — or, because no External Party ever resolves from
+        # it, admit the same row twice.
+        if not str(org or "").strip() or is_placeholder_party(org):
             return None
-        return (org, str(uid))
+        return (canonical_party(org, aliases), str(uid))
     return ("", str(uid))
+
+
+def normalize_party(name: str) -> str:
+    """One spelling of a party name, for use as a key.
+
+    Whitespace collapsed and case folded — the two ways one company's
+    name differs between revisions of the same form. Nothing looser:
+    matching a party by resemblance is Adjudication's judgment, and
+    alias resolution belongs to the External Party's own record.
+    """
+    return " ".join(str(name).split()).casefold()
 
 
 def document_numbering_schemes(
@@ -74,17 +148,21 @@ def document_numbering_schemes(
 
 
 def candidate_identity(
-    candidate: Candidate, schemes: Mapping[int, str]
+    candidate: Candidate,
+    schemes: Mapping[int, str],
+    aliases: Mapping[str, str] | None = None,
 ) -> tuple[str, str] | None:
     """A Candidate's identity under its source document's declared scheme.
 
     A document absent from the mapping is read as project-unique — the
     default every document carries — so a caller can pass a mapping built
-    from the documents it actually loaded.
+    from the documents it actually loaded. `aliases` collapses a party's
+    registered spellings; omitting it keys on the stated spelling, which
+    is right for a caller comparing rows inside one document.
     """
     fields = (candidate.payload_json or {}).get("fields", {})
     scheme = schemes.get(candidate.source_document_id, PROJECT_UNIQUE)
-    return row_identity(scheme, fields)
+    return row_identity(scheme, fields, aliases)
 
 
 def party_matches(session: Session, dependency: Dependency, org: str) -> bool:
@@ -103,4 +181,5 @@ def party_matches(session: Session, dependency: Dependency, org: str) -> bool:
     if external is None:
         return False
     names = [external.name, *(external.aliases or [])]
-    return any(org.casefold() == str(n).casefold() for n in names if n)
+    wanted = normalize_party(org)
+    return any(normalize_party(n) == wanted for n in names if n)

@@ -137,6 +137,7 @@ def browse(
     resolution_strategy: str | None = None,
     ready: bool | None = None,
     rule: str | None = None,
+    owner: str | None = None,
     limit: int = 200,
 ) -> list[LedgerRow]:
     """The ledger, filterable, at one evaluation of the project.
@@ -160,6 +161,17 @@ def browse(
     )
     if status:
         query = query.where(Dependency.status == status)
+    if owner:
+        # `unassigned` is the question a coordinator actually asks first —
+        # what has nobody — so it is a value of this filter rather than a
+        # separate control. Any other value names a person, matched
+        # exactly: an Internal Owner is established by a Work Decision
+        # naming someone, and fuzzy-matching people is how a list quietly
+        # attributes work to the wrong one.
+        if owner == "unassigned":
+            query = query.where(Dependency.internal_owner.is_(None))
+        else:
+            query = query.where(Dependency.internal_owner == owner)
     if org_id:
         query = query.where(Dependency.external_org_id == org_id)
     if resolution_strategy:
@@ -401,6 +413,11 @@ def mark_satisfies(
     session.flush()
     lock_project(session, dependency.project_id)
     session.expire_all()
+    if dependency.dismissed_at is not None:
+        raise ValueError(
+            f"{dependency.ref_code} was dismissed — readiness cannot move "
+            "on a record nobody is working"
+        )
     link = session.get(EvidenceLink, link_id, populate_existing=True)
     if link is None or link.dependency_id != dependency_id:
         raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")

@@ -51,6 +51,7 @@ from corridor.models import (
     PolicyRun,
     Document,
     Project,
+    is_placeholder_party,
 )
 from corridor.project_lock import lock_project
 
@@ -109,12 +110,21 @@ class DependencyAdmissionResult:
 def declared_matrix_document_ids(
     session: Session, project_id: int
 ) -> list[int]:
-    """Every matrix revision the policy reads, oldest stated date first.
+    """Every current matrix revision the policy reads, oldest date first.
 
     Order is the record's own: the newest revision's row is the one
     admitted, and older revisions corroborate it. Nothing here elects a
     revision — corroboration only happens between rows that already
     state the same thing.
+
+    A revision the registry has declared replaced is not read at all.
+    Every other path into the Ledger already refuses its rows — that is
+    what `actionable_candidate_query` means by scope — so including one
+    here did not corroborate anything: the write refused, the savepoint
+    rolled back, and the *current* revision's own row was lost with it.
+    Measured on NHHIP, that was 211 conflicts admitted where 688 should
+    have been. Supersession already answers which revision is current
+    (ADR-0016); this reads the answer instead of re-deriving one.
     """
     return list(
         session.scalars(
@@ -126,6 +136,7 @@ def declared_matrix_document_ids(
             .where(
                 Document.project_id == project_id,
                 Document.doc_type == "matrix",
+                Document.superseded_by.is_(None),
             )
             .order_by(Document.doc_date.asc().nulls_first(), Document.id.asc())
         ).all()
@@ -151,6 +162,7 @@ def run_dependency_admission(
     document_ids = declared_matrix_document_ids(session, project_id)
     policy_json = _canonical_policy(session, project, document_ids)
     schemes = identity.document_numbering_schemes(session, project_id)
+    aliases = identity.party_canonical_names(session)
 
     # Pending dependency candidates from each agreement document's
     # declared Active Run, grouped by document then by row identity under
@@ -175,7 +187,7 @@ def run_dependency_admission(
             .order_by(Candidate.id)
         ).all()
         for candidate in candidates:
-            key = identity.candidate_identity(candidate, schemes)
+            key = identity.candidate_identity(candidate, schemes, aliases)
             if key is not None:
                 rows.setdefault(key, []).append(candidate)
                 continue
@@ -227,19 +239,30 @@ def run_dependency_admission(
         # it asks whether these are one conflict at all, and merging two
         # parties' rows into one record would answer it by accident. That
         # question is Adjudication's (ADR-0031).
+        # Resolved through the party's registered aliases, like the
+        # identity key above: `Zeta Cable Co` and `Zeta Cable Company` are
+        # one company saying one thing, and reading them as two parties
+        # would withhold a row over a spelling the registry already
+        # reconciles. A blank or placeholder cell names nobody (ADR-0031
+        # withholds only where revisions name different External
+        # Parties), so `N/A` against `AT&T` is one named party and a
+        # gap, never a disagreement.
         parties = {
-            str((c.payload_json or {}).get("fields", {}).get("external_org") or "")
-            .strip()
-            .casefold()
+            identity.canonical_party(org, aliases)
             for c in candidates
+            for org in [
+                (c.payload_json or {}).get("fields", {}).get("external_org")
+            ]
+            if str(org or "").strip() and not is_placeholder_party(org)
         }
         if len(parties) > 1:
             abstain(candidates, "revisions_disagree_on_party")
             continue
-        fields = (candidates[0].payload_json or {}).get("fields", {})
-        if not any(v for v in fields.values() if v):
-            abstain(candidates, "asserts_nothing")
-            continue
+        # No "asserts nothing" branch here: a group only exists because
+        # its rows carry an identity, and the identity's own fields are
+        # claims — the branch that used to sit here could never fire. The
+        # write boundary still enforces the rule (CandidateAssertsNothing
+        # → write_refused), where it is real rather than vacuous.
         party, uid = key
         carriers = session.scalars(
             select(Dependency).where(

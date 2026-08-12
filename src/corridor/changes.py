@@ -22,13 +22,18 @@ from sqlalchemy.orm import Session
 
 from corridor.exceptions import RULESET_VERSION, Evaluation
 from corridor.ledger import browse
-from corridor.models import LegacyLedgerArchive, ReportRun, is_critical
+from corridor.models import (
+    DependencyDismissal,
+    LegacyLedgerArchive,
+    ReportRun,
+    is_critical,
+)
 
 
 @dataclass
 class Change:
     ref_code: str
-    kind: str  # new | closed | slipped | escalated | became_ready
+    kind: str  # new | closed | dismissed | slipped | escalated | became_ready
     detail: str
     # The Dependency this change is about, so a report cell describing it
     # drills through to the record rather than citing nothing (ADR-0003).
@@ -93,6 +98,18 @@ def snapshot(
             for row in rows
         },
     }
+
+
+def _dismissal_of(session: Session, dependency_id: int | None):
+    """The decision that took a record off the working list, if any."""
+    if dependency_id is None:
+        return None
+    return session.scalars(
+        select(DependencyDismissal)
+        .where(DependencyDismissal.dependency_id == dependency_id)
+        .order_by(DependencyDismissal.id.desc())
+        .limit(1)
+    ).first()
 
 
 def diff_since_last(
@@ -213,14 +230,31 @@ def diff_since_last(
 
     for ref in before:
         if ref not in after:
-            diff.changes.append(
-                Change(
-                    ref,
-                    "closed",
-                    "no longer in the ledger",
-                    before[ref].get("id"),
+            # A record can leave the working list two ways, and telling an
+            # external reader that a utility conflict was resolved when it
+            # was thrown out as junk is the one mistake this report cannot
+            # afford (ADR-0032). Dismissal is a decision with a reason on
+            # it, so the change carries the reason rather than a guess.
+            dismissal = _dismissal_of(session, before[ref].get("id"))
+            if dismissal is not None:
+                diff.changes.append(
+                    Change(
+                        ref,
+                        "dismissed",
+                        f"dismissed as {dismissal.reason} "
+                        f"by {dismissal.dismissed_by}",
+                        before[ref].get("id"),
+                    )
                 )
-            )
+            else:
+                diff.changes.append(
+                    Change(
+                        ref,
+                        "closed",
+                        "no longer in the ledger",
+                        before[ref].get("id"),
+                    )
+                )
 
     diff.changes.sort(key=lambda c: (c.kind, c.ref_code))
     return diff

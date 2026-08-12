@@ -3833,3 +3833,174 @@ def test_dismissing_twice_refuses(session, client, project, document):
         follow_redirects=False,
     )
     assert again.status_code == 409
+
+
+# ── The list answers "who owns it, and what's next" ──────────────────────
+
+
+def _coordinated_record(session, client, project, document, *, owner, action):
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/dependencies/{dependency.id}/owner",
+        data={"slug": project.slug, "owner": owner},
+        follow_redirects=False,
+    )
+    client.post(
+        f"/dependencies/{dependency.id}/action",
+        data={"slug": project.slug, "action": action, "due_date": "2026-01-05"},
+        follow_redirects=False,
+    )
+    session.refresh(dependency)
+    return dependency
+
+
+def test_the_list_shows_who_owns_it_and_what_is_next(
+    session, client, project, document
+):
+    """The coordinator's first question, answerable without opening a
+    single row."""
+    _coordinated_record(
+        session,
+        client,
+        project,
+        document,
+        owner="Dana Reyes",
+        action="call the utility about relocation",
+    )
+
+    page = client.get(f"/ledger/{project.slug}").text
+    assert "Dana Reyes" in page
+    assert "call the utility about relocation" in page
+    assert "by 2026-01-05" in page
+
+
+def test_the_list_can_be_narrowed_to_one_persons_work(
+    session, client, project, document
+):
+    _coordinated_record(
+        session, client, project, document, owner="Dana Reyes", action="call"
+    )
+
+    mine = client.get(f"/ledger/{project.slug}?owner=Dana+Reyes").text
+    assert "Dana Reyes" in mine
+    assert "1 shown" in mine
+
+    someone_else = client.get(f"/ledger/{project.slug}?owner=Sam+Okafor").text
+    assert "0 shown" in someone_else
+
+
+def test_the_list_can_be_narrowed_to_what_nobody_owns(
+    session, client, project, document
+):
+    """What has nobody is the question a coordinator asks first."""
+    _record_on_the_list(session, project, document)
+
+    unassigned = client.get(f"/ledger/{project.slug}?owner=unassigned").text
+    assert "1 shown" in unassigned
+
+
+def test_an_assigned_record_leaves_the_unassigned_list(
+    session, client, project, document
+):
+    _coordinated_record(
+        session, client, project, document, owner="Dana Reyes", action="call"
+    )
+
+    unassigned = client.get(f"/ledger/{project.slug}?owner=unassigned").text
+    assert "0 shown" in unassigned
+
+
+def test_the_owner_filter_offers_only_people_this_project_assigned(
+    session, client, project, document
+):
+    _coordinated_record(
+        session, client, project, document, owner="Dana Reyes", action="call"
+    )
+
+    page = client.get(f"/ledger/{project.slug}").text
+    assert '<option value="Dana Reyes"' in page
+    assert '<option value="unassigned"' in page
+
+
+def test_a_dismissed_record_is_not_offered_as_someones_work(
+    session, client, project, document
+):
+    dependency = _coordinated_record(
+        session, client, project, document, owner="Dana Reyes", action="call"
+    )
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+
+    page = client.get(f"/ledger/{project.slug}?owner=Dana+Reyes").text
+    assert "0 shown" in page
+
+
+# ── Dismissal holds at every door (re-review round) ──────────────────────
+
+
+def test_a_dismissed_record_refuses_a_merge(session, client, project, document):
+    """The offer list already excluded dismissed targets; the mutation
+    must too, or a stale form files a claim where nothing looks again."""
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+    candidate = make_candidate(
+        session, project, document, uid="FOC1-2", station_from="1150+00"
+    )
+
+    refused = client.post(
+        f"/candidates/{candidate.id}/merge",
+        data={"slug": project.slug, "dependency_id": str(dependency.id)},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 409
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+
+
+def test_a_dismissed_record_refuses_work_decisions(
+    session, client, project, document
+):
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "not-a-conflict"},
+        follow_redirects=False,
+    )
+
+    refused = client.post(
+        f"/dependencies/{dependency.id}/owner",
+        data={"slug": project.slug, "owner": "Dana Reyes"},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 400
+    session.refresh(dependency)
+    assert dependency.internal_owner is None
+
+
+def test_a_dismissed_record_leaves_the_reviewer_worklist(
+    session, client, project, document
+):
+    """A worklist must not offer work on a record that was thrown out."""
+    from corridor.supersession_review import build_reviewer_worklist
+
+    dependency = _record_on_the_list(session, project, document)
+    client.post(
+        f"/ledger/{project.slug}/{dependency.id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+
+    worklist = build_reviewer_worklist(session, project.id)
+    named = {
+        review.dependency_id
+        for review in (*worklist.ordinary, *worklist.reconfirmation)
+        if getattr(review, "dependency_id", None)
+    }
+    assert dependency.id not in named

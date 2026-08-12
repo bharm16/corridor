@@ -178,6 +178,13 @@ class _Facts:
     superseded_scopes: tuple[SupersededOperativeScope, ...]
 
 
+def _is_dismissed(session: Session, dependency: Dependency) -> bool:
+    """A record nobody is working raises no findings about nobody working
+    it (ADR-0032). The project-wide `evaluate` filters in SQL; the
+    per-record path has to ask the same question of its one row."""
+    return dependency.dismissed_at is not None
+
+
 def exceptions_for(
     session: Session,
     dependency_id: int,
@@ -311,7 +318,11 @@ def evaluate_dependency(
         today=today,
         thresholds=thresholds,
         ruleset_version=RULESET_VERSION,
-        found=tuple(_apply(_gather(session, dependency), today, thresholds)),
+        found=(
+            ()
+            if _is_dismissed(session, dependency)
+            else tuple(_apply(_gather(session, dependency), today, thresholds))
+        ),
     )
 
 
@@ -348,6 +359,43 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
         )
     view.sort(key=lambda f: (-f.count, f.rule))
     return view
+
+
+# Exactly the characters Python's str.strip() removes. Postgres's
+# [[:space:]] is narrower — it misses the non-breaking space and its
+# Unicode relatives — so a value of a lone NBSP counted as a claim in SQL
+# and not in Python, re-opening the one-predicate rule from the side
+# nobody had checked. Spelled out rather than referenced, because the
+# whole defect was two systems each defining "whitespace" their own way.
+_PY_WHITESPACE = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008"
+    "\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def claim_predicates():
+    """The SQL half of "does this assertion say anything".
+
+    Postgres `trim` strips spaces only; `is_claim` — the Python half of
+    this one rule — strips every kind of whitespace, so a value of a
+    single tab counted as a competing claim in the engine and did not on
+    the detail page, and the two readers disagreed about one record.
+    `[:space:]` is the class Python strips. Returned as predicates rather
+    than written twice, because every reader asking this question has to
+    ask it the same way — that is the whole reason this rule lives in one
+    function.
+    """
+    return (
+        Assertion.asserted_value.is_not(None),
+        func.regexp_replace(
+            Assertion.asserted_value,
+            f"^[{_PY_WHITESPACE}]+|[{_PY_WHITESPACE}]+$",
+            "",
+            "g",
+        )
+        != "",
+    )
 
 
 def contradicted_fields(
@@ -389,8 +437,7 @@ def contradicted_fields(
             EvidenceLink.verified.is_(True),
             # A null is an absent column, not a competing value — the
             # matrix revisions add and drop columns between editions.
-            Assertion.asserted_value.is_not(None),
-            func.trim(Assertion.asserted_value) != "",
+            *claim_predicates(),
         )
         .group_by(Assertion.dependency_id, Assertion.field_name)
         .having(func.count(func.distinct(Assertion.asserted_value)) > 1)

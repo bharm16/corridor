@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.exceptions import claim_predicates
 from corridor.models import (
     Assertion,
     Dependency,
@@ -36,6 +37,11 @@ from corridor.project_lock import lock_project
 
 class NoSuchDispute(ValueError):
     """The field is not in dispute, so there is nothing to settle."""
+
+
+class DisputeMovedOn(ValueError):
+    """A claim arrived after the page was read; the judgment would cover
+    evidence the reviewer never saw."""
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,17 @@ class Dispute:
     claims: tuple[DisputedClaim, ...]
 
     @property
+    def newest_claim_id(self) -> int:
+        """The claim a reviewer looking at this page has seen up to.
+
+        Submitted with a settlement so the judgment covers exactly what
+        was compared. A claim that lands between render and submit makes
+        the two disagree, and the settlement is refused rather than
+        silently reaching over evidence nobody read.
+        """
+        return max(claim.assertion_id for claim in self.claims)
+
+    @property
     def values(self) -> tuple[str | None, ...]:
         seen: list[str | None] = []
         for claim in self.claims:
@@ -81,13 +98,23 @@ def settled_field_names(
     if not dependency_ids:
         return {}
 
+    # Only the claims that could contradict anything. `contradicted_fields`
+    # counts verified, non-blank assertions; measuring a settlement's reach
+    # against every row let an unverified or blank assertion — a bad
+    # citation, not a source disagreeing — arrive with a higher id and
+    # un-settle a Dispute a reviewer had already decided.
     newest_claim = (
         select(
             Assertion.dependency_id.label("dependency_id"),
             Assertion.field_name.label("field_name"),
             func.max(Assertion.id).label("newest_assertion_id"),
         )
-        .where(Assertion.dependency_id.in_(dependency_ids))
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
+            Assertion.dependency_id.in_(dependency_ids),
+            EvidenceLink.verified.is_(True),
+            *claim_predicates(),
+        )
         .group_by(Assertion.dependency_id, Assertion.field_name)
         .subquery()
     )
@@ -117,11 +144,41 @@ def settled_field_names(
     return settled
 
 
-def disputes_for(session: Session, dependency_id: int) -> list[Dispute]:
-    """Every standing Dispute on one record, with both pages to read."""
-    from corridor.exceptions import contradicted_fields
+def _disagreeing_field_names(session: Session, dependency_id: int) -> list[str]:
+    """Fields with two or more distinct verified claims, settled or not."""
+    return list(
+        session.scalars(
+            select(Assertion.field_name)
+            .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+            .where(
+                Assertion.dependency_id == dependency_id,
+                EvidenceLink.verified.is_(True),
+                *claim_predicates(),
+            )
+            .group_by(Assertion.field_name)
+            .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
+        ).all()
+    )
 
-    names = contradicted_fields(session, [dependency_id]).get(dependency_id, [])
+
+def disputes_for(
+    session: Session, dependency_id: int, *, include_settled: bool = False
+) -> list[Dispute]:
+    """Every standing Dispute on one record, with both pages to read.
+
+    `include_settled` also returns the disagreements a settlement has
+    answered — for the page that offers to change a conclusion, because a
+    mistaken settlement is corrected by settling again (ADR-0031), and
+    correcting one needs the claims in front of the reviewer.
+    """
+    if include_settled:
+        names = _disagreeing_field_names(session, dependency_id)
+    else:
+        from corridor.exceptions import contradicted_fields
+
+        names = contradicted_fields(session, [dependency_id]).get(
+            dependency_id, []
+        )
     if not names:
         return []
 
@@ -135,6 +192,10 @@ def disputes_for(session: Session, dependency_id: int) -> list[Dispute]:
                 Assertion.dependency_id == dependency_id,
                 Assertion.field_name == name,
                 EvidenceLink.verified.is_(True),
+                # The same claim rule everywhere: a blank assertion is an
+                # absent column, not a competing value, and rendering one
+                # as a claim would let the page disagree with the engine.
+                *claim_predicates(),
             )
             .order_by(Document.doc_date.asc().nulls_first(), Assertion.id.asc())
         ).all()
@@ -166,6 +227,7 @@ def settle_dispute(
     *,
     value: str | None,
     principal: HumanPrincipal,
+    saw_claim_id: int | None = None,
 ) -> DisputeSettlement:
     """Record what the record concludes for one disputed field.
 
@@ -173,30 +235,50 @@ def settle_dispute(
     pages may conclude a third thing, which is the same latitude
     edit-then-accept has always given. What it may not be is unattributed
     — settling is a human act on the Ledger.
+
+    `saw_claim_id` is the newest claim the page showed. When it is given
+    and a newer claim has since arrived, the settlement is refused: the
+    reviewer compared two pages and a third has appeared, and recording
+    their judgment as covering it would settle a disagreement they were
+    never shown.
     """
     settler = require_human_principal(principal)
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise ValueError(f"dependency {dependency_id} does not exist")
     lock_project(session, dependency.project_id)
+    session.refresh(dependency)
+    if dependency.dismissed_at is not None:
+        raise ValueError(
+            f"{dependency.ref_code} was dismissed — a Dispute on a record "
+            "nobody is working needs no verdict"
+        )
 
-    from corridor.exceptions import contradicted_fields
-
-    standing = contradicted_fields(session, [dependency_id]).get(
-        dependency_id, []
-    )
-    if field_name not in standing:
+    # The raw disagreement, ignoring settlements: a mistaken settlement
+    # is corrected by settling again (ADR-0031), so "already settled"
+    # must not read as "nothing to settle". What still refuses is a field
+    # the sources never disagreed about.
+    if field_name not in _disagreeing_field_names(session, dependency_id):
         raise NoSuchDispute(
             f"{field_name!r} is not in dispute on this record — nothing to "
             "settle"
         )
 
     newest = session.scalar(
-        select(func.max(Assertion.id)).where(
+        select(func.max(Assertion.id))
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
             Assertion.dependency_id == dependency_id,
             Assertion.field_name == field_name,
+            EvidenceLink.verified.is_(True),
+            *claim_predicates(),
         )
     )
+    if saw_claim_id is not None and newest is not None and newest > saw_claim_id:
+        raise DisputeMovedOn(
+            "another revision stated this field while you were reading — "
+            "look again before settling it"
+        )
     settlement = DisputeSettlement(
         dependency_id=dependency_id,
         field_name=field_name,
@@ -210,7 +292,15 @@ def settle_dispute(
     # Where the record carries a column for the field, the conclusion is
     # projected onto it — the same shape the Committed Date projection
     # takes. Fields with no column live on in the settlement alone.
-    if hasattr(dependency, field_name) and field_name in _PROJECTED_FIELDS:
+    #
+    # `title` is NOT NULL, and settling a field as saying nothing is a
+    # legitimate conclusion, so the two meet at a 500 unless the
+    # projection declines. The settlement still records the conclusion;
+    # only the denormalized column keeps its last non-null value, which
+    # is what a column that cannot be empty means.
+    if field_name in _PROJECTED_FIELDS and not (
+        value is None and field_name in _NOT_NULL_COLUMNS
+    ):
         setattr(dependency, field_name, value)
 
     audit.record(
@@ -236,3 +326,6 @@ def settle_dispute(
 _PROJECTED_FIELDS = frozenset(
     {"station_from", "station_to", "title", "location_desc"}
 )
+
+# Of those, the ones the schema refuses to leave empty.
+_NOT_NULL_COLUMNS = frozenset({"title"})

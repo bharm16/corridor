@@ -80,13 +80,18 @@ from corridor.web.queue import (
     next_candidate,
     pending_counts,
 )
-from corridor.disputes import NoSuchDispute, disputes_for, settle_dispute
+from corridor.disputes import (
+    DisputeMovedOn,
+    NoSuchDispute,
+    disputes_for,
+    settle_dispute,
+)
 from corridor.event_admission import (
     StatementUnplaceable,
     attach_statement,
     waiting_statements,
 )
-from corridor.identity import document_numbering_schemes
+from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.cohort import (
     CohortScopeViolation,
@@ -250,7 +255,8 @@ def _sibling_revisions(
     revision is machine-current; the reviewer's gesture is the explicit
     choice (#199)."""
     schemes = document_numbering_schemes(session, candidate.project_id)
-    if conflict_key(candidate, schemes) is None:
+    aliases = party_canonical_names(session)
+    if conflict_key(candidate, schemes, aliases) is None:
         return []
     siblings = []
     others = session.scalars(
@@ -263,7 +269,7 @@ def _sibling_revisions(
     for other in others:
         # The same predicate the accept path refuses on, so the lane never
         # offers a merge the mutation would then reject.
-        if not same_conflict(candidate, other, schemes):
+        if not same_conflict(candidate, other, schemes, aliases):
             continue
         document = session.get(Document, other.source_document_id)
         siblings.append(
@@ -397,6 +403,12 @@ REVIEW_REASONS = {
     "no_utility_id": (
         "This row has no identifier.",
         "Nothing can name it in the record as it stands.",
+    ),
+    "revisions_disagree_on_party": (
+        "The revisions name different parties for this conflict.",
+        "That asks whether these are one conflict at all, which is not "
+        "something the machine may answer. Read both pages and accept the "
+        "one that is right.",
     ),
     "no_row_identity": (
         "This row's number needs a party to name it.",
@@ -826,6 +838,7 @@ def ledger(
     resolution_strategy: str | None = None,
     ready: str | None = None,
     rule: str | None = None,
+    owner: str | None = None,
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -841,8 +854,22 @@ def ledger(
         resolution_strategy=resolution_strategy or None,
         ready={"yes": True, "no": False}.get(ready or ""),
         rule=rule or None,
+        owner=owner or None,
     )
     orgs = session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
+    # Only the people this project has actually assigned work to. A list of
+    # every principal who ever touched anything would offer names that
+    # match nothing here.
+    owners = session.scalars(
+        select(Dependency.internal_owner)
+        .where(
+            Dependency.project_id == project.id,
+            Dependency.dismissed_at.is_(None),
+            Dependency.internal_owner.is_not(None),
+        )
+        .distinct()
+        .order_by(Dependency.internal_owner)
+    ).all()
     return TEMPLATES.TemplateResponse(
         request,
         "ledger.html",
@@ -856,10 +883,13 @@ def ledger(
                 "resolution_strategy": resolution_strategy or "",
                 "ready": ready or "",
                 "rule": rule or "",
+                "owner": owner or "",
             },
             "rules": sorted(RULES),
             "statuses": DEP_STATUSES,
             "strategies": RESOLUTION_STRATEGIES,
+            "owners": owners,
+            "today": date.today(),
         },
     )
 
@@ -889,7 +919,10 @@ def dependency_detail(
             "owner_decision": owner_decision,
             "action_decision": action_decision,
             "disputes": {
-                d.field_name: d for d in disputes_for(session, dependency_id)
+                d.field_name: d
+                for d in disputes_for(
+                    session, dependency_id, include_settled=True
+                )
             },
             "dismiss_reasons": DISMISS_REASONS,
         },
@@ -902,6 +935,7 @@ def settle(
     dependency_id: int,
     field_name: str = Form(...),
     value: str = Form(""),
+    saw_claim_id: int | None = Form(None),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -922,8 +956,9 @@ def settle(
             field_name,
             value=value.strip() or None,
             principal=principal,
+            saw_claim_id=saw_claim_id,
         )
-    except NoSuchDispute as exc:
+    except (NoSuchDispute, DisputeMovedOn) as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1035,6 +1070,8 @@ def mark_evidence_satisfies(
         raise HTTPException(404, str(exc))
     except UnverifiedEvidence as exc:
         raise HTTPException(400, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
@@ -1080,12 +1117,14 @@ def accept(
     # knows. Whether the resolved set is one gesture over one conflict is
     # the lane's, and is refused in full before anything is written (#199).
     schemes = document_numbering_schemes(session, project.id)
+    aliases = party_canonical_names(session)
     try:
         check_sibling_request(
             candidate,
             merge_sibling_ids,
             in_event_lane=event_cohort_receipt_id is not None,
             schemes=schemes,
+            aliases=aliases,
         )
     except SiblingsNeedTheEventLane as exc:
         raise HTTPException(400, str(exc))
@@ -1103,7 +1142,7 @@ def accept(
             )
         )
     try:
-        check_sibling_set(candidate, siblings, schemes)
+        check_sibling_set(candidate, siblings, schemes, aliases)
     except LaneRefusal as exc:
         raise HTTPException(409, str(exc))
 
@@ -1275,6 +1314,8 @@ def merge(
             principal=principal,
             historical_document_id=historical_document_id,
         )
+    except AlreadyDismissed as exc:
+        raise HTTPException(409, str(exc))
     except InvalidCandidateScope as exc:
         raise HTTPException(409, str(exc))
     except InvalidCandidateProvenance as exc:

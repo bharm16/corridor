@@ -192,7 +192,12 @@ def build_reviewer_worklist(
     dependencies = tuple(
         session.scalars(
             select(Dependency)
-            .where(Dependency.project_id == project_id)
+            .where(
+                Dependency.project_id == project_id,
+                # A worklist must not offer work on a record that was
+                # thrown out (ADR-0032).
+                Dependency.dismissed_at.is_(None),
+            )
             .order_by(Dependency.id)
         ).all()
     )

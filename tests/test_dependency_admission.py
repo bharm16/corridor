@@ -686,3 +686,171 @@ def test_declaring_a_scheme_changes_the_digest_the_receipt_records(
     session.flush()
     after = run_dependency_admission(session, project.id)
     assert session.get(PolicyRun, after.run_id).policy_sha256 != before_sha
+
+
+def test_a_replaced_revision_is_not_read_at_all(session, project):
+    """Every other path refuses a replaced revision's rows, so including
+    one here did not corroborate — the write refused and took the current
+    revision's own row down with it. Measured on NHHIP: 211 admitted
+    where 688 should have been."""
+    from corridor.supersession import SupersessionDeclaration, register_supersessions
+    from datetime import date
+
+    feb = _document(session, project, filename="ucm-feb.pdf")
+    may = _document(session, project, filename="ucm-may.pdf")
+    feb.registry_id, may.registry_id = "ucm-feb", "ucm-may"
+    session.flush()
+    _run(session, feb, [_candidate(feb, _fields("SHARED")),
+                        _candidate(feb, _fields("FEBONLY", station="1200+00"))])
+    _run(session, may, [_candidate(may, _fields("SHARED")),
+                        _candidate(may, _fields("MAYONLY", station="1300+00"))])
+    declare_single_run_documents_by_policy(session, project.id)
+    register_supersessions(
+        session,
+        [
+            SupersessionDeclaration(
+                predecessor_registry_id="ucm-feb",
+                successor_registry_id="ucm-may",
+                replacement_date=date(2025, 5, 5),
+                source_registry_id="ucm-may",
+                source_page=1,
+            )
+        ],
+        project_id=project.id,
+    )
+    session.flush()
+
+    result = run_dependency_admission(session, project.id)
+
+    # The current revision lands whole. Nothing is refused, and SHARED —
+    # which the replaced revision also states — is not dragged down.
+    assert result.abstained_count == 0
+    assert {
+        d.source_ref
+        for d in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    } == {"SHARED", "MAYONLY"}
+
+
+def test_one_party_under_two_registered_names_is_one_conflict(
+    session, project
+):
+    """An External Party is known by many names — that is what its
+    aliases are for. Keying on the stated spelling made one company's two
+    registered names two records with the same number, each invisible to
+    the other's already-admitted check, and split the disagreement
+    between them across both rows instead of raising it as a Dispute."""
+    from corridor.disputes import disputes_for
+    from corridor.models import ExternalOrg
+
+    org = ExternalOrg(
+        name="Zeta Cable Co TEST", aliases=["Zeta Cable Company TEST"]
+    )
+    session.add(org)
+    session.flush()
+
+    feb = _per_party_document(session, project, filename="alias-feb.pdf")
+    may = _per_party_document(session, project, filename="alias-may.pdf")
+    _run(session, feb, [_candidate(feb, _fields("1", org="Zeta Cable Co TEST"))])
+    _run(
+        session,
+        may,
+        [
+            _candidate(
+                may,
+                _fields("1", org="Zeta Cable Company TEST", station="9999+00"),
+            )
+        ],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == 1
+    assert result.abstained_count == 0
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    # And the station disagreement is a Dispute on that one row, not two
+    # records each holding half of it.
+    assert "station_from" in [
+        d.field_name for d in disputes_for(session, dependency.id)
+    ]
+
+
+def test_an_unregistered_spelling_stays_its_own_party(session, project):
+    """Nothing guesses. A spelling nobody has registered surfaces as a
+    row to look at rather than silently merging two companies."""
+    feb = _per_party_document(session, project, filename="unreg-feb.pdf")
+    may = _per_party_document(session, project, filename="unreg-may.pdf")
+    _run(session, feb, [_candidate(feb, _fields("1", org="Aardvark Gas TEST"))])
+    _run(
+        session,
+        may,
+        [_candidate(may, _fields("1", org="Aardvark Gas Company TEST"))],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 2  # two parties, as far as anyone knows
+
+
+def test_a_registered_alias_binds_to_its_party_not_a_duplicate(
+    session, project
+):
+    """The write path resolves registered spellings exactly as the key
+    does. Before this, a row stating an alias minted a duplicate
+    External Party, and the already-admitted check — which reads the
+    bound party's names — could never see the carrier again."""
+    from corridor.models import ExternalOrg
+
+    org = ExternalOrg(
+        name="Zeta Cable Co WTEST", aliases=["Zeta Cable Company WTEST"]
+    )
+    session.add(org)
+    session.flush()
+
+    first = _per_party_document(session, project, filename="w-feb.pdf")
+    _run(
+        session,
+        first,
+        [_candidate(first, _fields("1", org="Zeta Cable Company WTEST"))],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+    assert run_dependency_admission(session, project.id).admitted_count == 1
+
+    admitted = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    assert admitted.external_org_id == org.id  # no duplicate party minted
+
+    second = _per_party_document(session, project, filename="w-may.pdf")
+    _run(
+        session,
+        second,
+        [_candidate(second, _fields("1", org="Zeta Cable Co WTEST"))],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    assert {a.reason for a in result.abstentions} == {"already_admitted"}
+
+
+def test_a_placeholder_against_a_named_party_is_not_a_disagreement(
+    session, project
+):
+    """ADR-0031 withholds only where revisions name different External
+    Parties. `N/A` names nobody, so it is a gap beside a name, never a
+    second party."""
+    feb, may, feb_c, may_c = _corpus(
+        session,
+        project,
+        [_fields("PL1", org=PIPELINE)],
+        [_fields("PL1", org="N/A")],
+    )
+
+    result = run_dependency_admission(session, project.id)
+    assert result.admitted_count == 1
+    assert result.abstained_count == 0
