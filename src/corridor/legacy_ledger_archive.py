@@ -449,6 +449,13 @@ def retire_legacy_ledger(
                 )
             ).all()
         )
+        event_evidence_ids = set(
+            session.scalars(
+                select(DependencyEventEvidence.evidence_link_id).where(
+                    DependencyEventEvidence.event_id.in_(event_ids or {0})
+                )
+            ).all()
+        )
         _purge_statement_rows(session, project_id)
         # The privileged procedure deleted rows outside SQLAlchemy's normal
         # synchronize-session path.  Remove only those stale statement
@@ -460,6 +467,8 @@ def retire_legacy_ledger(
             elif isinstance(row, (DependencyEventScope, DependencyEventTiming)):
                 is_statement_row = row.event_id in event_ids
             elif isinstance(row, EvidenceLink):
+                is_statement_row = row.id in event_evidence_ids
+            elif isinstance(row, DependencyEventEvidence):
                 is_statement_row = row.event_id in event_ids
             else:
                 is_statement_row = False

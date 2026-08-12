@@ -49,13 +49,21 @@ def evidence_is_scoped_to_dependency(
     """Whether one Evidence identity belongs to this record's stated scope.
 
     Direct evidence owns a Dependency. Event evidence owns an event and is
-    visible only through its explicit scope; readiness additionally needs the
-    independent, per-Dependency sufficiency judgment.
+    visible only through its explicit scope; both use the independent,
+    per-Dependency sufficiency judgment for readiness.
     """
     if evidence is None:
         return False
     if evidence.dependency_id == dependency_id:
-        return not require_sufficiency or evidence.satisfies_requirement is True
+        if not require_sufficiency:
+            return True
+        return session.scalar(
+            select(DependencyEvidenceSufficiency.id).where(
+                DependencyEvidenceSufficiency.dependency_id == dependency_id,
+                DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+                DependencyEvidenceSufficiency.scope_link_id.is_(None),
+            )
+        ) is not None
     event_id = session.scalar(
         select(DependencyEventEvidence.event_id).where(
             DependencyEventEvidence.evidence_link_id == evidence.id
@@ -352,12 +360,17 @@ def _transfer_operative_scopes_under_lock(
         page_no=page_no,
         quote=quote,
         verified=True,
-        satisfies_requirement=any(
-            scope.role == "readiness" for scope in ordered
-        ),
     )
     session.add(new_evidence)
     session.flush([new_evidence])
+    if any(scope.role == "readiness" for scope in ordered):
+        session.add(
+            DependencyEvidenceSufficiency(
+                dependency_id=dependency_id,
+                evidence_link_id=new_evidence.id,
+                scope_link_id=None,
+            )
+        )
 
     prior_scopes: list[dict[str, Any]] = []
     moved_scopes: list[dict[str, Any]] = []
@@ -412,9 +425,18 @@ def resolve_operative_support(
     }
     evidence_by_id: dict[tuple[int, int], EvidenceSupport] = {}
     project_ids: set[int] = set()
-    for link, document in session.execute(
-        select(EvidenceLink, Document)
+    for link, document, sufficiency_id in session.execute(
+        select(EvidenceLink, Document, DependencyEvidenceSufficiency.id)
         .join(Document, EvidenceLink.document_id == Document.id)
+        .outerjoin(
+            DependencyEvidenceSufficiency,
+            and_(
+                DependencyEvidenceSufficiency.dependency_id
+                == EvidenceLink.dependency_id,
+                DependencyEvidenceSufficiency.evidence_link_id == EvidenceLink.id,
+                DependencyEvidenceSufficiency.scope_link_id.is_(None),
+            ),
+        )
         .where(EvidenceLink.dependency_id.in_(ids))
         .order_by(EvidenceLink.id)
     ).all():
@@ -430,7 +452,7 @@ def resolve_operative_support(
             page_no=link.page_no,
             quote=link.quote,
             verified=bool(link.verified),
-            satisfies_requirement=bool(link.satisfies_requirement),
+            satisfies_requirement=sufficiency_id is not None,
             evidence_date=evidence_date,
             superseded_by=document.superseded_by,
             superseded_on=document.superseded_on,

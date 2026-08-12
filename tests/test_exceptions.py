@@ -79,6 +79,7 @@ def document(session, project):
 
 
 def make_dep(session, project, ref="DEP-1", **kw):
+    committed_date = kw.pop("committed_date", None)
     dep = Dependency(
         project_id=project.id,
         ref_code=ref,
@@ -91,6 +92,39 @@ def make_dep(session, project, ref="DEP-1", **kw):
     )
     session.add(dep)
     session.flush()
+    if committed_date is not None:
+        party = ExternalOrg(name=f"Example Utility {dep.id}")
+        session.add(party)
+        session.flush()
+        dep.external_org_id = party.id
+        event = DependencyEvent(
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_external_org_id=party.id,
+            scope_mode="selected",
+            event_type="commitment",
+            source_kind="cited",
+            stated_party=party.name,
+            event_date=TODAY - timedelta(days=60),
+            description="Example Utility stated its completion date.",
+            created_by="corridor:event-admission",
+        )
+        session.add(event)
+        session.flush()
+        session.add_all(
+            (
+                DependencyEventTiming(
+                    event_id=event.id,
+                    kind="new",
+                    text=committed_date.isoformat(),
+                    precision="day",
+                    start_date=committed_date,
+                    end_date=committed_date,
+                ),
+                DependencyEventScope(event_id=event.id, dependency_id=dep.id),
+            )
+        )
+        session.flush()
     return dep
 
 
@@ -115,10 +149,16 @@ def add_evidence(
         page_no=1,
         quote="a quote",
         verified=verified,
-        satisfies_requirement=satisfies,
     )
     session.add(link)
     session.flush()
+    if satisfies:
+        mark_satisfies(
+            session,
+            dep.id,
+            link.id,
+            principal=TEST_PRINCIPAL,
+        )
     return link
 
 
@@ -339,7 +379,7 @@ def test_a_current_month_statement_suppresses_overdue_from_a_stale_scalar(
     session, project, document
 ):
     """A month statement is not a Dependency-level exact date calculation."""
-    dep = make_dep(session, project, committed_date=TODAY - timedelta(days=1))
+    dep = make_dep(session, project)
     add_evidence(session, dep, document)
     event = DependencyEvent(
         project_id=project.id,
@@ -555,7 +595,7 @@ def test_exceptions_lapse_readiness_without_recasting_it_as_schedule_failure(
     # no longer current enough to satisfy readiness.
     assert "MISSING_EVIDENCE" not in found
     assert link.verified is True
-    assert link.satisfies_requirement is True
+    assert link.id in {support.evidence_link_id for support in resolved.readiness}
 
 
 def test_registering_a_successor_immediately_creates_provenance_review_work(
@@ -745,7 +785,12 @@ def test_current_human_review_clears_the_signal_without_deleting_history(
     assert "SUPERSEDED_CITATION" not in codes(session, dependency)
     assert resolve_operative_support(session, [dependency.id])[dependency.id].is_ready
     assert session.get(EvidenceLink, historical.id).verified is True
-    assert session.get(EvidenceLink, historical.id).satisfies_requirement is True
+    historical_support = resolve_operative_support(
+        session, [dependency.id]
+    )[dependency.id]
+    assert historical.id in {
+        support.evidence_link_id for support in historical_support.readiness
+    }
     assert session.get(Assertion, assertion.id).evidence_link_id == historical.id
 
 

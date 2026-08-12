@@ -22,6 +22,7 @@ from corridor.identity import is_project_side_party, normalize_party
 from corridor.models import (
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
     DependencyEventTiming,
@@ -244,13 +245,20 @@ def record_external_party_statement(
         if evidence is not None:
             event_evidence = EvidenceLink(
                 dependency_id=None,
-                event_id=event.id,
                 document_id=evidence.document_id,
                 page_no=evidence.page_no,
                 quote=evidence.quote.strip(),
                 verified=True,
             )
             session.add(event_evidence)
+            session.flush([event_evidence])
+            session.add(
+                DependencyEventEvidence(
+                    evidence_link_id=event_evidence.id,
+                    event_id=event.id,
+                    recorded_by=created_by.strip(),
+                )
+            )
         session.flush()
 
         # Imported lazily: projections read the event representation but do

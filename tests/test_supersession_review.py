@@ -11,7 +11,7 @@ from datetime import date
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import and_, delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor import audit
@@ -29,6 +29,7 @@ from corridor.models import (
     AuditLog,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
     DocPage,
     Document,
     EvidenceLink,
@@ -56,6 +57,36 @@ from corridor.supersession_review import (
 
 
 REVIEWER = HumanPrincipal("local:supersession-reviewer")
+
+
+def _has_direct_readiness(session, evidence: EvidenceLink) -> bool:
+    return session.scalar(
+        select(DependencyEvidenceSufficiency.id).where(
+            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+        )
+    ) is not None
+
+
+def _set_direct_readiness(session, evidence: EvidenceLink, ready: bool) -> None:
+    role = session.scalar(
+        select(DependencyEvidenceSufficiency).where(
+            DependencyEvidenceSufficiency.dependency_id == evidence.dependency_id,
+            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+        )
+    )
+    if ready and role is None:
+        session.add(
+            DependencyEvidenceSufficiency(
+                dependency_id=evidence.dependency_id,
+                evidence_link_id=evidence.id,
+                scope_link_id=None,
+            )
+        )
+    elif not ready and role is not None:
+        session.delete(role)
+    session.flush()
 
 
 @pytest.fixture
@@ -307,7 +338,6 @@ def _reconfirm_first_revision(
             page_no=1,
             quote="FOC1-1 AT&T Telecom 100+00",
             verified=True,
-            satisfies_requirement=False,
         )
         session.add(existing_successor_evidence)
         session.flush([existing_successor_evidence])
@@ -1408,9 +1438,9 @@ def test_reconfirmation_moves_support_without_revising_the_dependency(session):
         scenario["successor"].id,
     }
     assert new_evidence.document_id == scenario["successor"].id
-    assert new_evidence.satisfies_requirement is True
+    assert _has_direct_readiness(session, new_evidence)
     session.refresh(scenario["old_evidence"])
-    assert scenario["old_evidence"].satisfies_requirement is True
+    assert _has_direct_readiness(session, scenario["old_evidence"])
     assert session.get(Project, scenario["project"].id) is not None
     assert scenario["dependency"].title == original_title
     assert successor_candidate.state == original_state == "pending"
@@ -1509,9 +1539,9 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
     )
     assert middle_evidence.document_id == scenario["successor"].id
     assert middle_evidence.verified is True
-    assert middle_evidence.satisfies_requirement is True
+    assert _has_direct_readiness(session, middle_evidence)
     session.refresh(scenario["old_evidence"])
-    assert scenario["old_evidence"].satisfies_requirement is True
+    assert _has_direct_readiness(session, scenario["old_evidence"])
 
     terminal = _document(
         session,
@@ -1567,11 +1597,11 @@ def test_exact_reconfirmation_can_continue_across_sequential_revisions(session):
     assert terminal_evidence.page_no == 1
     assert terminal_evidence.quote == "FOC1-1 AT&T Telecom 100+00"
     assert terminal_evidence.verified is True
-    assert terminal_evidence.satisfies_requirement is True
+    assert _has_direct_readiness(session, terminal_evidence)
     session.refresh(scenario["old_evidence"])
     session.refresh(middle_evidence)
-    assert scenario["old_evidence"].satisfies_requirement is True
-    assert middle_evidence.satisfies_requirement is True
+    assert _has_direct_readiness(session, scenario["old_evidence"])
+    assert _has_direct_readiness(session, middle_evidence)
     final_worklist = build_reviewer_worklist(session, scenario["project"].id)
     assert final_worklist.reconfirmation == ()
     assert final_worklist.ordinary == ()
@@ -1757,7 +1787,7 @@ def test_later_attributable_source_readiness_toggle_preserves_lineage(session):
 def test_later_attributable_readiness_addition_expands_next_scope(session):
     scenario = _superseded_dependency(session, satisfying=False)
     first = _reconfirm_first_revision(session, scenario)
-    assert first["middle_evidence"].satisfies_requirement is False
+    assert not _has_direct_readiness(session, first["middle_evidence"])
     assert mark_satisfies(
         session,
         scenario["dependency"].id,
@@ -1805,8 +1835,8 @@ def test_later_attributable_readiness_lapse_allows_publication_only(session):
 def test_later_readiness_lapse_does_not_resurrect_transferred_source(session):
     scenario = _superseded_dependency(session)
     first = _reconfirm_first_revision(session, scenario)
-    assert scenario["old_evidence"].satisfies_requirement is True
-    assert first["middle_evidence"].satisfies_requirement is True
+    assert _has_direct_readiness(session, scenario["old_evidence"])
+    assert _has_direct_readiness(session, first["middle_evidence"])
     assert mark_satisfies(
         session,
         scenario["dependency"].id,
@@ -1834,7 +1864,6 @@ def test_preexisting_successor_readiness_lapse_remains_a_historical_tombstone(
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(successor_readiness)
     session.flush([successor_readiness])
@@ -1874,7 +1903,6 @@ def test_corrupt_readiness_history_cannot_restore_an_older_true_scope(session):
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(successor_readiness)
     session.flush([successor_readiness])
@@ -1935,15 +1963,13 @@ def test_corrupt_readiness_history_cannot_restore_an_older_true_scope(session):
 
 def test_unaudited_readiness_flag_cannot_be_transferred(session):
     scenario = _superseded_dependency(session, satisfying=False)
-    scenario["old_evidence"].satisfies_requirement = True
-    session.flush([scenario["old_evidence"]])
+    _set_direct_readiness(session, scenario["old_evidence"], True)
     current_publication = EvidenceLink(
         dependency_id=scenario["dependency"].id,
         document_id=scenario["successor"].id,
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(current_publication)
     session.flush([current_publication])
@@ -1981,8 +2007,7 @@ def test_unaudited_readiness_lapse_cannot_offer_publication_only_reconfirmation(
     session,
 ):
     scenario = _superseded_dependency(session)
-    scenario["old_evidence"].satisfies_requirement = False
-    session.flush([scenario["old_evidence"]])
+    _set_direct_readiness(session, scenario["old_evidence"], False)
     successor_candidate = _candidate(
         scenario["project"], scenario["successor"]
     )
@@ -2011,7 +2036,11 @@ def test_unaudited_readiness_lapse_cannot_offer_publication_only_reconfirmation(
         if scope.role == "readiness"
     )
     assert readiness_scope.evidence.evidence_link_id == scenario["old_evidence"].id
-    assert readiness_scope.evidence.satisfies_requirement is False
+    readiness_evidence = session.get(
+        EvidenceLink, readiness_scope.evidence.evidence_link_id
+    )
+    assert readiness_evidence is not None
+    assert not _has_direct_readiness(session, readiness_evidence)
     assert review.successor_candidate_ids == (successor_candidate.id,)
 
 
@@ -2219,7 +2248,7 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
             tampered_receipt_field: [],
         }
     elif tampered_receipt_field == "lapsed_readiness_source_evidence":
-        scenario["old_evidence"].satisfies_requirement = False
+        _set_direct_readiness(session, scenario["old_evidence"], False)
     elif tampered_receipt_field in {
         "omitted_readiness_scope",
         "omitted_readiness_scope_after_lapse",
@@ -2292,10 +2321,10 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                 verified=(
                     tampered_receipt_field != "unverified_source_evidence"
                 ),
-                satisfies_requirement=True,
             )
             session.add(source_evidence)
             session.flush([source_evidence])
+            _set_direct_readiness(session, source_evidence, True)
             source_evidence_id = source_evidence.id
         before_scopes = [
             {**scope, "evidence_link_id": source_evidence_id}
@@ -2378,7 +2407,15 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                 EvidenceLink.document_id,
                 EvidenceLink.page_no,
                 EvidenceLink.quote,
-                EvidenceLink.satisfies_requirement,
+                DependencyEvidenceSufficiency.id,
+            )
+            .outerjoin(
+                DependencyEvidenceSufficiency,
+                and_(
+                    DependencyEvidenceSufficiency.evidence_link_id
+                    == EvidenceLink.id,
+                    DependencyEvidenceSufficiency.scope_link_id.is_(None),
+                ),
             )
             .where(EvidenceLink.dependency_id == scenario["dependency"].id)
             .order_by(EvidenceLink.id)
@@ -2430,7 +2467,15 @@ def test_tampered_reconfirmation_transfer_receipt_breaks_sequential_lineage(
                 EvidenceLink.document_id,
                 EvidenceLink.page_no,
                 EvidenceLink.quote,
-                EvidenceLink.satisfies_requirement,
+                DependencyEvidenceSufficiency.id,
+            )
+            .outerjoin(
+                DependencyEvidenceSufficiency,
+                and_(
+                    DependencyEvidenceSufficiency.evidence_link_id
+                    == EvidenceLink.id,
+                    DependencyEvidenceSufficiency.scope_link_id.is_(None),
+                ),
             )
             .where(EvidenceLink.dependency_id == scenario["dependency"].id)
             .order_by(EvidenceLink.id)
@@ -2471,7 +2516,6 @@ def test_duplicate_publication_owner_corrupts_a_reconfirmation_receipt(session):
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(duplicate_source)
     session.flush([duplicate_source])
@@ -2834,7 +2878,6 @@ def test_reconfirmation_recovery_does_not_hide_an_unrelated_candidate(
             page_no=1,
             quote="FOC9-9 AT&T Telecom 900+00",
             verified=True,
-            satisfies_requirement=False,
         )
         session.add(unrelated_evidence)
         session.flush([unrelated_evidence])
@@ -2940,7 +2983,6 @@ def test_every_moved_predecessor_scope_has_one_immutable_candidate_citation(
             page_no=2,
             quote="Separate verified predecessor support",
             verified=True,
-            satisfies_requirement=False,
         )
         session.add(unrelated_support)
         session.flush()
@@ -3186,7 +3228,7 @@ def test_cross_session_support_change_refuses_a_stale_reconfirmation_without_wri
         )
         assert stale_evidence is not None
         assert stale_designation is not None
-        assert stale_evidence.satisfies_requirement is True
+        assert stale_evidence.id == old_evidence_id
         assert stale_designation.evidence_link_id == old_evidence_id
 
         current_evidence = EvidenceLink(
@@ -3195,7 +3237,6 @@ def test_cross_session_support_change_refuses_a_stale_reconfirmation_without_wri
             page_no=1,
             quote="FOC1-1 AT&T Telecom 100+00",
             verified=True,
-            satisfies_requirement=False,
         )
         support_reviewer.add(current_evidence)
         support_reviewer.flush()
@@ -3222,7 +3263,7 @@ def test_cross_session_support_change_refuses_a_stale_reconfirmation_without_wri
         # The first Session still carries the pre-transition objects. The
         # mutation boundary, not the caller, is responsible for expiring and
         # re-deriving them after it joins the shared project-lock order.
-        assert stale_evidence.satisfies_requirement is True
+        assert stale_evidence.id == old_evidence_id
         assert stale_designation.evidence_link_id == old_evidence_id
 
         evidence_before = tuple(
@@ -3356,7 +3397,15 @@ def test_scope_fingerprint_refuses_cross_session_scope_drift_without_writes():
                     EvidenceLink.document_id,
                     EvidenceLink.page_no,
                     EvidenceLink.quote,
-                    EvidenceLink.satisfies_requirement,
+                    DependencyEvidenceSufficiency.id,
+                )
+                .outerjoin(
+                    DependencyEvidenceSufficiency,
+                    and_(
+                        DependencyEvidenceSufficiency.evidence_link_id
+                        == EvidenceLink.id,
+                        DependencyEvidenceSufficiency.scope_link_id.is_(None),
+                    ),
                 )
                 .where(EvidenceLink.dependency_id == dependency_id)
                 .order_by(EvidenceLink.id)
@@ -3409,7 +3458,15 @@ def test_scope_fingerprint_refuses_cross_session_scope_drift_without_writes():
                     EvidenceLink.document_id,
                     EvidenceLink.page_no,
                     EvidenceLink.quote,
-                    EvidenceLink.satisfies_requirement,
+                    DependencyEvidenceSufficiency.id,
+                )
+                .outerjoin(
+                    DependencyEvidenceSufficiency,
+                    and_(
+                        DependencyEvidenceSufficiency.evidence_link_id
+                        == EvidenceLink.id,
+                        DependencyEvidenceSufficiency.scope_link_id.is_(None),
+                    ),
                 )
                 .where(EvidenceLink.dependency_id == dependency_id)
                 .order_by(EvidenceLink.id)
@@ -3557,7 +3614,6 @@ def test_reconfirmation_refuses_to_move_only_one_of_two_stale_documents(session)
         page_no=1,
         quote="FOC1-1 AT&T Telecom 100+00",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(other_evidence)
     session.flush()
@@ -3630,8 +3686,8 @@ def test_reconfirmation_refuses_to_move_only_one_of_two_stale_documents(session)
     assert len(session.scalars(select(EvidenceLink)).all()) == before
     session.refresh(scenario["old_evidence"])
     session.refresh(other_evidence)
-    assert scenario["old_evidence"].satisfies_requirement is True
-    assert other_evidence.satisfies_requirement is True
+    assert _has_direct_readiness(session, scenario["old_evidence"])
+    assert _has_direct_readiness(session, other_evidence)
 
 
 def test_reconfirmation_does_not_invent_readiness(session):
@@ -3664,7 +3720,7 @@ def test_reconfirmation_does_not_invent_readiness(session):
         principal=REVIEWER,
     )
 
-    assert new_evidence.satisfies_requirement is False
+    assert not _has_direct_readiness(session, new_evidence)
 
 
 def test_multi_hop_chain_refuses_an_intermediate_successor(session):

@@ -558,6 +558,7 @@ def test_controlled_phase_carries_only_exact_previously_authorized_support(
         "automatic_carry_forward_outcomes",
         "automatic_carry_forward_receipts",
         "automatic_carry_forward_runs",
+        "dependency_evidence_sufficiencies",
         "evidence_links",
         "operative_support",
     ]
@@ -566,6 +567,7 @@ def test_controlled_phase_carries_only_exact_previously_authorized_support(
         "automatic_carry_forward_outcomes",
         "automatic_carry_forward_receipts",
         "automatic_carry_forward_runs",
+        "dependency_evidence_sufficiencies",
         "evidence_links",
         "operative_support",
     ]

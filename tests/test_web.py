@@ -25,9 +25,14 @@ from corridor.models import (
     AuditLog,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
+    DependencyEvent,
+    DependencyEventScope,
+    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     Project,
 )
 from corridor.operative_support import designate_publication_support
@@ -1748,8 +1753,13 @@ def test_marking_evidence_on_another_projects_dependency_is_hidden_and_refused(
     )
 
     assert mark.status_code == 404
-    session.refresh(evidence)
-    assert evidence.satisfies_requirement is False
+    assert session.scalar(
+        select(func.count()).select_from(DependencyEvidenceSufficiency).where(
+            DependencyEvidenceSufficiency.dependency_id == dependency.id,
+            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+        )
+    ) == 0
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1849,8 +1859,13 @@ def test_mark_satisfies_route_refuses_without_a_configured_human_principal(
     )
 
     assert response.status_code == 503
-    session.refresh(evidence)
-    assert evidence.satisfies_requirement is False
+    assert session.scalar(
+        select(func.count()).select_from(DependencyEvidenceSufficiency).where(
+            DependencyEvidenceSufficiency.dependency_id == dependency.id,
+            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+        )
+    ) == 0
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -2189,6 +2204,10 @@ def two_overdue(session, project):
 
     deps = []
     for ref, strategy in (("DEP-CRIT", "relocate"), ("DEP-PLAIN", None)):
+        committed_date = date.today() - timedelta(days=40)
+        party = ExternalOrg(name=f"Overdue test party {len(deps) + 1}")
+        session.add(party)
+        session.flush()
         dep = Dependency(
             project_id=project.id,
             ref_code=ref,
@@ -2196,11 +2215,40 @@ def two_overdue(session, project):
             title=f"Telecom — {ref}",
             status="committed",
             resolution_strategy=strategy,
-            committed_date=date.today() - timedelta(days=40),
+            external_org_id=party.id,
             internal_owner="Bryce",
         )
         session.add(dep)
         deps.append(dep)
+    session.flush()
+    for dep in deps:
+        event = DependencyEvent(
+            project_id=project.id,
+            affected_external_org_id=dep.external_org_id,
+            stated_external_org_id=dep.external_org_id,
+            scope_mode="selected",
+            event_type="commitment",
+            source_kind="cited",
+            stated_party=f"Overdue test party {dep.id}",
+            event_date=date.today() - timedelta(days=60),
+            description="The external party stated its completion date.",
+            created_by="corridor:event-admission",
+        )
+        session.add(event)
+        session.flush()
+        session.add_all(
+            (
+                DependencyEventTiming(
+                    event_id=event.id,
+                    kind="new",
+                    text=committed_date.isoformat(),
+                    precision="day",
+                    start_date=committed_date,
+                    end_date=committed_date,
+                ),
+                DependencyEventScope(event_id=event.id, dependency_id=dep.id),
+            )
+        )
     session.flush()
     return deps
 

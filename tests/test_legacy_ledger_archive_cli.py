@@ -143,7 +143,6 @@ def legacy_project(session):
         page_no=1,
         quote="FOC1-1 AT&T Texas Telecom",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(evidence)
     session.flush()
@@ -270,7 +269,6 @@ def test_plan_fails_cleanly_on_a_mixed_human_and_legacy_ledger(
         page_no=1,
         quote="FOC1-1 AT&T Texas Telecom",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(evidence)
     session.flush()

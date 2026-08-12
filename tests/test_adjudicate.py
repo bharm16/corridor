@@ -2,8 +2,6 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from threading import Event
 from uuid import uuid4
 
-from datetime import date
-
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -25,7 +23,7 @@ from corridor.adjudicate import (
 )
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
-from corridor.ledger import load_dependency
+from corridor.ledger import UnverifiedEvidence, load_dependency, mark_satisfies
 from corridor.models import (
     CRITICAL_STRATEGIES,
     RESOLUTION_STRATEGIES,
@@ -565,8 +563,8 @@ def test_accepting_links_the_evidence_with_its_quote(session, document):
     assert link.quote == "FOC1-1 AT&T Texas (SWBT)"
     assert link.page_no == 1
     assert link.verified is True
-    # Acceptance never asserts readiness.
-    assert link.satisfies_requirement is False
+    # Acceptance never creates a readiness role.
+    assert load_dependency(session, dep.id).is_ready is False
 
 
 def test_acceptance_does_not_make_a_dependency_ready(session, document):
@@ -583,8 +581,7 @@ def test_marking_evidence_as_satisfying_makes_it_ready(session, document):
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dep.id)
     ).one()
-    link.satisfies_requirement = True
-    session.flush()
+    mark_satisfies(session, dep.id, link.id, principal=BRYCE)
 
     assert load_dependency(session, dep.id).is_ready is True
 
@@ -596,10 +593,10 @@ def test_unverified_evidence_can_never_confer_readiness(session, document):
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dep.id)
     ).one()
-    link.satisfies_requirement = True
-    session.flush()
+    with pytest.raises(UnverifiedEvidence):
+        mark_satisfies(session, dep.id, link.id, principal=BRYCE)
 
-    # A reviewer marked it sufficient, but the quote is not on the page.
+    # The reviewer cannot mark a quote that is not on the page.
     assert load_dependency(session, dep.id).is_ready is False
 
 
@@ -1909,7 +1906,7 @@ def test_accepting_an_agreement_obligation_states_what_it_obligated(
 
     assert dependency.dep_type == "agreement"
     assert dependency.title == AGREEMENT_FIELDS["title"]
-    assert dependency.committed_date == date(1996, 1, 31)
+    assert dependency.committed_date is None
     assert dependency.evidence_required == AGREEMENT_FIELDS["evidence_required"]
     assert dependency.notes == AGREEMENT_FIELDS["obligation"]
     assert dependency.station_from is None
@@ -1940,14 +1937,15 @@ def test_an_agreement_shape_missing_its_obligation_refuses(
     assert candidate.state == "pending"
 
 
-def test_an_unparseable_committed_date_refuses_rather_than_guessing(
+def test_an_unparseable_agreement_date_stays_an_assertion_rather_than_a_projection(
     session, agreement_document
 ):
     fields = dict(AGREEMENT_FIELDS, committed_date="next spring")
     candidate = agreement_candidate(session, agreement_document, fields=fields)
 
-    with pytest.raises(MalformedCandidateShape, match="committed_date"):
-        accept_candidate(session, candidate, principal=BRYCE)
+    dependency = accept_candidate(session, candidate, principal=BRYCE)
+
+    assert dependency.committed_date is None
 
 
 def test_a_dependency_candidate_from_an_unmaterializable_source_refuses(
