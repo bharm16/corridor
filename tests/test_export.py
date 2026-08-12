@@ -21,6 +21,7 @@ from corridor.models import (
 from corridor.operative_support import designate_publication_support
 from corridor.principals import HumanPrincipal
 from corridor.report import build_report, render
+from corridor.verbal import record_verbal
 
 TEST_PRINCIPAL = HumanPrincipal("local:tester")
 
@@ -189,20 +190,15 @@ def test_the_xlsx_attributes_a_verbal_backed_committed_date(
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
-    dependency.committed_date = date(2026, 8, 15)
-    session.add(
-        DependencyEvent(
-            dependency_id=dependency.id,
-            event_type="commitment",
-            source_kind="verbal",
-            stated_party="Export Test Utility",
-            event_date=date(2026, 5, 8),
-            committed_date=dependency.committed_date,
-            description="Export Test Utility said relocation will finish in August.",
-            created_by=TEST_PRINCIPAL.subject,
-        )
+    record_verbal(
+        session,
+        dependency,
+        stated_party="Export Test Utility",
+        description="Export Test Utility said relocation will finish in August.",
+        conversation_date=date(2026, 5, 8),
+        committed_date=date(2026, 8, 15),
+        principal=TEST_PRINCIPAL,
     )
-    session.flush()
 
     path = to_xlsx(
         session,

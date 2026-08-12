@@ -44,6 +44,7 @@ from corridor.models import (
 from corridor.operative_support import (
     UnsafeSupportTransfer,
     _transfer_operative_scopes_under_lock,
+    evidence_is_scoped_to_dependency,
 )
 from corridor.principals import (
     HumanPrincipal,
@@ -669,10 +670,8 @@ def _carry_one(
             EvidenceLink,
             scope.evidence.evidence_link_id,
         )
-        if (
-            prior_readiness is None
-            or prior_readiness.dependency_id != dependency.id
-            or prior_readiness.satisfies_requirement is not True
+        if not evidence_is_scoped_to_dependency(
+            session, prior_readiness, dependency.id, require_sufficiency=True
         ):
             return None, "readiness_source_changed"
 

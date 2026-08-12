@@ -18,7 +18,8 @@ from pathlib import Path
 import re
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session
 
@@ -29,7 +30,10 @@ from corridor.models import (
     AutomaticCarryForwardReceipt,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
     DependencyEvent,
+    DependencyEventScope,
+    DependencyEventTiming,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -41,8 +45,10 @@ from corridor.models import (
 )
 from corridor.project_lock import lock_project
 
-ARCHIVE_FORMAT_VERSION = "legacy-ledger-v1"
+ARCHIVE_FORMAT_VERSION = "legacy-ledger-v2"
+_READABLE_ARCHIVE_FORMATS = frozenset({"legacy-ledger-v1", ARCHIVE_FORMAT_VERSION})
 RETIREMENT_ACTOR = "system:legacy-ledger-retirement/v1"
+STATEMENT_RETIREMENT_ROLE = "corridor_statement_retirement"
 LEGACY_ADMISSION_ACTORS = frozenset({"agent", "demo"})
 _REF_CODE = re.compile(r"DEP-(\d+)$")
 
@@ -78,6 +84,37 @@ class CorruptLegacyLedgerArchive(LegacyLedgerArchiveError):
     """A stored archive no longer agrees with its immutable receipt."""
 
 
+def _assume_statement_retirement_role(session: Session) -> None:
+    """Assume the dedicated DB role for the one sealed statement purge."""
+
+    try:
+        session.execute(text(f"set local role {STATEMENT_RETIREMENT_ROLE}"))
+    except DBAPIError as exc:
+        raise LegacyLedgerArchiveError(
+            "legacy Ledger retirement requires the statement-retirement database role"
+        ) from exc
+
+
+def _purge_statement_rows(session: Session, project_id: int) -> None:
+    """Delete sealed statement rows without leaking the maintenance role."""
+
+    _assume_statement_retirement_role(session)
+    try:
+        session.execute(
+            text(
+                "select public.purge_external_party_statement_rows("
+                ":project_id, 'retirement')"
+            ),
+            {"project_id": project_id},
+        )
+    except Exception:
+        # A failing statement aborts this transaction; its eventual rollback
+        # also rolls the local role back to the caller.
+        raise
+    else:
+        session.execute(text("set local role none"))
+
+
 def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
     """Build a canonical, read-only manifest for one project's active Ledger."""
 
@@ -95,7 +132,28 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
     dependency_ids = [dependency.id for dependency in dependencies]
     assertions = _for_dependencies(session, Assertion, dependency_ids)
     evidence_links = _for_dependencies(session, EvidenceLink, dependency_ids)
-    events = _for_dependencies(session, DependencyEvent, dependency_ids)
+    events = list(
+        session.scalars(
+            select(DependencyEvent)
+            .where(DependencyEvent.project_id == project_id)
+            .order_by(DependencyEvent.id)
+        ).all()
+    )
+    event_ids = [event.id for event in events]
+    event_scopes = list(
+        session.scalars(
+            select(DependencyEventScope)
+            .where(DependencyEventScope.event_id.in_(event_ids or [0]))
+            .order_by(DependencyEventScope.id)
+        ).all()
+    )
+    event_timings = list(
+        session.scalars(
+            select(DependencyEventTiming)
+            .where(DependencyEventTiming.event_id.in_(event_ids or [0]))
+            .order_by(DependencyEventTiming.id)
+        ).all()
+    )
     operative_support = _for_dependencies(
         session, OperativeSupport, dependency_ids
     )
@@ -142,6 +200,21 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
         ).all()
     )
 
+    event_evidence = list(
+        session.scalars(
+            select(EvidenceLink)
+            .where(EvidenceLink.event_id.in_(event_ids or [0]))
+            .order_by(EvidenceLink.id)
+        ).all()
+    )
+    evidence_links = list({link.id: link for link in [*evidence_links, *event_evidence]}.values())
+    sufficiencies = list(
+        session.scalars(
+            select(DependencyEvidenceSufficiency)
+            .where(DependencyEvidenceSufficiency.dependency_id.in_(dependency_ids or [0]))
+            .order_by(DependencyEvidenceSufficiency.id)
+        ).all()
+    )
     document_ids = sorted(
         {
             *(link.document_id for link in evidence_links),
@@ -198,7 +271,12 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
             "dependencies": [_row_content(row) for row in dependencies],
             "assertions": [_row_content(row) for row in assertions],
             "evidence_links": [_row_content(row) for row in evidence_links],
+            "dependency_evidence_sufficiencies": [
+                _row_content(row) for row in sufficiencies
+            ],
             "dependency_events": [_row_content(row) for row in events],
+            "dependency_event_scopes": [_row_content(row) for row in event_scopes],
+            "dependency_event_timings": [_row_content(row) for row in event_timings],
             "operative_support": [_row_content(row) for row in operative_support],
             "audit_log": [_row_content(row) for row in audit_entries],
             "originating_candidates": [
@@ -317,7 +395,6 @@ def retire_legacy_ledger(
         # the object that was just added from the identity map.
         session.expire(archive)
         verify_archive(session, archive.id)
-
         dependency_ids = [row["id"] for row in plan.content["dependencies"]]
         session.execute(
             delete(Assertion).where(Assertion.dependency_id.in_(dependency_ids))
@@ -328,15 +405,38 @@ def retire_legacy_ledger(
             )
         )
         session.execute(
+            delete(DependencyEvidenceSufficiency).where(
+                DependencyEvidenceSufficiency.dependency_id.in_(dependency_ids)
+            )
+        )
+        session.execute(
             delete(EvidenceLink).where(
                 EvidenceLink.dependency_id.in_(dependency_ids)
             )
         )
-        session.execute(
-            delete(DependencyEvent).where(
-                DependencyEvent.dependency_id.in_(dependency_ids)
-            )
+        event_ids = set(
+            session.scalars(
+                select(DependencyEvent.id).where(
+                    DependencyEvent.project_id == project_id
+                )
+            ).all()
         )
+        _purge_statement_rows(session, project_id)
+        # The privileged procedure deleted rows outside SQLAlchemy's normal
+        # synchronize-session path.  Remove only those stale statement
+        # identities: archive callers may still need their live Dependency
+        # ids for immediate readback.
+        for row in list(session.identity_map.values()):
+            if isinstance(row, DependencyEvent):
+                is_statement_row = row.id in event_ids
+            elif isinstance(row, (DependencyEventScope, DependencyEventTiming)):
+                is_statement_row = row.event_id in event_ids
+            elif isinstance(row, EvidenceLink):
+                is_statement_row = row.event_id in event_ids
+            else:
+                is_statement_row = False
+            if is_statement_row:
+                session.expunge(row)
         session.execute(delete(Dependency).where(Dependency.id.in_(dependency_ids)))
         session.flush()
         remaining = session.scalar(
@@ -378,7 +478,7 @@ def verify_archive(session: Session, archive_id: int) -> ArchiveReadback:
             f"legacy Ledger archive {archive_id} does not exist"
         )
     content = deepcopy(archive.content_json)
-    if archive.format_version != ARCHIVE_FORMAT_VERSION:
+    if archive.format_version not in _READABLE_ARCHIVE_FORMATS:
         raise CorruptLegacyLedgerArchive(
             f"unsupported archive format {archive.format_version!r}"
         )

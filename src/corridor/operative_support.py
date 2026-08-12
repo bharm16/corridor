@@ -12,11 +12,18 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Iterable
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.models import Dependency, Document, EvidenceLink, OperativeSupport
+from corridor.models import (
+    Dependency,
+    DependencyEvidenceSufficiency,
+    DependencyEventScope,
+    Document,
+    EvidenceLink,
+    OperativeSupport,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
@@ -27,6 +34,42 @@ class NoSuchSupportEvidence(ValueError):
 
 class UnsafeSupportTransfer(ValueError):
     """Current operative scopes no longer match an all-or-none transfer."""
+
+
+def evidence_is_scoped_to_dependency(
+    session: Session,
+    evidence: EvidenceLink | None,
+    dependency_id: int,
+    *,
+    require_sufficiency: bool = False,
+) -> bool:
+    """Whether one Evidence identity belongs to this record's stated scope.
+
+    Direct evidence owns a Dependency. Event evidence owns an event and is
+    visible only through its explicit scope; readiness additionally needs the
+    independent, per-Dependency sufficiency judgment.
+    """
+    if evidence is None:
+        return False
+    if evidence.dependency_id == dependency_id:
+        return not require_sufficiency or evidence.satisfies_requirement is True
+    if evidence.event_id is None:
+        return False
+    if session.scalar(
+        select(DependencyEventScope.id).where(
+            DependencyEventScope.event_id == evidence.event_id,
+            DependencyEventScope.dependency_id == dependency_id,
+        )
+    ) is None:
+        return False
+    if not require_sufficiency:
+        return True
+    return session.scalar(
+        select(DependencyEvidenceSufficiency.id).where(
+            DependencyEvidenceSufficiency.dependency_id == dependency_id,
+            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+        )
+    ) is not None
 
 
 @dataclass(frozen=True)
@@ -173,13 +216,16 @@ def _designate_publication_support_under_lock(
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise NoSuchSupportEvidence(f"no dependency {dependency_id}")
-    link = session.scalar(
-        select(EvidenceLink).where(
+    link = session.get(EvidenceLink, evidence_link_id)
+    linked_scope = session.scalar(
+        select(DependencyEventScope.id)
+        .join(EvidenceLink, EvidenceLink.event_id == DependencyEventScope.event_id)
+        .where(
             EvidenceLink.id == evidence_link_id,
-            EvidenceLink.dependency_id == dependency_id,
+            DependencyEventScope.dependency_id == dependency_id,
         )
     )
-    if link is None:
+    if link is None or (link.dependency_id != dependency_id and linked_scope is None):
         raise NoSuchSupportEvidence(
             f"no evidence {evidence_link_id} on dependency {dependency_id}"
         )
@@ -256,10 +302,8 @@ def _transfer_operative_scopes_under_lock(
         prior_readiness = session.get(
             EvidenceLink, scope.evidence.evidence_link_id
         )
-        if (
-            prior_readiness is None
-            or prior_readiness.dependency_id != dependency_id
-            or prior_readiness.satisfies_requirement is not True
+        if not evidence_is_scoped_to_dependency(
+            session, prior_readiness, dependency_id, require_sufficiency=True
         ):
             raise UnsafeSupportTransfer("readiness support changed")
 
@@ -337,7 +381,7 @@ def resolve_operative_support(
     evidence_by_dependency: dict[int, list[EvidenceSupport]] = {
         dependency_id: [] for dependency_id in ids
     }
-    evidence_by_id: dict[int, EvidenceSupport] = {}
+    evidence_by_id: dict[tuple[int, int], EvidenceSupport] = {}
     project_ids: set[int] = set()
     for link, document in session.execute(
         select(EvidenceLink, Document)
@@ -363,7 +407,50 @@ def resolve_operative_support(
             superseded_on=document.superseded_on,
         )
         evidence_by_dependency.setdefault(link.dependency_id, []).append(support)
-        evidence_by_id[link.id] = support
+        evidence_by_id[(link.dependency_id, link.id)] = support
+
+    # Event citations have one identity and no direct Dependency owner.  The
+    # scope link gives every affected record visibility of the quote; the
+    # optional sufficiency row answers the separate readiness question.
+    for dependency_id, link, document, sufficiency_id in session.execute(
+        select(
+            DependencyEventScope.dependency_id,
+            EvidenceLink,
+            Document,
+            DependencyEvidenceSufficiency.id,
+        )
+        .join(EvidenceLink, EvidenceLink.event_id == DependencyEventScope.event_id)
+        .join(Document, Document.id == EvidenceLink.document_id)
+        .outerjoin(
+            DependencyEvidenceSufficiency,
+            and_(
+                DependencyEvidenceSufficiency.dependency_id
+                == DependencyEventScope.dependency_id,
+                DependencyEvidenceSufficiency.evidence_link_id == EvidenceLink.id,
+            ),
+        )
+        .where(DependencyEventScope.dependency_id.in_(ids))
+        .order_by(DependencyEventScope.dependency_id, EvidenceLink.id)
+    ).all():
+        project_ids.add(document.project_id)
+        evidence_date = document.doc_date
+        if evidence_date is None and document.retrieved_at is not None:
+            evidence_date = document.retrieved_at.date()
+        support = EvidenceSupport(
+            evidence_link_id=link.id,
+            dependency_id=dependency_id,
+            document_id=document.id,
+            filename=document.filename,
+            page_no=link.page_no,
+            quote=link.quote,
+            verified=bool(link.verified),
+            satisfies_requirement=sufficiency_id is not None,
+            evidence_date=evidence_date,
+            superseded_by=document.superseded_by,
+            superseded_on=document.superseded_on,
+        )
+        evidence_by_dependency.setdefault(dependency_id, []).append(support)
+        evidence_by_id[(dependency_id, link.id)] = support
 
     successor_by_document = dict(
         session.execute(
@@ -407,13 +494,11 @@ def resolve_operative_support(
                 | stored_readiness_ids
             )
             historical_basis = tuple(
-                evidence_by_id[evidence_link_id]
+                evidence_by_id[(dependency_id, evidence_link_id)]
                 for evidence_link_id in sorted(basis_ids)
                 if (
-                    evidence_link_id in evidence_by_id
-                    and evidence_by_id[evidence_link_id].dependency_id
-                    == dependency_id
-                    and evidence_by_id[evidence_link_id].verified
+                    (dependency_id, evidence_link_id) in evidence_by_id
+                    and evidence_by_id[(dependency_id, evidence_link_id)].verified
                 )
             )
             if len(historical_basis) == len(basis_ids):
@@ -427,7 +512,7 @@ def resolve_operative_support(
         by_field: dict[str, EvidenceSupport] = {}
         superseded_scopes: list[SupersededOperativeScope] = []
         for designation in designations.get(dependency_id, []):
-            support = evidence_by_id.get(designation.evidence_link_id)
+            support = evidence_by_id.get((dependency_id, designation.evidence_link_id))
             # A human judgment cannot make a mechanically unverified quote
             # citable. Preserve the designation row, but it is not operative.
             if support is None or not support.verified:
@@ -524,8 +609,16 @@ def readiness_frontier_before_audit(
         select(EvidenceLink, Document)
         .join(Document, EvidenceLink.document_id == Document.id)
         .where(
-            EvidenceLink.dependency_id == dependency_id,
             EvidenceLink.id.in_(readiness_ids),
+            or_(
+                EvidenceLink.dependency_id == dependency_id,
+                exists(
+                    select(DependencyEventScope.id).where(
+                        DependencyEventScope.event_id == EvidenceLink.event_id,
+                        DependencyEventScope.dependency_id == dependency_id,
+                    )
+                ),
+            ),
         )
         .order_by(EvidenceLink.id)
     ).all()
@@ -545,7 +638,7 @@ def readiness_frontier_before_audit(
         readiness.append(
             EvidenceSupport(
                 evidence_link_id=link.id,
-                dependency_id=link.dependency_id,
+                dependency_id=dependency_id,
                 document_id=document.id,
                 filename=document.filename,
                 page_no=link.page_no,

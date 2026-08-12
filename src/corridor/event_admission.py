@@ -26,24 +26,30 @@ from sqlalchemy.orm import Session
 
 from corridor import audit
 from corridor import dependency_events
-from corridor.dependency_events import project_committed_date
 from corridor import identity
 from corridor import policy
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementRefusal,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
-    EvidenceLink,
     EventAdmissionOutcome,
+    ExternalOrg,
     PolicyRun,
     Project,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
-EVENT_ADMISSION_POLICY_VERSION = "event-admission-v1"
+EVENT_ADMISSION_POLICY_VERSION = "event-admission-v2"
 FAMILY = "event-admission"
-ABSTENTION_REASON_VERSION = "event-admission-abstentions-v1"
+ABSTENTION_REASON_VERSION = "event-admission-abstentions-v2"
 MACHINE_ACTOR = "corridor:event-admission"
 
 OUTCOME_ADMITTED = "admitted"
@@ -52,7 +58,7 @@ OUTCOME_ABSTAINED = "abstained"
 # The types the policy will admit. A response or a status change says
 # something happened without stating a date anyone is held to, and the
 # date lanes read only these three.
-ADMISSIBLE_EVENT_TYPES = ("closure", "commitment", "slip")
+ADMISSIBLE_EVENT_TYPES = ("commitment", "committed_date_change")
 
 ABSTENTION_REASONS = frozenset(
     {
@@ -64,6 +70,7 @@ ABSTENTION_REASONS = frozenset(
         "reference_resolves_to_no_dependency",
         "reference_resolves_to_many",
         "party_unstated",
+        "stated_party_unresolved",
         "party_mismatch",
         "project_side_actor",
     }
@@ -118,7 +125,17 @@ def run_event_admission(
     # the receipt table is immutable, so a run row is never updated after
     # it exists — which is the property that makes it a receipt.
     admissible: list[
-        tuple[Candidate, Dependency, dict, date | None, date | None]
+        tuple[
+            Candidate,
+            Dependency,
+            dict,
+            date | None,
+            StatementTiming,
+            StatementTiming | None,
+            str,
+            int,
+            CitedStatementEvidence,
+        ]
     ] = []
     abstentions: list[EventAdmissionAbstention] = []
     for candidate in candidates:
@@ -130,9 +147,28 @@ def run_event_admission(
                 )
             )
         else:
-            dependency, fields, event_date, committed_date = verdict
+            (
+                dependency,
+                fields,
+                event_date,
+                new_timing,
+                previous_timing,
+                stated_party,
+                stated_external_org_id,
+                evidence,
+            ) = verdict
             admissible.append(
-                (candidate, dependency, fields, event_date, committed_date)
+                (
+                    candidate,
+                    dependency,
+                    fields,
+                    event_date,
+                    new_timing,
+                    previous_timing,
+                    stated_party,
+                    stated_external_org_id,
+                    evidence,
+                )
             )
 
     run = PolicyRun(
@@ -158,19 +194,37 @@ def run_event_admission(
             )
         )
 
-    touched: set[int] = set()
-    for candidate, dependency, fields, event_date, committed_date in admissible:
-        event = DependencyEvent(
-            dependency_id=dependency.id,
-            event_type=fields["event_type"],
-            event_date=event_date,
-            committed_date=committed_date,
-            description=str(fields.get("description") or ""),
-            created_by=MACHINE_ACTOR,
-        )
-        session.add(event)
-        session.flush([event])
-        _link_event_evidence(session, dependency, event, candidate)
+    for (
+        candidate,
+        dependency,
+        fields,
+        event_date,
+        new_timing,
+        previous_timing,
+        stated_party,
+        stated_external_org_id,
+        evidence,
+    ) in admissible:
+        try:
+            event = record_external_party_statement(
+                session,
+                project_id=project.id,
+                affected_external_org_id=dependency.external_org_id,
+                stated_party=stated_party,
+                stated_external_org_id=stated_external_org_id,
+                source_kind="cited",
+                event_date=event_date,
+                description=str(fields.get("description") or ""),
+                new_timing=new_timing,
+                previous_timing=previous_timing,
+                scope=StatementScope.selected((dependency.id,)),
+                created_by=MACHINE_ACTOR,
+                evidence=evidence,
+            )
+        except StatementRefusal as exc:
+            raise RuntimeError(
+                f"candidate {candidate.id} passed admission but statement recording refused: {exc}"
+            ) from exc
 
         candidate.state = "accepted"
         candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -195,11 +249,6 @@ def run_event_admission(
                 "policy_sha256": run.policy_sha256,
             },
         )
-        touched.add(dependency.id)
-
-    for dependency_id in sorted(touched):
-        project_committed_date(session, dependency_id)
-
     session.flush()
     return EventAdmissionResult(
         run_id=run.id,
@@ -211,7 +260,16 @@ def run_event_admission(
 
 def _evaluate(
     session: Session, project: Project, candidate: Candidate
-) -> str | tuple[Dependency, dict, date | None, date | None]:
+) -> str | tuple[
+    Dependency,
+    dict,
+    date | None,
+    StatementTiming,
+    StatementTiming | None,
+    str,
+    int,
+    CitedStatementEvidence,
+]:
     """Every check, in order. A string is the abstention reason."""
     if not candidate.citations_verified:
         return "citations_unverified"
@@ -227,15 +285,11 @@ def _evaluate(
     # orders by exactly that.
     raw_event_date = fields.get("event_date")
     raw_committed_date = fields.get("committed_date")
-    if not raw_event_date and not raw_committed_date:
+    if not raw_committed_date:
         return "no_date"
     event_date = _parse_date(raw_event_date) if raw_event_date else None
-    committed_date = (
-        _parse_date(raw_committed_date) if raw_committed_date else None
-    )
-    if (raw_event_date and event_date is None) or (
-        raw_committed_date and committed_date is None
-    ):
+    new_timing = _timing_from_candidate(raw_committed_date)
+    if (raw_event_date and event_date is None) or new_timing is None:
         return "unparseable_date"
 
     ref = fields.get("conflict_ref")
@@ -261,29 +315,50 @@ def _evaluate(
         # party is the other half of the name. Narrowing by it is the
         # same alias-bounded match the party check below applies — not a
         # second, looser rule.
-        stated = str(fields.get("external_org") or "").strip()
-        matches = [
-            d
-            for d in matches
-            if stated and identity.party_matches(session, d, stated)
-        ]
+        affected = str(fields.get("external_org") or "").strip()
+        matches = [d for d in matches if affected and identity.party_matches(session, d, affected)]
         if len(matches) != 1:
             return "reference_resolves_to_many"
     [dependency] = matches
 
-    org = str(fields.get("external_org") or "").strip()
-    if not org:
+    affected_party = str(fields.get("external_org") or "").strip()
+    if not affected_party:
         return "party_unstated"
-    if identity.is_project_side_party(project, org):
+    if dependency.external_org_id is None or not identity.party_matches(
+        session, dependency, affected_party
+    ):
+        return "party_mismatch"
+    stated_party = str(fields.get("stated_party") or "").strip()
+    if not stated_party:
+        # ``external_org`` is affected-party context from old extractors.  It
+        # is never proof of who spoke.
+        return "party_unstated"
+    if identity.is_project_side_party(project, stated_party):
         # The project's own engineer taking an action item is a Next
         # Action's territory, never an External Party's commitment
         # (ADR-0026). Adjudication may still record it by hand.
         return "project_side_actor"
-    if not identity.party_matches(session, dependency, org):
-        # Alias resolution is Adjudication's judgment, not the policy's.
-        return "party_mismatch"
-
-    return dependency, fields, event_date, committed_date
+    stated_external_org = _external_org_for_party(session, stated_party)
+    if stated_external_org is None:
+        return "stated_party_unresolved"
+    evidence = _candidate_evidence(candidate)
+    if evidence is None:
+        return "citations_unverified"
+    previous_timing = _previous_timing_from_candidate(fields.get("previous_timing"))
+    if fields.get("event_type") == "committed_date_change" and previous_timing is None:
+        return "no_date"
+    if fields.get("event_type") == "commitment" and previous_timing is not None:
+        return "event_type_outside_policy"
+    return (
+        dependency,
+        fields,
+        event_date,
+        new_timing,
+        previous_timing,
+        stated_party,
+        stated_external_org.id,
+        evidence,
+    )
 
 
 def _parse_date(value: object) -> date | None:
@@ -295,6 +370,59 @@ def _parse_date(value: object) -> date | None:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
+    return None
+
+
+def _timing_from_candidate(value: object) -> StatementTiming | None:
+    """Read only timing precision the Candidate explicitly supplies."""
+    if isinstance(value, dict):
+        text = str(value.get("text") or "").strip()
+        precision = str(value.get("precision") or "").strip()
+        if precision == "approximate" and text:
+            return StatementTiming.approximate(text)
+        start = _parse_date(value.get("start_date"))
+        end = _parse_date(value.get("end_date"))
+        if precision == "day" and start is not None and end == start and text:
+            return StatementTiming.day(text, start)
+        if precision == "month" and start is not None and end is not None and text:
+            return StatementTiming(text, "month", start, end)
+        return None
+    parsed = _parse_date(value)
+    if parsed is None:
+        return None
+    return StatementTiming.day(str(value), parsed)
+
+
+def _previous_timing_from_candidate(value: object) -> StatementTiming | None:
+    return _timing_from_candidate(value) if isinstance(value, dict) else None
+
+
+def _external_org_for_party(session: Session, party: str) -> ExternalOrg | None:
+    """Resolve one registered party spelling; ambiguity is not admission proof."""
+    wanted = identity.normalize_party(party)
+    matches = [
+        org
+        for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id))
+        if any(
+            identity.normalize_party(name) == wanted
+            for name in (org.name, *(org.aliases or []))
+            if name
+        )
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _candidate_evidence(candidate: Candidate) -> CitedStatementEvidence | None:
+    """Select the event's one canonical verified page citation."""
+    for citation in (candidate.payload_json or {}).get("citations", []):
+        if not isinstance(citation, dict) or citation.get("verified") is not True:
+            continue
+        document_id = citation.get("document_id")
+        page_no = citation.get("page")
+        quote = citation.get("quote")
+        if isinstance(document_id, int) and isinstance(page_no, int) and isinstance(quote, str):
+            if quote.strip():
+                return CitedStatementEvidence(document_id, page_no, quote)
     return None
 
 
@@ -310,10 +438,12 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
 
     from corridor import models as models_module
     from corridor import principals as principals_module
+    from corridor import external_statements as external_statements_module
 
     paths = (
         ("corridor.event_admission", Path(__file__)),
         ("corridor.dependency_events", Path(dependency_events.__file__)),
+        ("corridor.external_statements", Path(external_statements_module.__file__)),
         ("corridor.audit", Path(audit.__file__)),
         ("corridor.identity", Path(identity.__file__)),
         ("corridor.policy", Path(policy.__file__)),
@@ -323,6 +453,11 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
             "corridor.migrations.c7d2f5a83b46",
             Path(__file__).parent
             / "migrations/versions/c7d2f5a83b46_add_event_admission.py",
+        ),
+        (
+            "corridor.migrations.a217e4f3a2b1",
+            Path(__file__).parent
+            / "migrations/versions/a217e4f3a2b1_external_party_statement_shape.py",
         ),
     )
     return tuple((name, path.read_bytes()) for name, path in paths)
@@ -353,9 +488,10 @@ def _canonical_policy(project: Project) -> dict:
         "checks": [
             "citations_verified",
             "event_type_admissible",
-            "date_present_and_parseable",
+            "source_timing_explicit_and_parseable",
             "reference_resolves_to_exactly_one_dependency",
-            "party_stated_and_matching",
+            "affected_party_matches_scope",
+            "stated_party_is_resolved",
             "actor_is_not_project_side",
         ],
         "rules_digest_method": "sha256-rule-source-files-v1",
@@ -437,18 +573,17 @@ def _statement_attachable(
         return False
     if fields.get("event_type") not in ADMISSIBLE_EVENT_TYPES:
         return False
-    raw_event_date = fields.get("event_date")
     raw_committed_date = fields.get("committed_date")
-    if not raw_event_date and not raw_committed_date:
+    if not raw_committed_date:
         return False
-    if raw_event_date and _parse_date(raw_event_date) is None:
+    if _timing_from_candidate(raw_committed_date) is None:
         return False
-    if raw_committed_date and _parse_date(raw_committed_date) is None:
+    stated_party = str(fields.get("stated_party") or "").strip()
+    if not stated_party:
         return False
-    org = str(fields.get("external_org") or "").strip()
-    if org and project is not None and identity.is_project_side_party(project, org):
+    if project is not None and identity.is_project_side_party(project, stated_party):
         return False
-    return True
+    return _candidate_evidence(candidate) is not None
 
 
 def attach_statement(
@@ -527,36 +662,63 @@ def attach_statement(
         )
 
     raw_event_date = fields.get("event_date")
-    raw_committed_date = fields.get("committed_date")
-    if not raw_event_date and not raw_committed_date:
+    new_timing = _timing_from_candidate(fields.get("committed_date"))
+    if new_timing is None:
         raise StatementUnplaceable("a statement must carry a date")
     event_date = _parse_date(raw_event_date) if raw_event_date else None
-    committed_date = (
-        _parse_date(raw_committed_date) if raw_committed_date else None
-    )
-    if (raw_event_date and event_date is None) or (
-        raw_committed_date and committed_date is None
-    ):
+    if raw_event_date and event_date is None:
         raise StatementUnplaceable("a stated date could not be read")
 
-    org = str(fields.get("external_org") or "").strip()
-    if org and identity.is_project_side_party(project, org):
+    affected_party = str(fields.get("external_org") or "").strip()
+    if affected_party and not identity.party_matches(session, dependency, affected_party):
         raise StatementUnplaceable(
-            f"{org} is the project's own side — an action item, never an "
-            "External Party's commitment"
+            "the statement's affected External Party does not match this record"
         )
+    stated_party = str(fields.get("stated_party") or "").strip()
+    if identity.is_project_side_party(project, stated_party):
+        raise StatementUnplaceable(
+            f"{stated_party} is the project's own side — an action item, never an External Party commitment"
+        )
+    stated_external_org = _external_org_for_party(session, stated_party)
+    if stated_external_org is None:
+        raise StatementUnplaceable(
+            "the statement must name a registered External Party who spoke"
+        )
+    evidence = _candidate_evidence(candidate)
+    if evidence is None:
+        raise StatementUnplaceable(
+            "this statement's quote was not found on its page — check the page before placing it"
+        )
+    previous_timing = _previous_timing_from_candidate(fields.get("previous_timing"))
+    if event_type == "committed_date_change" and previous_timing is None:
+        raise StatementUnplaceable(
+            "a Committed Date Change must preserve the earlier stated timing"
+        )
+    if event_type == "commitment" and previous_timing is not None:
+        raise StatementUnplaceable(
+            "two stated timings are a Committed Date Change"
+        )
+    if dependency.external_org_id is None:
+        raise StatementUnplaceable("this record has no resolved External Party")
 
-    event = DependencyEvent(
-        dependency_id=dependency.id,
-        event_type=event_type,
-        event_date=event_date,
-        committed_date=committed_date,
-        description=str(fields.get("description") or ""),
-        created_by=attacher.subject,
-    )
-    session.add(event)
-    session.flush([event])
-    _link_event_evidence(session, dependency, event, candidate)
+    try:
+        event = record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=dependency.external_org_id,
+            stated_party=stated_party,
+            stated_external_org_id=stated_external_org.id,
+            source_kind="cited",
+            event_date=event_date,
+            description=str(fields.get("description") or ""),
+            new_timing=new_timing,
+            previous_timing=previous_timing,
+            scope=StatementScope.selected((dependency.id,)),
+            created_by=attacher.subject,
+            evidence=evidence,
+        )
+    except StatementRefusal as exc:
+        raise StatementUnplaceable(str(exc)) from exc
 
     candidate.state = "accepted"
     candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -572,37 +734,5 @@ def attach_statement(
             "event_type": event_type,
         },
     )
-    project_committed_date(session, dependency.id)
     session.flush()
     return event
-
-
-def _link_event_evidence(
-    session: Session,
-    dependency: Dependency,
-    event: DependencyEvent,
-    candidate: Candidate,
-) -> None:
-    """Carry a cited event's verified page evidence onto the event itself."""
-    citations = (candidate.payload_json or {}).get("citations", [])
-    for citation in citations:
-        if not isinstance(citation, dict):
-            continue
-        document_id = citation.get("document_id")
-        page_no = citation.get("page")
-        quote = citation.get("quote")
-        if not isinstance(document_id, int) or not isinstance(page_no, int):
-            continue
-        if not isinstance(quote, str) or not quote:
-            continue
-        session.add(
-            EvidenceLink(
-                dependency_id=dependency.id,
-                event_id=event.id,
-                document_id=document_id,
-                page_no=page_no,
-                quote=quote,
-                verified=bool(citation.get("verified")),
-            )
-        )
-    session.flush()

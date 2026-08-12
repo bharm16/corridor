@@ -22,6 +22,8 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
+    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
@@ -297,19 +299,35 @@ def test_the_prompt_supplies_the_citables_by_reference(session, dependency):
 
 
 def test_the_prompt_attributes_a_verbal_backed_committed_date(session, dependency):
-    dependency.committed_date = TODAY + timedelta(days=60)
-    session.add(
-        DependencyEvent(
-            dependency_id=dependency.id,
-            event_type="commitment",
-            source_kind="verbal",
-            stated_party="CenterPoint Energy",
-            event_date=TODAY - timedelta(days=1),
-            committed_date=dependency.committed_date,
-            description="CenterPoint said the relocation will finish in June.",
-            created_by="local:phone-coordinator",
+    committed_date = TODAY + timedelta(days=60)
+    event = DependencyEvent(
+        project_id=dependency.project_id,
+        affected_external_org_id=None,
+        stated_external_org_id=None,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="verbal",
+        stated_party="CenterPoint Energy",
+        event_date=TODAY - timedelta(days=1),
+        description="CenterPoint said the relocation will finish in June.",
+        created_by="local:phone-coordinator",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text=committed_date.isoformat(),
+                precision="day",
+                start_date=committed_date,
+                end_date=committed_date,
+            ),
         )
     )
+    dependency.committed_date = committed_date
     session.flush()
     client = StubClient([drafted(*covering_sentences(session, dependency))])
 

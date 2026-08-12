@@ -16,7 +16,12 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.dependency_events import event_type_for_verbal, project_committed_date
+from corridor.external_statements import (
+    StatementRefusal,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.identity import is_project_side_party, party_matches
 from corridor.models import Dependency, DependencyEvent, Project
 from corridor.principals import HumanPrincipal, require_human_principal
@@ -70,18 +75,24 @@ def record_verbal(
             f"{party} is not this record's External Party or a registered alias"
         )
 
-    event = DependencyEvent(
-        dependency_id=dependency.id,
-        event_type=event_type_for_verbal(session, dependency.id, committed_date),
-        source_kind="verbal",
-        stated_party=party,
-        event_date=conversation_date,
-        committed_date=committed_date,
-        description=what_was_said,
-        created_by=recorder.subject,
-    )
-    session.add(event)
-    session.flush([event])
+    if dependency.external_org_id is None:
+        raise VerbalRefusal("this record has no resolved External Party")
+    try:
+        event = record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=dependency.external_org_id,
+            stated_party=party,
+            stated_external_org_id=dependency.external_org_id,
+            source_kind="verbal",
+            event_date=conversation_date,
+            description=what_was_said,
+            new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
+            scope=StatementScope.selected((dependency.id,)),
+            created_by=recorder.subject,
+        )
+    except StatementRefusal as exc:
+        raise VerbalRefusal(str(exc)) from exc
     audit.record(
         session,
         principal=recorder,
@@ -93,10 +104,9 @@ def record_verbal(
             "source_kind": event.source_kind,
             "stated_party": party,
             "conversation_date": conversation_date.isoformat(),
-            "committed_date": committed_date.isoformat(),
+            "committed_date": event.new_timing.start_date.isoformat(),
             "event_type": event.event_type,
         },
     )
-    project_committed_date(session, dependency.id)
     session.flush()
     return event

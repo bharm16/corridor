@@ -35,6 +35,7 @@ from corridor.ledger import Evidence, LedgerRow, browse
 from corridor.models import (
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
     Document,
     EvidenceLink,
     Milestone,
@@ -263,7 +264,7 @@ def build_report(
     )
     committed_dates = {
         dependency_id: (
-            committed_events[dependency_id].committed_date
+            committed_events[dependency_id].new_timing.start_date
             if dependency_id in committed_events
             # A legacy projection with no event can retain its pre-event
             # field provenance. A projection with an unsupported cited event
@@ -953,8 +954,9 @@ def _verified_cited_event_ids(
         session.scalars(
             select(EvidenceLink.event_id)
             .join(DependencyEvent, EvidenceLink.event_id == DependencyEvent.id)
+            .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
             .where(
-                DependencyEvent.dependency_id.in_(dependency_ids),
+                DependencyEventScope.dependency_id.in_(dependency_ids),
                 DependencyEvent.source_kind == "cited",
                 EvidenceLink.verified.is_(True),
             )

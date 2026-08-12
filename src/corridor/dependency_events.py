@@ -1,25 +1,22 @@
-"""The shared event history and its one Committed Date projection.
+"""Read exact-day, known-scope statements into the legacy Dependency view.
 
-Mechanical minutes admission once carried its own "latest commitment" query,
-while reports read the Dependency projection and would quietly disagree after
-a later statement. Mechanical admission and a coordinator's verbal are now
-distinct writers, but their statements share one order and one date
-projection. Keeping that readback here prevents either writer or a report from
-inventing a different meaning of "newest commitment."
+The old event table stored one Dependency and one scalar date, so every reader
+invented its own answer after a party-level statement or a month-only source.
+The structured event record is now authoritative; this module intentionally
+exports only the honest subset legacy Dependency readers can represent.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable
-from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import Dependency, DependencyEvent
+from corridor.models import Dependency, DependencyEvent, DependencyEventScope, DependencyEventTiming
 
 
-COMMITTED_EVENT_TYPES = ("commitment", "slip")
+COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change")
 
 
 def latest_committed_events(
@@ -35,46 +32,49 @@ def latest_committed_events(
         return {}
     if event_ids is not None and not event_ids:
         return {}
-    query = select(DependencyEvent).where(
-        DependencyEvent.dependency_id.in_(ids),
-        DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
-        DependencyEvent.committed_date.is_not(None),
+    query = (
+        select(DependencyEventScope.dependency_id, DependencyEvent)
+        .join(DependencyEvent, DependencyEventScope.event_id == DependencyEvent.id)
+        .join(DependencyEventTiming, DependencyEventTiming.event_id == DependencyEvent.id)
+        .where(
+            DependencyEventScope.dependency_id.in_(ids),
+            DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
+            DependencyEvent.scope_mode.in_(("selected", "all_active")),
+            DependencyEventTiming.kind == "new",
+            DependencyEventTiming.precision == "day",
+        )
     )
     if source_kind is not None:
         query = query.where(DependencyEvent.source_kind == source_kind)
     if event_ids is not None:
         query = query.where(DependencyEvent.id.in_(event_ids))
-    events = session.scalars(
+    rows = session.execute(
         query.order_by(
-            DependencyEvent.dependency_id,
+            DependencyEventScope.dependency_id,
             DependencyEvent.event_date.desc().nulls_last(),
             DependencyEvent.id.desc(),
         )
     ).all()
     latest: dict[int, DependencyEvent] = {}
-    for event in events:
-        latest.setdefault(event.dependency_id, event)
+    for dependency_id, event in rows:
+        latest.setdefault(dependency_id, event)
     return latest
 
 
 def project_committed_date(session: Session, dependency_id: int) -> None:
     """Refresh the Dependency's stored projection from its appended events."""
     event = latest_committed_events(session, (dependency_id,)).get(dependency_id)
-    if event is None:
-        return
     dependency = session.get(Dependency, dependency_id)
     if dependency is not None:
-        dependency.committed_date = event.committed_date
+        dependency.committed_date = (
+            event.new_timing.start_date if event is not None and event.new_timing else None
+        )
 
 
-def event_type_for_verbal(
-    session: Session, dependency_id: int, committed_date: date
-) -> str:
-    """A later stated date is a Slip; any other newly stated date commits."""
-    previous = latest_committed_events(session, (dependency_id,)).get(dependency_id)
-    if previous is not None and committed_date > previous.committed_date:
-        return "slip"
-    return "commitment"
+def project_committed_dates(session: Session, dependency_ids: Iterable[int]) -> None:
+    """Refresh every compatibility projection affected by one statement."""
+    for dependency_id in set(dependency_ids):
+        project_committed_date(session, dependency_id)
 
 
 def verbal_attribution(event: DependencyEvent | None) -> str | None:

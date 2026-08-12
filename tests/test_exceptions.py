@@ -22,6 +22,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
     DocPage,
     Document,
     EvidenceLink,
@@ -299,15 +300,19 @@ def test_overdue_does_not_fire_once_closed_out(session, project, document):
     """A closure event is what stops the clock, not the passage of time."""
     dep = make_dep(session, project, committed_date=TODAY - timedelta(days=30))
     add_evidence(session, dep, document)
-    session.add(
-        DependencyEvent(
-            dependency_id=dep.id,
-            event_type="closure",
-            event_date=TODAY - timedelta(days=2),
-            description="Relocation complete, clearance letter received",
-            created_by="reviewer",
-        )
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=dep.external_org_id,
+        stated_external_org_id=dep.external_org_id,
+        scope_mode="selected",
+        event_type="closure",
+        event_date=TODAY - timedelta(days=2),
+        description="Relocation complete, clearance letter received",
+        created_by="reviewer",
     )
+    session.add(event)
+    session.flush()
+    session.add(DependencyEventScope(event_id=event.id, dependency_id=dep.id))
     session.flush()
     assert "OVERDUE" not in codes(session, dep)
 

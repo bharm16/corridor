@@ -34,7 +34,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 DOC_TYPES = (
     "matrix",
@@ -139,13 +139,16 @@ CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")
 ORG_TYPES = ("utility", "railroad", "agency", "consultant", "other")
 EVENT_TYPES = (
     "commitment",
+    "committed_date_change",
     "response",
-    "slip",
     "escalation",
     "status_change",
     "closure",
 )
 EVENT_SOURCE_KINDS = ("cited", "verbal")
+TIMING_PRECISIONS = ("day", "month", "approximate", "legacy_unknown")
+STATEMENT_SCOPE_MODES = ("unknown", "selected", "all_active")
+TIMING_CHANGE_DIRECTIONS = ("earlier", "later", "unknown")
 
 
 def is_claim(value: str | None) -> bool:
@@ -1209,18 +1212,35 @@ class Dependency(Base):
 
 
 class DependencyEvent(Base):
-    """Something that happened to a Dependency, in order.
+    """One attributable External Party statement, with scope kept separately.
 
-    Events are appended, never edited. A `slip` does not update the earlier
-    commitment — both stay, because the fact that a date moved is itself the
-    thing worth recording.
+    An event is project- and affected-party-scoped; a statement may concern no
+    known Dependency, one Dependency, or several.  ``DependencyEventScope``
+    is the only authority for that relationship.  Timings live in their own
+    rows so a month or approximate phrase never has to pretend to be one day.
     """
 
     __tablename__ = "dependency_events"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
     event_type: Mapped[str] = mapped_column(_enum(*EVENT_TYPES, name="event_type"))
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    affected_external_org_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_orgs.id")
+    )
+    # The resolved organization who made the statement.  The raw wording is
+    # retained separately because source spelling is provenance too.
+    stated_external_org_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_orgs.id")
+    )
+    scope_mode: Mapped[str] = mapped_column(
+        _enum(*STATEMENT_SCOPE_MODES, name="statement_scope_mode"),
+        default="unknown",
+        server_default="unknown",
+    )
+    timing_direction: Mapped[str | None] = mapped_column(
+        _enum(*TIMING_CHANGE_DIRECTIONS, name="timing_change_direction")
+    )
     # A source is declared rather than inferred from an absent EvidenceLink:
     # missing Evidence is how a defect looks, not how a verbal looks.
     source_kind: Mapped[str] = mapped_column(
@@ -1228,35 +1248,101 @@ class DependencyEvent(Base):
         default="cited",
         server_default="cited",
     )
-    # The party as the recorder named it on the call. Cited events keep this
-    # null because their stated party remains in the source document.
+    # The exact party wording as the source or recorder stated it.  Cited
+    # events must not derive this from the affected party.
     stated_party: Mapped[str | None] = mapped_column(Text)
     # The date the event happened, which is not the date it was recorded.
     event_date: Mapped[date | None] = mapped_column(Date)
-    # What the External Party said it would deliver by, when the event
-    # states one. Distinct from `event_date`, which is when they said it:
-    # a commitment made at the January meeting to finish in June is two
-    # dates, and collapsing them would make every meeting look like a
-    # deadline. Only this one can project the Dependency's Committed Date.
-    committed_date: Mapped[date | None] = mapped_column(Date)
     description: Mapped[str] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
+    timings: Mapped[list["DependencyEventTiming"]] = relationship(
+        back_populates="event",
+        order_by="DependencyEventTiming.id",
+        cascade="all, delete-orphan",
+    )
+    scope_links: Mapped[list["DependencyEventScope"]] = relationship(
+        back_populates="event",
+        order_by="DependencyEventScope.dependency_id",
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def previous_timing(self) -> "DependencyEventTiming | None":
+        return next((timing for timing in self.timings if timing.kind == "previous"), None)
+
+    @property
+    def new_timing(self) -> "DependencyEventTiming | None":
+        return next((timing for timing in self.timings if timing.kind == "new"), None)
+
+
+class DependencyEventTiming(Base):
+    """One source-preserving timing within an External Party statement."""
+
+    __tablename__ = "dependency_event_timings"
+    __table_args__ = (
+        UniqueConstraint("event_id", "kind", name="uq_dependency_event_timing_kind"),
+        CheckConstraint(
+            "kind in ('previous', 'new')", name="ck_dependency_event_timing_kind"
+        ),
+        CheckConstraint(
+            "precision in ('day', 'month', 'approximate', 'legacy_unknown')",
+            name="ck_dependency_event_timing_precision",
+        ),
+        CheckConstraint(
+            "(precision = 'day' and start_date is not null and end_date = start_date) "
+            "or (precision = 'month' and start_date is not null and end_date is not null "
+            "and start_date = date_trunc('month', start_date::timestamp)::date "
+            "and end_date = (date_trunc('month', start_date::timestamp) "
+            "+ interval '1 month - 1 day')::date) "
+            "or (precision in ('approximate', 'legacy_unknown') and start_date is null and end_date is null)",
+            name="ck_dependency_event_timing_bounds",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("dependency_events.id"))
+    kind: Mapped[str] = mapped_column(String(16))
+    text: Mapped[str] = mapped_column(Text)
+    precision: Mapped[str] = mapped_column(String(32))
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
+    event: Mapped[DependencyEvent] = relationship(back_populates="timings")
+
+
+class DependencyEventScope(Base):
+    """One exact Dependency selected by an External Party statement."""
+
+    __tablename__ = "dependency_event_scopes"
+    __table_args__ = (UniqueConstraint("event_id", "dependency_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("dependency_events.id"))
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    event: Mapped[DependencyEvent] = relationship(back_populates="scope_links")
+
 
 class EvidenceLink(Base):
     __tablename__ = "evidence_links"
-    __table_args__ = (UniqueConstraint("dependency_id", "id"),)
+    __table_args__ = (
+        UniqueConstraint("dependency_id", "id"),
+        CheckConstraint(
+            "(event_id is null and dependency_id is not null) or "
+            "(event_id is not null and dependency_id is null and satisfies_requirement is false)",
+            name="ck_evidence_links_event_ownership",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    # Always set, even when the evidence is really about an event: an
-    # event's evidence is also its dependency's evidence, and keeping this
-    # required means `is_ready` and `last_evidenced_at` stay simple queries
-    # over one column rather than a union.
-    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
-    # Set when this quote specifically supports an event rather than a field.
+    # Direct record evidence owns one Dependency.  Event evidence owns no
+    # fake Dependency; its scope links and separate sufficiency judgments
+    # make the record-specific relationship explicit.
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    # Set when this quote supports an External Party statement rather than a
+    # direct record assertion.
     event_id: Mapped[int | None] = mapped_column(ForeignKey("dependency_events.id"))
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
     page_no: Mapped[int] = mapped_column(Integer)
@@ -1277,20 +1363,37 @@ class EvidenceLink(Base):
     )
 
 
+class DependencyEvidenceSufficiency(Base):
+    """A Dependency-specific sufficiency judgment on shared event Evidence."""
+
+    __tablename__ = "dependency_evidence_sufficiencies"
+    __table_args__ = (UniqueConstraint("dependency_id", "evidence_link_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    evidence_link_id: Mapped[int] = mapped_column(ForeignKey("evidence_links.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class OperativeSupport(Base):
     """A human designation of which Evidence supports a publication scope.
 
     Readiness deliberately does not live here: it remains the independent
-    ``EvidenceLink.satisfies_requirement`` judgment. The resolver combines
-    the two roles without collapsing their meanings (ADR-0017).
+    dependency-specific sufficiency judgment.  An event citation can scope to
+    several Dependencies, so support constrains the cited Evidence itself and
+    the resolver verifies that the selected record is in the event's scope.
+    The resolver combines the roles without collapsing their meanings
+    (ADR-0017).
     """
 
     __tablename__ = "operative_support"
     __table_args__ = (
         ForeignKeyConstraint(
-            ["dependency_id", "evidence_link_id"],
-            ["evidence_links.dependency_id", "evidence_links.id"],
-            name="fk_operative_support_dependency_evidence",
+            ["evidence_link_id"],
+            ["evidence_links.id"],
+            name="fk_operative_support_evidence_link",
         ),
         Index(
             "uq_operative_support_record_role",

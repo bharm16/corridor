@@ -59,7 +59,8 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("project_slug")
 
     retire = commands.add_parser(
-        "retire", help="seal and retire only an exactly planned Ledger"
+        "retire",
+        help="seal and retire only an exactly planned Ledger (maintenance DB role required)",
     )
     retire.add_argument("project_slug")
     retire.add_argument(

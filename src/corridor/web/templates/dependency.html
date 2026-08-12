@@ -243,7 +243,7 @@
         {% for e in view.events %}
           <tr>
             <td>{{ e.event_date or '—' }}</td>
-            <td>{{ e.event_type }}</td>
+            <td>{% if e.event_type == 'committed_date_change' %}Committed Date Change{% else %}{{ e.event_type.replace('_', ' ').title() }}{% endif %}</td>
             <td>
               {% if e.source_kind == 'verbal' %}
                 <span class="pill contra">Verbal</span>
@@ -260,7 +260,7 @@
       </tbody>
     </table>
   {% else %}
-    <p class="muted">No events yet. Slips and commitments are appended here, never edited.</p>
+    <p class="muted">No events yet. Commitments and Committed Date Changes are appended here, never edited.</p>
   {% endif %}
 
   <h2>Evidence</h2>

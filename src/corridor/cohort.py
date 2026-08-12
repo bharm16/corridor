@@ -36,13 +36,15 @@ from corridor.project_lock import lock_project
 COHORT_RULE_VERSION = "newly-added-or-n-to-y-or-verification-blocked-v1"
 
 # The event cohort's stated rule (docs/sh99-date-rehearsal.md): a conflict
-# enters when at least one commitment, slip, or closure event carrying a
+# enters when at least one commitment, committed-date change, or closure event carrying a
 # date references it and the reference matches a dependency Candidate's
 # utility_id. Other event types and undated events stay in the default
 # lanes; a reference matching nothing selects nothing.
-EVENT_COHORT_RULE_VERSION = "dated-commitment-slip-closure-refs-conflict-v1"
+EVENT_COHORT_RULE_VERSION = "dated-commitment-date-change-closure-refs-conflict-v2"
 
-_EVENT_COHORT_EVENT_TYPES = frozenset({"commitment", "slip", "closure"})
+_EVENT_COHORT_EVENT_TYPES = frozenset(
+    {"commitment", "committed_date_change", "closure"}
+)
 
 NEWLY_ADDED = "newly_added"
 CONFLICT_FLAG_N_TO_Y = "conflict_flag_n_to_y"
