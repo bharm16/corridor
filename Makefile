@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance minutes report
 
 # One command from a clean clone.
 boot:
@@ -117,6 +117,14 @@ carry-forward:
 #   make m8-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
 m8-acceptance:
 	uv run python -m corridor.m8_acceptance_cli $(ARGS)
+
+# Replay the pinned SH 99 Admission rehearsal only on a newly created,
+# disposable PostgreSQL database; verify checks the emitted receipt without
+# opening a database. This never authorizes or performs shared SH 99 mutation:
+#   make sh99-admission-acceptance ARGS="replay --snapshot=tests/fixtures/sh99_admission_acceptance/v1/snapshot.json --expected-snapshot-sha256=<sha> --expected-clean-git-revision=<sha> --output-dir=<new-dir> --postgres-admin-url=<url>"
+#   make sh99-admission-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+sh99-admission-acceptance:
+	uv run python -m corridor.sh99_admission_acceptance_cli $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 minutes:
