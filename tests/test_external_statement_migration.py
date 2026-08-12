@@ -464,6 +464,36 @@ def _run_alembic(
     return completed
 
 
+def _remove_late_a217_immutability_guard(connection) -> None:
+    """Reproduce databases that applied a217 before its source was amended."""
+    connection.execute(
+        text(
+            """
+            drop trigger if exists external_party_statement_events_are_immutable
+                on dependency_events;
+            drop trigger if exists external_party_statement_events_reject_truncate
+                on dependency_events;
+            drop trigger if exists external_party_statement_scopes_are_immutable
+                on dependency_event_scopes;
+            drop trigger if exists external_party_statement_scopes_reject_truncate
+                on dependency_event_scopes;
+            drop trigger if exists external_party_statement_timings_are_immutable
+                on dependency_event_timings;
+            drop trigger if exists external_party_statement_timings_reject_truncate
+                on dependency_event_timings;
+            drop trigger if exists external_party_statement_evidence_is_immutable
+                on evidence_links;
+            drop trigger if exists external_party_statement_evidence_reject_truncate
+                on evidence_links;
+            drop function if exists reject_external_party_statement_child_mutation();
+            drop function if exists reject_external_party_statement_evidence_mutation();
+            drop function if exists reject_external_party_statement_mutation();
+            drop function if exists reject_external_party_statement_truncate();
+            """
+        )
+    )
+
+
 def _statement_revision_path() -> tuple[str, ...]:
     config = Config(str(_ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
@@ -1112,6 +1142,44 @@ def test_populated_rehearsal_checks_receipts_round_trip_and_atomic_refusal():
                 assert (
                     _capture_columns_constraints_triggers_fingerprint(connection)
                     == head_schema
+                )
+        finally:
+            engine.dispose()
+
+
+def test_attributable_storage_repairs_a217_applied_before_late_guards():
+    """The next revision repairs, rather than assumes, amended a217 source."""
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=_ROOT,
+        error_cls=RuntimeError,
+        database_prefix="a223_historical_a217_",
+        migration_revision=_PRE_STATEMENT_REVISION,
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                _seed_216_statement_history(connection)
+                base_snapshot = _capture_216_statement_snapshot(connection)
+
+            rendered_database_url = database_url.render_as_string(
+                hide_password=False
+            )
+            _run_alembic(
+                rendered_database_url, "upgrade", _STATEMENT_SHAPE_REVISION
+            )
+            with engine.begin() as connection:
+                _remove_late_a217_immutability_guard(connection)
+
+            _run_alembic(
+                rendered_database_url, "upgrade", _ATTRIBUTABLE_STORAGE_REVISION
+            )
+            with engine.connect() as connection:
+                _assert_migration_state(
+                    connection,
+                    expected_revision=_ATTRIBUTABLE_STORAGE_REVISION,
+                    expected_216_data=base_snapshot.content,
                 )
         finally:
             engine.dispose()

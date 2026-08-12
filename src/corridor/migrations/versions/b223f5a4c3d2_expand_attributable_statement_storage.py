@@ -46,9 +46,25 @@ def upgrade() -> None:
     op.add_column(
         "dependency_events", sa.Column("attribution_state", sa.String(length=16))
     )
+    # a217 was amended after some databases had already applied it.  Those
+    # databases have its shape but not the later External Party immutability
+    # guard, so this revision must not assume that trigger exists.  The guard
+    # is converged below before this revision commits.
     op.execute(
-        "alter table dependency_events disable trigger "
-        "external_party_statement_events_are_immutable"
+        """
+        do $$
+        begin
+            if exists (
+                select 1 from pg_trigger
+                where tgrelid = 'dependency_events'::regclass
+                  and tgname = 'external_party_statement_events_are_immutable'
+            ) then
+                alter table dependency_events disable trigger
+                    external_party_statement_events_are_immutable;
+            end if;
+        end;
+        $$;
+        """
     )
     op.execute(
         "alter table dependency_events disable trigger "
@@ -63,10 +79,6 @@ def upgrade() -> None:
         "alter table dependency_events enable trigger "
         "verbal_dependency_events_are_immutable"
     )
-    op.execute(
-        "alter table dependency_events enable trigger "
-        "external_party_statement_events_are_immutable"
-    )
     op.execute("set constraints all deferred")
     op.alter_column(
         "dependency_events",
@@ -79,6 +91,140 @@ def upgrade() -> None:
         "dependency_events",
         "(attribution_state = 'resolved' and stated_external_org_id is not null) "
         "or (attribution_state = 'unresolved' and stated_external_org_id is null)",
+    )
+    # Re-establish the latest a217 immutability contract here as a repair
+    # migration.  It makes databases that applied an earlier a217 source
+    # converge with fresh installations before later revisions rely on these
+    # functions and trigger names.
+    op.execute(
+        """
+        create or replace function reject_external_party_statement_child_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        declare
+            target_event_id bigint;
+            target_source text;
+        begin
+            if current_user <> 'corridor_statement_retirement' then
+                target_event_id := case when tg_op = 'DELETE' then old.event_id else new.event_id end;
+                select source_kind into target_source
+                from dependency_events where id = target_event_id;
+                if target_source = 'verbal' then
+                    raise exception 'verbal dependency events are append-only'
+                        using errcode = '23514';
+                end if;
+                raise exception 'External Party statements are append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
+
+        create or replace function reject_external_party_statement_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            if current_user <> 'corridor_statement_retirement' then
+                if (tg_op = 'DELETE' and old.source_kind = 'verbal')
+                   or (tg_op = 'UPDATE' and (
+                       old.source_kind = 'verbal' or new.source_kind = 'verbal'
+                   )) then
+                    raise exception 'verbal dependency events are append-only'
+                        using errcode = '23514';
+                end if;
+                raise exception 'External Party statements are append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
+
+        create or replace function reject_external_party_statement_evidence_mutation()
+        returns trigger
+        language plpgsql
+        as $$
+        declare
+            target_event_id bigint;
+        begin
+            if tg_op = 'DELETE' then
+                target_event_id := old.event_id;
+            else
+                target_event_id := coalesce(old.event_id, new.event_id);
+            end if;
+            if target_event_id is not null
+               and current_user <> 'corridor_statement_retirement' then
+                raise exception 'External Party statement Evidence is append-only'
+                    using errcode = '23514';
+            end if;
+            return case when tg_op = 'DELETE' then old else new end;
+        end;
+        $$;
+
+        create or replace function reject_external_party_statement_truncate()
+        returns trigger
+        language plpgsql
+        as $$
+        begin
+            raise exception 'External Party statements are append-only'
+                using errcode = '23514';
+        end;
+        $$;
+
+        drop trigger if exists external_party_statement_events_are_immutable
+            on dependency_events;
+        drop trigger if exists external_party_statement_events_reject_truncate
+            on dependency_events;
+        drop trigger if exists external_party_statement_scopes_are_immutable
+            on dependency_event_scopes;
+        drop trigger if exists external_party_statement_scopes_reject_truncate
+            on dependency_event_scopes;
+        drop trigger if exists external_party_statement_timings_are_immutable
+            on dependency_event_timings;
+        drop trigger if exists external_party_statement_timings_reject_truncate
+            on dependency_event_timings;
+        drop trigger if exists external_party_statement_evidence_is_immutable
+            on evidence_links;
+        drop trigger if exists external_party_statement_evidence_reject_truncate
+            on evidence_links;
+        drop trigger if exists external_party_statement_evidence_updates_are_immutable
+            on evidence_links;
+        drop trigger if exists external_party_statement_evidence_deletes_are_immutable
+            on evidence_links;
+
+        create trigger external_party_statement_events_are_immutable
+        before update or delete on dependency_events
+        for each row execute function reject_external_party_statement_mutation();
+
+        create trigger external_party_statement_evidence_is_immutable
+        before update or delete on evidence_links
+        for each row execute function reject_external_party_statement_evidence_mutation();
+
+        create trigger external_party_statement_events_reject_truncate
+        before truncate on dependency_events
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_scopes_reject_truncate
+        before truncate on dependency_event_scopes
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_timings_reject_truncate
+        before truncate on dependency_event_timings
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_evidence_reject_truncate
+        before truncate on evidence_links
+        for each statement execute function reject_external_party_statement_truncate();
+
+        create trigger external_party_statement_scopes_are_immutable
+        before update or delete on dependency_event_scopes
+        for each row execute function reject_external_party_statement_child_mutation();
+
+        create trigger external_party_statement_timings_are_immutable
+        before update or delete on dependency_event_timings
+        for each row execute function reject_external_party_statement_child_mutation();
+        """
     )
     op.execute(
         """
