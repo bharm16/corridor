@@ -448,7 +448,7 @@ def test_the_prompt_withholds_an_unverified_cited_statement_date(
     session, dependency
 ):
     """A cited date needs the event's own verified Evidence to be publishable."""
-    committed_date = TODAY + timedelta(days=60)
+    committed_date = TODAY - timedelta(days=1)
     event = DependencyEvent(
         project_id=dependency.project_id,
         affected_external_org_id=None,
@@ -486,6 +486,7 @@ def test_the_prompt_withholds_an_unverified_cited_statement_date(
     assert "committed —;" in user
     assert f"committed {stale_date};" not in user
     assert f"committed {committed_date};" not in user
+    assert "OVERDUE" not in user
 
 
 # ------------------------------------------------------------- the render

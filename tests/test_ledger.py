@@ -177,6 +177,15 @@ def _browse(session, project, **filters):
     )
 
 
+def test_browse_refuses_an_evaluation_from_another_project(session, project):
+    foreign = Project(slug="ledger-foreign", name="Foreign", is_synthetic=True)
+    session.add(foreign)
+    session.flush()
+
+    with pytest.raises(ValueError, match="evaluation belongs to another project"):
+        browse(session, project.id, evaluation=evaluate_project(session, foreign.id))
+
+
 def test_browse_lists_dependencies_with_their_backing(session, project, dependency):
     [row] = _browse(session, project)
     assert row.dependency.id == dependency.id

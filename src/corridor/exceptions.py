@@ -278,6 +278,10 @@ class Evaluation:
     thresholds: Thresholds
     ruleset_version: str
     found: tuple[Exception_, ...]
+    # The exact statement-date reading used by the rules. Publishers pair
+    # this with StatementPublication so a withheld date cannot still fire a
+    # date-derived Exception beside an empty cell.
+    committed_dates: dict[int, date | None]
 
     def by_dependency(self) -> dict[int, list[Exception_]]:
         """The other grouping every consumer needs, beside `facets`.
@@ -309,6 +313,25 @@ def evaluate_project(
     """Evaluate a project once, and hand back the clock along with the facts."""
     today = today or date.today()
     thresholds = thresholds or Thresholds()
+    dependency_ids = session.scalars(
+        select(Dependency.id).where(
+            Dependency.project_id == project_id,
+            Dependency.dismissed_at.is_(None),
+        )
+    ).all()
+    current = current_dependency_statements(session, dependency_ids)
+    evaluated_committed_dates = {
+        dependency_id: statement.effective_date
+        for dependency_id, statement in current.items()
+    }
+    if committed_dates is not None:
+        evaluated_committed_dates.update(
+            {
+                dependency_id: committed_dates[dependency_id]
+                for dependency_id in dependency_ids
+                if dependency_id in committed_dates
+            }
+        )
     return Evaluation(
         project_id=project_id,
         today=today,
@@ -320,9 +343,10 @@ def evaluate_project(
                 project_id,
                 today=today,
                 thresholds=thresholds,
-                committed_dates=committed_dates,
+                committed_dates=evaluated_committed_dates,
             )
         ),
+        committed_dates=evaluated_committed_dates,
     )
 
 
@@ -332,6 +356,7 @@ def evaluate_dependency(
     *,
     today: date | None = None,
     thresholds: Thresholds | None = None,
+    committed_dates: Mapping[int, date | None] | None = None,
 ) -> Evaluation:
     """One dependency's exceptions, computed once against a stated clock.
 
@@ -347,6 +372,12 @@ def evaluate_dependency(
     thresholds = thresholds or Thresholds()
     statement = current_dependency_statements(session, (dependency_id,)).get(
         dependency_id
+    )
+    projected_date = statement.effective_date if statement is not None else None
+    committed_date = (
+        projected_date
+        if committed_dates is None
+        else committed_dates.get(dependency_id, projected_date)
     )
     return Evaluation(
         project_id=dependency.project_id,
@@ -366,11 +397,12 @@ def evaluate_dependency(
                     today,
                     thresholds,
                     committed_date=(
-                        statement.effective_date if statement is not None else None
+                        committed_date
                     ),
                 )
             )
         ),
+        committed_dates={dependency_id: committed_date},
     )
 
 

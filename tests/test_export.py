@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
+from corridor.dependency_events import published_dependency_statements
 from corridor.exceptions import Thresholds, evaluate_project, format_exception_label
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.export import COLUMNS, to_pdf, to_xlsx
@@ -14,6 +15,8 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
+    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
@@ -110,6 +113,18 @@ def project(session):
     return project
 
 
+def _statement_publication(session, project_id):
+    dependency_ids = session.scalars(
+        select(Dependency.id).where(
+            Dependency.project_id == project_id,
+            Dependency.dismissed_at.is_(None),
+        )
+    ).all()
+    return published_dependency_statements(
+        session, dependency_ids, project_id=project_id
+    )
+
+
 def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
     """A spreadsheet that drops the provenance is just the matrix they had."""
     path = to_xlsx(
@@ -117,6 +132,7 @@ def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
         project.id,
         tmp_path / "ledger.xlsx",
         evaluation=evaluate_project(session, project.id),
+        statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]
 
@@ -147,6 +163,7 @@ def test_the_xlsx_records_what_produced_it(session, project, tmp_path):
         project.id,
         tmp_path / "ledger.xlsx",
         evaluation=evaluation,
+        statement_publication=_statement_publication(session, project.id),
     )
     workbook = load_workbook(path)
     assert "Provenance" in workbook.sheetnames
@@ -158,6 +175,53 @@ def test_the_xlsx_records_what_produced_it(session, project, tmp_path):
     assert meta["STALE threshold (days)"] == 21
     assert meta["DUE_SOON threshold (days)"] == 9
     assert meta["Records"] == 1
+
+
+def test_the_xlsx_refuses_an_evaluation_from_another_statement_reading(
+    session, project, tmp_path
+):
+    """Date cells and date-derived Exceptions must describe one snapshot."""
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    publication = _statement_publication(session, project.id)
+    mismatched = evaluate_project(
+        session,
+        project.id,
+        today=date(2026, 8, 4),
+        committed_dates={dependency.id: date(2026, 8, 3)},
+    )
+
+    with pytest.raises(ValueError, match="different Committed Date readings"):
+        to_xlsx(
+            session,
+            project.id,
+            tmp_path / "mismatched-reading.xlsx",
+            evaluation=mismatched,
+            statement_publication=publication,
+        )
+
+
+def test_the_xlsx_refuses_a_statement_publication_from_another_project(
+    session, tmp_path
+):
+    target = Project(slug="export-target-empty", name="Target", is_synthetic=True)
+    foreign = Project(slug="export-foreign-empty", name="Foreign", is_synthetic=True)
+    session.add_all((target, foreign))
+    session.flush()
+    evaluation = evaluate_project(session, target.id)
+    publication = published_dependency_statements(
+        session, (), project_id=foreign.id
+    )
+
+    with pytest.raises(ValueError, match="publication belongs to another project"):
+        to_xlsx(
+            session,
+            target.id,
+            tmp_path / "foreign-publication.xlsx",
+            evaluation=evaluation,
+            statement_publication=publication,
+        )
 
 
 def test_the_xlsx_carries_computed_exceptions(session, project, tmp_path):
@@ -182,6 +246,7 @@ def test_the_xlsx_carries_computed_exceptions(session, project, tmp_path):
         project.id,
         tmp_path / "ledger.xlsx",
         evaluation=evaluation,
+        statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]
     headers = [c.value for c in sheet[1]]
@@ -215,6 +280,7 @@ def test_the_xlsx_attributes_a_verbal_backed_committed_date(
         project.id,
         tmp_path / "ledger.xlsx",
         evaluation=evaluate_project(session, project.id),
+        statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]
     headers = [cell.value for cell in sheet[1]]
@@ -270,13 +336,17 @@ def test_the_xlsx_uses_an_exact_day_statement_over_a_stale_scalar(
         project.id,
         tmp_path / "statement-projection.xlsx",
         evaluation=evaluate_project(session, project.id),
+        statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
     assert row["Committed date"].date() == date(2026, 8, 15)
-    assert row["Committed date source"] == "Cited statement"
+    assert row["Committed date source"] == (
+        "Cited statement — nhhip-seg3c2-utilities-inventory-2-13-2026.pdf "
+        "p.4: “Export Test Utility will finish relocation on August 15.”"
+    )
 
 
 def test_the_xlsx_suppresses_a_stale_scalar_after_a_month_statement(
@@ -325,6 +395,7 @@ def test_the_xlsx_suppresses_a_stale_scalar_after_a_month_statement(
         project.id,
         tmp_path / "month-statement-projection.xlsx",
         evaluation=evaluate_project(session, project.id),
+        statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]
     headers = [cell.value for cell in sheet[1]]
@@ -332,6 +403,65 @@ def test_the_xlsx_suppresses_a_stale_scalar_after_a_month_statement(
 
     assert row["Committed date"] is None
     assert row["Committed date source"] is None
+
+
+def test_the_xlsx_withholds_an_unverified_cited_statement_date(
+    session, project, tmp_path
+):
+    """A standalone workbook cannot publish a cited date without Evidence."""
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=dependency.external_org_id,
+        stated_external_org_id=dependency.external_org_id,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="Export Test Utility",
+        event_date=date(2026, 5, 8),
+        description="Export Test Utility will finish relocation on August 15.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text="August 3",
+                precision="day",
+                start_date=date(2026, 8, 3),
+                end_date=date(2026, 8, 3),
+            ),
+        )
+    )
+    session.flush()
+    publication = _statement_publication(session, project.id)
+
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "unverified-statement.xlsx",
+        evaluation=evaluate_project(
+            session,
+            project.id,
+            today=date(2026, 8, 4),
+            committed_dates=publication.committed_dates,
+        ),
+        statement_publication=publication,
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: cell.value for header, cell in zip(headers, sheet[2])}
+
+    assert row["Committed date"] is None
+    assert row["Committed date source"] is None
+    assert "DUE_SOON" not in (row["Exceptions"] or "")
+    assert "OVERDUE" not in (row["Exceptions"] or "")
 
 
 def test_the_xlsx_does_not_treat_a_scalar_only_date_as_statement_authority(
@@ -349,6 +479,7 @@ def test_the_xlsx_does_not_treat_a_scalar_only_date_as_statement_authority(
         project.id,
         tmp_path / "legacy-scalar-projection.xlsx",
         evaluation=evaluate_project(session, project.id),
+        statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]
     headers = [cell.value for cell in sheet[1]]
@@ -375,6 +506,7 @@ def test_an_empty_ledger_still_exports(session, tmp_path):
         empty.id,
         tmp_path / "empty.xlsx",
         evaluation=evaluate_project(session, empty.id),
+        statement_publication=_statement_publication(session, empty.id),
     )
     sheet = load_workbook(path)["Ledger"]
     assert [c.value for c in sheet[1]] == COLUMNS
@@ -424,6 +556,7 @@ def test_xlsx_uses_publication_support_while_readiness_stays_independent(
         project.id,
         tmp_path / "role-scoped.xlsx",
         evaluation=evaluate_project(session, project.id),
+        statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]
     headers = [cell.value for cell in sheet[1]]

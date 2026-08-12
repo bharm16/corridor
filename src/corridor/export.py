@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from corridor.dependency_events import verbal_attribution
+from corridor.dependency_events import StatementPublication
 from corridor.exceptions import Evaluation, format_exception_label
 from corridor.ledger import browse, primary_evidence
 from corridor.models import Project
@@ -37,15 +37,6 @@ COLUMNS = [
 ]
 
 
-def _committed_date_source(row) -> str | None:
-    """Name only the source class of a date the workbook actually publishes."""
-    if row.committed_date is None:
-        return None
-    if row.committed_event is None:
-        return "Legacy compatibility projection"
-    return verbal_attribution(row.committed_event) or "Cited statement"
-
-
 def to_pdf(html: str, path: Path | str) -> Path:
     """Render the report HTML to PDF.
 
@@ -66,17 +57,24 @@ def to_xlsx(
     path: Path | str,
     *,
     evaluation: Evaluation,
+    statement_publication: StatementPublication,
 ) -> Path:
     """The ledger as a workbook, at the evaluation the report published.
 
-    Required, not defaulted: this workbook is the artefact a project
-    forwards to an External Party, and a second reading here would let it
-    disagree with the report it was sent alongside.
+    Both inputs are required: this workbook is the artefact a project
+    forwards to an External Party. The evaluation supplies its Exceptions;
+    the paired statement publication supplies date and provenance cells.
+    Refusing a mismatched pair prevents either side from taking a second
+    reading that disagrees with the report it was sent alongside.
     """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
     project = session.get(Project, project_id)
+    if evaluation.project_id != project_id:
+        raise ValueError("the evaluation belongs to another project")
+    if statement_publication.project_id != project_id:
+        raise ValueError("the statement publication belongs to another project")
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
 
     by_dependency = {
@@ -86,6 +84,11 @@ def to_xlsx(
     evidence_by_dependency = primary_evidence(
         session, [row.dependency.id for row in rows]
     )
+    if evaluation.committed_dates != statement_publication.committed_dates:
+        raise ValueError(
+            "the evaluation and statement publication describe different "
+            "Committed Date readings"
+        )
 
     workbook = Workbook()
     sheet = workbook.active
@@ -99,6 +102,7 @@ def to_xlsx(
     for row in rows:
         dependency = row.dependency
         evidence = evidence_by_dependency.get(dependency.id)
+        statement = statement_publication.by_dependency[dependency.id]
         sheet.append(
             [
                 dependency.ref_code,
@@ -110,8 +114,14 @@ def to_xlsx(
                 dependency.station_to,
                 dependency.status,
                 dependency.resolution_strategy,
-                row.committed_date,
-                _committed_date_source(row),
+                statement.committed_date,
+                (
+                    f"Cited statement — {statement.cited_provenance.filename} "
+                    f"p.{statement.cited_provenance.page_no}: “"
+                    f"{statement.cited_provenance.quote}”"
+                    if statement.cited_provenance is not None
+                    else statement.source_attribution
+                ),
                 dependency.need_date,
                 "yes" if row.is_ready else "no",
                 ", ".join(sorted(by_dependency.get(dependency.id, ()))),

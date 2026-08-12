@@ -212,7 +212,13 @@ def main(limit: int | None = None) -> int:
         report = build_report(session, project.id)
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(render(report))
-        to_xlsx(session, project.id, XLSX, evaluation=report.evaluation)
+        to_xlsx(
+            session,
+            project.id,
+            XLSX,
+            evaluation=report.evaluation,
+            statement_publication=report.statement_publication,
+        )
         try:
             to_pdf(OUT.read_text(), PDF)
             pdf_note = f" · {PDF}"
