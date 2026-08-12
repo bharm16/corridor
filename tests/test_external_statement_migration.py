@@ -56,6 +56,7 @@ _SNAPSHOT_TABLES = (
     "event_cohort_receipts",
 )
 _STATEMENT_SHAPE_REVISION = "a217e4f3a2b1"
+_ATTRIBUTABLE_STORAGE_REVISION = "b223f5a4c3d2"
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,32 @@ _REVISION_SCHEMA_EXPECTATIONS = {
         ),
     ),
 }
+
+_REVISION_SCHEMA_EXPECTATIONS[_ATTRIBUTABLE_STORAGE_REVISION] = (
+    _RevisionSchemaExpectation(
+        constraints=_REVISION_SCHEMA_EXPECTATIONS[
+            _STATEMENT_SHAPE_REVISION
+        ].constraints
+        | frozenset(
+            {
+                "ck_dependency_events_attribution",
+                "dependency_event_migration_receipts_event_id_fkey",
+                "dependency_event_migration_receipts_pkey",
+                "dependency_event_timing_cardinality_is_valid",
+                "dependency_event_timing_rows_match_event",
+            }
+        ),
+        triggers=_REVISION_SCHEMA_EXPECTATIONS[_STATEMENT_SHAPE_REVISION].triggers
+        | frozenset(
+            {
+                "dependency_event_migration_receipts_are_immutable",
+                "dependency_event_migration_receipts_reject_truncate",
+                "dependency_event_timing_cardinality_is_valid",
+                "dependency_event_timing_rows_match_event",
+            }
+        ),
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -437,6 +464,39 @@ def _run_alembic(
     return completed
 
 
+def _remove_late_a217_immutability_guard(connection) -> None:
+    """Reproduce databases that applied a217 before its source was amended."""
+    connection.execute(
+        text(
+            """
+            drop trigger if exists external_party_statement_events_are_immutable
+                on dependency_events;
+            drop trigger if exists external_party_statement_events_reject_truncate
+                on dependency_events;
+            drop trigger if exists external_party_statement_scopes_are_immutable
+                on dependency_event_scopes;
+            drop trigger if exists external_party_statement_scopes_reject_truncate
+                on dependency_event_scopes;
+            drop trigger if exists external_party_statement_timings_are_immutable
+                on dependency_event_timings;
+            drop trigger if exists external_party_statement_timings_reject_truncate
+                on dependency_event_timings;
+            drop trigger if exists external_party_statement_evidence_is_immutable
+                on evidence_links;
+            drop trigger if exists external_party_statement_evidence_reject_truncate
+                on evidence_links;
+            drop function if exists reject_external_party_statement_child_mutation();
+            drop function if exists reject_external_party_statement_evidence_mutation();
+            drop function if exists reject_external_party_statement_mutation();
+            drop function if exists reject_external_party_statement_truncate();
+            revoke all privileges on table projects, legacy_ledger_archives,
+                dependency_events, dependency_event_scopes, dependency_event_timings,
+                evidence_links from corridor_statement_retirement;
+            """
+        )
+    )
+
+
 def _statement_revision_path() -> tuple[str, ...]:
     config = Config(str(_ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
@@ -723,6 +783,30 @@ def _assert_statement_data_at_revision(
     if expected_revision == _STATEMENT_SHAPE_REVISION:
         _assert_a217_statement_data(connection, expected_216_data)
         return
+    if expected_revision == _ATTRIBUTABLE_STORAGE_REVISION:
+        _assert_a217_statement_data(connection, expected_216_data)
+        rows = connection.execute(
+            text(
+                """
+                select event.id, event.attribution_state,
+                       event.stated_external_org_id,
+                       receipt.original_event =
+                           (to_jsonb(event) - 'attribution_state') as exact_receipt
+                from dependency_events event
+                join dependency_event_migration_receipts receipt
+                  on receipt.event_id = event.id
+                order by event.id
+                """
+            )
+        ).mappings().all()
+        assert len(rows) == len(expected_216_data["dependency_events"])
+        assert all(row["exact_receipt"] for row in rows)
+        assert all(
+            row["attribution_state"]
+            == ("resolved" if row["stated_external_org_id"] is not None else "unresolved")
+            for row in rows
+        )
+        return
     raise AssertionError(
         "statement migration rehearsal needs explicit data expectations for "
         f"revision {expected_revision}"
@@ -942,8 +1026,8 @@ def test_populated_216_fixture_records_every_historical_statement_case():
     )
 
 
-def test_populated_rehearsal_checks_each_revision_and_atomic_refusal():
-    """Every post-#216 step preserves integrity; a lossy downgrade is atomic."""
+def test_populated_rehearsal_checks_receipts_round_trip_and_atomic_refusal():
+    """Legacy rows round-trip; a later unrepresentable statement refuses."""
     revisions = _statement_revision_path()
     assert revisions
 
@@ -976,6 +1060,67 @@ def test_populated_rehearsal_checks_each_revision_and_atomic_refusal():
                 base_snapshot.content,
             )
 
+            for statement in (
+                "update dependency_event_migration_receipts "
+                "set original_event = '{}'::jsonb where event_id = 222101",
+                "delete from dependency_event_migration_receipts "
+                "where event_id = 222101",
+                "truncate dependency_event_migration_receipts",
+            ):
+                with pytest.raises(DBAPIError, match="append-only"):
+                    with engine.begin() as connection:
+                        connection.execute(text(statement))
+
+            _run_alembic(
+                rendered_database_url,
+                "downgrade",
+                _STATEMENT_SHAPE_REVISION,
+            )
+            with engine.connect() as connection:
+                _assert_migration_state(
+                    connection,
+                    expected_revision=_STATEMENT_SHAPE_REVISION,
+                    expected_216_data=base_snapshot.content,
+                )
+            _upgrade_and_assert_revisions(
+                rendered_database_url,
+                engine,
+                revisions,
+                base_snapshot.content,
+            )
+
+            with engine.begin() as connection:
+                event_id = connection.scalar(
+                    text(
+                        """
+                        insert into dependency_events
+                            (project_id, affected_external_org_id,
+                             stated_external_org_id, attribution_state,
+                             scope_mode, event_type, source_kind, stated_party,
+                             description, created_by)
+                        values
+                            (222000, 222000, 222000, 'resolved', 'unknown',
+                             'commitment', 'cited', 'Equistar',
+                             'Equistar committed for January 2027.',
+                             'corridor:event-admission')
+                        returning id
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        insert into dependency_event_timings
+                            (event_id, kind, text, precision,
+                             start_date, end_date)
+                        values
+                            (:event_id, 'new', '01/2027', 'month',
+                             '2027-01-01', '2027-01-31')
+                        """
+                    ),
+                    {"event_id": event_id},
+                )
+
             with engine.connect() as connection:
                 head_snapshot = _capture_database_data(connection)
                 head_schema = (
@@ -993,16 +1138,59 @@ def test_populated_rehearsal_checks_each_revision_and_atomic_refusal():
             )
 
             with engine.connect() as connection:
-                _assert_migration_state(
-                    connection,
-                    expected_revision=revisions[-1],
-                    expected_216_data=base_snapshot.content,
-                )
+                assert connection.scalar(
+                    text("select version_num from alembic_version")
+                ) == revisions[-1]
                 assert _capture_database_data(connection) == head_snapshot
                 assert (
                     _capture_columns_constraints_triggers_fingerprint(connection)
                     == head_schema
                 )
+        finally:
+            engine.dispose()
+
+
+def test_attributable_storage_repairs_a217_applied_before_late_guards():
+    """The next revision repairs, rather than assumes, amended a217 source."""
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=_ROOT,
+        error_cls=RuntimeError,
+        database_prefix="a223_historical_a217_",
+        migration_revision=_PRE_STATEMENT_REVISION,
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                _seed_216_statement_history(connection)
+                base_snapshot = _capture_216_statement_snapshot(connection)
+
+            rendered_database_url = database_url.render_as_string(
+                hide_password=False
+            )
+            _run_alembic(
+                rendered_database_url, "upgrade", _STATEMENT_SHAPE_REVISION
+            )
+            with engine.begin() as connection:
+                _remove_late_a217_immutability_guard(connection)
+
+            _run_alembic(
+                rendered_database_url, "upgrade", _ATTRIBUTABLE_STORAGE_REVISION
+            )
+            with engine.connect() as connection:
+                _assert_migration_state(
+                    connection,
+                    expected_revision=_ATTRIBUTABLE_STORAGE_REVISION,
+                    expected_216_data=base_snapshot.content,
+                )
+                assert connection.scalar(
+                    text(
+                        "select has_table_privilege("
+                        "'corridor_statement_retirement', "
+                        "'dependency_events', 'delete')"
+                    )
+                ) is True
         finally:
             engine.dispose()
 

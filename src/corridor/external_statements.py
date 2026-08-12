@@ -180,6 +180,7 @@ def record_external_party_statement(
             project_id=project.id,
             affected_external_org_id=affected.id,
             stated_external_org_id=stated.id,
+            attribution_state="resolved",
             stated_party=party,
             event_type=event_type,
             source_kind=source_kind,

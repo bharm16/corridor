@@ -18,6 +18,7 @@ from corridor.models import (
     DependencyEvidenceSufficiency,
     DependencyEvent,
     DependencyEventScope,
+    DependencyEventTiming,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -102,6 +103,7 @@ def test_unknown_scope_preserves_month_timing_without_a_dependency_projection(
     assert event.project_id == project.id
     assert event.affected_external_org_id == party.id
     assert event.stated_external_org_id == party.id
+    assert event.attribution_state == "resolved"
     assert event.scope_mode == "unknown"
     assert event.new_timing.text == "01/2025"
     assert event.new_timing.precision == "month"
@@ -613,6 +615,17 @@ def test_database_rejects_scope_links_for_unknown_scope_and_empty_known_scope(
     )
     session.add(unknown)
     session.flush()
+    session.add(
+        DependencyEventTiming(
+            event_id=unknown.id,
+            kind="new",
+            text="June 2025",
+            precision="month",
+            start_date=date(2025, 6, 1),
+            end_date=date(2025, 6, 30),
+        )
+    )
+    session.flush()
     with pytest.raises(IntegrityError, match="unknown statement scope"):
         with session.begin_nested():
             session.add(DependencyEventScope(event_id=unknown.id, dependency_id=dependency.id))
@@ -620,19 +633,142 @@ def test_database_rejects_scope_links_for_unknown_scope_and_empty_known_scope(
 
     with pytest.raises(IntegrityError, match="known statement scope has no"):
         with session.begin_nested():
+            known = DependencyEvent(
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_external_org_id=party.id,
+                scope_mode="selected",
+                event_type="commitment",
+                source_kind="cited",
+                stated_party="Equistar",
+                description="A known-scope statement.",
+                created_by="corridor:event-admission",
+            )
+            session.add(known)
+            session.flush()
             session.add(
-                DependencyEvent(
-                    project_id=project.id,
-                    affected_external_org_id=party.id,
-                    stated_external_org_id=party.id,
-                    scope_mode="selected",
-                    event_type="commitment",
-                    source_kind="cited",
-                    stated_party="Equistar",
-                    description="A known-scope statement.",
-                    created_by="corridor:event-admission",
+                DependencyEventTiming(
+                    event_id=known.id,
+                    kind="new",
+                    text="June 2025",
+                    precision="month",
+                    start_date=date(2025, 6, 1),
+                    end_date=date(2025, 6, 30),
                 )
             )
+            session.execute(text("set constraints all immediate"))
+
+
+def test_database_requires_attribution_state_to_match_resolved_party(
+    session, statement_record
+):
+    project, party, _, _ = statement_record
+
+    with pytest.raises(IntegrityError, match="ck_dependency_events_attribution"):
+        with session.begin_nested():
+            session.execute(
+                text(
+                    """
+                    insert into dependency_events
+                        (project_id, affected_external_org_id,
+                         stated_external_org_id, attribution_state, scope_mode,
+                         event_type, source_kind, stated_party, description,
+                         created_by)
+                    values
+                        (:project_id, :party_id, :party_id, 'unresolved',
+                         'unknown', 'commitment', 'cited', 'Equistar',
+                         'Attribution contradicts its resolved party.',
+                         'corridor:event-admission')
+                    """
+                ),
+                {"project_id": project.id, "party_id": party.id},
+            )
+
+
+def test_statement_storage_preserves_explicit_unresolved_attribution(
+    session, statement_record
+):
+    project, party, _, _ = statement_record
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_external_org_id=None,
+        attribution_state="unresolved",
+        scope_mode="unknown",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="the pipeline operator",
+        description="The source wording does not resolve the speaker.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add(
+        DependencyEventTiming(
+            event_id=event.id,
+            kind="new",
+            text="late summer",
+            precision="approximate",
+            start_date=None,
+            end_date=None,
+        )
+    )
+    session.flush()
+
+    assert event.affected_external_org_id == party.id
+    assert event.stated_party == "the pipeline operator"
+    assert event.stated_external_org_id is None
+    assert event.attribution_state == "unresolved"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "timings", "message"),
+    [
+        ("commitment", (), "Commitment requires exactly one new timing"),
+        (
+            "committed_date_change",
+            (("new", "June 2025"),),
+            "Committed Date Change requires previous and new timings",
+        ),
+        (
+            "closure",
+            (("new", "June 2025"),),
+            "closure cannot carry a commitment timing",
+        ),
+    ],
+)
+def test_database_enforces_statement_timing_cardinality(
+    session, statement_record, event_type, timings, message
+):
+    project, party, _, _ = statement_record
+
+    with pytest.raises(IntegrityError, match=message):
+        with session.begin_nested():
+            event = DependencyEvent(
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_external_org_id=party.id,
+                attribution_state="resolved",
+                scope_mode="unknown",
+                event_type=event_type,
+                source_kind="cited",
+                stated_party="Equistar",
+                description="A deliberately invalid timing shape.",
+                created_by="corridor:event-admission",
+            )
+            session.add(event)
+            session.flush()
+            for kind, wording in timings:
+                session.add(
+                    DependencyEventTiming(
+                        event_id=event.id,
+                        kind=kind,
+                        text=wording,
+                        precision="month",
+                        start_date=date(2025, 6, 1),
+                        end_date=date(2025, 6, 30),
+                    )
+                )
             session.flush()
             session.execute(text("set constraints all immediate"))
 
