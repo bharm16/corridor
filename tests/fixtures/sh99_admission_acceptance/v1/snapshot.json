@@ -1,0 +1,105 @@
+{
+  "schema_version": "corridor.sh99-admission-snapshot.v1",
+  "source_revision": "4864d6cebf22b7a16f87c59faefab4a508f21d26",
+  "database_snapshot": {
+    "identity": "sh99-admission-bounded-rehearsal-v1",
+    "captured_at": "2026-08-12T00:00:00+00:00",
+    "migration_head": "b230e4f5a6b7"
+  },
+  "project": {
+    "slug": "sh99-grand-parkway",
+    "name": "SH 99 Grand Parkway Segment B-1",
+    "project_side_parties": ["LJA"]
+  },
+  "corpus_inputs": [
+    {
+      "registry_id": "sh99-utility-owner-minutes-2025-01",
+      "filename": "sh99-utility-owner-minutes-2025-01.pdf",
+      "sha256": "9e8c89f3a6ea0e86e5ce88b00a788c3c35cfda5453ea88f6956c7a43924652d3",
+      "doc_type": "minutes"
+    }
+  ],
+  "declared_active_runs": [
+    {
+      "registry_id": "sh99-utility-owner-minutes-2025-01",
+      "prompt_version": "sh99-admission-fixture-v1",
+      "model": "captured-sh99-input",
+      "schema_version": "event-candidate-shape-v1"
+    }
+  ],
+  "dependencies": [
+    {
+      "source_ref": "PL35",
+      "ref_code": "SH99-AIR-PRODUCTS-PL35",
+      "title": "Air Products PL35 relocation",
+      "external_org": "Air Products"
+    },
+    {
+      "source_ref": "C42",
+      "ref_code": "SH99-BLUEBONNET-C42",
+      "title": "Bluebonnet Gas C42 relocation",
+      "external_org": "Bluebonnet Gas"
+    }
+  ],
+  "event_candidates": [
+    {
+      "id": 7129,
+      "fields": {
+        "event_type": "commitment",
+        "description": "Equistar to provide a chain of title on the ROW agreement that is in DOW's name (Due date of 01/2025).",
+        "external_org": "Equistar",
+        "stated_party": "Equistar",
+        "event_date": null,
+        "committed_date": {
+          "text": "01/2025",
+          "precision": "month",
+          "start_date": "2025-01-01",
+          "end_date": "2025-01-31"
+        },
+        "conflict_ref": null
+      }
+    },
+    {
+      "id": 7296,
+      "fields": {
+        "event_type": "committed_date_change",
+        "description": "The March 2026 completion timeline seems unattainable. Propose extending to May 16th.",
+        "external_org": "Kinder Morgan",
+        "stated_party": null,
+        "event_date": null,
+        "committed_date": "2026-05-16",
+        "previous_timing": {
+          "text": "March 2026",
+          "precision": "month",
+          "start_date": "2026-03-01",
+          "end_date": "2026-03-31"
+        },
+        "conflict_ref": null
+      }
+    },
+    {
+      "id": 7587,
+      "fields": {
+        "event_type": "commitment",
+        "description": "Air Products will be invited to the TxDOT-Utility Owners-DB Proposers Workshop on May 8th, 2025.",
+        "external_org": "Air Products",
+        "stated_party": null,
+        "event_date": "2025-01-16",
+        "committed_date": "2025-05-08",
+        "conflict_ref": "PL35"
+      }
+    },
+    {
+      "id": 7600,
+      "fields": {
+        "event_type": "commitment",
+        "description": "Bluebonnet Gas commits to relocate C42 by June 1, 2025.",
+        "external_org": "Bluebonnet Gas",
+        "stated_party": "Bluebonnet Gas",
+        "event_date": "2025-01-16",
+        "committed_date": "2025-06-01",
+        "conflict_ref": "C42"
+      }
+    }
+  ]
+}

@@ -46,11 +46,44 @@ def write_bundle(
         },
         "canonical-content.json": canonical_content,
     }
+    return publish_verified_bundle(
+        output_dir,
+        exports=exports,
+        canonical_content=canonical_content,
+        bundle_schema_version=bundle_schema_version,
+        bundle_files=bundle_files,
+        error_cls=error_cls,
+        corrupt_bundle_error_cls=corrupt_bundle_error_cls,
+        canonical_json=canonical_json,
+        sha256=sha256,
+        json_sha256=json_sha256,
+        temp_prefix="corridor-m8-bundle",
+        self_verification_failure="new acceptance bundle failed self-verification",
+    )
+
+
+def publish_verified_bundle(
+    output_dir: Path,
+    *,
+    exports: dict[str, Any],
+    canonical_content: dict[str, Any],
+    bundle_schema_version: str,
+    bundle_files: Sequence[str],
+    error_cls: type[Exception],
+    corrupt_bundle_error_cls: type[Exception],
+    canonical_json: Callable[[Any], bytes],
+    sha256: Callable[[bytes], str],
+    json_sha256: Callable[[Any], str],
+    temp_prefix: str,
+    self_verification_failure: str,
+) -> tuple[Path, str, str]:
+    """Publish and self-verify any closed, digest-pinned acceptance export."""
+
     canonical_sha256 = json_sha256(canonical_content)
     try:
         published_dir = publish_directory_once(
             output_dir,
-            temp_prefix="corridor-m8-bundle",
+            temp_prefix=temp_prefix,
             build=lambda stage_dir: _stage_bundle(
                 stage_dir,
                 exports=exports,
@@ -75,7 +108,7 @@ def write_bundle(
         json_sha256=json_sha256,
     )
     if verified.canonical_content_sha256 != canonical_sha256:
-        raise error_cls("new acceptance bundle failed self-verification")
+        raise error_cls(self_verification_failure)
     return manifest_path, manifest_sha256, canonical_sha256
 
 
