@@ -351,7 +351,7 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
         event_type="commitment",
         event_date=date(2026, 8, 2),
         description="AT&T committed to relocate by August 15",
-        created_by="agent",
+        created_by="local:archive-tester",
     )
     session.add(event)
     session.flush()
@@ -390,14 +390,29 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
     assert archived_event["scope_mode"] == "selected"
     assert archived_event["event_date"] == "2026-08-02"
     assert archived_event["description"] == "AT&T committed to relocate by August 15"
-    assert plan.content["dependency_event_scopes"] == [
-        {"id": plan.content["dependency_event_scopes"][0]["id"], "event_id": event.id, "dependency_id": dependency.id}
-    ]
+    [archived_scope] = plan.content["dependency_event_scopes"]
+    [archived_scope_decision] = plan.content["dependency_event_scope_decisions"]
+    assert archived_scope == {
+        "id": archived_scope["id"],
+        "event_id": event.id,
+        "scope_decision_id": archived_scope_decision["id"],
+        "dependency_id": dependency.id,
+        "recorded_by": "local:archive-tester",
+    }
+    assert archived_scope_decision == {
+        "id": archived_scope_decision["id"],
+        "event_id": event.id,
+        "scope_mode": "selected",
+        "supersedes_scope_decision_id": None,
+        "decided_by": "local:archive-tester",
+        "created_at": archived_scope_decision["created_at"],
+    }
     assert plan.content["operative_support"] == [
         {
             "id": support.id,
             "dependency_id": dependency.id,
             "evidence_link_id": ready_evidence.id,
+            "scope_link_id": None,
             "role": "publication",
             "field_name": None,
             "designated_by": "agent",
@@ -414,6 +429,16 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
         row["id"] == event_evidence.id and row["event_id"] == event.id
         for row in plan.content["evidence_links"]
     )
+    assert plan.content["dependency_event_evidence"] == [
+        {
+            "evidence_link_id": event_evidence.id,
+            "event_id": event.id,
+            "recorded_by": "local:archive-tester",
+            "created_at": plan.content["dependency_event_evidence"][0][
+                "created_at"
+            ],
+        }
+    ]
 
     archive = retire_legacy_ledger(
         session,

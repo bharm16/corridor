@@ -66,11 +66,14 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
+    DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     EvidenceLink,
     ExternalOrg,
     Project,
 )
+from corridor.dependency_events import current_scope_decision_filter
 from corridor.web.queue import (
     build_cohort_rail,
     build_evidence,
@@ -1519,12 +1522,23 @@ def _project_evidence(
     link = session.get(EvidenceLink, link_id)
     scoped_event = (
         session.scalar(
-            select(DependencyEventScope.id).where(
-                DependencyEventScope.event_id == link.event_id,
+            select(DependencyEventScope.id)
+            .join(
+                DependencyEventEvidence,
+                DependencyEventEvidence.event_id == DependencyEventScope.event_id,
+            )
+            .join(
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
+            )
+            .where(
+                DependencyEventEvidence.evidence_link_id == link_id,
                 DependencyEventScope.dependency_id == dependency.id,
+                current_scope_decision_filter(),
             )
         )
-        if link is not None and link.event_id is not None
+        if link is not None
         else None
     )
     if link is None or (link.dependency_id != dependency.id and scoped_event is None):

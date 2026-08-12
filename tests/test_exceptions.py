@@ -347,7 +347,7 @@ def test_overdue_does_not_fire_once_closed_out(session, project, document):
         event_type="closure",
         event_date=TODAY - timedelta(days=2),
         description="Relocation complete, clearance letter received",
-        created_by="reviewer",
+        created_by="local:closure-reviewer",
     )
     session.add(event)
     session.flush()

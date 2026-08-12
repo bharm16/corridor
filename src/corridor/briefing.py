@@ -35,7 +35,11 @@ from pathlib import Path
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from corridor.dependency_events import latest_committed_events, verbal_attribution
+from corridor.dependency_events import (
+    current_scope_decision_filter,
+    latest_committed_events,
+    verbal_attribution,
+)
 from corridor.exceptions import (
     Evaluation,
     Thresholds,
@@ -45,7 +49,9 @@ from corridor.exceptions import (
 from corridor.models import (
     Assertion,
     Dependency,
+    DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     DocPage,
     EvidenceLink,
 )
@@ -316,13 +322,25 @@ def _assemble(
                 & (DocPage.page_no == EvidenceLink.page_no),
             )
             .outerjoin(
+                DependencyEventEvidence,
+                DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+            )
+            .outerjoin(
                 DependencyEventScope,
-                DependencyEventScope.event_id == EvidenceLink.event_id,
+                DependencyEventScope.event_id == DependencyEventEvidence.event_id,
+            )
+            .outerjoin(
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
             )
             .where(
                 or_(
                     EvidenceLink.dependency_id == dependency.id,
-                    DependencyEventScope.dependency_id == dependency.id,
+                    (
+                        (DependencyEventScope.dependency_id == dependency.id)
+                        & current_scope_decision_filter()
+                    ),
                 )
             )
             .order_by(EvidenceLink.id)

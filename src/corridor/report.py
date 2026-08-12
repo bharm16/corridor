@@ -35,13 +35,16 @@ from corridor.ledger import Evidence, LedgerRow, browse
 from corridor.models import (
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     Document,
     EvidenceLink,
     Milestone,
     Project,
     is_critical,
 )
+from corridor.dependency_events import current_scope_decision_filter
 
 # Enough to act on in a weekly meeting. More than this and nobody reads it.
 CRITICAL_ITEM_COUNT = 15
@@ -927,17 +930,21 @@ def _event_citations(
     if not event_ids:
         return {}
     citations: dict[int, Assertion] = {}
-    for link, document in session.execute(
-        select(EvidenceLink, Document)
+    for event_evidence, link, document in session.execute(
+        select(DependencyEventEvidence, EvidenceLink, Document)
+        .join(
+            EvidenceLink,
+            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+        )
         .join(Document, EvidenceLink.document_id == Document.id)
         .where(
-            EvidenceLink.event_id.in_(event_ids),
+            DependencyEventEvidence.event_id.in_(event_ids),
             EvidenceLink.verified.is_(True),
         )
-        .order_by(EvidenceLink.event_id, EvidenceLink.id)
+        .order_by(DependencyEventEvidence.event_id, EvidenceLink.id)
     ).all():
         citations.setdefault(
-            link.event_id,
+            event_evidence.event_id,
             Assertion(document.id, document.filename, link.page_no, link.quote),
         )
     return citations
@@ -951,11 +958,27 @@ def _verified_cited_event_ids(
         return set()
     return set(
         session.scalars(
-            select(EvidenceLink.event_id)
-            .join(DependencyEvent, EvidenceLink.event_id == DependencyEvent.id)
-            .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+            select(DependencyEventEvidence.event_id)
+            .join(
+                EvidenceLink,
+                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            )
+            .join(
+                DependencyEvent,
+                DependencyEventEvidence.event_id == DependencyEvent.id,
+            )
+            .join(
+                DependencyEventScope,
+                DependencyEventScope.event_id == DependencyEventEvidence.event_id,
+            )
+            .join(
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
+            )
             .where(
                 DependencyEventScope.dependency_id.in_(dependency_ids),
+                current_scope_decision_filter(),
                 DependencyEvent.source_kind == "cited",
                 EvidenceLink.verified.is_(True),
             )

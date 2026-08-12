@@ -12,18 +12,31 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import false as sa_false, select
+from sqlalchemy import exists, false as sa_false, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm import Session
 
 from corridor.models import (
     Dependency,
     DependencyEvent,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     DependencyEventTiming,
 )
 
 
 COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change")
+
+
+def current_scope_decision_filter():
+    """SQL predicate for the one scope decision not replaced by a later act."""
+    superseding = aliased(DependencyEventScopeDecision)
+    return ~exists(
+        select(superseding.id).where(
+            superseding.supersedes_scope_decision_id
+            == DependencyEventScopeDecision.id
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -69,11 +82,17 @@ def current_dependency_statements(
         session.scalars(
             select(DependencyEventScope.dependency_id)
             .join(
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
+            )
+            .join(
                 DependencyEvent,
                 DependencyEventScope.event_id == DependencyEvent.id,
             )
             .where(
                 DependencyEventScope.dependency_id.in_(ids),
+                current_scope_decision_filter(),
                 DependencyEvent.event_type == "closure",
             )
         ).all()
@@ -86,6 +105,11 @@ def current_dependency_statements(
             DependencyEventTiming,
         )
         .join(
+            DependencyEventScopeDecision,
+            DependencyEventScope.scope_decision_id
+            == DependencyEventScopeDecision.id,
+        )
+        .join(
             DependencyEvent,
             DependencyEventScope.event_id == DependencyEvent.id,
         )
@@ -96,7 +120,8 @@ def current_dependency_statements(
         .where(
             DependencyEventScope.dependency_id.in_(ids),
             DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
-            DependencyEvent.scope_mode.in_(("selected", "all_active")),
+            DependencyEventScopeDecision.scope_mode.in_(("selected", "all_active")),
+            current_scope_decision_filter(),
             DependencyEventTiming.kind == "new",
         )
     )
