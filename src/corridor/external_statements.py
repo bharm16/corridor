@@ -178,7 +178,7 @@ def record_external_party_statement(
         scope=scope,
     )
     if evidence is not None:
-        _validate_evidence(session, evidence, project.id)
+        validate_cited_statement_evidence(session, evidence, project.id)
 
     # This command is the one atomic writer for every statement path. A
     # database refusal after the event row exists must not leave the caller
@@ -453,9 +453,10 @@ def _current_scope_decision(
     )
 
 
-def _validate_evidence(
+def validate_cited_statement_evidence(
     session: Session, evidence: CitedStatementEvidence, project_id: int
 ) -> None:
+    """Refuse a citation that cannot be verified inside the stated project."""
     if evidence.page_no < 1 or not evidence.quote.strip():
         raise StatementRefusal("cited Evidence needs a page and quote")
     document = session.get(Document, evidence.document_id)

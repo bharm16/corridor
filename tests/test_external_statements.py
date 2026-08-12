@@ -471,6 +471,210 @@ def test_current_statement_projection_keeps_identity_date_provenance_and_closure
     assert dependency.committed_date == statement.effective_date
 
 
+def test_full_statement_publication_uses_the_current_verbal_with_its_provenance(
+    session, statement_record
+):
+    """Every full publisher receives one supported reading of the statement."""
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation by 2025-06-01."
+        ),
+    )
+    verbal = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="verbal",
+        event_date=date(2025, 2, 1),
+        description="Equistar said relocation will finish on July 15.",
+        new_timing=StatementTiming.day("July 15", date(2025, 7, 15)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="local:statement-coordinator",
+    )
+
+    publication = published_dependency_statements(
+        session, (dependency.id,), project_id=project.id
+    )
+    statement = publication.by_dependency[dependency.id]
+
+    assert statement.current_event is verbal
+    assert statement.event is verbal
+    assert statement.committed_date == date(2025, 7, 15)
+    assert statement.source_attribution == (
+        "Verbal — Equistar told local:statement-coordinator on 2025-02-01"
+    )
+    assert publication.committed_dates == {dependency.id: date(2025, 7, 15)}
+    assert publication.committed_events == {dependency.id: verbal}
+    assert publication.unsupported_dependency_ids == frozenset()
+
+
+def test_document_only_statement_publication_falls_back_to_verified_cited_history(
+    session, statement_record
+):
+    """Document-only publishers select cited history before choosing the newest."""
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    cited = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation by 2025-06-01."
+        ),
+    )
+    verbal = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="verbal",
+        event_date=date(2025, 2, 1),
+        description="Equistar said relocation will finish on July 15.",
+        new_timing=StatementTiming.day("July 15", date(2025, 7, 15)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="local:statement-coordinator",
+    )
+
+    publication = published_dependency_statements(
+        session,
+        (dependency.id,),
+        project_id=project.id,
+        document_only=True,
+    )
+    statement = publication.by_dependency[dependency.id]
+
+    assert statement.current_event is verbal
+    assert statement.event is cited
+    assert statement.committed_date == date(2025, 6, 1)
+    assert statement.source_attribution == "Cited statement"
+    assert statement.cited_provenance is not None
+    assert statement.cited_provenance.document_id == document.id
+    assert statement.cited_provenance.page_no == 1
+    assert publication.committed_dates == {dependency.id: date(2025, 6, 1)}
+    assert publication.committed_events == {dependency.id: cited}
+    assert publication.unsupported_dependency_ids == frozenset()
+
+
+def test_document_only_statement_publication_withholds_an_unsupported_current_citation(
+    session, statement_record
+):
+    """An unsupported current citation must not expose stale cited history."""
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(document.id, 1, "Older cited commitment."),
+    )
+    current = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        attribution_state="resolved",
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        event_date=date(2025, 2, 1),
+        description="Equistar later stated relocation would finish July 15.",
+        created_by="corridor:event-admission",
+    )
+    session.add(current)
+    session.flush()
+    current_decision = session.scalar(
+        select(DependencyEventScopeDecision).where(
+            DependencyEventScopeDecision.event_id == current.id
+        )
+    )
+    session.add_all(
+        (
+            DependencyEventTiming(
+                event_id=current.id,
+                kind="new",
+                text="July 15",
+                precision="day",
+                start_date=date(2025, 7, 15),
+                end_date=date(2025, 7, 15),
+            ),
+            DependencyEventScope(
+                event_id=current.id,
+                scope_decision_id=current_decision.id,
+                dependency_id=dependency.id,
+                recorded_by="corridor:event-admission",
+            ),
+        )
+    )
+    session.flush()
+
+    publication = published_dependency_statements(
+        session,
+        (dependency.id,),
+        project_id=project.id,
+        document_only=True,
+    )
+    statement = publication.by_dependency[dependency.id]
+
+    assert statement.current_event is current
+    assert statement.event is None
+    assert statement.committed_date is None
+    assert statement.cited_provenance is None
+    assert publication.unsupported_dependency_ids == frozenset((dependency.id,))
+
+
 def test_current_statement_projection_clears_an_older_scalar_for_month_precision(
     session, statement_record
 ):
@@ -797,6 +1001,7 @@ def test_shared_seam_refuses_incomplete_or_non_day_verbals(session, statement_re
 def test_event_evidence_requires_an_explicit_dependency_sufficiency_judgment(
     session, statement_record
 ):
+    from corridor.dependency_events import current_statement_evidence_memberships
     from corridor.external_statements import (
         CitedStatementEvidence,
         StatementScope,
@@ -835,6 +1040,14 @@ def test_event_evidence_requires_an_explicit_dependency_sufficiency_judgment(
     )
 
     assert evidence.dependency_id is None
+    membership = current_statement_evidence_memberships(
+        session, (dependency.id,)
+    )
+    [member] = membership.for_dependency(dependency.id)
+    assert member.event_id == event.id
+    assert member.evidence_link.id == evidence.id
+    assert member.document.id == document.id
+    assert membership.contains(dependency.id, evidence.id) is True
     assert is_ready(session, dependency.id) is False
     designate_publication_support(
         session,
@@ -877,6 +1090,7 @@ def test_event_evidence_has_one_source_identity_and_roles_bind_the_scope_link(
         record_external_party_statement,
         record_statement_scope_decision,
     )
+    from corridor.dependency_events import current_statement_evidence_memberships
     from corridor.ledger import mark_satisfies
     from corridor.operative_support import designate_publication_support
 
@@ -943,6 +1157,18 @@ def test_event_evidence_has_one_source_identity_and_roles_bind_the_scope_link(
         )
     )
     assert sufficiency.scope_link_id == scope_link.id
+
+    record_statement_scope_decision(
+        session,
+        event_id=event.id,
+        scope=StatementScope.unknown(),
+        actor=HumanPrincipal("local:scope-coordinator"),
+    )
+    membership = current_statement_evidence_memberships(
+        session, (dependency.id,)
+    )
+    assert membership.for_dependency(dependency.id) == ()
+    assert membership.contains(dependency.id, evidence.id) is False
 
 
 def test_database_rejects_scope_links_for_unknown_scope_and_empty_known_scope(

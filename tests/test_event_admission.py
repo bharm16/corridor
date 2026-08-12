@@ -16,6 +16,7 @@ Adjudication rather than forced onto the record.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import date
 
 import pytest
@@ -684,6 +685,49 @@ def test_attaching_places_the_statement_a_human_names(
     assert waiting_statements(session, project.id) == []
 
 
+def test_attaching_uses_the_candidate_payload_re_read_under_the_project_lock(
+    session, project, admitted
+):
+    """A reviewed edit committed after the initial read is the attached fact."""
+    from corridor.event_admission import attach_statement
+
+    [candidate] = _minutes_with(
+        session, project, [_event(ref="PL99", committed_date="2025-06-01")]
+    )
+    run_event_admission(session, project.id)
+    edited_payload = json.loads(json.dumps(candidate.payload_json))
+    edited_payload["fields"]["committed_date"] = "2025-07-15"
+    session.execute(
+        text(
+            "update candidates set payload_json = cast(:payload as jsonb) "
+            "where id = :candidate_id"
+        ),
+        {"payload": json.dumps(edited_payload), "candidate_id": candidate.id},
+    )
+    assert candidate.payload_json["fields"]["committed_date"] == "2025-06-01"
+
+    event = attach_statement(session, candidate, admitted, principal=OPERATOR)
+
+    assert event.new_timing.start_date == date(2025, 7, 15)
+
+
+def test_the_pile_disables_attach_when_cited_evidence_is_outside_the_project(
+    session, project, admitted
+):
+    from corridor.event_admission import waiting_statements
+
+    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
+    run_event_admission(session, project.id)
+    payload = json.loads(json.dumps(candidate.payload_json))
+    payload["citations"][0]["document_id"] = 9_999_999
+    candidate.payload_json = payload
+    session.flush()
+
+    [waiting] = waiting_statements(session, project.id)
+
+    assert waiting["attachable"] is False
+
+
 def test_refused_statement_placement_leaves_the_candidate_and_event_unchanged(
     session, project, admitted
 ):
@@ -952,3 +996,60 @@ def test_the_pile_marks_what_attach_would_refuse(session, project, admitted):
     }
     assert by_ref["PL99"]["attachable"] is True
     assert by_ref["PL98"]["attachable"] is False  # type outside the policy
+
+
+def test_the_pile_disables_attach_when_the_statement_date_is_unreadable(
+    session, project, admitted
+):
+    """Preview and mutation share the statement's target-independent rules."""
+    from corridor.event_admission import waiting_statements
+
+    _minutes_with(
+        session,
+        project,
+        [_event(ref="PL99", event_date="the third of never")],
+    )
+    run_event_admission(session, project.id)
+
+    [waiting] = waiting_statements(session, project.id)
+    assert waiting["attachable"] is False
+
+
+def test_the_pile_disables_attach_when_the_speaker_is_not_registered(
+    session, project, admitted
+):
+    from corridor.event_admission import waiting_statements
+
+    _minutes_with(
+        session,
+        project,
+        [_event(ref="PL99", stated_party="Unregistered Speaker")],
+    )
+    run_event_admission(session, project.id)
+
+    [waiting] = waiting_statements(session, project.id)
+    assert waiting["attachable"] is False
+
+
+def test_the_pile_disables_attach_when_the_timing_shape_contradicts_the_type(
+    session, project, admitted
+):
+    from corridor.event_admission import waiting_statements
+
+    commitment = _event(ref="PL99")
+    commitment["previous_timing"] = {
+        "text": "May 2025",
+        "precision": "month",
+        "start_date": "2025-05-01",
+        "end_date": "2025-05-31",
+    }
+    change = _event(ref="PL98", event_type="committed_date_change")
+    _minutes_with(session, project, [commitment, change])
+    run_event_admission(session, project.id)
+
+    by_ref = {
+        waiting["conflict_ref"]: waiting
+        for waiting in waiting_statements(session, project.id)
+    }
+    assert by_ref["PL99"]["attachable"] is False
+    assert by_ref["PL98"]["attachable"] is False

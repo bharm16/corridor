@@ -66,14 +66,11 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
-    DependencyEventEvidence,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
     EvidenceLink,
     ExternalOrg,
     Project,
 )
-from corridor.dependency_events import current_scope_decision_filter
+from corridor.dependency_events import current_statement_evidence_memberships
 from corridor.web.queue import (
     build_cohort_rail,
     build_evidence,
@@ -1520,27 +1517,9 @@ def _project_evidence(
     session: Session, dependency: Dependency, link_id: int
 ) -> EvidenceLink:
     link = session.get(EvidenceLink, link_id)
-    scoped_event = (
-        session.scalar(
-            select(DependencyEventScope.id)
-            .join(
-                DependencyEventEvidence,
-                DependencyEventEvidence.event_id == DependencyEventScope.event_id,
-            )
-            .join(
-                DependencyEventScopeDecision,
-                DependencyEventScope.scope_decision_id
-                == DependencyEventScopeDecision.id,
-            )
-            .where(
-                DependencyEventEvidence.evidence_link_id == link_id,
-                DependencyEventScope.dependency_id == dependency.id,
-                current_scope_decision_filter(),
-            )
-        )
-        if link is not None
-        else None
-    )
-    if link is None or (link.dependency_id != dependency.id and scoped_event is None):
+    scoped_event = link is not None and current_statement_evidence_memberships(
+        session, (dependency.id,)
+    ).contains(dependency.id, link_id)
+    if link is None or (link.dependency_id != dependency.id and not scoped_event):
         raise HTTPException(404, "no such evidence")
     return link

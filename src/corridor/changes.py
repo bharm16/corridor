@@ -73,6 +73,17 @@ def snapshot(
     moment later. Required, not defaulted: this snapshot is what the *next*
     report diffs against, so a second reading here misreports change.
     """
+    if evaluation.project_id != project_id:
+        raise ValueError("the evaluation belongs to another project")
+    published_committed_dates = (
+        dict(committed_dates)
+        if committed_dates is not None
+        else evaluation.committed_dates
+    )
+    if published_committed_dates != evaluation.committed_dates:
+        raise ValueError(
+            "the snapshot and evaluation describe different Committed Date readings"
+        )
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
 
     by_dependency = {
@@ -81,13 +92,7 @@ def snapshot(
     }
 
     def published_committed_date(row) -> date | None:
-        if committed_dates is not None:
-            return committed_dates.get(row.dependency.id)
-        # ``browse`` attaches the one structured statement compatibility
-        # readers may expose.  Reading the persisted scalar directly here
-        # would let an unrefreshed legacy projection disagree with the
-        # Ledger and every other current statement reader.
-        return row.committed_date
+        return published_committed_dates.get(row.dependency.id)
 
     return {
         "ruleset_version": evaluation.ruleset_version,

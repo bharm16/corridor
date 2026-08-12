@@ -23,8 +23,9 @@ from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
 from corridor.dependency_events import (
-    current_dependency_statements,
-    verified_cited_statement_event_ids,
+    PublishedDependencyStatement,
+    StatementPublication,
+    published_dependency_statements,
 )
 from corridor.exceptions import (
     RULESET_VERSION,
@@ -38,11 +39,6 @@ from corridor.ledger import Evidence, LedgerRow, browse
 from corridor.models import (
     Dependency,
     DependencyEvent,
-    DependencyEventEvidence,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
-    Document,
-    EvidenceLink,
     Milestone,
     Project,
     is_critical,
@@ -194,6 +190,7 @@ class Report:
     # The evaluation this report published, so the export and the recorded
     # run describe the same reading rather than taking their own.
     evaluation: Evaluation | None = None
+    statement_publication: StatementPublication | None = None
 
     @property
     def cells(self) -> list[Cell]:
@@ -238,51 +235,14 @@ def build_report(
             Dependency.dismissed_at.is_(None),
         )
     ).all()
-    current_statements = current_dependency_statements(session, dependency_ids)
-    verified_cited_event_ids = verified_cited_statement_event_ids(
-        session, dependency_ids
+    publication = published_dependency_statements(
+        session,
+        dependency_ids,
+        project_id=project_id,
+        document_only=document_only,
     )
-    if document_only:
-        # Filter before selecting the newest event, not afterwards: the
-        # newest cited statement may lack a verified event citation while an
-        # earlier cited commitment remains publishable.
-        published_statements = current_dependency_statements(
-            session,
-            dependency_ids,
-            source_kind="cited",
-            event_ids=verified_cited_event_ids,
-        )
-    else:
-        # A cited event that cannot point to its own verified Evidence cannot
-        # lend its date to a report. A Verbal has its own explicit provenance.
-        published_statements = {
-            dependency_id: statement
-            for dependency_id, statement in current_statements.items()
-            if statement.event is None
-            or statement.event.source_kind == "verbal"
-            or statement.event.id in verified_cited_event_ids
-        }
-    committed_dates = {
-        dependency_id: published_statements[dependency_id].effective_date
-        if dependency_id in published_statements
-        else None
-        for dependency_id in dependency_ids
-    }
-    committed_events = {
-        dependency_id: statement.event
-        for dependency_id, statement in published_statements.items()
-        if statement.event is not None and statement.effective_date is not None
-    }
-    unsupported_committed_dependencies = {
-        dependency_id
-        for dependency_id, current in current_statements.items()
-        if current.event is not None
-        and (
-            dependency_id not in published_statements
-            or published_statements[dependency_id].event is None
-            or published_statements[dependency_id].effective_date is None
-        )
-    }
+    committed_dates = publication.committed_dates
+    committed_events = publication.committed_events
     # One evaluation for the whole report. `today` used to reach two
     # sections while every exception in the same report was computed
     # against `date.today()` by a separate call, so a report built for a
@@ -338,6 +298,7 @@ def build_report(
         document_only=document_only,
         committed_dates=committed_dates,
         evaluation=evaluation,
+        statement_publication=publication,
     )
 
     if not document_only:
@@ -363,20 +324,15 @@ def build_report(
         _critical_items(
             session,
             rows,
-            committed_events=committed_events,
-            committed_dates=committed_dates,
-            unsupported_committed_dependencies=unsupported_committed_dependencies,
+            statement_publication=publication,
             document_only=document_only,
         ),
         _coordination(session, rows),
         _exceptions_summary(evaluation),
         _changes_since_last(report.diff, committed_events=committed_events),
         _aging(
-            session,
             rows,
-            committed_events=committed_events,
-            committed_dates=committed_dates,
-            document_only=document_only,
+            statement_publication=publication,
         ),
         _appendix(rows),
     ]
@@ -481,9 +437,7 @@ def _critical_items(
     session: Session,
     rows: list[LedgerRow],
     *,
-    committed_events: dict[int, DependencyEvent],
-    committed_dates: dict[int, date | None],
-    unsupported_committed_dependencies: set[int],
+    statement_publication: StatementPublication,
     document_only: bool,
 ) -> Section:
     """The critical records, nearest need first (ADR-0010, #116).
@@ -541,14 +495,11 @@ def _critical_items(
     resolved = resolve_operative_support(
         session, [r.dependency.id for r in ranked]
     )
-    citations = _event_citations(
-        session,
-        [committed_events[r.dependency.id] for r in ranked if r.dependency.id in committed_events],
-    )
     for row in ranked:
         dependency_id = row.dependency.id
         support = resolved.get(dependency_id)
-        committed_event = committed_events.get(dependency_id)
+        statement = statement_publication.by_dependency[dependency_id]
+        committed_event = statement.event
 
         # Field-exact provenance (#178): each cell carries what backs its
         # own field, never a neighbour's citation. One record-level quote
@@ -579,7 +530,7 @@ def _critical_items(
             return record_fallback
 
         def committed_cell() -> Cell:
-            committed_date = committed_dates.get(dependency_id)
+            committed_date = statement.committed_date
             if committed_date is None:
                 # A row that never had an event retains field-exact support
                 # for its empty legacy value. A date-bearing cited event
@@ -588,7 +539,7 @@ def _critical_items(
                 provenance = (
                     record_fallback
                     if document_only
-                    or dependency_id in unsupported_committed_dependencies
+                    or statement.unsupported_current
                     else cited_field("committed_date")
                 )
                 return Cell("Committed", "—", provenance)
@@ -596,24 +547,13 @@ def _critical_items(
                 return Cell(
                     "Committed", committed_date.isoformat(), cited_field("committed_date")
                 )
-            if committed_event.source_kind == "verbal":
-                return Cell(
-                    "Committed",
-                    committed_date.isoformat(),
-                    Verbal(
-                        committed_event.id,
-                        committed_event.created_by,
-                        committed_event.event_date,
-                        committed_event.stated_party or "unstated party",
-                    ),
-                )
-            citation = citations.get(committed_event.id)
-            if citation is None:
+            provenance = _statement_provenance(statement)
+            if provenance is None:
                 return Cell("Committed", "—", record_fallback)
             return Cell(
                 "Committed",
                 committed_date.isoformat(),
-                citation,
+                provenance,
             )
 
         # The row's exceptions as facts, each with its own quantity — no
@@ -827,12 +767,9 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
 
 
 def _aging(
-    session: Session,
     rows: list[LedgerRow],
     *,
-    committed_events: dict[int, DependencyEvent],
-    committed_dates: dict[int, date | None],
-    document_only: bool,
+    statement_publication: StatementPublication,
 ) -> Section:
     """Days overdue as the engine counted them, not as the report recounts.
 
@@ -841,11 +778,15 @@ def _aging(
     never saw — two numbers for one fact whenever the two clocks differed.
     """
     overdue = [
-        (r, e, committed_dates.get(r.dependency.id))
+        (
+            r,
+            e,
+            statement_publication.by_dependency[r.dependency.id].committed_date,
+        )
         for r in rows
         for e in r.exceptions
         if e.rule == "OVERDUE"
-        and committed_dates.get(r.dependency.id)
+        and statement_publication.by_dependency[r.dependency.id].committed_date
     ]
     overdue.sort(key=lambda pair: pair[2])
 
@@ -854,21 +795,11 @@ def _aging(
         columns=["Ref", "External party", "Committed", "Days overdue"],
         empty_message="Nothing is overdue.",
     )
-    citations = _event_citations(session, list(committed_events.values()))
     for row, overdue_fact, committed_date in overdue:
-        event = committed_events.get(row.dependency.id)
-        provenance = (
-            Verbal(
-                event.id,
-                event.created_by,
-                event.event_date,
-                event.stated_party or "unstated party",
-            )
-            if event is not None and event.source_kind == "verbal"
-            else citations.get(event.id)
-            if event is not None
-            else Derivation(RULESET_VERSION, (row.dependency.id,))
-        )
+        statement = statement_publication.by_dependency[row.dependency.id]
+        provenance = _statement_provenance(statement)
+        if statement.event is None:
+            provenance = Derivation(RULESET_VERSION, (row.dependency.id,))
         if provenance is None:
             provenance = Derivation(RULESET_VERSION, (row.dependency.id,))
         days = overdue_fact.quantity_days
@@ -932,32 +863,29 @@ def _as_assertion(evidence: Evidence | None) -> Assertion | None:
     )
 
 
-def _event_citations(
-    session: Session, events: list[DependencyEvent]
-) -> dict[int, Assertion]:
-    """One verified page citation for each cited event a report prints."""
-    event_ids = [event.id for event in events if event.source_kind == "cited"]
-    if not event_ids:
-        return {}
-    citations: dict[int, Assertion] = {}
-    for event_evidence, link, document in session.execute(
-        select(DependencyEventEvidence, EvidenceLink, Document)
-        .join(
-            EvidenceLink,
-            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+def _statement_provenance(
+    statement: PublishedDependencyStatement,
+) -> Assertion | Verbal | None:
+    """Adapt the publication seam's source into this report's marker type."""
+    event = statement.event
+    if event is None or statement.committed_date is None:
+        return None
+    if event.source_kind == "verbal":
+        return Verbal(
+            event.id,
+            event.created_by,
+            event.event_date,
+            event.stated_party or "unstated party",
         )
-        .join(Document, EvidenceLink.document_id == Document.id)
-        .where(
-            DependencyEventEvidence.event_id.in_(event_ids),
-            EvidenceLink.verified.is_(True),
-        )
-        .order_by(DependencyEventEvidence.event_id, EvidenceLink.id)
-    ).all():
-        citations.setdefault(
-            event_evidence.event_id,
-            Assertion(document.id, document.filename, link.page_no, link.quote),
-        )
-    return citations
+    cited = statement.cited_provenance
+    if cited is None:
+        return None
+    return Assertion(
+        cited.document_id,
+        cited.filename,
+        cited.page_no,
+        cited.quote,
+    )
 
 
 def assert_no_bare_cells(report: Report) -> None:
@@ -1136,6 +1064,7 @@ def main(argv: list[str]) -> int:
                 project.id,
                 Path("out/ledger.xlsx"),
                 evaluation=report.evaluation,
+                statement_publication=report.statement_publication,
             )
             xlsx = " · out/ledger.xlsx"
         try:

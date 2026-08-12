@@ -23,6 +23,7 @@ from corridor.models import (
     DependencyEventScope,
     DependencyEventScopeDecision,
     DependencyEventTiming,
+    Document,
     EvidenceLink,
 )
 
@@ -42,6 +43,113 @@ def current_scope_decision_filter():
 
 
 @dataclass(frozen=True)
+class StatementEvidenceMembership:
+    """One Evidence identity visible through one current statement scope link."""
+
+    dependency_id: int
+    event: DependencyEvent
+    scope_link_id: int
+    evidence_link: EvidenceLink
+    document: Document
+
+    @property
+    def event_id(self) -> int:
+        return self.event.id
+
+
+@dataclass(frozen=True)
+class CurrentStatementEvidenceMemberships:
+    """Current statement Evidence membership without exposing its join graph."""
+
+    members: tuple[StatementEvidenceMembership, ...]
+
+    def for_dependency(
+        self, dependency_id: int
+    ) -> tuple[StatementEvidenceMembership, ...]:
+        return tuple(
+            member
+            for member in self.members
+            if member.dependency_id == dependency_id
+        )
+
+    def contains(self, dependency_id: int, evidence_link_id: int) -> bool:
+        return self.find(dependency_id, evidence_link_id) is not None
+
+    def find(
+        self, dependency_id: int, evidence_link_id: int
+    ) -> StatementEvidenceMembership | None:
+        return next(
+            (
+                member
+                for member in self.members
+                if member.dependency_id == dependency_id
+                and member.evidence_link.id == evidence_link_id
+            ),
+            None,
+        )
+
+    @property
+    def counts(self) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for member in self.members:
+            counts[member.dependency_id] = counts.get(member.dependency_id, 0) + 1
+        return counts
+
+
+def current_statement_evidence_memberships(
+    session: Session, dependency_ids: Iterable[int]
+) -> CurrentStatementEvidenceMemberships:
+    """Return Event Evidence visible through each Dependency's current scope."""
+    ids = tuple(dict.fromkeys(dependency_ids))
+    if not ids:
+        return CurrentStatementEvidenceMemberships(())
+    rows = session.execute(
+        select(
+            DependencyEventScope.dependency_id,
+            DependencyEvent,
+            DependencyEventScope.id,
+            EvidenceLink,
+            Document,
+        )
+        .join(
+            DependencyEventScopeDecision,
+            DependencyEventScope.scope_decision_id
+            == DependencyEventScopeDecision.id,
+        )
+        .join(
+            DependencyEventEvidence,
+            DependencyEventEvidence.event_id == DependencyEventScope.event_id,
+        )
+        .join(
+            DependencyEvent,
+            DependencyEvent.id == DependencyEventEvidence.event_id,
+        )
+        .join(
+            EvidenceLink,
+            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+        )
+        .join(Document, Document.id == EvidenceLink.document_id)
+        .where(
+            DependencyEventScope.dependency_id.in_(ids),
+            current_scope_decision_filter(),
+        )
+        .order_by(DependencyEventScope.dependency_id, EvidenceLink.id)
+    ).all()
+    return CurrentStatementEvidenceMemberships(
+        tuple(
+            StatementEvidenceMembership(
+                dependency_id,
+                event,
+                scope_link_id,
+                evidence_link,
+                document,
+            )
+            for dependency_id, event, scope_link_id, evidence_link, document in rows
+        )
+    )
+
+
+@dataclass(frozen=True)
 class CurrentDependencyStatement:
     """The one statement compatibility readers can safely expose.
 
@@ -54,6 +162,60 @@ class CurrentDependencyStatement:
     effective_date: date | None
     provenance_class: str | None
     is_closed: bool
+
+
+@dataclass(frozen=True)
+class CitedStatementProvenance:
+    """The verified page citation that makes one cited statement publishable."""
+
+    document_id: int
+    filename: str
+    page_no: int
+    quote: str
+
+
+@dataclass(frozen=True)
+class PublishedDependencyStatement:
+    """The statement one publisher may expose for one Dependency."""
+
+    current_event: DependencyEvent | None
+    event: DependencyEvent | None
+    committed_date: date | None
+    source_attribution: str | None
+    cited_provenance: CitedStatementProvenance | None
+    is_closed: bool
+    unsupported_current: bool
+
+
+@dataclass(frozen=True)
+class StatementPublication:
+    """One provenance-consistent statement reading for a set of Dependencies."""
+
+    project_id: int
+    by_dependency: dict[int, PublishedDependencyStatement]
+
+    @property
+    def committed_dates(self) -> dict[int, date | None]:
+        return {
+            dependency_id: statement.committed_date
+            for dependency_id, statement in self.by_dependency.items()
+        }
+
+    @property
+    def committed_events(self) -> dict[int, DependencyEvent]:
+        return {
+            dependency_id: statement.event
+            for dependency_id, statement in self.by_dependency.items()
+            if statement.event is not None and statement.committed_date is not None
+        }
+
+    @property
+    def unsupported_dependency_ids(self) -> frozenset[int]:
+        return frozenset(
+            dependency_id
+            for dependency_id, statement in self.by_dependency.items()
+            if statement.unsupported_current
+        )
 
 
 def current_dependency_statements(
@@ -156,42 +318,119 @@ def current_dependency_statements(
     return statements
 
 
-def verified_cited_statement_event_ids(
+def published_dependency_statements(
+    session: Session,
+    dependency_ids: Iterable[int],
+    *,
+    project_id: int,
+    document_only: bool = False,
+) -> StatementPublication:
+    """Read statements a publisher may expose with their provenance attached."""
+    ids = tuple(dict.fromkeys(dependency_ids))
+    owned_ids = set(
+        session.scalars(
+            select(Dependency.id).where(
+                Dependency.id.in_(ids), Dependency.project_id == project_id
+            )
+        ).all()
+    )
+    if owned_ids != set(ids):
+        raise ValueError("statement publication contains another project's record")
+    current = current_dependency_statements(session, ids)
+    verified_cited_provenance = verified_cited_statement_provenance(session, ids)
+    verified_cited_event_ids = set(verified_cited_provenance)
+    cited_history = (
+        current_dependency_statements(
+            session,
+            ids,
+            source_kind="cited",
+            event_ids=verified_cited_event_ids,
+        )
+        if document_only
+        else {}
+    )
+    if document_only:
+        published_by_dependency = {}
+        for dependency_id, statement in current.items():
+            event = statement.event
+            if event is None:
+                continue
+            if event.source_kind == "verbal":
+                # A document-only view intentionally excludes Verbal history,
+                # so it may select the newest supported cited predecessor.
+                cited = cited_history.get(dependency_id)
+                if cited is not None and cited.effective_date is not None:
+                    published_by_dependency[dependency_id] = cited
+            elif (
+                event.id in verified_cited_event_ids
+                and statement.effective_date is not None
+            ):
+                # A current cited statement is authoritative. If its own
+                # date or Evidence is unsupported, withhold rather than fall
+                # back to stale cited history.
+                published_by_dependency[dependency_id] = statement
+    else:
+        published_by_dependency = {
+            dependency_id: statement
+            for dependency_id, statement in current.items()
+            if statement.event is None
+            or statement.event.source_kind == "verbal"
+            or statement.event.id in verified_cited_event_ids
+        }
+    by_dependency: dict[int, PublishedDependencyStatement] = {}
+    for dependency_id in ids:
+        current_statement = current[dependency_id]
+        current_event = current_statement.event
+        published = published_by_dependency.get(dependency_id)
+        event = published.event if published is not None else None
+        committed_date = published.effective_date if published is not None else None
+        by_dependency[dependency_id] = PublishedDependencyStatement(
+            current_event=current_event,
+            event=event,
+            committed_date=committed_date,
+            source_attribution=(
+                verbal_attribution(event) or "Cited statement"
+                if event is not None and committed_date is not None
+                else None
+            ),
+            cited_provenance=(
+                verified_cited_provenance.get(event.id)
+                if event is not None and committed_date is not None
+                else None
+            ),
+            is_closed=current_statement.is_closed,
+            unsupported_current=(
+                current_event is not None
+                and (published is None or event is None or committed_date is None)
+            ),
+        )
+    return StatementPublication(project_id, by_dependency)
+
+
+def verified_cited_statement_provenance(
     session: Session, dependency_ids: Iterable[int]
-) -> set[int]:
-    """Cited statement ids whose own Evidence is verified for these Dependencies."""
+) -> dict[int, CitedStatementProvenance]:
+    """The canonical verified page citation for each scoped cited statement."""
     ids = tuple(dict.fromkeys(dependency_ids))
     if not ids:
-        return set()
-    return set(
-        session.scalars(
-            select(DependencyEventEvidence.event_id)
-            .join(
-                EvidenceLink,
-                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
-            )
-            .join(
-                DependencyEvent,
-                DependencyEventEvidence.event_id == DependencyEvent.id,
-            )
-            .join(
-                DependencyEventScope,
-                DependencyEventScope.event_id == DependencyEventEvidence.event_id,
-            )
-            .join(
-                DependencyEventScopeDecision,
-                DependencyEventScope.scope_decision_id
-                == DependencyEventScopeDecision.id,
-            )
-            .where(
-                DependencyEventScope.dependency_id.in_(ids),
-                current_scope_decision_filter(),
-                DependencyEvent.source_kind == "cited",
-                EvidenceLink.verified.is_(True),
-            )
-            .distinct()
+        return {}
+    provenance: dict[int, CitedStatementProvenance] = {}
+    memberships = current_statement_evidence_memberships(session, ids)
+    for member in memberships.members:
+        if member.event.source_kind != "cited" or not member.evidence_link.verified:
+            continue
+        link = member.evidence_link
+        document = member.document
+        provenance.setdefault(
+            member.event_id,
+            CitedStatementProvenance(
+                document.id,
+                document.filename,
+                link.page_no,
+                link.quote,
+            ),
         )
-    )
+    return provenance
 
 
 def latest_committed_events(

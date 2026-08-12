@@ -32,14 +32,13 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_events import (
-    current_dependency_statements,
-    current_scope_decision_filter,
-    verified_cited_statement_event_ids,
-    verbal_attribution,
+    StatementPublication,
+    current_statement_evidence_memberships,
+    published_dependency_statements,
 )
 from corridor.exceptions import (
     Evaluation,
@@ -50,9 +49,6 @@ from corridor.exceptions import (
 from corridor.models import (
     Assertion,
     Dependency,
-    DependencyEventEvidence,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
     DocPage,
     EvidenceLink,
 )
@@ -153,12 +149,21 @@ def brief(
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise LookupError(f"no dependency {dependency_id}")
+    publication = published_dependency_statements(
+        session, (dependency_id,), project_id=dependency.project_id
+    )
     return _brief(
         session,
         [dependency],
         ref_code=dependency.ref_code,
         client=client,
-        evaluation=evaluate_dependency(session, dependency_id, today=today),
+        evaluation=evaluate_dependency(
+            session,
+            dependency_id,
+            today=today,
+            committed_dates=publication.committed_dates,
+        ),
+        publication=publication,
     )
 
 
@@ -195,6 +200,11 @@ def brief_project(
             .order_by(Dependency.ref_code)
         )
     )
+    publication = published_dependency_statements(
+        session,
+        (dependency.id for dependency in dependencies),
+        project_id=project_id,
+    )
     return _brief(
         session,
         dependencies,
@@ -203,7 +213,13 @@ def brief_project(
         # One reading for the whole briefing. Every record used to take
         # its own `exceptions_for`, so a project briefing spanning N
         # records computed N clocks and stamped one of them.
-        evaluation=evaluate_project(session, project_id, today=today),
+        evaluation=evaluate_project(
+            session,
+            project_id,
+            today=today,
+            committed_dates=publication.committed_dates,
+        ),
+        publication=publication,
     )
 
 
@@ -214,8 +230,11 @@ def _brief(
     ref_code: str,
     client,
     evaluation: Evaluation,
+    publication: StatementPublication,
 ) -> Briefing:
-    citables, floor, committed_dates = _assemble(session, dependencies, evaluation)
+    citables, floor, committed_dates = _assemble(
+        session, dependencies, evaluation, publication
+    )
     if not citables:
         # Nothing to cite means nothing a sentence could stand on: the
         # honest briefing is empty, and a model call would burn money to
@@ -277,7 +296,10 @@ def _brief(
 
 
 def _assemble(
-    session: Session, dependencies: list[Dependency], evaluation: Evaluation
+    session: Session,
+    dependencies: list[Dependency],
+    evaluation: Evaluation,
+    publication: StatementPublication,
 ) -> tuple[list[Citable], tuple[str, ...], dict[int, date | None]]:
     """Everything a sentence may stand on, and which refs are the floor.
 
@@ -293,78 +315,72 @@ def _assemble(
     citables: list[Citable] = []
     floor: list[str] = []
     counters = {"E": 0, "A": 0, "V": 0, "X": 0}
-    current_statements = current_dependency_statements(
+    committed_dates = publication.committed_dates
+    memberships = current_statement_evidence_memberships(
         session, (dependency.id for dependency in dependencies)
     )
-    verified_cited_event_ids = verified_cited_statement_event_ids(
-        session, (dependency.id for dependency in dependencies)
+    event_link_ids = tuple(
+        dict.fromkeys(member.evidence_link.id for member in memberships.members)
     )
-    published_statements = {
-        dependency_id: statement
-        for dependency_id, statement in current_statements.items()
-        if statement.event is None
-        or statement.event.source_kind == "verbal"
-        or statement.event.id in verified_cited_event_ids
-    }
-    committed_dates = {
-        dependency_id: statement.effective_date
-        for dependency_id, statement in published_statements.items()
-    }
-    committed_events = {
-        dependency_id: statement.event
-        for dependency_id, statement in published_statements.items()
-        if statement.event is not None and statement.effective_date is not None
-    }
+    event_pages_by_link = (
+        dict(
+            session.execute(
+                select(EvidenceLink.id, DocPage)
+                .outerjoin(
+                    DocPage,
+                    (DocPage.document_id == EvidenceLink.document_id)
+                    & (DocPage.page_no == EvidenceLink.page_no),
+                )
+                .where(EvidenceLink.id.in_(event_link_ids))
+            ).all()
+        )
+        if event_link_ids
+        else {}
+    )
 
     def ref(prefix: str) -> str:
         counters[prefix] += 1
         return f"{prefix}{counters[prefix]}"
 
     for dependency in dependencies:
-        committed_event = committed_events.get(dependency.id)
-        if attribution := verbal_attribution(committed_event):
+        statement = publication.by_dependency[dependency.id]
+        committed_event = statement.event
+        if (
+            committed_event is not None
+            and committed_event.source_kind == "verbal"
+            and statement.source_attribution is not None
+        ):
             citables.append(
                 Citable(
                     ref=ref("V"),
                     kind="verbal",
                     text=(
-                        f"{dependency.ref_code}: {attribution}. "
+                        f"{dependency.ref_code}: {statement.source_attribution}. "
                         f"{committed_event.description}"
                     ),
                     dependency_id=dependency.id,
                 )
             )
-        links = session.execute(
+        direct_links = session.execute(
             select(EvidenceLink, DocPage)
             .outerjoin(
                 DocPage,
                 (DocPage.document_id == EvidenceLink.document_id)
                 & (DocPage.page_no == EvidenceLink.page_no),
             )
-            .outerjoin(
-                DependencyEventEvidence,
-                DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
-            )
-            .outerjoin(
-                DependencyEventScope,
-                DependencyEventScope.event_id == DependencyEventEvidence.event_id,
-            )
-            .outerjoin(
-                DependencyEventScopeDecision,
-                DependencyEventScope.scope_decision_id
-                == DependencyEventScopeDecision.id,
-            )
-            .where(
-                or_(
-                    EvidenceLink.dependency_id == dependency.id,
-                    (
-                        (DependencyEventScope.dependency_id == dependency.id)
-                        & current_scope_decision_filter()
-                    ),
-                )
-            )
+            .where(EvidenceLink.dependency_id == dependency.id)
             .order_by(EvidenceLink.id)
         ).all()
+        links_by_id = {link.id: (link, page) for link, page in direct_links}
+        for member in memberships.for_dependency(dependency.id):
+            links_by_id.setdefault(
+                member.evidence_link.id,
+                (
+                    member.evidence_link,
+                    event_pages_by_link.get(member.evidence_link.id),
+                ),
+            )
+        links = [links_by_id[key] for key in sorted(links_by_id)]
         for link, page in links:
             citables.append(
                 Citable(

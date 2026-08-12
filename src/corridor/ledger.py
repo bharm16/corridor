@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlalchemy import false as sa_false, func, or_, select
+from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
@@ -21,6 +21,7 @@ from corridor.dependency_events import (
     CurrentDependencyStatement,
     current_dependency_statements,
     current_scope_decision_filter,
+    current_statement_evidence_memberships,
 )
 from corridor.exceptions import (
     Evaluation,
@@ -37,7 +38,6 @@ from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
     DependencyEvent,
-    DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
     Document,
@@ -177,6 +177,8 @@ def browse(
     an HTML report, an XLSX and a snapshot from three readings of one
     Ledger. A caller with no evaluation now has to say so.
     """
+    if evaluation.project_id != project_id:
+        raise ValueError("the evaluation belongs to another project")
     # A dismissed record is off the working list and stays in history
     # (ADR-0032). Filtered here rather than by every caller, because the
     # list is what "the working list" means.
@@ -237,29 +239,9 @@ def browse(
             .group_by(EvidenceLink.dependency_id)
         ).all()
     )
-    event_evidence_counts = dict(
-        session.execute(
-            select(DependencyEventScope.dependency_id, func.count())
-            .join(
-                DependencyEventScopeDecision,
-                DependencyEventScope.scope_decision_id
-                == DependencyEventScopeDecision.id,
-            )
-            .join(
-                DependencyEventEvidence,
-                DependencyEventEvidence.event_id == DependencyEventScope.event_id,
-            )
-            .join(
-                EvidenceLink,
-                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
-            )
-            .where(
-                DependencyEventScope.dependency_id.in_(ids),
-                current_scope_decision_filter(),
-            )
-            .group_by(DependencyEventScope.dependency_id)
-        ).all()
-    )
+    event_evidence_counts = current_statement_evidence_memberships(
+        session, ids
+    ).counts
     assertion_counts = dict(
         session.execute(
             select(Assertion.dependency_id, func.count())
@@ -397,33 +379,21 @@ def load_dependency(
             )
         )
 
-    evidence = session.execute(
+    direct_evidence = session.execute(
         select(EvidenceLink, Document)
         .join(Document, EvidenceLink.document_id == Document.id)
-        .outerjoin(
-            DependencyEventEvidence,
-            DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
-        )
-        .outerjoin(
-            DependencyEventScope,
-            DependencyEventScope.event_id == DependencyEventEvidence.event_id,
-        )
-        .outerjoin(
-            DependencyEventScopeDecision,
-            DependencyEventScope.scope_decision_id
-            == DependencyEventScopeDecision.id,
-        )
-        .where(
-            or_(
-                EvidenceLink.dependency_id == dependency_id,
-                (
-                    (DependencyEventScope.dependency_id == dependency_id)
-                    & current_scope_decision_filter()
-                ),
-            )
-        )
+        .where(EvidenceLink.dependency_id == dependency_id)
         .order_by(EvidenceLink.id)
     ).all()
+    event_memberships = current_statement_evidence_memberships(
+        session, (dependency_id,)
+    ).for_dependency(dependency_id)
+    evidence_by_id = {link.id: (link, document) for link, document in direct_evidence}
+    for member in event_memberships:
+        evidence_by_id.setdefault(
+            member.evidence_link.id, (member.evidence_link, member.document)
+        )
+    evidence = [evidence_by_id[key] for key in sorted(evidence_by_id)]
 
     support = resolve_operative_support(session, [dependency_id])[dependency_id]
     current_statement = current_dependency_statements(session, [dependency_id]).get(
@@ -505,35 +475,15 @@ def mark_satisfies(
             "on a record nobody is working"
         )
     link = session.get(EvidenceLink, link_id, populate_existing=True)
-    event_evidence = (
-        session.scalar(
-            select(DependencyEventEvidence).where(
-                DependencyEventEvidence.evidence_link_id == link_id
-            )
+    event_membership = (
+        current_statement_evidence_memberships(session, (dependency_id,)).find(
+            dependency_id, link_id
         )
         if link is not None
         else None
     )
     event_scope = (
-        session.scalar(
-            select(DependencyEventScope.id)
-            .join(
-                DependencyEventScopeDecision,
-                DependencyEventScope.scope_decision_id
-                == DependencyEventScopeDecision.id,
-            )
-            .join(
-                DependencyEventEvidence,
-                DependencyEventEvidence.event_id == DependencyEventScope.event_id,
-            )
-            .where(
-                DependencyEventEvidence.evidence_link_id == link.id,
-                DependencyEventScope.dependency_id == dependency_id,
-                current_scope_decision_filter(),
-            )
-        )
-        if event_evidence is not None
-        else None
+        event_membership.scope_link_id if event_membership is not None else None
     )
     if link is None or (link.dependency_id != dependency_id and event_scope is None):
         raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")

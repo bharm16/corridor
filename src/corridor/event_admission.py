@@ -34,6 +34,7 @@ from corridor.external_statements import (
     StatementScope,
     StatementTiming,
     record_external_party_statement,
+    validate_cited_statement_evidence,
 )
 from corridor.models import (
     Candidate,
@@ -90,6 +91,21 @@ class EventAdmissionResult:
     admitted_count: int
     abstained_count: int
     abstentions: list[EventAdmissionAbstention] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreparedStatementPlacement:
+    """Target-independent facts proved before one Unplaced Statement attaches."""
+
+    event_type: str
+    event_date: date | None
+    new_timing: StatementTiming
+    previous_timing: StatementTiming | None
+    affected_party: str
+    stated_party: str
+    stated_external_org_id: int
+    description: str
+    evidence: CitedStatementEvidence
 
 
 def run_event_admission(
@@ -549,6 +565,11 @@ def waiting_statements(session: Session, project_id: int) -> list[dict]:
     waiting = []
     for candidate in candidates:
         fields = (candidate.payload_json or {}).get("fields", {})
+        try:
+            _prepare_statement_placement(session, project, candidate)
+            attachable = True
+        except StatementUnplaceable:
+            attachable = False
         waiting.append(
             {
                 "candidate": candidate,
@@ -560,35 +581,97 @@ def waiting_statements(session: Session, project_id: int) -> list[dict]:
                 "conflict_ref": fields.get("conflict_ref"),
                 "description": fields.get("description"),
                 # Whether attach could possibly take it: the checks that
-                # depend on the statement alone, mirrored from
+                # depend on the statement alone use the same preparation as
                 # attach_statement. An enabled button that 409s teaches a
                 # reviewer the pile is broken; a disabled one with the
                 # reason beside it teaches them what the statement lacks.
-                "attachable": _statement_attachable(project, candidate, fields),
+                "attachable": attachable,
             }
         )
     return waiting
 
 
-def _statement_attachable(
-    project: Project | None, candidate: Candidate, fields: dict
-) -> bool:
-    """The attach refusals answerable from the statement itself."""
+def _prepare_statement_placement(
+    session: Session,
+    project: Project,
+    candidate: Candidate,
+) -> PreparedStatementPlacement:
+    """Parse or refuse every placement rule independent of the chosen target."""
+    if candidate.kind != "event":
+        raise StatementUnplaceable(
+            f"candidate {candidate.id} is a {candidate.kind}; only a "
+            "statement attaches to a record"
+        )
+    if candidate.state != "pending":
+        raise StatementUnplaceable(
+            f"candidate {candidate.id} was already {candidate.state}"
+        )
+    if candidate.project_id != project.id:
+        raise StatementUnplaceable(
+            "a statement cannot attach to another project's record"
+        )
     if not candidate.citations_verified:
-        return False
-    if fields.get("event_type") not in ADMISSIBLE_EVENT_TYPES:
-        return False
+        raise StatementUnplaceable(
+            "this statement's quote was not found on its page — check the "
+            "page before placing it"
+        )
+    fields = (candidate.payload_json or {}).get("fields", {})
+    event_type = fields.get("event_type")
+    if event_type not in ADMISSIBLE_EVENT_TYPES:
+        raise StatementUnplaceable(
+            f"{event_type!r} is not one of {', '.join(ADMISSIBLE_EVENT_TYPES)}"
+        )
     raw_committed_date = fields.get("committed_date")
-    if not raw_committed_date:
-        return False
-    if _timing_from_candidate(raw_committed_date) is None:
-        return False
+    new_timing = _timing_from_candidate(raw_committed_date)
+    if new_timing is None:
+        raise StatementUnplaceable("a statement must carry a date")
+    raw_event_date = fields.get("event_date")
+    event_date = _parse_date(raw_event_date) if raw_event_date else None
+    if raw_event_date and event_date is None:
+        raise StatementUnplaceable("a stated date could not be read")
     stated_party = str(fields.get("stated_party") or "").strip()
     if not stated_party:
-        return False
-    if project is not None and identity.is_project_side_party(project, stated_party):
-        return False
-    return _candidate_evidence(candidate) is not None
+        raise StatementUnplaceable(
+            "the statement must name a registered External Party who spoke"
+        )
+    if identity.is_project_side_party(project, stated_party):
+        raise StatementUnplaceable(
+            f"{stated_party} is the project's own side — an action item, "
+            "never an External Party commitment"
+        )
+    stated_external_org = _external_org_for_party(session, stated_party)
+    if stated_external_org is None:
+        raise StatementUnplaceable(
+            "the statement must name a registered External Party who spoke"
+        )
+    evidence = _candidate_evidence(candidate)
+    if evidence is None:
+        raise StatementUnplaceable(
+            "this statement's quote was not found on its page — check the "
+            "page before placing it"
+        )
+    try:
+        validate_cited_statement_evidence(session, evidence, project.id)
+    except StatementRefusal as exc:
+        raise StatementUnplaceable(str(exc)) from exc
+    previous_timing = _previous_timing_from_candidate(fields.get("previous_timing"))
+    if event_type == "committed_date_change" and previous_timing is None:
+        raise StatementUnplaceable(
+            "a Committed Date Change must preserve the earlier stated timing"
+        )
+    if event_type == "commitment" and previous_timing is not None:
+        raise StatementUnplaceable("two stated timings are a Committed Date Change")
+    return PreparedStatementPlacement(
+        event_type=event_type,
+        event_date=event_date,
+        new_timing=new_timing,
+        previous_timing=previous_timing,
+        affected_party=str(fields.get("external_org") or "").strip(),
+        stated_party=stated_party,
+        stated_external_org_id=stated_external_org.id,
+        description=str(fields.get("description") or ""),
+        evidence=evidence,
+    )
 
 
 def attach_statement(
@@ -610,20 +693,26 @@ def attach_statement(
     External Party's commitment (ADR-0026).
     """
     attacher = require_human_principal(principal)
-    if candidate.kind != "event":
-        raise StatementUnplaceable(
-            f"candidate {candidate.id} is a {candidate.kind}; only a "
-            "statement attaches to a record"
-        )
-    if candidate.state != "pending":
-        raise StatementUnplaceable(
-            f"candidate {candidate.id} was already {candidate.state}"
-        )
     if candidate.project_id != dependency.project_id:
         raise StatementUnplaceable(
             "a statement cannot attach to another project's record"
         )
-    lock_project(session, dependency.project_id)
+    # The Candidate is mutable reviewer work until this act. Its state,
+    # payload, and action scope must all be re-read after the project lock;
+    # preparing first could write a stale pre-lock edit.
+    from corridor.adjudicate import _require_candidate_action_scope
+
+    try:
+        _require_candidate_action_scope(
+            session, candidate, historical_document_id=None
+        )
+    except Exception as exc:
+        raise StatementUnplaceable(str(exc)) from exc
+    project = session.get(Project, dependency.project_id, populate_existing=True)
+    if project is None:
+        raise StatementUnplaceable(
+            f"dependency {dependency.id} belongs to no registered project"
+        )
     # Re-read under the lock — the caller loaded this row before taking
     # it, and a dismissal committed in between must refuse this attach,
     # not race it. The same stale-read the dismiss path re-reads for.
@@ -633,75 +722,13 @@ def attach_statement(
             f"{dependency.ref_code} was dismissed — a statement cannot "
             "attach to a record nobody is working"
         )
+    prepared = _prepare_statement_placement(session, project, candidate)
 
-    # The same scope every other human write goes through: a Candidate
-    # outside its document's declared Active Run, or on a revision the
-    # registry has replaced, is not actionable by anyone. Attaching by
-    # hand was the one path that skipped it.
-    from corridor.adjudicate import _require_candidate_action_scope
-
-    try:
-        _require_candidate_action_scope(
-            session, candidate, historical_document_id=None
-        )
-    except Exception as exc:
-        raise StatementUnplaceable(str(exc)) from exc
-
-    # And the policy's own first refusal. Its docstring promises that
-    # everything the policy would still have refused is refused here, and
-    # a quote proved absent from its page was the gap: without this a
-    # Committed Date could be published from a citation the system had
-    # already disproved.
-    if not candidate.citations_verified:
-        raise StatementUnplaceable(
-            "this statement's quote was not found on its page — check the "
-            "page before placing it"
-        )
-
-    project = session.get(Project, dependency.project_id)
-    fields = (candidate.payload_json or {}).get("fields", {})
-    event_type = fields.get("event_type")
-    if event_type not in ADMISSIBLE_EVENT_TYPES:
-        raise StatementUnplaceable(
-            f"{event_type!r} is not one of {', '.join(ADMISSIBLE_EVENT_TYPES)}"
-        )
-
-    raw_event_date = fields.get("event_date")
-    new_timing = _timing_from_candidate(fields.get("committed_date"))
-    if new_timing is None:
-        raise StatementUnplaceable("a statement must carry a date")
-    event_date = _parse_date(raw_event_date) if raw_event_date else None
-    if raw_event_date and event_date is None:
-        raise StatementUnplaceable("a stated date could not be read")
-
-    affected_party = str(fields.get("external_org") or "").strip()
-    if affected_party and not identity.party_matches(session, dependency, affected_party):
+    if prepared.affected_party and not identity.party_matches(
+        session, dependency, prepared.affected_party
+    ):
         raise StatementUnplaceable(
             "the statement's affected External Party does not match this record"
-        )
-    stated_party = str(fields.get("stated_party") or "").strip()
-    if identity.is_project_side_party(project, stated_party):
-        raise StatementUnplaceable(
-            f"{stated_party} is the project's own side — an action item, never an External Party commitment"
-        )
-    stated_external_org = _external_org_for_party(session, stated_party)
-    if stated_external_org is None:
-        raise StatementUnplaceable(
-            "the statement must name a registered External Party who spoke"
-        )
-    evidence = _candidate_evidence(candidate)
-    if evidence is None:
-        raise StatementUnplaceable(
-            "this statement's quote was not found on its page — check the page before placing it"
-        )
-    previous_timing = _previous_timing_from_candidate(fields.get("previous_timing"))
-    if event_type == "committed_date_change" and previous_timing is None:
-        raise StatementUnplaceable(
-            "a Committed Date Change must preserve the earlier stated timing"
-        )
-    if event_type == "commitment" and previous_timing is not None:
-        raise StatementUnplaceable(
-            "two stated timings are a Committed Date Change"
         )
     if dependency.external_org_id is None:
         raise StatementUnplaceable("this record has no resolved External Party")
@@ -715,16 +742,16 @@ def attach_statement(
                 session,
                 project_id=project.id,
                 affected_external_org_id=dependency.external_org_id,
-                stated_party=stated_party,
-                stated_external_org_id=stated_external_org.id,
+                stated_party=prepared.stated_party,
+                stated_external_org_id=prepared.stated_external_org_id,
                 source_kind="cited",
-                event_date=event_date,
-                description=str(fields.get("description") or ""),
-                new_timing=new_timing,
-                previous_timing=previous_timing,
+                event_date=prepared.event_date,
+                description=prepared.description,
+                new_timing=prepared.new_timing,
+                previous_timing=prepared.previous_timing,
                 scope=StatementScope.selected((dependency.id,)),
                 created_by=attacher.subject,
-                evidence=evidence,
+                evidence=prepared.evidence,
             )
             candidate.state = "accepted"
             candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -737,7 +764,7 @@ def attach_statement(
                 after={
                     "candidate_id": candidate.id,
                     "dependency_event_id": event.id,
-                    "event_type": event_type,
+                    "event_type": prepared.event_type,
                 },
             )
             session.flush()

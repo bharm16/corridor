@@ -859,6 +859,7 @@ def test_the_export_and_the_recorded_run_read_the_report_s_evaluation(
         project_with_two_dependencies.id,
         tmp_path / "ledger.xlsx",
         evaluation=report.evaluation,
+        statement_publication=report.statement_publication,
     )
     sheet = load_workbook(path)["Ledger"]
     headers = [c.value for c in sheet[1]]
@@ -895,6 +896,30 @@ def test_publishing_without_an_evaluation_is_refused(
         snapshot(session, project_id)
     with pytest.raises(TypeError):
         browse(session, project_id)
+
+
+def test_the_xlsx_refuses_an_evaluation_from_another_project(
+    session, project_with_two_dependencies, tmp_path
+):
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.models import Project
+
+    other = Project(slug="foreign-evaluation", name="Foreign", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    evaluation = evaluate_project(session, other.id)
+    publication = published_dependency_statements(
+        session, (), project_id=project_with_two_dependencies.id
+    )
+
+    with pytest.raises(ValueError, match="another project"):
+        to_xlsx(
+            session,
+            project_with_two_dependencies.id,
+            tmp_path / "foreign.xlsx",
+            evaluation=evaluation,
+            statement_publication=publication,
+        )
 
 
 def test_the_report_states_the_date_its_figures_were_counted_from(

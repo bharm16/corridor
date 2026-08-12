@@ -176,6 +176,38 @@ def _record(session, project, **kwargs):
     )
 
 
+@pytest.mark.parametrize("operation", (snapshot, record_run))
+def test_snapshot_writers_refuse_an_evaluation_from_another_project(
+    session, project, operation
+):
+    foreign = Project(slug=f"foreign-{operation.__name__}", name="Foreign", is_synthetic=True)
+    session.add(foreign)
+    session.flush()
+
+    with pytest.raises(ValueError, match="evaluation belongs to another project"):
+        operation(
+            session,
+            project.id,
+            evaluation=evaluate_project(session, foreign.id),
+        )
+
+
+@pytest.mark.parametrize("operation", (snapshot, record_run))
+def test_snapshot_writers_refuse_dates_that_disagree_with_the_evaluation(
+    session, project, operation
+):
+    dependency = make_dep(session, project, f"DEP-{operation.__name__}")
+    evaluation = evaluate_project(session, project.id)
+
+    with pytest.raises(ValueError, match="different Committed Date readings"):
+        operation(
+            session,
+            project.id,
+            evaluation=evaluation,
+            committed_dates={dependency.id: date(2026, 9, 1)},
+        )
+
+
 def test_a_snapshot_captures_state_and_its_ruleset(session, project, document):
     dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 9, 1))
     add_evidence(session, dep, document)
