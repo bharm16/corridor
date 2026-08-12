@@ -51,8 +51,11 @@ DEPENDENCY = "dependency"
 CANDIDATE = "candidate"
 MILESTONE = "milestone"
 PROJECT = "project"
+COMMITMENT_LINEAGE = "commitment_lineage"
 
-ENTITY_TYPES = frozenset({DEPENDENCY, CANDIDATE, MILESTONE, PROJECT})
+ENTITY_TYPES = frozenset(
+    {DEPENDENCY, CANDIDATE, MILESTONE, PROJECT, COMMITMENT_LINEAGE}
+)
 
 # Every act this system records against the Ledger. `entity_type` was
 # checked against its three constants while `action` stayed free text, so
@@ -72,6 +75,7 @@ ASSIGN_INTERNAL_OWNER = "assign_internal_owner"
 SET_NEXT_ACTION = "set_next_action"
 COMPLETE_NEXT_ACTION = "complete_next_action"
 CANCEL_NEXT_ACTION = "cancel_next_action"
+SET_MILESTONE_IMPACT = "set_milestone_impact"
 MARK_SATISFIES_REQUIREMENT = "mark_satisfies_requirement"
 LINK_MILESTONE = "link_milestone"
 CREATE_MILESTONE = "create_milestone"
@@ -108,6 +112,7 @@ ACTIONS = frozenset(
         SET_NEXT_ACTION,
         COMPLETE_NEXT_ACTION,
         CANCEL_NEXT_ACTION,
+        SET_MILESTONE_IMPACT,
         MARK_SATISFIES_REQUIREMENT,
         LINK_MILESTONE,
         CREATE_MILESTONE,

@@ -105,7 +105,7 @@ def test_human_recorded_candidate_7129_preserves_month_timing_and_unknown_scope(
         record_external_party_statement,
     )
 
-    project, party, document, dependency = statement_record
+    project, party, document, _dependency = statement_record
     event = record_external_party_statement(
         session,
         project_id=project.id,
@@ -220,6 +220,107 @@ def test_shared_writer_requires_an_exact_quote_on_cells_text(
         )
 
     assert session.scalars(select(DependencyEvent)).all() == []
+
+
+def test_corrections_cannot_move_a_commitment_lineage_to_other_external_parties(
+    session, statement_record
+):
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    root = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=None,
+        description="Equistar will complete relocation.",
+        new_timing=StatementTiming.day("August 20, 2026", date(2026, 8, 20)),
+        scope=StatementScope.unknown(),
+        created_by="local:statement-coordinator",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation."
+        ),
+    )
+    other_party = ExternalOrg(name="Kinder Morgan")
+    session.add(other_party)
+    session.flush()
+
+    with pytest.raises(StatementRefusal, match="same External Parties"):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=other_party.id,
+            stated_party=other_party.name,
+            stated_external_org_id=other_party.id,
+            source_kind="cited",
+            event_date=None,
+            description="Kinder Morgan will complete relocation.",
+            new_timing=StatementTiming.day("August 27, 2026", date(2026, 8, 27)),
+            scope=StatementScope.unknown(),
+            created_by="local:statement-coordinator",
+            commitment_lineage_id=root.commitment_lineage_id,
+            evidence=CitedStatementEvidence(
+                document.id, 1, "Equistar will complete relocation."
+            ),
+        )
+
+    with pytest.raises(IntegrityError, match="same External Parties"):
+        with session.begin_nested():
+            raw = DependencyEvent(
+                project_id=project.id,
+                commitment_lineage_id=root.commitment_lineage_id,
+                supersedes_event_id=root.id,
+                affected_external_org_id=other_party.id,
+                stated_external_org_id=other_party.id,
+                attribution_state="resolved",
+                stated_party=other_party.name,
+                event_type="commitment",
+                source_kind="cited",
+                scope_mode="unknown",
+                timing_direction=None,
+                event_date=None,
+                description="Kinder Morgan will complete relocation.",
+                created_by="local:statement-coordinator",
+            )
+            session.add(raw)
+            session.flush([raw])
+            session.add(
+                DependencyEventTiming(
+                    event_id=raw.id,
+                    kind="new",
+                    text="August 27, 2026",
+                    precision="day",
+                    start_date=date(2026, 8, 27),
+                    end_date=date(2026, 8, 27),
+                )
+            )
+            evidence = EvidenceLink(
+                dependency_id=None,
+                document_id=document.id,
+                page_no=1,
+                quote="Equistar will complete relocation.",
+                verified=True,
+            )
+            session.add(evidence)
+            session.flush([evidence])
+            session.add(
+                DependencyEventEvidence(
+                    evidence_link_id=evidence.id,
+                    event_id=raw.id,
+                    recorded_by="local:statement-coordinator",
+                )
+            )
+            session.flush()
+            session.execute(text("set constraints all immediate"))
 
 
 def test_human_recorded_candidate_7296_preserves_both_timings_direction_and_unknown_scope(
