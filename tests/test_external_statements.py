@@ -21,6 +21,7 @@ from corridor.models import (
     DependencyEventScopeDecision,
     DependencyEventScope,
     DependencyEventTiming,
+    DocPage,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -66,6 +67,29 @@ def statement_record(session):
         status="identified",
     )
     session.add_all([document, dependency])
+    session.flush()
+    # Each cited statement below is intentionally quoted from this one
+    # fixture page.  The writer now proves that page membership itself, so
+    # these are real test citations rather than free-floating strings.
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=1,
+            text="\n".join(
+                (
+                    "Equistar to provide a chain of title (Due date of 01/2025).",
+                    "The March 2026 completion timeline seems unattainable. Propose extending to May 16th.",
+                    "Equistar will complete relocation.",
+                    "January 2025",
+                    "Equistar will complete relocation by 2025-06-01.",
+                    "Older cited commitment.",
+                    "Equistar will complete relocation in January 2026.",
+                    "The March 2026 completion timeline is unattainable.",
+                    "refuse this statement evidence",
+                )
+            ),
+        )
+    )
     session.flush()
     return project, party, document, dependency
 
@@ -116,6 +140,86 @@ def test_human_recorded_candidate_7129_preserves_month_timing_and_unknown_scope(
     ).all() == []
     session.refresh(dependency)
     assert dependency.committed_date is None
+
+
+def test_shared_writer_refuses_an_unregistered_page_or_quote(
+    session, statement_record
+):
+    """A cited event can only own Evidence that the stored page proves."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    for evidence, message in (
+        (CitedStatementEvidence(document.id, 2, "Equistar will complete relocation."), "not registered"),
+        (CitedStatementEvidence(document.id, 1, "Invented sentence."), "not found"),
+    ):
+        with pytest.raises(StatementRefusal, match=message):
+            record_external_party_statement(
+                session,
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_party=party.name,
+                stated_external_org_id=party.id,
+                source_kind="cited",
+                event_date=None,
+                description="Equistar will complete relocation.",
+                new_timing=StatementTiming.month("January 2025", 2025, 1),
+                scope=StatementScope.selected((dependency.id,)),
+                created_by="local:statement-coordinator",
+                evidence=evidence,
+            )
+
+    assert session.scalars(select(DependencyEvent)).all() == []
+
+
+def test_shared_writer_requires_an_exact_quote_on_cells_text(
+    session, statement_record
+):
+    """Cell-derived text has no extraction tolerance to spend on a near match."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, dependency = statement_record
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=2,
+            text="Equistar will complete relocation!",
+            text_source="cells",
+        )
+    )
+    session.flush()
+
+    with pytest.raises(StatementRefusal, match="quote was not found"):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=None,
+            description="Equistar will complete relocation.",
+            new_timing=StatementTiming.month("January 2025", 2025, 1),
+            scope=StatementScope.selected((dependency.id,)),
+            created_by="local:statement-coordinator",
+            evidence=CitedStatementEvidence(
+                document.id, 2, "Equistar will complete relocation."
+            ),
+        )
+
+    assert session.scalars(select(DependencyEvent)).all() == []
 
 
 def test_human_recorded_candidate_7296_preserves_both_timings_direction_and_unknown_scope(

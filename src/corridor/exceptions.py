@@ -17,11 +17,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+from types import MappingProxyType
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.dependency_events import current_dependency_statements
+from corridor.dependency_events import (
+    StatementPublication,
+    StatementPublicationFingerprint,
+    current_dependency_statements,
+    published_dependency_statements,
+)
 from corridor.models import (
     Assertion,
     Dependency,
@@ -213,6 +219,7 @@ def evaluate(
     today: date | None = None,
     thresholds: Thresholds | None = None,
     committed_dates: Mapping[int, date | None] | None = None,
+    statement_publication: StatementPublication | None = None,
 ) -> list[Exception_]:
     """Every exception on every dependency in the project, worst first."""
     today = today or date.today()
@@ -226,14 +233,33 @@ def evaluate(
             Dependency.dismissed_at.is_(None),
         )
     ).all()
-    current_statements = current_dependency_statements(
-        session, (dependency.id for dependency in dependencies)
-    )
+    if statement_publication is not None:
+        if statement_publication.project_id != project_id:
+            raise ValueError("the statement publication belongs to another project")
+        if set(statement_publication.by_dependency) != {
+            dependency.id for dependency in dependencies
+        }:
+            raise ValueError("the statement publication has a different Ledger population")
+        current_statements = None
+    else:
+        current_statements = current_dependency_statements(
+            session, (dependency.id for dependency in dependencies)
+        )
 
     found: list[Exception_] = []
     for dependency in dependencies:
-        statement = current_statements.get(dependency.id)
-        projected_date = statement.effective_date if statement is not None else None
+        if statement_publication is not None:
+            published = statement_publication.by_dependency[dependency.id]
+            projected_date = (
+                published.committed_date
+                if published.current_event is not None
+                else dependency.committed_date
+            )
+            is_closed = published.is_closed
+        else:
+            statement = current_statements.get(dependency.id)
+            projected_date = statement.effective_date if statement is not None else None
+            is_closed = statement.is_closed if statement is not None else False
         committed_date = (
             projected_date
             if committed_dates is None
@@ -244,7 +270,7 @@ def evaluate(
                 _gather(
                     session,
                     dependency,
-                    is_closed=statement.is_closed if statement is not None else False,
+                    is_closed=is_closed,
                 ),
                 today,
                 thresholds,
@@ -281,7 +307,15 @@ class Evaluation:
     # The exact statement-date reading used by the rules. Publishers pair
     # this with StatementPublication so a withheld date cannot still fire a
     # date-derived Exception beside an empty cell.
-    committed_dates: dict[int, date | None]
+    committed_dates: Mapping[int, date | None]
+    statement_publication_fingerprint: StatementPublicationFingerprint | None = None
+    statement_publication: StatementPublication | None = None
+
+    def __post_init__(self) -> None:
+        """Preserve the exact input map the Exceptions were computed against."""
+        object.__setattr__(
+            self, "committed_dates", MappingProxyType(dict(self.committed_dates))
+        )
 
     def by_dependency(self) -> dict[int, list[Exception_]]:
         """The other grouping every consumer needs, beside `facets`.
@@ -309,20 +343,32 @@ def evaluate_project(
     today: date | None = None,
     thresholds: Thresholds | None = None,
     committed_dates: Mapping[int, date | None] | None = None,
+    statement_publication: StatementPublication | None = None,
 ) -> Evaluation:
     """Evaluate a project once, and hand back the clock along with the facts."""
     today = today or date.today()
     thresholds = thresholds or Thresholds()
-    dependency_ids = session.scalars(
-        select(Dependency.id).where(
+    dependencies = session.scalars(
+        select(Dependency).where(
             Dependency.project_id == project_id,
             Dependency.dismissed_at.is_(None),
         )
     ).all()
-    current = current_dependency_statements(session, dependency_ids)
+    dependency_ids = [dependency.id for dependency in dependencies]
+    publication = statement_publication or published_dependency_statements(
+        session, dependency_ids, project_id=project_id
+    )
+    if publication.project_id != project_id:
+        raise ValueError("the statement publication belongs to another project")
+    if set(publication.by_dependency) != set(dependency_ids):
+        raise ValueError("the statement publication has a different Ledger population")
     evaluated_committed_dates = {
-        dependency_id: statement.effective_date
-        for dependency_id, statement in current.items()
+        dependency.id: (
+            publication.by_dependency[dependency.id].committed_date
+            if publication.by_dependency[dependency.id].current_event is not None
+            else dependency.committed_date
+        )
+        for dependency in dependencies
     }
     if committed_dates is not None:
         evaluated_committed_dates.update(
@@ -332,6 +378,8 @@ def evaluate_project(
                 if dependency_id in committed_dates
             }
         )
+    if statement_publication is not None and committed_dates is None:
+        evaluated_committed_dates = dict(publication.committed_dates)
     return Evaluation(
         project_id=project_id,
         today=today,
@@ -344,9 +392,12 @@ def evaluate_project(
                 today=today,
                 thresholds=thresholds,
                 committed_dates=evaluated_committed_dates,
+                statement_publication=publication,
             )
         ),
         committed_dates=evaluated_committed_dates,
+        statement_publication_fingerprint=publication.fingerprint,
+        statement_publication=publication,
     )
 
 
@@ -357,6 +408,7 @@ def evaluate_dependency(
     today: date | None = None,
     thresholds: Thresholds | None = None,
     committed_dates: Mapping[int, date | None] | None = None,
+    statement_publication: StatementPublication | None = None,
 ) -> Evaluation:
     """One dependency's exceptions, computed once against a stated clock.
 
@@ -370,10 +422,19 @@ def evaluate_dependency(
         raise LookupError(f"no dependency {dependency_id}")
     today = today or date.today()
     thresholds = thresholds or Thresholds()
-    statement = current_dependency_statements(session, (dependency_id,)).get(
-        dependency_id
+    publication = statement_publication or published_dependency_statements(
+        session, (dependency_id,), project_id=dependency.project_id
     )
-    projected_date = statement.effective_date if statement is not None else None
+    if publication.project_id != dependency.project_id:
+        raise ValueError("the statement publication belongs to another project")
+    if set(publication.by_dependency) != {dependency_id}:
+        raise ValueError("the statement publication has a different Ledger population")
+    statement = publication.by_dependency[dependency_id]
+    projected_date = (
+        statement.committed_date
+        if statement.current_event is not None
+        else dependency.committed_date
+    )
     committed_date = (
         projected_date
         if committed_dates is None
@@ -392,7 +453,7 @@ def evaluate_dependency(
                     _gather(
                         session,
                         dependency,
-                        is_closed=statement.is_closed if statement is not None else False,
+                        is_closed=statement.is_closed,
                     ),
                     today,
                     thresholds,
@@ -403,6 +464,8 @@ def evaluate_dependency(
             )
         ),
         committed_dates={dependency_id: committed_date},
+        statement_publication_fingerprint=publication.fingerprint,
+        statement_publication=publication,
     )
 
 

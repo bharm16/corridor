@@ -61,7 +61,11 @@ def project(session):
         DocPage(
             document_id=doc.id,
             page_no=4,
-            text="FOC1-1 Export Test Utility Telecom",
+            text=(
+                "FOC1-1 Export Test Utility Telecom\n"
+                "Export Test Utility will finish relocation on August 15.\n"
+                "Export Test Utility now expects completion in August 2026."
+            ),
             image_path="/tmp/corridor-missing-page.png",
         )
     )
@@ -200,6 +204,101 @@ def test_the_xlsx_refuses_an_evaluation_from_another_statement_reading(
             evaluation=mismatched,
             statement_publication=publication,
         )
+
+
+def test_the_xlsx_refuses_a_same_date_from_a_different_statement(
+    session, project, tmp_path
+):
+    """A paired evaluation cannot be reused with a later statement event."""
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    record_verbal(
+        session,
+        dependency,
+        stated_party="Export Test Utility",
+        description="Export Test Utility said relocation will finish on August 15.",
+        conversation_date=date(2026, 8, 1),
+        committed_date=date(2026, 8, 15),
+        principal=TEST_PRINCIPAL,
+    )
+    first_publication = _statement_publication(session, project.id)
+    evaluation = evaluate_project(
+        session,
+        project.id,
+        today=date(2026, 8, 4),
+        committed_dates=first_publication.committed_dates,
+    )
+    record_verbal(
+        session,
+        dependency,
+        stated_party="Export Test Utility",
+        description="Export Test Utility repeated the August 15 commitment.",
+        conversation_date=date(2026, 8, 2),
+        committed_date=date(2026, 8, 15),
+        principal=TEST_PRINCIPAL,
+    )
+
+    with pytest.raises(ValueError, match="different statement provenance"):
+        to_xlsx(
+            session,
+            project.id,
+            tmp_path / "different-statement.xlsx",
+            evaluation=evaluation,
+            statement_publication=_statement_publication(session, project.id),
+        )
+
+
+def test_the_xlsx_refuses_a_ledger_population_change_after_the_paired_reading(
+    session, project, tmp_path
+):
+    """A new record cannot be mixed into an export that did not evaluate it."""
+    existing = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    publication = _statement_publication(session, project.id)
+    evaluation = evaluate_project(
+        session, project.id, committed_dates=publication.committed_dates
+    )
+    session.add(
+        Dependency(
+            project_id=project.id,
+            ref_code="DEP-export-population-change",
+            source_ref="population-change",
+            dep_type=existing.dep_type,
+            title="A record admitted after the paired reading",
+            external_org_id=existing.external_org_id,
+        )
+    )
+    session.flush()
+    path = tmp_path / "population-change.xlsx"
+
+    with pytest.raises(ValueError, match="Ledger population changed"):
+        to_xlsx(
+            session,
+            project.id,
+            path,
+            evaluation=evaluation,
+            statement_publication=publication,
+        )
+
+    assert path.exists() is False
+
+
+def test_an_evaluation_statement_reading_cannot_be_mutated_after_computation(
+    session, project
+):
+    """Frozen evaluation facts keep a later exporter from changing their input."""
+    publication = _statement_publication(session, project.id)
+    evaluation = evaluate_project(
+        session, project.id, committed_dates=publication.committed_dates
+    )
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+
+    with pytest.raises(TypeError):
+        evaluation.committed_dates[dependency.id] = date(2026, 8, 15)
 
 
 def test_the_xlsx_refuses_a_statement_publication_from_another_project(
@@ -446,12 +545,7 @@ def test_the_xlsx_withholds_an_unverified_cited_statement_date(
         session,
         project.id,
         tmp_path / "unverified-statement.xlsx",
-        evaluation=evaluate_project(
-            session,
-            project.id,
-            today=date(2026, 8, 4),
-            committed_dates=publication.committed_dates,
-        ),
+        evaluation=evaluate_project(session, project.id, today=date(2026, 8, 4)),
         statement_publication=publication,
     )
     sheet = load_workbook(path)["Ledger"]
@@ -478,7 +572,11 @@ def test_the_xlsx_does_not_treat_a_scalar_only_date_as_statement_authority(
         session,
         project.id,
         tmp_path / "legacy-scalar-projection.xlsx",
-        evaluation=evaluate_project(session, project.id),
+        evaluation=evaluate_project(
+            session,
+            project.id,
+            statement_publication=_statement_publication(session, project.id),
+        ),
         statement_publication=_statement_publication(session, project.id),
     )
     sheet = load_workbook(path)["Ledger"]

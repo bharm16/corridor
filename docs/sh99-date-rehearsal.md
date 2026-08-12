@@ -1,135 +1,211 @@
-# The date rehearsal: SH 99 Grand Parkway, bounded
+# SH 99 External Party commitment rehearsal, bounded
 
-> Amended 2026-08-09 by ADR-0029. Every "the operator authorizes once"
-> step below is gone: the admission policies run as a pipeline stage when
-> documents land, and one matrix is enough to put conflicts on the record.
-> The rest of the plan — what the policies check, what abstains, the
-> project-side actor boundary — stands as written.
+> Re-decided 2026-08-10 and completed by the post-foundation decisions recorded in
+> ADR-0034 through ADR-0040. This contract supersedes the earlier event-cohort rehearsal
+> plan. Admission is mechanical under ADR-0029; customer users do not authorize
+> policy or operate Active Runs; Committed Date Change replaces the prior later-date
+> classification. The former Air Products overdue example is rejected because its
+> source is an invitation, not an Air Products commitment.
 
-Decided 2026-08-07. The City of Houston rehearsal proved the half of the product that
-organizes conflicts — the Ledger, Adjudication, the cited report. This rehearsal proves
-the half that reads dates: events on the record, Committed Dates, slips, and the
-Exceptions that fire on them. The feed is SH 99 Grand Parkway, whose meeting minutes
-have already been extracted: 1,401 dependency Candidates and 1,629 event Candidates,
-all pending, none admitted.
+The City of Houston rehearsal proved that Corridor can organize cited Dependencies.
+This rehearsal is the first narrow coordinator slice for the date half of the
+product. It must prove that Corridor can preserve what an identified External Party
+actually stated, at the precision and scope the source supports, and turn that fact
+into useful coordination work and an honest Report.
 
-## What the interview settled
-
-Three decisions, reached by grilling on 2026-08-07 and recorded before any build:
-
-1. **Events enter by policy or by Adjudication, and a model may only demote**
-   (ADR-0026). The operator refused per-row clicking of near-certain records; the
-   answer is a named, versioned event-admission policy the operator authorizes once,
-   whose every check is a replayable computation. Events failing any check fall to
-   Adjudication. A model verdict may flag an event into the human pile, and can never
-   admit one.
-2. **A project-side actor can never set a Committed Date.** The data forced this: most
-   extracted SH 99 "commitments" are LJA — the project's own engineer — taking action
-   items, not an External Party promising delivery. The masquerade rule the
-   coordination lanes already enforce for dates extends to events' actors.
-3. **The cohort is selected by stated rule, and the rule was adopted, not each row.**
-   A conflict enters if at least one dated commitment, slip, or closure event
-   references it. That selects 36 conflicts — pipeline parties almost entirely: Energy
-   Transfer, Kinder Morgan Tejas, Enterprise, Denbury Green, Buckeye, Chevron, Air
-   Products, Air Liquide, DOW, ExxonMobil, Equistar, Florida Gas Transmission, Shell,
-   Phillips66, CenterPoint (electric) — carrying roughly 267 dated date-bearing events.
-   (The rule first proposed 37; PL23 is excluded by the ambiguity rule — its matrix
-   revisions re-attribute it from Enterprise to "UNK (former Enterprise)", a real
-   ownership handoff that stays in the default lanes until resolved.) The operator
-   adopted the rule's output in place of per-row review
-   (out/sh99-date-cohort-approval.txt records this; the per-row wizard at
-   scripts/sh99-cohort-wizard.sh would supersede it if ever run).
-4. **Dependencies enter by policy when revisions agree exactly (ADR-0027,
-   2026-08-07, superseding the step where the operator admits the cohort through
-   the lane).** The operator rejected bulk clicking as the product's cold-start
-   shape — correctly: measured on this cohort, the February and May matrices state
-   byte-identical rows for 34 of the 36 conflicts. Those admit under an authorized
-   dependency-admission policy whose eligibility proof is exact agreement between
-   the stated revisions, pinned by content hash. The lane survives as the residue
-   flow: one changed row, one missing row, and whatever else the policy abstains on.
-
-## What the data honestly holds
-
-Read before scoping, twice — the first reading got it wrong. The minutes' event dates
-are overwhelmingly meeting dates: only 24 of 1,629 events carry an explicit
-delivery date. The date machinery cannot be demonstrated on delivery-date *pairs*,
-because none exist. What the data does hold, verified quote by quote:
-
-- **Three real slips**, stated in the minutes themselves. Kinder Morgan: "The March
-  2026 completion timeline seems unattainable. Propose extending to May 16th."
-  Kinder Morgan again: a schedule "pushed on to 06/2026 but is dependent on receiving
-  drawings in a timely manner." Enterprise: "ROW, Util Agreement, Execution – 7/2025
-  04/2026" — the old date struck through beside the new one. All three are Candidates
-  with verified citations (ids 7296, 7306, 7554). None carries a conflict reference,
-  so attaching each to its Dependency is a human act in the queue — which is the
-  residue path working as designed, not a defect.
-- **The slips contradict Milestones the project already holds.** Three Milestones are
-  loaded: design completion 2025-01-31, ROW and utility agreement execution
-  2025-07-31, relocation construction completion 2026-03-31. Enterprise's slip moves
-  the second; Kinder Morgan's calls the third unattainable. An External Party telling
-  the project it will miss a date the project is holding is the exact event the
-  product exists to catch.
-- **One real overdue**: Air Products committed to 2025-05-08 on PL35, which has
-  passed; whether a closure event answers it is Adjudication's question to settle on
-  the record.
+It is an **internal workflow rehearsal**, not target-user validation. No realistic
+project coordinator is currently available to test it. The timings below are
+provisional product targets measured by the internal operator through the normal
+interface. They cannot be reported as customer usability evidence.
 
 ## The claim to earn
 
-*For a bounded set of Grand Parkway conflicts, Corridor turns two years of meeting
-minutes into a cited, dated record on each conflict — the project's own action items
-distinguished from the External Party's statements — and surfaces what that record
-supports: commitments whose stated date passed without closure, and an External Party
-moving a date the project is holding.*
+For two real SH 99 statements, a project coordinator can start from one prioritized
+work list and, without a command line, database query, technical id, or separate
+screen search:
+
+1. preserve a cited Kinder Morgan Committed Date Change whose Dependency scope is
+   not safely known; and
+2. respond to a cited, party-level Equistar Commitment that became past due after
+   January 2025, then release a fixed Report export that presents it without
+   inventing a Dependency or an exact January day.
+
+The rehearsal succeeds only if the product distinguishes the External Party's
+statement from the project's Coordination Plan. Assigning an Internal Owner,
+completing a Next Action, or closing the work-list item cannot rewrite or close the
+External Party commitment.
+
+## The three source cases
+
+### Candidate 7296 — guided Committed Date Change case
+
+The Candidate's cited statement says: “The March 2026 completion timeline seems
+unattainable. Propose extending to May 16th.” It preserves the earlier timing, the
+new timing, their source wording and precision, and the later direction. Verified
+surrounding Evidence must establish Kinder Morgan as the stated party; confirmation
+alone is insufficient. The
+statement does not safely identify one Dependency. The coordinator therefore
+sees the general choices—one Dependency, a selected set, every currently active
+Kinder Morgan Dependency as an explicit snapshot, or **scope not yet known**—and
+chooses **scope not yet known** for this source. Unknown scope preserves the
+party-level statement and changes no individual Dependency.
+
+### Candidate 7129 — guided party-level past-due case
+
+Equistar's cited statement says: “Equistar to provide a chain of title on the ROW
+agreement that is in DOW's name (Due date of 01/2025).” This is attributable to
+Equistar. Its timing is **January 2025**, not January 1, 2025, and it becomes past
+due only after January 31. No closure is currently established. Because the source
+does not establish one Dependency, the commitment stays party-level until its scope
+is confirmed.
+
+### Candidate 7587 — required negative attribution case
+
+The Air Products quote says that Air Products “will be invited” to a workshop on May
+8, 2025. It does not say Air Products promised to deliver anything on that date.
+Corridor must refuse to set an Air Products Committed Date or produce an overdue
+fact from it. The affected party is not automatically the stated actor.
+
+These cases replace the earlier plan's claim that Candidate 7587 proved a real PL35
+overdue commitment. It does not. The five earlier PL35 closure Candidates add
+contradiction risk, but the actor-attribution failure is sufficient to reject the
+claim before closure is considered.
+
+## Operating boundary
+
+At the 2026-08-10 planning checkpoint, SH 99 has no admitted Dependencies and 3,030
+pending Candidates. That backlog is not coordinator work. Before the timed rehearsal,
+Corridor operations pins the source revision, database snapshot, declared Active
+Runs, policy version, and corpus inputs. It rehearses mechanical Admission from clean
+current `main` against an isolated clone of that database before requesting explicit
+approval to mutate the shared SH 99 database.
+
+The receipt audit records exact before and after Ledger rows, Candidate states,
+Policy Runs, per-Candidate outcomes, and reason codes; it does not guess expected
+totals. Candidate 7587 must abstain, and Candidates 7129 and 7296 must remain pending
+for guided Adjudication rather than gaining guessed attribution or scope. Repeating
+the same backfill may append an immutable run receipt but creates no duplicate Ledger
+fact. Operations then seeds one individual coordinator identity. Setup, repair, and
+backfill time are measured separately and excluded from coordinator timing.
+
+Any customer-facing use of a CLI command, database query, Active Run id,
+Carry-Forward authorization, or manual record repair fails the rehearsal. A trained
+Corridor operator may use internal technical tools outside the timed workflow, with
+receipts. Magic-link sign-in, connected ingestion, and the managed Active Run and
+Automatic Carry-Forward redesign remain required before customer use but are not on
+issue #196's critical path.
+
+The existing SH 99 EventCohortReceipt, cohort lane, and their tests are not this
+rehearsal's acceptance boundary and must not be expanded merely to satisfy the former
+plan for issue #196. A child slice may reuse compatible mechanics or retire the
+residue after the new attribution, precision, scope, and guided-workflow contract is
+represented.
+
+## Timed coordinator workflow
+
+### A. Record the Kinder Morgan change — target: at most 5 minutes
+
+1. Open the highest-priority plain-language work item from the coordinator home.
+2. Read the cited statement beside the proposed Committed Date Change.
+3. Use verified Evidence, including a separate verified quote if required, to
+   establish Kinder Morgan as the stated party; preserve both timings and their
+   precision without erasing the Candidate. Corridor derives the statement type and
+   direction from those supported facts.
+4. Choose **scope not yet known**. The general control also supports all currently
+   active party Dependencies as an explicit snapshot, one Dependency, or a selected
+   set, but this source does not justify any of those choices.
+5. Record Milestone Impact as **affects**, **does not affect**, or **not yet known**;
+   `affects` names exact registered Milestones. Save the current Internal Owner, Next
+   Action, and Action Due Date—or structured reason a date is not yet known—in one
+   Coordination Plan. The statement and separate Work Decisions commit atomically.
+
+### B. Respond to the Equistar past-due commitment and release the export — target:
+at most 3 minutes
+
+1. Open the Equistar work item from the same prioritized list and see the plain fact:
+   “The January 2025 commitment passed, and no closure is recorded.”
+2. Verify the stated party, month precision, source, and unresolved party-level scope.
+3. Save the current Coordination Plan. The overdue fact remains until Evidence or an
+   attributable Verbal establishes closure, even if the immediate work item leaves
+   the inbox while that Next Action is current.
+4. Open the automatically updated internal Report and explicitly release one fixed
+   PDF. The export includes every open unknown-scope party-level Commitment—not only
+   Equistar or overdue entries—in an External Party commitments section. Its receipt
+   binds exact bytes, SHA-256, Evaluation date, ruleset, provenance mode, covered
+   records, releaser, and timestamp. Sending the same sealed bytes through email or
+   document control is outside Corridor and outside this rehearsal.
+
+The total provisional coordinator target is **at most 8 minutes**. The clock starts
+when the seeded coordinator opens the prioritized work item and stops when the fixed
+export and its release receipt are persisted. Wall-clock time includes any wait for
+export generation. Operations setup has its own measurement.
 
 ## Exit criteria
 
-1. The event admission path exists per ADR-0026: policy gate first, human residue
-   second, model demotes only, receipts and abstention mirroring the carry-forward
-   family.
-2. The actor boundary is enforced and tested: no project-side event sets a Committed
-   Date.
-3. At least one of the three real slips is on the record — attached by human act,
-   both dates preserved, cited to its page.
-4. OVERDUE fires on a real Committed Date and appears in a report section with
-   field-exact provenance.
-5. The work is timed, end to end. The timing is the acceptance measurement and the
-   only sanctioned source for any future effort estimate — the City rehearsal's
-   140 decisions/hour rule applies unchanged.
+1. Mechanical backfill on the isolated clone produces the exact before/after receipt
+   audit and an idempotent second run without duplicate Ledger facts. Shared-database
+   execution remains separately approved; the timed user sees no setup machinery.
+2. Stated party and affected party are separate facts. Candidate 7587 records an
+   Admission Abstention, creates no Commitment, and cannot create a past-due fact;
+   Candidates 7129 and 7296 remain pending after mechanical backfill.
+3. Guided Adjudication makes Candidate 7296 one party-level Committed Date Change
+   with **scope not yet
+   known**, preserving both source timings and direction and changing no Dependency.
+   The scope control and automated coverage also prove that one Commitment can link
+   all active party Dependencies or a selected set without duplicating the event.
+4. Guided Adjudication makes Candidate 7129 display as January 2025, become past due
+   only after January 31, and remain party-level without invented Dependency scope.
+5. The coordinator completes the 7296 flow in at most 5 minutes and the 7129 plus
+   release flow in at most 3 minutes, through the normal interface only.
+6. The Report has an External Party commitments section containing every open
+   unknown-scope party-level Commitment, with party, statement, timing text and
+   precision, scope status, current Coordination Plan, status, and exact provenance.
+   Release seals one PDF with all ADR-0040 receipt fields. Unsupported provenance,
+   inconsistent Evaluation inputs, or inability to seal the bytes blocks release;
+   honest unknown scope, past due, or visible missing work does not.
+7. Completing internal work does not close the External Party commitment. Closure
+   requires verified Evidence or a Verbal attributable to that party.
+8. One stale guided Save refuses without partial mutation. Immediate Undo appends
+   reversal records, makes the entire Save noncurrent, and returns the Candidate to
+   work; dependent later decisions force targeted Correct instead.
+9. History remains append-only and plain by default: what changed, who acted, when,
+   why, and the source. Corrections, restorations, and replacements do not delete the
+   original record.
 
-## Boundaries stated up front
+## What this rehearsal does not prove
 
-- Slip is demonstrated from explicit minute statements, not from delivery-date pairs;
-  a revision-to-revision slip demonstration waits for a stream that carries real
-  delivery dates. The verified routes to such a stream — NCDOT's public bid proposals
-  with day-precision utility commitments, and TxDOT ROW-U-35 assemblies by records
-  request — are documented in docs/research/dated-commitment-sources.md and are not
-  this rehearsal's path.
-- DUE_SOON stays dark unless cohort Dependencies are linked to the loaded Milestones
-  during Adjudication; linking is permitted, not required, and no criterion depends
-  on it.
-- The cost of event admission at scale is measured here, not solved here; the policy
-  gate is the proposed answer and this rehearsal is its first test.
-- WSDOT 9424's `committed_date` values are a mislabeled *Relocation Estimated Date*
-  column — the DOT's own estimate, not a party's promise (see the research note).
-  They are out of scope and the field naming defect is its own follow-up.
+- usability by a real construction worker or project coordinator;
+- the still-deferred construction-worker Ledger permission boundary;
+- production magic-link or SSO authentication;
+- connected document ingestion or the managed technical-operations redesign;
+- external delivery of the approved export;
+- an exact-day overdue calculation for a month-only source; or
+- every human workflow in ADR-0035, ADR-0037, and ADR-0040.
 
 ## Build order
 
-1. Register the cohort boundary: the member conflicts, the rule, and the adoption
-   record, as a pinned set the queue lane reads — the Cohort Receipt pattern, derived
-   from a stated rule over the event stream rather than a Revision Comparison; the
-   glossary entry lands with the build. *(Built: receipt 82, 36 members.)*
-2. Admit the cohort Dependencies under the dependency-admission policy (ADR-0027):
-   the operator authorizes the agreement documents once, the policy admits every
-   conflict whose revisions agree exactly, and the lane presents only the residue.
-   *(Supersedes the original step 2 — the operator admitting each row by hand.)*
-3. Build the event-admission policy machinery: policy document, authorization,
-   per-event outcome receipts, abstention; then run it over the cohort's events.
-   *(Built: ADR-0026 machinery, `make admission`.)*
-4. Adjudicate the residue in the queue — including attaching the three slips by hand.
-5. The Exceptions already read `committed_date` and closure events; verify OVERDUE
-   and MISSING_DATE against the admitted record rather than building anything new.
-6. Ship the report section with field-exact provenance; run it; record the timing.
+Two cleanup deliveries precede new #196 children. Transplant local commit `7b9a233`
+onto fresh current `main`, review and validate it independently, and do not merge its
+divergent branch wholesale. Deliver ADR-0034 through ADR-0040 and this corrected
+contract as a separate change from fresh current `main`.
 
-Each step is a ticket with its own branch and PR, red test first, full suite once per
-batch, review after — the pattern that carried #166–#178.
+The remaining #196 children then run in this order:
+
+1. mechanical backfill and exact receipt validation;
+2. statement-subject Work Decisions and their migration;
+3. guided Adjudication with atomic Save, correction, and Undo;
+4. the prioritized work list and precision-aware party-level past due;
+5. the External Party commitments Report section;
+6. fixed PDF release; and
+7. the timed internal rehearsal.
+
+Report-comparator research in #150 and the human records request in #151 may proceed
+in parallel but do not displace this outcome. Issues #164, #165, #172, and #70 are a
+separate tracker cleanup, not runnable product work by assumption; each is closed,
+superseded, or deferred only after its live evidence is recorded. Publishing the
+bounded #196 child graph follows the two cleanup deliveries, and its backfill child
+retains the explicit shared-database approval gate.
+
+Implementation work is split into child issues only after this umbrella contract is
+accepted. Each child owns one vertical slice and its tests; #196 remains the outcome
+contract rather than a grab bag of implementation tasks.

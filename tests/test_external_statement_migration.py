@@ -36,6 +36,7 @@ from corridor.models import (
     DependencyEventScope,
     DependencyEventScopeDecision,
     DependencyEventTiming,
+    DocPage,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -1870,6 +1871,13 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
             )
             session.add(document)
             session.flush()
+            session.add(
+                DocPage(
+                    document_id=document.id,
+                    page_no=1,
+                    text="Equistar will complete by June 1.",
+                )
+            )
             candidate = Candidate(
                 project_id=project.id,
                 kind="dependency",

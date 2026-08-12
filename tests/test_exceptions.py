@@ -32,6 +32,12 @@ from corridor.models import (
     Project,
 )
 from corridor.ledger import mark_satisfies
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.operative_support import (
     designate_publication_support,
     resolve_operative_support,
@@ -97,34 +103,41 @@ def make_dep(session, project, ref="DEP-1", **kw):
         session.add(party)
         session.flush()
         dep.external_org_id = party.id
-        event = DependencyEvent(
+        event_document = Document(
             project_id=project.id,
-            affected_external_org_id=party.id,
-            stated_external_org_id=party.id,
-            scope_mode="selected",
-            event_type="commitment",
-            source_kind="cited",
-            stated_party=party.name,
-            event_date=TODAY - timedelta(days=60),
-            description="Example Utility stated its completion date.",
-            created_by="corridor:event-admission",
+            sha256=f"statement-{dep.id}".ljust(64, "x")[:64],
+            filename=f"statement-{dep.id}.pdf",
+            doc_type="minutes",
+            parse_status="parsed",
+            pages=1,
+            doc_date=TODAY - timedelta(days=60),
         )
-        session.add(event)
+        session.add(event_document)
         session.flush()
-        session.add_all(
-            (
-                DependencyEventTiming(
-                    event_id=event.id,
-                    kind="new",
-                    text=committed_date.isoformat(),
-                    precision="day",
-                    start_date=committed_date,
-                    end_date=committed_date,
-                ),
-                DependencyEventScope(event_id=event.id, dependency_id=dep.id),
+        quote = "Example Utility stated its completion date."
+        session.add(
+            DocPage(
+                document_id=event_document.id,
+                page_no=1,
+                text=quote,
+                image_path=None,
             )
         )
         session.flush()
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=TODAY - timedelta(days=60),
+            description=quote,
+            new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
+            scope=StatementScope.selected((dep.id,)),
+            created_by="corridor:event-admission",
+            evidence=CitedStatementEvidence(event_document.id, 1, quote),
+        )
     return dep
 
 
@@ -342,35 +355,37 @@ def test_overdue_reads_the_current_exact_day_statement_not_a_stale_scalar(
 ):
     dep = make_dep(session, project)
     add_evidence(session, dep, document)
-    event = DependencyEvent(
-        project_id=project.id,
-        affected_external_org_id=dep.external_org_id,
-        stated_external_org_id=dep.external_org_id,
-        scope_mode="selected",
-        event_type="commitment",
-        source_kind="cited",
-        stated_party="Example Utility",
-        event_date=TODAY - timedelta(days=30),
-        description="Example Utility committed to a past date.",
-        created_by="corridor:event-admission",
-    )
-    session.add(event)
+    party = ExternalOrg(name="Example Utility")
+    session.add(party)
     session.flush()
-    session.add_all(
-        (
-            DependencyEventTiming(
-                event_id=event.id,
-                kind="new",
-                text=(TODAY - timedelta(days=1)).isoformat(),
-                precision="day",
-                start_date=TODAY - timedelta(days=1),
-                end_date=TODAY - timedelta(days=1),
-            ),
-            DependencyEventScope(event_id=event.id, dependency_id=dep.id),
+    dep.external_org_id = party.id
+    quote = "Example Utility committed to a past date."
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=1,
+            text=quote,
+            image_path=None,
         )
     )
     session.flush()
-    assert dep.committed_date is None
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=TODAY - timedelta(days=30),
+        description=quote,
+        new_timing=StatementTiming.day(
+            (TODAY - timedelta(days=1)).isoformat(), TODAY - timedelta(days=1)
+        ),
+        scope=StatementScope.selected((dep.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(document.id, 1, quote),
+    )
+    assert dep.committed_date == TODAY - timedelta(days=1)
 
     assert "OVERDUE" in codes(session, dep)
 
@@ -1269,3 +1284,32 @@ def test_the_action_horizon_is_per_project_overridable(
         )
     }
     assert "ACTION_DUE_SOON" in widened
+
+
+def test_an_evaluation_reuses_a_supplied_statement_publication_without_rereading(
+    session, project, monkeypatch
+):
+    """A paired publisher supplies one frozen statement reading, not a hint."""
+    from corridor import exceptions as exceptions_module
+    from corridor.dependency_events import published_dependency_statements
+
+    dependency = make_dep(session, project, ref="DEP-frozen-publication")
+    publication = published_dependency_statements(
+        session, (dependency.id,), project_id=project.id
+    )
+
+    def reread_forbidden(*args, **kwargs):
+        raise AssertionError("evaluation reread the supplied statement publication")
+
+    monkeypatch.setattr(
+        exceptions_module, "current_dependency_statements", reread_forbidden
+    )
+
+    evaluation = exceptions_module.evaluate_project(
+        session,
+        project.id,
+        today=TODAY,
+        statement_publication=publication,
+    )
+
+    assert evaluation.statement_publication is publication

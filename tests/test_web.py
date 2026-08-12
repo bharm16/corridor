@@ -20,6 +20,12 @@ from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.models import (
     Assertion,
     AuditLog,
@@ -2202,6 +2208,16 @@ def two_overdue(session, project):
     """Two overdue records; one critical, one whose document said nothing."""
     from datetime import date, timedelta
 
+    document = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "overdue-statements"),
+        filename="overdue-statements.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+        pages=2,
+    )
+    session.add(document)
+    session.flush()
     deps = []
     for ref, strategy in (("DEP-CRIT", "relocate"), ("DEP-PLAIN", None)):
         committed_date = date.today() - timedelta(days=40)
@@ -2221,35 +2237,32 @@ def two_overdue(session, project):
         session.add(dep)
         deps.append(dep)
     session.flush()
-    for dep in deps:
-        event = DependencyEvent(
-            project_id=project.id,
-            affected_external_org_id=dep.external_org_id,
-            stated_external_org_id=dep.external_org_id,
-            scope_mode="selected",
-            event_type="commitment",
-            source_kind="cited",
-            stated_party=f"Overdue test party {dep.id}",
-            event_date=date.today() - timedelta(days=60),
-            description="The external party stated its completion date.",
-            created_by="corridor:event-admission",
-        )
-        session.add(event)
-        session.flush()
-        session.add_all(
-            (
-                DependencyEventTiming(
-                    event_id=event.id,
-                    kind="new",
-                    text=committed_date.isoformat(),
-                    precision="day",
-                    start_date=committed_date,
-                    end_date=committed_date,
-                ),
-                DependencyEventScope(event_id=event.id, dependency_id=dep.id),
+    for page_no, dep in enumerate(deps, start=1):
+        party = session.get(ExternalOrg, dep.external_org_id)
+        quote = "The external party stated its completion date."
+        session.add(
+            DocPage(
+                document_id=document.id,
+                page_no=page_no,
+                text=quote,
+                image_path=None,
             )
         )
-    session.flush()
+        session.flush()
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=date.today() - timedelta(days=60),
+            description=quote,
+            new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
+            scope=StatementScope.selected((dep.id,)),
+            created_by="corridor:event-admission",
+            evidence=CitedStatementEvidence(document.id, page_no, quote),
+        )
     return deps
 
 

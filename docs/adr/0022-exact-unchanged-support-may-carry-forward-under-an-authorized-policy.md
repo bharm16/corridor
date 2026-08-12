@@ -1,5 +1,12 @@
 # Exact unchanged support may carry forward under an authorized policy
 
+> **Partially superseded by ADR-0034.** Automatic Carry-Forward is now normal
+> fail-closed processing and no longer requires project authorization. The exact
+> eligibility proof, role boundaries, Abstention behavior, immutable receipts, and
+> prohibition on originating Ready remain in force. The body below records the
+> historical decision; its authorization and human-Reconfirmation requirements are
+> not current and must not be implemented.
+
 Human Reconfirmation remains the act of reviewing and moving Operative Support, but an exact successor row can add no new judgment for a reviewer to make. A project may therefore authorize a named, versioned Carry-Forward Policy that performs Automatic Carry-Forward only for an exact, unique, mechanically verified unchanged correspondence. The act moves only the publication and readiness scopes a human previously established; it never performs Admission, changes Dependency fields, creates a readiness judgment, or treats model confidence as proof.
 
 Eligibility fails closed. A project with no active policy retains human Reconfirmation; policy absence is not Abstention. Once an active policy evaluates affected work, the predecessor must have attributable Admission and trustworthy support history; the successor must be current, actionable, citation-verified, and linked through immutable exact Extraction Runs and a valid Revision Comparison; the correspondence must be one-to-one and unchanged; the admitted conclusion must not contain a human edit the successor source cannot prove; and the approved policy version must still be active for the project. Missing or unsafe inputs, structural fan-in or fan-out, ambiguity, change, corruption, or provenance failure produce Abstention and leave the Ledger untouched.

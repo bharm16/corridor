@@ -42,6 +42,7 @@ from corridor.web.app import app, get_human_principal, get_session
 
 
 RECORDER = HumanPrincipal("local:phone-coordinator")
+_CITED_QUOTE = "AT&T committed to June 15"
 
 
 @pytest.fixture
@@ -101,6 +102,18 @@ def _record_cited(
     project = session.get(Project, dependency.project_id)
     party = session.get(ExternalOrg, dependency.external_org_id)
     if verified:
+        page = session.scalar(
+            select(DocPage).where(
+                DocPage.document_id == document.id,
+                DocPage.page_no == 1,
+            )
+        )
+        if page is None:
+            session.add(DocPage(document_id=document.id, page_no=1, text=_CITED_QUOTE))
+            session.flush()
+        elif _CITED_QUOTE not in page.text:
+            page.text = f"{page.text}\n{_CITED_QUOTE}"
+            session.flush()
         return record_external_party_statement(
             session,
             project_id=project.id,
@@ -113,7 +126,7 @@ def _record_cited(
             new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
             scope=StatementScope.selected((dependency.id,)),
             created_by="corridor:event-admission",
-            evidence=CitedStatementEvidence(document.id, 1, "AT&T committed to June 15"),
+            evidence=CitedStatementEvidence(document.id, 1, _CITED_QUOTE),
         )
 
     # A reader must still fail closed when it reads an old incomplete cited
@@ -561,6 +574,11 @@ def test_reports_do_not_publish_a_stale_day_after_a_current_month_statement(
         committed_date=date(2026, 6, 15),
         description="AT&T committed to June 15.",
     )
+    page = session.scalar(
+        select(DocPage).where(DocPage.document_id == document.id, DocPage.page_no == 1)
+    )
+    assert page is not None
+    page.text = f"{page.text}\nAT&T now expects completion in August 2026."
     party = session.get(ExternalOrg, dependency.external_org_id)
     record_external_party_statement(
         session,

@@ -161,7 +161,7 @@ def brief(
             session,
             dependency_id,
             today=today,
-            committed_dates=publication.committed_dates,
+            statement_publication=publication,
         ),
         publication=publication,
     )
@@ -217,7 +217,7 @@ def brief_project(
             session,
             project_id,
             today=today,
-            committed_dates=publication.committed_dates,
+            statement_publication=publication,
         ),
         publication=publication,
     )
@@ -232,6 +232,14 @@ def _brief(
     evaluation: Evaluation,
     publication: StatementPublication,
 ) -> Briefing:
+    if evaluation.statement_publication is not publication:
+        raise ValueError(
+            "the briefing evaluation must use the exact frozen statement publication"
+        )
+    if evaluation.statement_publication_fingerprint != publication.fingerprint:
+        raise ValueError(
+            "the briefing evaluation and statement publication describe different statement provenance"
+        )
     citables, floor, committed_dates = _assemble(
         session, dependencies, evaluation, publication
     )

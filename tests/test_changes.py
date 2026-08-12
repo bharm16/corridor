@@ -15,6 +15,7 @@ from corridor.exceptions import evaluate_project
 from corridor.ledger import mark_satisfies
 from corridor.models import (
     Dependency,
+    DocPage,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -132,6 +133,18 @@ def _record_exact_cited_statement(
     else:
         party = session.get(ExternalOrg, dep.external_org_id)
     assert party is not None
+    quote = f"{party.name} will complete on {committed_date.isoformat()}."
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    if page is None:
+        page = DocPage(document_id=document.id, page_no=1, text=quote)
+        session.add(page)
+    else:
+        page.text = f"{page.text}\n{quote}"
     return record_external_party_statement(
         session,
         project_id=dep.project_id,
@@ -140,14 +153,14 @@ def _record_exact_cited_statement(
         stated_external_org_id=party.id,
         source_kind="cited",
         event_date=event_date,
-        description=f"{party.name} will complete on {committed_date.isoformat()}.",
+        description=quote,
         new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
         scope=StatementScope.selected((dep.id,)),
         created_by="corridor:event-admission",
         evidence=CitedStatementEvidence(
             document.id,
             1,
-            f"{party.name} will complete on {committed_date.isoformat()}.",
+            quote,
         ),
     )
 
