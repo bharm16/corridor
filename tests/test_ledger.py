@@ -6,6 +6,12 @@ from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate, merge_candidate
 from corridor.db import Session, engine
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.exceptions import evaluate_project
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import (
@@ -26,6 +32,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     Project,
 )
 from corridor.operative_support import (
@@ -215,8 +222,7 @@ def test_browse_filters_by_readiness(session, project, dependency):
     link = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
     ).one()
-    link.satisfies_requirement = True
-    session.flush()
+    mark_satisfies(session, dependency.id, link.id, principal=TEST_PRINCIPAL)
 
     assert len(_browse(session, project, ready=True)) == 1
     assert _browse(session, project, ready=False) == []
@@ -338,11 +344,29 @@ def test_the_detail_view_states_the_clock_it_was_read_against(
 
 
 def test_a_caller_may_read_the_record_against_a_stated_evaluation(
-    session, project, dependency
+    session, project, document, dependency
 ):
     """The clock is a parameter of the read, not a default inside it."""
-    dependency.committed_date = date(2026, 1, 1)
-    session.flush()
+    organization = session.get(ExternalOrg, dependency.external_org_id)
+    assert organization is not None
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=organization.id,
+        stated_external_org_id=organization.id,
+        stated_party=organization.name,
+        source_kind="cited",
+        event_date=date(2026, 1, 1),
+        description="AT&T stated that relocation would complete on January 1.",
+        new_timing=StatementTiming.day("January 1", date(2026, 1, 1)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id,
+            1,
+            "FOC1-1 LT AT&T Texas Telecom",
+        ),
+    )
 
     stated = evaluate_project(session, project.id, today=date(2026, 2, 10))
     view = load_dependency(session, dependency.id, evaluation=stated)
@@ -658,7 +682,7 @@ def test_ledger_readers_use_the_same_current_support_resolution(
     session.add(successor)
     session.flush()
     link = _link_of(session, dependency)
-    link.satisfies_requirement = True
+    mark_satisfies(session, dependency.id, link.id, principal=TEST_PRINCIPAL)
     document.registry_id = "ledger-matrix-old"
     successor.registry_id = "ledger-matrix-new"
     session.flush()

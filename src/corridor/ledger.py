@@ -143,7 +143,7 @@ class LedgerRow:
         return (
             self.committed_statement.effective_date
             if self.committed_statement is not None
-            else self.dependency.committed_date
+            else None
         )
 
     @property
@@ -543,35 +543,24 @@ def mark_satisfies(
             "quote that is not on the page"
         )
 
-    designation = (
-        session.scalar(
-            select(DependencyEvidenceSufficiency).where(
-                DependencyEvidenceSufficiency.dependency_id == dependency_id,
-                DependencyEvidenceSufficiency.evidence_link_id == link_id,
-                DependencyEvidenceSufficiency.scope_link_id == event_scope,
+    designation = session.scalar(
+        select(DependencyEvidenceSufficiency).where(
+            DependencyEvidenceSufficiency.dependency_id == dependency_id,
+            DependencyEvidenceSufficiency.evidence_link_id == link_id,
+            DependencyEvidenceSufficiency.scope_link_id == event_scope,
+        )
+    )
+    was = designation is not None
+    if designation is None:
+        session.add(
+            DependencyEvidenceSufficiency(
+                dependency_id=dependency_id,
+                evidence_link_id=link_id,
+                scope_link_id=event_scope,
             )
         )
-        if event_evidence is not None
-        else None
-    )
-    was = (
-        designation is not None
-        if event_evidence is not None
-        else bool(link.satisfies_requirement)
-    )
-    if event_evidence is not None:
-        if designation is None:
-            session.add(
-                DependencyEvidenceSufficiency(
-                    dependency_id=dependency_id,
-                    evidence_link_id=link_id,
-                    scope_link_id=event_scope,
-                )
-            )
-        else:
-            session.delete(designation)
     else:
-        link.satisfies_requirement = not was
+        session.delete(designation)
     audit.record(
         session,
         principal=principal,

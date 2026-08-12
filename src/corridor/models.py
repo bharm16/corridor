@@ -3,8 +3,9 @@
 Three points differ from a naive reading of the spec and are easy to get
 wrong, so they are called out here as well as in the ADRs:
 
-- `Dependency.status` has no `ready` value. Readiness is computed from a
-  verified `EvidenceLink` marked `satisfies_requirement` (ADR-0002).
+- `Dependency.status` has no `ready` value. Readiness is computed from
+  verified Evidence carrying a separate Dependency sufficiency judgment
+  (ADR-0002).
 - `Assertion` is a table, not a column. A ledger field value is an
   adjudicated conclusion; the assertions beneath it preserve what each
   source actually claimed (ADR-0001).
@@ -34,7 +35,12 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 DOC_TYPES = (
     "matrix",
@@ -266,7 +272,6 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-
 
 # The three families that write records or move support under an
 # authorized policy (ADRs 0022, 0026, 0027). ADR-0028 joined their
@@ -1452,21 +1457,13 @@ class EvidenceLink(Base):
     __tablename__ = "evidence_links"
     __table_args__ = (
         UniqueConstraint("dependency_id", "id"),
-        CheckConstraint(
-            "(event_id is null and dependency_id is not null) or "
-            "(event_id is not null and dependency_id is null and satisfies_requirement is false)",
-            name="ck_evidence_links_event_ownership",
-        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    # Direct record evidence owns one Dependency.  Event evidence owns no
-    # fake Dependency; its scope links and separate sufficiency judgments
-    # make the record-specific relationship explicit.
+    # Direct record Evidence owns one Dependency. Statement Evidence leaves
+    # this null and is owned by DependencyEventEvidence instead; neither
+    # relationship is inferred from missing data.
     dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
-    # Set when this quote supports an External Party statement rather than a
-    # direct record assertion.
-    event_id: Mapped[int | None] = mapped_column(ForeignKey("dependency_events.id"))
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
     page_no: Mapped[int] = mapped_column(Integer)
     quote: Mapped[str] = mapped_column(Text)
@@ -1474,20 +1471,12 @@ class EvidenceLink(Base):
     verified: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
-    # A reviewer's judgment that this evidence meets the dependency's
-    # evidence_required bar. Readiness is computed from verified AND this.
-    # Defaults are server-side so that neither verification nor sufficiency
-    # can be assumed by a writer that bypasses the ORM.
-    satisfies_requirement: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default=false()
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-
 class DependencyEvidenceSufficiency(Base):
-    """A Dependency-specific sufficiency judgment on shared event Evidence."""
+    """A Dependency-specific sufficiency judgment on direct or event Evidence."""
 
     __tablename__ = "dependency_evidence_sufficiencies"
     __table_args__ = (

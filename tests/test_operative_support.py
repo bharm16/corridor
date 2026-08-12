@@ -1,13 +1,22 @@
 from datetime import date
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
 from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
-from corridor.models import Candidate, DocPage, Document, EvidenceLink, Project
+from corridor.models import (
+    Candidate,
+    Dependency,
+    DependencyEvidenceSufficiency,
+    DocPage,
+    Document,
+    EvidenceLink,
+    Project,
+)
 from corridor.operative_support import (
     designate_publication_support,
     resolve_operative_support,
@@ -160,9 +169,16 @@ def test_completion_readiness_support_does_not_replace_publication_support(
         page_no=1,
         quote="FOC1-1 relocation complete and accepted",
         verified=True,
-        satisfies_requirement=True,
     )
     session.add(readiness)
+    session.flush()
+    session.add(
+        DependencyEvidenceSufficiency(
+            dependency_id=dependency.id,
+            evidence_link_id=readiness.id,
+            scope_link_id=None,
+        )
+    )
     session.flush()
 
     resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
@@ -173,6 +189,49 @@ def test_completion_readiness_support_does_not_replace_publication_support(
     }
     assert resolved.is_ready is True
     assert set(resolved.superseded_roles) == set()
+
+
+def test_database_refuses_reassigning_direct_evidence_with_a_readiness_role(
+    session, project
+):
+    """A direct readiness judgment cannot silently follow a new owner."""
+    document = _document(
+        session,
+        project,
+        suffix="matrix-owner",
+        text="FOC1-1 LT AT&T Texas Telecom 1149+00 1153+17",
+    )
+    first = accept_candidate(
+        session,
+        _candidate(
+            session,
+            project,
+            document,
+            quote="FOC1-1 LT AT&T Texas Telecom 1149+00 1153+17",
+        ),
+        principal=TEST_PRINCIPAL,
+    )
+    second = Dependency(
+        project_id=project.id,
+        ref_code="DEP-SECOND-OWNER",
+        dep_type="utility_relocation",
+        title="Second owner",
+        external_org_id=first.external_org_id,
+        status="identified",
+    )
+    session.add(second)
+    session.flush()
+    evidence = _evidence_links(session, first.id)[0]
+    mark_satisfies(session, first.id, evidence.id, principal=TEST_PRINCIPAL)
+    session.flush()
+
+    with pytest.raises(IntegrityError, match="direct Evidence roles"):
+        with session.begin_nested():
+            session.execute(
+                text("update evidence_links set dependency_id = :dependency_id where id = :id"),
+                {"dependency_id": second.id, "id": evidence.id},
+            )
+            session.execute(text("set constraints all immediate"))
 
 
 def test_satisfying_but_unverified_evidence_cannot_make_a_record_ready(
@@ -200,9 +259,16 @@ def test_satisfying_but_unverified_evidence_cannot_make_a_record_ready(
         page_no=1,
         quote="not actually present",
         verified=False,
-        satisfies_requirement=True,
     )
     session.add(unverified_completion)
+    session.flush()
+    session.add(
+        DependencyEvidenceSufficiency(
+            dependency_id=dependency.id,
+            evidence_link_id=unverified_completion.id,
+            scope_link_id=None,
+        )
+    )
     session.flush()
 
     resolved = resolve_operative_support(session, [dependency.id])[dependency.id]
@@ -392,7 +458,14 @@ def test_superseded_support_lapses_readiness_and_names_each_affected_role(
     assert set(resolved.superseded_roles) == {"publication", "readiness"}
     # Currency changed; historical provenance did not.
     assert link.verified is True
-    assert link.satisfies_requirement is True
+    assert any(
+        role.evidence_link_id == link.id
+        for role in session.scalars(
+            select(DependencyEvidenceSufficiency).where(
+                DependencyEvidenceSufficiency.dependency_id == dependency.id
+            )
+        )
+    )
 
 
 def test_superseded_publication_support_preserves_its_exact_field_scope(

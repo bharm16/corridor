@@ -233,9 +233,7 @@ def evaluate(
     found: list[Exception_] = []
     for dependency in dependencies:
         statement = current_statements.get(dependency.id)
-        projected_date = (
-            statement.effective_date if statement is not None else dependency.committed_date
-        )
+        projected_date = statement.effective_date if statement is not None else None
         committed_date = (
             projected_date
             if committed_dates is None
@@ -368,9 +366,7 @@ def evaluate_dependency(
                     today,
                     thresholds,
                     committed_date=(
-                        statement.effective_date
-                        if statement is not None
-                        else dependency.committed_date
+                        statement.effective_date if statement is not None else None
                     ),
                 )
             )

@@ -5,7 +5,14 @@ from sqlalchemy import select
 
 from corridor.changes import diff_since_last, record_run, snapshot
 from corridor.db import Session, engine
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.exceptions import evaluate_project
+from corridor.ledger import mark_satisfies
 from corridor.models import (
     Dependency,
     Document,
@@ -14,6 +21,10 @@ from corridor.models import (
     Project,
     ReportRun,
 )
+from corridor.principals import HumanPrincipal
+
+
+TEST_PRINCIPAL = HumanPrincipal("local:changes-reviewer")
 
 
 @pytest.fixture
@@ -88,11 +99,57 @@ def add_evidence(session, dep, document, *, satisfies=False):
         page_no=1,
         quote="a quote",
         verified=True,
-        satisfies_requirement=satisfies,
     )
     session.add(link)
     session.flush()
+    if satisfies:
+        mark_satisfies(
+            session,
+            dep.id,
+            link.id,
+            principal=TEST_PRINCIPAL,
+        )
+    if dep.committed_date is not None:
+        _record_exact_cited_statement(
+            session,
+            dep,
+            document,
+            committed_date=dep.committed_date,
+            event_date=dep.committed_date,
+        )
     return link
+
+
+def _record_exact_cited_statement(
+    session, dep, document, *, committed_date: date, event_date: date
+):
+    """Give a test record an authoritative exact-day external statement."""
+    if dep.external_org_id is None:
+        party = ExternalOrg(name=f"{dep.ref_code} Test Party")
+        session.add(party)
+        session.flush()
+        dep.external_org_id = party.id
+    else:
+        party = session.get(ExternalOrg, dep.external_org_id)
+    assert party is not None
+    return record_external_party_statement(
+        session,
+        project_id=dep.project_id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=event_date,
+        description=f"{party.name} will complete on {committed_date.isoformat()}.",
+        new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
+        scope=StatementScope.selected((dep.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id,
+            1,
+            f"{party.name} will complete on {committed_date.isoformat()}.",
+        ),
+    )
 
 
 # ----------------------------------------------------------------- snapshot
@@ -164,8 +221,13 @@ def test_a_later_committed_date_is_a_slip(session, project, document):
     add_evidence(session, dep, document)
     _record(session, project)
 
-    dep.committed_date = date(2026, 8, 15)
-    session.flush()
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 7, 1),
+        committed_date=date(2026, 8, 15),
+    )
 
     [change] = _diff(session, project).of_kind("slipped")
     assert "2026-06-03" in change.detail and "2026-08-15" in change.detail
@@ -175,13 +237,6 @@ def test_snapshot_and_diff_read_the_current_statement_over_a_stale_scalar(
     session, project, document
 ):
     """A historical snapshot stays readable while new reads use the statement."""
-    from corridor.external_statements import (
-        CitedStatementEvidence,
-        StatementScope,
-        StatementTiming,
-        record_external_party_statement,
-    )
-
     party = ExternalOrg(name="Changes Test Party")
     session.add(party)
     session.flush()
@@ -195,24 +250,14 @@ def test_snapshot_and_diff_read_the_current_statement_over_a_stale_scalar(
     add_evidence(session, dep, document)
     _record(session, project)
 
-    record_external_party_statement(
+    _record_exact_cited_statement(
         session,
-        project_id=project.id,
-        affected_external_org_id=party.id,
-        stated_party=party.name,
-        stated_external_org_id=party.id,
-        source_kind="cited",
+        dep,
+        document,
         event_date=date(2026, 7, 1),
-        description="The party will complete relocation by August 15.",
-        new_timing=StatementTiming.day("August 15", date(2026, 8, 15)),
-        scope=StatementScope.selected((dep.id,)),
-        created_by="corridor:event-admission",
-        evidence=CitedStatementEvidence(
-            document.id, 1, "The party will complete relocation by August 15."
-        ),
+        committed_date=date(2026, 8, 15),
     )
-    # The statement is authoritative even before a compatibility scalar is
-    # refreshed (for example after an old import or interrupted maintenance).
+    # A stale materialized scalar is not a fallback authority.
     dep.committed_date = date(2026, 6, 3)
     session.flush()
 
@@ -240,8 +285,12 @@ def test_becoming_ready_is_reported(session, project, document):
     link = add_evidence(session, dep, document)
     _record(session, project)
 
-    link.satisfies_requirement = True
-    session.flush()
+    mark_satisfies(
+        session,
+        dep.id,
+        link.id,
+        principal=TEST_PRINCIPAL,
+    )
 
     [change] = _diff(session, project).of_kind("became_ready")
     assert change.ref_code == "DEP-1"
@@ -369,8 +418,13 @@ def test_real_movement_still_reports_across_a_ruleset_change(
 
     run = latest_run(session, project)
     run.ruleset_version = "v0.0-old"
-    dep.committed_date = date(2026, 9, 9)
-    session.flush()
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 7, 1),
+        committed_date=date(2026, 9, 9),
+    )
 
     assert _diff(session, project).of_kind("slipped")
 
@@ -393,12 +447,22 @@ def test_the_diff_reads_the_most_recent_run(session, project, document):
     add_evidence(session, dep, document)
     _record(session, project)
 
-    dep.committed_date = date(2026, 7, 1)
-    session.flush()
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 6, 15),
+        committed_date=date(2026, 7, 1),
+    )
     _record(session, project)
 
-    dep.committed_date = date(2026, 8, 1)
-    session.flush()
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 7, 15),
+        committed_date=date(2026, 8, 1),
+    )
 
     # Diffed against the July snapshot, not the June one.
     [change] = _diff(session, project).of_kind("slipped")

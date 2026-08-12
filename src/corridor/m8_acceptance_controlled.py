@@ -49,6 +49,7 @@ from corridor.models import (
     PolicyRun,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
     DocPage,
     Document,
     EvidenceLink,
@@ -240,9 +241,20 @@ def _automation_record_snapshot(
                 "page_no": item.page_no,
                 "quote": item.quote,
                 "verified": item.verified,
-                "satisfies_requirement": item.satisfies_requirement,
             }
             for item in evidence_links
+        },
+        "dependency_evidence_sufficiencies": {
+            item.id: {
+                "dependency_id": item.dependency_id,
+                "evidence_link_id": item.evidence_link_id,
+                "scope_link_id": item.scope_link_id,
+            }
+            for item in session.scalars(
+                select(DependencyEvidenceSufficiency)
+                .where(DependencyEvidenceSufficiency.dependency_id.in_(dependency_ids))
+                .order_by(DependencyEvidenceSufficiency.id)
+            ).all()
         },
         "operative_support": {
             item.id: {
@@ -372,6 +384,7 @@ def _automation_write_boundary(
             "automatic_carry_forward_outcomes",
             "automatic_carry_forward_receipts",
             "automatic_carry_forward_runs",
+            "dependency_evidence_sufficiencies",
             "evidence_links",
             "operative_support",
         }
@@ -1804,12 +1817,23 @@ def _ledger_mutation_fingerprint(
                 "page_no": item.page_no,
                 "quote": item.quote,
                 "verified": item.verified,
-                "satisfies_requirement": item.satisfies_requirement,
             }
             for item in session.scalars(
                 select(EvidenceLink)
                 .where(EvidenceLink.dependency_id == dependency_id)
                 .order_by(EvidenceLink.id)
+            ).all()
+        ],
+        "sufficiencies": [
+            {
+                "id": item.id,
+                "evidence_link_id": item.evidence_link_id,
+                "scope_link_id": item.scope_link_id,
+            }
+            for item in session.scalars(
+                select(DependencyEvidenceSufficiency)
+                .where(DependencyEvidenceSufficiency.dependency_id == dependency_id)
+                .order_by(DependencyEvidenceSufficiency.id)
             ).all()
         ],
         "operative_support": [

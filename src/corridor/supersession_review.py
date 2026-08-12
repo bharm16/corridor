@@ -1174,23 +1174,14 @@ def _reconfirmation_sources_match_receipt(
         )
     )
     # Audit history tracks the live sufficiency designation, not whether its
-    # document remains terminal.  Query both physical representations before
-    # applying frontier logic: direct Evidence keeps its flag, while event
-    # Evidence keeps one explicit per-Dependency sufficiency row.
+    # document remains terminal. Every Evidence shape now keeps that role in
+    # one explicit per-Dependency sufficiency row.
     stored_current_readiness_ids = frozenset(
-        {
-            *session.scalars(
-                select(EvidenceLink.id).where(
-                    EvidenceLink.dependency_id == dependency_id,
-                    EvidenceLink.satisfies_requirement.is_(True),
-                )
-            ).all(),
-            *session.scalars(
-                select(DependencyEvidenceSufficiency.evidence_link_id).where(
-                    DependencyEvidenceSufficiency.dependency_id == dependency_id
-                )
-            ).all(),
-        }
+        session.scalars(
+            select(DependencyEvidenceSufficiency.evidence_link_id).where(
+                DependencyEvidenceSufficiency.dependency_id == dependency_id
+            )
+        ).all()
     )
     if (
         current_readiness_ids is None

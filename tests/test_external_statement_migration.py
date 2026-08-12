@@ -32,12 +32,18 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
+    DependencyEventScope,
+    DependencyEventScopeDecision,
+    DependencyEventTiming,
     Document,
     EvidenceLink,
     ExternalOrg,
     Project,
 )
 from corridor.principals import HumanPrincipal
+import corridor.adjudicate as adjudicate_module
+import corridor.models as models_module
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +69,7 @@ _SCOPE_DECISION_REVISION = "c224a6b4d3e2"
 _EVENT_EVIDENCE_ROLE_REVISION = "d225a7c4e3f2"
 _LEGACY_STATEMENT_BACKFILL_REVISION = "e226a8d4f3c2"
 _EVENT_EVIDENCE_MIGRATION_REVISION = "f227b9e4d3c2"
+_CONTRACT_STATEMENT_REVISION = "a230c4d3e2f1"
 
 
 @dataclass(frozen=True)
@@ -270,6 +277,31 @@ _REVISION_SCHEMA_EXPECTATIONS[_LEGACY_STATEMENT_BACKFILL_REVISION] = (
 )
 _REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_MIGRATION_REVISION] = (
     _REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_ROLE_REVISION]
+)
+_REVISION_SCHEMA_EXPECTATIONS[_CONTRACT_STATEMENT_REVISION] = (
+    _RevisionSchemaExpectation(
+        constraints=(
+            _REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_MIGRATION_REVISION]
+            .constraints
+            - frozenset(
+                {
+                    "ck_evidence_links_event_ownership",
+                    "evidence_links_event_id_fkey",
+                }
+            )
+        ),
+        triggers=(
+            _REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_MIGRATION_REVISION]
+            .triggers
+            - frozenset({"evidence_links_receive_event_evidence"})
+            | frozenset(
+                {
+                    "dependency_event_evidence_has_one_owner",
+                    "evidence_links_have_one_owner",
+                }
+            )
+        ),
+    )
 )
 
 
@@ -1064,6 +1096,82 @@ def _assert_event_evidence_migration(
     ]
 
 
+def _assert_contracted_statement_data(
+    connection, expected_216_data: dict[str, list[dict]]
+) -> None:
+    """Assert the contract keeps one structural owner and one readiness role."""
+    columns = {
+        (row["table_name"], row["column_name"])
+        for row in connection.execute(
+            text(
+                """
+                select table_name, column_name
+                from information_schema.columns
+                where table_schema = 'public'
+                """
+            )
+        ).mappings()
+    }
+    assert ("evidence_links", "event_id") not in columns
+    assert ("evidence_links", "satisfies_requirement") not in columns
+    assert ("dependencies", "committed_date") in columns
+
+    legacy_events = expected_216_data["dependency_events"]
+    mappings = connection.execute(
+        text(
+            """
+            select mapping.evidence_link_id, mapping.event_id
+            from dependency_event_evidence mapping
+            order by mapping.evidence_link_id
+            """
+        )
+    ).mappings().all()
+    assert [dict(row) for row in mappings] == [
+        {"evidence_link_id": evidence["id"], "event_id": evidence["event_id"]}
+        for evidence in expected_216_data["evidence_links"]
+        if evidence["event_id"] is not None
+    ]
+
+    # The #216 fixture establishes exact days only for its Verbal history.
+    # Cited scalars and scalar-only rows are now legacy-unknown statements,
+    # so the compatibility date must clear rather than fabricate a day.
+    expected_dates = {
+        dependency["id"]: next(
+            (
+                event["committed_date"]
+                for event in sorted(
+                    legacy_events,
+                    key=lambda item: (item["event_date"] or "", item["id"]),
+                    reverse=True,
+                )
+                if event["dependency_id"] == dependency["id"]
+                and event["source_kind"] == "verbal"
+                and event["committed_date"] is not None
+            ),
+            None,
+        )
+        for dependency in expected_216_data["dependencies"]
+    }
+    projected = dict(
+        connection.execute(
+            text("select id, committed_date::text from dependencies order by id")
+        ).all()
+    )
+    assert projected == expected_dates
+
+    direct_roles = connection.execute(
+        text(
+            """
+            select sufficiency.dependency_id, sufficiency.evidence_link_id
+            from dependency_evidence_sufficiencies sufficiency
+            where sufficiency.scope_link_id is null
+            order by sufficiency.id
+            """
+        )
+    ).all()
+    assert direct_roles == []
+
+
 def _assert_statement_data_at_revision(
     connection,
     *,
@@ -1140,6 +1248,9 @@ def _assert_statement_data_at_revision(
     if expected_revision == _EVENT_EVIDENCE_MIGRATION_REVISION:
         _assert_event_evidence_migration(connection, expected_216_data)
         return
+    if expected_revision == _CONTRACT_STATEMENT_REVISION:
+        _assert_contracted_statement_data(connection, expected_216_data)
+        return
     raise AssertionError(
         "statement migration rehearsal needs explicit data expectations for "
         f"revision {expected_revision}"
@@ -1163,6 +1274,7 @@ def _assert_migration_state(
             in {
                 _LEGACY_STATEMENT_BACKFILL_REVISION,
                 _EVENT_EVIDENCE_MIGRATION_REVISION,
+                _CONTRACT_STATEMENT_REVISION,
             }
         ):
             legacy_dependency_ids = {
@@ -1336,6 +1448,45 @@ def test_statement_rehearsal_starts_at_completed_216_schema():
         assert database.current_revision == _PRE_STATEMENT_REVISION
 
 
+def test_contract_head_removes_legacy_statement_authority_but_keeps_projection():
+    """The live schema has one structured authority and one date projection."""
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=_ROOT,
+        error_cls=RuntimeError,
+        database_prefix="a230_contract_",
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        engine = create_engine(database_url)
+        try:
+            with engine.connect() as connection:
+                columns = {
+                    (row["table_name"], row["column_name"])
+                    for row in connection.execute(
+                        text(
+                            """
+                            select table_name, column_name
+                            from information_schema.columns
+                            where table_schema = 'public'
+                            """
+                        )
+                    ).mappings()
+                }
+                assert ("dependency_events", "dependency_id") not in columns
+                assert ("dependency_events", "committed_date") not in columns
+                assert ("evidence_links", "event_id") not in columns
+                assert ("evidence_links", "satisfies_requirement") not in columns
+                assert ("dependencies", "committed_date") in columns
+        finally:
+            engine.dispose()
+
+    model_source = Path(models_module.__file__).read_text()
+    adjudication_source = Path(adjudicate_module.__file__).read_text()
+    assert "def event_id(" not in model_source
+    assert "def satisfies_requirement(" not in model_source
+    assert "committed_date=committed_date" not in adjudication_source
+
+
 def test_populated_216_fixture_records_every_historical_statement_case():
     """The fixed snapshot names every legacy shape later revisions must preserve."""
     with provision_disposable_postgres(
@@ -1420,76 +1571,24 @@ def test_populated_rehearsal_checks_receipts_round_trip_and_atomic_refusal():
                     with engine.begin() as connection:
                         connection.execute(text(statement))
 
-            _run_alembic(
-                rendered_database_url,
-                "downgrade",
-                _STATEMENT_SHAPE_REVISION,
-            )
-            with engine.connect() as connection:
-                _assert_migration_state(
-                    connection,
-                    expected_revision=_STATEMENT_SHAPE_REVISION,
-                    expected_216_data=base_snapshot.content,
-                )
-            _upgrade_and_assert_revisions(
-                rendered_database_url,
-                engine,
-                revisions,
-                base_snapshot.content,
-            )
-
-            with engine.begin() as connection:
-                event_id = connection.scalar(
-                    text(
-                        """
-                        insert into dependency_events
-                            (project_id, affected_external_org_id,
-                             stated_external_org_id, attribution_state,
-                             scope_mode, event_type, source_kind, stated_party,
-                             description, created_by)
-                        values
-                            (222000, 222000, 222000, 'resolved', 'unknown',
-                             'commitment', 'cited', 'Equistar',
-                             'Equistar committed for January 2027.',
-                             'corridor:event-admission')
-                        returning id
-                        """
-                    )
-                )
-                connection.execute(
-                    text(
-                        """
-                        insert into dependency_event_timings
-                            (event_id, kind, text, precision,
-                             start_date, end_date)
-                        values
-                            (:event_id, 'new', '01/2027', 'month',
-                             '2027-01-01', '2027-01-31')
-                        """
-                    ),
-                    {"event_id": event_id},
-                )
-
             with engine.connect() as connection:
                 head_snapshot = _capture_database_data(connection)
-                head_schema = (
-                    _capture_columns_constraints_triggers_fingerprint(connection)
+                head_schema = _capture_columns_constraints_triggers_fingerprint(
+                    connection
                 )
-
             refused = _run_alembic(
                 rendered_database_url,
                 "downgrade",
-                _PRE_STATEMENT_REVISION,
+                _STATEMENT_SHAPE_REVISION,
                 expect_success=False,
             )
-            assert "cannot downgrade statement scope or timing" in (
+            assert "cannot downgrade statement contract" in (
                 refused.stderr + refused.stdout
             )
-
             with engine.connect() as connection:
-                assert connection.scalar(
-                    text("select version_num from alembic_version")
-                ) == revisions[-1]
+                assert connection.scalar(text("select version_num from alembic_version")) == (
+                    revisions[-1]
+                )
                 assert _capture_database_data(connection) == head_snapshot
                 assert (
                     _capture_columns_constraints_triggers_fingerprint(connection)
@@ -1582,36 +1681,89 @@ def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
             )
             session.add_all((document, dependency))
             session.flush()
-            event = record_external_party_statement(
-                session,
-                project_id=project.id,
-                affected_external_org_id=party.id,
-                stated_party="Equistar",
-                stated_external_org_id=party.id,
-                source_kind="cited",
-                event_date=date(2025, 1, 16),
-                description="Equistar will complete relocation by June 1.",
-                new_timing=StatementTiming.day("June 1", date(2025, 6, 1)),
-                scope=StatementScope.selected((dependency.id,)),
-                created_by="corridor:event-admission",
-                evidence=CitedStatementEvidence(
-                    document.id, 1, "Equistar will complete by June 1."
+            # This fixture intentionally targets the completed #224 schema.
+            # Current writers are already contracted, so seed the historical
+            # dual representation directly rather than pretending modern code
+            # can write a schema that no longer exists.
+            event_id = session.scalar(
+                text(
+                    """
+                    insert into dependency_events
+                        (project_id, affected_external_org_id,
+                         stated_external_org_id, attribution_state, scope_mode,
+                         event_type, source_kind, stated_party, event_date,
+                         description, created_by)
+                    values
+                        (:project_id, :party_id, :party_id, 'resolved',
+                         'selected', 'commitment', 'cited', 'Equistar',
+                         '2025-01-16',
+                         'Equistar will complete relocation by June 1.',
+                         'corridor:event-admission')
+                    returning id
+                    """
                 ),
+                {"project_id": project.id, "party_id": party.id},
             )
-            evidence = session.scalar(
-                select(EvidenceLink).where(EvidenceLink.event_id == event.id)
+            decision_id = session.scalar(
+                text(
+                    """
+                    select id from dependency_event_scope_decisions
+                    where event_id = :event_id
+                    """
+                ),
+                {"event_id": event_id},
             )
-            assert evidence is not None
+            session.scalar(
+                text(
+                    """
+                    insert into dependency_event_scopes
+                        (event_id, scope_decision_id, dependency_id, recorded_by)
+                    values
+                        (:event_id, :decision_id, :dependency_id,
+                         'corridor:event-admission')
+                    returning id
+                    """
+                ),
+                {
+                    "event_id": event_id,
+                    "decision_id": decision_id,
+                    "dependency_id": dependency.id,
+                },
+            )
+            session.execute(
+                text(
+                    """
+                    insert into dependency_event_timings
+                        (event_id, kind, text, precision, start_date, end_date)
+                    values (:event_id, 'new', 'June 1', 'day',
+                            '2025-06-01', '2025-06-01')
+                    """
+                ),
+                {"event_id": event_id},
+            )
+            evidence_id = session.scalar(
+                text(
+                    """
+                    insert into evidence_links
+                        (dependency_id, event_id, document_id, page_no, quote,
+                         verified, satisfies_requirement)
+                    values (null, :event_id, :document_id, 1,
+                            'Equistar will complete by June 1.', true, false)
+                    returning id
+                    """
+                ),
+                {"event_id": event_id, "document_id": document.id},
+            )
             session.execute(
                 text(
                     "insert into dependency_evidence_sufficiencies "
                     "(dependency_id, evidence_link_id) values (:dependency_id, :link_id)"
                 ),
-                {"dependency_id": dependency.id, "link_id": evidence.id},
+                {"dependency_id": dependency.id, "link_id": evidence_id},
             )
             record_statement_scope_decision(
                 session,
-                event_id=event.id,
+                event_id=event_id,
                 scope=StatementScope.selected((dependency.id,)),
                 actor=HumanPrincipal("local:scope-corrector"),
             )
@@ -1678,8 +1830,8 @@ def test_representable_216_history_round_trips_each_revision_exactly():
             engine.dispose()
 
 
-def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_rows():
-    """A safe #216 Verbal downgrades, upgrades, and remains append-only."""
+def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
+    """Current attributable statements cannot be rewritten as legacy Slips."""
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=_ROOT,
@@ -1767,59 +1919,35 @@ def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_row
             }
             session.commit()
 
-        _run_alembic(database_url, "downgrade", _PRE_STATEMENT_REVISION)
-        legacy_engine = create_engine(database_url)
+        engine = create_engine(database_url)
         try:
-            with legacy_engine.begin() as connection:
-                connection.execute(
-                    text(
-                        "alter table dependency_events disable trigger "
-                        "verbal_dependency_events_are_immutable"
-                    )
+            with engine.connect() as connection:
+                before_data = _capture_database_data(connection)
+                before_schema = _capture_columns_constraints_triggers_fingerprint(
+                    connection
                 )
-                connection.execute(
-                    text(
-                        "update dependency_events set event_type = 'slip' "
-                        "where id = :event_id"
-                    ),
-                    {"event_id": ids["verbal"]},
-                )
-                connection.execute(
-                    text(
-                        "alter table dependency_events enable trigger "
-                        "verbal_dependency_events_are_immutable"
-                    )
-                )
-        finally:
-            legacy_engine.dispose()
-
-        _run_alembic(database_url, "upgrade", "head")
-        with session_factory() as session:
-            verbal = session.get(DependencyEvent, ids["verbal"])
-            assert verbal is not None
-            assert verbal.event_type == "commitment"
-            assert verbal.new_timing.precision == "day"
-            assert verbal.new_timing.start_date == verbal.new_timing.end_date == date(
-                2025, 6, 1
+            refused = _run_alembic(
+                database_url,
+                "downgrade",
+                _PRE_STATEMENT_REVISION,
+                expect_success=False,
             )
+            assert "cannot downgrade statement contract" in (
+                refused.stderr + refused.stdout
+            )
+            with engine.connect() as connection:
+                assert connection.scalar(text("select version_num from alembic_version")) == (
+                    _CONTRACT_STATEMENT_REVISION
+                )
+                assert _capture_database_data(connection) == before_data
+                assert (
+                    _capture_columns_constraints_triggers_fingerprint(connection)
+                    == before_schema
+                )
 
-        # This is the safe #216-compatible downgrade that must not be stopped
-        # by the inherited Verbal append-only trigger.
-        _run_alembic(database_url, "downgrade", _PRE_STATEMENT_REVISION)
-        legacy_engine = create_engine(database_url)
-        try:
-            with legacy_engine.connect() as connection:
-                assert connection.scalar(
-                    text(
-                        "select committed_date from dependency_events "
-                        "where id = :event_id"
-                    ),
-                    {"event_id": ids["verbal"]},
-                ) == date(2025, 6, 1)
         finally:
-            legacy_engine.dispose()
+            engine.dispose()
 
-        _run_alembic(database_url, "upgrade", "head")
         with session_factory() as session:
             cited = record_external_party_statement(
                 session,
@@ -1843,7 +1971,12 @@ def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_row
             ids["timing"] = cited.new_timing.id
             ids["scope"] = cited.scope_links[0].id
             ids["evidence"] = session.scalar(
-                select(EvidenceLink.id).where(EvidenceLink.event_id == cited.id)
+                select(EvidenceLink.id)
+                .join(
+                    DependencyEventEvidence,
+                    DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+                )
+                .where(DependencyEventEvidence.event_id == cited.id)
             )
             session.commit()
 
@@ -1869,11 +2002,9 @@ def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_row
         )
         _assert_rejected(
             session_factory,
-            "update evidence_links set event_id = null, "
-            "dependency_id = :dependency_id, satisfies_requirement = false "
-            "where id = :evidence_id",
+            "delete from dependency_event_evidence "
+            "where evidence_link_id = :evidence_id",
             {
-                "dependency_id": ids["dependency"],
                 "evidence_id": ids["evidence"],
             },
         )
@@ -1896,3 +2027,122 @@ def test_external_statement_migration_preserves_verbal_slips_and_seals_cited_row
                     DependencyEvent.project_id == ids["project"]
                 )
             ).all() == []
+
+
+def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
+    """A later multi-Dependency scope cannot be collapsed into one old event."""
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=_ROOT,
+        error_cls=RuntimeError,
+        database_prefix="a230_multiscope_",
+    ) as database:
+        database_url = make_url(settings.database_url).set(
+            database=database.name
+        ).render_as_string(hide_password=False)
+        session_factory = database.session_factory
+        with session_factory() as session:
+            project = Project(
+                slug="a230-multiscope",
+                name="A230 multi-scope",
+                is_synthetic=True,
+            )
+            party = ExternalOrg(name="Equistar")
+            session.add_all((project, party))
+            session.flush()
+            first = Dependency(
+                project_id=project.id,
+                ref_code="DEP-A230-1",
+                dep_type="utility_relocation",
+                title="Equistar first relocation",
+                external_org_id=party.id,
+                status="identified",
+            )
+            second = Dependency(
+                project_id=project.id,
+                ref_code="DEP-A230-2",
+                dep_type="utility_relocation",
+                title="Equistar second relocation",
+                external_org_id=party.id,
+                status="identified",
+            )
+            session.add_all((first, second))
+            session.flush()
+            # This shape is intentionally as close as possible to the
+            # reversible legacy form: unresolved attribution, one exact day,
+            # selected scope, and no correction. Only scope cardinality makes
+            # it impossible to collapse faithfully.
+            event = DependencyEvent(
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_external_org_id=None,
+                attribution_state="unresolved",
+                scope_mode="selected",
+                event_type="commitment",
+                source_kind="cited",
+                stated_party=None,
+                event_date=None,
+                description="Equistar will complete both relocations by June 1.",
+                created_by="corridor:event-admission",
+            )
+            session.add(event)
+            session.flush()
+            decision = session.scalar(
+                select(DependencyEventScopeDecision).where(
+                    DependencyEventScopeDecision.event_id == event.id
+                )
+            )
+            assert decision is not None
+            session.add_all(
+                (
+                    DependencyEventTiming(
+                        event_id=event.id,
+                        kind="new",
+                        text="June 1",
+                        precision="day",
+                        start_date=date(2025, 6, 1),
+                        end_date=date(2025, 6, 1),
+                    ),
+                    DependencyEventScope(
+                        event_id=event.id,
+                        scope_decision_id=decision.id,
+                        dependency_id=first.id,
+                        recorded_by="corridor:event-admission",
+                    ),
+                    DependencyEventScope(
+                        event_id=event.id,
+                        scope_decision_id=decision.id,
+                        dependency_id=second.id,
+                        recorded_by="corridor:event-admission",
+                    ),
+                )
+            )
+            session.commit()
+
+        engine = create_engine(database_url)
+        try:
+            with engine.connect() as connection:
+                before_data = _capture_database_data(connection)
+                before_schema = _capture_columns_constraints_triggers_fingerprint(
+                    connection
+                )
+            refused = _run_alembic(
+                database_url,
+                "downgrade",
+                _PRE_STATEMENT_REVISION,
+                expect_success=False,
+            )
+            assert "cannot downgrade statement contract" in (
+                refused.stderr + refused.stdout
+            )
+            with engine.connect() as connection:
+                assert connection.scalar(text("select version_num from alembic_version")) == (
+                    _CONTRACT_STATEMENT_REVISION
+                )
+                assert _capture_database_data(connection) == before_data
+                assert (
+                    _capture_columns_constraints_triggers_fingerprint(connection)
+                    == before_schema
+                )
+        finally:
+            engine.dispose()

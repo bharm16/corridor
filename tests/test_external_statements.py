@@ -397,7 +397,12 @@ def test_one_exact_day_statement_links_each_selected_dependency_once_and_project
     assert [link.dependency_id for link in links] == [first.id, second.id]
     assert len(session.scalars(select(DependencyEvent)).all()) == 1
     [evidence] = session.scalars(
-        select(EvidenceLink).where(EvidenceLink.event_id == event.id)
+        select(EvidenceLink)
+        .join(
+            DependencyEventEvidence,
+            DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+        )
+        .where(DependencyEventEvidence.event_id == event.id)
     ).all()
     assert evidence.dependency_id is None
     session.refresh(first)
@@ -820,7 +825,14 @@ def test_event_evidence_requires_an_explicit_dependency_sufficiency_judgment(
         created_by="corridor:event-admission",
         evidence=CitedStatementEvidence(document.id, 1, "Equistar will complete relocation."),
     )
-    evidence = session.scalar(select(EvidenceLink).where(EvidenceLink.event_id == event.id))
+    evidence = session.scalar(
+        select(EvidenceLink)
+        .join(
+            DependencyEventEvidence,
+            DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+        )
+        .where(DependencyEventEvidence.event_id == event.id)
+    )
 
     assert evidence.dependency_id is None
     assert is_ready(session, dependency.id) is False
@@ -886,7 +898,12 @@ def test_event_evidence_has_one_source_identity_and_roles_bind_the_scope_link(
         ),
     )
     evidence = session.scalar(
-        select(EvidenceLink).where(EvidenceLink.event_id == event.id)
+        select(EvidenceLink)
+        .join(
+            DependencyEventEvidence,
+            DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+        )
+        .where(DependencyEventEvidence.event_id == event.id)
     )
     [event_evidence] = session.scalars(
         select(DependencyEventEvidence).where(
@@ -1126,25 +1143,13 @@ def test_database_requires_explicit_scope_mode_and_event_evidence_ownership(
                 {"project_id": project.id, "party_id": party.id},
             )
 
-    event = DependencyEvent(
-        project_id=project.id,
-        affected_external_org_id=party.id,
-        stated_external_org_id=party.id,
-        scope_mode="unknown",
-        event_type="commitment",
-        source_kind="cited",
-        stated_party="Equistar",
-        description="Party-level statement.",
-        created_by="corridor:event-admission",
-    )
-    session.add(event)
-    session.flush()
-    with pytest.raises(IntegrityError, match="ck_evidence_links_event_ownership"):
+    # An Evidence row without direct ownership must have one explicit event
+    # owner. The event id is no longer an inline shadow on EvidenceLink.
+    with pytest.raises(IntegrityError, match="statement Evidence needs exactly one event owner"):
         with session.begin_nested():
             session.add(
                 EvidenceLink(
-                    dependency_id=dependency.id,
-                    event_id=event.id,
+                    dependency_id=None,
                     document_id=document.id,
                     page_no=1,
                     quote="Party-level statement.",
@@ -1152,3 +1157,4 @@ def test_database_requires_explicit_scope_mode_and_event_evidence_ownership(
                 )
             )
             session.flush()
+            session.execute(text("set constraints all immediate"))
