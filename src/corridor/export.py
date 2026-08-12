@@ -37,6 +37,15 @@ COLUMNS = [
 ]
 
 
+def _committed_date_source(row) -> str | None:
+    """Name only the source class of a date the workbook actually publishes."""
+    if row.committed_date is None:
+        return None
+    if row.committed_event is None:
+        return "Legacy compatibility projection"
+    return verbal_attribution(row.committed_event) or "Cited statement"
+
+
 def to_pdf(html: str, path: Path | str) -> Path:
     """Render the report HTML to PDF.
 
@@ -101,8 +110,8 @@ def to_xlsx(
                 dependency.station_to,
                 dependency.status,
                 dependency.resolution_strategy,
-                dependency.committed_date,
-                verbal_attribution(row.committed_event) or "Cited statement",
+                row.committed_date,
+                _committed_date_source(row),
                 dependency.need_date,
                 "yes" if row.is_ready else "no",
                 ", ".join(sorted(by_dependency.get(dependency.id, ()))),

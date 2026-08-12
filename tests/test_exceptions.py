@@ -335,6 +335,44 @@ def test_overdue_reads_the_current_exact_day_statement_not_a_stale_scalar(
     assert "OVERDUE" in codes(session, dep)
 
 
+def test_a_current_month_statement_suppresses_overdue_from_a_stale_scalar(
+    session, project, document
+):
+    """A month statement is not a Dependency-level exact date calculation."""
+    dep = make_dep(session, project, committed_date=TODAY - timedelta(days=1))
+    add_evidence(session, dep, document)
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=dep.external_org_id,
+        stated_external_org_id=dep.external_org_id,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="Example Utility",
+        event_date=TODAY - timedelta(days=30),
+        description="Example Utility now expects completion in August 2026.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text="August 2026",
+                precision="month",
+                start_date=date(2026, 8, 1),
+                end_date=date(2026, 8, 31),
+            ),
+            DependencyEventScope(event_id=event.id, dependency_id=dep.id),
+        )
+    )
+    session.flush()
+
+    assert "OVERDUE" not in codes(session, dep)
+
+
 def test_overdue_does_not_fire_once_closed_out(session, project, document):
     """A closure event is what stops the clock, not the passage of time."""
     dep = make_dep(session, project, committed_date=TODAY - timedelta(days=30))

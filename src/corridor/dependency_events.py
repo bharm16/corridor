@@ -19,9 +19,11 @@ from sqlalchemy.orm import Session
 from corridor.models import (
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
     DependencyEventTiming,
+    EvidenceLink,
 )
 
 
@@ -162,6 +164,44 @@ def current_dependency_statements(
             is_closed=dependency_id in closed_ids,
         )
     return statements
+
+
+def verified_cited_statement_event_ids(
+    session: Session, dependency_ids: Iterable[int]
+) -> set[int]:
+    """Cited statement ids whose own Evidence is verified for these Dependencies."""
+    ids = tuple(dict.fromkeys(dependency_ids))
+    if not ids:
+        return set()
+    return set(
+        session.scalars(
+            select(DependencyEventEvidence.event_id)
+            .join(
+                EvidenceLink,
+                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            )
+            .join(
+                DependencyEvent,
+                DependencyEventEvidence.event_id == DependencyEvent.id,
+            )
+            .join(
+                DependencyEventScope,
+                DependencyEventScope.event_id == DependencyEventEvidence.event_id,
+            )
+            .join(
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
+            )
+            .where(
+                DependencyEventScope.dependency_id.in_(ids),
+                current_scope_decision_filter(),
+                DependencyEvent.source_kind == "cited",
+                EvidenceLink.verified.is_(True),
+            )
+            .distinct()
+        )
+    )
 
 
 def latest_committed_events(

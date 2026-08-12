@@ -36,8 +36,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_events import (
+    current_dependency_statements,
     current_scope_decision_filter,
-    latest_committed_events,
+    verified_cited_statement_event_ids,
     verbal_attribution,
 )
 from corridor.exceptions import (
@@ -214,7 +215,7 @@ def _brief(
     client,
     evaluation: Evaluation,
 ) -> Briefing:
-    citables, floor = _assemble(session, dependencies, evaluation)
+    citables, floor, committed_dates = _assemble(session, dependencies, evaluation)
     if not citables:
         # Nothing to cite means nothing a sentence could stand on: the
         # honest briefing is empty, and a model call would burn money to
@@ -234,7 +235,7 @@ def _brief(
 
     result = client.complete(
         system=PROMPT.read_text(),
-        user=_user_message(dependencies, citables),
+        user=_user_message(dependencies, citables, committed_dates),
         schema=SENTENCE_SCHEMA,
     )
     drafted = [
@@ -277,7 +278,7 @@ def _brief(
 
 def _assemble(
     session: Session, dependencies: list[Dependency], evaluation: Evaluation
-) -> tuple[list[Citable], tuple[str, ...]]:
+) -> tuple[list[Citable], tuple[str, ...], dict[int, date | None]]:
     """Everything a sentence may stand on, and which refs are the floor.
 
     One numbering across however many records the briefing spans, so a
@@ -292,9 +293,28 @@ def _assemble(
     citables: list[Citable] = []
     floor: list[str] = []
     counters = {"E": 0, "A": 0, "V": 0, "X": 0}
-    committed_events = latest_committed_events(
+    current_statements = current_dependency_statements(
         session, (dependency.id for dependency in dependencies)
     )
+    verified_cited_event_ids = verified_cited_statement_event_ids(
+        session, (dependency.id for dependency in dependencies)
+    )
+    published_statements = {
+        dependency_id: statement
+        for dependency_id, statement in current_statements.items()
+        if statement.event is None
+        or statement.event.source_kind == "verbal"
+        or statement.event.id in verified_cited_event_ids
+    }
+    committed_dates = {
+        dependency_id: statement.effective_date
+        for dependency_id, statement in published_statements.items()
+    }
+    committed_events = {
+        dependency_id: statement.event
+        for dependency_id, statement in published_statements.items()
+        if statement.event is not None and statement.effective_date is not None
+    }
 
     def ref(prefix: str) -> str:
         counters[prefix] += 1
@@ -396,10 +416,14 @@ def _assemble(
                 )
             )
 
-    return citables, tuple(floor)
+    return citables, tuple(floor), committed_dates
 
 
-def _user_message(dependencies: list[Dependency], citables: list[Citable]) -> str:
+def _user_message(
+    dependencies: list[Dependency],
+    citables: list[Citable],
+    committed_dates: dict[int, date | None],
+) -> str:
     verbal_sources = {
         citable.dependency_id: citable
         for citable in citables
@@ -407,7 +431,7 @@ def _user_message(dependencies: list[Dependency], citables: list[Citable]) -> st
     }
     lines = []
     for dependency in dependencies:
-        committed = str(dependency.committed_date or "—")
+        committed = str(committed_dates.get(dependency.id) or "—")
         if verbal := verbal_sources.get(dependency.id):
             committed = f"{committed} ({verbal.text}; cite [{verbal.ref}])"
         lines.append(f"Record {dependency.ref_code}: {dependency.title}.")

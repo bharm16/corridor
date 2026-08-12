@@ -358,6 +358,35 @@ def test_the_first_report_says_so_instead_of_claiming_nothing_changed(
     assert "nothing to compare" in changes.empty_message.lower()
 
 
+def test_a_new_report_calls_a_later_date_a_committed_date_change(
+    session, project_with_two_dependencies
+):
+    """Customer output uses the domain name, while old snapshots stay readable."""
+    project = project_with_two_dependencies
+    dependency = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project.id)
+        .order_by(Dependency.id)
+    ).first()
+    dependency.committed_date = date(2026, 6, 3)
+    session.flush()
+    first = build_report(session, project.id, today=date(2026, 8, 1))
+    record_run(
+        session,
+        project.id,
+        evaluation=first.evaluation,
+        committed_dates=first.committed_dates,
+    )
+    dependency.committed_date = date(2026, 8, 15)
+    session.flush()
+
+    report = build_report(session, project.id, today=date(2026, 8, 1))
+    changes = section(report, "Changes since last report")
+
+    assert "Committed Date Change" in [row[1].value for row in changes.rows]
+    assert "slipped" not in render(report).lower()
+
+
 def test_the_report_states_what_it_does_not_cover(
     session, project_with_two_dependencies
 ):

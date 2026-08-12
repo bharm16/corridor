@@ -16,6 +16,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     Project,
 )
 from corridor.operative_support import designate_publication_support
@@ -214,6 +215,138 @@ def test_the_xlsx_attributes_a_verbal_backed_committed_date(
     assert row["Committed date source"] == (
         "Verbal — Export Test Utility told local:tester on 2026-05-08"
     )
+
+
+def test_the_xlsx_uses_an_exact_day_statement_over_a_stale_scalar(
+    session, project, tmp_path
+):
+    """The workbook is a reader, so its date and statement provenance agree."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    document = session.scalars(
+        select(Document).where(Document.project_id == project.id)
+    ).one()
+    party = session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == "Export Test Utility")
+    ).one()
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2026, 5, 8),
+        description="Export Test Utility will finish relocation on August 15.",
+        new_timing=StatementTiming.day("August 15", date(2026, 8, 15)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 4, "Export Test Utility will finish relocation on August 15."
+        ),
+    )
+    dependency.committed_date = date(2026, 6, 3)
+    session.flush()
+
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "statement-projection.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: cell.value for header, cell in zip(headers, sheet[2])}
+
+    assert row["Committed date"].date() == date(2026, 8, 15)
+    assert row["Committed date source"] == "Cited statement"
+
+
+def test_the_xlsx_suppresses_a_stale_scalar_after_a_month_statement(
+    session, project, tmp_path
+):
+    """A source month cannot become a day in an external-ready workbook."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    document = session.scalars(
+        select(Document).where(Document.project_id == project.id)
+    ).one()
+    party = session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == "Export Test Utility")
+    ).one()
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2026, 5, 8),
+        description="Export Test Utility now expects completion in August 2026.",
+        new_timing=StatementTiming.month("August 2026", 2026, 8),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id,
+            4,
+            "Export Test Utility now expects completion in August 2026.",
+        ),
+    )
+    dependency.committed_date = date(2026, 6, 3)
+    session.flush()
+
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "month-statement-projection.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: cell.value for header, cell in zip(headers, sheet[2])}
+
+    assert row["Committed date"] is None
+    assert row["Committed date source"] is None
+
+
+def test_the_xlsx_labels_a_scalar_only_date_as_a_legacy_projection(
+    session, project, tmp_path
+):
+    """The compatibility path remains readable without inventing a citation."""
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.committed_date = date(2026, 8, 15)
+    session.flush()
+
+    path = to_xlsx(
+        session,
+        project.id,
+        tmp_path / "legacy-scalar-projection.xlsx",
+        evaluation=evaluate_project(session, project.id),
+    )
+    sheet = load_workbook(path)["Ledger"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: cell.value for header, cell in zip(headers, sheet[2])}
+
+    assert row["Committed date"].date() == date(2026, 8, 15)
+    assert row["Committed date source"] == "Legacy compatibility projection"
 
 
 def test_the_pdf_renders(session, project, tmp_path):
