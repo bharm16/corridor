@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_events import StatementPublication
 from corridor.exceptions import Evaluation, format_exception_label
 from corridor.ledger import browse, primary_evidence
-from corridor.models import Project
+from corridor.models import Dependency, Project
 
 COLUMNS = [
     "Ref",
@@ -75,7 +76,35 @@ def to_xlsx(
         raise ValueError("the evaluation belongs to another project")
     if statement_publication.project_id != project_id:
         raise ValueError("the statement publication belongs to another project")
+    if evaluation.committed_dates != statement_publication.committed_dates:
+        raise ValueError(
+            "the evaluation and statement publication describe different "
+            "Committed Date readings"
+        )
+    if evaluation.statement_publication_fingerprint != statement_publication.fingerprint:
+        raise ValueError(
+            "the evaluation and statement publication describe different "
+            "statement provenance"
+        )
+    current_population = set(
+        session.scalars(
+            select(Dependency.id).where(
+                Dependency.project_id == project_id,
+                Dependency.dismissed_at.is_(None),
+            )
+        ).all()
+    )
+    if current_population != set(statement_publication.by_dependency):
+        raise ValueError(
+            "the Ledger population changed after the paired evaluation and "
+            "statement publication"
+        )
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
+    if {row.dependency.id for row in rows} != set(statement_publication.by_dependency):
+        raise ValueError(
+            "the Ledger population changed after the paired evaluation and "
+            "statement publication"
+        )
 
     by_dependency = {
         dependency_id: [format_exception_label(e) for e in found]
@@ -84,11 +113,6 @@ def to_xlsx(
     evidence_by_dependency = primary_evidence(
         session, [row.dependency.id for row in rows]
     )
-    if evaluation.committed_dates != statement_publication.committed_dates:
-        raise ValueError(
-            "the evaluation and statement publication describe different "
-            "Committed Date readings"
-        )
 
     workbook = Workbook()
     sheet = workbook.active

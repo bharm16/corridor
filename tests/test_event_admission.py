@@ -193,6 +193,17 @@ def _minutes_with(session, project, event_fields_list, *, verified=True):
         _candidate(minutes, kind="event", fields=f, verified=verified)
         for f in event_fields_list
     ]
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == minutes.id,
+            DocPage.page_no == 1,
+        )
+    )
+    assert page is not None
+    page.text = "\n".join(
+        candidate.payload_json["citations"][0]["quote"]
+        for candidate in candidates
+    )
     _run(session, minutes, candidates)
     declare_single_run_documents(session, project.id, principal=OPERATOR)
     return candidates
@@ -1013,6 +1024,50 @@ def test_the_pile_disables_attach_when_the_statement_date_is_unreadable(
 
     [waiting] = waiting_statements(session, project.id)
     assert waiting["attachable"] is False
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        (
+            {**_event(ref="PL99"), "description": ""},
+            "preserve what the party said",
+        ),
+        (
+            {
+                **_event(ref="PL99"),
+                "committed_date": {
+                    "text": "January 2025",
+                    "precision": "month",
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-30",
+                },
+            },
+            "invalid calendar bounds",
+        ),
+    ],
+)
+def test_the_pile_and_mutation_refuse_the_same_invalid_statement_draft(
+    session, project, admitted, fields, reason
+):
+    """A preview must not offer a writer-rejected statement as attachable."""
+    from corridor.event_admission import (
+        StatementUnplaceable,
+        attach_statement,
+        waiting_statements,
+    )
+
+    [candidate] = _minutes_with(session, project, [fields])
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    [waiting] = waiting_statements(session, project.id)
+    assert waiting["attachable"] is False
+    with pytest.raises(StatementUnplaceable, match=reason):
+        attach_statement(session, candidate, admitted, principal=OPERATOR)
+    assert _events_on(session, admitted.id) == []
+    session.refresh(candidate)
+    assert candidate.state == "pending"
 
 
 def test_the_pile_disables_attach_when_the_speaker_is_not_registered(

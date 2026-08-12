@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from corridor import audit
 from corridor.dependency_events import (
     CurrentDependencyStatement,
+    PublishedDependencyStatement,
     current_dependency_statements,
     current_scope_decision_filter,
     current_statement_evidence_memberships,
@@ -134,14 +135,14 @@ class LedgerRow:
     verified_evidence_count: int
     assertion_count: int
     contradicted: bool
-    committed_statement: CurrentDependencyStatement | None = None
+    committed_statement: PublishedDependencyStatement | None = None
     exceptions: list = field(default_factory=list)
 
     @property
     def committed_date(self) -> date | None:
         """The one scalar-compatible date this Ledger row may render."""
         return (
-            self.committed_statement.effective_date
+            self.committed_statement.committed_date
             if self.committed_statement is not None
             else None
         )
@@ -253,7 +254,21 @@ def browse(
     support_by_dependency = resolve_operative_support(
         session, (dependency.id for dependency in dependencies)
     )
-    current_statements = current_dependency_statements(session, ids)
+    publication = evaluation.statement_publication
+    if publication is None:
+        raise ValueError("the evaluation has no frozen statement publication")
+    if publication.project_id != project_id:
+        raise ValueError("the statement publication belongs to another project")
+    publication_population = set(
+        session.scalars(
+            select(Dependency.id).where(
+                Dependency.project_id == project_id,
+                Dependency.dismissed_at.is_(None),
+            )
+        ).all()
+    )
+    if set(publication.by_dependency) != publication_population:
+        raise ValueError("the statement publication has a different Ledger population")
 
     # Exceptions are computed, never stored (ADR-0002's reasoning), so they
     # are read off the evaluation the caller published rather than joined.
@@ -272,7 +287,7 @@ def browse(
             ),
             assertion_count=assertion_counts.get(d.id, 0),
             contradicted=d.id in contradicted,
-            committed_statement=current_statements.get(d.id),
+            committed_statement=publication.by_dependency[d.id],
             exceptions=by_dependency.get(d.id, []),
         )
         for d in dependencies

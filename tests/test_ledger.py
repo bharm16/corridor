@@ -292,6 +292,58 @@ def test_browse_and_detail_read_the_current_statement_projection(
     assert detail.current_statement.event is event
 
 
+def test_browse_and_internal_web_withhold_an_unsupported_cited_statement_date(
+    session, client, project, dependency
+):
+    """The internal Ledger shares the Evaluation's published reading.
+
+    This event is deliberately shaped like old imported data: it is current
+    and exact-day, but has no verified event-owned Evidence.  Raw statement
+    traversal sees the date; neither the Ledger row nor its rendered page
+    may publish it or derive an overdue exception from it.
+    """
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=dependency.external_org_id,
+        stated_external_org_id=dependency.external_org_id,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="LT AT&T Texas",
+        event_date=date(2026, 3, 4),
+        description="AT&T stated an unsupported completion date.",
+        created_by="local:ledger-reviewer",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text="2026-08-15",
+                precision="day",
+                start_date=date(2026, 8, 15),
+                end_date=date(2026, 8, 15),
+            ),
+            DependencyEventScope(event_id=event.id, dependency_id=dependency.id),
+        )
+    )
+    session.flush()
+
+    evaluation = evaluate_project(session, project.id, today=date(2026, 9, 30))
+    [row] = browse(session, project.id, evaluation=evaluation)
+    page = client.get(f"/ledger/{project.slug}")
+
+    assert row.committed_date is None
+    assert row.committed_event is None
+    assert not {"DUE_SOON", "OVERDUE"}.intersection(
+        exception.rule for exception in row.exceptions
+    )
+    assert page.status_code == 200
+    assert "2026-08-15" not in page.text
+
+
 def test_an_unverified_disagreement_is_not_a_contradiction(
     session, project, document, dependency
 ):

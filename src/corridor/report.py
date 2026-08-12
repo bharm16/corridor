@@ -253,6 +253,7 @@ def build_report(
         project_id,
         today=today,
         committed_dates=committed_dates,
+        statement_publication=publication,
     )
     project = session.get(Project, project_id)
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)

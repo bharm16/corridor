@@ -85,7 +85,10 @@ def legacy_ledger(session):
         DocPage(
             document_id=document.id,
             page_no=1,
-            text="FOC1-1 AT&T Texas Telecom",
+            text=(
+                "FOC1-1 AT&T Texas Telecom\n"
+                "AT&T Texas will provide its design package in January 2027."
+            ),
             text_source="text_layer",
         )
     )

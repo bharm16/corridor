@@ -422,7 +422,7 @@ def upgrade() -> None:
         )
         returns void
         language plpgsql
-        security definer
+        security invoker
         set search_path = pg_catalog, public
         as $$
         begin
@@ -741,7 +741,7 @@ def downgrade() -> None:
         )
         returns void
         language plpgsql
-        security definer
+        security invoker
         set search_path = pg_catalog, public
         as $$
         begin

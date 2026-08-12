@@ -34,7 +34,7 @@ from corridor.external_statements import (
     StatementScope,
     StatementTiming,
     record_external_party_statement,
-    validate_cited_statement_evidence,
+    validate_external_party_statement_draft,
 )
 from corridor.models import (
     Candidate,
@@ -74,6 +74,7 @@ ABSTENTION_REASONS = frozenset(
         "stated_party_unresolved",
         "party_mismatch",
         "project_side_actor",
+        "statement_draft_invalid",
     }
 )
 
@@ -370,6 +371,26 @@ def _evaluate(
         return "no_date"
     if fields.get("event_type") == "commitment" and previous_timing is not None:
         return "event_type_outside_policy"
+    try:
+        validate_external_party_statement_draft(
+            session,
+            project_id=project.id,
+            stated_party=stated_party,
+            stated_external_org_id=stated_external_org.id,
+            source_kind="cited",
+            event_date=event_date,
+            description=str(fields.get("description") or ""),
+            new_timing=new_timing,
+            previous_timing=previous_timing,
+            evidence=evidence,
+        )
+    except StatementRefusal as exc:
+        message = str(exc)
+        if "timing" in message or "calendar bounds" in message:
+            return "unparseable_date"
+        if "Evidence" in message:
+            return "citations_unverified"
+        return "statement_draft_invalid"
     return (
         dependency,
         fields,
@@ -650,10 +671,6 @@ def _prepare_statement_placement(
             "this statement's quote was not found on its page — check the "
             "page before placing it"
         )
-    try:
-        validate_cited_statement_evidence(session, evidence, project.id)
-    except StatementRefusal as exc:
-        raise StatementUnplaceable(str(exc)) from exc
     previous_timing = _previous_timing_from_candidate(fields.get("previous_timing"))
     if event_type == "committed_date_change" and previous_timing is None:
         raise StatementUnplaceable(
@@ -661,6 +678,21 @@ def _prepare_statement_placement(
         )
     if event_type == "commitment" and previous_timing is not None:
         raise StatementUnplaceable("two stated timings are a Committed Date Change")
+    try:
+        validate_external_party_statement_draft(
+            session,
+            project_id=project.id,
+            stated_party=stated_party,
+            stated_external_org_id=stated_external_org.id,
+            source_kind="cited",
+            event_date=event_date,
+            description=str(fields.get("description") or ""),
+            new_timing=new_timing,
+            previous_timing=previous_timing,
+            evidence=evidence,
+        )
+    except StatementRefusal as exc:
+        raise StatementUnplaceable(str(exc)) from exc
     return PreparedStatementPlacement(
         event_type=event_type,
         event_date=event_date,

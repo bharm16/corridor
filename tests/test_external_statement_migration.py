@@ -36,6 +36,7 @@ from corridor.models import (
     DependencyEventScope,
     DependencyEventScopeDecision,
     DependencyEventTiming,
+    DocPage,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -70,6 +71,7 @@ _EVENT_EVIDENCE_ROLE_REVISION = "d225a7c4e3f2"
 _LEGACY_STATEMENT_BACKFILL_REVISION = "e226a8d4f3c2"
 _EVENT_EVIDENCE_MIGRATION_REVISION = "f227b9e4d3c2"
 _CONTRACT_STATEMENT_REVISION = "a230c4d3e2f1"
+_RETIREMENT_ROLE_REPAIR_REVISION = "b230e4f5a6b7"
 
 
 @dataclass(frozen=True)
@@ -302,6 +304,9 @@ _REVISION_SCHEMA_EXPECTATIONS[_CONTRACT_STATEMENT_REVISION] = (
             )
         ),
     )
+)
+_REVISION_SCHEMA_EXPECTATIONS[_RETIREMENT_ROLE_REPAIR_REVISION] = (
+    _REVISION_SCHEMA_EXPECTATIONS[_CONTRACT_STATEMENT_REVISION]
 )
 
 
@@ -592,6 +597,39 @@ def _run_alembic(
     else:
         assert completed.returncode != 0, "downgrade unexpectedly succeeded"
     return completed
+
+
+def _remove_late_a217_immutability_guard(connection) -> None:
+    """Reproduce databases that applied a217 before its source was amended."""
+    connection.execute(
+        text(
+            """
+            drop trigger if exists external_party_statement_events_are_immutable
+                on dependency_events;
+            drop trigger if exists external_party_statement_events_reject_truncate
+                on dependency_events;
+            drop trigger if exists external_party_statement_scopes_are_immutable
+                on dependency_event_scopes;
+            drop trigger if exists external_party_statement_scopes_reject_truncate
+                on dependency_event_scopes;
+            drop trigger if exists external_party_statement_timings_are_immutable
+                on dependency_event_timings;
+            drop trigger if exists external_party_statement_timings_reject_truncate
+                on dependency_event_timings;
+            drop trigger if exists external_party_statement_evidence_is_immutable
+                on evidence_links;
+            drop trigger if exists external_party_statement_evidence_reject_truncate
+                on evidence_links;
+            drop function if exists reject_external_party_statement_child_mutation();
+            drop function if exists reject_external_party_statement_evidence_mutation();
+            drop function if exists reject_external_party_statement_mutation();
+            drop function if exists reject_external_party_statement_truncate();
+            revoke all privileges on table projects, legacy_ledger_archives,
+                dependency_events, dependency_event_scopes, dependency_event_timings,
+                evidence_links from corridor_statement_retirement;
+            """
+        )
+    )
 
 
 def _statement_revision_path() -> tuple[str, ...]:
@@ -1215,7 +1253,10 @@ def _assert_statement_data_at_revision(
     if expected_revision == _EVENT_EVIDENCE_MIGRATION_REVISION:
         _assert_event_evidence_migration(connection, expected_216_data)
         return
-    if expected_revision == _CONTRACT_STATEMENT_REVISION:
+    if expected_revision in {
+        _CONTRACT_STATEMENT_REVISION,
+        _RETIREMENT_ROLE_REPAIR_REVISION,
+    }:
         _assert_contracted_statement_data(connection, expected_216_data)
         return
     raise AssertionError(
@@ -1242,6 +1283,7 @@ def _assert_migration_state(
                 _LEGACY_STATEMENT_BACKFILL_REVISION,
                 _EVENT_EVIDENCE_MIGRATION_REVISION,
                 _CONTRACT_STATEMENT_REVISION,
+                _RETIREMENT_ROLE_REPAIR_REVISION,
             }
         ):
             legacy_dependency_ids = {
@@ -1565,6 +1607,51 @@ def test_populated_rehearsal_checks_receipts_round_trip_and_atomic_refusal():
             engine.dispose()
 
 
+def test_attributable_storage_repairs_a217_applied_before_late_guards():
+    """The next revision repairs, rather than assumes, amended a217 source."""
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=_ROOT,
+        error_cls=RuntimeError,
+        database_prefix="a223_historical_a217_",
+        migration_revision=_PRE_STATEMENT_REVISION,
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                _seed_216_statement_history(connection)
+                base_snapshot = _capture_216_statement_snapshot(connection)
+
+            rendered_database_url = database_url.render_as_string(
+                hide_password=False
+            )
+            _run_alembic(
+                rendered_database_url, "upgrade", _STATEMENT_SHAPE_REVISION
+            )
+            with engine.begin() as connection:
+                _remove_late_a217_immutability_guard(connection)
+
+            _run_alembic(
+                rendered_database_url, "upgrade", _ATTRIBUTABLE_STORAGE_REVISION
+            )
+            with engine.connect() as connection:
+                _assert_migration_state(
+                    connection,
+                    expected_revision=_ATTRIBUTABLE_STORAGE_REVISION,
+                    expected_216_data=base_snapshot.content,
+                )
+                assert connection.scalar(
+                    text(
+                        "select has_table_privilege("
+                        "'corridor_statement_retirement', "
+                        "'dependency_events', 'delete')"
+                    )
+                ) is True
+        finally:
+            engine.dispose()
+
+
 def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
     """A role predating #225 cannot be guessed onto a corrected scope."""
     with provision_disposable_postgres(
@@ -1784,6 +1871,13 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
             )
             session.add(document)
             session.flush()
+            session.add(
+                DocPage(
+                    document_id=document.id,
+                    page_no=1,
+                    text="Equistar will complete by June 1.",
+                )
+            )
             candidate = Candidate(
                 project_id=project.id,
                 kind="dependency",
@@ -1859,7 +1953,7 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _CONTRACT_STATEMENT_REVISION
+                    _RETIREMENT_ROLE_REPAIR_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (
@@ -2059,7 +2153,7 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _CONTRACT_STATEMENT_REVISION
+                    _RETIREMENT_ROLE_REPAIR_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (

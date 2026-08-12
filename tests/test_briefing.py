@@ -165,6 +165,64 @@ def test_a_briefing_carries_its_stamps(session, dependency):
     assert briefing.ruleset_version == RULESET_VERSION
 
 
+def test_a_briefing_evaluates_the_exact_statement_publication_it_cites(
+    session, dependency, monkeypatch
+):
+    """The narrative cannot pair one statement read with another evaluation."""
+    from corridor import briefing as briefing_module
+
+    captured = {}
+    original = briefing_module._brief
+
+    def capture(*args, **kwargs):
+        captured["evaluation"] = kwargs["evaluation"]
+        captured["publication"] = kwargs["publication"]
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(briefing_module, "_brief", capture)
+    client = StubClient([drafted(*covering_sentences(session, dependency))])
+
+    briefing_module.brief(session, dependency.id, client=client, today=TODAY)
+
+    assert captured["evaluation"].statement_publication is captured["publication"]
+    assert (
+        captured["evaluation"].statement_publication_fingerprint
+        == captured["publication"].fingerprint
+    )
+
+
+def test_a_briefing_refuses_an_evaluation_from_another_statement_read(
+    session, dependency
+):
+    """Even an equivalent later read cannot replace the frozen cited one."""
+    from corridor.briefing import _brief
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.exceptions import evaluate_dependency
+
+    first = published_dependency_statements(
+        session, (dependency.id,), project_id=dependency.project_id
+    )
+    evaluation = evaluate_dependency(
+        session,
+        dependency.id,
+        today=TODAY,
+        statement_publication=first,
+    )
+    second = published_dependency_statements(
+        session, (dependency.id,), project_id=dependency.project_id
+    )
+
+    with pytest.raises(ValueError, match="exact frozen statement publication"):
+        _brief(
+            session,
+            [dependency],
+            ref_code=dependency.ref_code,
+            client=StubClient([]),
+            evaluation=evaluation,
+            publication=second,
+        )
+
+
 def test_an_uncited_sentence_is_withheld_and_counted(session, dependency):
     """A sentence that cannot cite is a sentence the Briefing may not
     contain — withheld loudly, never shown unverified, never silently

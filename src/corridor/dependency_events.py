@@ -8,9 +8,10 @@ the one exact-day projection they can represent honestly.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
+from types import MappingProxyType
 
 from sqlalchemy import exists, false as sa_false, select
 from sqlalchemy.orm import aliased
@@ -192,7 +193,12 @@ class StatementPublication:
     """One provenance-consistent statement reading for a set of Dependencies."""
 
     project_id: int
-    by_dependency: dict[int, PublishedDependencyStatement]
+    by_dependency: Mapping[int, PublishedDependencyStatement]
+    document_only: bool = False
+
+    def __post_init__(self) -> None:
+        """Keep the paired publication from being changed after it is read."""
+        object.__setattr__(self, "by_dependency", MappingProxyType(dict(self.by_dependency)))
 
     @property
     def committed_dates(self) -> dict[int, date | None]:
@@ -216,6 +222,50 @@ class StatementPublication:
             for dependency_id, statement in self.by_dependency.items()
             if statement.unsupported_current
         )
+
+    @property
+    def fingerprint(self) -> "StatementPublicationFingerprint":
+        """The event-and-audience identity an Evaluation must agree with."""
+        return StatementPublicationFingerprint(
+            document_only=self.document_only,
+            statements=tuple(
+                StatementPublicationEntryFingerprint(
+                    dependency_id=dependency_id,
+                    current_event_id=(
+                        statement.current_event.id if statement.current_event else None
+                    ),
+                    published_event_id=(
+                        statement.event.id if statement.event else None
+                    ),
+                    published_source_kind=(
+                        statement.event.source_kind if statement.event else None
+                    ),
+                    committed_date=statement.committed_date,
+                    unsupported_current=statement.unsupported_current,
+                )
+                for dependency_id, statement in sorted(self.by_dependency.items())
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class StatementPublicationEntryFingerprint:
+    """One Dependency's immutable identity inside a statement publication."""
+
+    dependency_id: int
+    current_event_id: int | None
+    published_event_id: int | None
+    published_source_kind: str | None
+    committed_date: date | None
+    unsupported_current: bool
+
+
+@dataclass(frozen=True)
+class StatementPublicationFingerprint:
+    """The immutable statement identity and audience mode behind one reading."""
+
+    document_only: bool
+    statements: tuple[StatementPublicationEntryFingerprint, ...]
 
 
 def current_dependency_statements(
@@ -404,7 +454,7 @@ def published_dependency_statements(
                 and (published is None or event is None or committed_date is None)
             ),
         )
-    return StatementPublication(project_id, by_dependency)
+    return StatementPublication(project_id, by_dependency, document_only=document_only)
 
 
 def verified_cited_statement_provenance(

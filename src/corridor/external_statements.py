@@ -27,12 +27,14 @@ from corridor.models import (
     DependencyEventScopeDecision,
     DependencyEventTiming,
     Document,
+    DocPage,
     EvidenceLink,
     ExternalOrg,
     Project,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.project_lock import lock_project
+from corridor.verify import quote_appears_on, threshold_for
 
 
 class StatementRefusal(ValueError):
@@ -123,50 +125,33 @@ def record_external_party_statement(
     scope, creates one event-level citation, and refreshes only exact-day,
     known-scope Dependency projections.
     """
-    project = session.get(Project, project_id)
-    if project is None:
-        raise StatementRefusal(f"project {project_id} does not exist")
+    project = validate_external_party_statement_draft(
+        session,
+        project_id=project_id,
+        stated_party=stated_party,
+        stated_external_org_id=stated_external_org_id,
+        source_kind=source_kind,
+        event_date=event_date,
+        description=description,
+        new_timing=new_timing,
+        previous_timing=previous_timing,
+        evidence=evidence,
+    )
     lock_project(session, project.id)
 
     party = stated_party.strip()
-    if not party:
-        raise StatementRefusal("a statement must name the party who spoke")
-    if not description.strip():
-        raise StatementRefusal("a statement must preserve what the party said")
+    stated = session.get(ExternalOrg, stated_external_org_id)
+    if stated is None:
+        # Re-check after locking the project rather than relying on a stale
+        # draft read if an administrator removed an organization concurrently.
+        raise StatementRefusal("the affected and stated External Parties must exist")
     if not created_by.strip():
         raise StatementRefusal("a statement must identify who recorded it")
-    if source_kind not in {"cited", "verbal"}:
-        raise StatementRefusal("a statement has an unknown source kind")
-    if source_kind == "cited" and evidence is None:
-        raise StatementRefusal("a cited statement requires its verified Evidence")
-    if source_kind == "verbal" and evidence is not None:
-        raise StatementRefusal("a Verbal cannot be presented as cited Evidence")
 
     affected = session.get(ExternalOrg, affected_external_org_id)
-    stated = session.get(ExternalOrg, stated_external_org_id)
-    if affected is None or stated is None:
+    if affected is None:
         raise StatementRefusal("the affected and stated External Parties must exist")
-    if normalize_party(party) not in {
-        normalize_party(name) for name in (stated.name, *(stated.aliases or [])) if name
-    }:
-        raise StatementRefusal(
-            "the stated-party wording does not resolve to the stated External Party"
-        )
-    if is_project_side_party(project, party):
-        raise StatementRefusal(
-            f"{party} is the project's own side — an action item, never an External Party commitment"
-        )
-
-    _validate_timing(new_timing)
-    if previous_timing is not None:
-        _validate_timing(previous_timing)
     if source_kind == "verbal":
-        if event_date is None:
-            raise StatementRefusal("a Verbal must preserve the conversation date")
-        if previous_timing is not None:
-            raise StatementRefusal("a Verbal cannot be a Committed Date Change")
-        if new_timing.precision != "day":
-            raise StatementRefusal("a Verbal must preserve one exact-day commitment")
         if scope.mode != "selected" or len(scope.dependency_ids) != 1:
             raise StatementRefusal("a Verbal must scope to exactly one Dependency")
     scope_actor = _scope_actor_subject(created_by)
@@ -177,9 +162,6 @@ def record_external_party_statement(
         affected_external_org_id=affected.id,
         scope=scope,
     )
-    if evidence is not None:
-        validate_cited_statement_evidence(session, evidence, project.id)
-
     # This command is the one atomic writer for every statement path. A
     # database refusal after the event row exists must not leave the caller
     # with an unusable transaction or an event missing its timing, scope,
@@ -268,6 +250,70 @@ def record_external_party_statement(
         project_committed_dates(session, dependency_ids)
         session.flush()
     return event
+
+
+def validate_external_party_statement_draft(
+    session: Session,
+    *,
+    project_id: int,
+    stated_party: str,
+    stated_external_org_id: int,
+    source_kind: str,
+    event_date: date | None,
+    description: str,
+    new_timing: StatementTiming,
+    previous_timing: StatementTiming | None = None,
+    evidence: CitedStatementEvidence | None = None,
+) -> Project:
+    """Validate the statement facts shared by policy, preview, and writer.
+
+    Target selection belongs to the final writer because only it knows the
+    affected party and chosen Dependency scope.  Everything a Candidate says
+    for itself belongs here, so the worklist never enables a placement whose
+    own description, timing, attribution, or cited page the writer rejects.
+    """
+    project = session.get(Project, project_id)
+    if project is None:
+        raise StatementRefusal(f"project {project_id} does not exist")
+    party = stated_party.strip()
+    if not party:
+        raise StatementRefusal("a statement must name the party who spoke")
+    if not description.strip():
+        raise StatementRefusal("a statement must preserve what the party said")
+    if source_kind not in {"cited", "verbal"}:
+        raise StatementRefusal("a statement has an unknown source kind")
+    if source_kind == "cited" and evidence is None:
+        raise StatementRefusal("a cited statement requires its verified Evidence")
+    if source_kind == "verbal" and evidence is not None:
+        raise StatementRefusal("a Verbal cannot be presented as cited Evidence")
+
+    stated = session.get(ExternalOrg, stated_external_org_id)
+    if stated is None:
+        raise StatementRefusal("the affected and stated External Parties must exist")
+    if normalize_party(party) not in {
+        normalize_party(name) for name in (stated.name, *(stated.aliases or [])) if name
+    }:
+        raise StatementRefusal(
+            "the stated-party wording does not resolve to the stated External Party"
+        )
+    if is_project_side_party(project, party):
+        raise StatementRefusal(
+            f"{party} is the project's own side — an action item, never an External Party commitment"
+        )
+
+    _validate_timing(new_timing)
+    if previous_timing is not None:
+        _validate_timing(previous_timing)
+    if source_kind == "verbal":
+        if event_date is None:
+            raise StatementRefusal("a Verbal must preserve the conversation date")
+        if previous_timing is not None:
+            raise StatementRefusal("a Verbal cannot be a Committed Date Change")
+        if new_timing.precision != "day":
+            raise StatementRefusal("a Verbal must preserve one exact-day commitment")
+    if evidence is not None:
+        validate_cited_statement_evidence(session, evidence, project.id)
+    return project
 
 
 def record_statement_scope_decision(
@@ -462,3 +508,15 @@ def validate_cited_statement_evidence(
     document = session.get(Document, evidence.document_id)
     if document is None or document.project_id != project_id:
         raise StatementRefusal("cited Evidence belongs to another project")
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == evidence.page_no,
+        )
+    )
+    if page is None:
+        raise StatementRefusal("cited Evidence page is not registered")
+    if not quote_appears_on(
+        evidence.quote, page.text, threshold_for(page.text_source)
+    ):
+        raise StatementRefusal("cited Evidence quote was not found on its registered page")
