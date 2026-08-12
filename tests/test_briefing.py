@@ -22,6 +22,7 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventTiming,
     DocPage,
@@ -97,7 +98,6 @@ def dependency(session, project):
         page_no=1,
         quote="UC-1 CenterPoint Energy Electric 1149+00",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(link)
     session.flush()
@@ -375,13 +375,20 @@ def test_the_prompt_uses_the_current_exact_day_statement_over_a_stale_scalar(
     direct_evidence = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
     ).one()
+    event_evidence = EvidenceLink(
+        dependency_id=None,
+        document_id=direct_evidence.document_id,
+        page_no=direct_evidence.page_no,
+        quote="CenterPoint will finish relocation in October.",
+        verified=True,
+    )
+    session.add(event_evidence)
+    session.flush()
     session.add(
-        EvidenceLink(
+        DependencyEventEvidence(
+            evidence_link_id=event_evidence.id,
             event_id=event.id,
-            document_id=direct_evidence.document_id,
-            page_no=direct_evidence.page_no,
-            quote="CenterPoint will finish relocation in October.",
-            verified=True,
+            recorded_by="corridor:event-admission",
         )
     )
     session.flush()

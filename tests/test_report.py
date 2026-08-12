@@ -8,16 +8,23 @@ from sqlalchemy import select
 from corridor.adjudicate import accept_candidate
 from corridor.changes import record_run, snapshot
 from corridor.db import Session, engine
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementScope,
+    StatementTiming,
+    record_external_party_statement,
+)
 from corridor.exceptions import evaluate_project, format_exception_label
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.export import to_xlsx
-from corridor.ledger import browse
+from corridor.ledger import browse, mark_satisfies
 from corridor.models import (
     Candidate,
     Dependency,
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     Project,
 )
 from corridor.operative_support import designate_publication_support
@@ -143,6 +150,35 @@ def _a_link_of(session, project_id):
         .where(Dependency.project_id == project_id)
         .order_by(EvidenceLink.id)
     ).first()
+
+
+def _record_exact_cited_statement(
+    session, dependency, *, event_date: date, committed_date: date
+):
+    """Give a fixture record an authoritative exact-day commitment."""
+    document = session.scalars(
+        select(Document).where(Document.project_id == dependency.project_id)
+    ).first()
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    assert document is not None and party is not None
+    return record_external_party_statement(
+        session,
+        project_id=dependency.project_id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=event_date,
+        description=f"{party.name} will complete on {committed_date.isoformat()}.",
+        new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id,
+            1,
+            f"{party.name} will complete on {committed_date.isoformat()}.",
+        ),
+    )
 
 
 def test_a_bare_cell_is_refused(session):
@@ -368,8 +404,12 @@ def test_a_new_report_calls_a_later_date_a_committed_date_change(
         .where(Dependency.project_id == project.id)
         .order_by(Dependency.id)
     ).first()
-    dependency.committed_date = date(2026, 6, 3)
-    session.flush()
+    _record_exact_cited_statement(
+        session,
+        dependency,
+        event_date=date(2026, 6, 1),
+        committed_date=date(2026, 6, 3),
+    )
     first = build_report(session, project.id, today=date(2026, 8, 1))
     record_run(
         session,
@@ -377,8 +417,12 @@ def test_a_new_report_calls_a_later_date_a_committed_date_change(
         evaluation=first.evaluation,
         committed_dates=first.committed_dates,
     )
-    dependency.committed_date = date(2026, 8, 15)
-    session.flush()
+    _record_exact_cited_statement(
+        session,
+        dependency,
+        event_date=date(2026, 7, 1),
+        committed_date=date(2026, 8, 15),
+    )
 
     report = build_report(session, project.id, today=date(2026, 8, 1))
     changes = section(report, "Changes since last report")
@@ -491,8 +535,14 @@ def test_readiness_in_the_report_is_computed_not_stored(
     assert ready_summary.value == "0"
 
     link = _a_link_of(session, project_with_two_dependencies.id)
-    link.satisfies_requirement = True
-    session.flush()
+    dependency = session.get(Dependency, link.dependency_id)
+    assert dependency is not None
+    mark_satisfies(
+        session,
+        dependency.id,
+        link.id,
+        principal=TEST_PRINCIPAL,
+    )
 
     after = build_report(session, project_with_two_dependencies.id)
     assert next(c for c in after.summary if c.label == "Ready").value == "1"
@@ -639,7 +689,12 @@ def test_a_critical_row_lists_its_exceptions_as_facts(
     shows its exceptions with their quantities, and the reader judges."""
     project = project_with_two_dependencies
     critical = make_critical(session, project)
-    critical.committed_date = date(2026, 7, 28)
+    _record_exact_cited_statement(
+        session,
+        critical,
+        event_date=date(2026, 7, 27),
+        committed_date=date(2026, 7, 28),
+    )
     critical.need_date = date(2026, 8, 8)
     session.flush()
 
@@ -688,8 +743,12 @@ def _overdue_by(session, project_id, days):
     for dependency in session.scalars(
         select(Dependency).where(Dependency.project_id == project_id)
     ).all():
-        dependency.committed_date = committed
-    session.flush()
+        _record_exact_cited_statement(
+            session,
+            dependency,
+            event_date=committed - timedelta(days=1),
+            committed_date=committed,
+        )
     return committed + timedelta(days=days)
 
 
@@ -765,8 +824,12 @@ def _due_tomorrow(session, project_id):
     for dependency in session.scalars(
         select(Dependency).where(Dependency.project_id == project_id)
     ).all():
-        dependency.committed_date = committed
-    session.flush()
+        _record_exact_cited_statement(
+            session,
+            dependency,
+            event_date=committed - timedelta(days=1),
+            committed_date=committed,
+        )
     return committed - timedelta(days=1)
 
 

@@ -45,6 +45,7 @@ from corridor.models import (
     PolicyRun,
     Candidate,
     Dependency,
+    DependencyEvidenceSufficiency,
     DocPage,
     Document,
     EvidenceLink,
@@ -472,6 +473,16 @@ def _assertion_state(session, dependency_id: int) -> tuple:
     )
 
 
+def _direct_sufficiency(session, dependency_id: int, evidence_link_id: int) -> bool:
+    return session.scalar(
+        select(DependencyEvidenceSufficiency.id).where(
+            DependencyEvidenceSufficiency.dependency_id == dependency_id,
+            DependencyEvidenceSufficiency.evidence_link_id == evidence_link_id,
+            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+        )
+    ) is not None
+
+
 def _ledger_mutation_state(
     session, scenario: TransitionScenario
 ) -> tuple:
@@ -494,9 +505,17 @@ def _ledger_mutation_state(
                     EvidenceLink.page_no,
                     EvidenceLink.quote,
                     EvidenceLink.verified,
-                    EvidenceLink.satisfies_requirement,
+                    DependencyEvidenceSufficiency.id.is_not(None),
                 )
                 .where(EvidenceLink.dependency_id == scenario.dependency.id)
+                .outerjoin(
+                    DependencyEvidenceSufficiency,
+                    (DependencyEvidenceSufficiency.dependency_id
+                     == EvidenceLink.dependency_id)
+                    & (DependencyEvidenceSufficiency.evidence_link_id
+                       == EvidenceLink.id)
+                    & DependencyEvidenceSufficiency.scope_link_id.is_(None),
+                )
                 .order_by(EvidenceLink.id)
             ).all()
         ),
@@ -842,7 +861,9 @@ def test_exact_success_moves_support_without_admitting_or_revising(session):
     assert _assertion_state(session, scenario.dependency.id) == assertions_before
     session.refresh(scenario.old_evidence)
     assert scenario.old_evidence.verified is True
-    assert scenario.old_evidence.satisfies_requirement is True
+    assert _direct_sufficiency(
+        session, scenario.dependency.id, scenario.old_evidence.id
+    )
 
     worklist = build_reviewer_worklist(session, scenario.project.id)
     assert worklist.reconfirmation == ()
@@ -919,7 +940,9 @@ def test_readiness_is_inherited_but_never_invented(
         .order_by(EvidenceLink.id.desc())
     ).first()
     assert evidence.document_id == scenario.successor.id
-    assert evidence.satisfies_requirement is prior_satisfying
+    assert _direct_sufficiency(
+        session, scenario.dependency.id, evidence.id
+    ) is prior_satisfying
     support = resolve_operative_support(
         session, (scenario.dependency.id,)
     )[scenario.dependency.id]
@@ -1530,8 +1553,12 @@ def test_a_late_readiness_refusal_leaves_zero_partial_writes(
     # its mutation seam. The project lock prevents this in ordinary operation;
     # the forced seam proves even a late fail-closed decision happens before
     # Evidence, designation, or machine-audit writes.
-    scenario.old_evidence.satisfies_requirement = False
-    session.flush([scenario.old_evidence])
+    mark_satisfies(
+        session,
+        scenario.dependency.id,
+        scenario.old_evidence.id,
+        principal=REVIEWER,
+    )
     before = _ledger_mutation_state(session, scenario)
     monkeypatch.setattr(
         automatic,

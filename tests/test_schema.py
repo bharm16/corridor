@@ -48,8 +48,8 @@ def test_database_rejects_a_ready_status(conn):
         )
 
 
-def test_evidence_defaults_are_false(conn):
-    """Neither verification nor sufficiency is ever assumed."""
+def test_evidence_defaults_to_unverified_and_has_no_sufficiency_role(conn):
+    """Neither verification nor readiness is ever assumed."""
     conn.execute(
         text(
             "insert into projects (id, slug, name, is_synthetic) "
@@ -78,12 +78,15 @@ def test_evidence_defaults_are_false(conn):
     )
     row = conn.execute(
         text(
-            "select verified, satisfies_requirement from evidence_links "
-            "where dependency_id = 9998"
+            "select evidence.verified, exists ("
+            "select 1 from dependency_evidence_sufficiencies sufficiency "
+            "where sufficiency.evidence_link_id = evidence.id"
+            ") as has_sufficiency from evidence_links evidence "
+            "where evidence.dependency_id = 9998"
         )
     ).one()
     assert row.verified is False
-    assert row.satisfies_requirement is False
+    assert row.has_sufficiency is False
 
 
 def test_dependency_model_declares_external_org_and_milestone_foreign_keys():

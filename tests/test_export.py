@@ -9,6 +9,7 @@ from corridor.db import Session, engine
 from corridor.exceptions import Thresholds, evaluate_project, format_exception_label
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.export import COLUMNS, to_pdf, to_xlsx
+from corridor.ledger import mark_satisfies
 from corridor.models import (
     Candidate,
     Dependency,
@@ -163,7 +164,15 @@ def test_the_xlsx_carries_computed_exceptions(session, project, tmp_path):
     dep = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
-    dep.committed_date = date(2026, 7, 28)
+    record_verbal(
+        session,
+        dep,
+        stated_party="Export Test Utility",
+        description="Export Test Utility said relocation will finish on July 28.",
+        conversation_date=date(2026, 7, 27),
+        committed_date=date(2026, 7, 28),
+        principal=TEST_PRINCIPAL,
+    )
     dep.need_date = date(2026, 8, 8)
     session.flush()
     evaluation = evaluate_project(session, project.id, today=date(2026, 8, 5))
@@ -325,10 +334,10 @@ def test_the_xlsx_suppresses_a_stale_scalar_after_a_month_statement(
     assert row["Committed date source"] is None
 
 
-def test_the_xlsx_labels_a_scalar_only_date_as_a_legacy_projection(
+def test_the_xlsx_does_not_treat_a_scalar_only_date_as_statement_authority(
     session, project, tmp_path
 ):
-    """The compatibility path remains readable without inventing a citation."""
+    """A stale materialized scalar cannot publish a commitment by itself."""
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
@@ -345,8 +354,8 @@ def test_the_xlsx_labels_a_scalar_only_date_as_a_legacy_projection(
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
-    assert row["Committed date"].date() == date(2026, 8, 15)
-    assert row["Committed date source"] == "Legacy compatibility projection"
+    assert row["Committed date"] is None
+    assert row["Committed date source"] is None
 
 
 def test_the_pdf_renders(session, project, tmp_path):
@@ -387,7 +396,6 @@ def test_xlsx_uses_publication_support_while_readiness_stays_independent(
         page_no=4,
         quote="completion evidence only",
         verified=True,
-        satisfies_requirement=True,
     )
     publication = EvidenceLink(
         dependency_id=dependency.id,
@@ -398,6 +406,12 @@ def test_xlsx_uses_publication_support_while_readiness_stays_independent(
     )
     session.add_all([completion, publication])
     session.flush()
+    mark_satisfies(
+        session,
+        dependency.id,
+        completion.id,
+        principal=TEST_PRINCIPAL,
+    )
     designate_publication_support(
         session,
         dependency.id,

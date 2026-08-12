@@ -31,7 +31,9 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEvidenceSufficiency,
     DocPage,
     Document,
     EvidenceLink,
@@ -145,7 +147,6 @@ def legacy_ledger(session):
         page_no=1,
         quote="FOC1-1 AT&T Texas Telecom",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(evidence)
     session.flush()
@@ -360,18 +361,29 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
     ready_evidence = session.scalars(
         select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
     ).one()
-    ready_evidence.satisfies_requirement = True
+    session.add(
+        DependencyEvidenceSufficiency(
+            dependency_id=dependency.id,
+            evidence_link_id=ready_evidence.id,
+            scope_link_id=None,
+        )
+    )
     event_evidence = EvidenceLink(
         dependency_id=None,
-        event_id=event.id,
         document_id=document.id,
         page_no=1,
         quote="AT&T committed to relocate by August 15",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(event_evidence)
     session.flush()
+    session.add(
+        DependencyEventEvidence(
+            event_id=event.id,
+            evidence_link_id=event_evidence.id,
+            recorded_by="local:archive-tester",
+        )
+    )
     support = OperativeSupport(
         dependency_id=dependency.id,
         evidence_link_id=ready_evidence.id,
@@ -421,14 +433,21 @@ def test_retirement_archives_and_deletes_events_support_and_ready_evidence(
             ],
         }
     ]
-    assert any(
-        row["id"] == ready_evidence.id and row["satisfies_requirement"] is True
+    assert all(
+        "satisfies_requirement" not in row and "event_id" not in row
         for row in plan.content["evidence_links"]
     )
-    assert any(
-        row["id"] == event_evidence.id and row["event_id"] == event.id
-        for row in plan.content["evidence_links"]
-    )
+    assert plan.content["dependency_evidence_sufficiencies"] == [
+        {
+            "id": plan.content["dependency_evidence_sufficiencies"][0]["id"],
+            "dependency_id": dependency.id,
+            "evidence_link_id": ready_evidence.id,
+            "scope_link_id": None,
+            "created_at": plan.content["dependency_evidence_sufficiencies"][0][
+                "created_at"
+            ],
+        }
+    ]
     assert plan.content["dependency_event_evidence"] == [
         {
             "evidence_link_id": event_evidence.id,
@@ -505,9 +524,18 @@ def test_retirement_archives_and_deletes_unknown_scope_statements(
         statement.id
     ]
     assert plan.content["dependency_event_scopes"] == []
-    assert any(
-        row["event_id"] == statement.id for row in plan.content["evidence_links"]
-    )
+    assert plan.content["dependency_event_evidence"] == [
+        {
+            "evidence_link_id": plan.content["dependency_event_evidence"][0][
+                "evidence_link_id"
+            ],
+            "event_id": statement.id,
+            "recorded_by": "corridor:event-admission",
+            "created_at": plan.content["dependency_event_evidence"][0][
+                "created_at"
+            ],
+        }
+    ]
 
     retire_legacy_ledger(
         session,
@@ -518,7 +546,9 @@ def test_retirement_archives_and_deletes_unknown_scope_statements(
 
     assert session.get(DependencyEvent, statement.id) is None
     assert session.scalar(
-        select(func.count(EvidenceLink.id)).where(EvidenceLink.event_id == statement.id)
+        select(func.count(DependencyEventEvidence.evidence_link_id)).where(
+            DependencyEventEvidence.event_id == statement.id
+        )
     ) == 0
 
 
@@ -923,7 +953,6 @@ def test_plan_fails_closed_on_a_mixed_human_and_legacy_ledger(
         page_no=1,
         quote="FOC1-1 AT&T Texas Telecom",
         verified=True,
-        satisfies_requirement=False,
     )
     session.add(human_evidence)
     session.flush()
@@ -990,6 +1019,43 @@ def test_verify_rejects_a_receipt_whose_content_does_not_match_its_digest(sessio
 
     with pytest.raises(CorruptLegacyLedgerArchive, match="digest does not match"):
         verify_archive(session, archive.id)
+
+
+def test_verify_reads_a_slip_era_archive_without_reviving_slip_writes(session):
+    project = Project(
+        slug="slip-era-legacy-archive",
+        name="Slip-era Legacy Archive",
+        is_synthetic=False,
+    )
+    session.add(project)
+    session.flush()
+    content = {
+        "project": {"id": project.id, "slug": project.slug},
+        "dependencies": [],
+        "assertions": [],
+        "evidence_links": [],
+        "audit_log": [],
+        "dependency_events": [{"event_type": "slip", "id": 44}],
+        "ref_code_high_watermark": 0,
+    }
+    archive = LegacyLedgerArchive(
+        project_id=project.id,
+        format_version="legacy-ledger-v1",
+        content_json=content,
+        content_sha256=archive_module._content_sha256(content),
+        dependency_count=0,
+        assertion_count=0,
+        evidence_link_count=0,
+        audit_log_count=0,
+        ref_code_high_watermark=0,
+        retired_by="system:test",
+    )
+    session.add(archive)
+    session.flush()
+
+    assert verify_archive(session, archive.id).content["dependency_events"] == [
+        {"event_type": "slip", "id": 44}
+    ]
 
 
 @pytest.mark.parametrize("mutation", ["update", "delete", "truncate"])

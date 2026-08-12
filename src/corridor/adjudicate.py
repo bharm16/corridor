@@ -10,7 +10,7 @@ sources instead of silently keeping whichever was written last.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 import re
 
 from sqlalchemy import func, select
@@ -795,9 +795,6 @@ def _evidence_link(session: Session, dependency: Dependency, citation: dict):
         page_no=citation["page"],
         quote=citation["quote"],
         verified=citation.get("verified", False),
-        # Never set on acceptance. Readiness is a separate, deliberate
-        # judgment that this evidence meets the dependency's bar (ADR-0002).
-        satisfies_requirement=False,
     )
     session.add(link)
     session.flush()
@@ -1101,21 +1098,10 @@ def _materialize(
                 f"candidate {candidate.id} is an agreement claim with no "
                 f"{missing} — acceptance will not guess what was obligated"
             )
-        raw_date = fields.get("committed_date")
-        committed_date = None
-        if raw_date:
-            try:
-                committed_date = date.fromisoformat(str(raw_date))
-            except ValueError:
-                raise MalformedCandidateShape(
-                    f"candidate {candidate.id} carries committed_date "
-                    f"{raw_date!r}, which is not a date acceptance can type"
-                )
         return Dependency(
             dep_type="agreement",
             title=title,
             notes=obligation,
-            committed_date=committed_date,
             evidence_required=fields.get("evidence_required"),
             **common,
         )

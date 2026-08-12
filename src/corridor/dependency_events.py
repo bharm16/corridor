@@ -65,21 +65,14 @@ def current_dependency_statements(
 ) -> dict[int, CurrentDependencyStatement]:
     """Return the current exact-day statement and closure state per Dependency.
 
-    An unfiltered compatibility read preserves an existing scalar only where
-    no structured event exists.  A filtered read is event-only: selecting
-    cited statements must not surface a Verbal-backed scalar as cited.
+    The Dependency scalar is a materialized compatibility projection, never a
+    fallback authority. A filtered read is event-only: selecting cited
+    statements must not surface a Verbal-backed projection as cited.
     """
     ids = tuple(dict.fromkeys(dependency_ids))
     if not ids:
         return {}
 
-    scalar_dates = dict(
-        session.execute(
-            select(Dependency.id, Dependency.committed_date).where(
-                Dependency.id.in_(ids)
-            )
-        ).all()
-    )
     closed_ids = set(
         session.scalars(
             select(DependencyEventScope.dependency_id)
@@ -146,17 +139,14 @@ def current_dependency_statements(
     ):
         current.setdefault(dependency_id, (event, timing))
 
-    filtered = source_kind is not None or event_ids is not None
     statements: dict[int, CurrentDependencyStatement] = {}
-    for dependency_id in scalar_dates:
+    for dependency_id in ids:
         current_event = current.get(dependency_id)
         effective_date = (
             current_event[1].start_date
             if current_event is not None and current_event[1].precision == "day"
             else None
         )
-        if current_event is None and not filtered:
-            effective_date = scalar_dates[dependency_id]
         statements[dependency_id] = CurrentDependencyStatement(
             event=current_event[0] if current_event else None,
             effective_date=effective_date,
