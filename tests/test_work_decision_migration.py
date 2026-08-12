@@ -17,7 +17,8 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b230e4f5a6b7"
-HEAD = "c249d7e1f4a3"
+REASON_PROJECTION_PREDECESSOR = "c249d7e1f4a3"
+HEAD = "d249f8a2e5b4"
 
 
 def _upgrade(database_url: str, target: str) -> None:
@@ -139,5 +140,61 @@ def test_work_decision_expansion_preserves_exact_predecessor_receipts():
                         ),
                     },
                 ]
+        finally:
+            engine.dispose()
+
+
+def test_reason_projection_backfills_an_undated_dependency_action_tail():
+    """The successor migration preserves b249's receipt/projection equality."""
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="issue249_reason_predecessor_",
+        migration_revision=REASON_PROJECTION_PREDECESSOR,
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        rendered = database_url.render_as_string(hide_password=False)
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "insert into projects (slug, name, is_synthetic) "
+                        "values ('issue249-reason', 'Issue 249 reason', true)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "insert into dependencies "
+                        "(project_id, ref_code, dep_type, title, status, next_action) "
+                        "select id, 'WD-REASON', 'utility_relocation', "
+                        "'Undated action', 'identified', 'Call the party' "
+                        "from projects where slug = 'issue249-reason'"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "insert into work_decisions "
+                        "(dependency_id, decision_type, field, before_value, "
+                        "after_value, recorded_by, action_due_date_reason) "
+                        "select id, 'set_next_action', 'next_action', null, "
+                        "json_build_object('action', 'Call the party', "
+                        "'due_date', null)::text, "
+                        "'local:coordination-recorder', "
+                        "'awaiting_external_information' "
+                        "from dependencies where ref_code = 'WD-REASON'"
+                    )
+                )
+
+            _upgrade(rendered, "head")
+
+            with engine.connect() as connection:
+                assert connection.scalar(
+                    text(
+                        "select action_due_date_reason from dependencies "
+                        "where ref_code = 'WD-REASON'"
+                    )
+                ) == "awaiting_external_information"
         finally:
             engine.dispose()
