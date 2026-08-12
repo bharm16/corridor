@@ -1,5 +1,11 @@
 # The date rehearsal: SH 99 Grand Parkway, bounded
 
+> Amended 2026-08-09 by ADR-0029. Every "the operator authorizes once"
+> step below is gone: the admission policies run as a pipeline stage when
+> documents land, and one matrix is enough to put conflicts on the record.
+> The rest of the plan — what the policies check, what abstains, the
+> project-side actor boundary — stands as written.
+
 Decided 2026-08-07. The City of Houston rehearsal proved the half of the product that
 organizes conflicts — the Ledger, Adjudication, the cited report. This rehearsal proves
 the half that reads dates: events on the record, Committed Dates, slips, and the

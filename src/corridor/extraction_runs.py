@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 import sys
 
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import Session, aliased
 
+from corridor import audit
 from corridor.models import (
     EXTRACTION_OUTCOMES,
     ActiveExtractionRun,
@@ -167,13 +169,47 @@ def declare_active_run(
 ) -> ExtractionRun:
     """Declare a completed run operative; never infer one from recency.
 
-    The declaration is a human act at Admission's bar: the declarer is
-    recorded, declarations append rather than overwrite, and re-declaring
-    the run already current records nothing new — an identical rerun does
-    not duplicate an outcome. ``active_extraction_runs`` stays the one-row
-    projection readers join, maintained to equal the chain tail.
+    The declarer is recorded, declarations append rather than overwrite,
+    and re-declaring the run already current records nothing new — an
+    identical rerun does not duplicate an outcome.
+    ``active_extraction_runs`` stays the one-row projection readers join,
+    maintained to equal the chain tail.
     """
-    declarer = require_human_principal(principal)
+    return _declare(
+        session,
+        document_id,
+        extraction_run_id,
+        declared_by=require_human_principal(principal).subject,
+    )
+
+
+def declare_active_run_by_policy(
+    session: Session, document_id: int, extraction_run_id: int
+) -> ExtractionRun:
+    """Declare a run the machine chose, under the declaring actor.
+
+    Only the unambiguous case reaches here (see
+    ``declare_single_run_documents_by_policy``): choosing between several
+    completed runs is the inference Active Runs exist to forbid, and it
+    stays a human act. What the machine does is name the only reading a
+    document has, which is a fact rather than a choice — and ADR-0029
+    put it in the pipeline so a project is not dark until someone says so.
+    """
+    return _declare(
+        session,
+        document_id,
+        extraction_run_id,
+        declared_by=audit.ACTIVE_RUN_DECLARATION_ACTOR,
+    )
+
+
+def _declare(
+    session: Session,
+    document_id: int,
+    extraction_run_id: int,
+    *,
+    declared_by: str,
+) -> ExtractionRun:
     project_id = session.scalar(
         select(Document.project_id).where(Document.id == document_id)
     )
@@ -211,7 +247,7 @@ def declare_active_run(
         ActiveRunDeclaration(
             document_id=document_id,
             extraction_run_id=extraction_run_id,
-            declared_by=declarer.subject,
+            declared_by=declared_by,
             predecessor_declaration_id=tail.id if tail is not None else None,
         )
     )
@@ -293,6 +329,60 @@ def declare_single_run_documents(
             )
         )
     return declared
+
+
+@dataclass(frozen=True)
+class MechanicalDeclarations:
+    """What the landing stage declared, and what it left for a human."""
+
+    declared: list[ExtractionRun]
+    # Documents holding several completed runs, named as a reader knows
+    # them. Left undeclared rather than guessed, and surfaced rather than
+    # raised: one ambiguous document must not keep a whole project dark.
+    ambiguous: list[str]
+
+
+def declare_single_run_documents_by_policy(
+    session: Session, project_id: int
+) -> MechanicalDeclarations:
+    """Name the only reading every undeclared document has.
+
+    The human form of this refuses as a whole when any document is
+    ambiguous, because it answers an operator's stated intent to declare
+    a project. This one runs unattended whenever documents land
+    (ADR-0029), so it declares what is unambiguous and reports what is
+    not — the ambiguous document waits for a human to choose its run,
+    and every other document's conflicts reach the list meanwhile.
+    """
+    lock_project(session, project_id)
+
+    rows = session.execute(
+        select(ExtractionRun, Document)
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(Document.project_id == project_id, completion_predicate())
+        .order_by(ExtractionRun.id)
+    ).all()
+
+    runs_by_document: dict[int, list[ExtractionRun]] = {}
+    registry_ids: dict[int, str] = {}
+    for run, document in rows:
+        runs_by_document.setdefault(document.id, []).append(run)
+        registry_ids[document.id] = (
+            document.registry_id or document.filename or f"document {document.id}"
+        )
+
+    declared: list[ExtractionRun] = []
+    ambiguous: list[str] = []
+    for document_id, runs in sorted(runs_by_document.items()):
+        if session.get(ActiveExtractionRun, document_id) is not None:
+            continue
+        if len(runs) > 1:
+            ambiguous.append(registry_ids[document_id])
+            continue
+        declared.append(
+            declare_active_run_by_policy(session, document_id, runs[0].id)
+        )
+    return MechanicalDeclarations(declared=declared, ambiguous=sorted(ambiguous))
 
 
 def current_active_run_declaration(

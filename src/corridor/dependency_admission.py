@@ -1,20 +1,23 @@
-"""Policy-authorized admission of dependencies when revisions agree exactly.
+"""Mechanical admission of the conflicts a project's matrices can anchor.
 
-ADR-0027 finishes what ADR-0026 started: a record enters the Ledger by a
-human decision or by a named deterministic policy a human authorized —
-and stopping that rule at events produced a product whose cold start was
-bulk human data entry. The eligibility proof here is exact agreement:
-the policy names its agreement documents, pinned by content hash, and a
-conflict admits mechanically only when each named document's declared
-Active Run holds exactly one candidate for its identifier, their fields
-are byte-identical, the citations are verified, and no record already
-carries the reference. Two revisions independently asserting the
-identical row is stronger evidence than one reviewer glancing at a card.
+ADR-0027 admitted a conflict only where two revisions agreed exactly,
+under an authorization a principal signed. ADR-0029 removed both gates,
+because together they were the product's front door: a project with one
+matrix could not be loaded at all, and a project with two showed nothing
+until someone signed for rules they had not yet seen work. What the
+machine surfaces is the point; the signature was buying a provenance
+claim the verified citation already carries.
 
-Where revisions disagree is exactly where human judgment pays, so the
-disagreement — with the missing, the duplicated, and the ambiguous — is
-all Adjudication ever sees. Abstention leaves the Candidate pending; the
-Ledger is never forced; no model verdict appears anywhere in the path.
+So a conflict admits when the revisions that state it can anchor it: the
+declared Active Run of each holds exactly one candidate for the
+identifier, the citation is verified, the row asserts something, and no
+record already carries the reference. One matrix is enough. Where
+several revisions state a row identically the newest is admitted and the
+rest merge as corroboration; where they disagree the row waits for
+judgment, and the reviewer is told which revisions differ.
+
+Abstention leaves the Candidate pending; the Ledger is never forced; no
+model verdict appears anywhere in the path.
 """
 
 from __future__ import annotations
@@ -39,12 +42,10 @@ from corridor.models import (
     Candidate,
     Dependency,
     DependencyAdmissionOutcome,
-    PolicyApproval,
     PolicyRun,
     Document,
     Project,
 )
-from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 
 DEPENDENCY_ADMISSION_POLICY_VERSION = "dependency-admission-v1"
@@ -56,6 +57,10 @@ OUTCOME_ADMITTED = "admitted"
 OUTCOME_MERGED = "merged"
 OUTCOME_ABSTAINED = "abstained"
 
+# `missing_from_agreement_document` is no longer emitted — a revision
+# that never mentions a row stopped withholding it (ADR-0029) — but
+# receipts written before that decision still carry it, and this set
+# names what the column may hold across the family's history.
 ABSTENTION_REASONS = frozenset(
     {
         "citations_unverified",
@@ -68,10 +73,6 @@ ABSTENTION_REASONS = frozenset(
         "write_refused",
     }
 )
-
-
-class DependencyAdmissionNotAuthorized(RuntimeError):
-    """No current approval covers this policy for this project."""
 
 
 @dataclass(frozen=True)
@@ -91,106 +92,50 @@ class DependencyAdmissionResult:
     )
 
 
-def authorize_dependency_admission(
-    session: Session,
-    project_id: int,
-    *,
-    principal: HumanPrincipal,
-    agreement_document_ids: list[int],
-) -> PolicyApproval:
-    """Append one human authorization naming the agreement documents.
-
-    The named documents must belong to the project and hold declared
-    Active Runs — the policy stands only on declared work — and the
-    approval pins each by its content hash, so a swapped file pauses the
-    policy exactly as an edited check does.
-    """
-    principal = require_human_principal(principal)
-    project = session.get(Project, project_id)
-    if project is None:
-        raise ValueError(f"project {project_id} does not exist")
-    if len(agreement_document_ids) < 2:
-        raise ValueError(
-            "agreement needs at least two documents — one document alone "
-            "cannot corroborate itself"
-        )
-    lock_project(session, project_id)
-
-    for document_id in agreement_document_ids:
-        document = session.get(Document, document_id)
-        if document is None or document.project_id != project_id:
-            raise ValueError(
-                f"document {document_id} is not part of this project"
-            )
-        if document.doc_type != "matrix":
-            raise ValueError(
-                f"document {document_id} ({document.filename}) is a "
-                f"{document.doc_type} — the exact-agreement policy stands "
-                "on matrix revisions; other document types need their own "
-                "eligibility rule"
-            )
-        if session.get(ActiveExtractionRun, document_id) is None:
-            raise ValueError(
-                f"document {document_id} ({document.filename}) has no "
-                "declared Active Run — the policy stands only on declared "
-                "work"
-            )
-
-    return policy.record_approval(
-        session,
-        FAMILY,
-        project_id=project_id,
-        policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
-        policy_json=_canonical_policy(session, project, agreement_document_ids),
-        principal=principal,
-        action=audit.AUTHORIZE_DEPENDENCY_ADMISSION,
-        also_recorded={"agreement_document_ids": list(agreement_document_ids)},
-    )
-
-
-def current_dependency_admission_approval(
+def declared_matrix_document_ids(
     session: Session, project_id: int
-) -> PolicyApproval | None:
-    """The newest approval, and only if it still describes what would run.
+) -> list[int]:
+    """Every matrix revision the policy reads, oldest stated date first.
 
-    The named documents are re-read from the approval itself, so a
-    re-declared Active Run or a swapped file pauses the policy: the
-    recompute raises, and a policy that can no longer be described is not
-    a current one.
+    Order is the record's own: the newest revision's row is the one
+    admitted, and older revisions corroborate it. Nothing here elects a
+    revision — corroboration only happens between rows that already
+    state the same thing.
     """
-
-    def recompute(project: Project, approval) -> dict:
-        stored = approval.policy_json.get("agreement_documents", [])
-        return _canonical_policy(
-            session, project, [int(d["document_id"]) for d in stored]
-        )
-
-    return policy.current_approval(
-        session,
-        FAMILY,
-        project_id=project_id,
-        policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
-        recompute=recompute,
+    return list(
+        session.scalars(
+            select(Document.id)
+            .join(
+                ActiveExtractionRun,
+                ActiveExtractionRun.document_id == Document.id,
+            )
+            .where(
+                Document.project_id == project_id,
+                Document.doc_type == "matrix",
+            )
+            .order_by(Document.doc_date.asc().nulls_first(), Document.id.asc())
+        ).all()
     )
 
 
 def run_dependency_admission(
     session: Session, project_id: int
 ) -> DependencyAdmissionResult:
-    """Evaluate the authorized policy over the agreement documents' rows."""
-    approval = current_dependency_admission_approval(session, project_id)
-    if approval is None:
-        raise DependencyAdmissionNotAuthorized(
-            "dependency admission requires a current authorization of "
-            f"{DEPENDENCY_ADMISSION_POLICY_VERSION} — authorization covers "
-            "the rules, and a changed policy needs a new one"
-        )
+    """Admit what the project's declared matrix revisions can anchor.
+
+    No authorization stands in front of this (ADR-0029). The run records
+    the exact policy it evaluated — its version, the documents it read
+    pinned by content hash, and the deployed bytes of these checks — so
+    the receipt still answers "what ran, over what" without a signature
+    having been collected first.
+    """
+    project = session.get(Project, project_id)
+    if project is None:
+        raise ValueError(f"project {project_id} does not exist")
     lock_project(session, project_id)
 
-    document_ids = [
-        int(d["document_id"])
-        for d in approval.policy_json["agreement_documents"]
-    ]
+    document_ids = declared_matrix_document_ids(session, project_id)
+    policy_json = _canonical_policy(session, project, document_ids)
 
     # Pending dependency candidates from each agreement document's
     # declared Active Run, grouped by document then by utility_id.
@@ -237,16 +182,21 @@ def run_dependency_admission(
             abstain(rows[""], "no_utility_id")
 
     for uid in all_uids:
-        per_doc = [by_document[d].get(uid, []) for d in document_ids]
-        participants = [c for group in per_doc for c in group]
+        # Only the revisions that state this conflict have anything to say
+        # about it. A revision that never mentions the row does not
+        # withhold it: one matrix is enough to put a conflict on the
+        # record, and a later revision corroborates or disputes it
+        # (ADR-0029).
+        stating = [
+            group for group in (by_document[d].get(uid, []) for d in document_ids)
+            if group
+        ]
+        participants = [c for group in stating for c in group]
 
-        if any(len(group) > 1 for group in per_doc):
+        if any(len(group) > 1 for group in stating):
             abstain(participants, "multiple_rows_in_agreement_document")
             continue
-        if any(not group for group in per_doc):
-            abstain(participants, "missing_from_agreement_document")
-            continue
-        candidates = [group[0] for group in per_doc]
+        candidates = [group[0] for group in stating]
         if any(not c.citations_verified for c in candidates):
             abstain(candidates, "citations_unverified")
             continue
@@ -299,9 +249,9 @@ def run_dependency_admission(
     run = PolicyRun(
         project_id=project_id,
         family=FAMILY,
-        policy_approval_id=approval.id,
-        policy_version=approval.policy_version,
-        policy_sha256=approval.policy_sha256,
+        policy_approval_id=None,
+        policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
+        policy_sha256=policy.canonical_sha256(policy_json),
         abstention_reason_version=ABSTENTION_REASON_VERSION,
         applied_count=len(admitted),
         abstained_count=len(abstentions),
