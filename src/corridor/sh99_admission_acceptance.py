@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -103,8 +104,10 @@ def run_sh99_admission_acceptance(
     source_state = _require_pinned_source(
         snapshot["source_revision"], config.expected_clean_git_revision
     )
+    source_migration_head = _source_migration_head()
+    source_state["migration_head"] = source_migration_head
     with provision_database(config.postgres_admin_url) as database:
-        _require_pinned_schema(snapshot, database)
+        _require_current_source_schema(database, source_migration_head)
         with database.session_factory() as session:
             project, candidates = _seed_snapshot(session, snapshot)
             session.commit()
@@ -157,6 +160,7 @@ def run_sh99_admission_acceptance(
             canonical = {
                 "schema_version": BUNDLE_SCHEMA_VERSION,
                 "input_pins": receipt["input_pins"],
+                "source": source_state,
                 "migration_head": database.migration_head,
                 "before": before,
                 "first_run": first_run,
@@ -299,12 +303,32 @@ def _require_pinned_source(
     }
 
 
-def _require_pinned_schema(
-    snapshot: dict[str, Any], database: ProvisionedDatabase
+def _source_migration_head() -> str:
+    """Read the one Alembic head declared by the checked-out source."""
+
+    completed = subprocess.run(
+        ["uv", "run", "alembic", "heads"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    heads = []
+    for line in completed.stdout.splitlines():
+        match = re.match(r"^([0-9a-f]+) \(head\)$", line.strip())
+        if match:
+            heads.append(match.group(1))
+    if completed.returncode or len(heads) != 1:
+        raise ValueError("checked-out source must declare exactly one Alembic head")
+    return heads[0]
+
+
+def _require_current_source_schema(
+    database: ProvisionedDatabase, source_migration_head: str
 ) -> None:
-    if database.migration_head != snapshot["database_snapshot"]["migration_head"]:
+    if database.migration_head != source_migration_head:
         raise ValueError(
-            "disposable database migration head does not match the pinned snapshot"
+            "disposable database migration head does not match the checked-out source"
         )
 
 

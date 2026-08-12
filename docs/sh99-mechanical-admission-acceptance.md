@@ -9,9 +9,12 @@ bounded SH 99 snapshot, then drops that database on exit.
 The pinned fixture is
 `tests/fixtures/sh99_admission_acceptance/v1/snapshot.json`; its SHA-256 is
 `f7e1452da8abf1b05a58e68b838cca9f42937744649eb18547a9b0421d5b7365`.
-It records the source revision, bounded database snapshot identity, corpus input
-digest, declared Active Run, event-policy identity, and abstention reason
-vocabulary. It is a receipt fixture, not a claim that the shared SH 99 database
+It records the source revision, bounded database snapshot identity and capture
+head, corpus input digest, declared Active Run, event-policy identity, and
+abstention reason vocabulary. The runner migrates the disposable database to the
+single Alembic head declared by the checked-out source and records that head
+separately; it refuses a source with no unique head or a partially migrated
+disposable database. The fixture is not a claim that the shared SH 99 database
 has been modified or that its full candidate backlog was copied.
 
 Run the replay against the local PostgreSQL 16 admin connection, writing into a

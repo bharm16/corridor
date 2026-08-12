@@ -6,10 +6,12 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from contextlib import contextmanager
 
 import pytest
 
 from corridor.config import settings
+from corridor.m8_acceptance_database import ProvisionedDatabase
 from corridor.sh99_admission_acceptance import (
     CorruptSH99AdmissionBundle,
     SH99AdmissionAcceptanceConfig,
@@ -90,6 +92,9 @@ def test_isolated_rehearsal_writes_a_digest_pinned_exact_receipt(tmp_path):
             "abstention_reason_version": "event-admission-abstentions-v2",
         },
     }
+    assert receipt["source"]["migration_head"] == receipt["database"][
+        "migration_head"
+    ]
     assert receipt["before"]["candidates"] == [
         {"id": 7129, "state": "pending"},
         {"id": 7296, "state": "pending"},
@@ -257,19 +262,24 @@ def test_runner_refuses_an_unavailable_pinned_source_revision(tmp_path):
     assert not config.output_dir.exists()
 
 
-def test_runner_refuses_a_disposable_database_at_the_wrong_migration_head(tmp_path):
-    snapshot = json.loads(FIXTURE.read_bytes())
-    snapshot["database_snapshot"]["migration_head"] = "released-but-not-current"
-    path = tmp_path / "snapshot.json"
-    path.write_text(json.dumps(snapshot))
+def test_runner_refuses_a_disposable_database_that_is_not_at_source_head(tmp_path):
     config = SH99AdmissionAcceptanceConfig(
-        snapshot_path=path,
-        expected_snapshot_sha256=_sha256(path),
+        snapshot_path=FIXTURE,
+        expected_snapshot_sha256=_sha256(FIXTURE),
         expected_clean_git_revision=_git_revision(),
         output_dir=tmp_path / "bundle",
         postgres_admin_url=settings.database_url,
     )
 
+    @contextmanager
+    def provision_wrong_head(_admin_url):
+        yield ProvisionedDatabase(
+            name="corridor_sh99_admission_acceptance_wrong_head",
+            session_factory=None,  # type: ignore[arg-type]
+            postgres_version="16.14",
+            migration_head="released-but-not-current",
+        )
+
     with pytest.raises(ValueError, match="migration head does not match"):
-        run_sh99_admission_acceptance(config)
+        run_sh99_admission_acceptance(config, provision_database=provision_wrong_head)
     assert not config.output_dir.exists()
