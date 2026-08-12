@@ -1287,6 +1287,11 @@ class DependencyEvent(Base):
         order_by="DependencyEventScope.dependency_id",
         cascade="all, delete-orphan",
     )
+    scope_decisions: Mapped[list["DependencyEventScopeDecision"]] = relationship(
+        back_populates="event",
+        order_by="DependencyEventScopeDecision.id",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def previous_timing(self) -> "DependencyEventTiming | None":
@@ -1345,16 +1350,102 @@ class DependencyEventMigrationReceipt(Base):
     )
 
 
-class DependencyEventScope(Base):
-    """One exact Dependency selected by an External Party statement."""
+class DependencyEventScopeDecision(Base):
+    """One attributable, append-only decision about a statement's scope.
 
-    __tablename__ = "dependency_event_scopes"
-    __table_args__ = (UniqueConstraint("event_id", "dependency_id"),)
+    The statement and its scope do not share a lifecycle.  A later placement
+    corrects or expands the scope by superseding this decision; it never edits
+    the event or relocates one of this decision's links.
+    """
+
+    __tablename__ = "dependency_event_scope_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "supersedes_scope_decision_id",
+            name="uq_dependency_event_scope_decision_supersedes",
+        ),
+        CheckConstraint(
+            "scope_mode in ('unknown', 'selected', 'all_active')",
+            name="ck_dependency_event_scope_decisions_mode",
+        ),
+        CheckConstraint(
+            "length(trim(decided_by)) > 0",
+            name="ck_dependency_event_scope_decisions_actor",
+        ),
+        Index(
+            "uq_dependency_event_scope_decision_root",
+            "event_id",
+            unique=True,
+            postgresql_where=text("supersedes_scope_decision_id is null"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("dependency_events.id"))
+    scope_mode: Mapped[str] = mapped_column(String(16))
+    supersedes_scope_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_event_scope_decisions.id")
+    )
+    decided_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    event: Mapped[DependencyEvent] = relationship(back_populates="scope_decisions")
+    links: Mapped[list["DependencyEventScope"]] = relationship(
+        back_populates="scope_decision",
+        order_by="DependencyEventScope.dependency_id",
+    )
+
+
+class DependencyEventScope(Base):
+    """One exact Dependency selected by an immutable scope decision."""
+
+    __tablename__ = "dependency_event_scopes"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_decision_id",
+            "dependency_id",
+            name="uq_dependency_event_scopes_decision_dependency",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("dependency_events.id"))
+    scope_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("dependency_event_scope_decisions.id")
+    )
     dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    recorded_by: Mapped[str] = mapped_column(Text)
     event: Mapped[DependencyEvent] = relationship(back_populates="scope_links")
+    scope_decision: Mapped[DependencyEventScopeDecision] = relationship(
+        back_populates="links"
+    )
+
+
+class DependencyEventEvidence(Base):
+    """One source Evidence identity owned by an External Party statement.
+
+    Citation content remains on ``EvidenceLink`` so every existing foreign key
+    keeps its stable identity.  This row establishes its single event owner
+    without deriving any Dependency-specific readiness or publication role.
+    """
+
+    __tablename__ = "dependency_event_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_dependency_event_evidence_actor",
+        ),
+    )
+
+    evidence_link_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_links.id"), primary_key=True
+    )
+    event_id: Mapped[int] = mapped_column(ForeignKey("dependency_events.id"))
+    recorded_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class EvidenceLink(Base):
@@ -1399,11 +1490,20 @@ class DependencyEvidenceSufficiency(Base):
     """A Dependency-specific sufficiency judgment on shared event Evidence."""
 
     __tablename__ = "dependency_evidence_sufficiencies"
-    __table_args__ = (UniqueConstraint("dependency_id", "evidence_link_id"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_link_id",
+            "evidence_link_id",
+            name="uq_dependency_evidence_sufficiency_scope_evidence",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
     evidence_link_id: Mapped[int] = mapped_column(ForeignKey("evidence_links.id"))
+    scope_link_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_event_scopes.id")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -1447,6 +1547,9 @@ class OperativeSupport(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
     evidence_link_id: Mapped[int] = mapped_column(BigInteger)
+    scope_link_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_event_scopes.id")
+    )
     role: Mapped[str] = mapped_column(
         _enum(*SUPPORT_ROLES, name="operative_support_role")
     )

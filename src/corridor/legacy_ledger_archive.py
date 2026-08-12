@@ -32,7 +32,9 @@ from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     DependencyEventTiming,
     Document,
     EvidenceLink,
@@ -45,8 +47,10 @@ from corridor.models import (
 )
 from corridor.project_lock import lock_project
 
-ARCHIVE_FORMAT_VERSION = "legacy-ledger-v2"
-_READABLE_ARCHIVE_FORMATS = frozenset({"legacy-ledger-v1", ARCHIVE_FORMAT_VERSION})
+ARCHIVE_FORMAT_VERSION = "legacy-ledger-v3"
+_READABLE_ARCHIVE_FORMATS = frozenset(
+    {"legacy-ledger-v1", "legacy-ledger-v2", ARCHIVE_FORMAT_VERSION}
+)
 RETIREMENT_ACTOR = "system:legacy-ledger-retirement/v1"
 STATEMENT_RETIREMENT_ROLE = "corridor_statement_retirement"
 LEGACY_ADMISSION_ACTORS = frozenset({"agent", "demo"})
@@ -140,6 +144,13 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
         ).all()
     )
     event_ids = [event.id for event in events]
+    event_scope_decisions = list(
+        session.scalars(
+            select(DependencyEventScopeDecision)
+            .where(DependencyEventScopeDecision.event_id.in_(event_ids or [0]))
+            .order_by(DependencyEventScopeDecision.id)
+        ).all()
+    )
     event_scopes = list(
         session.scalars(
             select(DependencyEventScope)
@@ -203,8 +214,19 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
     event_evidence = list(
         session.scalars(
             select(EvidenceLink)
-            .where(EvidenceLink.event_id.in_(event_ids or [0]))
+            .join(
+                DependencyEventEvidence,
+                DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+            )
+            .where(DependencyEventEvidence.event_id.in_(event_ids or [0]))
             .order_by(EvidenceLink.id)
+        ).all()
+    )
+    event_evidence_mappings = list(
+        session.scalars(
+            select(DependencyEventEvidence)
+            .where(DependencyEventEvidence.event_id.in_(event_ids or [0]))
+            .order_by(DependencyEventEvidence.evidence_link_id)
         ).all()
     )
     evidence_links = list({link.id: link for link in [*evidence_links, *event_evidence]}.values())
@@ -275,8 +297,14 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
                 _row_content(row) for row in sufficiencies
             ],
             "dependency_events": [_row_content(row) for row in events],
+            "dependency_event_scope_decisions": [
+                _row_content(row) for row in event_scope_decisions
+            ],
             "dependency_event_scopes": [_row_content(row) for row in event_scopes],
             "dependency_event_timings": [_row_content(row) for row in event_timings],
+            "dependency_event_evidence": [
+                _row_content(row) for row in event_evidence_mappings
+            ],
             "operative_support": [_row_content(row) for row in operative_support],
             "audit_log": [_row_content(row) for row in audit_entries],
             "originating_candidates": [

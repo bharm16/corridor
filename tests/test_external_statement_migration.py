@@ -23,6 +23,7 @@ from corridor.external_statements import (
     StatementScope,
     StatementTiming,
     record_external_party_statement,
+    record_statement_scope_decision,
 )
 from corridor.legacy_ledger_archive import plan_retirement, retire_legacy_ledger
 from corridor.m8_acceptance_database import provision_disposable_postgres
@@ -36,6 +37,7 @@ from corridor.models import (
     ExternalOrg,
     Project,
 )
+from corridor.principals import HumanPrincipal
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +59,10 @@ _SNAPSHOT_TABLES = (
 )
 _STATEMENT_SHAPE_REVISION = "a217e4f3a2b1"
 _ATTRIBUTABLE_STORAGE_REVISION = "b223f5a4c3d2"
+_SCOPE_DECISION_REVISION = "c224a6b4d3e2"
+_EVENT_EVIDENCE_ROLE_REVISION = "d225a7c4e3f2"
+_LEGACY_STATEMENT_BACKFILL_REVISION = "e226a8d4f3c2"
+_EVENT_EVIDENCE_MIGRATION_REVISION = "f227b9e4d3c2"
 
 
 @dataclass(frozen=True)
@@ -172,6 +178,98 @@ _REVISION_SCHEMA_EXPECTATIONS[_ATTRIBUTABLE_STORAGE_REVISION] = (
             }
         ),
     )
+)
+
+_REVISION_SCHEMA_EXPECTATIONS[_SCOPE_DECISION_REVISION] = (
+    _RevisionSchemaExpectation(
+        constraints=(
+            _REVISION_SCHEMA_EXPECTATIONS[_ATTRIBUTABLE_STORAGE_REVISION]
+            .constraints
+            - frozenset(
+                {
+                    "dependency_event_scope_links_match_shape",
+                    "dependency_event_scope_shape_is_valid",
+                    "dependency_event_timings_match_statement",
+                }
+            )
+            | frozenset(
+                {
+                    "ck_dependency_event_scope_decisions_actor",
+                    "ck_dependency_event_scope_decisions_mode",
+                    "dependency_event_scope_decisi_supersedes_scope_decision_id_fkey",
+                    "dependency_event_scope_decision_links_match_shape",
+                    "dependency_event_scope_decision_shape_is_valid",
+                    "dependency_event_scope_decisions_event_id_fkey",
+                    "dependency_event_scope_decisions_pkey",
+                    "fk_dependency_event_scopes_scope_decision",
+                    "uq_dependency_event_scope_decision_supersedes",
+                    "uq_dependency_event_scopes_decision_dependency",
+                }
+            )
+        ),
+        triggers=(
+            _REVISION_SCHEMA_EXPECTATIONS[_ATTRIBUTABLE_STORAGE_REVISION]
+            .triggers
+            - frozenset(
+                {
+                    "dependency_event_scope_link_is_valid",
+                    "dependency_event_scope_links_match_shape",
+                    "dependency_event_scope_shape_is_valid",
+                    "dependency_event_timings_match_statement",
+                    "external_party_statement_scopes_are_immutable",
+                    "external_party_statement_scopes_reject_truncate",
+                }
+            )
+            | frozenset(
+                {
+                    "dependency_event_scope_decision_link_is_valid",
+                    "dependency_event_scope_decision_actor_is_valid",
+                    "dependency_event_scope_decision_links_match_shape",
+                    "dependency_event_scope_decision_shape_is_valid",
+                    "dependency_event_scope_decisions_are_immutable",
+                    "dependency_event_scope_decisions_reject_truncate",
+                    "dependency_event_scope_links_are_immutable",
+                    "dependency_event_scope_links_reject_truncate",
+                    "dependency_events_receive_initial_scope_decision",
+                    "verbal_statement_timings_match_shape",
+                    "verbal_statements_match_shape",
+                }
+            )
+        ),
+    )
+)
+
+_REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_ROLE_REVISION] = (
+    _RevisionSchemaExpectation(
+        constraints=_REVISION_SCHEMA_EXPECTATIONS[_SCOPE_DECISION_REVISION].constraints
+        | frozenset(
+            {
+                "ck_dependency_event_evidence_actor",
+                "dependency_event_evidence_event_id_fkey",
+                "dependency_event_evidence_evidence_link_id_fkey",
+                "dependency_event_evidence_pkey",
+                "fk_dependency_evidence_sufficiencies_scope_link",
+                "fk_operative_support_scope_link",
+                "uq_dependency_evidence_sufficiency_scope_evidence",
+            }
+        ),
+        triggers=_REVISION_SCHEMA_EXPECTATIONS[_SCOPE_DECISION_REVISION].triggers
+        | frozenset(
+            {
+                "dependency_event_evidence_is_immutable",
+                "dependency_event_evidence_is_valid",
+                "dependency_event_evidence_reject_truncate",
+                "dependency_evidence_sufficiency_scope_is_valid",
+                "operative_event_evidence_scope_is_valid",
+            }
+        ),
+    )
+)
+_REVISION_SCHEMA_EXPECTATIONS[_LEGACY_STATEMENT_BACKFILL_REVISION] = (
+    _REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_ROLE_REVISION]
+)
+_REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_MIGRATION_REVISION] = (
+    _REVISION_SCHEMA_EXPECTATIONS[_EVENT_EVIDENCE_ROLE_REVISION]
 )
 
 
@@ -623,7 +721,11 @@ def _capture_columns_constraints_triggers_fingerprint(connection) -> str:
 
 
 def _assert_a217_statement_data(
-    connection, expected_216_data: dict[str, list[dict]]
+    connection,
+    expected_216_data: dict[str, list[dict]],
+    *,
+    event_roles_migrated: bool = False,
+    event_role_columns_added: bool = False,
 ) -> None:
     current = _capture_statement_data(connection)
     unchanged_tables = {
@@ -634,13 +736,19 @@ def _assert_a217_statement_data(
         "event_admission_outcomes",
         "event_cohort_receipts",
         "external_orgs",
-        "operative_support",
         "policy_runs",
         "projects",
         "reconfirmation_receipts",
     }
+    if not event_roles_migrated and not event_role_columns_added:
+        unchanged_tables.add("operative_support")
     for table_name in unchanged_tables:
         assert current[table_name] == expected_216_data[table_name]
+    if event_role_columns_added:
+        assert [
+            {key: value for key, value in row.items() if key != "scope_link_id"}
+            for row in current["operative_support"]
+        ] == expected_216_data["operative_support"]
 
     dependencies = {
         row["id"]: row for row in expected_216_data["dependencies"]
@@ -771,6 +879,191 @@ def _assert_a217_statement_data(
     assert actual_sufficiencies == expected_sufficiencies
 
 
+def _assert_scope_decision_data(
+    connection,
+    expected_216_data: dict[str, list[dict]],
+    *,
+    scalar_backfilled: bool = False,
+    event_roles_migrated: bool = False,
+    event_role_columns_added: bool = False,
+) -> None:
+    """Assert the #224–#227 representation from independent legacy facts."""
+    _assert_a217_statement_data(
+        connection,
+        expected_216_data,
+        event_roles_migrated=event_roles_migrated,
+        event_role_columns_added=event_role_columns_added,
+    )
+    legacy_events = expected_216_data["dependency_events"]
+    decisions = connection.execute(
+        text(
+            """
+            select decision.event_id, decision.scope_mode, decision.decided_by,
+                   decision.supersedes_scope_decision_id, scope.dependency_id,
+                   scope.recorded_by
+            from dependency_event_scope_decisions decision
+            left join dependency_event_scopes scope
+              on scope.scope_decision_id = decision.id
+            where decision.event_id = any(:event_ids)
+            order by decision.event_id, scope.dependency_id
+            """
+        ),
+        {"event_ids": [event["id"] for event in legacy_events]},
+    ).mappings().all()
+    assert [dict(row) for row in decisions] == [
+        {
+            "event_id": event["id"],
+            "scope_mode": "selected",
+            "decided_by": "corridor:statement-migration-v1",
+            "supersedes_scope_decision_id": None,
+            "dependency_id": event["dependency_id"],
+            "recorded_by": "corridor:statement-migration-v1",
+        }
+        for event in legacy_events
+    ]
+    if not scalar_backfilled:
+        return
+
+    legacy_dependency_ids = {
+        event["dependency_id"] for event in legacy_events
+    }
+    scalar_dependencies = [
+        dependency
+        for dependency in expected_216_data["dependencies"]
+        if dependency["committed_date"] is not None
+        and dependency["id"] not in legacy_dependency_ids
+    ]
+    scalar = connection.execute(
+        text(
+            """
+            select event.event_type, event.project_id,
+                   event.affected_external_org_id, event.stated_external_org_id,
+                   event.attribution_state, event.source_kind, event.stated_party,
+                   event.event_date, event.description, event.created_by,
+                   timing.kind, timing.text, timing.precision,
+                   timing.start_date, timing.end_date, decision.scope_mode,
+                   decision.decided_by, scope.dependency_id, scope.recorded_by
+            from dependency_events event
+            join dependency_event_timings timing on timing.event_id = event.id
+            join dependency_event_scope_decisions decision on decision.event_id = event.id
+            join dependency_event_scopes scope on scope.scope_decision_id = decision.id
+            where event.created_by = 'corridor:statement-migration-v1'
+              and event.description like
+                'Legacy scalar-only Committed Date migrated for Dependency %'
+            order by scope.dependency_id
+            """
+        )
+    ).mappings().all()
+    assert [dict(row) for row in scalar] == [
+        {
+            "event_type": "commitment",
+            "project_id": dependency["project_id"],
+            "affected_external_org_id": dependency["external_org_id"],
+            "stated_external_org_id": None,
+            "attribution_state": "unresolved",
+            "source_kind": "cited",
+            "stated_party": None,
+            "event_date": None,
+            "description": (
+                "Legacy scalar-only Committed Date migrated for Dependency "
+                f"{dependency['id']}"
+            ),
+            "created_by": "corridor:statement-migration-v1",
+            "kind": "new",
+            "text": dependency["committed_date"],
+            "precision": "legacy_unknown",
+            "start_date": None,
+            "end_date": None,
+            "scope_mode": "selected",
+            "decided_by": "corridor:statement-migration-v1",
+            "dependency_id": dependency["id"],
+            "recorded_by": "corridor:statement-migration-v1",
+        }
+        for dependency in scalar_dependencies
+    ]
+
+
+def _assert_event_evidence_migration(
+    connection, expected_216_data: dict[str, list[dict]]
+) -> None:
+    _assert_scope_decision_data(
+        connection,
+        expected_216_data,
+        scalar_backfilled=True,
+        event_roles_migrated=True,
+        event_role_columns_added=True,
+    )
+    event_evidence = connection.execute(
+        text(
+            """
+            select evidence.evidence_link_id, evidence.event_id,
+                   link.document_id, link.page_no, link.quote, link.verified,
+                   link.dependency_id, link.satisfies_requirement
+            from dependency_event_evidence evidence
+            join evidence_links link on link.id = evidence.evidence_link_id
+            order by evidence.evidence_link_id
+            """
+        )
+    ).mappings().all()
+    legacy_event_evidence = [
+        evidence
+        for evidence in expected_216_data["evidence_links"]
+        if evidence["event_id"] is not None
+    ]
+    assert [dict(row) for row in event_evidence] == [
+        {
+            "evidence_link_id": evidence["id"],
+            "event_id": evidence["event_id"],
+            "document_id": evidence["document_id"],
+            "page_no": evidence["page_no"],
+            "quote": evidence["quote"],
+            "verified": evidence["verified"],
+            "dependency_id": None,
+            "satisfies_requirement": False,
+        }
+        for evidence in legacy_event_evidence
+    ]
+    roles = connection.execute(
+        text(
+            """
+            select sufficiency.dependency_id, sufficiency.evidence_link_id,
+                   scope.event_id, scope.dependency_id as scope_dependency_id,
+                   support.id as publication_support_id,
+                   support.scope_link_id = sufficiency.scope_link_id
+                       as publication_scope_matches
+                from dependency_evidence_sufficiencies sufficiency
+            join dependency_event_scopes scope on scope.id = sufficiency.scope_link_id
+            left join operative_support support
+                 on support.evidence_link_id = sufficiency.evidence_link_id
+                 and support.dependency_id = sufficiency.dependency_id
+                order by sufficiency.id
+                """
+            )
+        ).mappings().all()
+    expected_support_by_evidence = {
+        support["evidence_link_id"]: support
+        for support in expected_216_data["operative_support"]
+    }
+    assert [dict(row) for row in roles] == [
+        {
+            "dependency_id": evidence["dependency_id"],
+            "evidence_link_id": evidence["id"],
+            "event_id": evidence["event_id"],
+            "scope_dependency_id": evidence["dependency_id"],
+            "publication_support_id": (
+                expected_support_by_evidence[evidence["id"]]["id"]
+                if evidence["id"] in expected_support_by_evidence
+                else None
+            ),
+            "publication_scope_matches": (
+                True if evidence["id"] in expected_support_by_evidence else None
+            ),
+        }
+        for evidence in legacy_event_evidence
+        if evidence["satisfies_requirement"]
+    ]
+
+
 def _assert_statement_data_at_revision(
     connection,
     *,
@@ -807,6 +1100,46 @@ def _assert_statement_data_at_revision(
             for row in rows
         )
         return
+    if expected_revision == _SCOPE_DECISION_REVISION:
+        _assert_a217_statement_data(connection, expected_216_data)
+        assert connection.scalar(
+            text("select count(*) from dependency_event_scope_decisions")
+        ) == 0
+        assert connection.scalar(
+            text(
+                "select count(*) from dependency_event_scopes "
+                "where scope_decision_id is not null or recorded_by is not null"
+            )
+        ) == 0
+        return
+    if expected_revision == _EVENT_EVIDENCE_ROLE_REVISION:
+        _assert_a217_statement_data(
+            connection, expected_216_data, event_role_columns_added=True
+        )
+        assert connection.scalar(
+            text("select count(*) from dependency_event_evidence")
+        ) == 0
+        assert connection.scalar(
+            text(
+                "select count(*) from dependency_evidence_sufficiencies "
+                "where scope_link_id is not null"
+            )
+        ) == 0
+        assert connection.scalar(
+            text("select count(*) from operative_support where scope_link_id is not null")
+        ) == 0
+        return
+    if expected_revision == _LEGACY_STATEMENT_BACKFILL_REVISION:
+        _assert_scope_decision_data(
+            connection,
+            expected_216_data,
+            scalar_backfilled=True,
+            event_role_columns_added=True,
+        )
+        return
+    if expected_revision == _EVENT_EVIDENCE_MIGRATION_REVISION:
+        _assert_event_evidence_migration(connection, expected_216_data)
+        return
     raise AssertionError(
         "statement migration rehearsal needs explicit data expectations for "
         f"revision {expected_revision}"
@@ -823,9 +1156,25 @@ def _assert_migration_state(
         expected_revision
     )
     for table_name, expected_rows in expected_216_data.items():
-        assert connection.scalar(text(f"select count(*) from {table_name}")) == (
-            len(expected_rows)
-        )
+        expected_count = len(expected_rows)
+        if (
+            table_name == "dependency_events"
+            and expected_revision
+            in {
+                _LEGACY_STATEMENT_BACKFILL_REVISION,
+                _EVENT_EVIDENCE_MIGRATION_REVISION,
+            }
+        ):
+            legacy_dependency_ids = {
+                event["dependency_id"]
+                for event in expected_216_data["dependency_events"]
+            }
+            expected_count += sum(
+                dependency["committed_date"] is not None
+                and dependency["id"] not in legacy_dependency_ids
+                for dependency in expected_216_data["dependencies"]
+            )
+        assert connection.scalar(text(f"select count(*) from {table_name}")) == expected_count
 
     invalid_constraints = connection.execute(
         text(
@@ -1193,6 +1542,91 @@ def test_attributable_storage_repairs_a217_applied_before_late_guards():
                 ) is True
         finally:
             engine.dispose()
+
+
+def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
+    """A role predating #225 cannot be guessed onto a corrected scope."""
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=_ROOT,
+        error_cls=RuntimeError,
+        database_prefix="a227_ambiguous_scope_",
+        migration_revision=_SCOPE_DECISION_REVISION,
+    ) as database:
+        database_url = make_url(settings.database_url).set(
+            database=database.name
+        ).render_as_string(hide_password=False)
+        with database.session_factory() as session:
+            project = Project(
+                slug="a227-ambiguous-scope",
+                name="A227 ambiguous scope",
+                is_synthetic=True,
+            )
+            party = ExternalOrg(name="Equistar")
+            session.add_all((project, party))
+            session.flush()
+            document = Document(
+                project_id=project.id,
+                sha256=hashlib.sha256(b"a227 ambiguous scope").hexdigest(),
+                filename="a227-ambiguous-scope.pdf",
+                doc_type="minutes",
+                parse_status="parsed",
+            )
+            dependency = Dependency(
+                project_id=project.id,
+                ref_code="DEP-A227-1",
+                dep_type="utility_relocation",
+                title="Equistar relocation",
+                external_org_id=party.id,
+                status="identified",
+            )
+            session.add_all((document, dependency))
+            session.flush()
+            event = record_external_party_statement(
+                session,
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_party="Equistar",
+                stated_external_org_id=party.id,
+                source_kind="cited",
+                event_date=date(2025, 1, 16),
+                description="Equistar will complete relocation by June 1.",
+                new_timing=StatementTiming.day("June 1", date(2025, 6, 1)),
+                scope=StatementScope.selected((dependency.id,)),
+                created_by="corridor:event-admission",
+                evidence=CitedStatementEvidence(
+                    document.id, 1, "Equistar will complete by June 1."
+                ),
+            )
+            evidence = session.scalar(
+                select(EvidenceLink).where(EvidenceLink.event_id == event.id)
+            )
+            assert evidence is not None
+            session.execute(
+                text(
+                    "insert into dependency_evidence_sufficiencies "
+                    "(dependency_id, evidence_link_id) values (:dependency_id, :link_id)"
+                ),
+                {"dependency_id": dependency.id, "link_id": evidence.id},
+            )
+            record_statement_scope_decision(
+                session,
+                event_id=event.id,
+                scope=StatementScope.selected((dependency.id,)),
+                actor=HumanPrincipal("local:scope-corrector"),
+            )
+            session.commit()
+
+        _run_alembic(database_url, "upgrade", _LEGACY_STATEMENT_BACKFILL_REVISION)
+        refused = _run_alembic(
+            database_url,
+            "upgrade",
+            _EVENT_EVIDENCE_MIGRATION_REVISION,
+            expect_success=False,
+        )
+        assert "ambiguous historical Dependency scope" in (
+            refused.stderr + refused.stdout
+        )
 
 
 def test_representable_216_history_round_trips_each_revision_exactly():

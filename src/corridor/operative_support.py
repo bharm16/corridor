@@ -16,10 +16,13 @@ from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.dependency_events import current_scope_decision_filter
 from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
     DependencyEventScope,
+    DependencyEventScopeDecision,
+    DependencyEventEvidence,
     Document,
     EvidenceLink,
     OperativeSupport,
@@ -53,14 +56,24 @@ def evidence_is_scoped_to_dependency(
         return False
     if evidence.dependency_id == dependency_id:
         return not require_sufficiency or evidence.satisfies_requirement is True
-    if evidence.event_id is None:
-        return False
-    if session.scalar(
-        select(DependencyEventScope.id).where(
-            DependencyEventScope.event_id == evidence.event_id,
-            DependencyEventScope.dependency_id == dependency_id,
+    event_id = session.scalar(
+        select(DependencyEventEvidence.event_id).where(
+            DependencyEventEvidence.evidence_link_id == evidence.id
         )
-    ) is None:
+    )
+    if event_id is None:
+        return False
+    scope_link_id = session.scalar(
+        select(DependencyEventScope.id).where(
+            DependencyEventScope.event_id == event_id,
+            DependencyEventScope.dependency_id == dependency_id,
+        ).join(
+            DependencyEventScopeDecision,
+            DependencyEventScope.scope_decision_id
+            == DependencyEventScopeDecision.id,
+        ).where(current_scope_decision_filter())
+    )
+    if scope_link_id is None:
         return False
     if not require_sufficiency:
         return True
@@ -68,6 +81,7 @@ def evidence_is_scoped_to_dependency(
         select(DependencyEvidenceSufficiency.id).where(
             DependencyEvidenceSufficiency.dependency_id == dependency_id,
             DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+            DependencyEvidenceSufficiency.scope_link_id == scope_link_id,
         )
     ) is not None
 
@@ -219,10 +233,23 @@ def _designate_publication_support_under_lock(
     link = session.get(EvidenceLink, evidence_link_id)
     linked_scope = session.scalar(
         select(DependencyEventScope.id)
-        .join(EvidenceLink, EvidenceLink.event_id == DependencyEventScope.event_id)
+        .join(
+            DependencyEventScopeDecision,
+            DependencyEventScope.scope_decision_id
+            == DependencyEventScopeDecision.id,
+        )
+        .join(
+            DependencyEventEvidence,
+            DependencyEventEvidence.event_id == DependencyEventScope.event_id,
+        )
+        .join(
+            EvidenceLink,
+            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+        )
         .where(
             EvidenceLink.id == evidence_link_id,
             DependencyEventScope.dependency_id == dependency_id,
+            current_scope_decision_filter(),
         )
     )
     if link is None or (link.dependency_id != dependency_id and linked_scope is None):
@@ -244,6 +271,7 @@ def _designate_publication_support_under_lock(
         designation = OperativeSupport(
             dependency_id=dependency_id,
             evidence_link_id=evidence_link_id,
+            scope_link_id=linked_scope if linked_scope is not None else None,
             role="publication",
             field_name=field_name,
             designated_by=designated_by,
@@ -255,6 +283,7 @@ def _designate_publication_support_under_lock(
             .where(OperativeSupport.id == designation.id)
             .values(
                 evidence_link_id=evidence_link_id,
+                scope_link_id=linked_scope if linked_scope is not None else None,
                 designated_by=designated_by,
                 designated_at=func.now(),
             )
@@ -419,7 +448,19 @@ def resolve_operative_support(
             Document,
             DependencyEvidenceSufficiency.id,
         )
-        .join(EvidenceLink, EvidenceLink.event_id == DependencyEventScope.event_id)
+        .join(
+            DependencyEventScopeDecision,
+            DependencyEventScope.scope_decision_id
+            == DependencyEventScopeDecision.id,
+        )
+        .join(
+            DependencyEventEvidence,
+            DependencyEventEvidence.event_id == DependencyEventScope.event_id,
+        )
+        .join(
+            EvidenceLink,
+            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+        )
         .join(Document, Document.id == EvidenceLink.document_id)
         .outerjoin(
             DependencyEvidenceSufficiency,
@@ -427,9 +468,14 @@ def resolve_operative_support(
                 DependencyEvidenceSufficiency.dependency_id
                 == DependencyEventScope.dependency_id,
                 DependencyEvidenceSufficiency.evidence_link_id == EvidenceLink.id,
+                DependencyEvidenceSufficiency.scope_link_id
+                == DependencyEventScope.id,
             ),
         )
-        .where(DependencyEventScope.dependency_id.in_(ids))
+        .where(
+            DependencyEventScope.dependency_id.in_(ids),
+            current_scope_decision_filter(),
+        )
         .order_by(DependencyEventScope.dependency_id, EvidenceLink.id)
     ).all():
         project_ids.add(document.project_id)
@@ -614,8 +660,20 @@ def readiness_frontier_before_audit(
                 EvidenceLink.dependency_id == dependency_id,
                 exists(
                     select(DependencyEventScope.id).where(
-                        DependencyEventScope.event_id == EvidenceLink.event_id,
+                        DependencyEventScope.event_id
+                        == DependencyEventEvidence.event_id,
                         DependencyEventScope.dependency_id == dependency_id,
+                    ).join(
+                        DependencyEventScopeDecision,
+                        DependencyEventScope.scope_decision_id
+                        == DependencyEventScopeDecision.id,
+                    ).join(
+                        DependencyEventEvidence,
+                        DependencyEventEvidence.event_id
+                        == DependencyEventScope.event_id,
+                    ).where(
+                        DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+                        current_scope_decision_filter(),
                     )
                 ),
             ),

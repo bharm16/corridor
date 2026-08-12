@@ -17,6 +17,8 @@ from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
     DependencyEvent,
+    DependencyEventEvidence,
+    DependencyEventScopeDecision,
     DependencyEventScope,
     DependencyEventTiming,
     Document,
@@ -116,6 +118,176 @@ def test_unknown_scope_preserves_month_timing_without_a_dependency_projection(
     assert dependency.committed_date is None
 
 
+def test_scope_correction_supersedes_an_unknown_decision_without_rewriting_history(
+    session, statement_record
+):
+    """A coordinator can place a preserved party statement in a later act."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+        record_statement_scope_decision,
+    )
+
+    project, party, document, dependency = statement_record
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.unknown(),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation."
+        ),
+    )
+    [original] = session.scalars(
+        select(DependencyEventScopeDecision).where(
+            DependencyEventScopeDecision.event_id == event.id
+        )
+    ).all()
+
+    correction = record_statement_scope_decision(
+        session,
+        event_id=event.id,
+        scope=StatementScope.selected((dependency.id,)),
+        actor=HumanPrincipal("local:scope-coordinator"),
+    )
+
+    assert correction.supersedes_scope_decision_id == original.id
+    assert correction.decided_by == "local:scope-coordinator"
+    assert session.scalars(
+        select(DependencyEventScope).where(
+            DependencyEventScope.scope_decision_id == original.id
+        )
+    ).all() == []
+    assert session.scalars(
+        select(DependencyEventScope).where(
+            DependencyEventScope.scope_decision_id == correction.id
+        )
+    ).one().dependency_id == dependency.id
+    session.refresh(dependency)
+    assert dependency.committed_date == date(2025, 6, 1)
+
+
+def test_scope_decision_database_has_one_root_and_attributable_actors(
+    session, statement_record
+):
+    """Scope history cannot fork or turn a role label into its actor."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, _ = statement_record
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=None,
+        description="Equistar will provide a chain of title in January 2025.",
+        new_timing=StatementTiming.month("January 2025", 2025, 1),
+        scope=StatementScope.unknown(),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(document.id, 1, "January 2025"),
+    )
+    with pytest.raises(IntegrityError, match="uq_dependency_event_scope_decision_root"):
+        with session.begin_nested():
+            session.add(
+                DependencyEventScopeDecision(
+                    event_id=event.id,
+                    scope_mode="unknown",
+                    decided_by="corridor:event-admission",
+                )
+            )
+            session.flush()
+
+    root = session.scalar(
+        select(DependencyEventScopeDecision).where(
+            DependencyEventScopeDecision.event_id == event.id
+        )
+    )
+    assert root is not None
+    with pytest.raises(IntegrityError, match="named human or deployed policy"):
+        with session.begin_nested():
+            session.add(
+                DependencyEventScopeDecision(
+                    event_id=event.id,
+                    scope_mode="unknown",
+                    supersedes_scope_decision_id=root.id,
+                    decided_by="agent",
+                )
+            )
+            session.flush()
+
+    with pytest.raises(IntegrityError, match="named human or deployed policy"):
+        with session.begin_nested():
+            session.add(
+                DependencyEvent(
+                    project_id=project.id,
+                    affected_external_org_id=party.id,
+                    stated_external_org_id=party.id,
+                    scope_mode="unknown",
+                    event_type="commitment",
+                    source_kind="cited",
+                    stated_party="Equistar",
+                    description="A role label is not a statement-scope actor.",
+                    created_by="agent",
+                )
+            )
+            session.flush()
+
+
+def test_database_preserves_verbal_exact_day_shape(session, statement_record):
+    """Raw writers cannot create a month-only or broad-scope Verbal."""
+    project, party, _, dependency = statement_record
+    with pytest.raises(IntegrityError, match="exact-day commitment timing"):
+        with session.begin_nested():
+            event = DependencyEvent(
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_external_org_id=party.id,
+                scope_mode="selected",
+                event_type="commitment",
+                source_kind="verbal",
+                stated_party="Equistar",
+                event_date=date(2025, 1, 16),
+                description="Equistar said completion would be in January.",
+                created_by="local:statement-recorder",
+            )
+            session.add(event)
+            session.flush()
+            session.add_all(
+                (
+                    DependencyEventTiming(
+                        event_id=event.id,
+                        kind="new",
+                        text="January 2025",
+                        precision="month",
+                        start_date=date(2025, 1, 1),
+                        end_date=date(2025, 1, 31),
+                    ),
+                    DependencyEventScope(
+                        event_id=event.id,
+                        dependency_id=dependency.id,
+                    ),
+                )
+            )
+            session.flush()
+            session.execute(text("set constraints all immediate"))
+
+
 def test_one_exact_day_statement_links_each_selected_dependency_once_and_projects_it(
     session, statement_record
 ):
@@ -212,7 +384,7 @@ def test_current_statement_projection_keeps_identity_date_provenance_and_closure
         event_type="closure",
         event_date=date(2025, 2, 1),
         description="Relocation complete.",
-        created_by="local:reviewer",
+        created_by="local:closure-reviewer",
     )
     session.add(closure)
     session.flush()
@@ -531,6 +703,20 @@ def test_shared_seam_refuses_incomplete_or_non_day_verbals(session, statement_re
             scope=StatementScope.selected((dependency.id,)),
             created_by="local:recorder",
         )
+    with pytest.raises(StatementRefusal, match="exact-day commitment"):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party="Equistar",
+            stated_external_org_id=party.id,
+            source_kind="verbal",
+            event_date=date(2025, 1, 16),
+            description="Equistar said it will complete in January.",
+            new_timing=StatementTiming.month("January 2025", 2025, 1),
+            scope=StatementScope.selected((dependency.id,)),
+            created_by="local:recorder",
+        )
 
 
 def test_event_evidence_requires_an_explicit_dependency_sufficiency_judgment(
@@ -598,6 +784,80 @@ def test_event_evidence_requires_an_explicit_dependency_sufficiency_judgment(
     ) is not None
 
 
+def test_event_evidence_has_one_source_identity_and_roles_bind_the_scope_link(
+    session, statement_record
+):
+    """A party-level citation gains no Dependency judgment until placement."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+        record_statement_scope_decision,
+    )
+    from corridor.ledger import mark_satisfies
+    from corridor.operative_support import designate_publication_support
+
+    project, party, document, dependency = statement_record
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description="Equistar will complete relocation by 2025-06-01.",
+        new_timing=StatementTiming.day("2025-06-01", date(2025, 6, 1)),
+        scope=StatementScope.unknown(),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "Equistar will complete relocation."
+        ),
+    )
+    evidence = session.scalar(
+        select(EvidenceLink).where(EvidenceLink.event_id == event.id)
+    )
+    [event_evidence] = session.scalars(
+        select(DependencyEventEvidence).where(
+            DependencyEventEvidence.event_id == event.id
+        )
+    ).all()
+    assert event_evidence.evidence_link_id == evidence.id
+    assert evidence.dependency_id is None
+
+    decision = record_statement_scope_decision(
+        session,
+        event_id=event.id,
+        scope=StatementScope.selected((dependency.id,)),
+        actor=HumanPrincipal("local:scope-coordinator"),
+    )
+    [scope_link] = session.scalars(
+        select(DependencyEventScope).where(
+            DependencyEventScope.scope_decision_id == decision.id
+        )
+    ).all()
+    designate_publication_support(
+        session,
+        dependency.id,
+        evidence.id,
+        principal=HumanPrincipal("local:ready-judge"),
+    )
+    assert mark_satisfies(
+        session,
+        dependency.id,
+        evidence.id,
+        principal=HumanPrincipal("local:ready-judge"),
+    ) is True
+    sufficiency = session.scalar(
+        select(DependencyEvidenceSufficiency).where(
+            DependencyEvidenceSufficiency.dependency_id == dependency.id,
+            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+        )
+    )
+    assert sufficiency.scope_link_id == scope_link.id
+
+
 def test_database_rejects_scope_links_for_unknown_scope_and_empty_known_scope(
     session, statement_record
 ):
@@ -656,6 +916,7 @@ def test_database_rejects_scope_links_for_unknown_scope_and_empty_known_scope(
                     end_date=date(2025, 6, 30),
                 )
             )
+            session.flush()
             session.execute(text("set constraints all immediate"))
 
 

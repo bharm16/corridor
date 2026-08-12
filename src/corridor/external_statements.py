@@ -23,17 +23,24 @@ from corridor.models import (
     Dependency,
     DependencyEvent,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     DependencyEventTiming,
     Document,
     EvidenceLink,
     ExternalOrg,
     Project,
 )
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.project_lock import lock_project
 
 
 class StatementRefusal(ValueError):
     """The proposed statement would manufacture a fact the record lacks."""
+
+
+_STATEMENT_SCOPE_POLICY_ACTORS = frozenset(
+    {"corridor:event-admission", "corridor:statement-migration-v1"}
+)
 
 
 @dataclass(frozen=True)
@@ -155,12 +162,13 @@ def record_external_party_statement(
     if source_kind == "verbal":
         if event_date is None:
             raise StatementRefusal("a Verbal must preserve the conversation date")
-        if new_timing.precision != "day" or previous_timing is not None:
-            raise StatementRefusal(
-                "a Verbal records one exact-day commitment, not a date change"
-            )
+        if previous_timing is not None:
+            raise StatementRefusal("a Verbal cannot be a Committed Date Change")
+        if new_timing.precision != "day":
+            raise StatementRefusal("a Verbal must preserve one exact-day commitment")
         if scope.mode != "selected" or len(scope.dependency_ids) != 1:
-            raise StatementRefusal("a Verbal must name exactly one Dependency")
+            raise StatementRefusal("a Verbal must scope to exactly one Dependency")
+    scope_actor = _scope_actor_subject(created_by)
     event_type = "committed_date_change" if previous_timing else "commitment"
     dependency_ids = _resolve_scope(
         session,
@@ -196,6 +204,13 @@ def record_external_party_statement(
         )
         session.add(event)
         session.flush([event])
+        scope_decision = session.scalar(
+            select(DependencyEventScopeDecision).where(
+                DependencyEventScopeDecision.event_id == event.id
+            )
+        )
+        if scope_decision is None:
+            raise RuntimeError("statement event did not receive its initial scope decision")
         session.add(
             DependencyEventTiming(
                 event_id=event.id,
@@ -219,19 +234,23 @@ def record_external_party_statement(
             )
         for dependency_id in dependency_ids:
             session.add(
-                DependencyEventScope(event_id=event.id, dependency_id=dependency_id)
-            )
-        if evidence is not None:
-            session.add(
-                EvidenceLink(
-                    dependency_id=None,
+                DependencyEventScope(
                     event_id=event.id,
-                    document_id=evidence.document_id,
-                    page_no=evidence.page_no,
-                    quote=evidence.quote.strip(),
-                    verified=True,
+                    scope_decision_id=scope_decision.id,
+                    dependency_id=dependency_id,
+                    recorded_by=scope_actor,
                 )
             )
+        if evidence is not None:
+            event_evidence = EvidenceLink(
+                dependency_id=None,
+                event_id=event.id,
+                document_id=evidence.document_id,
+                page_no=evidence.page_no,
+                quote=evidence.quote.strip(),
+                verified=True,
+            )
+            session.add(event_evidence)
         session.flush()
 
         # Imported lazily: projections read the event representation but do
@@ -241,6 +260,66 @@ def record_external_party_statement(
         project_committed_dates(session, dependency_ids)
         session.flush()
     return event
+
+
+def record_statement_scope_decision(
+    session: Session,
+    *,
+    event_id: int,
+    scope: StatementScope,
+    actor: HumanPrincipal | str,
+) -> DependencyEventScopeDecision:
+    """Append a correction or expansion of one statement's Dependency scope.
+
+    The former decision and its links remain readable history.  Readers use
+    the one decision not superseded by a later decision when deriving current
+    Dependency effects.
+    """
+    event = session.get(DependencyEvent, event_id)
+    if event is None:
+        raise StatementRefusal(f"statement event {event_id} does not exist")
+    actor_subject = _scope_actor_subject(actor)
+    lock_project(session, event.project_id)
+    predecessor = _current_scope_decision(session, event.id)
+    if predecessor is None:
+        raise StatementRefusal("statement has no scope decision to correct")
+    dependency_ids = _resolve_scope(
+        session,
+        project_id=event.project_id,
+        affected_external_org_id=event.affected_external_org_id,
+        scope=scope,
+    )
+    previous_ids = tuple(
+        session.scalars(
+            select(DependencyEventScope.dependency_id).where(
+                DependencyEventScope.scope_decision_id == predecessor.id
+            )
+        ).all()
+    )
+    with session.begin_nested():
+        decision = DependencyEventScopeDecision(
+            event_id=event.id,
+            scope_mode=scope.mode,
+            supersedes_scope_decision_id=predecessor.id,
+            decided_by=actor_subject,
+        )
+        session.add(decision)
+        session.flush([decision])
+        for dependency_id in dependency_ids:
+            session.add(
+                DependencyEventScope(
+                    event_id=event.id,
+                    scope_decision_id=decision.id,
+                    dependency_id=dependency_id,
+                    recorded_by=actor_subject,
+                )
+            )
+        session.flush()
+        from corridor.dependency_events import project_committed_dates
+
+        project_committed_dates(session, (*previous_ids, *dependency_ids))
+        session.flush()
+    return decision
 
 
 def _validate_timing(timing: StatementTiming) -> None:
@@ -300,6 +379,7 @@ def _resolve_scope(
                     Dependency.project_id == project_id,
                     Dependency.external_org_id == affected_external_org_id,
                     Dependency.dismissed_at.is_(None),
+                    Dependency.status != "closed",
                 )
                 .order_by(Dependency.id)
             ).all()
@@ -325,7 +405,44 @@ def _resolve_scope(
             raise StatementRefusal("selected scope names another External Party")
         if dependency.dismissed_at is not None:
             raise StatementRefusal("selected scope cannot include a dismissed Dependency")
+        if dependency.status == "closed":
+            raise StatementRefusal("selected scope cannot include a closed Dependency")
     return tuple(scope.dependency_ids)
+
+
+def _scope_actor_subject(actor: HumanPrincipal | str) -> str:
+    """Accept a named human or a deployed Corridor policy, never a role."""
+    if isinstance(actor, HumanPrincipal):
+        return actor.subject
+    if not isinstance(actor, str) or not actor.strip() or actor != actor.strip():
+        raise StatementRefusal("a scope decision must name its human or deployed-policy actor")
+    if actor in _STATEMENT_SCOPE_POLICY_ACTORS:
+        return actor
+    try:
+        return HumanPrincipal(actor).subject
+    except InvalidHumanPrincipal as exc:
+        raise StatementRefusal(
+            "a scope decision actor must be a named human or deployed Corridor policy"
+        ) from exc
+
+
+def _current_scope_decision(
+    session: Session, event_id: int
+) -> DependencyEventScopeDecision | None:
+    superseding = DependencyEventScopeDecision.__table__.alias("superseding")
+    return session.scalar(
+        select(DependencyEventScopeDecision)
+        .where(
+            DependencyEventScopeDecision.event_id == event_id,
+            ~select(superseding.c.id)
+            .where(
+                superseding.c.supersedes_scope_decision_id
+                == DependencyEventScopeDecision.id
+            )
+            .exists(),
+        )
+        .order_by(DependencyEventScopeDecision.id)
+    )
 
 
 def _validate_evidence(

@@ -20,6 +20,7 @@ from corridor import audit
 from corridor.dependency_events import (
     CurrentDependencyStatement,
     current_dependency_statements,
+    current_scope_decision_filter,
 )
 from corridor.exceptions import (
     Evaluation,
@@ -36,7 +37,9 @@ from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -238,10 +241,22 @@ def browse(
         session.execute(
             select(DependencyEventScope.dependency_id, func.count())
             .join(
-                EvidenceLink,
-                EvidenceLink.event_id == DependencyEventScope.event_id,
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
             )
-            .where(DependencyEventScope.dependency_id.in_(ids))
+            .join(
+                DependencyEventEvidence,
+                DependencyEventEvidence.event_id == DependencyEventScope.event_id,
+            )
+            .join(
+                EvidenceLink,
+                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            )
+            .where(
+                DependencyEventScope.dependency_id.in_(ids),
+                current_scope_decision_filter(),
+            )
             .group_by(DependencyEventScope.dependency_id)
         ).all()
     )
@@ -386,13 +401,25 @@ def load_dependency(
         select(EvidenceLink, Document)
         .join(Document, EvidenceLink.document_id == Document.id)
         .outerjoin(
+            DependencyEventEvidence,
+            DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+        )
+        .outerjoin(
             DependencyEventScope,
-            DependencyEventScope.event_id == EvidenceLink.event_id,
+            DependencyEventScope.event_id == DependencyEventEvidence.event_id,
+        )
+        .outerjoin(
+            DependencyEventScopeDecision,
+            DependencyEventScope.scope_decision_id
+            == DependencyEventScopeDecision.id,
         )
         .where(
             or_(
                 EvidenceLink.dependency_id == dependency_id,
-                DependencyEventScope.dependency_id == dependency_id,
+                (
+                    (DependencyEventScope.dependency_id == dependency_id)
+                    & current_scope_decision_filter()
+                ),
             )
         )
         .order_by(EvidenceLink.id)
@@ -412,7 +439,15 @@ def load_dependency(
         events=session.scalars(
             select(DependencyEvent)
             .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
-            .where(DependencyEventScope.dependency_id == dependency_id)
+            .join(
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
+            )
+            .where(
+                DependencyEventScope.dependency_id == dependency_id,
+                current_scope_decision_filter(),
+            )
             .order_by(DependencyEvent.event_date, DependencyEvent.id)
         ).all(),
         exceptions=evaluation.for_dependency(dependency_id),
@@ -470,15 +505,34 @@ def mark_satisfies(
             "on a record nobody is working"
         )
     link = session.get(EvidenceLink, link_id, populate_existing=True)
+    event_evidence = (
+        session.scalar(
+            select(DependencyEventEvidence).where(
+                DependencyEventEvidence.evidence_link_id == link_id
+            )
+        )
+        if link is not None
+        else None
+    )
     event_scope = (
         session.scalar(
             select(DependencyEventScope.id)
+            .join(
+                DependencyEventScopeDecision,
+                DependencyEventScope.scope_decision_id
+                == DependencyEventScopeDecision.id,
+            )
+            .join(
+                DependencyEventEvidence,
+                DependencyEventEvidence.event_id == DependencyEventScope.event_id,
+            )
             .where(
-                DependencyEventScope.event_id == link.event_id,
+                DependencyEventEvidence.evidence_link_id == link.id,
                 DependencyEventScope.dependency_id == dependency_id,
+                current_scope_decision_filter(),
             )
         )
-        if link is not None and link.event_id is not None
+        if event_evidence is not None
         else None
     )
     if link is None or (link.dependency_id != dependency_id and event_scope is None):
@@ -494,22 +548,24 @@ def mark_satisfies(
             select(DependencyEvidenceSufficiency).where(
                 DependencyEvidenceSufficiency.dependency_id == dependency_id,
                 DependencyEvidenceSufficiency.evidence_link_id == link_id,
+                DependencyEvidenceSufficiency.scope_link_id == event_scope,
             )
         )
-        if link.event_id is not None
+        if event_evidence is not None
         else None
     )
     was = (
         designation is not None
-        if link.event_id is not None
+        if event_evidence is not None
         else bool(link.satisfies_requirement)
     )
-    if link.event_id is not None:
+    if event_evidence is not None:
         if designation is None:
             session.add(
                 DependencyEvidenceSufficiency(
                     dependency_id=dependency_id,
                     evidence_link_id=link_id,
+                    scope_link_id=event_scope,
                 )
             )
         else:
