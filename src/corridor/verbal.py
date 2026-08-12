@@ -78,35 +78,40 @@ def record_verbal(
     if dependency.external_org_id is None:
         raise VerbalRefusal("this record has no resolved External Party")
     try:
-        event = record_external_party_statement(
-            session,
-            project_id=project.id,
-            affected_external_org_id=dependency.external_org_id,
-            stated_party=party,
-            stated_external_org_id=dependency.external_org_id,
-            source_kind="verbal",
-            event_date=conversation_date,
-            description=what_was_said,
-            new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
-            scope=StatementScope.selected((dependency.id,)),
-            created_by=recorder.subject,
-        )
+        # The call record and its audit receipt are inseparable: a refusal
+        # must not preserve a Verbal whose attributable human act was lost.
+        with session.begin_nested():
+            event = record_external_party_statement(
+                session,
+                project_id=project.id,
+                affected_external_org_id=dependency.external_org_id,
+                stated_party=party,
+                stated_external_org_id=dependency.external_org_id,
+                source_kind="verbal",
+                event_date=conversation_date,
+                description=what_was_said,
+                new_timing=StatementTiming.day(
+                    committed_date.isoformat(), committed_date
+                ),
+                scope=StatementScope.selected((dependency.id,)),
+                created_by=recorder.subject,
+            )
+            audit.record(
+                session,
+                principal=recorder,
+                action=audit.RECORD_VERBAL,
+                entity_type=audit.DEPENDENCY,
+                entity_id=dependency.id,
+                after={
+                    "dependency_event_id": event.id,
+                    "source_kind": event.source_kind,
+                    "stated_party": party,
+                    "conversation_date": conversation_date.isoformat(),
+                    "committed_date": event.new_timing.start_date.isoformat(),
+                    "event_type": event.event_type,
+                },
+            )
+            session.flush()
     except StatementRefusal as exc:
         raise VerbalRefusal(str(exc)) from exc
-    audit.record(
-        session,
-        principal=recorder,
-        action=audit.RECORD_VERBAL,
-        entity_type=audit.DEPENDENCY,
-        entity_id=dependency.id,
-        after={
-            "dependency_event_id": event.id,
-            "source_kind": event.source_kind,
-            "stated_party": party,
-            "conversation_date": conversation_date.isoformat(),
-            "committed_date": event.new_timing.start_date.isoformat(),
-            "event_type": event.event_type,
-        },
-    )
-    session.flush()
     return event

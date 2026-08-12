@@ -171,6 +171,58 @@ def test_a_later_committed_date_is_a_slip(session, project, document):
     assert "2026-06-03" in change.detail and "2026-08-15" in change.detail
 
 
+def test_snapshot_and_diff_read_the_current_statement_over_a_stale_scalar(
+    session, project, document
+):
+    """A historical snapshot stays readable while new reads use the statement."""
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    party = ExternalOrg(name="Changes Test Party")
+    session.add(party)
+    session.flush()
+    dep = make_dep(
+        session,
+        project,
+        "DEP-1",
+        external_org_id=party.id,
+        committed_date=date(2026, 6, 3),
+    )
+    add_evidence(session, dep, document)
+    _record(session, project)
+
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2026, 7, 1),
+        description="The party will complete relocation by August 15.",
+        new_timing=StatementTiming.day("August 15", date(2026, 8, 15)),
+        scope=StatementScope.selected((dep.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "The party will complete relocation by August 15."
+        ),
+    )
+    # The statement is authoritative even before a compatibility scalar is
+    # refreshed (for example after an old import or interrupted maintenance).
+    dep.committed_date = date(2026, 6, 3)
+    session.flush()
+
+    assert _snapshot(session, project)["dependencies"]["DEP-1"][
+        "committed_date"
+    ] == "2026-08-15"
+    [change] = _diff(session, project).of_kind("slipped")
+    assert "2026-06-03" in change.detail and "2026-08-15" in change.detail
+
+
 def test_an_earlier_committed_date_is_not_a_slip(session, project, document):
     """Pulling a date forward is good news, not a slip."""
     dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 8, 15))

@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from corridor.changes import record_run
@@ -174,6 +174,75 @@ def test_recording_a_verbal_projects_its_date_and_attributes_the_call(
     ).one()
     assert audit.action == "record_verbal"
     assert audit.actor == RECORDER.subject
+
+
+def test_refused_verbal_recording_leaves_no_event_or_audit(session, dependency):
+    """The Verbal adapter does not preserve an event when its receipt refuses."""
+    project = session.get(Project, dependency.project_id)
+    session.execute(
+        text(
+            """
+            create function refuse_test_verbal_audit()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+                if new.action = 'record_verbal'
+                   and new.after_json->>'committed_date' = '2026-08-15' then
+                    raise exception 'verbal audit refused' using errcode = '23514';
+                end if;
+                return new;
+            end;
+            $$;
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            create trigger refuse_test_verbal_audit
+            before insert on audit_log
+            for each row execute function refuse_test_verbal_audit();
+            """
+        )
+    )
+
+    with pytest.raises(IntegrityError, match="verbal audit refused"):
+        record_verbal(
+            session,
+            dependency,
+            stated_party="AT&T",
+            description="AT&T said relocation will finish in August.",
+            conversation_date=date(2026, 5, 8),
+            committed_date=date(2026, 8, 15),
+            principal=RECORDER,
+        )
+
+    assert session.scalars(
+        select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+    ).all() == []
+    assert session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_id == dependency.id,
+            AuditLog.action == "record_verbal",
+        )
+    ).all() == []
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+
+    event = record_verbal(
+        session,
+        dependency,
+        stated_party="AT&T",
+        description="AT&T said relocation will finish in September.",
+        conversation_date=date(2026, 5, 9),
+        committed_date=date(2026, 9, 15),
+        principal=RECORDER,
+    )
+
+    assert event.id is not None
+    session.refresh(dependency)
+    assert dependency.committed_date == date(2026, 9, 15)
 
 
 def test_a_verbal_cannot_be_rewritten_or_deleted(session, dependency):
@@ -467,6 +536,74 @@ def test_reports_withhold_an_unverified_cited_event_date(session, dependency):
     assert committed.value == "—"
     assert "2026-06-15" not in render(report)
     assert_no_bare_cells(report)
+
+
+def test_reports_do_not_publish_a_stale_day_after_a_current_month_statement(
+    session, client, dependency
+):
+    """A current non-day statement still retires the older scalar projection."""
+    project = session.get(Project, dependency.project_id)
+    dependency.resolution_strategy = "relocate"
+    document = Document(
+        project_id=project.id,
+        sha256="8" * 64,
+        filename="minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    _record_cited(
+        session,
+        dependency,
+        document,
+        event_date=date(2026, 1, 8),
+        committed_date=date(2026, 6, 15),
+        description="AT&T committed to June 15.",
+    )
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="AT&T",
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2026, 5, 8),
+        description="AT&T now expects completion in August 2026.",
+        new_timing=StatementTiming.month("August 2026", 2026, 8),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="corridor:event-admission",
+        evidence=CitedStatementEvidence(
+            document.id, 1, "AT&T now expects completion in August 2026."
+        ),
+    )
+    # Model an old import or interrupted projection refresh. The structured
+    # statement remains authoritative even while this scalar is stale.
+    dependency.committed_date = date(2026, 6, 15)
+    session.flush()
+
+    for document_only in (False, True):
+        report = build_report(
+            session,
+            project.id,
+            today=date(2026, 7, 1),
+            document_only=document_only,
+        )
+        committed = next(
+            row[2]
+            for report_section in report.sections
+            if report_section.title == "Critical items"
+            for row in report_section.rows
+        )
+
+        assert report.committed_dates[dependency.id] is None
+        assert committed.value == "—"
+        assert "2026-06-15" not in render(report)
+        assert_no_bare_cells(report)
+
+    ledger_page = client.get(f"/ledger/{project.slug}").text
+    assert "2026-06-15" not in ledger_page
 
 
 def test_document_only_reports_keep_their_own_cited_history(

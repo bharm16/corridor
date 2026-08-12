@@ -21,11 +21,10 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.dependency_events import current_dependency_statements
 from corridor.models import (
     Assertion,
     Dependency,
-    DependencyEvent,
-    DependencyEventScope,
     EvidenceLink,
     is_critical,
 )
@@ -227,17 +226,28 @@ def evaluate(
             Dependency.dismissed_at.is_(None),
         )
     ).all()
+    current_statements = current_dependency_statements(
+        session, (dependency.id for dependency in dependencies)
+    )
 
     found: list[Exception_] = []
     for dependency in dependencies:
+        statement = current_statements.get(dependency.id)
+        projected_date = (
+            statement.effective_date if statement is not None else dependency.committed_date
+        )
         committed_date = (
-            dependency.committed_date
+            projected_date
             if committed_dates is None
-            else committed_dates.get(dependency.id, dependency.committed_date)
+            else committed_dates.get(dependency.id, projected_date)
         )
         found.extend(
             _apply(
-                _gather(session, dependency),
+                _gather(
+                    session,
+                    dependency,
+                    is_closed=statement.is_closed if statement is not None else False,
+                ),
                 today,
                 thresholds,
                 committed_date=committed_date,
@@ -337,6 +347,9 @@ def evaluate_dependency(
         raise LookupError(f"no dependency {dependency_id}")
     today = today or date.today()
     thresholds = thresholds or Thresholds()
+    statement = current_dependency_statements(session, (dependency_id,)).get(
+        dependency_id
+    )
     return Evaluation(
         project_id=dependency.project_id,
         today=today,
@@ -347,10 +360,18 @@ def evaluate_dependency(
             if _is_dismissed(session, dependency)
             else tuple(
                 _apply(
-                    _gather(session, dependency),
+                    _gather(
+                        session,
+                        dependency,
+                        is_closed=statement.is_closed if statement is not None else False,
+                    ),
                     today,
                     thresholds,
-                    committed_date=dependency.committed_date,
+                    committed_date=(
+                        statement.effective_date
+                        if statement is not None
+                        else dependency.committed_date
+                    ),
                 )
             )
         ),
@@ -479,20 +500,10 @@ def contradicted_fields(
     return found
 
 
-def _gather(session: Session, dependency: Dependency) -> _Facts:
+def _gather(
+    session: Session, dependency: Dependency, *, is_closed: bool
+) -> _Facts:
     support = resolve_operative_support(session, [dependency.id])[dependency.id]
-
-    has_closure = (
-        session.scalars(
-            select(DependencyEvent.id)
-            .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
-            .where(
-                DependencyEventScope.dependency_id == dependency.id,
-                DependencyEvent.event_type == "closure",
-            )
-        ).first()
-        is not None
-    )
 
     contradicted = contradicted_fields(session, [dependency.id]).get(
         dependency.id, []
@@ -504,7 +515,7 @@ def _gather(session: Session, dependency: Dependency) -> _Facts:
         readiness_lapsed=bool(support.readiness and not support.current_readiness),
         has_verified_evidence=bool(support.verified_evidence_count),
         last_evidenced_at=support.last_evidenced_at,
-        has_closure=has_closure,
+        has_closure=is_closed,
         contradicted_fields=contradicted,
         superseded_scopes=support.superseded_scopes,
     )

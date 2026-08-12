@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.changes import Diff, diff_since_last
-from corridor.dependency_events import latest_committed_events
+from corridor.dependency_events import current_dependency_statements
 from corridor.exceptions import (
     RULESET_VERSION,
     Evaluation,
@@ -232,16 +232,13 @@ def build_report(
             Dependency.dismissed_at.is_(None),
         )
     ).all()
-    latest_events = latest_committed_events(
-        session,
-        dependency_ids,
-    )
+    current_statements = current_dependency_statements(session, dependency_ids)
     verified_cited_event_ids = _verified_cited_event_ids(session, dependency_ids)
     if document_only:
         # Filter before selecting the newest event, not afterwards: the
         # newest cited statement may lack a verified event citation while an
         # earlier cited commitment remains publishable.
-        committed_events = latest_committed_events(
+        published_statements = current_dependency_statements(
             session,
             dependency_ids,
             source_kind="cited",
@@ -250,32 +247,34 @@ def build_report(
     else:
         # A cited event that cannot point to its own verified Evidence cannot
         # lend its date to a report. A Verbal has its own explicit provenance.
-        committed_events = {
-            dependency_id: event
-            for dependency_id, event in latest_events.items()
-            if event.source_kind == "verbal" or event.id in verified_cited_event_ids
+        published_statements = {
+            dependency_id: statement
+            for dependency_id, statement in current_statements.items()
+            if statement.event is None
+            or statement.event.source_kind == "verbal"
+            or statement.event.id in verified_cited_event_ids
         }
-    stored_committed_dates = dict(
-        session.execute(
-            select(Dependency.id, Dependency.committed_date).where(
-                Dependency.id.in_(dependency_ids)
-            )
-        ).all()
-    )
     committed_dates = {
-        dependency_id: (
-            committed_events[dependency_id].new_timing.start_date
-            if dependency_id in committed_events
-            # A legacy projection with no event can retain its pre-event
-            # field provenance. A projection with an unsupported cited event
-            # cannot: it must wait for the event's own verified Evidence.
-            else None
-            if document_only or dependency_id in latest_events
-            else stored_committed_dates.get(dependency_id)
-        )
+        dependency_id: published_statements[dependency_id].effective_date
+        if dependency_id in published_statements
+        else None
         for dependency_id in dependency_ids
     }
-    unsupported_committed_dependencies = set(latest_events) - set(committed_events)
+    committed_events = {
+        dependency_id: statement.event
+        for dependency_id, statement in published_statements.items()
+        if statement.event is not None and statement.effective_date is not None
+    }
+    unsupported_committed_dependencies = {
+        dependency_id
+        for dependency_id, current in current_statements.items()
+        if current.event is not None
+        and (
+            dependency_id not in published_statements
+            or published_statements[dependency_id].event is None
+            or published_statements[dependency_id].effective_date is None
+        )
+    }
     # One evaluation for the whole report. `today` used to reach two
     # sections while every exception in the same report was computed
     # against `date.today()` by a separate call, so a report built for a

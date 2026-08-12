@@ -23,6 +23,7 @@ from corridor.models import (
     Dependency,
     DependencyEvent,
     DependencyEventScope,
+    DependencyEventTiming,
     DocPage,
     Document,
     EvidenceLink,
@@ -293,6 +294,44 @@ def test_due_soon_does_not_fire_on_a_ready_record(session, project, document):
 def test_overdue_fires_on_a_past_committed_date(session, project, document):
     dep = make_dep(session, project, committed_date=TODAY - timedelta(days=1))
     add_evidence(session, dep, document)
+    assert "OVERDUE" in codes(session, dep)
+
+
+def test_overdue_reads_the_current_exact_day_statement_not_a_stale_scalar(
+    session, project, document
+):
+    dep = make_dep(session, project)
+    add_evidence(session, dep, document)
+    event = DependencyEvent(
+        project_id=project.id,
+        affected_external_org_id=dep.external_org_id,
+        stated_external_org_id=dep.external_org_id,
+        scope_mode="selected",
+        event_type="commitment",
+        source_kind="cited",
+        stated_party="Example Utility",
+        event_date=TODAY - timedelta(days=30),
+        description="Example Utility committed to a past date.",
+        created_by="corridor:event-admission",
+    )
+    session.add(event)
+    session.flush()
+    session.add_all(
+        (
+            DependencyEventTiming(
+                event_id=event.id,
+                kind="new",
+                text=(TODAY - timedelta(days=1)).isoformat(),
+                precision="day",
+                start_date=TODAY - timedelta(days=1),
+                end_date=TODAY - timedelta(days=1),
+            ),
+            DependencyEventScope(event_id=event.id, dependency_id=dep.id),
+        )
+    )
+    session.flush()
+    assert dep.committed_date is None
+
     assert "OVERDUE" in codes(session, dep)
 
 

@@ -83,7 +83,11 @@ def snapshot(
     def published_committed_date(row) -> date | None:
         if committed_dates is not None:
             return committed_dates.get(row.dependency.id)
-        return row.dependency.committed_date
+        # ``browse`` attaches the one structured statement compatibility
+        # readers may expose.  Reading the persisted scalar directly here
+        # would let an unrefreshed legacy projection disagree with the
+        # Ledger and every other current statement reader.
+        return row.committed_date
 
     return {
         "ruleset_version": evaluation.ruleset_version,
