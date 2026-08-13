@@ -259,22 +259,7 @@ def record_external_party_statement(
                 )
             )
         for cited_evidence in _all_cited_evidence(evidence, supporting_evidence):
-            event_evidence = EvidenceLink(
-                dependency_id=None,
-                document_id=cited_evidence.document_id,
-                page_no=cited_evidence.page_no,
-                quote=cited_evidence.quote.strip(),
-                verified=True,
-            )
-            session.add(event_evidence)
-            session.flush([event_evidence])
-            session.add(
-                DependencyEventEvidence(
-                    evidence_link_id=event_evidence.id,
-                    event_id=event.id,
-                    recorded_by=created_by.strip(),
-                )
-            )
+            _record_event_evidence(session, event, cited_evidence, created_by)
         session.flush()
 
         # Imported lazily: projections read the event representation but do
@@ -284,6 +269,104 @@ def record_external_party_statement(
         project_committed_dates(session, dependency_ids)
         session.flush()
     return event
+
+
+def record_external_party_closure(
+    session: Session,
+    *,
+    project_id: int,
+    commitment_lineage_id: int,
+    source_kind: str,
+    event_date: date | None,
+    description: str,
+    created_by: str,
+    evidence: CitedStatementEvidence | None = None,
+) -> DependencyEvent:
+    """Record an attributable closure for exactly one External Party Commitment.
+
+    Closure ends the party-level statement fact only.  It deliberately does
+    not complete, cancel, or otherwise alter a Coordination Plan's internal
+    Next Action, and it never derives a Dependency scope from the party.
+    """
+    project = session.get(Project, project_id)
+    if project is None:
+        raise StatementRefusal(f"project {project_id} does not exist")
+    if source_kind not in {"cited", "verbal"}:
+        raise StatementRefusal("a closure has an unknown source kind")
+    if not description.strip():
+        raise StatementRefusal("a closure must preserve what the party said")
+    if not created_by.strip():
+        raise StatementRefusal("a closure must identify who recorded it")
+    if source_kind == "cited":
+        if evidence is None:
+            raise StatementRefusal("a cited closure requires its verified Evidence")
+        validate_cited_statement_evidence(session, evidence, project.id)
+    elif evidence is not None:
+        raise StatementRefusal("a Verbal closure cannot be presented as cited Evidence")
+    if source_kind == "verbal" and event_date is None:
+        raise StatementRefusal("a Verbal closure must preserve the conversation date")
+
+    lock_project(session, project.id)
+    lineage = session.get(CommitmentLineage, commitment_lineage_id)
+    if lineage is None or lineage.project_id != project.id:
+        raise StatementRefusal("Commitment Lineage belongs to another project")
+    commitment = _current_commitment_event(session, lineage.id)
+    if commitment is None:
+        raise StatementRefusal("Commitment Lineage has no accepted statement to close")
+    if (
+        commitment.affected_external_org_id is None
+        or commitment.stated_external_org_id is None
+        or commitment.attribution_state != "resolved"
+        or not commitment.stated_party
+    ):
+        raise StatementRefusal("only an attributable External Party Commitment can close")
+
+    with session.begin_nested():
+        closure = DependencyEvent(
+            project_id=project.id,
+            closes_commitment_lineage_id=lineage.id,
+            affected_external_org_id=commitment.affected_external_org_id,
+            stated_external_org_id=commitment.stated_external_org_id,
+            attribution_state="resolved",
+            scope_mode="unknown",
+            event_type="closure",
+            source_kind=source_kind,
+            stated_party=commitment.stated_party,
+            event_date=event_date,
+            description=description.strip(),
+            created_by=created_by.strip(),
+        )
+        session.add(closure)
+        session.flush([closure])
+        if evidence is not None:
+            _record_event_evidence(session, closure, evidence, created_by)
+        session.flush()
+    return closure
+
+
+def _record_event_evidence(
+    session: Session,
+    event: DependencyEvent,
+    evidence: CitedStatementEvidence,
+    recorded_by: str,
+) -> None:
+    """Attach one already-validated citation to its one External Party event."""
+    event_evidence = EvidenceLink(
+        dependency_id=None,
+        document_id=evidence.document_id,
+        page_no=evidence.page_no,
+        quote=evidence.quote.strip(),
+        verified=True,
+    )
+    session.add(event_evidence)
+    session.flush([event_evidence])
+    session.add(
+        DependencyEventEvidence(
+            evidence_link_id=event_evidence.id,
+            event_id=event.id,
+            recorded_by=recorded_by.strip(),
+        )
+    )
 
 
 def _commitment_lineage_for_append(

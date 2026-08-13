@@ -77,6 +77,8 @@ SET_NEXT_ACTION = "set_next_action"
 COMPLETE_NEXT_ACTION = "complete_next_action"
 CANCEL_NEXT_ACTION = "cancel_next_action"
 SET_MILESTONE_IMPACT = "set_milestone_impact"
+DEFER_WORK = "defer_work"
+RESUME_WORK = "resume_work"
 MARK_SATISFIES_REQUIREMENT = "mark_satisfies_requirement"
 LINK_MILESTONE = "link_milestone"
 CREATE_MILESTONE = "create_milestone"
@@ -120,6 +122,8 @@ ACTIONS = frozenset(
         COMPLETE_NEXT_ACTION,
         CANCEL_NEXT_ACTION,
         SET_MILESTONE_IMPACT,
+        DEFER_WORK,
+        RESUME_WORK,
         MARK_SATISFIES_REQUIREMENT,
         LINK_MILESTONE,
         CREATE_MILESTONE,

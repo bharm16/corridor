@@ -154,9 +154,26 @@ from corridor.statement_lifecycle import (
     current_candidate_disposition,
     current_lineage_statement,
 )
+from corridor.work_list import build_work_list
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Corridor — adjudication")
+
+_WORK_REASON_COPY = {
+    "past_due": "The External Party commitment passed its stated date.",
+    "critical_missing_internal_owner": "A Critical Dependency has no Internal Owner.",
+    "critical_missing_next_action": "A Critical Dependency has no Next Action.",
+    "committed_date_change": "The External Party changed its Committed Date.",
+    "milestone_impact_unknown": "Its Milestone Impact is not yet known.",
+    "disputed_date": "Sources disagree about a current date.",
+    "unknown_scope": "Choose which Dependency the Commitment applies to.",
+    "unplaced_statement": "Place this External Party statement with the right Dependency.",
+    "missing_internal_owner": "Assign the Internal Owner for this Commitment.",
+    "missing_next_action": "Set the Next Action for this Commitment.",
+    "action_due": "The project Next Action is due now.",
+    "action_due_date_unknown": "The Next Action needs a return date.",
+    "external_closure_follow_up": "Confirm the project Next Action after the External Party closure.",
+}
 
 
 def get_session():
@@ -1243,7 +1260,50 @@ def _optional_form_date(form, name: str) -> date | None:
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    return RedirectResponse("/queue/nhhip-3c2", status_code=302)
+    return RedirectResponse("/work/nhhip-3c2", status_code=302)
+
+
+@app.get("/work/{slug}", response_class=HTMLResponse)
+def coordinator_home(
+    request: Request,
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """The coordinator's short, project-language entry point."""
+    project = _project(session, slug)
+    work_list = build_work_list(session, project.id)
+
+    def view(item):
+        if item.kind == "candidate":
+            action_url = f"/statements/{project.slug}/{item.candidate_id}/coordinate"
+            action_label = "Coordinate statement"
+        elif item.kind == "dependency":
+            action_url = f"/ledger/{project.slug}/{item.dependency_id}"
+            action_label = "Open Dependency"
+        elif item.source_candidate_id is not None:
+            action_url = (
+                f"/statements/{project.slug}/{item.source_candidate_id}/coordinate"
+            )
+            action_label = "Open statement plan"
+        else:
+            action_url = f"/statements/{project.slug}"
+            action_label = "Review statement"
+        return {
+            "item": item,
+            "reasons": tuple(_WORK_REASON_COPY[code] for code in item.attention_reason_codes),
+            "action_url": action_url,
+            "action_label": action_label,
+        }
+
+    return TEMPLATES.TemplateResponse(
+        request,
+        "work_list.html",
+        {
+            "project": project,
+            "immediate": tuple(view(item) for item in work_list.immediate),
+            "backlog": tuple(view(item) for item in work_list.backlog),
+        },
+    )
 
 
 @app.get("/queue/{slug}", response_class=HTMLResponse)

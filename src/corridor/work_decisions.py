@@ -25,6 +25,7 @@ from corridor.models import (
     CommitmentLineage,
     Dependency,
     DependencyEvent,
+    DependencyEventScopeDecision,
     Milestone,
     WorkDecision,
     WorkDecisionMilestoneImpact,
@@ -35,16 +36,20 @@ from corridor.statement_lifecycle import (
     current_statement_event_filter,
     current_work_decision_filter,
 )
+from corridor.dependency_events import current_scope_decision_filter
 
 ASSIGN_INTERNAL_OWNER = "assign_internal_owner"
 SET_NEXT_ACTION = "set_next_action"
 COMPLETE_NEXT_ACTION = "complete_next_action"
 CANCEL_NEXT_ACTION = "cancel_next_action"
 SET_MILESTONE_IMPACT = "set_milestone_impact"
+DEFER_WORK = "defer_work"
+RESUME_WORK = "resume_work"
 
 INTERNAL_OWNER = "internal_owner"
 NEXT_ACTION = "next_action"
 MILESTONE_IMPACT = "milestone_impact"
+DEFERRAL = "deferral"
 
 MILESTONE_IMPACT_STATES = frozenset(
     {"affects", "does_not_affect", "not_yet_known"}
@@ -65,6 +70,13 @@ NO_FOLLOW_UP_REASONS = frozenset(
 )
 CANCELLATION_REASONS = frozenset(
     {"no_longer_needed", "superseded", "recorded_in_error"}
+)
+DEFERRAL_REASONS = frozenset(
+    {
+        "waiting_for_information",
+        "waiting_for_external_party",
+        "assigned_to_someone_else",
+    }
 )
 
 @dataclass(frozen=True)
@@ -104,6 +116,15 @@ class CoordinationSubject:
 
 SubjectInput = CoordinationSubject | int
 SubjectProjection = Dependency | CommitmentLineage
+
+
+@dataclass(frozen=True)
+class ReturnObservation:
+    """The current External Party state a delayed Work Item has answered."""
+
+    statement_event_id: int | None
+    scope_decision_id: int | None
+    milestone_impact_decision_id: int | None
 
 
 def assign_internal_owner(
@@ -158,6 +179,8 @@ def set_next_action(
     composite = _composite(action.strip(), due_date)
 
     coordination_subject, projection = _locked_subject(session, subject)
+    _clear_deferral_if_current(session, coordination_subject, projection, recorder)
+    observation = _return_observation(session, coordination_subject)
     tail = _consistent_tail(
         session,
         coordination_subject,
@@ -185,6 +208,58 @@ def set_next_action(
         recorder=recorder,
         audit_action=audit.SET_NEXT_ACTION,
         action_due_date_reason=reason,
+        return_observation=observation,
+    )
+
+
+def defer_work(
+    session: Session,
+    subject: SubjectInput,
+    *,
+    reason: str,
+    return_date: date,
+    principal: HumanPrincipal,
+) -> WorkDecision:
+    """Record why immediate work can wait and the date it must return.
+
+    This is deliberately not an unknown Action Due Date.  The latter says
+    the project does not know when its next step belongs; a deferral is a
+    positive, attributable decision to revisit a Work Item on one date.
+    """
+    recorder = require_human_principal(principal)
+    if not isinstance(return_date, date):
+        raise ValueError("a deferral needs a return date")
+    deferral_reason = _reason(
+        reason,
+        DEFERRAL_REASONS,
+        "a deferral needs a structured reason",
+    )
+    coordination_subject, projection = _locked_subject(session, subject)
+    observation = _return_observation(session, coordination_subject)
+    tail = _consistent_tail(
+        session,
+        coordination_subject,
+        DEFERRAL,
+        _projected_deferral(projection),
+    )
+    after_value = _deferral_value(deferral_reason, return_date)
+    if tail is not None and tail.after_value == after_value:
+        return tail
+
+    projection.deferral_reason = deferral_reason
+    projection.deferral_return_date = return_date
+    return _append(
+        session,
+        coordination_subject,
+        field=DEFERRAL,
+        decision_type=DEFER_WORK,
+        after_value=after_value,
+        tail=tail,
+        recorder=recorder,
+        audit_action=audit.DEFER_WORK,
+        deferral_reason=deferral_reason,
+        deferral_return_date=return_date,
+        return_observation=observation,
     )
 
 
@@ -361,6 +436,13 @@ def current_milestone_impact_decision(
     if current_statement is None or current_statement.event_type != "committed_date_change":
         return None
     return _tail(session, coordination_subject, MILESTONE_IMPACT)
+
+
+def current_deferral_decision(
+    session: Session, subject: SubjectInput
+) -> WorkDecision | None:
+    """The current explicit deferral, if immediate work was deliberately delayed."""
+    return _tail(session, _coerce_subject(subject), DEFERRAL)
 
 
 def _close_next_action(
@@ -548,6 +630,9 @@ def _append(
     no_follow_up_reason: str | None = None,
     cancellation_reason: str | None = None,
     note: str | None = None,
+    deferral_reason: str | None = None,
+    deferral_return_date: date | None = None,
+    return_observation: ReturnObservation | None = None,
 ) -> WorkDecision:
     decision = WorkDecision(
         dependency_id=subject.dependency_id,
@@ -562,6 +647,19 @@ def _append(
         no_follow_up_reason=no_follow_up_reason,
         cancellation_reason=cancellation_reason,
         note=note,
+        deferral_reason=deferral_reason,
+        deferral_return_date=deferral_return_date,
+        observed_statement_event_id=(
+            return_observation.statement_event_id if return_observation else None
+        ),
+        observed_scope_decision_id=(
+            return_observation.scope_decision_id if return_observation else None
+        ),
+        observed_milestone_impact_decision_id=(
+            return_observation.milestone_impact_decision_id
+            if return_observation
+            else None
+        ),
     )
     session.add(decision)
     session.flush([decision])
@@ -596,6 +694,35 @@ def _assert_next_action_reason_consistent(
         raise ValueError(
             "the next_action projection diverged from its Work Decision receipts"
         )
+
+
+def _clear_deferral_if_current(
+    session: Session,
+    subject: CoordinationSubject,
+    projection: SubjectProjection,
+    recorder: HumanPrincipal,
+) -> WorkDecision | None:
+    """A new Next Action resumes work instead of leaving an old deferral live."""
+    tail = _consistent_tail(
+        session,
+        subject,
+        DEFERRAL,
+        _projected_deferral(projection),
+    )
+    if tail is None or tail.after_value is None:
+        return None
+    projection.deferral_reason = None
+    projection.deferral_return_date = None
+    return _append(
+        session,
+        subject,
+        field=DEFERRAL,
+        decision_type=RESUME_WORK,
+        after_value=None,
+        tail=tail,
+        recorder=recorder,
+        audit_action=audit.RESUME_WORK,
+    )
 
 
 def _due_date_reason(due_date: date | None, reason: str | None) -> str | None:
@@ -637,6 +764,47 @@ def _projected_composite(projection: SubjectProjection) -> str | None:
     if projection.next_action is None and projection.action_due_date is None:
         return None
     return _composite(projection.next_action or "", projection.action_due_date)
+
+
+def _deferral_value(reason: str, return_date: date) -> str:
+    return json.dumps(
+        {"reason": reason, "return_date": return_date.isoformat()},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _projected_deferral(projection: SubjectProjection) -> str | None:
+    if projection.deferral_reason is None and projection.deferral_return_date is None:
+        return None
+    if projection.deferral_reason is None or projection.deferral_return_date is None:
+        raise ValueError("the deferral projection lacks its reason or return date")
+    return _deferral_value(projection.deferral_reason, projection.deferral_return_date)
+
+
+def _return_observation(
+    session: Session, subject: CoordinationSubject
+) -> ReturnObservation:
+    """The current statement state a future return condition must watch."""
+    if subject.commitment_lineage_id is None:
+        return ReturnObservation(None, None, None)
+    event = _current_statement(session, subject.commitment_lineage_id)
+    if event is None:
+        return ReturnObservation(None, None, None)
+    scope = session.scalar(
+        select(DependencyEventScopeDecision)
+        .where(
+            DependencyEventScopeDecision.event_id == event.id,
+            current_scope_decision_filter(),
+        )
+        .order_by(DependencyEventScopeDecision.id)
+    )
+    impact = current_milestone_impact_decision(session, subject)
+    return ReturnObservation(
+        event.id,
+        scope.id if scope is not None else None,
+        impact.id if impact else None,
+    )
 
 
 def _milestone_impact_value(impact: str, milestone_ids: tuple[int, ...]) -> str:
