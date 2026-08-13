@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -107,6 +107,12 @@ from corridor.event_admission import (
 from corridor.verbal import VerbalRefusal, record_verbal
 from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.report_release import (
+    ReleaseRefusal,
+    prepare_external_report,
+    release_external_report,
+    render_external_report_pdf,
+)
 from corridor.cohort import (
     CohortScopeViolation,
     cohort_candidate_ids,
@@ -1261,6 +1267,61 @@ def _optional_form_date(form, name: str) -> date | None:
 @app.get("/", response_class=HTMLResponse)
 def root():
     return RedirectResponse("/work/nhhip-3c2", status_code=302)
+
+
+@app.post("/reports/{slug}/render")
+def render_report(
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """Render and retain one fixed PDF; this does not release it externally."""
+    project = _project(session, slug)
+    try:
+        artifact = prepare_external_report(
+            session,
+            project_id=project.id,
+            rendered=render_external_report_pdf(session, project.id),
+        )
+    except ReleaseRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return JSONResponse(
+        status_code=201,
+        content={
+            "artifact_id": artifact.id,
+            "artifact_name": artifact.artifact_name,
+            "pdf_sha256": artifact.pdf_sha256,
+        },
+    )
+
+
+@app.post("/reports/{slug}/release")
+def release_report(
+    slug: str,
+    artifact_id: int = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Human-authorize one previously rendered PDF without regenerating it."""
+    project = _project(session, slug)
+    try:
+        release = release_external_report(
+            session,
+            project_id=project.id,
+            artifact_id=artifact_id,
+            principal=principal,
+        )
+    except ReleaseRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return JSONResponse(
+        status_code=201,
+        content={
+            "release_id": release.id,
+            "artifact_name": release.artifact_name,
+            "pdf_sha256": release.pdf_sha256,
+        },
+    )
 
 
 @app.get("/work/{slug}", response_class=HTMLResponse)
