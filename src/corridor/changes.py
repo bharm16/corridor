@@ -94,6 +94,10 @@ def snapshot(
     def published_committed_date(row) -> date | None:
         return published_committed_dates.get(row.dependency.id)
 
+    publication = evaluation.statement_publication
+    party_statements = (
+        () if publication is None else publication.party_statements
+    )
     return {
         "ruleset_version": evaluation.ruleset_version,
         "dependencies": {
@@ -115,6 +119,21 @@ def snapshot(
                 "exceptions": sorted(by_dependency.get(row.dependency.id, ())),
             }
             for row in rows
+        },
+        # These statements intentionally have no Dependency key. Keeping their
+        # frozen identities beside the Dependency snapshot makes the report's
+        # covered population auditable without inventing a Ledger projection.
+        "external_party_commitments": {
+            str(statement.current_event.commitment_lineage_id): {
+                "current_event_id": statement.current_event.id,
+                "published_event_id": (
+                    statement.event.id if statement.event is not None else None
+                ),
+                "scope_decision_id": statement.scope_decision.id,
+                "unsupported_current": statement.unsupported_current,
+            }
+            for statement in party_statements
+            if not statement.is_closed
         },
     }
 

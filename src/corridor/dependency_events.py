@@ -18,6 +18,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.orm import Session
 
 from corridor.models import (
+    CommitmentLineage,
     Dependency,
     DependencyEvent,
     DependencyEventEvidence,
@@ -26,6 +27,7 @@ from corridor.models import (
     DependencyEventTiming,
     Document,
     EvidenceLink,
+    WorkDecision,
 )
 from corridor.statement_lifecycle import (
     current_scope_decision_filter as current_lifecycle_scope_decision_filter,
@@ -197,16 +199,47 @@ class PublishedDependencyStatement:
 
 
 @dataclass(frozen=True)
+class PublishedStatementCoordinationPlan:
+    """The current, separately-attributable project response to a statement."""
+
+    internal_owner: str | None
+    internal_owner_decision: WorkDecision | None
+    next_action: str | None
+    next_action_decision: WorkDecision | None
+    action_due_date: date | None
+    action_due_date_reason: str | None
+    milestone_impact: str | None
+    milestone_impact_decision: WorkDecision | None
+    needs_review: bool
+
+
+@dataclass(frozen=True)
+class PublishedPartyStatement:
+    """One open unknown-scope statement a Report may publish without a Dependency."""
+
+    current_event: DependencyEvent
+    event: DependencyEvent | None
+    timings: tuple[DependencyEventTiming, ...]
+    scope_decision: DependencyEventScopeDecision
+    cited_provenance: CitedStatementProvenance | None
+    is_closed: bool
+    unsupported_current: bool
+    plan: PublishedStatementCoordinationPlan
+
+
+@dataclass(frozen=True)
 class StatementPublication:
-    """One provenance-consistent statement reading for a set of Dependencies."""
+    """One provenance-consistent statement reading for every Report surface."""
 
     project_id: int
     by_dependency: Mapping[int, PublishedDependencyStatement]
     document_only: bool = False
+    party_statements: tuple[PublishedPartyStatement, ...] = ()
 
     def __post_init__(self) -> None:
         """Keep the paired publication from being changed after it is read."""
         object.__setattr__(self, "by_dependency", MappingProxyType(dict(self.by_dependency)))
+        object.__setattr__(self, "party_statements", tuple(self.party_statements))
 
     @property
     def committed_dates(self) -> dict[int, date | None]:
@@ -253,6 +286,29 @@ class StatementPublication:
                 )
                 for dependency_id, statement in sorted(self.by_dependency.items())
             ),
+            party_statements=tuple(
+                PartyStatementPublicationEntryFingerprint(
+                    commitment_lineage_id=statement.current_event.commitment_lineage_id,
+                    current_event_id=statement.current_event.id,
+                    published_event_id=(
+                        statement.event.id if statement.event is not None else None
+                    ),
+                    scope_decision_id=statement.scope_decision.id,
+                    is_closed=statement.is_closed,
+                    unsupported_current=statement.unsupported_current,
+                    plan_decision_ids=tuple(
+                        decision.id
+                        for decision in (
+                            statement.plan.internal_owner_decision,
+                            statement.plan.next_action_decision,
+                            statement.plan.milestone_impact_decision,
+                        )
+                        if decision is not None
+                    ),
+                    plan_needs_review=statement.plan.needs_review,
+                )
+                for statement in self.party_statements
+            ),
         )
 
 
@@ -269,11 +325,26 @@ class StatementPublicationEntryFingerprint:
 
 
 @dataclass(frozen=True)
+class PartyStatementPublicationEntryFingerprint:
+    """One party-level statement identity inside a frozen Report reading."""
+
+    commitment_lineage_id: int | None
+    current_event_id: int
+    published_event_id: int | None
+    scope_decision_id: int
+    is_closed: bool
+    unsupported_current: bool
+    plan_decision_ids: tuple[int, ...]
+    plan_needs_review: bool
+
+
+@dataclass(frozen=True)
 class StatementPublicationFingerprint:
     """The immutable statement identity and audience mode behind one reading."""
 
     document_only: bool
     statements: tuple[StatementPublicationEntryFingerprint, ...]
+    party_statements: tuple[PartyStatementPublicationEntryFingerprint, ...] = ()
 
 
 def current_dependency_statements(
@@ -464,7 +535,208 @@ def published_dependency_statements(
                 and (published is None or event is None or committed_date is None)
             ),
         )
-    return StatementPublication(project_id, by_dependency, document_only=document_only)
+    return StatementPublication(
+        project_id,
+        by_dependency,
+        document_only=document_only,
+        party_statements=published_party_statements(
+            session,
+            project_id=project_id,
+            document_only=document_only,
+        ),
+    )
+
+
+def published_party_statements(
+    session: Session,
+    *,
+    project_id: int,
+    document_only: bool,
+) -> tuple[PublishedPartyStatement, ...]:
+    """Freeze every current unknown-scope party statement for Report readers.
+
+    A statement with unknown Dependency scope cannot enter the legacy
+    ``by_dependency`` projection.  It still belongs in the automatic internal
+    Report, so it travels beside that projection in the same immutable
+    ``StatementPublication`` rather than inviting a second reader to select
+    its own current event, Evidence, or provenance mode.
+    """
+    rows = session.execute(
+        select(DependencyEvent, DependencyEventScopeDecision, CommitmentLineage)
+        .join(
+            DependencyEventScopeDecision,
+            DependencyEventScopeDecision.event_id == DependencyEvent.id,
+        )
+        .join(
+            CommitmentLineage,
+            CommitmentLineage.id == DependencyEvent.commitment_lineage_id,
+        )
+        .where(
+            DependencyEvent.project_id == project_id,
+            DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
+            DependencyEvent.attribution_state == "resolved",
+            DependencyEvent.stated_external_org_id.is_not(None),
+            DependencyEvent.commitment_lineage_id.is_not(None),
+            DependencyEventScopeDecision.scope_mode == "unknown",
+            current_scope_decision_filter(),
+            current_statement_event_filter(DependencyEvent.id),
+        )
+        .order_by(DependencyEvent.commitment_lineage_id, DependencyEvent.id)
+    ).all()
+    event_ids = tuple(event.id for event, _, _ in rows)
+    timings_by_event: dict[int, list[DependencyEventTiming]] = {}
+    if event_ids:
+        for timing in session.scalars(
+            select(DependencyEventTiming)
+            .where(DependencyEventTiming.event_id.in_(event_ids))
+            .order_by(DependencyEventTiming.event_id, DependencyEventTiming.id)
+        ):
+            timings_by_event.setdefault(timing.event_id, []).append(timing)
+
+    cited_provenance = _verified_party_statement_provenance(
+        session, event_ids, project_id=project_id
+    )
+    closed_lineages = _closed_party_commitment_lineages(session, project_id)
+    published: list[PublishedPartyStatement] = []
+    for event, scope_decision, lineage in rows:
+        published_event = (
+            event
+            if event.source_kind == "verbal" or event.id in cited_provenance
+            else None
+        )
+        if document_only and event.source_kind != "cited":
+            published_event = None
+        plan = _published_statement_plan(session, lineage)
+        published.append(
+            PublishedPartyStatement(
+                current_event=event,
+                event=published_event,
+                timings=(
+                    tuple(timings_by_event.get(event.id, ()))
+                    if published_event is not None
+                    else ()
+                ),
+                scope_decision=scope_decision,
+                cited_provenance=(
+                    cited_provenance.get(event.id)
+                    if published_event is not None
+                    else None
+                ),
+                is_closed=lineage.id in closed_lineages,
+                unsupported_current=published_event is None,
+                plan=plan,
+            )
+        )
+    return tuple(published)
+
+
+def _published_statement_plan(
+    session: Session, lineage: CommitmentLineage
+) -> PublishedStatementCoordinationPlan:
+    """Read one statement plan's receipt tails while freezing publication."""
+    # ``work_decisions`` imports this module for scope authority, so this local
+    # import keeps the shared read seam acyclic while preserving its one tail
+    # reader for all three independently-attributable plan fields.
+    from corridor.work_decisions import (
+        CoordinationSubject,
+        current_internal_owner_decision,
+        current_milestone_impact_decision,
+        current_next_action_decision,
+    )
+
+    subject = CoordinationSubject.statement(lineage.id)
+    return PublishedStatementCoordinationPlan(
+        internal_owner=lineage.internal_owner,
+        internal_owner_decision=current_internal_owner_decision(session, subject),
+        next_action=lineage.next_action,
+        next_action_decision=current_next_action_decision(session, subject),
+        action_due_date=lineage.action_due_date,
+        action_due_date_reason=lineage.action_due_date_reason,
+        milestone_impact=lineage.milestone_impact,
+        milestone_impact_decision=current_milestone_impact_decision(session, subject),
+        needs_review=lineage.plan_needs_review,
+    )
+
+
+def _verified_party_statement_provenance(
+    session: Session,
+    event_ids: Iterable[int],
+    *,
+    project_id: int,
+) -> dict[int, CitedStatementProvenance]:
+    """Return only page- and quote-verified Evidence owned by these events."""
+    ids = tuple(dict.fromkeys(event_ids))
+    if not ids:
+        return {}
+    # The writer validates cited Evidence, but publication has to fail closed
+    # when a later raw mutation or bad migration makes that exact page/quote
+    # unsupported.  Do not publish an older statement in its place.
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementRefusal,
+        validate_cited_statement_evidence,
+    )
+
+    provenance: dict[int, CitedStatementProvenance] = {}
+    rows = session.execute(
+        select(DependencyEventEvidence.event_id, EvidenceLink, Document)
+        .join(
+            EvidenceLink,
+            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+        )
+        .join(Document, Document.id == EvidenceLink.document_id)
+        .where(
+            DependencyEventEvidence.event_id.in_(ids),
+            EvidenceLink.verified.is_(True),
+        )
+        .order_by(DependencyEventEvidence.event_id, EvidenceLink.id)
+    ).all()
+    for event_id, link, document in rows:
+        try:
+            validate_cited_statement_evidence(
+                session,
+                CitedStatementEvidence(link.document_id, link.page_no, link.quote),
+                project_id,
+            )
+        except StatementRefusal:
+            continue
+        provenance.setdefault(
+            event_id,
+            CitedStatementProvenance(
+                document.id,
+                document.filename,
+                link.page_no,
+                link.quote,
+            ),
+        )
+    return provenance
+
+
+def _closed_party_commitment_lineages(
+    session: Session, project_id: int
+) -> frozenset[int]:
+    """A Closure ends a party-level row only when its provenance still holds."""
+    closures = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.project_id == project_id,
+            DependencyEvent.event_type == "closure",
+            DependencyEvent.closes_commitment_lineage_id.is_not(None),
+            DependencyEvent.attribution_state == "resolved",
+            DependencyEvent.stated_external_org_id.is_not(None),
+            current_statement_event_filter(DependencyEvent.id),
+        )
+    ).all()
+    cited = _verified_party_statement_provenance(
+        session, (closure.id for closure in closures), project_id=project_id
+    )
+    return frozenset(
+        closure.closes_commitment_lineage_id
+        for closure in closures
+        if (
+            closure.source_kind == "verbal" and closure.event_date is not None
+        )
+        or (closure.source_kind == "cited" and closure.id in cited)
+    )
 
 
 def verified_cited_statement_provenance(
