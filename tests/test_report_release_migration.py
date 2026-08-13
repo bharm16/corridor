@@ -17,7 +17,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f253a7c4d9e2"
-HEAD = "a255a7c4d9e2"
+HEAD = "b255a7c4d9e2"
 RELEASE_COLUMNS = [
     "id",
     "project_id",
@@ -77,6 +77,12 @@ def test_release_schema_is_one_linear_head_on_a_fresh_database():
                     text(
                         "select exists (select 1 from pg_trigger "
                         "where tgname = 'prevent_external_report_release_mutation')"
+                    )
+                ) is True
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from pg_trigger "
+                        "where tgname = 'external_report_releases_reject_truncate')"
                     )
                 ) is True
                 assert connection.execute(

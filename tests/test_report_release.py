@@ -366,6 +366,16 @@ def test_database_refuses_edits_to_a_sealed_release(session, project):
     )
 
 
+def test_database_refuses_truncating_sealed_releases(session, project):
+    release = _release(session, project)
+
+    with pytest.raises(Exception, match="immutable"):
+        with session.begin_nested():
+            session.execute(text("truncate external_report_releases"))
+
+    assert retrieve_released_external_report(session, project.id, release.id).id == release.id
+
+
 def test_real_renderer_bytes_are_the_bytes_the_release_service_seals(session, project):
     rendered = render_external_report_pdf(session, project.id, today=date(2026, 8, 13))
 
