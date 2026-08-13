@@ -1,70 +1,78 @@
-"""Digest-pinned, isolated SH 99 mechanical Admission rehearsal.
+"""Replay the real SH 99 Admission operation on a pinned isolated clone.
 
-This is deliberately an operations acceptance boundary, not a production
-backfill command.  It reconstructs only a small, pinned SH 99 fixture in a
-fresh PostgreSQL 16 database, invokes the ordinary event-admission policy,
-and exports the exact receipts and rows an independent reviewer needs.  The
-shared SH 99 database is never opened or mutated here.
+The first SH 99 acceptance boundary proved the event policy on a small
+synthetic fixture.  That was useful policy coverage, but it did not prove the
+operation that would run against the shared project: Active Run declaration,
+Dependency Admission, and Event Admission over the real Candidate population.
+
+This boundary captures a read-only, content-addressed PostgreSQL data snapshot,
+restores it into a newly migrated disposable PostgreSQL 16 database, and invokes
+the exact ``make admission ARGS=\"load sh99-grand-parkway\"`` command twice.
+The shared database is read only throughout; only the disposable clone changes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from corridor import audit
-from corridor.event_admission import (
-    ABSTENTION_REASON_VERSION,
-    EVENT_ADMISSION_POLICY_VERSION,
-    FAMILY,
-    run_event_admission,
-)
-from corridor.extraction_runs import record_extraction_run
-from corridor.m8_acceptance_bundle import (
-    VerificationResult,
-    publish_verified_bundle,
-    verify_bundle,
-)
+from corridor.exceptions import evaluate
+from corridor.m8_acceptance_bundle import VerificationResult, publish_verified_bundle, verify_bundle
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     ProvisionedDatabase,
     provision_disposable_postgres,
+    read_migration_head,
+    require_local_postgres_host,
 )
 from corridor.models import (
     ActiveExtractionRun,
+    ActiveRunDeclaration,
+    Assertion,
     Candidate,
+    CommitmentLineage,
     Dependency,
+    DependencyAdmissionOutcome,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     DependencyEventTiming,
-    DocPage,
     Document,
     EventAdmissionOutcome,
+    EvidenceLink,
     ExternalOrg,
+    ExtractionRun,
     PolicyRun,
     Project,
 )
+from corridor.m8_acceptance_publication import publish_directory_once
 
 
-SNAPSHOT_SCHEMA_VERSION = "corridor.sh99-admission-snapshot.v1"
-BUNDLE_SCHEMA_VERSION = "corridor.sh99-admission-bundle.v1"
-DATABASE_PREFIX = "corridor_sh99_admission_acceptance_"
+SNAPSHOT_SCHEMA_VERSION = "corridor.sh99-real-admission-source-snapshot.v1"
+BUNDLE_SCHEMA_VERSION = "corridor.sh99-real-admission-bundle.v1"
+DATABASE_PREFIX = "corridor_sh99_real_admission_acceptance_"
 BUNDLE_FILES = ("receipt.json", "canonical-content.json", "environment.json")
 HUMAN_APPROVAL_GATE = (
     "No shared SH 99 database was changed. A designated human must separately "
     "approve any shared-database Admission operation."
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_DATABASE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 class CorruptSH99AdmissionBundle(ValueError):
@@ -73,8 +81,8 @@ class CorruptSH99AdmissionBundle(ValueError):
 
 @dataclass(frozen=True)
 class SH99AdmissionAcceptanceConfig:
-    snapshot_path: Path
-    expected_snapshot_sha256: str
+    project_slug: str
+    source_database_url: str
     expected_clean_git_revision: str
     output_dir: Path
     postgres_admin_url: str
@@ -94,101 +102,114 @@ def run_sh99_admission_acceptance(
     *,
     provision_database: DatabaseProvisioner | None = None,
 ) -> SH99AdmissionAcceptanceSummary:
-    """Run two deterministic Admission passes on a disposable pinned clone."""
+    """Pin and replay the shared SH 99 operation without mutating its database."""
 
     if provision_database is None:
         provision_database = _provision_database
-    snapshot, snapshot_sha256 = _load_snapshot(
-        config.snapshot_path, expected_sha256=config.expected_snapshot_sha256
+    source = _require_clean_source(config.expected_clean_git_revision)
+    source_head = _source_migration_head()
+    source_database = _source_database(config.source_database_url)
+    shared_head = read_migration_head(
+        config.source_database_url, repo_root=REPO_ROOT, error_cls=ValueError
     )
-    source_state = _require_pinned_source(
-        snapshot["source_revision"], config.expected_clean_git_revision
-    )
-    source_migration_head = _source_migration_head()
-    source_state["migration_head"] = source_migration_head
-    with provision_database(config.postgres_admin_url) as database:
-        _require_current_source_schema(database, source_migration_head)
-        with database.session_factory() as session:
-            project, candidates = _seed_snapshot(session, snapshot)
-            session.commit()
-            before = _state(session, project.id, candidates)
-            late_refusal = _late_refusal_receipt(session, project, candidates)
-            session.commit()
+    if shared_head != source_head:
+        raise ValueError("shared database migration head does not match checked-out source")
 
-            first = run_event_admission(session, project.id)
-            session.commit()
-            first_run = _run_receipt(session, project.id, first.run_id, before)
-            after_first_run = _state(session, project.id, candidates)
+    with tempfile.TemporaryDirectory(prefix="corridor-sh99-real-admission-") as parent:
+        dump_path = Path(parent) / "source.dump"
+        source_state = _read_project_state(config.source_database_url, config.project_slug)
+        _dump_source_database(source_database, dump_path)
+        source_snapshot = {
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
+            "source": {
+                **source,
+                "migration_head": source_head,
+                "database_name": source_database["database"],
+            },
+            "project_slug": config.project_slug,
+            "source_dump_sha256": _sha256(dump_path.read_bytes()),
+            "before": source_state,
+        }
 
-            second = run_event_admission(session, project.id)
-            session.commit()
-            after_second_run = _state(session, project.id, candidates)
-            second_run = _run_receipt(
-                session, project.id, second.run_id, after_first_run
+        with provision_database(config.postgres_admin_url) as database:
+            database_name = database.name
+            if database.migration_head != source_head:
+                raise ValueError(
+                    "disposable database migration head does not match checked-out source"
+                )
+            _restore_source_database(source_database, dump_path, database.name)
+            clone_before = _read_project_state(
+                _database_url(config.postgres_admin_url, database.name),
+                config.project_slug,
             )
+            if clone_before != source_state:
+                raise ValueError("restored SH 99 clone does not match its pinned source state")
 
-            receipt = {
-                "schema_version": BUNDLE_SCHEMA_VERSION,
-                "input_pins": _input_pins(snapshot, snapshot_sha256),
-                "database": {
-                    "name": database.name,
-                    "postgres_version": database.postgres_version,
-                    "migration_head": database.migration_head,
-                },
-                "source": source_state,
-                "before": before,
-                "first_run": first_run,
-                "after_first_run": after_first_run,
-                "second_run": second_run,
-                "after_second_run": after_second_run,
-                "negative_cases": _negative_cases(
-                    first_run=first_run, after_second_run=after_second_run
-                ),
-                "late_refusal": late_refusal,
-                "human_approval_gate": HUMAN_APPROVAL_GATE,
-            }
-            environment = {
-                "schema_version": BUNDLE_SCHEMA_VERSION,
-                "replayed_at": datetime.now(timezone.utc).isoformat(),
-                "database_name": database.name,
-                "postgres_version": database.postgres_version,
-                "migration_head": database.migration_head,
-                "snapshot_sha256": snapshot_sha256,
-                "source_revision": snapshot["source_revision"],
-                "checkout_revision": source_state["revision"],
-            }
-            canonical = {
-                "schema_version": BUNDLE_SCHEMA_VERSION,
-                "input_pins": receipt["input_pins"],
-                "source": source_state,
-                "migration_head": database.migration_head,
-                "before": before,
-                "first_run": first_run,
-                "second_run": second_run,
-                "after_second_run": after_second_run,
-                "negative_cases": receipt["negative_cases"],
-                "late_refusal": late_refusal,
-                "human_approval_gate": HUMAN_APPROVAL_GATE,
-            }
-            manifest_path, manifest_sha256, canonical_sha256 = _write_bundle(
-                config.output_dir,
-                environment=environment,
-                receipt=receipt,
-                canonical_content=canonical,
-            )
-        return SH99AdmissionAcceptanceSummary(
-            bundle_dir=config.output_dir,
-            manifest_path=manifest_path,
-            integrity_manifest_sha256=manifest_sha256,
-            canonical_content_sha256=canonical_sha256,
-            database_name=database.name,
+            clone_url = _database_url(config.postgres_admin_url, database.name)
+            first_operation = _run_shared_operation(clone_url, config.project_slug)
+            after_first_run = _read_project_state(clone_url, config.project_slug)
+            second_operation = _run_shared_operation(clone_url, config.project_slug)
+            after_second_run = _read_project_state(clone_url, config.project_slug)
+            first_run = _run_receipt(clone_before, after_first_run, first_operation)
+            second_run = _run_receipt(after_first_run, after_second_run, second_operation)
+            protected = _protected_cases(first_run, after_second_run)
+            _require_protected_outcomes(protected, second_run)
+
+        late_refusal = _late_refusal_receipt(
+            config=config,
+            source_database=source_database,
+            source_head=source_head,
+            dump_path=dump_path,
+            provision_database=provision_database,
         )
+
+    receipt = {
+        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "source_snapshot": source_snapshot,
+        "first_run": first_run,
+        "after_first_run": after_first_run,
+        "second_run": second_run,
+        "after_second_run": after_second_run,
+        "protected_cases": protected,
+        "late_refusal": late_refusal,
+        "human_approval_gate": HUMAN_APPROVAL_GATE,
+    }
+    environment = {
+        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "replayed_at": datetime.now(timezone.utc).isoformat(),
+        "source_revision": source["revision"],
+        "migration_head": source_head,
+        "source_dump_sha256": source_snapshot["source_dump_sha256"],
+    }
+    canonical = {
+        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "source_snapshot": source_snapshot,
+        "first_run": first_run,
+        "second_run": second_run,
+        "after_second_run": after_second_run,
+        "protected_cases": protected,
+        "late_refusal": late_refusal,
+        "human_approval_gate": HUMAN_APPROVAL_GATE,
+    }
+    manifest_path, manifest_sha256, canonical_sha256 = _write_bundle(
+        config.output_dir,
+        environment=environment,
+        receipt=receipt,
+        canonical_content=canonical,
+    )
+    return SH99AdmissionAcceptanceSummary(
+        bundle_dir=config.output_dir,
+        manifest_path=manifest_path,
+        integrity_manifest_sha256=manifest_sha256,
+        canonical_content_sha256=canonical_sha256,
+        database_name=database_name,
+    )
 
 
 def verify_sh99_admission_bundle(
     bundle_dir: Path, *, expected_integrity_manifest_sha256: str
 ) -> VerificationResult:
-    """Verify a closed receipt export without opening any source database."""
+    """Verify a closed real-SH-99 receipt export without opening PostgreSQL."""
 
     return verify_bundle(
         bundle_dir,
@@ -201,7 +222,7 @@ def verify_sh99_admission_bundle(
     )
 
 
-def _provision_database(admin_url: str) -> Iterator[ProvisionedDatabase]:
+def _provision_database(admin_url: str):
     return provision_disposable_postgres(
         admin_url,
         repo_root=REPO_ROOT,
@@ -210,102 +231,26 @@ def _provision_database(admin_url: str) -> Iterator[ProvisionedDatabase]:
     )
 
 
-def _load_snapshot(path: Path, *, expected_sha256: str) -> tuple[dict[str, Any], str]:
-    if len(expected_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha256):
-        raise ValueError("snapshot digest must be a lowercase SHA-256")
-    try:
-        value = path.read_bytes()
-    except OSError as exc:
-        raise ValueError("snapshot is absent or unreadable") from exc
-    digest = _sha256(value)
-    if digest != expected_sha256:
-        raise ValueError("snapshot digest does not match the caller-provided pin")
-    try:
-        snapshot = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise ValueError("snapshot is not valid JSON") from exc
-    if snapshot.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
-        raise ValueError("snapshot schema is unsupported")
-    _validate_snapshot(snapshot)
-    return snapshot, digest
+def _require_clean_source(expected_checkout_revision: str) -> dict[str, str]:
+    revision = _git("rev-parse", "HEAD")
+    if _git("status", "--porcelain"):
+        raise ValueError("SH 99 Admission replay requires a clean source checkout")
+    if revision != expected_checkout_revision:
+        raise ValueError("checkout revision does not match the caller-provided pin")
+    return {"expected_checkout_revision": expected_checkout_revision, "revision": revision}
 
 
-def _validate_snapshot(snapshot: dict[str, Any]) -> None:
-    """Refuse input that cannot name one exact Active Run for every document."""
-
-    corpus = {item.get("registry_id") for item in snapshot.get("corpus_inputs", [])}
-    if len(corpus) != 1:
-        raise ValueError("the bounded SH 99 snapshot must contain exactly one corpus input")
-    active_runs = snapshot.get("declared_active_runs")
-    if not isinstance(active_runs, list) or not active_runs:
-        raise ValueError("snapshot must pin declared Active Runs")
-    active_registry_ids = [item.get("registry_id") for item in active_runs]
-    if set(active_registry_ids) != corpus or len(active_registry_ids) != len(corpus):
-        raise ValueError("snapshot Active Runs must cover every corpus input exactly once")
-    if any(
-        not isinstance(item.get(key), str) or not item[key]
-        for item in active_runs
-        for key in ("prompt_version", "model", "schema_version")
-    ):
-        raise ValueError("snapshot Active Runs must pin prompt, model, and schema")
-    database_snapshot = snapshot.get("database_snapshot")
-    if not isinstance(database_snapshot, dict) or not isinstance(
-        database_snapshot.get("migration_head"), str
-    ):
-        raise ValueError("snapshot must pin the database migration head")
-
-
-def _require_pinned_source(
-    snapshot_revision: str, expected_checkout_revision: str
-) -> dict[str, str]:
-    """Refuse any checkout other than the exact caller-held source pin."""
-
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+def _git(*args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    if status:
-        raise ValueError("isolated Admission replay requires a clean source checkout")
-    if revision != expected_checkout_revision:
-        raise ValueError("checkout revision does not match the caller-provided pin")
-    exists = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{snapshot_revision}^{{commit}}"],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if exists.returncode:
-        raise ValueError("snapshot source revision is unavailable in this checkout")
-    ancestry = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", snapshot_revision, revision],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if ancestry.returncode:
-        raise ValueError("checkout does not descend from the pinned snapshot source")
-    return {
-        "snapshot_revision": snapshot_revision,
-        "expected_checkout_revision": expected_checkout_revision,
-        "revision": revision,
-    }
 
 
 def _source_migration_head() -> str:
-    """Read the one Alembic head declared by the checked-out source."""
-
     completed = subprocess.run(
         ["uv", "run", "alembic", "heads"],
         cwd=REPO_ROOT,
@@ -313,441 +258,540 @@ def _source_migration_head() -> str:
         capture_output=True,
         text=True,
     )
-    heads = []
-    for line in completed.stdout.splitlines():
-        match = re.match(r"^([0-9a-f]+) \(head\)$", line.strip())
-        if match:
-            heads.append(match.group(1))
+    heads = [
+        match.group(1)
+        for line in completed.stdout.splitlines()
+        if (match := re.match(r"^([0-9a-f]+) \(head\)$", line.strip()))
+    ]
     if completed.returncode or len(heads) != 1:
         raise ValueError("checked-out source must declare exactly one Alembic head")
     return heads[0]
 
 
-def _require_current_source_schema(
-    database: ProvisionedDatabase, source_migration_head: str
-) -> None:
-    if database.migration_head != source_migration_head:
-        raise ValueError(
-            "disposable database migration head does not match the checked-out source"
-        )
+def _source_database(url: str) -> dict[str, str]:
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "postgresql":
+        raise ValueError("SH 99 Admission replay requires PostgreSQL")
+    require_local_postgres_host(parsed.host, error_cls=ValueError)
+    if not parsed.database or not _DATABASE_NAME.fullmatch(parsed.database):
+        raise ValueError("source database name is invalid")
+    if not parsed.username or not _DATABASE_NAME.fullmatch(parsed.username):
+        raise ValueError("source database username is invalid")
+    return {"database": parsed.database, "username": parsed.username}
 
 
-def _seed_snapshot(session: Session, snapshot: dict[str, Any]) -> tuple[Project, dict[int, Candidate]]:
-    project_data = snapshot["project"]
-    project = Project(
-        slug=project_data["slug"],
-        name=project_data["name"],
-        is_synthetic=True,
-        project_side_parties=project_data["project_side_parties"],
+def _database_url(admin_url: str, database_name: str) -> str:
+    return make_url(admin_url).set(database=database_name).render_as_string(
+        hide_password=False
     )
-    session.add(project)
-    session.flush([project])
-
-    organizations = _seed_organizations(session, snapshot)
-    _seed_dependencies(session, project, snapshot, organizations)
-    document = _seed_document(session, project, snapshot)
-    candidates = _seed_event_candidates(session, project, document, snapshot)
-    session.flush()
-    return project, candidates
 
 
-def _seed_organizations(session: Session, snapshot: dict[str, Any]) -> dict[str, ExternalOrg]:
-    names = {
-        item["external_org"] for item in snapshot["dependencies"]
-    } | {
-        str(item["fields"].get("external_org"))
-        for item in snapshot["event_candidates"]
-        if item["fields"].get("external_org")
-    } | {
-        str(item["fields"].get("stated_party"))
-        for item in snapshot["event_candidates"]
-        if item["fields"].get("stated_party")
-    }
-    organizations = {name: ExternalOrg(name=name) for name in sorted(names)}
-    session.add_all(organizations.values())
-    session.flush(list(organizations.values()))
-    return organizations
+def _dump_source_database(source_database: dict[str, str], dump_path: Path) -> None:
+    """Capture PostgreSQL 16 data inside the local Compose service, read only."""
 
-
-def _seed_dependencies(
-    session: Session,
-    project: Project,
-    snapshot: dict[str, Any],
-    organizations: dict[str, ExternalOrg],
-) -> dict[str, Dependency]:
-    dependencies = {}
-    for item in snapshot["dependencies"]:
-        dependency = Dependency(
-            project_id=project.id,
-            source_ref=item["source_ref"],
-            ref_code=item["ref_code"],
-            title=item["title"],
-            dep_type="utility_relocation",
-            external_org_id=organizations[item["external_org"]].id,
-            status="identified",
-        )
-        session.add(dependency)
-        dependencies[item["source_ref"]] = dependency
-    session.flush(list(dependencies.values()))
-    return dependencies
-
-
-def _seed_document(session: Session, project: Project, snapshot: dict[str, Any]) -> Document:
-    [input_document] = snapshot["corpus_inputs"]
-    document = Document(
-        project_id=project.id,
-        registry_id=input_document["registry_id"],
-        filename=input_document["filename"],
-        sha256=input_document["sha256"],
-        doc_type=input_document["doc_type"],
-        parse_status="parsed",
-        pages=1,
-    )
-    session.add(document)
-    session.flush([document])
-    return document
-
-
-def _seed_event_candidates(
-    session: Session,
-    project: Project,
-    document: Document,
-    snapshot: dict[str, Any],
-) -> dict[int, Candidate]:
-    [active_run] = snapshot["declared_active_runs"]
-    candidates = {}
-    quotes = []
-    for item in snapshot["event_candidates"]:
-        fields = item["fields"]
-        quote = fields["description"]
-        quotes.append(quote)
-        candidate = Candidate(
-            id=item["id"],
-            project_id=project.id,
-            kind="event",
-            payload_json={
-                "kind": "event",
-                "fields": fields,
-                "citations": [
-                    {
-                        "document_id": document.id,
-                        "page": 1,
-                        "quote": quote,
-                        "verified": True,
-                        "whole_row": True,
-                    }
-                ],
-                "dedupe_hint": quote,
-                "text_source": "text_layer",
-            },
-            source_document_id=document.id,
-            source_pages=[1],
-            confidence=0.99,
-            prompt_version=active_run["prompt_version"],
-            model=active_run["model"],
-            citations_verified=True,
-        )
-        candidates[item["id"]] = candidate
-    session.add(DocPage(document_id=document.id, page_no=1, text="\n".join(quotes)))
-    run = record_extraction_run(
-        session,
-        document,
-        prompt_version=active_run["prompt_version"],
-        candidate_count=len(candidates),
-        page_errors=0,
-        candidates=list(candidates.values()),
-        model=active_run["model"],
-        schema_version=active_run["schema_version"],
-    )
-    session.add(ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id))
-    return candidates
-
-
-def _state(session: Session, project_id: int, candidates: dict[int, Candidate]) -> dict[str, Any]:
-    session.expire_all()
-    return {
-        "ledger": {
-            "dependencies": [
-                {
-                    "id": dependency.id,
-                    "source_ref": dependency.source_ref,
-                    "committed_date": _date_value(dependency.committed_date),
-                }
-                for dependency in session.scalars(
-                    select(Dependency)
-                    .where(Dependency.project_id == project_id)
-                    .order_by(Dependency.id)
-                )
+    with dump_path.open("wb") as output:
+        completed = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "postgres",
+                "pg_dump",
+                "--format=custom",
+                "--data-only",
+                "--no-owner",
+                "--no-privileges",
+                "--exclude-table-data=alembic_version",
+                "--username",
+                source_database["username"],
+                "--dbname",
+                source_database["database"],
             ],
-            "dependency_events": _events(session, project_id),
-            "dependency_event_scopes": _scopes(session, project_id),
-            "dependency_event_timings": _timings(session, project_id),
-            "event_admission_audits": _audits(session, project_id),
-        },
-        "candidates": [
-            {"id": candidate_id, "state": session.get(Candidate, candidate_id).state}
-            for candidate_id in sorted(candidates)
-        ],
-        "policy_runs": _policy_runs(session, project_id),
+            cwd=REPO_ROOT,
+            stdout=output,
+            stderr=subprocess.PIPE,
+            text=False,
+            check=False,
+        )
+    if completed.returncode or not dump_path.stat().st_size:
+        detail = completed.stderr.decode(errors="replace").strip().splitlines()
+        raise ValueError(
+            "could not capture the shared database"
+            + (f": {detail[-1]}" if detail else "")
+        )
+
+
+def _restore_source_database(
+    source_database: dict[str, str], dump_path: Path, database_name: str
+) -> None:
+    """Restore the captured data only into an already-migrated disposable clone."""
+
+    with dump_path.open("rb") as source:
+        completed = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "postgres",
+                "pg_restore",
+                "--data-only",
+                "--disable-triggers",
+                "--exit-on-error",
+                "--no-owner",
+                "--no-privileges",
+                "--username",
+                source_database["username"],
+                "--dbname",
+                database_name,
+            ],
+            cwd=REPO_ROOT,
+            stdin=source,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    if completed.returncode:
+        detail = completed.stderr.decode(errors="replace").strip().splitlines()
+        raise ValueError(
+            "could not restore the pinned SH 99 source snapshot"
+            + (f": {detail[-1]}" if detail else "")
+        )
+
+
+def _run_shared_operation(
+    database_url: str,
+    project_slug: str,
+    *,
+    expected_failure_marker: str | None = None,
+) -> dict[str, Any]:
+    """Invoke the exact shared-database command with only its database redirected."""
+
+    argv = ["make", "admission", f"ARGS=load {project_slug}"]
+    completed = subprocess.run(
+        argv,
+        cwd=REPO_ROOT,
+        env={**os.environ, "DATABASE_URL": database_url},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode and expected_failure_marker is None:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise ValueError(
+            "the isolated shared-operation command failed"
+            + (f": {detail[-1]}" if detail else "")
+        )
+    if (
+        expected_failure_marker is not None
+        and expected_failure_marker not in completed.stderr
+    ):
+        raise ValueError("isolated late-refusal operation did not reach its forced refusal")
+    return {
+        "argv": argv,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        **(
+            {"expected_failure_marker": expected_failure_marker}
+            if expected_failure_marker is not None
+            else {}
+        ),
     }
+
+
+def _read_project_state(database_url: str, project_slug: str) -> dict[str, Any]:
+    engine = create_engine(database_url, poolclass=NullPool, future=True)
+    try:
+        with Session(engine) as session:
+            session.execute(text("set transaction read only"))
+            state = _project_state(session, project_slug)
+            session.rollback()
+            return state
+    finally:
+        engine.dispose()
+
+
+def _project_state(session: Session, project_slug: str) -> dict[str, Any]:
+    project = session.scalar(select(Project).where(Project.slug == project_slug))
+    if project is None:
+        raise ValueError(f"no project with slug {project_slug!r}")
+    documents = list(
+        session.scalars(
+            select(Document).where(Document.project_id == project.id).order_by(Document.id)
+        )
+    )
+    document_ids = [document.id for document in documents]
+    candidates = list(
+        session.scalars(
+            select(Candidate).where(Candidate.project_id == project.id).order_by(Candidate.id)
+        )
+    )
+    dependencies = list(
+        session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id).order_by(Dependency.id)
+        )
+    )
+    dependency_ids = [dependency.id for dependency in dependencies]
+    events = list(
+        session.scalars(
+            select(DependencyEvent)
+            .where(DependencyEvent.project_id == project.id)
+            .order_by(DependencyEvent.id)
+        )
+    )
+    event_ids = [event.id for event in events]
+    runs = list(
+        session.scalars(
+            select(PolicyRun).where(PolicyRun.project_id == project.id).order_by(PolicyRun.id)
+        )
+    )
+    run_ids = [run.id for run in runs]
+    organization_ids = {
+        org_id
+        for org_id in [
+            *(dependency.external_org_id for dependency in dependencies),
+            *(event.affected_external_org_id for event in events),
+            *(event.stated_external_org_id for event in events),
+        ]
+        if org_id is not None
+    }
+
+    def rows(model, criterion, order_column):
+        return [
+            _row(value)
+            for value in session.scalars(select(model).where(criterion).order_by(order_column))
+        ]
+
+    active_runs = rows(
+        ActiveExtractionRun,
+        ActiveExtractionRun.document_id.in_(document_ids),
+        ActiveExtractionRun.document_id,
+    )
+    extraction_runs = rows(
+        ExtractionRun,
+        ExtractionRun.document_id.in_(document_ids),
+        ExtractionRun.id,
+    )
+    overdue_dependency_ids = sorted(
+        exception.dependency_id
+        for exception in evaluate(session, project.id)
+        if exception.rule == "OVERDUE"
+    )
+    return {
+        "project": _row(project),
+        "documents": [_row(document) for document in documents],
+        "active_runs": active_runs,
+        "active_run_declarations": rows(
+            ActiveRunDeclaration,
+            ActiveRunDeclaration.document_id.in_(document_ids),
+            ActiveRunDeclaration.id,
+        ),
+        "extraction_runs": extraction_runs,
+        "candidates": [_row(candidate) for candidate in candidates],
+        "ledger": {
+            "dependencies": [_row(dependency) for dependency in dependencies],
+            "assertions": rows(Assertion, Assertion.dependency_id.in_(dependency_ids), Assertion.id),
+            "evidence_links": rows(
+                EvidenceLink, EvidenceLink.dependency_id.in_(dependency_ids), EvidenceLink.id
+            ),
+            "dependency_events": [_row(event) for event in events],
+            "commitment_lineages": rows(
+                CommitmentLineage,
+                CommitmentLineage.project_id == project.id,
+                CommitmentLineage.id,
+            ),
+            "dependency_event_timings": rows(
+                DependencyEventTiming,
+                DependencyEventTiming.event_id.in_(event_ids),
+                DependencyEventTiming.id,
+            ),
+            "dependency_event_scope_decisions": rows(
+                DependencyEventScopeDecision,
+                DependencyEventScopeDecision.event_id.in_(event_ids),
+                DependencyEventScopeDecision.id,
+            ),
+            "dependency_event_scopes": rows(
+                DependencyEventScope,
+                DependencyEventScope.event_id.in_(event_ids),
+                DependencyEventScope.id,
+            ),
+            "dependency_event_evidence": rows(
+                DependencyEventEvidence,
+                DependencyEventEvidence.event_id.in_(event_ids),
+                DependencyEventEvidence.evidence_link_id,
+            ),
+        },
+        "organizations": rows(ExternalOrg, ExternalOrg.id.in_(organization_ids), ExternalOrg.id),
+        "policy_runs": [_row(run) for run in runs],
+        "dependency_admission_outcomes": rows(
+            DependencyAdmissionOutcome,
+            DependencyAdmissionOutcome.policy_run_id.in_(run_ids),
+            DependencyAdmissionOutcome.id,
+        ),
+        "event_admission_outcomes": rows(
+            EventAdmissionOutcome,
+            EventAdmissionOutcome.policy_run_id.in_(run_ids),
+            EventAdmissionOutcome.id,
+        ),
+        "overdue_dependency_ids": overdue_dependency_ids,
+        "admission_audits": [
+            _row(entry)
+            for entry in session.scalars(
+                select(audit.AuditLog)
+                .join(Dependency, Dependency.id == audit.AuditLog.entity_id)
+                .where(
+                    Dependency.project_id == project.id,
+                    audit.AuditLog.action.in_((audit.ADMIT_DEPENDENCY, audit.ADMIT_EVENT)),
+                )
+                .order_by(audit.AuditLog.id)
+            )
+        ],
+    }
+
+
+def _row(value: Any) -> dict[str, Any]:
+    return {
+        column.name: _json_value(getattr(value, column.name))
+        for column in value.__table__.columns
+    }
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    return value
 
 
 def _run_receipt(
-    session: Session, project_id: int, run_id: int, before: dict[str, Any]
+    before: dict[str, Any], after: dict[str, Any], operation: dict[str, Any]
 ) -> dict[str, Any]:
-    run = session.get(PolicyRun, run_id)
-    if run is None:
-        raise RuntimeError("Admission policy did not persist its run receipt")
-    after = _state(session, project_id, {})["ledger"]
-    outcomes = [
-        {
-            "candidate_id": outcome.candidate_id,
-            "outcome": outcome.outcome,
-            "reason": outcome.reason,
-            "dependency_event_id": outcome.dependency_event_id,
-            "created_record_identities": _outcome_created_identities(
-                outcome, before["ledger"], after
-            ),
-        }
-        for outcome in session.scalars(
-            select(EventAdmissionOutcome)
-            .where(EventAdmissionOutcome.policy_run_id == run.id)
-            .order_by(EventAdmissionOutcome.candidate_id)
+    return {
+        "operation": operation,
+        "created_ledger_identities": _created_ledger_identities(before, after),
+        "policy_runs": _new_rows(before["policy_runs"], after["policy_runs"]),
+        "dependency_outcomes": _new_rows(
+            before["dependency_admission_outcomes"], after["dependency_admission_outcomes"]
+        ),
+        "event_outcomes": _new_rows(
+            before["event_admission_outcomes"], after["event_admission_outcomes"]
+        ),
+    }
+
+
+def _created_ledger_identities(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[int]]:
+    collections = {
+        "active_run_declarations": (before["active_run_declarations"], after["active_run_declarations"]),
+        "dependencies": (before["ledger"]["dependencies"], after["ledger"]["dependencies"]),
+        "assertions": (before["ledger"]["assertions"], after["ledger"]["assertions"]),
+        "evidence_links": (before["ledger"]["evidence_links"], after["ledger"]["evidence_links"]),
+        "dependency_events": (before["ledger"]["dependency_events"], after["ledger"]["dependency_events"]),
+        "commitment_lineages": (before["ledger"]["commitment_lineages"], after["ledger"]["commitment_lineages"]),
+        "dependency_event_timings": (before["ledger"]["dependency_event_timings"], after["ledger"]["dependency_event_timings"]),
+        "dependency_event_scope_decisions": (before["ledger"]["dependency_event_scope_decisions"], after["ledger"]["dependency_event_scope_decisions"]),
+        "dependency_event_scopes": (before["ledger"]["dependency_event_scopes"], after["ledger"]["dependency_event_scopes"]),
+        "dependency_event_evidence": (before["ledger"]["dependency_event_evidence"], after["ledger"]["dependency_event_evidence"]),
+        "admission_audits": (before["admission_audits"], after["admission_audits"]),
+    }
+    return {name: _new_identifiers(old, new) for name, (old, new) in collections.items()}
+
+
+def _new_rows(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    old_ids = {item["id"] for item in before}
+    return [item for item in after if item["id"] not in old_ids]
+
+
+def _new_identifiers(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[int]:
+    return [item["id"] for item in _new_rows(before, after)]
+
+
+def _protected_cases(first_run: dict[str, Any], after_second_run: dict[str, Any]) -> dict[str, Any]:
+    candidate_by_id = {item["id"]: item for item in after_second_run["candidates"]}
+    event_outcomes = {
+        item["candidate_id"]: item for item in first_run["event_outcomes"]
+    }
+    return {
+        str(candidate_id): _protected_candidate_facts(
+            candidate_by_id.get(candidate_id),
+            event_outcomes.get(candidate_id),
+            after_second_run,
         )
+        for candidate_id in (7587, 7129, 7296)
+    }
+
+
+def _protected_candidate_facts(
+    candidate: dict[str, Any] | None,
+    event_outcome: dict[str, Any] | None,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Record only durable facts the protected Candidate could have created.
+
+    A Candidate does not own a separate statement projection.  Its only route
+    to attribution, timing, scope, a committed-date projection, or a derived
+    overdue result is an admitted ``DependencyEvent``.  Recording that entire
+    route makes an abstention or remaining-pending result independently
+    inspectable instead of treating a ``Candidate.state`` value as proof.
+    """
+
+    event_id = event_outcome.get("dependency_event_id") if event_outcome else None
+    events = [
+        event
+        for event in state["ledger"]["dependency_events"]
+        if event["id"] == event_id
+    ]
+    scopes = [
+        scope
+        for scope in state["ledger"]["dependency_event_scopes"]
+        if scope["event_id"] == event_id
+    ]
+    scope_decisions = [
+        decision
+        for decision in state["ledger"]["dependency_event_scope_decisions"]
+        if decision["event_id"] == event_id
+    ]
+    timings = [
+        timing
+        for timing in state["ledger"]["dependency_event_timings"]
+        if timing["event_id"] == event_id
+    ]
+    statement_evidence = [
+        evidence
+        for evidence in state["ledger"]["dependency_event_evidence"]
+        if evidence["event_id"] == event_id
+    ]
+    scoped_dependency_ids = {scope["dependency_id"] for scope in scopes}
+    dependency_projections = [
+        {
+            "dependency_id": dependency["id"],
+            "committed_date": dependency["committed_date"],
+        }
+        for dependency in state["ledger"]["dependencies"]
+        if dependency["id"] in scoped_dependency_ids
     ]
     return {
-        "policy_run": {
-            "id": run.id,
-            "family": run.family,
-            "policy_version": run.policy_version,
-            "policy_sha256": run.policy_sha256,
-            "abstention_reason_version": run.abstention_reason_version,
-            "applied_count": run.applied_count,
-            "abstained_count": run.abstained_count,
-        },
-        "outcomes": outcomes,
-        "created_record_identities": _created_identities(before["ledger"], after),
+        "state": candidate.get("state") if candidate else None,
+        "merged_into": candidate.get("merged_into") if candidate else None,
+        "event_outcome": event_outcome,
+        "statement_facts": events,
+        "scope_decision_ids": [decision["id"] for decision in scope_decisions],
+        "scope_ids": [scope["id"] for scope in scopes],
+        "timing_ids": [timing["id"] for timing in timings],
+        "statement_evidence_ids": [evidence["evidence_link_id"] for evidence in statement_evidence],
+        "committed_date_projections": dependency_projections,
+        # OVERDUE is computed by the canonical exception reader rather than
+        # inferred from a scalar. With no statement and no scope, the
+        # protected Candidate has no dependency for which it can be true.
+        "past_due_dependency_ids": [
+            dependency_id
+            for dependency_id in sorted(scoped_dependency_ids)
+            if dependency_id in state["overdue_dependency_ids"]
+        ],
     }
 
 
-def _negative_cases(*, first_run: dict[str, Any], after_second_run: dict[str, Any]) -> dict[str, Any]:
-    outcome_by_candidate = {item["candidate_id"]: item for item in first_run["outcomes"]}
-    candidate_by_id = {item["id"]: item for item in after_second_run["candidates"]}
-    return {
-        "7587": {
-            "admission_abstention_reason": outcome_by_candidate[7587]["reason"],
-            "created_statement_ids": [],
-            "created_scope_ids": [],
-            "projected_committed_dates": [],
-        },
-        "7129": {
-            "state": candidate_by_id[7129]["state"],
-            "created_statement_ids": [],
-            "created_scope_ids": [],
-        },
-        "7296": {
-            "state": candidate_by_id[7296]["state"],
-            "created_statement_ids": [],
-            "created_scope_ids": [],
-        },
-    }
+def _require_protected_outcomes(protected: dict[str, Any], second_run: dict[str, Any]) -> None:
+    if protected["7587"]["state"] != "pending":
+        raise ValueError("Candidate 7587 did not remain pending after Admission Abstention")
+    event_outcome = protected["7587"]["event_outcome"]
+    if event_outcome is None or event_outcome.get("outcome") != "abstained":
+        raise ValueError("Candidate 7587 did not record an Admission Abstention")
+    if event_outcome.get("dependency_event_id") is not None:
+        raise ValueError("Candidate 7587 Admission Abstention created a statement")
+    if any(protected[str(candidate_id)]["state"] != "pending" for candidate_id in (7129, 7296)):
+        raise ValueError("Candidates 7129 and 7296 did not remain pending")
+    if any(
+        protected[str(candidate_id)]["merged_into"] is not None
+        for candidate_id in (7587, 7129, 7296)
+    ):
+        raise ValueError("protected Candidates were merged despite remaining pending")
+    protected_fact_collections = (
+        "statement_facts",
+        "scope_decision_ids",
+        "scope_ids",
+        "timing_ids",
+        "statement_evidence_ids",
+        "committed_date_projections",
+        "past_due_dependency_ids",
+    )
+    if any(
+        protected[str(candidate_id)][collection]
+        for candidate_id in (7587, 7129, 7296)
+        for collection in protected_fact_collections
+    ):
+        raise ValueError("protected Candidates created unsupported statement or timing facts")
+    if any(second_run["created_ledger_identities"].values()):
+        raise ValueError("replay created duplicate Ledger or audit facts")
 
 
 def _late_refusal_receipt(
-    session: Session, project: Project, candidates: dict[int, Candidate]
+    *,
+    config: SH99AdmissionAcceptanceConfig,
+    source_database: dict[str, str],
+    source_head: str,
+    dump_path: Path,
+    provision_database: DatabaseProvisioner,
 ) -> dict[str, Any]:
-    before = _state(session, project.id, candidates)
-    session.execute(
-        text(
-            """
-            create function refuse_sh99_acceptance_late_event()
-            returns trigger language plpgsql as $$
-            begin
-                if new.description = 'Bluebonnet Gas commits to relocate C42 by June 1, 2025.' then
-                    raise exception 'forced late Admission refusal' using errcode = '23514';
-                end if;
-                return new;
-            end;
-            $$;
-            """
+    """Prove an isolated late write refusal leaves Ledger and Candidates untouched."""
+
+    with provision_database(config.postgres_admin_url) as database:
+        if database.migration_head != source_head:
+            raise ValueError("disposable refusal database is not at the source migration head")
+        _restore_source_database(source_database, dump_path, database.name)
+        clone_url = _database_url(config.postgres_admin_url, database.name)
+        before = _read_project_state(clone_url, config.project_slug)
+        _install_dependency_refusal(clone_url)
+        operation = _run_shared_operation(
+            clone_url,
+            config.project_slug,
+            expected_failure_marker="forced SH 99 acceptance dependency refusal",
         )
-    )
-    session.execute(
-        text(
-            """
-            create trigger refuse_sh99_acceptance_late_event
-            before insert on dependency_events
-            for each row execute function refuse_sh99_acceptance_late_event();
-            """
-        )
-    )
-    raised = False
-    try:
-        run_event_admission(session, project.id)
-    except Exception as exc:
-        if "forced late Admission refusal" not in str(exc):
-            raise
-        raised = True
-        session.rollback()
-    finally:
-        # The test-only trigger lives inside the disposable database.  Rollback
-        # removes it after the expected refusal together with every candidate
-        # and ledger mutation the policy attempted.
-        pass
-    after = _state(session, project.id, candidates)
-    return {
-        "raised": raised,
-        "ledger_and_candidate_state_unchanged": before == after,
-        "policy_run_ids_created": [
-            item["id"]
-            for item in after["policy_runs"]
-            if item["id"] not in {run["id"] for run in before["policy_runs"]}
-        ],
-    }
-
-
-def _input_pins(snapshot: dict[str, Any], snapshot_sha256: str) -> dict[str, Any]:
-    return {
-        "snapshot_sha256": snapshot_sha256,
-        "source_revision": snapshot["source_revision"],
-        "database_snapshot": snapshot["database_snapshot"],
-        "corpus_inputs": [
-            {"registry_id": item["registry_id"], "sha256": item["sha256"]}
-            for item in snapshot["corpus_inputs"]
-        ],
-        "declared_active_runs": snapshot["declared_active_runs"],
-        "policy": {
-            "family": FAMILY,
-            "version": EVENT_ADMISSION_POLICY_VERSION,
-            "abstention_reason_version": ABSTENTION_REASON_VERSION,
-        },
-    }
-
-
-def _events(session: Session, project_id: int) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": event.id,
-            "event_type": event.event_type,
-            "stated_external_org_id": event.stated_external_org_id,
-            "scope_mode": event.scope_mode,
-            "timing_direction": event.timing_direction,
-            "source_kind": event.source_kind,
+        after = _read_project_state(clone_url, config.project_slug)
+        unchanged = {
+            "candidates": before["candidates"] == after["candidates"],
+            "ledger": before["ledger"] == after["ledger"],
         }
-        for event in session.scalars(
-            select(DependencyEvent)
-            .where(DependencyEvent.project_id == project_id)
-            .order_by(DependencyEvent.id)
-        )
-    ]
-
-
-def _scopes(session: Session, project_id: int) -> list[dict[str, Any]]:
-    return [
-        {"id": scope.id, "event_id": scope.event_id, "dependency_id": scope.dependency_id}
-        for scope in session.scalars(
-            select(DependencyEventScope)
-            .join(DependencyEvent, DependencyEvent.id == DependencyEventScope.event_id)
-            .where(DependencyEvent.project_id == project_id)
-            .order_by(DependencyEventScope.id)
-        )
-    ]
-
-
-def _timings(session: Session, project_id: int) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": timing.id,
-            "event_id": timing.event_id,
-            "kind": timing.kind,
-            "precision": timing.precision,
-            "text": timing.text,
-        }
-        for timing in session.scalars(
-            select(DependencyEventTiming)
-            .join(DependencyEvent, DependencyEvent.id == DependencyEventTiming.event_id)
-            .where(DependencyEvent.project_id == project_id)
-            .order_by(DependencyEventTiming.id)
-        )
-    ]
-
-
-def _audits(session: Session, project_id: int) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": entry.id,
-            "entity_id": entry.entity_id,
-            "action": entry.action,
-            "candidate_id": (entry.after_json or {}).get("candidate_id"),
-        }
-        for entry in session.scalars(
-            select(audit.AuditLog)
-            .join(Dependency, Dependency.id == audit.AuditLog.entity_id)
-            .where(
-                Dependency.project_id == project_id,
-                audit.AuditLog.action == audit.ADMIT_EVENT,
-            )
-            .order_by(audit.AuditLog.id)
-        )
-    ]
-
-
-def _policy_runs(session: Session, project_id: int) -> list[dict[str, Any]]:
-    return [
-        {"id": run.id, "family": run.family, "applied_count": run.applied_count, "abstained_count": run.abstained_count}
-        for run in session.scalars(
-            select(PolicyRun)
-            .where(PolicyRun.project_id == project_id)
-            .order_by(PolicyRun.id)
-        )
-    ]
-
-
-def _created_identities(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[int]]:
-    return {
-        key: [item["id"] for item in after[key] if item["id"] not in {old["id"] for old in before[key]}]
-        for key in (
-            "dependency_events",
-            "dependency_event_scopes",
-            "dependency_event_timings",
-            "event_admission_audits",
-        )
-    }
-
-
-def _outcome_created_identities(
-    outcome: EventAdmissionOutcome, before: dict[str, Any], after: dict[str, Any]
-) -> dict[str, list[int]]:
-    """Name the rows this one Candidate outcome caused, never a run total."""
-
-    if outcome.dependency_event_id is None:
+        if not all(unchanged.values()):
+            raise ValueError("late refusal changed SH 99 Ledger or Candidate state")
         return {
-            "dependency_events": [],
-            "dependency_event_scopes": [],
-            "dependency_event_timings": [],
-            "event_admission_audits": [],
+            "operation": operation,
+            "ledger_and_candidate_state_unchanged": unchanged,
+            "policy_runs_created": _new_rows(before["policy_runs"], after["policy_runs"]),
         }
-    event_id = outcome.dependency_event_id
-    new = _created_identities(before, after)
-    return {
-        "dependency_events": [event_id] if event_id in new["dependency_events"] else [],
-        "dependency_event_scopes": [
-            item["id"]
-            for item in after["dependency_event_scopes"]
-            if item["id"] in new["dependency_event_scopes"] and item["event_id"] == event_id
-        ],
-        "dependency_event_timings": [
-            item["id"]
-            for item in after["dependency_event_timings"]
-            if item["id"] in new["dependency_event_timings"] and item["event_id"] == event_id
-        ],
-        "event_admission_audits": [
-            item["id"]
-            for item in after["event_admission_audits"]
-            if item["id"] in new["event_admission_audits"]
-            and item["candidate_id"] == outcome.candidate_id
-        ],
-    }
+
+
+def _install_dependency_refusal(database_url: str) -> None:
+    engine = create_engine(database_url, poolclass=NullPool, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    create function refuse_sh99_real_acceptance_dependency()
+                    returns trigger language plpgsql as $$
+                    begin
+                        raise exception 'forced SH 99 acceptance dependency refusal'
+                            using errcode = '23514';
+                    end;
+                    $$;
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    create trigger refuse_sh99_real_acceptance_dependency
+                    before insert on dependencies
+                    for each row execute function refuse_sh99_real_acceptance_dependency();
+                    """
+                )
+            )
+    finally:
+        engine.dispose()
 
 
 def _write_bundle(
@@ -757,14 +801,13 @@ def _write_bundle(
     receipt: dict[str, Any],
     canonical_content: dict[str, Any],
 ) -> tuple[Path, str, str]:
-    exports = {
-        "environment.json": environment,
-        "receipt.json": receipt,
-        "canonical-content.json": canonical_content,
-    }
     return publish_verified_bundle(
         output_dir,
-        exports=exports,
+        exports={
+            "environment.json": environment,
+            "receipt.json": receipt,
+            "canonical-content.json": canonical_content,
+        },
         canonical_content=canonical_content,
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
         bundle_files=BUNDLE_FILES,
@@ -773,13 +816,9 @@ def _write_bundle(
         canonical_json=_canonical_json,
         sha256=_sha256,
         json_sha256=_json_sha256,
-        temp_prefix="corridor-sh99-admission-bundle",
-        self_verification_failure="new SH 99 Admission bundle failed self-verification",
+        temp_prefix="corridor-sh99-real-admission-bundle",
+        self_verification_failure="new real SH 99 Admission bundle failed self-verification",
     )
-
-
-def _date_value(value) -> str | None:
-    return value.isoformat() if value is not None else None
 
 
 def _canonical_json(value: Any) -> bytes:
