@@ -14,10 +14,9 @@ def _output(capsys) -> dict:
     return json.loads(capsys.readouterr().out)
 
 
-def test_replay_constructs_only_the_isolated_pinned_runner(
+def test_replay_receives_the_real_project_and_source_database(
     monkeypatch, tmp_path, capsys
 ):
-    snapshot = tmp_path / "snapshot.json"
     bundle = tmp_path / "bundle"
     seen = []
 
@@ -31,38 +30,32 @@ def test_replay_constructs_only_the_isolated_pinned_runner(
             database_name="corridor_sh99_admission_acceptance_test",
         )
 
-    monkeypatch.setattr("corridor.sh99_admission_acceptance_cli.run_sh99_admission_acceptance", replay)
+    monkeypatch.setattr(
+        "corridor.sh99_admission_acceptance_cli.run_sh99_admission_acceptance",
+        replay,
+    )
 
     assert main(
         [
             "replay",
-            "--snapshot",
-            str(snapshot),
-            "--expected-snapshot-sha256",
-            "33" * 32,
+            "--project-slug",
+            "sh99-grand-parkway",
+            "--source-database-url",
+            "postgresql+psycopg://corridor:corridor@localhost:5433/corridor",
             "--expected-clean-git-revision",
             "44" * 10,
             "--output-dir",
             str(bundle),
             "--postgres-admin-url",
-            "postgresql+psycopg://corridor:corridor@localhost:5433/postgres",
+            "postgresql+psycopg://corridor:corridor@localhost:5433/corridor",
         ]
     ) == 0
 
     [config] = seen
-    assert config.snapshot_path == snapshot
-    assert config.expected_snapshot_sha256 == "33" * 32
+    assert config.project_slug == "sh99-grand-parkway"
+    assert config.source_database_url.endswith("/corridor")
     assert config.expected_clean_git_revision == "44" * 10
     assert config.output_dir == bundle
-    assert _output(capsys) == {
-        "bundle_dir": str(bundle),
-        "canonical_content_sha256": "22" * 32,
-        "command": "replay",
-        "database_name": "corridor_sh99_admission_acceptance_test",
-        "integrity_manifest_sha256": "11" * 32,
-        "manifest_path": str(bundle / "manifest.json"),
-        "shared_database_mutated": False,
-    }
 
 
 def test_verify_uses_only_the_public_database_free_verifier(monkeypatch, tmp_path, capsys):

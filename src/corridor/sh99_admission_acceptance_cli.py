@@ -36,10 +36,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sh99-admission-acceptance")
     commands = parser.add_subparsers(dest="command", required=True)
     replay = commands.add_parser(
-        "replay", help="replay the pinned SH 99 snapshot only on disposable PostgreSQL"
+        "replay",
+        help="clone the pinned real SH 99 state and run its exact Admission command",
     )
-    replay.add_argument("--snapshot", required=True, type=Path)
-    replay.add_argument("--expected-snapshot-sha256", required=True, type=_sha256)
+    replay.add_argument("--project-slug", required=True)
+    replay.add_argument("--source-database-url", required=True)
     replay.add_argument("--expected-clean-git-revision", required=True)
     replay.add_argument("--output-dir", required=True, type=Path)
     replay.add_argument("--postgres-admin-url", required=True)
@@ -62,8 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "replay":
             summary = run_sh99_admission_acceptance(
                 SH99AdmissionAcceptanceConfig(
-                    snapshot_path=args.snapshot,
-                    expected_snapshot_sha256=args.expected_snapshot_sha256,
+                    project_slug=args.project_slug,
+                    source_database_url=args.source_database_url,
                     expected_clean_git_revision=args.expected_clean_git_revision,
                     output_dir=args.output_dir,
                     postgres_admin_url=args.postgres_admin_url,
