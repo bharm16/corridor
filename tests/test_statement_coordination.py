@@ -584,6 +584,9 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
             assert quote in screen.text
             assert "Scope not yet known" in screen.text
             assert "Dana Fields" in screen.text
+            assert 'name="scope_mode" value="unknown" required' in screen.text
+            assert 'data-dependency-party="' in screen.text
+            assert "Kinder Morgan crossing · Kinder Morgan" in screen.text
 
             response = client.post(
                 f"/statements/{project.slug}/{candidate.id}/coordinate",

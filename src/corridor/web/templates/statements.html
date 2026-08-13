@@ -71,21 +71,9 @@
            href="/statements/{{ project.slug }}/{{ item.candidate.id }}/coordinate">
           coordinate statement
         </a>
-        <span class="toss">
-          {% for reason in ["duplicate", "wrong", "irrelevant"] %}
-            <form class="inline" method="post"
-                  action="/candidates/{{ item.candidate.id }}/reject">
-              <input type="hidden" name="slug" value="{{ project.slug }}">
-              <input type="hidden" name="reason" value="{{ reason }}">
-              <input type="hidden" name="redirect_to"
-                     value="/statements/{{ project.slug }}">
-              <button>toss: {{ reason }}</button>
-            </form>
-          {% endfor %}
-        </span>
       </div>
     </section>
   {% else %}
-    <p class="empty">Nothing waiting — every statement found its conflict.</p>
+    <p class="empty">Nothing waiting — every statement has been coordinated.</p>
   {% endfor %}
 </main>

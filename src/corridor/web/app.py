@@ -657,8 +657,9 @@ def _statement_coordination_screen(
     for evidence in candidate_evidence:
         document = session.get(Document, evidence["document_id"])
         evidence["filename"] = document.filename if document else "registered document"
-    dependencies = session.scalars(
-        select(Dependency)
+    dependencies = session.execute(
+        select(Dependency, ExternalOrg.name)
+        .outerjoin(ExternalOrg, ExternalOrg.id == Dependency.external_org_id)
         .where(
             Dependency.project_id == project.id,
             Dependency.dismissed_at.is_(None),
@@ -695,7 +696,18 @@ def _statement_coordination_screen(
             "candidate_fields": fields,
             "candidate_party": str(fields.get("external_org") or ""),
             "candidate_evidence": candidate_evidence,
-            "dependencies": dependencies,
+            "dependencies": [
+                {
+                    "id": dependency.id,
+                    "ref_code": dependency.ref_code,
+                    "title": dependency.title,
+                    "station_from": dependency.station_from,
+                    "station_to": dependency.station_to,
+                    "external_org_id": dependency.external_org_id,
+                    "external_org_name": external_org_name or "External Party not resolved",
+                }
+                for dependency, external_org_name in dependencies
+            ],
             "roster": roster,
             "parties": parties,
             "documents": documents,

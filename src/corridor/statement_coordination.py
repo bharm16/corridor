@@ -4,6 +4,12 @@ An Unplaced Statement needs a human to settle supported statement facts and a
 project response, but the two are not the same fact.  This command keeps the
 External Party statement, scope decision, Candidate disposition, and separate
 Work Decision chains attributable while committing the guided Save as one act.
+
+The earlier attach-to-Dependency path was intentionally narrow: it forced one
+known Dependency scope and could not collect a second verified quote for
+attribution context.  Reusing it here would invent scope for the SH 99 cases,
+so this module owns the grouped command while preserving the shared statement
+and Work Decision writers beneath it.
 """
 
 from __future__ import annotations

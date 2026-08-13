@@ -107,12 +107,12 @@
 
       <fieldset>
         <legend>Commitment Scope</legend>
-        <label class="check"><input type="radio" name="scope_mode" value="unknown" checked> Scope not yet known</label>
+        <label class="check"><input type="radio" name="scope_mode" value="unknown" required> Scope not yet known</label>
         <label class="check"><input type="radio" name="scope_mode" value="selected"> Selected Dependencies</label>
         <label class="check"><input type="radio" name="scope_mode" value="all_active"> All currently active Dependencies for the selected External Party</label>
         <div class="choice">
           {% for dependency in dependencies %}
-            <label class="check"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.ref_code }} — {{ dependency.title }}{% if dependency.station_from or dependency.station_to %} · {{ dependency.station_from or '?' }} to {{ dependency.station_to or '?' }}{% endif %}</label>
+            <label class="check" data-dependency-party="{{ dependency.external_org_id or '' }}"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.ref_code }} — {{ dependency.title }} · {{ dependency.external_org_name }}{% if dependency.station_from or dependency.station_to %} · {{ dependency.station_from or '?' }} to {{ dependency.station_to or '?' }}{% endif %}</label>
           {% else %}<span class="muted">No active Dependencies are available for selected scope.</span>{% endfor %}
         </div>
       </fieldset>
@@ -139,4 +139,17 @@
     const phrase = search.value.toLocaleLowerCase();
     for (const option of owner.options) option.hidden = Boolean(option.value) && !option.text.toLocaleLowerCase().includes(phrase);
   });
+  const affectedParty = document.querySelector('#affected-party');
+  const scopeEntries = document.querySelectorAll('[data-dependency-party]');
+  function syncScopeChoices() {
+    const selectedParty = affectedParty.value;
+    for (const entry of scopeEntries) {
+      const matches = Boolean(selectedParty) && entry.dataset.dependencyParty === selectedParty;
+      entry.hidden = !matches;
+      const input = entry.querySelector('input');
+      input.disabled = !matches;
+      if (!matches) input.checked = false;
+    }
+  }
+  if (affectedParty) { affectedParty.addEventListener('change', syncScopeChoices); syncScopeChoices(); }
 </script>
