@@ -71,6 +71,7 @@ _EVENT_EVIDENCE_MIGRATION_REVISION = "f227b9e4d3c2"
 _CONTRACT_STATEMENT_REVISION = "a230c4d3e2f1"
 _RETIREMENT_ROLE_REPAIR_REVISION = "b230e4f5a6b7"
 _WORK_DECISION_SUBJECT_REVISION = "e251a7c4d9e2"
+_STATEMENT_LIFECYCLE_REVISION = "b252a7c4d9e2"
 
 
 @dataclass(frozen=True)
@@ -1983,7 +1984,7 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _WORK_DECISION_SUBJECT_REVISION
+                    _STATEMENT_LIFECYCLE_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (
@@ -2183,7 +2184,7 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
             )
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == (
-                    _WORK_DECISION_SUBJECT_REVISION
+                    _STATEMENT_LIFECYCLE_REVISION
                 )
                 assert _capture_database_data(connection) == before_data
                 assert (

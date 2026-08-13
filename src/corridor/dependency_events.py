@@ -27,6 +27,10 @@ from corridor.models import (
     Document,
     EvidenceLink,
 )
+from corridor.statement_lifecycle import (
+    current_scope_decision_filter as current_lifecycle_scope_decision_filter,
+    current_statement_event_filter,
+)
 
 
 COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change")
@@ -35,11 +39,14 @@ COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change")
 def current_scope_decision_filter():
     """SQL predicate for the one scope decision not replaced by a later act."""
     superseding = aliased(DependencyEventScopeDecision)
-    return ~exists(
-        select(superseding.id).where(
-            superseding.supersedes_scope_decision_id
-            == DependencyEventScopeDecision.id
+    return (
+        ~exists(
+            select(superseding.id).where(
+                superseding.supersedes_scope_decision_id
+                == DependencyEventScopeDecision.id
+            )
         )
+        & current_lifecycle_scope_decision_filter(DependencyEventScopeDecision.id)
     )
 
 
@@ -133,6 +140,7 @@ def current_statement_evidence_memberships(
         .where(
             DependencyEventScope.dependency_id.in_(ids),
             current_scope_decision_filter(),
+            current_statement_event_filter(DependencyEvent.id),
         )
         .order_by(DependencyEventScope.dependency_id, EvidenceLink.id)
     ).all()
@@ -327,7 +335,9 @@ def current_dependency_statements(
         .where(
             DependencyEventScope.dependency_id.in_(ids),
             DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
-            DependencyEventScopeDecision.scope_mode.in_(("selected", "all_active")),
+            DependencyEventScopeDecision.scope_mode.in_(
+                ("selected", "all_active", "carried_forward")
+            ),
             current_scope_decision_filter(),
             DependencyEventTiming.kind == "new",
         )

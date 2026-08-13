@@ -35,6 +35,10 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.project_lock import lock_project
+from corridor.statement_lifecycle import (
+    current_scope_decision_filter as current_lifecycle_scope_decision_filter,
+    current_statement_event_filter,
+)
 from corridor.verify import quote_appears_on, threshold_for
 
 
@@ -120,6 +124,8 @@ def record_external_party_statement(
     evidence: CitedStatementEvidence | None = None,
     supporting_evidence: tuple[CitedStatementEvidence, ...] = (),
     commitment_lineage_id: int | None = None,
+    allow_party_correction: bool = False,
+    _scope_snapshot_dependency_ids: tuple[int, ...] | None = None,
 ) -> DependencyEvent:
     """Append one attributable External Party Commitment or Date Change.
 
@@ -160,11 +166,21 @@ def record_external_party_statement(
             raise StatementRefusal("a Verbal must scope to exactly one Dependency")
     scope_actor = _scope_actor_subject(created_by)
     event_type = "committed_date_change" if previous_timing else "commitment"
-    dependency_ids = _resolve_scope(
-        session,
-        project_id=project.id,
-        affected_external_org_id=affected.id,
-        scope=scope,
+    dependency_ids = (
+        _resolve_scope_snapshot(
+            session,
+            project_id=project.id,
+            affected_external_org_id=affected.id,
+            scope=scope,
+            dependency_ids=_scope_snapshot_dependency_ids,
+        )
+        if _scope_snapshot_dependency_ids is not None
+        else _resolve_scope(
+            session,
+            project_id=project.id,
+            affected_external_org_id=affected.id,
+            scope=scope,
+        )
     )
     # This command is the one atomic writer for every statement path. A
     # database refusal after the event row exists must not leave the caller
@@ -177,6 +193,7 @@ def record_external_party_statement(
             commitment_lineage_id=commitment_lineage_id,
             affected_external_org_id=affected.id,
             stated_external_org_id=stated.id,
+            allow_party_correction=allow_party_correction,
         )
         event = DependencyEvent(
             project_id=project.id,
@@ -276,6 +293,7 @@ def _commitment_lineage_for_append(
     commitment_lineage_id: int | None,
     affected_external_org_id: int,
     stated_external_org_id: int,
+    allow_party_correction: bool = False,
 ) -> tuple[CommitmentLineage, DependencyEvent | None]:
     """Return the durable statement subject and its current factual tail."""
     if commitment_lineage_id is None:
@@ -290,7 +308,7 @@ def _commitment_lineage_for_append(
     predecessor = _current_commitment_event(session, lineage.id)
     if predecessor is None:
         raise StatementRefusal("Commitment Lineage has no accepted statement to correct")
-    if (
+    if not allow_party_correction and (
         predecessor.affected_external_org_id != affected_external_org_id
         or predecessor.stated_external_org_id != stated_external_org_id
     ):
@@ -308,6 +326,7 @@ def _current_commitment_event(
         select(DependencyEvent)
         .where(
             DependencyEvent.commitment_lineage_id == commitment_lineage_id,
+            current_statement_event_filter(DependencyEvent.id),
             ~select(superseding.c.id)
             .where(superseding.c.supersedes_event_id == DependencyEvent.id)
             .exists(),
@@ -553,6 +572,39 @@ def _resolve_scope(
     return tuple(scope.dependency_ids)
 
 
+def _resolve_scope_snapshot(
+    session: Session,
+    *,
+    project_id: int,
+    affected_external_org_id: int,
+    scope: StatementScope,
+    dependency_ids: tuple[int, ...],
+) -> tuple[int, ...]:
+    """Carry exact current scope through a factual successor without re-choosing it.
+
+    The snapshot is internal to the fact-correction command.  A correction to
+    attribution or timing must not silently expand or shrink a separate human
+    scope decision merely because active Dependencies changed in the meantime.
+    """
+    ids = tuple(dependency_ids)
+    if len(ids) != len(set(ids)):
+        raise StatementRefusal("a preserved Commitment Scope contains a duplicate Dependency")
+    if scope.mode == "unknown":
+        if ids:
+            raise StatementRefusal("unknown scope cannot name Dependencies")
+        return ()
+    if scope.mode not in {"selected", "all_active", "carried_forward"} or not ids:
+        raise StatementRefusal("a preserved Commitment Scope is incomplete")
+    dependencies = session.scalars(select(Dependency).where(Dependency.id.in_(ids))).all()
+    if len(dependencies) != len(ids) or any(
+        dependency.project_id != project_id
+        or dependency.external_org_id != affected_external_org_id
+        for dependency in dependencies
+    ):
+        raise StatementRefusal("a preserved Commitment Scope no longer belongs to this statement")
+    return ids
+
+
 def _scope_actor_subject(actor: HumanPrincipal | str) -> str:
     """Accept a named human or a deployed Corridor policy, never a role."""
     if isinstance(actor, HumanPrincipal):
@@ -577,6 +629,7 @@ def _current_scope_decision(
         select(DependencyEventScopeDecision)
         .where(
             DependencyEventScopeDecision.event_id == event_id,
+            current_lifecycle_scope_decision_filter(DependencyEventScopeDecision.id),
             ~select(superseding.c.id)
             .where(
                 superseding.c.supersedes_scope_decision_id

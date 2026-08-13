@@ -31,6 +31,10 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.statement_lifecycle import (
+    current_statement_event_filter,
+    current_work_decision_filter,
+)
 
 ASSIGN_INTERNAL_OWNER = "assign_internal_owner"
 SET_NEXT_ACTION = "set_next_action"
@@ -476,6 +480,7 @@ def _current_statement(
             DependencyEvent.event_type.in_(("commitment", "committed_date_change")),
             DependencyEvent.attribution_state == "resolved",
             DependencyEvent.stated_external_org_id.is_not(None),
+            current_statement_event_filter(DependencyEvent.id),
             ~select(superseding.c.id)
             .where(superseding.c.supersedes_event_id == DependencyEvent.id)
             .exists(),
@@ -520,6 +525,7 @@ def _tail(
         .where(
             clause,
             WorkDecision.field == field,
+            current_work_decision_filter(WorkDecision.id),
             ~select(successor.id)
             .where(successor.predecessor_decision_id == WorkDecision.id)
             .exists(),

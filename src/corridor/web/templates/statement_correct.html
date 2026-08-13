@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Correct statement — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --paper:#fafafa; }
+  * { box-sizing:border-box; } body { margin:0; color:#111; font:14px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; } main { max-width:58rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.45rem; margin:0 0 .25rem; } h2 { font-size:1.05rem; margin:1.6rem 0 .5rem; }
+  .lead,.muted { color:var(--muted); } fieldset { margin:1rem 0; border:1px solid var(--line); border-radius:6px; padding:.8rem; }
+  legend,label { font-weight:650; } label { display:block; margin:.55rem 0 .2rem; }
+  input,select,textarea { font:inherit; padding:.35rem .45rem; border:1px solid #bdbdbd; border-radius:4px; max-width:100%; }
+  textarea { width:100%; min-height:4rem; } .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.6rem 1rem; }
+  .check { display:block; padding:.25rem 0; font-weight:400; } .check input { margin-right:.35rem; }
+  button { font:inherit; padding:.45rem .85rem; border:1px solid #111; background:#111; color:#fff; border-radius:4px; cursor:pointer; }
+  @media (max-width:640px) { .grid { grid-template-columns:1fr; } }
+</style>
+<header><b>{{ project.name }}</b><a href="/statements/{{ project.slug }}/{{ candidate.id }}/coordinate">back to statement</a></header>
+<main>
+  <h1>Correct this statement</h1>
+  <p class="lead">Correct Scope separately from an External Party fact. Both actions append history; neither rewrites the original Save.</p>
+
+  <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/scope">
+    <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
+    <input type="hidden" name="expected_scope_decision_id" value="{{ scope_decision.id }}">
+    <fieldset>
+      <legend>Correct Commitment Scope</legend>
+      <label class="check"><input type="radio" name="scope_mode" value="unknown" {% if scope_decision.scope_mode == 'unknown' %}checked{% endif %} required> Scope not yet known</label>
+      <label class="check"><input type="radio" name="scope_mode" value="selected" {% if scope_decision.scope_mode == 'selected' %}checked{% endif %}> Selected Dependencies</label>
+      <label class="check"><input type="radio" name="scope_mode" value="all_active" {% if scope_decision.scope_mode == 'all_active' %}checked{% endif %}> All currently active Dependencies for the selected External Party</label>
+      {% for dependency, party_name in dependencies %}
+        <label class="check"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}" {% if dependency.id in scope_dependency_ids %}checked{% endif %}> {{ dependency.ref_code }} — {{ dependency.title }} · {{ party_name or 'External Party not resolved' }}</label>
+      {% endfor %}
+      <button type="submit">Save scope correction</button>
+    </fieldset>
+  </form>
+
+  <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/facts">
+    <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
+    <fieldset>
+      <legend>Correct one supported External Party fact</legend>
+      <div class="grid">
+        <div><label for="affected-party">External Party affected</label><select id="affected-party" name="affected_external_org_id" required>{% for party in parties %}<option value="{{ party.id }}" {% if party.id == event.affected_external_org_id %}selected{% endif %}>{{ party.name }}</option>{% endfor %}</select></div>
+        <div><label for="stated-party">External Party who spoke</label><select id="stated-party" name="stated_external_org_id" required>{% for party in parties %}<option value="{{ party.id }}" {% if party.id == event.stated_external_org_id %}selected{% endif %}>{{ party.name }}</option>{% endfor %}</select></div>
+      </div>
+      <label for="stated-party-words">Party wording in the Evidence</label><input id="stated-party-words" name="stated_party" value="{{ event.stated_party or '' }}" required>
+      <label for="event-date">Statement date, if the Evidence says one</label><input id="event-date" name="event_date" type="date" value="{{ event.event_date or '' }}">
+      <label for="description">What the External Party said</label><textarea id="description" name="description" required>{{ event.description }}</textarea>
+      <div class="grid">
+        <div><label for="new-timing-text">New timing, exactly as stated</label><input id="new-timing-text" name="new_timing_text" value="{{ event.new_timing.text if event.new_timing else '' }}" required></div>
+        <div><label for="new-timing-precision">Precision</label><select id="new-timing-precision" name="new_timing_precision" required>{% for precision in ('day', 'month', 'approximate') %}<option value="{{ precision }}" {% if event.new_timing and event.new_timing.precision == precision %}selected{% endif %}>{{ precision }}</option>{% endfor %}</select></div>
+        <div><label for="new-timing-start">New timing start</label><input id="new-timing-start" name="new_timing_start_date" type="date" value="{{ event.new_timing.start_date if event.new_timing and event.new_timing.start_date else '' }}"></div>
+        <div><label for="new-timing-end">New timing end</label><input id="new-timing-end" name="new_timing_end_date" type="date" value="{{ event.new_timing.end_date if event.new_timing and event.new_timing.end_date else '' }}"></div>
+        <div><label for="previous-timing-text">Earlier timing, if this changed</label><input id="previous-timing-text" name="previous_timing_text" value="{{ event.previous_timing.text if event.previous_timing else '' }}"></div>
+        <div><label for="previous-timing-precision">Earlier timing precision</label><select id="previous-timing-precision" name="previous_timing_precision"><option value="">No earlier timing</option>{% for precision in ('day', 'month', 'approximate') %}<option value="{{ precision }}" {% if event.previous_timing and event.previous_timing.precision == precision %}selected{% endif %}>{{ precision }}</option>{% endfor %}</select></div>
+        <div><label for="previous-timing-start">Earlier timing start</label><input id="previous-timing-start" name="previous_timing_start_date" type="date" value="{{ event.previous_timing.start_date if event.previous_timing and event.previous_timing.start_date else '' }}"></div>
+        <div><label for="previous-timing-end">Earlier timing end</label><input id="previous-timing-end" name="previous_timing_end_date" type="date" value="{{ event.previous_timing.end_date if event.previous_timing and event.previous_timing.end_date else '' }}"></div>
+      </div>
+      <label for="evidence-document">Verified Evidence document</label><select id="evidence-document" name="evidence_document_id" required><option value="">Choose document</option>{% for document in documents %}<option value="{{ document.id }}">{{ document.filename }}</option>{% endfor %}</select>
+      <label for="evidence-page">Verified Evidence page</label><input id="evidence-page" name="evidence_page_no" type="number" min="1" required>
+      <label for="evidence-quote">Exact quote supporting the correction</label><textarea id="evidence-quote" name="evidence_quote" required></textarea>
+      <button type="submit">Save factual correction</button>
+    </fieldset>
+  </form>
+</main>

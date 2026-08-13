@@ -30,18 +30,31 @@ from corridor.external_statements import (
     StatementScope,
     StatementTiming,
     record_external_party_statement,
+    record_statement_scope_decision,
 )
 from corridor.models import (
     Candidate,
+    CandidateDisposition,
     CommitmentLineage,
+    AuditLog,
     DependencyEvent,
+    DependencyEventScope,
     DependencyEventScopeDecision,
     ProjectRosterEntry,
+    ReportRun,
     StatementCoordinationReceipt,
+    StatementCoordinationReversal,
+    StatementCoordinationReversalEffect,
+    WorkDecisionMilestoneImpact,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 from corridor.supersession import actionable_candidate_query
+from corridor.statement_lifecycle import (
+    current_candidate_disposition,
+    current_lineage_statement,
+    current_scope_decision_filter,
+)
 from corridor.verify import normalize
 from corridor.work_decisions import (
     CoordinationSubject,
@@ -61,6 +74,20 @@ class StatementCoordinationRefusal(ValueError):
 
 class StaleStatementCoordination(StatementCoordinationRefusal):
     """The screen's expected predecessors are no longer current."""
+
+
+class StatementCoordinationUndoRefusal(StatementCoordinationRefusal):
+    """Undo would reverse a result that later work now depends on."""
+
+
+NOT_RELEVANT_REASONS = frozenset(
+    {
+        "not_an_external_party_statement",
+        "outside_project_scope",
+        "duplicate_statement",
+        "insufficient_source_context",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -124,6 +151,32 @@ class StatementCoordinationResult:
     internal_owner_decision: WorkDecision
     next_action_decision: WorkDecision
     milestone_impact_decision: WorkDecision | None
+
+
+@dataclass(frozen=True)
+class StatementScopeCorrection:
+    """The exact scope tail a coordinator read before correcting it."""
+
+    candidate_id: int
+    event_id: int
+    expected_scope_decision_id: int
+    scope: StatementScope
+
+
+@dataclass(frozen=True)
+class StatementFactCorrectionDraft:
+    """One supported factual successor in an existing Commitment Lineage."""
+
+    candidate_id: int
+    expected_statement_event_id: int
+    affected_external_org_id: int
+    stated_party: str
+    stated_external_org_id: int
+    event_date: date | None
+    description: str
+    new_timing: StatementTiming
+    previous_timing: StatementTiming | None
+    evidence: tuple[CitedStatementEvidence, ...]
 
 
 def coordinate_statement(
@@ -200,6 +253,14 @@ def coordinate_statement(
 
             candidate.state = "accepted"
             candidate.adjudicated_at = datetime.now(timezone.utc)
+            disposition = CandidateDisposition(
+                candidate_id=candidate.id,
+                disposition="accepted",
+                reason=None,
+                recorded_by=recorder.subject,
+            )
+            session.add(disposition)
+            session.flush([disposition])
             audit_entry = audit.record(
                 session,
                 principal=recorder,
@@ -222,6 +283,7 @@ def coordinate_statement(
             )
             receipt = StatementCoordinationReceipt(
                 candidate_id=candidate.id,
+                candidate_disposition_id=disposition.id,
                 commitment_lineage_id=event.commitment_lineage_id,
                 dependency_event_id=event.id,
                 scope_decision_id=scope_decision.id,
@@ -255,6 +317,562 @@ def coordinate_statement(
         next_action_decision=next_action_decision,
         milestone_impact_decision=milestone_impact_decision,
     )
+
+
+def undo_statement_coordination(
+    session: Session,
+    receipt_id: int,
+    *,
+    principal: HumanPrincipal,
+) -> StatementCoordinationReversal:
+    """Append the exact compensation for one immediately undoable guided Save."""
+    recorder = require_human_principal(principal)
+    receipt = session.get(StatementCoordinationReceipt, receipt_id)
+    if receipt is None:
+        raise StatementCoordinationUndoRefusal("the guided Save receipt no longer exists")
+    candidate = session.get(Candidate, receipt.candidate_id)
+    if candidate is None:
+        raise StatementCoordinationUndoRefusal("the guided Save Candidate no longer exists")
+
+    try:
+        with session.begin_nested():
+            lock_project(session, candidate.project_id)
+            _require_undoable_save(session, receipt, candidate)
+            disposition = session.get(CandidateDisposition, receipt.candidate_disposition_id)
+            if disposition is None:
+                raise StatementCoordinationUndoRefusal(
+                    "this historical guided Save has no reversible Candidate disposition"
+                )
+
+            audit_entry = audit.record(
+                session,
+                principal=recorder,
+                action=audit.UNDO_COORDINATED_STATEMENT,
+                entity_type=audit.CANDIDATE,
+                entity_id=candidate.id,
+                before={"receipt_id": receipt.id, "candidate_state": candidate.state},
+                after={
+                    "receipt_id": receipt.id,
+                    "candidate_state": "pending",
+                    "statement_event_id": receipt.dependency_event_id,
+                },
+            )
+            reversal = StatementCoordinationReversal(
+                receipt_id=receipt.id,
+                candidate_id=candidate.id,
+                audit_log_id=audit_entry.id,
+                recorded_by=recorder.subject,
+            )
+            session.add(reversal)
+            session.flush([reversal])
+            _record_undo_effects(session, reversal, receipt)
+
+            candidate.state = "pending"
+            candidate.adjudicated_at = None
+            lineage = session.get(CommitmentLineage, receipt.commitment_lineage_id)
+            if lineage is None:
+                raise StatementCoordinationUndoRefusal("the grouped Commitment Lineage no longer exists")
+            lineage.internal_owner = None
+            lineage.next_action = None
+            lineage.action_due_date = None
+            lineage.action_due_date_reason = None
+            lineage.milestone_impact = None
+            lineage.milestone_ids = []
+            lineage.plan_needs_review = False
+
+            from corridor.dependency_events import project_committed_dates
+
+            dependency_ids = tuple(
+                session.scalars(
+                    select(DependencyEventScope.dependency_id).where(
+                        DependencyEventScope.scope_decision_id == receipt.scope_decision_id
+                    )
+                ).all()
+            )
+            project_committed_dates(session, dependency_ids)
+            session.flush()
+    except StatementCoordinationUndoRefusal:
+        raise
+    except (ValueError, IntegrityError) as exc:
+        raise StatementCoordinationUndoRefusal(str(exc)) from exc
+    return reversal
+
+
+def _require_undoable_save(
+    session: Session,
+    receipt: StatementCoordinationReceipt,
+    candidate: Candidate,
+) -> None:
+    if session.scalar(
+        select(StatementCoordinationReversal.id).where(
+            StatementCoordinationReversal.receipt_id == receipt.id
+        )
+    ) is not None:
+        raise StatementCoordinationUndoRefusal("this guided Save was already undone")
+    disposition = current_candidate_disposition(session, candidate.id)
+    if (
+        candidate.state != "accepted"
+        or disposition is None
+        or disposition.id != receipt.candidate_disposition_id
+    ):
+        raise StatementCoordinationUndoRefusal(
+            "the Candidate changed after this Save; use Correct instead"
+        )
+    current_event = current_lineage_statement(session, receipt.commitment_lineage_id)
+    if current_event is None:
+        raise StatementCoordinationUndoRefusal(
+            "the statement changed after this Save; use Correct instead"
+        )
+    if current_event.id != receipt.dependency_event_id:
+        raise StatementCoordinationUndoRefusal(
+            "the statement changed after this Save; use Correct instead"
+        )
+    scope = _current_scope_decision(session, receipt.dependency_event_id)
+    if scope is None or scope.id != receipt.scope_decision_id:
+        raise StatementCoordinationUndoRefusal(
+            "the statement scope changed after this Save; use Correct instead"
+        )
+    subject = CoordinationSubject.statement(receipt.commitment_lineage_id)
+    current_decisions = (
+        _decision_id(current_internal_owner_decision(session, subject)),
+        _decision_id(current_next_action_decision(session, subject)),
+        _decision_id(current_milestone_impact_decision(session, subject)),
+    )
+    receipt_decisions = (
+        receipt.internal_owner_decision_id,
+        receipt.next_action_decision_id,
+        receipt.milestone_impact_decision_id,
+    )
+    if current_decisions != receipt_decisions:
+        raise StatementCoordinationUndoRefusal(
+            "later Coordination Plan work depends on this Save; use Correct instead"
+        )
+    _require_no_later_downstream_act(session, receipt)
+
+
+def _require_no_later_downstream_act(
+    session: Session, receipt: StatementCoordinationReceipt
+) -> None:
+    """Refuse Undo once a later closure, publication, or lineage act used it."""
+    lineage = session.get(CommitmentLineage, receipt.commitment_lineage_id)
+    if lineage is None:
+        raise StatementCoordinationUndoRefusal(
+            "the grouped Commitment Lineage no longer exists"
+        )
+    dependency_ids = tuple(
+        session.scalars(
+            select(DependencyEventScope.dependency_id).where(
+                DependencyEventScope.scope_decision_id == receipt.scope_decision_id
+            )
+        ).all()
+    )
+    later_closure = (
+        session.scalar(
+            select(DependencyEvent.id)
+            .join(
+                DependencyEventScope,
+                DependencyEventScope.event_id == DependencyEvent.id,
+            )
+            .where(
+                DependencyEvent.project_id == lineage.project_id,
+                DependencyEvent.event_type == "closure",
+                DependencyEventScope.dependency_id.in_(dependency_ids),
+                DependencyEvent.id > receipt.dependency_event_id,
+            )
+            .limit(1)
+        )
+        if dependency_ids
+        else None
+    )
+    if later_closure is not None:
+        raise StatementCoordinationUndoRefusal(
+            "a later closure depends on this Save; use Correct instead"
+        )
+    if _report_published_scoped_dependency(
+        session, receipt, lineage.project_id, dependency_ids
+    ):
+        raise StatementCoordinationUndoRefusal(
+            "a later Report publication depends on this Save; use Correct instead"
+        )
+    _require_no_later_audited_save_reference(session, receipt)
+
+
+def _require_no_later_audited_save_reference(
+    session: Session, receipt: StatementCoordinationReceipt
+) -> None:
+    """Reject Undo only when a later audit names an exact result of this Save."""
+    referenced_ids = {
+        "receipt_id": {receipt.id},
+        "statement_event_id": {receipt.dependency_event_id},
+        "scope_decision_id": {receipt.scope_decision_id},
+        "candidate_disposition_id": {receipt.candidate_disposition_id},
+        "work_decision_id": {
+            receipt.internal_owner_decision_id,
+            receipt.next_action_decision_id,
+            receipt.milestone_impact_decision_id,
+        }
+        - {None},
+        "milestone_link_id": set(
+            session.scalars(
+                select(WorkDecisionMilestoneImpact.id).where(
+                    WorkDecisionMilestoneImpact.work_decision_id
+                    == receipt.milestone_impact_decision_id
+                )
+            ).all()
+        ),
+    }
+    later_audits = session.scalars(
+        select(AuditLog).where(AuditLog.id > receipt.audit_log_id)
+    )
+    if any(
+        _audit_references_save(entry.after_json, referenced_ids)
+        or _audit_references_save(entry.before_json, referenced_ids)
+        for entry in later_audits
+    ):
+        raise StatementCoordinationUndoRefusal(
+            "a later recorded act depends on this Save; use Correct instead"
+        )
+
+
+def _audit_references_save(
+    value: object, referenced_ids: dict[str, set[int]]
+) -> bool:
+    """Find a typed exact Save reference in append-only audit detail."""
+    if isinstance(value, dict):
+        return any(
+            key in referenced_ids
+            and isinstance(item, int)
+            and item in referenced_ids[key]
+            for key, item in value.items()
+        ) or any(
+            _audit_references_save(item, referenced_ids) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_audit_references_save(item, referenced_ids) for item in value)
+    return False
+
+
+def _report_published_scoped_dependency(
+    session: Session,
+    receipt: StatementCoordinationReceipt,
+    project_id: int,
+    dependency_ids: tuple[int, ...],
+) -> bool:
+    """Whether a later immutable Report snapshot names this Save's scope."""
+    if not dependency_ids:
+        return False
+    reports = session.scalars(
+        select(ReportRun).where(
+            ReportRun.project_id == project_id,
+            ReportRun.ts >= receipt.created_at,
+        )
+    ).all()
+    for report in reports:
+        published_ids = {
+            value.get("id")
+            for value in ((report.snapshot_json or {}).get("dependencies") or {}).values()
+            if isinstance(value, dict)
+        }
+        if published_ids.intersection(dependency_ids):
+            return True
+    return False
+
+
+def _record_undo_effects(
+    session: Session,
+    reversal: StatementCoordinationReversal,
+    receipt: StatementCoordinationReceipt,
+) -> None:
+    effects = [
+        ("statement", receipt.dependency_event_id),
+        ("scope_decision", receipt.scope_decision_id),
+        ("work_decision", receipt.internal_owner_decision_id),
+        ("work_decision", receipt.next_action_decision_id),
+        ("candidate_disposition", receipt.candidate_disposition_id),
+        ("candidate_projection", receipt.candidate_id),
+        ("lineage_projection", receipt.commitment_lineage_id),
+        ("audit_pointer", receipt.audit_log_id),
+        ("grouping_receipt", receipt.id),
+    ]
+    if receipt.milestone_impact_decision_id is not None:
+        effects.append(("work_decision", receipt.milestone_impact_decision_id))
+        effects.extend(
+            ("milestone_link", milestone_link_id)
+            for milestone_link_id in session.scalars(
+                select(WorkDecisionMilestoneImpact.id).where(
+                    WorkDecisionMilestoneImpact.work_decision_id
+                    == receipt.milestone_impact_decision_id
+                )
+            )
+        )
+    session.add_all(
+        StatementCoordinationReversalEffect(
+            reversal_id=reversal.id,
+            effect_kind=effect_kind,
+            target_id=target_id,
+        )
+        for effect_kind, target_id in effects
+    )
+
+
+def correct_statement_scope(
+    session: Session,
+    correction: StatementScopeCorrection,
+    *,
+    principal: HumanPrincipal,
+) -> DependencyEventScopeDecision:
+    """Append one scope correction without changing the External Party fact."""
+    recorder = require_human_principal(principal)
+    event = session.get(DependencyEvent, correction.event_id)
+    if event is None:
+        raise StatementCoordinationRefusal("the statement to correct no longer exists")
+    try:
+        with session.begin_nested():
+            lock_project(session, event.project_id)
+            _require_candidate_owns_lineage(session, correction.candidate_id, event)
+            current = current_lineage_statement(session, event.commitment_lineage_id)
+            if current is None or current.id != event.id:
+                raise StaleStatementCoordination(
+                    "the statement changed; reload the newer state"
+                )
+            predecessor = _current_scope_decision(session, event.id)
+            if predecessor is None or predecessor.id != correction.expected_scope_decision_id:
+                raise StaleStatementCoordination(
+                    "the statement scope changed; reload the newer state"
+                )
+            decision = record_statement_scope_decision(
+                session,
+                event_id=event.id,
+                scope=correction.scope,
+                actor=recorder,
+            )
+            audit.record(
+                session,
+                principal=recorder,
+                action=audit.CORRECT_STATEMENT_SCOPE,
+                entity_type=audit.COMMITMENT_LINEAGE,
+                entity_id=event.commitment_lineage_id,
+                before={"scope_decision_id": predecessor.id},
+                after={
+                    "statement_event_id": event.id,
+                    "scope_decision_id": decision.id,
+                },
+            )
+    except StaleStatementCoordination:
+        raise
+    except (StatementRefusal, ValueError, IntegrityError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
+    return decision
+
+
+def correct_statement_facts(
+    session: Session,
+    draft: StatementFactCorrectionDraft,
+    *,
+    principal: HumanPrincipal,
+) -> DependencyEvent:
+    """Append a supported statement successor while retaining the plan lineage."""
+    recorder = require_human_principal(principal)
+    predecessor = session.get(DependencyEvent, draft.expected_statement_event_id)
+    if predecessor is None:
+        raise StatementCoordinationRefusal("the statement to correct no longer exists")
+    try:
+        with session.begin_nested():
+            lock_project(session, predecessor.project_id)
+            _require_candidate_owns_lineage(session, draft.candidate_id, predecessor)
+            current = current_lineage_statement(
+                session, predecessor.commitment_lineage_id
+            )
+            if current is None or current.id != predecessor.id:
+                raise StaleStatementCoordination(
+                    "the statement changed; reload the newer state"
+                )
+            scope_decision = _current_scope_decision(session, predecessor.id)
+            if scope_decision is None:
+                raise StatementCoordinationRefusal("the statement has no current Commitment Scope")
+            scope_ids = tuple(
+                session.scalars(
+                    select(DependencyEventScope.dependency_id)
+                    .where(DependencyEventScope.scope_decision_id == scope_decision.id)
+                    .order_by(DependencyEventScope.dependency_id)
+                ).all()
+            )
+            scope = StatementScope(
+                "unknown" if scope_decision.scope_mode == "unknown" else "carried_forward",
+                scope_ids,
+            )
+            evidence = _deduplicate_evidence(draft.evidence)
+            _require_fact_evidence_support(draft, evidence)
+            successor = record_external_party_statement(
+                session,
+                project_id=predecessor.project_id,
+                affected_external_org_id=draft.affected_external_org_id,
+                stated_party=draft.stated_party,
+                stated_external_org_id=draft.stated_external_org_id,
+                source_kind="cited",
+                event_date=draft.event_date,
+                description=draft.description,
+                new_timing=draft.new_timing,
+                previous_timing=draft.previous_timing,
+                scope=scope,
+                created_by=recorder.subject,
+                evidence=evidence[0],
+                supporting_evidence=evidence[1:],
+                commitment_lineage_id=predecessor.commitment_lineage_id,
+                allow_party_correction=True,
+                _scope_snapshot_dependency_ids=scope_ids,
+            )
+            audit.record(
+                session,
+                principal=recorder,
+                action=audit.CORRECT_STATEMENT_FACTS,
+                entity_type=audit.COMMITMENT_LINEAGE,
+                entity_id=predecessor.commitment_lineage_id,
+                before={"statement_event_id": predecessor.id},
+                after={"statement_event_id": successor.id},
+            )
+    except StaleStatementCoordination:
+        raise
+    except (StatementRefusal, ValueError, IntegrityError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
+    return successor
+
+
+def mark_statement_not_relevant(
+    session: Session,
+    candidate_id: int,
+    *,
+    reason: str,
+    confirmed: bool,
+    principal: HumanPrincipal,
+) -> CandidateDisposition:
+    """Record a reversible, reasoned disposition without creating a statement."""
+    recorder = require_human_principal(principal)
+    if reason not in NOT_RELEVANT_REASONS:
+        raise StatementCoordinationRefusal("Not Relevant needs a structured reason")
+    if confirmed is not True:
+        raise StatementCoordinationRefusal("Not Relevant needs explicit confirmation")
+    candidate = session.get(Candidate, candidate_id)
+    if candidate is None or candidate.kind != "event":
+        raise StatementCoordinationRefusal("only an Unplaced Statement can be marked Not Relevant")
+    try:
+        with session.begin_nested():
+            lock_project(session, candidate.project_id)
+            session.refresh(candidate)
+            if candidate.state != "pending" or current_candidate_disposition(session, candidate.id):
+                raise StaleStatementCoordination(
+                    "the statement Candidate changed; reload the newer state"
+                )
+            actionable = session.scalar(
+                actionable_candidate_query(candidate.project_id)
+                .where(Candidate.id == candidate.id, Candidate.kind == "event")
+                .limit(1)
+            )
+            if actionable is None:
+                raise StaleStatementCoordination(
+                    "the statement Candidate is no longer in the current actionable scope"
+                )
+            disposition = CandidateDisposition(
+                candidate_id=candidate.id,
+                disposition="not_relevant",
+                reason=reason,
+                recorded_by=recorder.subject,
+            )
+            session.add(disposition)
+            session.flush([disposition])
+            candidate.state = "rejected"
+            candidate.adjudicated_at = datetime.now(timezone.utc)
+            audit.record(
+                session,
+                principal=recorder,
+                action=audit.MARK_STATEMENT_NOT_RELEVANT,
+                entity_type=audit.CANDIDATE,
+                entity_id=candidate.id,
+                before={"candidate_state": "pending"},
+                after={
+                    "candidate_state": "rejected",
+                    "candidate_disposition_id": disposition.id,
+                    "reason": reason,
+                    "confirmed": True,
+                },
+            )
+            session.flush()
+    except StaleStatementCoordination:
+        raise
+    except (ValueError, IntegrityError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
+    return disposition
+
+
+def restore_statement_not_relevant(
+    session: Session,
+    disposition_id: int,
+    *,
+    principal: HumanPrincipal,
+) -> StatementCoordinationReversal:
+    """Append the restoration of one Not Relevant disposition."""
+    recorder = require_human_principal(principal)
+    disposition = session.get(CandidateDisposition, disposition_id)
+    if disposition is None or disposition.disposition != "not_relevant":
+        raise StatementCoordinationRefusal("the Not Relevant disposition no longer exists")
+    candidate = session.get(Candidate, disposition.candidate_id)
+    if candidate is None:
+        raise StatementCoordinationRefusal("the Not Relevant Candidate no longer exists")
+    try:
+        with session.begin_nested():
+            lock_project(session, candidate.project_id)
+            current = current_candidate_disposition(session, candidate.id)
+            if candidate.state != "rejected" or current is None or current.id != disposition.id:
+                raise StaleStatementCoordination(
+                    "the Candidate changed after Not Relevant; reload the newer state"
+                )
+            audit_entry = audit.record(
+                session,
+                principal=recorder,
+                action=audit.RESTORE_STATEMENT_NOT_RELEVANT,
+                entity_type=audit.CANDIDATE,
+                entity_id=candidate.id,
+                before={
+                    "candidate_state": "rejected",
+                    "candidate_disposition_id": disposition.id,
+                },
+                after={"candidate_state": "pending"},
+            )
+            reversal = StatementCoordinationReversal(
+                candidate_disposition_id=disposition.id,
+                candidate_id=candidate.id,
+                audit_log_id=audit_entry.id,
+                recorded_by=recorder.subject,
+            )
+            session.add(reversal)
+            session.flush([reversal])
+            session.add_all(
+                (
+                    StatementCoordinationReversalEffect(
+                        reversal_id=reversal.id,
+                        effect_kind="candidate_disposition",
+                        target_id=disposition.id,
+                    ),
+                    StatementCoordinationReversalEffect(
+                        reversal_id=reversal.id,
+                        effect_kind="candidate_projection",
+                        target_id=candidate.id,
+                    ),
+                    StatementCoordinationReversalEffect(
+                        reversal_id=reversal.id,
+                        effect_kind="audit_pointer",
+                        target_id=audit_entry.id,
+                    ),
+                )
+            )
+            candidate.state = "pending"
+            candidate.adjudicated_at = None
+            session.flush()
+    except StaleStatementCoordination:
+        raise
+    except (ValueError, IntegrityError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
+    return reversal
 
 
 def _require_current_candidate(
@@ -323,7 +941,7 @@ def _check_expected_predecessors(
     lineage = session.get(CommitmentLineage, expected.commitment_lineage_id)
     if lineage is None or lineage.project_id != project_id:
         raise StaleStatementCoordination("the expected Commitment Lineage is no longer current")
-    event = _current_statement_event(session, lineage.id)
+    event = current_lineage_statement(session, lineage.id)
     if event is None or event.id != expected.statement_event_id:
         raise StaleStatementCoordination("the statement changed; reload the newer state")
     scope_decision = _current_scope_decision(session, event.id)
@@ -347,18 +965,38 @@ def _check_expected_predecessors(
         raise StaleStatementCoordination("the Coordination Plan changed; reload the newer state")
 
 
-def _current_statement_event(session: Session, lineage_id: int) -> DependencyEvent | None:
-    successor = DependencyEvent.__table__.alias("successor")
-    return session.scalar(
-        select(DependencyEvent)
-        .where(
-            DependencyEvent.commitment_lineage_id == lineage_id,
-            ~select(successor.c.id)
-            .where(successor.c.supersedes_event_id == DependencyEvent.id)
-            .exists(),
+def _require_candidate_owns_lineage(
+    session: Session, candidate_id: int, event: DependencyEvent
+) -> None:
+    """Bind Correct to the Candidate whose active guided Save owns the lineage."""
+    candidate = session.get(Candidate, candidate_id)
+    if (
+        candidate is None
+        or candidate.kind != "event"
+        or candidate.state != "accepted"
+        or candidate.project_id != event.project_id
+    ):
+        raise StatementCoordinationRefusal(
+            "the statement Candidate does not own this correction target"
         )
-        .order_by(DependencyEvent.id)
+    receipt = session.scalar(
+        select(StatementCoordinationReceipt)
+        .outerjoin(
+            StatementCoordinationReversal,
+            StatementCoordinationReversal.receipt_id == StatementCoordinationReceipt.id,
+        )
+        .where(
+            StatementCoordinationReceipt.candidate_id == candidate.id,
+            StatementCoordinationReceipt.commitment_lineage_id
+            == event.commitment_lineage_id,
+            StatementCoordinationReversal.id.is_(None),
+        )
+        .limit(1)
     )
+    if receipt is None:
+        raise StatementCoordinationRefusal(
+            "the statement Candidate does not own this correction target"
+        )
 
 
 def _current_scope_decision(
@@ -369,6 +1007,7 @@ def _current_scope_decision(
         select(DependencyEventScopeDecision)
         .where(
             DependencyEventScopeDecision.event_id == event_id,
+            current_scope_decision_filter(DependencyEventScopeDecision.id),
             ~select(successor.c.id)
             .where(
                 successor.c.supersedes_scope_decision_id
@@ -421,6 +1060,14 @@ def _require_evidence_support(
     evidence: tuple[CitedStatementEvidence, ...],
 ) -> None:
     """Make source evidence, never confirmation, carry party and timing facts."""
+    _require_fact_evidence_support(draft, evidence)
+
+
+def _require_fact_evidence_support(
+    draft: StatementCoordinationDraft | StatementFactCorrectionDraft,
+    evidence: tuple[CitedStatementEvidence, ...],
+) -> None:
+    """Make each corrected attribution and timing fact point back to a quote."""
     quotes = tuple(normalize(item.quote) for item in evidence)
     party = normalize(draft.stated_party)
     if not party or not any(party in quote for quote in quotes):

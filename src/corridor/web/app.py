@@ -63,9 +63,12 @@ from corridor.models import (
     RESOLUTION_STRATEGIES,
     DEP_STATUSES,
     Candidate,
+    CandidateDisposition,
     CommitmentLineage,
     Dependency,
     DependencyEvent,
+    DependencyEventScope,
+    DependencyEventScopeDecision,
     DocPage,
     Document,
     EvidenceLink,
@@ -74,8 +77,12 @@ from corridor.models import (
     Project,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
+    StatementCoordinationReversal,
 )
-from corridor.dependency_events import current_statement_evidence_memberships
+from corridor.dependency_events import (
+    current_scope_decision_filter,
+    current_statement_evidence_memberships,
+)
 from corridor.web.queue import (
     build_cohort_rail,
     build_evidence,
@@ -134,7 +141,18 @@ from corridor.statement_coordination import (
     StatementCoordinationDraft,
     StatementCoordinationPredecessors,
     StatementCoordinationRefusal,
+    StatementFactCorrectionDraft,
+    StatementScopeCorrection,
     coordinate_statement,
+    correct_statement_facts,
+    correct_statement_scope,
+    mark_statement_not_relevant,
+    restore_statement_not_relevant,
+    undo_statement_coordination,
+)
+from corridor.statement_lifecycle import (
+    current_candidate_disposition,
+    current_lineage_statement,
 )
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -623,6 +641,214 @@ async def save_coordinated_statement(
     )
 
 
+@app.post("/statements/{slug}/{candidate_id}/coordination/{receipt_id}/undo")
+def undo_coordinated_statement(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    receipt_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Undo exactly the Save identified by the rendered grouping receipt."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    receipt = session.get(StatementCoordinationReceipt, receipt_id)
+    if receipt is None or receipt.candidate_id != candidate.id:
+        raise HTTPException(404, "no such guided Save for this statement")
+    try:
+        undo_statement_coordination(session, receipt.id, principal=principal)
+    except StatementCoordinationRefusal as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=409
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/not-relevant")
+async def mark_waiting_statement_not_relevant(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Keep a reasoned non-statement disposition separate from generic rejection."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    form = await request.form()
+    try:
+        mark_statement_not_relevant(
+            session,
+            candidate.id,
+            reason=str(form.get("reason") or "").strip(),
+            confirmed=str(form.get("confirmed") or "") == "yes",
+            principal=principal,
+        )
+    except StatementCoordinationRefusal as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/not-relevant/{disposition_id}/restore")
+def restore_waiting_statement_not_relevant(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    disposition_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Restore a Candidate from its exact Not Relevant disposition."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    disposition = session.get(CandidateDisposition, disposition_id)
+    if disposition is None or disposition.candidate_id != candidate.id:
+        raise HTTPException(404, "no such Not Relevant disposition for this statement")
+    try:
+        restore_statement_not_relevant(session, disposition.id, principal=principal)
+    except StatementCoordinationRefusal as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=409
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.get("/statements/{slug}/{candidate_id}/correct", response_class=HTMLResponse)
+def correct_statement_screen(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    session: Session = Depends(get_session),
+):
+    """Show one supported scope or fact correction for the current statement."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    receipt = _active_statement_coordination_receipt(session, candidate.id)
+    if receipt is None:
+        raise HTTPException(409, "this statement has no current guided Save to correct")
+    event = current_lineage_statement(session, receipt.commitment_lineage_id)
+    if event is None:
+        raise HTTPException(409, "this statement is no longer current")
+    scope_decision = session.scalar(
+        select(DependencyEventScopeDecision)
+        .where(
+            DependencyEventScopeDecision.event_id == event.id,
+            current_scope_decision_filter(),
+        )
+        .order_by(DependencyEventScopeDecision.id)
+    )
+    if scope_decision is None:
+        raise HTTPException(409, "this statement has no current Commitment Scope")
+    return TEMPLATES.TemplateResponse(
+        request,
+        "statement_correct.html",
+        {
+            "project": project,
+            "candidate": candidate,
+            "event": event,
+            "scope_decision": scope_decision,
+            "scope_dependency_ids": tuple(
+                session.scalars(
+                    select(DependencyEventScope.dependency_id).where(
+                        DependencyEventScope.scope_decision_id == scope_decision.id
+                    )
+                ).all()
+            ),
+            "parties": session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all(),
+            "documents": session.scalars(
+                select(Document)
+                .where(Document.project_id == project.id)
+                .order_by(Document.filename)
+            ).all(),
+            "dependencies": session.execute(
+                select(Dependency, ExternalOrg.name)
+                .outerjoin(ExternalOrg, ExternalOrg.id == Dependency.external_org_id)
+                .where(
+                    Dependency.project_id == project.id,
+                    Dependency.dismissed_at.is_(None),
+                    Dependency.status != "closed",
+                )
+                .order_by(Dependency.ref_code)
+            ).all(),
+        },
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/correct/scope")
+async def correct_statement_scope_from_screen(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Delegate the scope form to the append-only scope correction command."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    form = await request.form()
+    try:
+        correct_statement_scope(
+            session,
+            StatementScopeCorrection(
+                candidate_id=candidate.id,
+                event_id=_required_positive_form_id(form, "expected_statement_event_id"),
+                expected_scope_decision_id=_required_positive_form_id(
+                    form, "expected_scope_decision_id"
+                ),
+                scope=_form_statement_scope(form),
+            ),
+            principal=principal,
+        )
+    except StatementCoordinationRefusal as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=409
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/correct/facts")
+async def correct_statement_facts_from_screen(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Delegate a supported factual correction to the lineage successor command."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    form = await request.form()
+    try:
+        correct_statement_facts(
+            session,
+            _statement_fact_correction_draft(form, candidate.id),
+            principal=principal,
+        )
+    except StatementCoordinationRefusal as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=409
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
 def _project_statement_candidate(
     session: Session, project: Project, candidate_id: int
 ) -> Candidate:
@@ -630,6 +856,25 @@ def _project_statement_candidate(
     if candidate is None or candidate.project_id != project.id or candidate.kind != "event":
         raise HTTPException(404, "no such Unplaced Statement in this project")
     return candidate
+
+
+def _active_statement_coordination_receipt(
+    session: Session, candidate_id: int
+) -> StatementCoordinationReceipt | None:
+    return session.scalar(
+        select(StatementCoordinationReceipt)
+        .outerjoin(
+            StatementCoordinationReversal,
+            StatementCoordinationReversal.receipt_id
+            == StatementCoordinationReceipt.id,
+        )
+        .where(
+            StatementCoordinationReceipt.candidate_id == candidate_id,
+            StatementCoordinationReversal.id.is_(None),
+        )
+        .order_by(StatementCoordinationReceipt.id.desc())
+        .limit(1)
+    )
 
 
 def _statement_coordination_screen(
@@ -642,12 +887,16 @@ def _statement_coordination_screen(
     status_code: int = 200,
 ):
     """The browser reads facts; the command remains the one mutation seam."""
-    receipt = session.scalar(
-        select(StatementCoordinationReceipt).where(
-            StatementCoordinationReceipt.candidate_id == candidate.id
-        )
+    receipt = (
+        _active_statement_coordination_receipt(session, candidate.id)
+        if candidate.state == "accepted"
+        else None
     )
-    event = session.get(DependencyEvent, receipt.dependency_event_id) if receipt else None
+    event = (
+        current_lineage_statement(session, receipt.commitment_lineage_id)
+        if receipt
+        else None
+    )
     line = (
         session.get(CommitmentLineage, receipt.commitment_lineage_id)
         if receipt
@@ -687,6 +936,15 @@ def _statement_coordination_screen(
         .order_by(Milestone.code)
     ).all()
     fields = (candidate.payload_json or {}).get("fields") or {}
+    disposition = current_candidate_disposition(session, candidate.id)
+    not_relevant = (
+        disposition
+        if candidate.state == "rejected"
+        and disposition is not None
+        and disposition.disposition == "not_relevant"
+        else None
+    )
+    history = _statement_coordination_history(session, candidate.id)
     return TEMPLATES.TemplateResponse(
         request,
         "statement_coordinate.html",
@@ -715,10 +973,68 @@ def _statement_coordination_screen(
             "receipt": receipt,
             "event": event,
             "line": line,
+            "not_relevant": not_relevant,
+            "history": history,
             "error": error,
         },
         status_code=status_code,
     )
+
+
+def _statement_coordination_history(session: Session, candidate_id: int) -> tuple[dict, ...]:
+    """Render durable lifecycle acts in plain time order without hiding reversals."""
+    receipts = session.scalars(
+        select(StatementCoordinationReceipt)
+        .where(StatementCoordinationReceipt.candidate_id == candidate_id)
+        .order_by(StatementCoordinationReceipt.id)
+    ).all()
+    dispositions = session.scalars(
+        select(CandidateDisposition)
+        .where(CandidateDisposition.candidate_id == candidate_id)
+        .order_by(CandidateDisposition.id)
+    ).all()
+    reversals = session.scalars(
+        select(StatementCoordinationReversal)
+        .where(StatementCoordinationReversal.candidate_id == candidate_id)
+        .order_by(StatementCoordinationReversal.id)
+    ).all()
+    rows = [
+        {
+            "created_at": receipt.created_at,
+            "label": "Saved statement and Coordination Plan",
+            "detail": f"grouping receipt {receipt.id}",
+        }
+        for receipt in receipts
+    ]
+    rows.extend(
+        {
+            "created_at": disposition.created_at,
+            "label": (
+                "Marked Not Relevant"
+                if disposition.disposition == "not_relevant"
+                else "Accepted statement Candidate"
+            ),
+            "detail": disposition.reason.replace("_", " ") if disposition.reason else "",
+        }
+        for disposition in dispositions
+    )
+    rows.extend(
+        {
+            "created_at": reversal.created_at,
+            "label": (
+                "Undid guided Save"
+                if reversal.receipt_id is not None
+                else "Restored Not Relevant Candidate"
+            ),
+            "detail": (
+                f"grouping receipt {reversal.receipt_id}"
+                if reversal.receipt_id is not None
+                else f"disposition {reversal.candidate_disposition_id}"
+            ),
+        }
+        for reversal in reversals
+    )
+    return tuple(sorted(rows, key=lambda row: (row["created_at"], row["label"])))
 
 
 def _statement_coordination_draft(
@@ -773,6 +1089,34 @@ def _statement_coordination_draft(
                 form, "expected_milestone_impact_decision_id"
             ),
         ),
+    )
+
+
+def _statement_fact_correction_draft(
+    form, candidate_id: int
+) -> StatementFactCorrectionDraft:
+    evidence = CitedStatementEvidence(
+        _required_positive_form_id(form, "evidence_document_id"),
+        _required_positive_form_id(form, "evidence_page_no"),
+        _required_form_text(form, "evidence_quote", "a supporting Evidence quote"),
+    )
+    return StatementFactCorrectionDraft(
+        candidate_id=candidate_id,
+        expected_statement_event_id=_required_positive_form_id(
+            form, "expected_statement_event_id"
+        ),
+        affected_external_org_id=_required_positive_form_id(
+            form, "affected_external_org_id"
+        ),
+        stated_party=_required_form_text(form, "stated_party", "a stated External Party"),
+        stated_external_org_id=_required_positive_form_id(
+            form, "stated_external_org_id"
+        ),
+        event_date=_optional_form_date(form, "event_date"),
+        description=_required_form_text(form, "description", "what the party said"),
+        new_timing=_form_timing(form, "new_timing", required=True),
+        previous_timing=_form_timing(form, "previous_timing", required=False),
+        evidence=(evidence,),
     )
 
 
