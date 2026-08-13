@@ -370,6 +370,30 @@ def test_command_records_each_explicit_scope_mode(
             DependencyEventScope.event_id == result.event.id
         )
     ) == expected_count
+    scoped_dependency_ids = set(
+        session.scalars(
+            select(DependencyEventScope.dependency_id).where(
+                DependencyEventScope.event_id == result.event.id
+            )
+        )
+    )
+    expected_scope_ids = {
+        "one": {first.id},
+        "selected": {first.id, second.id},
+        "all_active": {first.id, second.id},
+        "unknown": set(),
+    }[scope_mode]
+    assert scoped_dependency_ids == expected_scope_ids
+    assert session.scalar(
+        select(func.count()).select_from(StatementCoordinationReceipt).where(
+            StatementCoordinationReceipt.candidate_id == candidate.id
+        )
+    ) == 1
+    assert session.scalar(
+        select(func.count()).select_from(DependencyEvent).where(
+            DependencyEvent.commitment_lineage_id == result.event.commitment_lineage_id
+        )
+    ) == 1
 
 
 def test_command_rolls_back_every_result_when_a_late_milestone_refuses(

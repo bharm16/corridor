@@ -7,25 +7,34 @@ coordinator timings, the release identity, and any assistance or failure.  A
 bundle can therefore prove an unqualified pass only when the measured run had
 neither assistance nor an error; it never turns an internal rehearsal into
 customer-usability evidence.
+
+The earlier SH 99 Admission replay already supplied the isolated-clone and
+mechanical-policy evidence, so this module reuses those mechanisms instead of
+adding a second coordinator service.  Direct database repair, raw technical
+identifiers, and a test-only screen were rejected for the timed journey; when
+the ordinary interface cannot complete a step, this module records that gap
+rather than patching around it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 from html import unescape
 from html.parser import HTMLParser
 import json
+import platform
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 from time import monotonic
 from typing import Any
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -35,18 +44,19 @@ from corridor.m8_acceptance_database import (
     provision_disposable_postgres,
     read_migration_head,
 )
+from corridor.dependency_events import published_party_statements
 from corridor.models import (
     Candidate,
-    Dependency,
+    CommitmentLineage,
     DependencyEvent,
     DependencyEventScope,
     DependencyEventTiming,
     EventAdmissionOutcome,
-    ExternalReportRelease,
     Project,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
 )
+from corridor.exceptions import RULESET_VERSION
 from corridor.principals import HumanPrincipal
 from corridor.report_release import retrieve_released_external_report
 from corridor.sh99_admission_acceptance import (
@@ -63,8 +73,13 @@ from corridor.web.app import app, get_human_principal, get_session
 from corridor.work_list import build_work_list
 
 
-BUNDLE_SCHEMA_VERSION = "corridor.sh99-coordinator-rehearsal-bundle.v1"
-BUNDLE_FILES = ("receipt.json", "canonical-content.json", "environment.json")
+BUNDLE_SCHEMA_VERSION = "corridor.sh99-coordinator-rehearsal-bundle.v2"
+BUNDLE_FILES = (
+    "receipt.json",
+    "canonical-content.json",
+    "environment.json",
+    "released-report.pdf",
+)
 CLAIM_BOUNDARY = {
     "internal_workflow_rehearsal": True,
     "customer_usability_validation": False,
@@ -103,6 +118,7 @@ class CoordinatorRehearsalCapture:
     coordinator: dict[str, Any]
     outcome: dict[str, Any]
     verification: dict[str, Any]
+    released_pdf_bytes: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +157,14 @@ class SH99CoordinatorRehearsalSummary:
     status: str
 
 
+@dataclass(frozen=True)
+class _CloneVerification:
+    """Read-only post-journey facts, with an optional fixed release artifact."""
+
+    facts: dict[str, Any]
+    released_pdf_bytes: bytes | None
+
+
 def publish_coordinator_rehearsal_bundle(
     output_dir: Path,
     capture: CoordinatorRehearsalCapture,
@@ -148,6 +172,11 @@ def publish_coordinator_rehearsal_bundle(
     """Publish one immutable, independently verifiable rehearsal observation."""
 
     canonical_content = _canonical_content(capture)
+    released_pdf_bytes = capture.released_pdf_bytes or b""
+    if canonical_content["outcome"]["released_pdf"] is not None and not released_pdf_bytes:
+        raise ValueError("a released PDF receipt requires retained PDF bytes")
+    if canonical_content["outcome"]["released_pdf"] is None and released_pdf_bytes:
+        raise ValueError("retained PDF bytes require a released PDF receipt")
     receipt = {
         "schema_version": BUNDLE_SCHEMA_VERSION,
         **canonical_content,
@@ -156,6 +185,8 @@ def publish_coordinator_rehearsal_bundle(
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "rehearsed_at": datetime.now(timezone.utc).isoformat(),
         "source_revision": capture.inputs["source_revision"],
+        "source_migration_head": capture.inputs["source_migration_head"],
+        "details": capture.inputs["environment_details"],
     }
     manifest_path, manifest_sha256, canonical_sha256 = publish_verified_bundle(
         output_dir,
@@ -163,6 +194,7 @@ def publish_coordinator_rehearsal_bundle(
             "receipt.json": receipt,
             "canonical-content.json": canonical_content,
             "environment.json": environment,
+            "released-report.pdf": released_pdf_bytes,
         },
         canonical_content=canonical_content,
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
@@ -188,7 +220,7 @@ def verify_coordinator_rehearsal_bundle(
 ) -> VerificationResult:
     """Verify the closed export without a database or a mutable output path."""
 
-    return verify_bundle(
+    verified = verify_bundle(
         bundle_dir,
         expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
@@ -197,6 +229,62 @@ def verify_coordinator_rehearsal_bundle(
         sha256=_sha256,
         json_sha256=_json_sha256,
     )
+    _verify_retained_release(bundle_dir)
+    return verified
+
+
+def _verify_retained_release(bundle_dir: Path) -> None:
+    """Bind the retained PDF bytes to the sealed release receipt, if any."""
+
+    try:
+        canonical = json.loads((bundle_dir / "canonical-content.json").read_bytes())
+        released_pdf_bytes = (bundle_dir / "released-report.pdf").read_bytes()
+        outcome_release = canonical["outcome"]["released_pdf"]
+        release = canonical["verification"].get("release")
+    except (KeyError, OSError, json.JSONDecodeError, AttributeError) as exc:
+        raise CorruptSH99CoordinatorRehearsalBundle(
+            "coordinator release receipt is absent or invalid"
+        ) from exc
+    if outcome_release is None:
+        if released_pdf_bytes:
+            raise CorruptSH99CoordinatorRehearsalBundle(
+                "unreleased rehearsal retains unexpected PDF bytes"
+            )
+        if release is not None:
+            raise CorruptSH99CoordinatorRehearsalBundle(
+                "unreleased rehearsal has a release verification receipt"
+            )
+        return
+    if not isinstance(outcome_release, dict) or not isinstance(release, dict):
+        raise CorruptSH99CoordinatorRehearsalBundle("released PDF receipt is invalid")
+    digest = _sha256(released_pdf_bytes)
+    if not released_pdf_bytes.startswith(b"%PDF-") or digest != outcome_release.get("sha256"):
+        raise CorruptSH99CoordinatorRehearsalBundle(
+            "retained released PDF does not match its receipt digest"
+        )
+    required = {
+        "release_id",
+        "artifact_name",
+        "sha256",
+        "evaluated_on",
+        "ruleset_version",
+        "provenance_mode",
+        "released_by",
+        "released_at",
+        "record_context",
+        "evaluation_context",
+    }
+    if not required <= set(release):
+        raise CorruptSH99CoordinatorRehearsalBundle("released PDF receipt is incomplete")
+    for field in ("release_id", "artifact_name", "sha256"):
+        if outcome_release.get(field) != release.get(field):
+            raise CorruptSH99CoordinatorRehearsalBundle(
+                "released PDF outcome and receipt disagree"
+            )
+    if digest != release["sha256"]:
+        raise CorruptSH99CoordinatorRehearsalBundle(
+            "retained released PDF does not match release verification"
+        )
 
 
 def run_sh99_coordinator_rehearsal(
@@ -226,6 +314,7 @@ def run_sh99_coordinator_rehearsal(
     shared_admission_receipt = _verified_shared_admission_receipt(config)
     source_state = _read_project_state(config.source_database_url, config.project_slug)
     _require_admitted_source_state(source_state)
+    environment_details = _environment_details(config.source_database_url, source_head)
 
     operations_started = monotonic()
     source_dump_sha256: str | None = None
@@ -234,6 +323,7 @@ def run_sh99_coordinator_rehearsal(
     assistance: list[str] = []
     errors: list[str] = []
     release_identity: dict[str, Any] | None = None
+    released_pdf_bytes: bytes | None = None
     verification: dict[str, Any] = {}
     coordinator_elapsed = 0.0
     scenario_timings: dict[str, float] = {}
@@ -272,11 +362,13 @@ def run_sh99_coordinator_rehearsal(
                         coordinator_elapsed = exc.elapsed_seconds
                         scenario_timings = exc.scenario_timings
                     try:
-                        verification = _verify_clone_result(
+                        clone_verification = _verify_clone_result(
                             session,
                             project_slug=config.project_slug,
                             release_identity=release_identity,
                         )
+                        verification = clone_verification.facts
+                        released_pdf_bytes = clone_verification.released_pdf_bytes
                     except (RuntimeError, ValueError) as exc:
                         errors.append(f"post-rehearsal verification: {exc}")
                         verification = {"valid": False, "error": str(exc)}
@@ -298,6 +390,8 @@ def run_sh99_coordinator_rehearsal(
         "source_revision": source["revision"],
         "source_snapshot_sha256": _json_sha256(source_state),
         "source_dump_sha256": source_dump_sha256,
+        "source_migration_head": source_head,
+        "environment_details": environment_details,
         "shared_admission_receipt": shared_admission_receipt,
         "approved_shared_state_receipt": config.approved_shared_state_receipt,
         "corpus_inputs": [
@@ -309,7 +403,11 @@ def run_sh99_coordinator_rehearsal(
             for document in source_state["documents"]
         ],
         "active_runs": source_state["active_runs"],
-        "policy_runs": source_state["policy_runs"],
+        "policy_identities": _policy_identities(source_state["policy_runs"]),
+        "report_publication": {
+            "ruleset_version": RULESET_VERSION,
+            "provenance_mode": "all-supported-sources",
+        },
         "seeded_coordinator": {
             "subject": config.coordinator_subject,
             "display_name": config.coordinator_display_name,
@@ -329,15 +427,17 @@ def run_sh99_coordinator_rehearsal(
                 "elapsed_seconds": coordinator_elapsed,
                 "scenario_timings": scenario_timings,
                 "interactions": interactions,
+                "retries": [],
             },
             outcome={
                 "status": status,
                 "assistance": assistance,
                 "errors": errors,
-                "deviations": [],
+                "deviations": _rehearsal_deviations(assistance, errors),
                 "released_pdf": release_identity,
             },
             verification=verification,
+            released_pdf_bytes=released_pdf_bytes,
         ),
     )
     return SH99CoordinatorRehearsalSummary(
@@ -419,6 +519,51 @@ def _require_admitted_source_state(source_state: dict[str, Any]) -> None:
         raise ValueError("Candidate 7587 Admission Abstention created a statement")
 
 
+def _environment_details(database_url: str, migration_head: str) -> dict[str, str]:
+    """Capture enough runtime context to interpret a replay without reopening it."""
+
+    engine = create_engine(database_url, poolclass=NullPool, future=True)
+    try:
+        with engine.connect() as connection:
+            database_version = str(connection.scalar(text("SHOW server_version")))
+    finally:
+        engine.dispose()
+    return {
+        "database_server_version": database_version,
+        "migration_head": migration_head,
+        "platform": platform.platform(),
+        "python_version": sys.version.split()[0],
+        "web_interface": "fastapi-testclient",
+    }
+
+
+def _policy_identities(policy_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pin policy authority fields, not incidental admission-run counters."""
+
+    return [
+        {
+            "run_id": policy_run["id"],
+            "family": policy_run["family"],
+            "approval_id": policy_run["policy_approval_id"],
+            "policy_version": policy_run["policy_version"],
+            "policy_sha256": policy_run["policy_sha256"],
+            "abstention_reason_version": policy_run["abstention_reason_version"],
+        }
+        for policy_run in policy_runs
+    ]
+
+
+def _rehearsal_deviations(assistance: list[str], errors: list[str]) -> list[dict[str, str]]:
+    """Distinguish observed departures from a clean run from the pass/fail result."""
+
+    deviations = [
+        {"kind": "assistance", "detail": detail}
+        for detail in assistance
+    ]
+    deviations.extend({"kind": "error", "detail": detail} for detail in errors)
+    return deviations
+
+
 def _seed_coordinator(session: Session, config: SH99CoordinatorRehearsalConfig) -> None:
     project = session.scalar(select(Project).where(Project.slug == config.project_slug))
     if project is None:
@@ -447,20 +592,29 @@ def _seed_coordinator(session: Session, config: SH99CoordinatorRehearsalConfig) 
 class _JourneyFailure(RuntimeError):
     """One normal-interface operation failed before the rehearsal could finish."""
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        interactions: list[str],
-        assistance: list[str],
-        elapsed_seconds: float,
-        scenario_timings: dict[str, float],
-    ) -> None:
+    def __init__(self, message: str, progress: "_JourneyProgress") -> None:
         super().__init__(message)
-        self.interactions = interactions
-        self.assistance = assistance
-        self.elapsed_seconds = elapsed_seconds
-        self.scenario_timings = scenario_timings
+        self.interactions = progress.interactions
+        self.assistance = progress.assistance
+        self.elapsed_seconds = monotonic() - progress.started
+        self.scenario_timings = progress.scenario_timings
+
+
+@dataclass
+class _JourneyProgress:
+    """The mutable, coordinator-timed state carried through ordinary UI actions."""
+
+    interactions: list[str]
+    assistance: list[str]
+    started: float
+    scenario_timings: dict[str, float]
+
+    @classmethod
+    def start(cls) -> "_JourneyProgress":
+        return cls(interactions=[], assistance=[], started=monotonic(), scenario_timings={})
+
+    def failure(self, message: str) -> _JourneyFailure:
+        return _JourneyFailure(message, self)
 
 
 def _run_ordinary_interface_journey(
@@ -468,10 +622,7 @@ def _run_ordinary_interface_journey(
 ) -> dict[str, Any]:
     """Exercise existing HTTP controls without querying during coordinator time."""
 
-    interactions: list[str] = []
-    assistance: list[str] = []
-    scenario_timings: dict[str, float] = {}
-    started = monotonic()
+    progress = _JourneyProgress.start()
     sentinel = object()
     old_session = app.dependency_overrides.get(get_session, sentinel)
     old_principal = app.dependency_overrides.get(get_human_principal, sentinel)
@@ -481,29 +632,23 @@ def _run_ordinary_interface_journey(
     )
     try:
         with TestClient(app) as client:
-            _record_interaction(interactions, "coordinator_home")
+            _record_interaction(progress.interactions, "coordinator_home")
             home = client.get(f"/work/{config.project_slug}")
             _require_response(
                 home.status_code,
                 200,
                 "coordinator home did not load",
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
             km_started = monotonic()
             km_url, km_screen = _find_statement_screen(
                 client,
                 home.text,
                 _KINER_MORGAN_PHRASE,
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
-            _record_interaction(interactions, "save_kinder_morgan_statement")
-            assistance.append(_SUPPORTING_EVIDENCE_ASSISTANCE)
+            _record_interaction(progress.interactions, "save_kinder_morgan_statement")
+            progress.assistance.append(_SUPPORTING_EVIDENCE_ASSISTANCE)
             saved_km = client.post(
                 km_url,
                 data=_kinder_morgan_form(km_screen, config.coordinator_display_name),
@@ -513,35 +658,26 @@ def _run_ordinary_interface_journey(
                 saved_km.status_code,
                 303,
                 "Kinder Morgan guided Save did not complete",
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
-            scenario_timings["7296"] = monotonic() - km_started
+            progress.scenario_timings["7296"] = monotonic() - km_started
 
-            _record_interaction(interactions, "coordinator_home_after_kinder_morgan")
+            _record_interaction(progress.interactions, "coordinator_home_after_kinder_morgan")
             refreshed_home = client.get(f"/work/{config.project_slug}")
             _require_response(
                 refreshed_home.status_code,
                 200,
                 "coordinator home did not refresh",
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
             equistar_started = monotonic()
             equistar_url, equistar_screen = _find_statement_screen(
                 client,
                 refreshed_home.text,
                 _EQUISTAR_PHRASE,
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
-            _record_interaction(interactions, "save_equistar_statement")
+            _record_interaction(progress.interactions, "save_equistar_statement")
             saved_equistar = client.post(
                 equistar_url,
                 data=_equistar_form(equistar_screen, config.coordinator_display_name),
@@ -551,34 +687,25 @@ def _run_ordinary_interface_journey(
                 saved_equistar.status_code,
                 303,
                 "Equistar guided Save did not complete",
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
 
-            _record_interaction(interactions, "render_internal_report")
+            _record_interaction(progress.interactions, "render_internal_report")
             rendered = client.post(f"/reports/{config.project_slug}/render")
             _require_response(
                 rendered.status_code,
                 201,
                 "automatic internal Report did not render",
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
             artifact_id = rendered.json().get("artifact_id")
             if not isinstance(artifact_id, int) or artifact_id <= 0:
                 raise _journey_failure(
                     "Report render did not return a fixed artifact identity",
-                    interactions,
-                    assistance,
-                    started,
-                    scenario_timings,
+                    progress,
                 )
-            assistance.append(_RELEASE_ID_ASSISTANCE)
-            _record_interaction(interactions, "release_fixed_pdf")
+            progress.assistance.append(_RELEASE_ID_ASSISTANCE)
+            _record_interaction(progress.interactions, "release_fixed_pdf")
             released = client.post(
                 f"/reports/{config.project_slug}/release",
                 data={"artifact_id": str(artifact_id)},
@@ -587,18 +714,15 @@ def _run_ordinary_interface_journey(
                 released.status_code,
                 201,
                 "fixed PDF release did not complete",
-                interactions,
-                assistance,
-                started,
-                scenario_timings,
+                progress,
             )
-            scenario_timings["7129_and_release"] = monotonic() - equistar_started
+            progress.scenario_timings["7129_and_release"] = monotonic() - equistar_started
             release = released.json()
             return {
-                "elapsed_seconds": monotonic() - started,
-                "scenario_timings": scenario_timings,
-                "interactions": interactions,
-                "assistance": assistance,
+                "elapsed_seconds": monotonic() - progress.started,
+                "scenario_timings": progress.scenario_timings,
+                "interactions": progress.interactions,
+                "assistance": progress.assistance,
                 "released_pdf": {
                     "release_id": release.get("release_id"),
                     "artifact_name": release.get("artifact_name"),
@@ -608,10 +732,7 @@ def _run_ordinary_interface_journey(
     except ValueError as exc:
         raise _journey_failure(
             str(exc),
-            interactions,
-            assistance,
-            started,
-            scenario_timings,
+            progress,
         ) from exc
     finally:
         _restore_override(get_session, old_session, sentinel)
@@ -628,41 +749,29 @@ def _find_statement_screen(
     client: TestClient,
     home_html: str,
     phrase: str,
-    interactions: list[str],
-    assistance: list[str],
-    started: float,
-    scenario_timings: dict[str, float],
+    progress: _JourneyProgress,
 ) -> tuple[str, str]:
     urls = _COORDINATE_HREF.findall(home_html)
     if len(urls) != 1:
         raise _journey_failure(
             "coordinator home does not distinguish the required statement among "
             f"{len(urls)} identical work-list cards",
-            interactions,
-            assistance,
-            started,
-            scenario_timings,
+            progress,
         )
     for url in urls:
-        _record_interaction(interactions, "open_statement_from_work_list")
+        _record_interaction(progress.interactions, "open_statement_from_work_list")
         screen = client.get(unescape(url))
         _require_response(
             screen.status_code,
             200,
             "statement screen did not load",
-            interactions,
-            assistance,
-            started,
-            scenario_timings,
+            progress,
         )
         if phrase in unescape(screen.text):
             return unescape(url), screen.text
     raise _journey_failure(
         f"work list did not expose the required statement containing {phrase!r}",
-        interactions,
-        assistance,
-        started,
-        scenario_timings,
+        progress,
     )
 
 
@@ -781,35 +890,20 @@ def _require_response(
     observed: int,
     expected: int,
     message: str,
-    interactions: list[str],
-    assistance: list[str],
-    started: float,
-    scenario_timings: dict[str, float],
+    progress: _JourneyProgress,
 ) -> None:
     if observed != expected:
         raise _journey_failure(
             f"{message}: expected HTTP {expected}, observed {observed}",
-            interactions,
-            assistance,
-            started,
-            scenario_timings,
+            progress,
         )
 
 
 def _journey_failure(
     message: str,
-    interactions: list[str],
-    assistance: list[str],
-    started: float,
-    scenario_timings: dict[str, float],
+    progress: _JourneyProgress,
 ) -> _JourneyFailure:
-    return _JourneyFailure(
-        message,
-        interactions=interactions,
-        assistance=assistance,
-        elapsed_seconds=monotonic() - started,
-        scenario_timings=scenario_timings,
-    )
+    return progress.failure(message)
 
 
 def _restore_override(key, previous: object, sentinel: object) -> None:
@@ -824,7 +918,7 @@ def _verify_clone_result(
     *,
     project_slug: str,
     release_identity: dict[str, Any] | None,
-) -> dict[str, Any]:
+) -> _CloneVerification:
     """Read durable effects after timing stops; this is verifier work, not UI work."""
 
     project = session.scalar(select(Project).where(Project.slug == project_slug))
@@ -852,22 +946,43 @@ def _verify_clone_result(
     _require(km_event.event_type == "committed_date_change", "Candidate 7296 is not a Committed Date Change")
     _require(km_event.timing_direction == "later", "Candidate 7296 direction is not later")
     _require(km_event.scope_mode == "unknown", "Candidate 7296 scope is not unknown")
+    _require(candidates[7296].state == "accepted", "Candidate 7296 did not become accepted")
     _require(equistar_event.event_type == "commitment", "Candidate 7129 is not a Commitment")
     _require(equistar_event.scope_mode == "unknown", "Candidate 7129 scope is not unknown")
-    equistar_timing = session.scalar(
-        select(DependencyEventTiming).where(
-            DependencyEventTiming.event_id == equistar_event.id,
-            DependencyEventTiming.kind == "new",
-        )
+    _require(candidates[7129].state == "accepted", "Candidate 7129 did not become accepted")
+    km_timings = _timings_by_kind(session, km_event.id)
+    _require_timing(
+        km_timings.get("previous"),
+        text_value="March 2026",
+        precision="month",
+        start="2026-03-01",
+        end="2026-03-31",
+        message="Candidate 7296 did not preserve the prior March 2026 timing",
     )
+    _require_timing(
+        km_timings.get("new"),
+        text_value="May 16th",
+        precision="day",
+        start="2026-05-16",
+        end="2026-05-16",
+        message="Candidate 7296 did not preserve the later May 16 timing",
+    )
+    equistar_timings = _timings_by_kind(session, equistar_event.id)
+    equistar_timing = equistar_timings.get("new")
+    _require_timing(
+        equistar_timing,
+        text_value="01/2025",
+        precision="month",
+        start="2025-01-01",
+        end="2025-01-31",
+        message="Candidate 7129 did not preserve January 2025 month precision",
+    )
+    km_lineage = session.get(CommitmentLineage, km_event.commitment_lineage_id)
     _require(
-        equistar_timing is not None
-        and equistar_timing.precision == "month"
-        and equistar_timing.start_date is not None
-        and equistar_timing.start_date.isoformat() == "2025-01-01"
-        and equistar_timing.end_date is not None
-        and equistar_timing.end_date.isoformat() == "2025-01-31",
-        "Candidate 7129 did not preserve January 2025 month precision",
+        km_lineage is not None
+        and km_lineage.milestone_impact == "not_yet_known"
+        and km_receipt.milestone_impact_decision_id is not None,
+        "Candidate 7296 did not persist the exact Milestone Impact plan",
     )
     scope_links = {
         candidate_id: session.scalars(
@@ -878,18 +993,19 @@ def _verify_clone_result(
         for candidate_id, receipt in receipts.items()
     }
     _require(not scope_links[7296] and not scope_links[7129], "unknown scope changed a Dependency")
-    work_list = build_work_list(session, project.id)
-    equistar_work = next(
-        (
-            item
-            for item in (*work_list.immediate, *work_list.backlog)
-            if item.statement_event_id == equistar_event.id
-        ),
-        None,
+    before_due = _statement_work_item(
+        build_work_list(session, project.id, today=date(2025, 1, 31)), equistar_event.id
+    )
+    equistar_work = _statement_work_item(
+        build_work_list(session, project.id, today=date(2025, 2, 1)), equistar_event.id
     )
     _require(
-        equistar_work is not None and equistar_work.past_due is not None,
-        "Candidate 7129 did not produce its party-level past-due derivation",
+        before_due is not None
+        and before_due.past_due is None
+        and equistar_work is not None
+        and equistar_work.past_due is not None
+        and equistar_work.dependency_id is None,
+        "Candidate 7129 did not become past due only after January 31 at party level",
     )
     _require(
         candidates.get(7587) is not None and candidates[7587].state == "pending",
@@ -904,24 +1020,57 @@ def _verify_clone_result(
         and abstention.dependency_event_id is None,
         "Candidate 7587 no longer has its Admission Abstention",
     )
+    candidate_7587_work = [
+        item
+        for item in (
+            *build_work_list(session, project.id, today=date(2025, 2, 1)).immediate,
+            *build_work_list(session, project.id, today=date(2025, 2, 1)).backlog,
+        )
+        if item.candidate_id == 7587 or item.source_candidate_id == 7587
+    ]
+    _require(
+        not candidate_7587_work,
+        "Candidate 7587 created a Work Item or past-due derivation",
+    )
     if release_identity is None or not isinstance(release_identity.get("release_id"), int):
         raise ValueError("coordinator flow did not produce a release receipt")
     release = retrieve_released_external_report(session, project.id, release_identity["release_id"])
-    released_party_event_ids = {
-        entry["current_statement_event_id"]
-        for entry in release.record_context_json.get("party_statements", [])
-    }
     _require(
-        {km_event.id, equistar_event.id}.issubset(released_party_event_ids),
-        "released PDF does not cover both open unknown-scope statements",
+        release.pdf_sha256 == release_identity.get("sha256")
+        and release.artifact_name == release_identity.get("artifact_name"),
+        "released PDF route response disagrees with its fixed receipt",
     )
-    return {
+    expected_party_statements = _open_party_statement_context(session, project.id)
+    released_party_statements = release.record_context_json.get("party_statements")
+    expected_current_event_ids = {
+        entry["current_statement_event_id"] for entry in expected_party_statements
+    }
+    released_open_party_statements = [
+        entry
+        for entry in released_party_statements
+        if entry.get("current_statement_event_id") in expected_current_event_ids
+    ]
+    _require(
+        released_open_party_statements == expected_party_statements
+        and len(released_open_party_statements) == len(expected_party_statements),
+        "released PDF does not cover exactly every open unknown-scope statement",
+    )
+    _require(
+        all(
+            entry["current_statement_event_id"] != abstention.dependency_event_id
+            for entry in released_party_statements
+        ),
+        "Candidate 7587 appeared in released report content",
+    )
+    facts = {
         "candidate_7296": {
             "state": candidates[7296].state,
             "statement_event_id": km_event.id,
             "event_type": km_event.event_type,
             "direction": km_event.timing_direction,
             "scope": km_event.scope_mode,
+            "timings": _timing_receipt(km_timings),
+            "milestone_impact": km_lineage.milestone_impact,
             "coordination_receipt_id": km_receipt.id,
         },
         "candidate_7129": {
@@ -939,6 +1088,7 @@ def _verify_clone_result(
                 "evaluated_on": equistar_work.past_due.evaluated_on.isoformat(),
                 "due_after": equistar_work.past_due.due_after.isoformat(),
                 "ruleset_version": equistar_work.past_due.ruleset_version,
+                "not_past_due_on": "2025-01-31",
             },
             "coordination_receipt_id": equistar_receipt.id,
         },
@@ -946,6 +1096,7 @@ def _verify_clone_result(
             "state": candidates[7587].state,
             "admission_outcome": abstention.outcome,
             "statement_event_id": abstention.dependency_event_id,
+            "work_item_count": len(candidate_7587_work),
         },
         "release": {
             "release_id": release.id,
@@ -960,11 +1111,96 @@ def _verify_clone_result(
             "evaluation_context": release.evaluation_context_json,
         },
     }
+    return _CloneVerification(facts=facts, released_pdf_bytes=bytes(release.pdf_bytes))
 
 
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def _timings_by_kind(session: Session, event_id: int) -> dict[str, DependencyEventTiming]:
+    """Read the one preserved timing of each declared kind for an event."""
+
+    return {
+        timing.kind: timing
+        for timing in session.scalars(
+            select(DependencyEventTiming)
+            .where(DependencyEventTiming.event_id == event_id)
+            .order_by(DependencyEventTiming.id)
+        )
+    }
+
+
+def _require_timing(
+    timing: DependencyEventTiming | None,
+    *,
+    text_value: str,
+    precision: str,
+    start: str,
+    end: str,
+    message: str,
+) -> None:
+    """Reject a scalar date or altered wording in a source-preserving timing."""
+
+    _require(
+        timing is not None
+        and timing.text == text_value
+        and timing.precision == precision
+        and timing.start_date is not None
+        and timing.start_date.isoformat() == start
+        and timing.end_date is not None
+        and timing.end_date.isoformat() == end,
+        message,
+    )
+
+
+def _timing_receipt(
+    timings: dict[str, DependencyEventTiming],
+) -> dict[str, dict[str, str | None]]:
+    """Serialize both source timings so a sealed result retains their precision."""
+
+    return {
+        kind: {
+            "text": timing.text,
+            "precision": timing.precision,
+            "start_date": timing.start_date.isoformat() if timing.start_date else None,
+            "end_date": timing.end_date.isoformat() if timing.end_date else None,
+        }
+        for kind, timing in sorted(timings.items())
+    }
+
+
+def _statement_work_item(work_list, event_id: int):
+    """Find one party-level statement item without treating it as a Dependency."""
+
+    return next(
+        (
+            item
+            for item in (*work_list.immediate, *work_list.backlog)
+            if item.statement_event_id == event_id
+        ),
+        None,
+    )
+
+
+def _open_party_statement_context(session: Session, project_id: int) -> list[dict[str, int | None]]:
+    """Return exactly the party-level rows the frozen Report is required to include."""
+
+    return [
+        {
+            "commitment_lineage_id": statement.current_event.commitment_lineage_id,
+            "current_statement_event_id": statement.current_event.id,
+            "published_statement_event_id": (
+                statement.event.id if statement.event is not None else None
+            ),
+            "scope_decision_id": statement.scope_decision.id,
+        }
+        for statement in published_party_statements(
+            session, project_id=project_id, document_only=False
+        )
+        if not statement.is_closed
+    ]
 
 
 def _run_scope_coverage() -> dict[str, Any]:
@@ -1033,10 +1269,13 @@ def _require_capture_shape(capture: CoordinatorRehearsalCapture) -> None:
     required_inputs = {
         "source_revision",
         "source_snapshot_sha256",
+        "source_migration_head",
+        "environment_details",
         "shared_admission_receipt",
         "corpus_inputs",
         "active_runs",
-        "policy_runs",
+        "policy_identities",
+        "report_publication",
         "seeded_coordinator",
         "scenario_candidates",
     }
@@ -1047,7 +1286,11 @@ def _require_capture_shape(capture: CoordinatorRehearsalCapture) -> None:
         raise ValueError("rehearsal outcome status must be passed or failed")
     for section, values, fields in (
         ("operations", capture.operations, {"elapsed_seconds", "backfill_elapsed_seconds"}),
-        ("coordinator", capture.coordinator, {"elapsed_seconds", "scenario_timings", "interactions"}),
+        (
+            "coordinator",
+            capture.coordinator,
+            {"elapsed_seconds", "scenario_timings", "interactions", "retries"},
+        ),
         ("outcome", capture.outcome, {"assistance", "errors", "deviations", "released_pdf"}),
     ):
         missing = sorted(fields - set(values))

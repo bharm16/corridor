@@ -65,7 +65,7 @@ def write_bundle(
 def publish_verified_bundle(
     output_dir: Path,
     *,
-    exports: dict[str, Any],
+    exports: dict[str, Any | bytes],
     canonical_content: dict[str, Any],
     bundle_schema_version: str,
     bundle_files: Sequence[str],
@@ -202,7 +202,7 @@ def verify_bundle(
 def _stage_bundle(
     output_dir: Path,
     *,
-    exports: dict[str, Any],
+    exports: dict[str, Any | bytes],
     canonical_sha256: str,
     bundle_schema_version: str,
     bundle_files: Sequence[str],
@@ -211,7 +211,8 @@ def _stage_bundle(
 ) -> None:
     file_manifest: dict[str, dict[str, Any]] = {}
     for relative_path in bundle_files:
-        value = canonical_json(exports[relative_path]) + b"\n"
+        export = exports[relative_path]
+        value = export if isinstance(export, bytes) else canonical_json(export) + b"\n"
         target = output_dir / relative_path
         target.write_bytes(value)
         file_manifest[relative_path] = {
