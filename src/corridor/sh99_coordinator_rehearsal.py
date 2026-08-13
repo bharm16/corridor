@@ -1040,7 +1040,8 @@ def _verify_clone_result(
         and release.artifact_name == release_identity.get("artifact_name"),
         "released PDF route response disagrees with its fixed receipt",
     )
-    expected_party_statements = _open_party_statement_context(session, project.id)
+    open_party_statements = _open_party_statements(session, project.id)
+    expected_party_statements = _party_statement_context(open_party_statements)
     released_party_statements = release.record_context_json.get("party_statements")
     expected_current_event_ids = {
         entry["current_statement_event_id"] for entry in expected_party_statements
@@ -1062,6 +1063,7 @@ def _verify_clone_result(
         ),
         "Candidate 7587 appeared in released report content",
     )
+    _require_report_pdf_contents(release.pdf_bytes, open_party_statements)
     facts = {
         "candidate_7296": {
             "state": candidates[7296].state,
@@ -1184,8 +1186,20 @@ def _statement_work_item(work_list, event_id: int):
     )
 
 
-def _open_party_statement_context(session: Session, project_id: int) -> list[dict[str, int | None]]:
-    """Return exactly the party-level rows the frozen Report is required to include."""
+def _open_party_statements(session: Session, project_id: int):
+    """Read exactly the party-level statements the frozen Report must include."""
+
+    return tuple(
+        statement
+        for statement in published_party_statements(
+            session, project_id=project_id, document_only=False
+        )
+        if not statement.is_closed
+    )
+
+
+def _party_statement_context(statements) -> list[dict[str, int | None]]:
+    """Serialize exactly the statement identities selected by the Report seam."""
 
     return [
         {
@@ -1196,11 +1210,59 @@ def _open_party_statement_context(session: Session, project_id: int) -> list[dic
             ),
             "scope_decision_id": statement.scope_decision.id,
         }
-        for statement in published_party_statements(
-            session, project_id=project_id, document_only=False
-        )
-        if not statement.is_closed
+        for statement in statements
     ]
+
+
+def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> None:
+    """Check the retained rendered PDF names every required party-report field."""
+
+    import fitz
+
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+            rendered_text = "\n".join(page.get_text() for page in document)
+    except (RuntimeError, ValueError) as exc:
+        raise ValueError("released PDF bytes are not readable") from exc
+    required = {
+        "External Party commitments",
+        "External Party",
+        "Supported statement",
+        "Timing",
+        "Timing precision",
+        "Statement type",
+        "Commitment Scope",
+        "Open / past-due status",
+        "Internal Owner",
+        "Next Action",
+        "Action Due",
+        "Milestone Impact",
+        "Scope not yet known",
+    }
+    for statement in statements:
+        event = statement.event
+        _require(event is not None, "released Report has unsupported current statement")
+        required.update(
+            {
+                event.stated_party or "Unstated External Party",
+                event.description,
+                "Committed Date Change · later"
+                if event.event_type == "committed_date_change"
+                else "Commitment",
+            }
+        )
+        required.update(timing.text for timing in statement.timings)
+        required.update(timing.precision for timing in statement.timings)
+        if statement.plan.internal_owner:
+            required.add(statement.plan.internal_owner)
+        if statement.plan.next_action:
+            required.add(statement.plan.next_action)
+        if statement.plan.action_due_date is None and statement.plan.next_action_decision:
+            required.add("Date not yet known")
+        if statement.plan.milestone_impact:
+            required.add(statement.plan.milestone_impact.replace("_", " ").capitalize())
+    missing = sorted(value for value in required if value not in rendered_text)
+    _require(not missing, "released PDF omits required Report fields: " + ", ".join(missing))
 
 
 def _run_scope_coverage() -> dict[str, Any]:

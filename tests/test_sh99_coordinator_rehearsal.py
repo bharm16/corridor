@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import fitz
+import pytest
 
 from corridor.sh99_coordinator_rehearsal import (
     BUNDLE_SCHEMA_VERSION,
     CoordinatorRehearsalCapture,
     CorruptSH99CoordinatorRehearsalBundle,
+    _require_report_pdf_contents,
     publish_coordinator_rehearsal_bundle,
     verify_coordinator_rehearsal_bundle,
 )
@@ -148,3 +153,69 @@ def test_verify_refuses_tampered_fixed_pdf_bytes(tmp_path):
         assert "released-report.pdf does not match its digest" in str(exc)
     else:
         raise AssertionError("tampered PDF passed bundle verification")
+
+
+def test_retained_pdf_check_requires_each_party_report_field():
+    """The byte-pinned PDF must also retain the fields named by its receipt."""
+
+    statement = SimpleNamespace(
+        event=SimpleNamespace(
+            event_type="committed_date_change",
+            timing_direction="later",
+            stated_party="Kinder Morgan",
+            description="Kinder Morgan moved completion to May 16th.",
+        ),
+        timings=(
+            SimpleNamespace(text="March 2026", precision="month"),
+            SimpleNamespace(text="May 16th", precision="day"),
+        ),
+        plan=SimpleNamespace(
+            internal_owner="SH 99 Coordinator",
+            next_action="Confirm the revised plan",
+            action_due_date=None,
+            next_action_decision=object(),
+            milestone_impact="not_yet_known",
+        ),
+    )
+    text = "\n".join(
+        (
+            "External Party commitments",
+            "External Party",
+            "Supported statement",
+            "Timing",
+            "Timing precision",
+            "Statement type",
+            "Commitment Scope",
+            "Open / past-due status",
+            "Internal Owner",
+            "Next Action",
+            "Action Due",
+            "Milestone Impact",
+            "Scope not yet known",
+            "Kinder Morgan",
+            "Kinder Morgan moved completion to May 16th.",
+            "Committed Date Change · later",
+            "March 2026",
+            "May 16th",
+            "month",
+            "day",
+            "SH 99 Coordinator",
+            "Confirm the revised plan",
+            "Date not yet known",
+            "Not yet known",
+        )
+    )
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_textbox(fitz.Rect(36, 36, 559, 806), text, fontsize=9)
+    pdf_bytes = document.tobytes()
+    document.close()
+
+    _require_report_pdf_contents(pdf_bytes, (statement,))
+    incomplete = fitz.open()
+    incomplete_page = incomplete.new_page()
+    incomplete_page.insert_text((36, 36), "External Party commitments", fontsize=9)
+    incomplete_bytes = incomplete.tobytes()
+    incomplete.close()
+    with pytest.raises(ValueError, match="omits required Report fields"):
+        _require_report_pdf_contents(incomplete_bytes, (statement,))
