@@ -118,6 +118,7 @@ def record_external_party_statement(
     created_by: str,
     previous_timing: StatementTiming | None = None,
     evidence: CitedStatementEvidence | None = None,
+    supporting_evidence: tuple[CitedStatementEvidence, ...] = (),
     commitment_lineage_id: int | None = None,
 ) -> DependencyEvent:
     """Append one attributable External Party Commitment or Date Change.
@@ -138,6 +139,7 @@ def record_external_party_statement(
         new_timing=new_timing,
         previous_timing=previous_timing,
         evidence=evidence,
+        supporting_evidence=supporting_evidence,
     )
     lock_project(session, project.id)
 
@@ -239,12 +241,12 @@ def record_external_party_statement(
                     recorded_by=scope_actor,
                 )
             )
-        if evidence is not None:
+        for cited_evidence in _all_cited_evidence(evidence, supporting_evidence):
             event_evidence = EvidenceLink(
                 dependency_id=None,
-                document_id=evidence.document_id,
-                page_no=evidence.page_no,
-                quote=evidence.quote.strip(),
+                document_id=cited_evidence.document_id,
+                page_no=cited_evidence.page_no,
+                quote=cited_evidence.quote.strip(),
                 verified=True,
             )
             session.add(event_evidence)
@@ -336,6 +338,7 @@ def validate_external_party_statement_draft(
     new_timing: StatementTiming,
     previous_timing: StatementTiming | None = None,
     evidence: CitedStatementEvidence | None = None,
+    supporting_evidence: tuple[CitedStatementEvidence, ...] = (),
 ) -> Project:
     """Validate the statement facts shared by policy, preview, and writer.
 
@@ -383,9 +386,23 @@ def validate_external_party_statement_draft(
             raise StatementRefusal("a Verbal cannot be a Committed Date Change")
         if new_timing.precision != "day":
             raise StatementRefusal("a Verbal must preserve one exact-day commitment")
-    if evidence is not None:
-        validate_cited_statement_evidence(session, evidence, project.id)
+    for cited_evidence in _all_cited_evidence(evidence, supporting_evidence):
+        validate_cited_statement_evidence(session, cited_evidence, project.id)
     return project
+
+
+def _all_cited_evidence(
+    evidence: CitedStatementEvidence | None,
+    supporting_evidence: tuple[CitedStatementEvidence, ...],
+) -> tuple[CitedStatementEvidence, ...]:
+    """One cited statement can own every verified quote its facts require."""
+    cited = (() if evidence is None else (evidence,)) + tuple(supporting_evidence)
+    identities = [
+        (item.document_id, item.page_no, item.quote.strip()) for item in cited
+    ]
+    if len(identities) != len(set(identities)):
+        raise StatementRefusal("a statement cannot own the same Evidence twice")
+    return cited
 
 
 def record_statement_scope_decision(

@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 
 import pytest
+from sqlalchemy import create_engine, text
 
 from corridor.config import settings
 from corridor.m8_acceptance_bundle import publish_verified_bundle
@@ -43,6 +44,23 @@ def _worktree_is_clean() -> bool:
     ).stdout
 
 
+def _source_has_sh99_project() -> bool:
+    """The real replay needs the separately managed shared SH 99 source.
+
+    Ordinary test databases deliberately start empty.  Running the public
+    acceptance replay against one is not a product failure; it is simply not
+    the pinned shared-database operation this test is intended to rehearse.
+    """
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            return connection.scalar(
+                text("select exists (select 1 from projects where slug = 'sh99-grand-parkway')")
+            ) is True
+    finally:
+        engine.dispose()
+
+
 def _config(tmp_path, *, expected_clean_git_revision: str) -> SH99AdmissionAcceptanceConfig:
     return SH99AdmissionAcceptanceConfig(
         project_slug="sh99-grand-parkway",
@@ -54,8 +72,11 @@ def _config(tmp_path, *, expected_clean_git_revision: str) -> SH99AdmissionAccep
 
 
 @pytest.mark.skipif(
-    not _worktree_is_clean(),
-    reason="the public acceptance command refuses an unpinned source checkout",
+    not _worktree_is_clean() or not _source_has_sh99_project(),
+    reason=(
+        "the public replay needs a clean checkout and the separately managed "
+        "SH 99 source project"
+    ),
 )
 def test_real_sh99_clone_replays_the_exact_shared_operation_twice(tmp_path):
     """The 3,030-Candidate SH 99 operation is proved only on an isolated clone."""

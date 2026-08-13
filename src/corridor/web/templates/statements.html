@@ -67,35 +67,13 @@
       </div>
 
       <div class="place">
-        <form method="post"
-              action="/projects/{{ project.slug }}/statements/{{ item.candidate.id }}/attach"
-              class="place">
-          {# Disabled whenever attach would refuse it — an enabled button
-             that then errors teaches a reviewer the pile is broken. The
-             headline above already says what the statement lacks. #}
-          <input name="dependency_ref" placeholder="DEP-00001" size="12"
-                 {% if not item.attachable %}disabled{% endif %}>
-          <button class="primary"
-                  {% if not item.attachable %}disabled
-                  title="{{ item.headline }}"{% endif %}>
-            attach to this record
-          </button>
-        </form>
-        <span class="toss">
-          {% for reason in ["duplicate", "wrong", "irrelevant"] %}
-            <form class="inline" method="post"
-                  action="/candidates/{{ item.candidate.id }}/reject">
-              <input type="hidden" name="slug" value="{{ project.slug }}">
-              <input type="hidden" name="reason" value="{{ reason }}">
-              <input type="hidden" name="redirect_to"
-                     value="/statements/{{ project.slug }}">
-              <button>toss: {{ reason }}</button>
-            </form>
-          {% endfor %}
-        </span>
+        <a class="primary"
+           href="/statements/{{ project.slug }}/{{ item.candidate.id }}/coordinate">
+          coordinate statement
+        </a>
       </div>
     </section>
   {% else %}
-    <p class="empty">Nothing waiting — every statement found its conflict.</p>
+    <p class="empty">Nothing waiting — every statement has been coordinated.</p>
   {% endfor %}
 </main>
