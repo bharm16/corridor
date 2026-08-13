@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+import hashlib
 from html import escape as escape_html
 
 import pytest
@@ -12,6 +13,7 @@ from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
     StatementTiming,
+    record_external_party_closure,
     record_external_party_statement,
 )
 from corridor.exceptions import evaluate_project, format_exception_label
@@ -368,7 +370,7 @@ def test_striking_a_records_verification_removes_no_row_from_the_report(
     assert critical.ref_code in render(report)
 
 
-def test_the_report_has_the_seven_documented_sections(
+def test_the_report_has_the_documented_sections(
     session, project_with_two_dependencies
 ):
     report = build_report(session, project_with_two_dependencies.id)
@@ -377,6 +379,7 @@ def test_the_report_has_the_seven_documented_sections(
         "Milestone readiness",
         "Critical items",
         "Coordination",
+        "External Party commitments",
         "Exceptions",
         "Changes since last report",
         "Aging",
@@ -1229,6 +1232,349 @@ def test_the_report_has_the_seven_documented_sections_now(
     titles = [s.title for s in report.sections]
     assert "Coordination" in titles
     assert titles.index("Critical items") < titles.index("Coordination")
+
+
+# --- Open unknown-scope External Party commitments (#254) ------------------
+
+
+def test_report_publishes_open_unknown_scope_party_commitments_with_their_plans(
+    session, project_with_two_dependencies
+):
+    """The working Report preserves party-level truth without a Dependency."""
+    from corridor.report import WorkDecision as WorkDecisionProvenance
+    from corridor.work_decisions import (
+        CoordinationSubject,
+        assign_internal_owner,
+        set_milestone_impact,
+        set_next_action,
+    )
+
+    project = project_with_two_dependencies
+    party = session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == "AT&T Texas (SWBT)")
+    ).one()
+
+    def record(quote, new_timing, *, previous_timing=None):
+        document = Document(
+            project_id=project.id,
+            sha256=hashlib.sha256(quote.encode()).hexdigest(),
+            filename=f"{hashlib.sha256(quote.encode()).hexdigest()[:12]}.pdf",
+            doc_type="minutes",
+            parse_status="parsed",
+        )
+        session.add(document)
+        session.flush()
+        session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+        session.flush()
+        return record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=date(2025, 1, 16),
+            description=quote,
+            new_timing=new_timing,
+            previous_timing=previous_timing,
+            scope=StatementScope.unknown(),
+            created_by="local:report-coordinator",
+            evidence=CitedStatementEvidence(document.id, 1, quote),
+        )
+
+    january = record(
+        "AT&T Texas (SWBT) will provide the chain of title in January 2025.",
+        StatementTiming.month("January 2025", 2025, 1),
+    )
+    due_soon = record(
+        "AT&T Texas (SWBT) will provide the utility release on February 2, 2025.",
+        StatementTiming.day("February 2, 2025", date(2025, 2, 2)),
+    )
+    changed = record(
+        "AT&T Texas (SWBT) moved delivery from December 2024 to February 2025.",
+        StatementTiming.month("February 2025", 2025, 2),
+        previous_timing=StatementTiming.month("December 2024", 2024, 12),
+    )
+    subject = CoordinationSubject.statement(changed.commitment_lineage_id)
+    owner = assign_internal_owner(
+        session, subject, "Dana Fields", principal=TEST_PRINCIPAL
+    )
+    action = set_next_action(
+        session,
+        subject,
+        "Confirm the revised delivery plan",
+        due_date=date(2025, 2, 15),
+        principal=TEST_PRINCIPAL,
+    )
+    impact = set_milestone_impact(
+        session,
+        subject,
+        "not_yet_known",
+        principal=TEST_PRINCIPAL,
+    )
+
+    report = build_report(session, project.id, today=date(2025, 2, 1))
+    commitments = section(report, "External Party commitments")
+    assert commitments.columns == [
+        "External Party",
+        "Supported statement",
+        "Timing",
+        "Timing precision",
+        "Statement type",
+        "Commitment Scope",
+        "Open / past-due status",
+        "Internal Owner",
+        "Next Action",
+        "Action Due",
+        "Milestone Impact",
+    ]
+    assert len(commitments.rows) == 3
+
+    by_statement = {row[1].value: row for row in commitments.rows}
+    january_row = by_statement[january.description]
+    due_soon_row = by_statement[due_soon.description]
+    changed_row = by_statement[changed.description]
+    assert january_row[2].value == "January 2025"
+    assert "January 1" not in january_row[2].value
+    assert january_row[6].value == "Open · past due"
+    assert due_soon_row[6].value == "Open · not past due"
+    assert changed_row[2].value == "Previous: December 2024; Current: February 2025"
+    assert changed_row[3].value == "Previous: month; Current: month"
+    assert changed_row[4].value == "Committed Date Change · later"
+    assert changed_row[5].value == "Scope not yet known"
+    assert changed_row[7].value == "Dana Fields"
+    assert changed_row[8].value == "Confirm the revised delivery plan"
+    assert changed_row[9].value == "2025-02-15"
+    assert changed_row[10].value == "Not yet known"
+    assert isinstance(changed_row[0].provenance, Assertion)
+    assert isinstance(changed_row[7].provenance, WorkDecisionProvenance)
+    assert changed_row[7].provenance.decision_ids == (owner.id,)
+    assert changed_row[8].provenance.decision_ids == (action.id,)
+    assert changed_row[10].provenance.decision_ids == (impact.id,)
+    assert report.evaluation.statement_publication is report.statement_publication
+    captured = snapshot(
+        session,
+        project.id,
+        evaluation=report.evaluation,
+        committed_dates=report.committed_dates,
+    )
+    assert {
+        entry["current_event_id"]
+        for entry in captured["external_party_commitments"].values()
+    } == {january.id, due_soon.id, changed.id}
+    assert_no_bare_cells(report)
+
+
+def test_report_marks_a_superseded_statement_plan_for_review(
+    session, project_with_two_dependencies
+):
+    """A changed External Party fact cannot make its old response look current."""
+    from corridor.work_decisions import (
+        CoordinationSubject,
+        assign_internal_owner,
+        set_next_action,
+    )
+
+    project = project_with_two_dependencies
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).first()
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    assert party is not None
+
+    def record(quote, timing, *, lineage_id=None):
+        document = Document(
+            project_id=project.id,
+            sha256=hashlib.sha256(quote.encode()).hexdigest(),
+            filename=f"{hashlib.sha256(quote.encode()).hexdigest()[:12]}.pdf",
+            doc_type="minutes",
+            parse_status="parsed",
+        )
+        session.add(document)
+        session.flush()
+        session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+        session.flush()
+        return record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=date(2025, 1, 16),
+            description=quote,
+            new_timing=timing,
+            scope=StatementScope.unknown(),
+            created_by="local:report-coordinator",
+            evidence=CitedStatementEvidence(document.id, 1, quote),
+            commitment_lineage_id=lineage_id,
+        )
+
+    original = record(
+        "AT&T Texas (SWBT) will complete the original work in January 2025.",
+        StatementTiming.month("January 2025", 2025, 1),
+    )
+    subject = CoordinationSubject.statement(original.commitment_lineage_id)
+    assign_internal_owner(session, subject, "Dana Fields", principal=TEST_PRINCIPAL)
+    set_next_action(
+        session,
+        subject,
+        "Confirm the original delivery plan",
+        due_date=date(2025, 2, 15),
+        principal=TEST_PRINCIPAL,
+    )
+    revised = record(
+        "AT&T Texas (SWBT) now commits to complete work in February 2025.",
+        StatementTiming.month("February 2025", 2025, 2),
+        lineage_id=original.commitment_lineage_id,
+    )
+
+    report = build_report(session, project.id, today=date(2025, 2, 1))
+    [row] = section(report, "External Party commitments").rows
+    assert row[1].value == revised.description
+    assert [cell.value for cell in row[7:]] == [
+        "Plan needs review",
+        "Plan needs review",
+        "Plan needs review",
+        "Plan needs review",
+    ]
+    assert "Dana Fields" not in render(report)
+    assert_no_bare_cells(report)
+
+
+def test_party_commitments_leave_the_open_section_when_scoped_or_closed(
+    session, project_with_two_dependencies
+):
+    """Known scope stays on a Dependency, while closure preserves history."""
+    project = project_with_two_dependencies
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).first()
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    assert party is not None
+
+    def statement(quote, scope):
+        document = Document(
+            project_id=project.id,
+            sha256=hashlib.sha256(quote.encode()).hexdigest(),
+            filename=f"{hashlib.sha256(quote.encode()).hexdigest()[:12]}.pdf",
+            doc_type="minutes",
+            parse_status="parsed",
+        )
+        session.add(document)
+        session.flush()
+        session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+        session.flush()
+        return record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=date(2025, 1, 16),
+            description=quote,
+            new_timing=StatementTiming.month("January 2025", 2025, 1),
+            scope=scope,
+            created_by="local:report-coordinator",
+            evidence=CitedStatementEvidence(document.id, 1, quote),
+        )
+
+    known = statement(
+        "AT&T Texas (SWBT) will relocate the known-scope facility in January 2025.",
+        StatementScope.selected((dependency.id,)),
+    )
+    unknown = statement(
+        "AT&T Texas (SWBT) will supply the unknown-scope material in January 2025.",
+        StatementScope.unknown(),
+    )
+
+    report = build_report(session, project.id, today=date(2025, 2, 1))
+    [row] = section(report, "External Party commitments").rows
+    assert row[1].value == unknown.description
+    assert known.description not in render(report)
+    assert dependency.committed_date is None
+
+    closure_quote = "AT&T Texas (SWBT) confirms the unknown-scope material is delivered."
+    closure_document = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(closure_quote.encode()).hexdigest(),
+        filename="closure.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(closure_document)
+    session.flush()
+    session.add(DocPage(document_id=closure_document.id, page_no=1, text=closure_quote))
+    session.flush()
+    record_external_party_closure(
+        session,
+        project_id=project.id,
+        commitment_lineage_id=unknown.commitment_lineage_id,
+        source_kind="cited",
+        event_date=date(2025, 2, 2),
+        description=closure_quote,
+        created_by="local:report-coordinator",
+        evidence=CitedStatementEvidence(closure_document.id, 1, closure_quote),
+    )
+
+    after = build_report(session, project.id, today=date(2025, 2, 3))
+    assert section(after, "External Party commitments").rows == []
+    assert session.get(type(unknown), unknown.id) is unknown
+    assert_no_bare_cells(after)
+
+
+def test_document_only_report_withholds_an_unsupported_unknown_scope_statement(
+    session, project_with_two_dependencies
+):
+    """A bad current citation cannot surface stale timing in a cited-only Report."""
+    project = project_with_two_dependencies
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).first()
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    assert party is not None
+    quote = "AT&T Texas (SWBT) will provide the chain of title in January 2025."
+    document = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(quote.encode()).hexdigest(),
+        filename="unsupported-current.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    page = DocPage(document_id=document.id, page_no=1, text=quote)
+    session.add(page)
+    session.flush()
+    record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 1, 16),
+        description=quote,
+        new_timing=StatementTiming.month("January 2025", 2025, 1),
+        scope=StatementScope.unknown(),
+        created_by="local:report-coordinator",
+        evidence=CitedStatementEvidence(document.id, 1, quote),
+    )
+    page.text = "The registered page no longer supports that statement."
+    session.flush()
+
+    report = build_report(
+        session,
+        project.id,
+        today=date(2025, 2, 1),
+        document_only=True,
+    )
+    [row] = section(report, "External Party commitments").rows
+    assert row[1].value == "Current statement unsupported in this provenance mode"
+    assert row[2].value == "Current timing unsupported"
+    assert "January 2025" not in row[2].value
+    assert_no_bare_cells(report)
 
 
 # --- Field-exact provenance in legacy sections (#178) ------------------------

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from corridor.changes import Diff, diff_since_last
 from corridor.dependency_events import (
     PublishedDependencyStatement,
+    PublishedPartyStatement,
     StatementPublication,
     published_dependency_statements,
 )
@@ -44,6 +45,7 @@ from corridor.models import (
     is_critical,
 )
 from corridor.dependency_events import current_scope_decision_filter
+from corridor.work_list import party_commitment_due_after
 
 # Enough to act on in a weekly meeting. More than this and nobody reads it.
 CRITICAL_ITEM_COUNT = 15
@@ -329,6 +331,10 @@ def build_report(
             document_only=document_only,
         ),
         _coordination(session, rows),
+        _external_party_commitments(
+            publication,
+            evaluated_on=evaluation.today,
+        ),
         _exceptions_summary(evaluation),
         _changes_since_last(report.diff, committed_events=committed_events),
         _aging(
@@ -765,6 +771,280 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
             ]
         )
     return section
+
+
+def _external_party_commitments(
+    statement_publication: StatementPublication,
+    *,
+    evaluated_on: date,
+) -> Section:
+    """Publish open party-level statements without inventing a Dependency.
+
+    These are not a second Dependency view.  The frozen publication already
+    selected the current statement, exact Evidence or Verbal source, scope
+    decision, and Coordination Plan tails; this reader only renders that one
+    coherent report reading.
+    """
+    section = Section(
+        "External Party commitments",
+        note=(
+            "Open attributable External Party Commitments whose Dependency "
+            "scope is not yet known. They remain party-level facts; no "
+            "Dependency Committed Date, closure answer, or Exception is "
+            "created here."
+        ),
+        columns=[
+            "External Party",
+            "Supported statement",
+            "Timing",
+            "Timing precision",
+            "Statement type",
+            "Commitment Scope",
+            "Open / past-due status",
+            "Internal Owner",
+            "Next Action",
+            "Action Due",
+            "Milestone Impact",
+        ],
+        empty_message="No open unknown-scope External Party Commitments.",
+    )
+    for statement in statement_publication.party_statements:
+        if statement.is_closed:
+            continue
+        event = statement.event
+        current_event = statement.current_event
+        source = _party_statement_provenance(statement)
+        derivation_scope = f"Commitment statement {current_event.id}"
+        fallback = Derivation(RULESET_VERSION, scope=derivation_scope)
+        timing_by_kind = {timing.kind: timing for timing in statement.timings}
+        previous = timing_by_kind.get("previous")
+        new = timing_by_kind.get("new")
+
+        if event is None:
+            statement_value = "Current statement unsupported in this provenance mode"
+            timing_value = "Current timing unsupported"
+            precision_value = "—"
+            type_value = _statement_kind(current_event)
+            status_value = "Open · past-due status unavailable"
+        else:
+            statement_value = event.description
+            timing_value = _party_timing_words(event, previous, new)
+            precision_value = _party_timing_precision(event, previous, new)
+            type_value = _statement_kind(event)
+            status_value = _party_open_status(new, evaluated_on)
+
+        statement_provenance = source or fallback
+        section.rows.append(
+            [
+                Cell(
+                    "External Party",
+                    (event or current_event).stated_party or "Unstated External Party",
+                    statement_provenance,
+                ),
+                Cell("Supported statement", statement_value, statement_provenance),
+                Cell(
+                    "Timing",
+                    timing_value,
+                    statement_provenance if event is not None else fallback,
+                ),
+                Cell(
+                    "Timing precision",
+                    precision_value,
+                    Derivation(
+                        RULESET_VERSION,
+                        scope=f"{derivation_scope} timing precision",
+                    ),
+                ),
+                Cell(
+                    "Statement type",
+                    type_value,
+                    Derivation(RULESET_VERSION, scope=derivation_scope),
+                ),
+                Cell(
+                    "Commitment Scope",
+                    "Scope not yet known",
+                    Derivation(
+                        RULESET_VERSION,
+                        scope=f"scope decision {statement.scope_decision.id}",
+                    ),
+                ),
+                Cell(
+                    "Open / past-due status",
+                    status_value,
+                    Derivation(
+                        RULESET_VERSION,
+                        scope=(
+                            f"{derivation_scope} evaluated {evaluated_on.isoformat()}"
+                        ),
+                    ),
+                ),
+                _party_plan_cell(
+                    "Internal Owner",
+                    statement.plan.internal_owner,
+                    statement.plan.internal_owner_decision,
+                    current_event.id,
+                    needs_review=statement.plan.needs_review,
+                ),
+                _party_plan_cell(
+                    "Next Action",
+                    statement.plan.next_action,
+                    statement.plan.next_action_decision,
+                    current_event.id,
+                    needs_review=statement.plan.needs_review,
+                ),
+                _party_action_due_cell(statement, current_event.id),
+                _party_milestone_impact_cell(statement, current_event.id),
+            ]
+        )
+    return section
+
+
+def _party_statement_provenance(
+    statement: PublishedPartyStatement,
+) -> Assertion | Verbal | None:
+    """Adapt a frozen party-level source into the Report provenance classes."""
+    event = statement.event
+    if event is None:
+        return None
+    if event.source_kind == "verbal":
+        return Verbal(
+            event.id,
+            event.created_by,
+            event.event_date,
+            event.stated_party or "unstated party",
+        )
+    cited = statement.cited_provenance
+    if cited is None:
+        return None
+    return Assertion(
+        cited.document_id,
+        cited.filename,
+        cited.page_no,
+        cited.quote,
+    )
+
+
+def _party_timing_words(event, previous, new) -> str:
+    return _party_timing_field(event, previous, new, "text")
+
+
+def _party_timing_precision(event, previous, new) -> str:
+    return _party_timing_field(event, previous, new, "precision")
+
+
+def _party_timing_field(event, previous, new, field: str) -> str:
+    """Render one source field while preserving both sides of a date change."""
+    if event.event_type == "committed_date_change":
+        return "; ".join(
+            value
+            for value in (
+                f"Previous: {getattr(previous, field)}" if previous is not None else None,
+                f"Current: {getattr(new, field)}" if new is not None else None,
+            )
+            if value is not None
+        ) or "—"
+    return getattr(new, field) if new is not None else "—"
+
+
+def _statement_kind(event) -> str:
+    if event.event_type == "committed_date_change":
+        direction = event.timing_direction or "direction not established"
+        return f"Committed Date Change · {direction}"
+    return "Commitment"
+
+
+def _party_open_status(timing, evaluated_on: date) -> str:
+    if timing is None:
+        return "Open · past-due status unavailable"
+    due_after = party_commitment_due_after(timing)
+    if due_after is None:
+        return "Open · no supported past-due boundary"
+    return "Open · past due" if evaluated_on > due_after else "Open · not past due"
+
+
+def _party_plan_cell(
+    label: str,
+    value: str | None,
+    decision,
+    event_id: int,
+    *,
+    needs_review: bool,
+) -> Cell:
+    if needs_review:
+        return _plan_needs_review_cell(label, event_id)
+    if value and decision is not None:
+        return Cell(
+            label,
+            value,
+            WorkDecision(
+                (decision.id,),
+                decision.recorded_by,
+                decision.recorded_at.date(),
+            ),
+        )
+    return Cell(
+        label,
+        "—",
+        Derivation(RULESET_VERSION, scope=f"Commitment statement {event_id} plan"),
+    )
+
+
+def _party_action_due_cell(statement: PublishedPartyStatement, event_id: int) -> Cell:
+    if statement.plan.needs_review:
+        return _plan_needs_review_cell("Action Due", event_id)
+    action = statement.plan.next_action_decision
+    if action is not None:
+        value = (
+            statement.plan.action_due_date.isoformat()
+            if statement.plan.action_due_date is not None
+            else "Date not yet known"
+        )
+        if statement.plan.action_due_date_reason:
+            value += f" ({statement.plan.action_due_date_reason.replace('_', ' ')})"
+        return Cell(
+            "Action Due",
+            value,
+            WorkDecision((action.id,), action.recorded_by, action.recorded_at.date()),
+        )
+    return Cell(
+        "Action Due",
+        "—",
+        Derivation(RULESET_VERSION, scope=f"Commitment statement {event_id} plan"),
+    )
+
+
+def _party_milestone_impact_cell(
+    statement: PublishedPartyStatement, event_id: int
+) -> Cell:
+    if statement.plan.needs_review:
+        return _plan_needs_review_cell("Milestone Impact", event_id)
+    decision = statement.plan.milestone_impact_decision
+    if decision is not None and statement.plan.milestone_impact is not None:
+        return Cell(
+            "Milestone Impact",
+            statement.plan.milestone_impact.replace("_", " ").capitalize(),
+            WorkDecision(
+                (decision.id,), decision.recorded_by, decision.recorded_at.date()
+            ),
+        )
+    value = "Not applicable" if statement.current_event.event_type == "commitment" else "—"
+    return Cell(
+        "Milestone Impact",
+        value,
+        Derivation(RULESET_VERSION, scope=f"Commitment statement {event_id} plan"),
+    )
+
+
+def _plan_needs_review_cell(label: str, event_id: int) -> Cell:
+    """Refuse to publish a response as current after its fact changed."""
+    return Cell(
+        label,
+        "Plan needs review",
+        Derivation(
+            RULESET_VERSION,
+            scope=f"Commitment statement {event_id} changed after its plan",
+        ),
+    )
 
 
 def _aging(

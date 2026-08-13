@@ -220,11 +220,7 @@ def _past_due(
     timing: DependencyEventTiming,
     evaluated_on: date,
 ) -> PastDueCommitment | None:
-    due_after = (
-        timing.end_date
-        if timing.precision in ("day", "month")
-        else None
-    )
+    due_after = party_commitment_due_after(timing)
     if due_after is None or evaluated_on <= due_after:
         return None
     assert event.commitment_lineage_id is not None
@@ -238,6 +234,20 @@ def _past_due(
         source_kind=event.source_kind,
         source_evidence_link_ids=_source_evidence_link_ids(session, event),
         due_after=due_after,
+    )
+
+
+def party_commitment_due_after(timing: DependencyEventTiming) -> date | None:
+    """Return the last supported day before a party-level Commitment is due.
+
+    Exact-day and month timing can establish a boundary; approximate and
+    legacy-unknown wording cannot.  Report readers use this same public rule
+    so a report and the coordinator work list never disagree about overdue.
+    """
+    return (
+        timing.end_date
+        if timing.precision in ("day", "month")
+        else None
     )
 
 
