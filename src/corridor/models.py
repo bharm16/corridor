@@ -33,6 +33,7 @@ from sqlalchemy import (
     false,
     func,
     text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import (
@@ -1300,6 +1301,40 @@ class CommitmentLineage(Base):
     )
 
 
+class ProjectRosterEntry(Base):
+    """One selectable project-team member for a Coordination Plan.
+
+    A Work Decision keeps its human-readable owner projection for existing
+    readers, but a guided save must not turn a typed project roster into a
+    caller-supplied string.  The grouping receipt binds the exact roster row
+    that supplied the rendered name.
+    """
+
+    __tablename__ = "project_roster_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "principal_subject", name="uq_project_roster_principal"
+        ),
+        CheckConstraint(
+            "length(trim(principal_subject)) > 0", name="ck_project_roster_principal"
+        ),
+        CheckConstraint(
+            "length(trim(display_name)) > 0", name="ck_project_roster_display_name"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    principal_subject: Mapped[str] = mapped_column(String(128))
+    display_name: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DependencyEvent(Base):
     """One attributable External Party statement, with scope kept separately.
 
@@ -1723,6 +1758,65 @@ class Candidate(Base):
     )
     merged_into: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
     adjudicated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class StatementCoordinationReceipt(Base):
+    """The immutable grouping identity for one guided statement Save.
+
+    The rows named here remain independent statement, scope, Work Decision,
+    Evidence, and audit facts.  This receipt only states which exact rows the
+    coordinator saved together and which predecessors the screen had read.
+    """
+
+    __tablename__ = "statement_coordination_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "jsonb_typeof(expected_predecessors_json) = 'object'",
+            name="ck_statement_coordination_receipt_predecessors_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(accepted_facts_json) = 'object'",
+            name="ck_statement_coordination_receipt_facts_object",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_statement_coordination_receipt_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id"), unique=True
+    )
+    commitment_lineage_id: Mapped[int] = mapped_column(
+        ForeignKey("commitment_lineages.id")
+    )
+    dependency_event_id: Mapped[int] = mapped_column(
+        ForeignKey("dependency_events.id"), unique=True
+    )
+    scope_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("dependency_event_scope_decisions.id"), unique=True
+    )
+    internal_owner_roster_entry_id: Mapped[int] = mapped_column(
+        ForeignKey("project_roster_entries.id")
+    )
+    internal_owner_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    next_action_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    milestone_impact_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"), unique=True)
+    expected_predecessors_json: Mapped[dict] = mapped_column(JSONB)
+    accepted_facts_json: Mapped[dict] = mapped_column(JSONB)
+    candidate_payload_sha256: Mapped[str] = mapped_column(String(64))
+    recorded_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

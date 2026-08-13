@@ -63,12 +63,17 @@ from corridor.models import (
     RESOLUTION_STRATEGIES,
     DEP_STATUSES,
     Candidate,
+    CommitmentLineage,
     Dependency,
+    DependencyEvent,
     DocPage,
     Document,
     EvidenceLink,
     ExternalOrg,
+    Milestone,
     Project,
+    ProjectRosterEntry,
+    StatementCoordinationReceipt,
 )
 from corridor.dependency_events import current_statement_evidence_memberships
 from corridor.web.queue import (
@@ -122,6 +127,14 @@ from corridor.models import (
     ActiveExtractionRun,
     DependencyAdmissionOutcome,
     PolicyRun,
+)
+from corridor.external_statements import CitedStatementEvidence, StatementScope, StatementTiming
+from corridor.statement_coordination import (
+    StaleStatementCoordination,
+    StatementCoordinationDraft,
+    StatementCoordinationPredecessors,
+    StatementCoordinationRefusal,
+    coordinate_statement,
 )
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -550,6 +563,326 @@ def statements(
         "statements.html",
         {"project": project, "waiting": waiting},
     )
+
+
+@app.get("/statements/{slug}/{candidate_id}/coordinate", response_class=HTMLResponse)
+def coordinate_statement_screen(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    session: Session = Depends(get_session),
+):
+    """Show source Evidence and plain-language choices for one Unplaced Statement."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    return _statement_coordination_screen(request, session, project, candidate)
+
+
+@app.post("/statements/{slug}/{candidate_id}/coordinate")
+async def save_coordinated_statement(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Delegate the ordinary screen's one Save to the atomic command."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    form = await request.form()
+    try:
+        result = coordinate_statement(
+            session,
+            _statement_coordination_draft(candidate, form),
+            principal=principal,
+        )
+    except StaleStatementCoordination as exc:
+        current = _project_statement_candidate(session, project, candidate_id)
+        return _statement_coordination_screen(
+            request,
+            session,
+            project,
+            current,
+            error=str(exc),
+            status_code=409,
+        )
+    except StatementCoordinationRefusal as exc:
+        current = _project_statement_candidate(session, project, candidate_id)
+        return _statement_coordination_screen(
+            request,
+            session,
+            project,
+            current,
+            error=str(exc),
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate_id}/coordinate",
+        status_code=303,
+    )
+
+
+def _project_statement_candidate(
+    session: Session, project: Project, candidate_id: int
+) -> Candidate:
+    candidate = session.get(Candidate, candidate_id)
+    if candidate is None or candidate.project_id != project.id or candidate.kind != "event":
+        raise HTTPException(404, "no such Unplaced Statement in this project")
+    return candidate
+
+
+def _statement_coordination_screen(
+    request: Request,
+    session: Session,
+    project: Project,
+    candidate: Candidate,
+    *,
+    error: str | None = None,
+    status_code: int = 200,
+):
+    """The browser reads facts; the command remains the one mutation seam."""
+    receipt = session.scalar(
+        select(StatementCoordinationReceipt).where(
+            StatementCoordinationReceipt.candidate_id == candidate.id
+        )
+    )
+    event = session.get(DependencyEvent, receipt.dependency_event_id) if receipt else None
+    line = (
+        session.get(CommitmentLineage, receipt.commitment_lineage_id)
+        if receipt
+        else None
+    )
+    candidate_evidence = _candidate_statement_evidence(candidate)
+    for evidence in candidate_evidence:
+        document = session.get(Document, evidence["document_id"])
+        evidence["filename"] = document.filename if document else "registered document"
+    dependencies = session.scalars(
+        select(Dependency)
+        .where(
+            Dependency.project_id == project.id,
+            Dependency.dismissed_at.is_(None),
+            Dependency.status != "closed",
+        )
+        .order_by(Dependency.ref_code)
+    ).all()
+    roster = session.scalars(
+        select(ProjectRosterEntry)
+        .where(
+            ProjectRosterEntry.project_id == project.id,
+            ProjectRosterEntry.active.is_(True),
+        )
+        .order_by(ProjectRosterEntry.display_name)
+    ).all()
+    parties = session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
+    documents = session.scalars(
+        select(Document)
+        .where(Document.project_id == project.id)
+        .order_by(Document.filename)
+    ).all()
+    milestones = session.scalars(
+        select(Milestone)
+        .where(Milestone.project_id == project.id)
+        .order_by(Milestone.code)
+    ).all()
+    fields = (candidate.payload_json or {}).get("fields") or {}
+    return TEMPLATES.TemplateResponse(
+        request,
+        "statement_coordinate.html",
+        {
+            "project": project,
+            "candidate": candidate,
+            "candidate_fields": fields,
+            "candidate_party": str(fields.get("external_org") or ""),
+            "candidate_evidence": candidate_evidence,
+            "dependencies": dependencies,
+            "roster": roster,
+            "parties": parties,
+            "documents": documents,
+            "milestones": milestones,
+            "receipt": receipt,
+            "event": event,
+            "line": line,
+            "error": error,
+        },
+        status_code=status_code,
+    )
+
+
+def _statement_coordination_draft(
+    candidate: Candidate, form
+) -> StatementCoordinationDraft:
+    return StatementCoordinationDraft(
+        candidate_id=candidate.id,
+        affected_external_org_id=_required_positive_form_id(
+            form, "affected_external_org_id"
+        ),
+        stated_party=_required_form_text(form, "stated_party", "a stated External Party"),
+        stated_external_org_id=_required_positive_form_id(
+            form, "stated_external_org_id"
+        ),
+        event_date=_optional_form_date(form, "event_date"),
+        description=_required_form_text(form, "description", "what the party said"),
+        new_timing=_form_timing(form, "new_timing", required=True),
+        previous_timing=_form_timing(form, "previous_timing", required=False),
+        evidence=_supporting_statement_evidence(form),
+        scope=_form_statement_scope(form),
+        internal_owner_roster_entry_id=_required_positive_form_id(
+            form, "internal_owner_roster_entry_id"
+        ),
+        next_action=_required_form_text(form, "next_action", "a Next Action"),
+        action_due_date=_optional_form_date(form, "action_due_date"),
+        action_due_date_unknown_reason=(
+            str(form.get("action_due_date_unknown_reason") or "").strip() or None
+        ),
+        milestone_impact=(str(form.get("milestone_impact") or "").strip() or None),
+        milestone_ids=tuple(
+            _required_positive_value(value, "milestone_id")
+            for value in form.getlist("milestone_id")
+        ),
+        expected=StatementCoordinationPredecessors(
+            candidate_state=str(form.get("expected_candidate_state") or "pending"),
+            commitment_lineage_id=_optional_positive_form_id(
+                form, "expected_commitment_lineage_id"
+            ),
+            statement_event_id=_optional_positive_form_id(
+                form, "expected_statement_event_id"
+            ),
+            scope_decision_id=_optional_positive_form_id(
+                form, "expected_scope_decision_id"
+            ),
+            internal_owner_decision_id=_optional_positive_form_id(
+                form, "expected_internal_owner_decision_id"
+            ),
+            next_action_decision_id=_optional_positive_form_id(
+                form, "expected_next_action_decision_id"
+            ),
+            milestone_impact_decision_id=_optional_positive_form_id(
+                form, "expected_milestone_impact_decision_id"
+            ),
+        ),
+    )
+
+
+def _candidate_statement_evidence(candidate: Candidate) -> tuple[dict, ...]:
+    """Render the extractor's immutable citation identity beside the form."""
+    evidence = []
+    for citation in (candidate.payload_json or {}).get("citations") or ():
+        try:
+            evidence.append(
+                {
+                    "document_id": int(citation["document_id"]),
+                    "page_no": int(citation["page"]),
+                    "quote": str(citation["quote"]),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(evidence)
+
+
+def _supporting_statement_evidence(form) -> tuple[CitedStatementEvidence, ...]:
+    document_ids = form.getlist("supporting_document_id")
+    page_numbers = form.getlist("supporting_page_no")
+    quotes = form.getlist("supporting_quote")
+    if not (len(document_ids) == len(page_numbers) == len(quotes)):
+        raise StatementCoordinationRefusal("supporting Evidence fields must arrive together")
+    evidence = []
+    for document_id, page_no, quote in zip(document_ids, page_numbers, quotes):
+        if not (str(document_id).strip() or str(page_no).strip() or str(quote).strip()):
+            continue
+        evidence.append(
+            CitedStatementEvidence(
+                _required_positive_value(document_id, "supporting_document_id"),
+                _required_positive_value(page_no, "supporting_page_no"),
+                _required_form_value(quote, "a supporting Evidence quote"),
+            )
+        )
+    return tuple(evidence)
+
+
+def _form_statement_scope(form) -> StatementScope:
+    mode = str(form.get("scope_mode") or "").strip()
+    if mode == "unknown":
+        return StatementScope.unknown()
+    if mode == "all_active":
+        return StatementScope.all_active()
+    if mode == "selected":
+        return StatementScope.selected(
+            tuple(
+                _required_positive_value(value, "dependency_id")
+                for value in form.getlist("dependency_id")
+            )
+        )
+    raise StatementCoordinationRefusal("choose an explicit Commitment Scope")
+
+
+def _form_timing(form, prefix: str, *, required: bool) -> StatementTiming | None:
+    text = str(form.get(f"{prefix}_text") or "").strip()
+    precision = str(form.get(f"{prefix}_precision") or "").strip()
+    start = _optional_form_date(form, f"{prefix}_start_date")
+    end = _optional_form_date(form, f"{prefix}_end_date")
+    if not any((text, precision, start, end)):
+        if required:
+            raise StatementCoordinationRefusal("the statement needs its new timing")
+        return None
+    if not text or not precision:
+        raise StatementCoordinationRefusal("each stated timing needs source wording and precision")
+    if precision == "day":
+        if start is None or end != start:
+            raise StatementCoordinationRefusal("an exact-day timing needs the same start and end date")
+        return StatementTiming.day(text, start)
+    if precision == "month":
+        if start is None or end is None:
+            raise StatementCoordinationRefusal("a month timing needs its calendar bounds")
+        return StatementTiming(text=text, precision="month", start_date=start, end_date=end)
+    if precision == "approximate":
+        if start is not None or end is not None:
+            raise StatementCoordinationRefusal("an approximate timing cannot claim calendar bounds")
+        return StatementTiming.approximate(text)
+    raise StatementCoordinationRefusal("timing precision must be day, month, or approximate")
+
+
+def _required_form_text(form, name: str, label: str) -> str:
+    return _required_form_value(form.get(name), label)
+
+
+def _required_form_value(value, label: str) -> str:
+    rendered = str(value or "").strip()
+    if not rendered:
+        raise StatementCoordinationRefusal(f"{label} is required")
+    return rendered
+
+
+def _required_positive_form_id(form, name: str) -> int:
+    return _required_positive_value(form.get(name), name)
+
+
+def _optional_positive_form_id(form, name: str) -> int | None:
+    value = form.get(name)
+    if value is None or not str(value).strip():
+        return None
+    return _required_positive_value(value, name)
+
+
+def _required_positive_value(value, name: str) -> int:
+    try:
+        identity = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise StatementCoordinationRefusal(f"{name} must be a positive identity") from exc
+    if identity <= 0:
+        raise StatementCoordinationRefusal(f"{name} must be a positive identity")
+    return identity
+
+
+def _optional_form_date(form, name: str) -> date | None:
+    raw = str(form.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise StatementCoordinationRefusal(f"{name.replace('_', ' ')} must be a date") from exc
 
 
 @app.get("/", response_class=HTMLResponse)

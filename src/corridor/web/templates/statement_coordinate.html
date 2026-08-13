@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Coordinate statement — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; --paper:#fafafa; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:14px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:58rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.45rem; margin:0 0 .25rem; } h2 { font-size:1.05rem; margin:1.6rem 0 .5rem; }
+  .lead,.muted { color:var(--muted); } .error { color:#8b1e12; border:1px solid #f0b6ae; background:#fff4f2; padding:.65rem; }
+  .saved { color:var(--ok); border:1px solid #94d5b2; background:#f1fff6; padding:.7rem; }
+  .evidence,.choice { border:1px solid var(--line); border-radius:6px; padding:.75rem; margin:.6rem 0; background:var(--paper); }
+  .quote { display:block; margin-top:.4rem; font-family:ui-monospace,monospace; white-space:pre-wrap; }
+  fieldset { margin:1rem 0; border:1px solid var(--line); border-radius:6px; padding:.8rem; }
+  legend { font-weight:650; padding:0 .3rem; } label { display:block; margin:.55rem 0 .2rem; font-weight:600; }
+  input,select,textarea { font:inherit; padding:.35rem .45rem; border:1px solid #bdbdbd; border-radius:4px; max-width:100%; }
+  textarea { width:100%; min-height:4rem; } .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.6rem 1rem; }
+  .check { display:block; padding:.25rem 0; font-weight:400; } .check input { margin-right:.35rem; }
+  button { font:inherit; padding:.45rem .85rem; border:1px solid #111; background:#111; color:#fff; border-radius:4px; cursor:pointer; }
+  .summary { display:grid; grid-template-columns:max-content 1fr; gap:.25rem .7rem; }
+  @media (max-width:640px) { .grid { grid-template-columns:1fr; } }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <a href="/statements/{{ project.slug }}">all waiting statements</a>
+</header>
+
+<main>
+  <h1>Coordinate this statement</h1>
+  <p class="lead">Save the External Party fact and the project response together. The source Candidate stays unchanged.</p>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  {% if receipt and event and line %}
+    <section class="saved">
+      <b>Coordination Plan saved.</b> The current statement and its plan are shown below.
+      <dl class="summary">
+        <dt>Statement</dt><dd>{{ event.event_type.replace('_', ' ').title() }}</dd>
+        <dt>Timing</dt><dd>{{ event.new_timing.text if event.new_timing else '—' }}</dd>
+        <dt>Scope</dt><dd>{{ event.scope_mode.replace('_', ' ') }}</dd>
+        {% if event.scope_mode == 'unknown' %}<dt>Attention Reason</dt><dd>Commitment Scope not yet known</dd>{% endif %}
+        <dt>Internal Owner</dt><dd>{{ line.internal_owner or '—' }}</dd>
+        <dt>Next Action</dt><dd>{{ line.next_action or '—' }}</dd>
+      </dl>
+    </section>
+  {% else %}
+    <h2>Verified Evidence</h2>
+    {% for evidence in candidate_evidence %}
+      <section class="evidence">
+        <span class="muted">{{ evidence.filename }} · registered page {{ evidence.page_no }}</span>
+        <span class="quote">{{ evidence.quote }}</span>
+      </section>
+    {% else %}
+      <p class="error">This Candidate has no complete Evidence identity and cannot be saved.</p>
+    {% endfor %}
+
+    <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/coordinate">
+      <input type="hidden" name="expected_candidate_state" value="pending">
+      <input type="hidden" name="expected_commitment_lineage_id" value="">
+      <input type="hidden" name="expected_statement_event_id" value="">
+      <input type="hidden" name="expected_scope_decision_id" value="">
+      <input type="hidden" name="expected_internal_owner_decision_id" value="">
+      <input type="hidden" name="expected_next_action_decision_id" value="">
+      <input type="hidden" name="expected_milestone_impact_decision_id" value="">
+
+      <fieldset>
+        <legend>Supported statement facts</legend>
+        <div class="grid">
+          <div><label for="affected-party">External Party affected</label>
+            <select id="affected-party" name="affected_external_org_id" required>
+              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}" {% if party.name == candidate_party %}selected{% endif %}>{{ party.name }}</option>{% endfor %}
+            </select></div>
+          <div><label for="stated-party">External Party who spoke</label>
+            <select id="stated-party" name="stated_external_org_id" required>
+              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}" {% if party.name == candidate_party %}selected{% endif %}>{{ party.name }}</option>{% endfor %}
+            </select></div>
+        </div>
+        <label for="stated-party-words">Party wording in the Evidence</label>
+        <input id="stated-party-words" name="stated_party" value="{{ candidate_party }}" required>
+        <label for="event-date">Statement date, if the Evidence says one</label>
+        <input id="event-date" name="event_date" type="date" value="{{ candidate_fields.get('event_date', '') }}">
+        <label for="description">What the External Party said</label>
+        <textarea id="description" name="description" required>{{ candidate_fields.get('description', '') }}</textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>Timing Evidence</legend>
+        <p class="muted">Corridor derives Commitment versus Committed Date Change and never asks you to choose the type.</p>
+        <div class="grid">
+          <div><label for="new-timing-text">New timing, exactly as stated</label><input id="new-timing-text" name="new_timing_text" required></div>
+          <div><label for="new-timing-precision">Precision</label><select id="new-timing-precision" name="new_timing_precision" required><option value="day">exact day</option><option value="month">month</option><option value="approximate">approximate</option></select></div>
+          <div><label for="new-timing-start">New timing start</label><input id="new-timing-start" name="new_timing_start_date" type="date"></div>
+          <div><label for="new-timing-end">New timing end</label><input id="new-timing-end" name="new_timing_end_date" type="date"></div>
+          <div><label for="previous-timing-text">Earlier timing, if this changed</label><input id="previous-timing-text" name="previous_timing_text"></div>
+          <div><label for="previous-timing-precision">Earlier timing precision</label><select id="previous-timing-precision" name="previous_timing_precision"><option value="">No earlier timing</option><option value="day">exact day</option><option value="month">month</option><option value="approximate">approximate</option></select></div>
+          <div><label for="previous-timing-start">Earlier timing start</label><input id="previous-timing-start" name="previous_timing_start_date" type="date"></div>
+          <div><label for="previous-timing-end">Earlier timing end</label><input id="previous-timing-end" name="previous_timing_end_date" type="date"></div>
+        </div>
+        <label for="support-document">Another verified quote, when it supplies missing party or timing context</label>
+        <select id="support-document" name="supporting_document_id"><option value="">No additional quote</option>{% for document in documents %}<option value="{{ document.id }}">{{ document.filename }}</option>{% endfor %}</select>
+        <div class="grid"><div><label for="support-page">Page</label><input id="support-page" name="supporting_page_no" type="number" min="1"></div><div></div></div>
+        <label for="support-quote">Exact verified quote</label><textarea id="support-quote" name="supporting_quote"></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>Commitment Scope</legend>
+        <label class="check"><input type="radio" name="scope_mode" value="unknown" checked> Scope not yet known</label>
+        <label class="check"><input type="radio" name="scope_mode" value="selected"> Selected Dependencies</label>
+        <label class="check"><input type="radio" name="scope_mode" value="all_active"> All currently active Dependencies for the selected External Party</label>
+        <div class="choice">
+          {% for dependency in dependencies %}
+            <label class="check"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.ref_code }} — {{ dependency.title }}{% if dependency.station_from or dependency.station_to %} · {{ dependency.station_from or '?' }} to {{ dependency.station_to or '?' }}{% endif %}</label>
+          {% else %}<span class="muted">No active Dependencies are available for selected scope.</span>{% endfor %}
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Coordination Plan</legend>
+        <label for="owner-search">Search the project roster</label><input id="owner-search" type="search" placeholder="Start typing a name">
+        <label for="owner">Internal Owner</label>
+        <select id="owner" name="internal_owner_roster_entry_id" required><option value="">Choose a project-team member</option>{% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}</select>
+        <label for="next-action">Next Action</label><textarea id="next-action" name="next_action" required></textarea>
+        <div class="grid"><div><label for="action-due">Action Due Date</label><input id="action-due" name="action_due_date" type="date"></div><div><label for="unknown-date-reason">If no date, why?</label><select id="unknown-date-reason" name="action_due_date_unknown_reason"><option value="">Choose only when no date is known</option><option value="awaiting_external_information">awaiting external information</option><option value="awaiting_schedule_information">awaiting schedule information</option><option value="date_not_yet_known">date not yet known</option></select></div></div>
+        <label for="milestone-impact">Milestone Impact (required only for a date change)</label><select id="milestone-impact" name="milestone_impact"><option value="">Not a date change</option><option value="affects">affects</option><option value="does_not_affect">does not affect</option><option value="not_yet_known">not yet known</option></select>
+        {% for milestone in milestones %}<label class="check"><input type="checkbox" name="milestone_id" value="{{ milestone.id }}"> {{ milestone.code }} — {{ milestone.name }}</label>{% endfor %}
+      </fieldset>
+      <button type="submit">Save statement and Coordination Plan</button>
+    </form>
+  {% endif %}
+</main>
+
+<script>
+  const search = document.querySelector('#owner-search');
+  const owner = document.querySelector('#owner');
+  if (search && owner) search.addEventListener('input', () => {
+    const phrase = search.value.toLocaleLowerCase();
+    for (const option of owner.options) option.hidden = Boolean(option.value) && !option.text.toLocaleLowerCase().includes(phrase);
+  });
+</script>

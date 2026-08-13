@@ -67,20 +67,10 @@
       </div>
 
       <div class="place">
-        <form method="post"
-              action="/projects/{{ project.slug }}/statements/{{ item.candidate.id }}/attach"
-              class="place">
-          {# Disabled whenever attach would refuse it — an enabled button
-             that then errors teaches a reviewer the pile is broken. The
-             headline above already says what the statement lacks. #}
-          <input name="dependency_ref" placeholder="DEP-00001" size="12"
-                 {% if not item.attachable %}disabled{% endif %}>
-          <button class="primary"
-                  {% if not item.attachable %}disabled
-                  title="{{ item.headline }}"{% endif %}>
-            attach to this record
-          </button>
-        </form>
+        <a class="primary"
+           href="/statements/{{ project.slug }}/{{ item.candidate.id }}/coordinate">
+          coordinate statement
+        </a>
         <span class="toss">
           {% for reason in ["duplicate", "wrong", "irrelevant"] %}
             <form class="inline" method="post"

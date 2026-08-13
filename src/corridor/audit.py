@@ -87,6 +87,7 @@ SETTLE_DISPUTE = "settle_dispute"
 ATTACH_STATEMENT = "attach_statement"
 RECORD_VERBAL = "record_verbal"
 DISMISS_DEPENDENCY = "dismiss_dependency"
+COORDINATE_STATEMENT = "coordinate_statement"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -125,6 +126,7 @@ ACTIONS = frozenset(
         ATTACH_STATEMENT,
         RECORD_VERBAL,
         DISMISS_DEPENDENCY,
+        COORDINATE_STATEMENT,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )
