@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance sh99-coordinator-rehearsal minutes report
 
 # One command from a clean clone.
 boot:
@@ -126,6 +126,15 @@ m8-acceptance:
 #   make sh99-admission-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
 sh99-admission-acceptance:
 	uv run python -m corridor.sh99_admission_acceptance_cli $(ARGS)
+
+# Run the bounded coordinator exercise only on a disposable clone. It verifies the
+# prior Admission bundle first, separates shared operations/backfill time from the
+# timed coordinator flow, and records assistance or failure rather than calling it
+# a customer-validation pass:
+#   make sh99-coordinator-rehearsal ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --shared-admission-receipt-path=<validation-passed.json> --expected-shared-admission-receipt-sha256=<sha> --approved-shared-state-receipt=<immutable-url> --shared-backfill-elapsed-seconds=291 --output-dir=<new-dir>"
+#   make sh99-coordinator-rehearsal ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+sh99-coordinator-rehearsal:
+	uv run python -m corridor.sh99_coordinator_rehearsal_cli $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 minutes:
