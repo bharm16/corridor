@@ -14,6 +14,7 @@ wrong, so they are called out here as well as in the ADRs:
 """
 
 from datetime import date, datetime
+from hashlib import sha256
 
 from sqlalchemy import (
     BigInteger,
@@ -27,6 +28,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -1128,6 +1130,73 @@ class ReportRun(Base):
     document_only: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
+
+
+class ExternalReportRelease(Base):
+    """One immutable authorization of one fixed External Report PDF.
+
+    A working ``ReportRun`` lets the next internal report describe change;
+    it is deliberately not an artifact authority.  This receipt instead
+    owns the exact PDF bytes and every context identity that was released,
+    so later Ledger, Evaluation, or rendering changes cannot alter the
+    recipient's record (ADR-0040).
+    """
+
+    __tablename__ = "external_report_releases"
+    __table_args__ = (
+        CheckConstraint(
+            "format = 'pdf'", name="ck_external_report_releases_pdf_only"
+        ),
+        CheckConstraint(
+            "pdf_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_external_report_releases_pdf_sha256",
+        ),
+        CheckConstraint(
+            "octet_length(pdf_bytes) > 5",
+            name="ck_external_report_releases_nonempty_pdf",
+        ),
+        CheckConstraint(
+            "provenance_mode in ('all-supported-sources', 'document-only')",
+            name="ck_external_report_releases_provenance_mode",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(record_context_json) = 'object'",
+            name="ck_external_report_releases_context_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(evaluation_context_json) = 'object'",
+            name="ck_external_report_releases_evaluation_object",
+        ),
+        CheckConstraint(
+            "length(trim(artifact_name)) > 0",
+            name="ck_external_report_releases_artifact_name",
+        ),
+        CheckConstraint(
+            "length(trim(released_by)) > 0",
+            name="ck_external_report_releases_released_by",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    artifact_name: Mapped[str] = mapped_column(Text)
+    format: Mapped[str] = mapped_column(String(16), server_default="pdf")
+    pdf_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    pdf_sha256: Mapped[str] = mapped_column(String(64))
+    evaluated_on: Mapped[date] = mapped_column(Date)
+    ruleset_version: Mapped[str] = mapped_column(String(64))
+    evaluation_context_json: Mapped[dict] = mapped_column(JSONB)
+    provenance_mode: Mapped[str] = mapped_column(String(32))
+    record_context_json: Mapped[dict] = mapped_column(JSONB)
+    released_by: Mapped[str] = mapped_column(String(128))
+    released_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    @property
+    def digest_is_valid(self) -> bool:
+        """Whether the bytes retrieved from the sealed store match the receipt."""
+        return sha256(self.pdf_bytes).hexdigest() == self.pdf_sha256
 
 
 class LegacyLedgerArchive(Base):

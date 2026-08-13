@@ -44,12 +44,26 @@ def to_pdf(html: str, path: Path | str) -> Path:
     WeasyPrint carries native dependencies; a missing one should fail loudly
     here rather than silently producing no file.
     """
-    from weasyprint import HTML
-
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    HTML(string=html).write_pdf(str(path))
+    path.write_bytes(to_pdf_bytes(html))
     return path
+
+
+def to_pdf_bytes(html: str) -> bytes:
+    """Render report markup to the exact PDF bytes a release can seal.
+
+    The release boundary accepts bytes rather than a renderer callback or a
+    pathname.  Keeping this small renderer seam separate lets the release
+    service retain exactly what it was handed without asking WeasyPrint to
+    regenerate a report later.
+    """
+    from weasyprint import HTML
+
+    pdf = HTML(string=html).write_pdf()
+    if not isinstance(pdf, bytes) or not pdf.startswith(b"%PDF-"):
+        raise RuntimeError("the PDF renderer did not return PDF bytes")
+    return pdf
 
 
 def to_xlsx(

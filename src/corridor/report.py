@@ -193,6 +193,10 @@ class Report:
     # run describe the same reading rather than taking their own.
     evaluation: Evaluation | None = None
     statement_publication: StatementPublication | None = None
+    # The exact Ledger identity the Report read.  A release copies this
+    # frozen project-language context rather than looking records up again
+    # after a PDF has been rendered.
+    covered_records: tuple[tuple[int, str], ...] = ()
 
     @property
     def cells(self) -> list[Cell]:
@@ -302,6 +306,9 @@ def build_report(
         committed_dates=committed_dates,
         evaluation=evaluation,
         statement_publication=publication,
+        covered_records=tuple(
+            (row.dependency.id, row.dependency.ref_code) for row in rows
+        ),
     )
 
     if not document_only:

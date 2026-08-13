@@ -1,0 +1,153 @@
+"""Rehearse the immutable External Report release schema on PostgreSQL."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import subprocess
+
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+
+from corridor.config import settings
+from corridor.m8_acceptance_database import provision_disposable_postgres
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREDECESSOR = "f253a7c4d9e2"
+HEAD = "a255a7c4d9e2"
+RELEASE_COLUMNS = [
+    "id",
+    "project_id",
+    "artifact_name",
+    "format",
+    "pdf_bytes",
+    "pdf_sha256",
+    "evaluated_on",
+    "ruleset_version",
+    "provenance_mode",
+    "record_context_json",
+    "released_by",
+    "released_at",
+    "evaluation_context_json",
+]
+
+
+def _upgrade(database_url: str, target: str) -> None:
+    completed = subprocess.run(
+        ["uv", "run", "alembic", "upgrade", target],
+        cwd=ROOT,
+        env={**os.environ, "DATABASE_URL": database_url},
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def _release_columns(connection) -> list[str]:
+    return connection.execute(
+        text(
+            "select column_name from information_schema.columns "
+            "where table_schema = 'public' "
+            "and table_name = 'external_report_releases' "
+            "order by ordinal_position"
+        )
+    ).scalars().all()
+
+
+def test_release_schema_is_one_linear_head_on_a_fresh_database():
+    scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    assert scripts.get_heads() == [HEAD]
+
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="issue255_fresh_",
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        engine = create_engine(database_url)
+        try:
+            with engine.connect() as connection:
+                assert connection.scalar(text("select version_num from alembic_version")) == HEAD
+                assert _release_columns(connection) == RELEASE_COLUMNS
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from pg_trigger "
+                        "where tgname = 'prevent_external_report_release_mutation')"
+                    )
+                ) is True
+                assert connection.execute(
+                    text(
+                        "select conname from pg_constraint "
+                        "where conrelid = 'external_report_releases'::regclass "
+                        "and conname like 'ck_external_report_releases_%' "
+                        "order by conname"
+                    )
+                ).scalars().all() == [
+                    "ck_external_report_releases_artifact_name",
+                    "ck_external_report_releases_context_object",
+                    "ck_external_report_releases_evaluation_object",
+                    "ck_external_report_releases_nonempty_pdf",
+                    "ck_external_report_releases_pdf_only",
+                    "ck_external_report_releases_pdf_sha256",
+                    "ck_external_report_releases_provenance_mode",
+                    "ck_external_report_releases_released_by",
+                ]
+        finally:
+            engine.dispose()
+
+
+def test_release_successors_upgrade_the_immediate_predecessor_without_rewriting_report_history():
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="issue255_predecessor_",
+        migration_revision=PREDECESSOR,
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        rendered = database_url.render_as_string(hide_password=False)
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "insert into projects (slug, name, is_synthetic) "
+                        "values ('issue255-predecessor', 'Issue 255 predecessor', true)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "insert into report_runs "
+                        "(project_id, ruleset_version, snapshot_json, output_path, document_only) "
+                        "select id, 'v0.4', '{\"dependencies\":{}}'::jsonb, "
+                        "'out/report.html', false from projects "
+                        "where slug = 'issue255-predecessor'"
+                    )
+                )
+
+            _upgrade(rendered, "head")
+
+            with engine.connect() as connection:
+                assert connection.scalar(text("select version_num from alembic_version")) == HEAD
+                assert _release_columns(connection) == RELEASE_COLUMNS
+                assert connection.execute(
+                    text(
+                        "select ruleset_version, snapshot_json, output_path, document_only "
+                        "from report_runs where project_id = "
+                        "(select id from projects where slug = 'issue255-predecessor')"
+                    )
+                ).one() == (
+                    "v0.4",
+                    {"dependencies": {}},
+                    "out/report.html",
+                    False,
+                )
+                assert connection.scalar(
+                    text("select count(*) from external_report_releases")
+                ) == 0
+        finally:
+            engine.dispose()
