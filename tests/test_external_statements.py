@@ -48,8 +48,14 @@ def statement_record(session):
         name="External statements test",
         is_synthetic=True,
     )
-    party = ExternalOrg(name="Equistar")
-    session.add_all([project, party])
+    # External organizations are global identities.  Other live-database tests
+    # can legitimately leave this fixture actor present, so reuse it rather
+    # than making the transaction fixture's isolation depend on test order.
+    party = session.scalar(select(ExternalOrg).where(ExternalOrg.name == "Equistar"))
+    if party is None:
+        party = ExternalOrg(name="Equistar")
+        session.add(party)
+    session.add(project)
     session.flush()
     document = Document(
         project_id=project.id,

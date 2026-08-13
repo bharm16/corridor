@@ -9,23 +9,34 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from corridor import audit
 from corridor.db import Session, engine
+from corridor.dependency_events import (
+    current_dependency_statements,
+    current_statement_evidence_memberships,
+)
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.external_statements import CitedStatementEvidence, StatementScope, StatementTiming
 from corridor.models import (
     Candidate,
+    CandidateDisposition,
     AuditLog,
+    CommitmentLineage,
     Dependency,
     DependencyEvent,
     DependencyEventEvidence,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     DocPage,
     Document,
     ExternalOrg,
     Milestone,
     Project,
     ProjectRosterEntry,
+    ReportRun,
     StatementCoordinationReceipt,
+    StatementCoordinationReversal,
+    StatementCoordinationReversalEffect,
     WorkDecision,
     WorkDecisionMilestoneImpact,
 )
@@ -34,7 +45,21 @@ from corridor.statement_coordination import (
     StaleStatementCoordination,
     StatementCoordinationDraft,
     StatementCoordinationRefusal,
+    StatementCoordinationUndoRefusal,
     coordinate_statement,
+    correct_statement_facts,
+    correct_statement_scope,
+    mark_statement_not_relevant,
+    restore_statement_not_relevant,
+    StatementFactCorrectionDraft,
+    StatementScopeCorrection,
+    undo_statement_coordination,
+)
+from corridor.work_decisions import (
+    CoordinationSubject,
+    current_internal_owner_decision,
+    current_next_action_decision,
+    set_next_action,
 )
 from corridor.web.app import app, get_human_principal, get_session
 
@@ -264,9 +289,11 @@ def test_command_records_the_7296_shape_with_additional_verified_party_context(
 def test_command_records_the_7129_month_commitment_without_inventing_a_day(
     session, project, roster_entry
 ):
-    party = ExternalOrg(name="Equistar")
-    session.add(party)
-    session.flush()
+    party = session.scalar(select(ExternalOrg).where(ExternalOrg.name == "Equistar"))
+    if party is None:
+        party = ExternalOrg(name="Equistar")
+        session.add(party)
+        session.flush()
     quote = "Equistar to provide a chain of title (Due date of 01/2025)."
     document = _document(session, project, "equistar-minutes.pdf", quote)
     candidate = _candidate(
@@ -558,6 +585,641 @@ def test_command_records_an_affecting_milestone_with_its_exact_registered_link(
             == result.milestone_impact_decision.id
         )
     ) == milestone.id
+
+
+def test_undo_reverses_exactly_one_guided_save_without_deleting_its_history(
+    session, project, party, roster_entry
+):
+    """Undo is a compensating command over the receipt, never a row delete."""
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(session, project, "undo-guided-save.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    dependency = _dependency(session, project, party, "UNDO-1", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+
+    reversal = undo_statement_coordination(session, result.receipt.id, principal=RECORDER)
+
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+    assert session.get(DependencyEvent, result.event.id) is not None
+    assert session.get(StatementCoordinationReceipt, result.receipt.id) is not None
+    assert session.scalar(
+        select(CandidateDisposition).where(
+            CandidateDisposition.candidate_id == candidate.id,
+            CandidateDisposition.disposition == "accepted",
+        )
+    ) is not None
+    assert reversal.receipt_id == result.receipt.id
+    assert {
+        (effect.effect_kind, effect.target_id)
+        for effect in session.scalars(
+            select(StatementCoordinationReversalEffect).where(
+                StatementCoordinationReversalEffect.reversal_id == reversal.id
+            )
+        )
+    } >= {
+        ("statement", result.event.id),
+        ("scope_decision", result.receipt.scope_decision_id),
+        ("work_decision", result.internal_owner_decision.id),
+        ("work_decision", result.next_action_decision.id),
+        ("candidate_disposition", result.receipt.candidate_disposition_id),
+        ("grouping_receipt", result.receipt.id),
+    }
+    subject = CoordinationSubject.statement(result.event.commitment_lineage_id)
+    assert current_internal_owner_decision(session, subject) is None
+    assert current_next_action_decision(session, subject) is None
+    assert session.scalar(select(func.count()).select_from(DependencyEventEvidence)) == 1
+    assert current_dependency_statements(session, (dependency.id,))[dependency.id].event is None
+
+    resaved = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+        ),
+        principal=RECORDER,
+    )
+    assert resaved.receipt.id != result.receipt.id
+
+
+def test_undo_refuses_atomically_when_later_work_depends_on_the_save(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(session, project, "undo-dependent-work.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+        ),
+        principal=RECORDER,
+    )
+    set_next_action(
+        session,
+        CoordinationSubject.statement(result.event.commitment_lineage_id),
+        "Ask Kinder Morgan for the June construction sequence",
+        due_date=date(2026, 2, 2),
+        principal=RECORDER,
+    )
+
+    with pytest.raises(StatementCoordinationRefusal, match="Correct"):
+        undo_statement_coordination(session, result.receipt.id, principal=RECORDER)
+
+    session.refresh(candidate)
+    assert candidate.state == "accepted"
+    assert session.scalar(
+        select(StatementCoordinationReversal).where(
+            StatementCoordinationReversal.receipt_id == result.receipt.id
+        )
+    ) is None
+    assert current_next_action_decision(
+        session, CoordinationSubject.statement(result.event.commitment_lineage_id)
+    ).after_value is not None
+
+
+def test_correct_scope_appends_one_scope_decision_without_rewriting_the_statement_or_plan(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(session, project, "correct-statement-scope.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    dependency = _dependency(session, project, party, "CORRECT-1", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+        ),
+        principal=RECORDER,
+    )
+
+    correction = correct_statement_scope(
+        session,
+        StatementScopeCorrection(
+            candidate_id=candidate.id,
+            event_id=result.event.id,
+            expected_scope_decision_id=result.receipt.scope_decision_id,
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+
+    assert correction.event_id == result.event.id
+    assert correction.supersedes_scope_decision_id == result.receipt.scope_decision_id
+    assert session.get(DependencyEvent, result.event.id).description == quote
+    assert current_internal_owner_decision(
+        session, CoordinationSubject.statement(result.event.commitment_lineage_id)
+    ).id == result.internal_owner_decision.id
+    assert session.scalar(
+        select(DependencyEventScope.dependency_id).where(
+            DependencyEventScope.scope_decision_id == correction.id
+        )
+    ) == dependency.id
+
+
+def test_correcting_statement_facts_appends_a_successor_and_marks_its_plan_for_review(
+    session, project, party, roster_entry
+):
+    original_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    corrected_quote = "Kinder Morgan will complete relocation by July 1, 2026."
+    document = _document(
+        session,
+        project,
+        "correct-statement-facts.pdf",
+        f"{original_quote}\n{corrected_quote}",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=original_quote,
+        fields={"event_type": "commitment", "description": original_quote},
+    )
+    dependency = _dependency(session, project, party, "FACT-CORRECT-1", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=original_quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, original_quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+
+    successor = correct_statement_facts(
+        session,
+        StatementFactCorrectionDraft(
+            candidate_id=candidate.id,
+            expected_statement_event_id=result.event.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            event_date=date(2025, 1, 17),
+            description=corrected_quote,
+            new_timing=StatementTiming.day("July 1, 2026", date(2026, 7, 1)),
+            previous_timing=None,
+            evidence=(CitedStatementEvidence(document.id, 1, corrected_quote),),
+        ),
+        principal=RECORDER,
+    )
+
+    lineage = session.get(CommitmentLineage, result.event.commitment_lineage_id)
+    assert successor.commitment_lineage_id == result.event.commitment_lineage_id
+    assert successor.supersedes_event_id == result.event.id
+    assert successor.new_timing.text == "July 1, 2026"
+    assert lineage.plan_needs_review is True
+    assert current_internal_owner_decision(
+        session, CoordinationSubject.statement(lineage.id)
+    ).id == result.internal_owner_decision.id
+    memberships = current_statement_evidence_memberships(
+        session, (dependency.id,)
+    ).for_dependency(dependency.id)
+    assert [(member.event_id, member.evidence_link.quote) for member in memberships] == [
+        (successor.id, corrected_quote)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("dependent_kind", "message"),
+    (
+        ("closure", "later closure"),
+        ("report", "Report publication"),
+        ("audit", "later recorded act"),
+        ("dependency_audit", "later recorded act"),
+        ("unrelated_audit", None),
+    ),
+)
+def test_undo_refuses_after_a_scoped_closure_or_published_report(
+    session, project, party, roster_entry, dependent_kind, message
+):
+    """Only later acts that use an exact Save result block its Undo."""
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(session, project, f"undo-{dependent_kind}.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    dependency = _dependency(session, project, party, f"UNDO-{dependent_kind}", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+
+    if dependent_kind == "closure":
+        closure = DependencyEvent(
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_external_org_id=party.id,
+            scope_mode="selected",
+            event_type="closure",
+            event_date=date(2026, 2, 1),
+            description="Relocation complete.",
+            created_by="local:closure-reviewer",
+        )
+        session.add(closure)
+        session.flush()
+        closure_scope = session.scalar(
+            select(DependencyEventScopeDecision).where(
+                DependencyEventScopeDecision.event_id == closure.id
+            )
+        )
+        session.add(
+            DependencyEventScope(
+                event_id=closure.id,
+                scope_decision_id=closure_scope.id,
+                dependency_id=dependency.id,
+                recorded_by="local:closure-reviewer",
+            )
+        )
+    elif dependent_kind == "report":
+        session.add(
+            ReportRun(
+                project_id=project.id,
+                ruleset_version="test-ruleset",
+                snapshot_json={"dependencies": {dependency.ref_code: {"id": dependency.id}}},
+            )
+        )
+    elif dependent_kind == "audit":
+        audit.record(
+            session,
+            principal=RECORDER,
+            action=audit.CORRECT_STATEMENT_SCOPE,
+            entity_type=audit.COMMITMENT_LINEAGE,
+            entity_id=result.event.commitment_lineage_id,
+            before={"scope_decision_id": result.receipt.scope_decision_id},
+            after={"scope_decision_id": result.receipt.scope_decision_id},
+        )
+    elif dependent_kind == "dependency_audit":
+        audit.record(
+            session,
+            principal=RECORDER,
+            action=audit.SET_NEXT_ACTION,
+            entity_type=audit.DEPENDENCY,
+            entity_id=dependency.id,
+            before={"dependency_id": dependency.id},
+            after={
+                "dependency_id": dependency.id,
+                "scope_decision_id": result.receipt.scope_decision_id,
+            },
+        )
+    else:
+        audit.record(
+            session,
+            principal=RECORDER,
+            action=audit.EDIT_CANDIDATE,
+            entity_type=audit.CANDIDATE,
+            entity_id=candidate.id,
+            before={"candidate_id": candidate.id},
+            after={"candidate_id": candidate.id, "note": "unrelated review"},
+        )
+    session.flush()
+
+    if message is not None:
+        with pytest.raises(StatementCoordinationUndoRefusal, match=message):
+            undo_statement_coordination(session, result.receipt.id, principal=RECORDER)
+        assert session.scalar(
+            select(StatementCoordinationReversal.id).where(
+                StatementCoordinationReversal.receipt_id == result.receipt.id
+            )
+        ) is None
+    else:
+        assert undo_statement_coordination(
+            session, result.receipt.id, principal=RECORDER
+        )
+
+
+def test_factual_correction_carries_an_all_active_snapshot_without_reselecting_scope(
+    session, project, party, roster_entry
+):
+    original_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    corrected_quote = "Kinder Morgan will complete relocation by July 1, 2026."
+    document = _document(
+        session,
+        project,
+        "correct-all-active-scope.pdf",
+        f"{original_quote}\n{corrected_quote}",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=original_quote,
+        fields={"event_type": "commitment", "description": original_quote},
+    )
+    original_dependency = _dependency(session, project, party, "SCOPE-1", "First KM line")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=original_quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, original_quote),),
+            scope=StatementScope.all_active(),
+        ),
+        principal=RECORDER,
+    )
+    later_dependency = _dependency(session, project, party, "SCOPE-2", "Later KM line")
+
+    successor = correct_statement_facts(
+        session,
+        StatementFactCorrectionDraft(
+            candidate_id=candidate.id,
+            expected_statement_event_id=result.event.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            event_date=date(2025, 1, 17),
+            description=corrected_quote,
+            new_timing=StatementTiming.day("July 1, 2026", date(2026, 7, 1)),
+            previous_timing=None,
+            evidence=(CitedStatementEvidence(document.id, 1, corrected_quote),),
+        ),
+        principal=RECORDER,
+    )
+
+    carried_scope = session.scalar(
+        select(DependencyEventScopeDecision).where(
+            DependencyEventScopeDecision.event_id == successor.id
+        )
+    )
+    assert carried_scope.scope_mode == "carried_forward"
+    assert session.scalars(
+        select(DependencyEventScope.dependency_id)
+        .where(DependencyEventScope.scope_decision_id == carried_scope.id)
+        .order_by(DependencyEventScope.dependency_id)
+    ).all() == [original_dependency.id]
+    assert later_dependency.id != original_dependency.id
+
+
+def test_not_relevant_is_reasoned_reversible_and_never_creates_a_statement_or_plan(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan discussed traffic control in the project meeting."
+    document = _document(session, project, "not-relevant.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "mention", "description": quote},
+    )
+
+    with pytest.raises(StatementCoordinationRefusal, match="confirmation"):
+        mark_statement_not_relevant(
+            session,
+            candidate.id,
+            reason="outside_project_scope",
+            confirmed=False,
+            principal=RECORDER,
+        )
+    disposition = mark_statement_not_relevant(
+        session,
+        candidate.id,
+        reason="outside_project_scope",
+        confirmed=True,
+        principal=RECORDER,
+    )
+
+    session.refresh(candidate)
+    assert candidate.state == "rejected"
+    assert disposition.reason == "outside_project_scope"
+    assert session.scalar(select(func.count()).select_from(DependencyEvent)) == 0
+    assert session.scalar(select(func.count()).select_from(StatementCoordinationReceipt)) == 0
+    reversal = restore_statement_not_relevant(session, disposition.id, principal=RECORDER)
+
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+    assert reversal.candidate_disposition_id == disposition.id
+    assert session.get(CandidateDisposition, disposition.id).reason == "outside_project_scope"
+
+
+def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
+    session, project, party, roster_entry
+):
+    """The browser exposes lifecycle commands but never rebuilds their logic."""
+    undo_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    undo_document = _document(session, project, "http-undo.pdf", undo_quote)
+    undo_candidate = _candidate(
+        session,
+        project,
+        undo_document,
+        quote=undo_quote,
+        fields={"event_type": "commitment", "description": undo_quote},
+    )
+    correct_quote = "Kinder Morgan will complete relocation by July 1, 2026."
+    correct_document = _document(session, project, "http-correct.pdf", correct_quote)
+    correct_candidate = _candidate(
+        session,
+        project,
+        correct_document,
+        quote=correct_quote,
+        fields={"event_type": "commitment", "description": correct_quote},
+    )
+    wrong_target_quote = "Kinder Morgan will complete relocation by August 1, 2026."
+    wrong_target_document = _document(
+        session, project, "http-wrong-correction-target.pdf", wrong_target_quote
+    )
+    wrong_target_candidate = _candidate(
+        session,
+        project,
+        wrong_target_document,
+        quote=wrong_target_quote,
+        fields={"event_type": "commitment", "description": wrong_target_quote},
+    )
+    dependency = _dependency(session, project, party, "HTTP-CORRECT", "KM crossing")
+    irrelevant_quote = "Kinder Morgan discussed traffic control in the project meeting."
+    irrelevant_document = _document(session, project, "http-not-relevant.pdf", irrelevant_quote)
+    irrelevant_candidate = _candidate(
+        session,
+        project,
+        irrelevant_document,
+        quote=irrelevant_quote,
+        fields={"event_type": "mention", "description": irrelevant_quote},
+    )
+
+    def save(candidate, quote, timing_date):
+        return {
+            "affected_external_org_id": str(party.id),
+            "stated_party": party.name,
+            "stated_external_org_id": str(party.id),
+            "event_date": "2025-01-16",
+            "description": quote,
+            "new_timing_text": quote.split(" by ")[-1].rstrip("."),
+            "new_timing_precision": "day",
+            "new_timing_start_date": timing_date,
+            "new_timing_end_date": timing_date,
+            "scope_mode": "unknown",
+            "internal_owner_roster_entry_id": str(roster_entry.id),
+            "next_action": "Confirm the plan with Kinder Morgan",
+            "action_due_date": "2026-02-01",
+        }
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            saved_undo = client.post(
+                f"/statements/{project.slug}/{undo_candidate.id}/coordinate",
+                data=save(undo_candidate, undo_quote, "2026-06-01"),
+                follow_redirects=False,
+            )
+            assert saved_undo.status_code == 303
+            undo_receipt = session.scalar(
+                select(StatementCoordinationReceipt).where(
+                    StatementCoordinationReceipt.candidate_id == undo_candidate.id
+                )
+            )
+            undone = client.post(
+                f"/statements/{project.slug}/{undo_candidate.id}/coordination/{undo_receipt.id}/undo",
+                follow_redirects=False,
+            )
+            assert undone.status_code == 303
+            assert "Undid guided Save" in client.get(undone.headers["location"]).text
+
+            saved_correct = client.post(
+                f"/statements/{project.slug}/{correct_candidate.id}/coordinate",
+                data=save(correct_candidate, correct_quote, "2026-07-01"),
+                follow_redirects=False,
+            )
+            assert saved_correct.status_code == 303
+            correct_receipt = session.scalar(
+                select(StatementCoordinationReceipt).where(
+                    StatementCoordinationReceipt.candidate_id == correct_candidate.id
+                )
+            )
+            corrected = client.post(
+                f"/statements/{project.slug}/{correct_candidate.id}/correct/scope",
+                data={
+                    "expected_statement_event_id": str(correct_receipt.dependency_event_id),
+                    "expected_scope_decision_id": str(correct_receipt.scope_decision_id),
+                    "scope_mode": "selected",
+                    "dependency_id": str(dependency.id),
+                },
+                follow_redirects=False,
+            )
+            assert corrected.status_code == 303
+            assert session.scalar(
+                select(DependencyEventScope).where(
+                    DependencyEventScope.event_id == correct_receipt.dependency_event_id,
+                    DependencyEventScope.dependency_id == dependency.id,
+                )
+            ) is not None
+
+            saved_wrong_target = client.post(
+                f"/statements/{project.slug}/{wrong_target_candidate.id}/coordinate",
+                data=save(wrong_target_candidate, wrong_target_quote, "2026-08-01"),
+                follow_redirects=False,
+            )
+            assert saved_wrong_target.status_code == 303
+            wrong_target = client.post(
+                f"/statements/{project.slug}/{wrong_target_candidate.id}/correct/scope",
+                data={
+                    "expected_statement_event_id": str(
+                        correct_receipt.dependency_event_id
+                    ),
+                    "expected_scope_decision_id": str(
+                        correct_receipt.scope_decision_id
+                    ),
+                    "scope_mode": "selected",
+                    "dependency_id": str(dependency.id),
+                },
+                follow_redirects=False,
+            )
+            assert wrong_target.status_code == 409
+            assert "does not own this correction target" in wrong_target.text
+            assert session.scalar(
+                select(func.count())
+                .select_from(DependencyEventScopeDecision)
+                .where(
+                    DependencyEventScopeDecision.event_id
+                    == correct_receipt.dependency_event_id
+                )
+            ) == 2
+
+            marked = client.post(
+                f"/statements/{project.slug}/{irrelevant_candidate.id}/not-relevant",
+                data={"reason": "outside_project_scope", "confirmed": "yes"},
+                follow_redirects=False,
+            )
+            assert marked.status_code == 303
+            disposition = session.scalar(
+                select(CandidateDisposition).where(
+                    CandidateDisposition.candidate_id == irrelevant_candidate.id
+                )
+            )
+            marked_page = client.get(marked.headers["location"])
+            assert "Marked Not Relevant" in marked_page.text
+            restored = client.post(
+                f"/statements/{project.slug}/{irrelevant_candidate.id}/not-relevant/{disposition.id}/restore",
+                follow_redirects=False,
+            )
+            assert restored.status_code == 303
+            session.refresh(irrelevant_candidate)
+            assert irrelevant_candidate.state == "pending"
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(

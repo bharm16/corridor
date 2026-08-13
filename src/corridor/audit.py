@@ -88,6 +88,11 @@ ATTACH_STATEMENT = "attach_statement"
 RECORD_VERBAL = "record_verbal"
 DISMISS_DEPENDENCY = "dismiss_dependency"
 COORDINATE_STATEMENT = "coordinate_statement"
+UNDO_COORDINATED_STATEMENT = "undo_coordinated_statement"
+CORRECT_STATEMENT_SCOPE = "correct_statement_scope"
+CORRECT_STATEMENT_FACTS = "correct_statement_facts"
+MARK_STATEMENT_NOT_RELEVANT = "mark_statement_not_relevant"
+RESTORE_STATEMENT_NOT_RELEVANT = "restore_statement_not_relevant"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -127,6 +132,11 @@ ACTIONS = frozenset(
         RECORD_VERBAL,
         DISMISS_DEPENDENCY,
         COORDINATE_STATEMENT,
+        UNDO_COORDINATED_STATEMENT,
+        CORRECT_STATEMENT_SCOPE,
+        CORRECT_STATEMENT_FACTS,
+        MARK_STATEMENT_NOT_RELEVANT,
+        RESTORE_STATEMENT_NOT_RELEVANT,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )

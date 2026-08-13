@@ -155,7 +155,7 @@ EVENT_TYPES = (
 EVENT_SOURCE_KINDS = ("cited", "verbal")
 TIMING_PRECISIONS = ("day", "month", "approximate", "legacy_unknown")
 STATEMENT_ATTRIBUTION_STATES = ("resolved", "unresolved")
-STATEMENT_SCOPE_MODES = ("unknown", "selected", "all_active")
+STATEMENT_SCOPE_MODES = ("unknown", "selected", "all_active", "carried_forward")
 TIMING_CHANGE_DIRECTIONS = ("earlier", "later", "unknown")
 
 
@@ -1494,7 +1494,7 @@ class DependencyEventScopeDecision(Base):
             name="uq_dependency_event_scope_decision_supersedes",
         ),
         CheckConstraint(
-            "scope_mode in ('unknown', 'selected', 'all_active')",
+            "scope_mode in ('unknown', 'selected', 'all_active', 'carried_forward')",
             name="ck_dependency_event_scope_decisions_mode",
         ),
         CheckConstraint(
@@ -1763,6 +1763,41 @@ class Candidate(Base):
     )
 
 
+class CandidateDisposition(Base):
+    """One human disposition of an Unplaced Statement Candidate.
+
+    Candidate state is the current-work projection.  This append-only record
+    preserves why a coordinator accepted a statement or marked it Not Relevant
+    without treating either as a mutation of the extractor's Candidate.
+    """
+
+    __tablename__ = "candidate_dispositions"
+    __table_args__ = (
+        CheckConstraint(
+            "disposition in ('accepted', 'not_relevant')",
+            name="ck_candidate_dispositions_kind",
+        ),
+        CheckConstraint(
+            "(disposition = 'accepted' and reason is null) or "
+            "(disposition = 'not_relevant' and reason is not null)",
+            name="ck_candidate_dispositions_reason",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_candidate_dispositions_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    disposition: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(String(64))
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class StatementCoordinationReceipt(Base):
     """The immutable grouping identity for one guided statement Save.
 
@@ -1788,8 +1823,9 @@ class StatementCoordinationReceipt(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    candidate_id: Mapped[int] = mapped_column(
-        ForeignKey("candidates.id"), unique=True
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    candidate_disposition_id: Mapped[int | None] = mapped_column(
+        ForeignKey("candidate_dispositions.id"), unique=True
     )
     commitment_lineage_id: Mapped[int] = mapped_column(
         ForeignKey("commitment_lineages.id")
@@ -1817,6 +1853,74 @@ class StatementCoordinationReceipt(Base):
     accepted_facts_json: Mapped[dict] = mapped_column(JSONB)
     candidate_payload_sha256: Mapped[str] = mapped_column(String(64))
     recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class StatementCoordinationReversal(Base):
+    """The attributable compensating act for one guided result.
+
+    A reversal names either one grouped Save or one Not Relevant disposition.
+    It changes only current projections; the source rows and their original
+    receipts remain immutable history.
+    """
+
+    __tablename__ = "statement_coordination_reversals"
+    __table_args__ = (
+        CheckConstraint(
+            "(receipt_id is not null and candidate_disposition_id is null) or "
+            "(receipt_id is null and candidate_disposition_id is not null)",
+            name="ck_statement_coordination_reversals_one_source",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_statement_coordination_reversals_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    receipt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("statement_coordination_receipts.id"), unique=True
+    )
+    candidate_disposition_id: Mapped[int | None] = mapped_column(
+        ForeignKey("candidate_dispositions.id"), unique=True
+    )
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"), unique=True)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class StatementCoordinationReversalEffect(Base):
+    """One exact result made noncurrent by a compensating command."""
+
+    __tablename__ = "statement_coordination_reversal_effects"
+    __table_args__ = (
+        CheckConstraint(
+            "effect_kind in ("
+            "'statement', 'scope_decision', 'work_decision', 'milestone_link', "
+            "'candidate_disposition', 'candidate_projection', 'lineage_projection', "
+            "'audit_pointer', 'grouping_receipt'"
+            ")",
+            name="ck_statement_coordination_reversal_effects_kind",
+        ),
+        UniqueConstraint(
+            "reversal_id",
+            "effect_kind",
+            "target_id",
+            name="uq_statement_coordination_reversal_effect",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    reversal_id: Mapped[int] = mapped_column(
+        ForeignKey("statement_coordination_reversals.id")
+    )
+    effect_kind: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

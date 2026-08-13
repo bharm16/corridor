@@ -18,7 +18,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b230e4f5a6b7"
 REASON_PROJECTION_PREDECESSOR = "c249d7e1f4a3"
-HEAD = "e251a7c4d9e2"
+HEAD = "b252a7c4d9e2"
 
 
 def _upgrade(database_url: str, target: str) -> None:
@@ -52,6 +52,26 @@ def test_work_decision_expansion_is_one_linear_head_on_a_fresh_database():
                         "select exists (select 1 from information_schema.tables "
                         "where table_schema = 'public' "
                         "and table_name = 'commitment_lineages')"
+                    )
+                ) is True
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from information_schema.tables "
+                        "where table_schema = 'public' "
+                        "and table_name = 'candidate_dispositions')"
+                    )
+                ) is True
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from information_schema.tables "
+                        "where table_schema = 'public' "
+                        "and table_name = 'statement_coordination_reversals')"
+                    )
+                ) is True
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from pg_trigger "
+                        "where tgname = 'statement_coordination_reversals_are_immutable')"
                     )
                 ) is True
                 assert connection.scalar(

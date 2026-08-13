@@ -20,6 +20,8 @@
   .check { display:block; padding:.25rem 0; font-weight:400; } .check input { margin-right:.35rem; }
   button { font:inherit; padding:.45rem .85rem; border:1px solid #111; background:#111; color:#fff; border-radius:4px; cursor:pointer; }
   .summary { display:grid; grid-template-columns:max-content 1fr; gap:.25rem .7rem; }
+  .history { margin:1.4rem 0 0; padding:0; list-style:none; border-top:1px solid var(--line); }
+  .history li { padding:.55rem 0; border-bottom:1px solid var(--line); }
   @media (max-width:640px) { .grid { grid-template-columns:1fr; } }
 </style>
 
@@ -45,6 +47,18 @@
         <dt>Internal Owner</dt><dd>{{ line.internal_owner or '—' }}</dd>
         <dt>Next Action</dt><dd>{{ line.next_action or '—' }}</dd>
       </dl>
+      <p><a href="/statements/{{ project.slug }}/{{ candidate.id }}/correct">Correct one supported fact or the Commitment Scope</a></p>
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/coordination/{{ receipt.id }}/undo">
+        <button type="submit">Undo this Save</button>
+      </form>
+    </section>
+  {% elif not_relevant %}
+    <section class="saved">
+      <b>Marked Not Relevant.</b> Reason: {{ not_relevant.reason.replace('_', ' ') }}.
+      The Candidate, its payload, and its Evidence remain in append-only history.
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant/{{ not_relevant.id }}/restore">
+        <button type="submit">Restore this Candidate to prioritized work</button>
+      </form>
     </section>
   {% else %}
     <h2>Verified Evidence</h2>
@@ -129,6 +143,31 @@
       </fieldset>
       <button type="submit">Save statement and Coordination Plan</button>
     </form>
+    <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant">
+      <fieldset>
+        <legend>Not Relevant</legend>
+        <p class="muted">Use only when this Candidate does not belong in the project record. It creates no statement or Coordination Plan and can be reversed.</p>
+        <label for="not-relevant-reason">Structured reason</label>
+        <select id="not-relevant-reason" name="reason" required>
+          <option value="">Choose a reason</option>
+          <option value="not_an_external_party_statement">not an External Party statement</option>
+          <option value="outside_project_scope">outside project scope</option>
+          <option value="duplicate_statement">duplicate statement</option>
+          <option value="insufficient_source_context">insufficient source context</option>
+        </select>
+        <label class="check"><input type="checkbox" name="confirmed" value="yes" required> I confirm this Candidate is Not Relevant.</label>
+        <button type="submit">Mark Not Relevant</button>
+      </fieldset>
+    </form>
+  {% endif %}
+
+  {% if history %}
+    <h2>Append-only history</h2>
+    <ul class="history">
+      {% for entry in history %}
+        <li><b>{{ entry.label }}</b>{% if entry.detail %} — {{ entry.detail }}{% endif %}</li>
+      {% endfor %}
+    </ul>
   {% endif %}
 </main>
 
