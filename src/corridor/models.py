@@ -1132,6 +1132,67 @@ class ReportRun(Base):
     )
 
 
+class ExternalReportArtifact(Base):
+    """One immutable, already-rendered External Report PDF.
+
+    Rendering is deliberately separate from human release.  This table owns
+    the exact PDF and frozen Report context a project person can later choose;
+    a release receipt copies those bytes so its retention never depends on an
+    artifact URL, path, or regenerating ReportRun.
+    """
+
+    __tablename__ = "external_report_artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "format = 'pdf'", name="ck_external_report_artifacts_pdf_only"
+        ),
+        CheckConstraint(
+            "pdf_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_external_report_artifacts_pdf_sha256",
+        ),
+        CheckConstraint(
+            "octet_length(pdf_bytes) > 5",
+            name="ck_external_report_artifacts_nonempty_pdf",
+        ),
+        CheckConstraint(
+            "provenance_mode in ('all-supported-sources', 'document-only')",
+            name="ck_external_report_artifacts_provenance_mode",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(evaluation_context_json) = 'object'",
+            name="ck_external_report_artifacts_evaluation_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(record_context_json) = 'object'",
+            name="ck_external_report_artifacts_context_object",
+        ),
+        CheckConstraint(
+            "length(trim(artifact_name)) > 0",
+            name="ck_external_report_artifacts_artifact_name",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    artifact_name: Mapped[str] = mapped_column(Text)
+    format: Mapped[str] = mapped_column(String(16), server_default="pdf")
+    pdf_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    pdf_sha256: Mapped[str] = mapped_column(String(64))
+    evaluated_on: Mapped[date] = mapped_column(Date)
+    ruleset_version: Mapped[str] = mapped_column(String(64))
+    evaluation_context_json: Mapped[dict] = mapped_column(JSONB)
+    provenance_mode: Mapped[str] = mapped_column(String(32))
+    record_context_json: Mapped[dict] = mapped_column(JSONB)
+    rendered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    @property
+    def digest_is_valid(self) -> bool:
+        """Whether the retained bytes still match the rendered artifact digest."""
+        return sha256(self.pdf_bytes).hexdigest() == self.pdf_sha256
+
+
 class ExternalReportRelease(Base):
     """One immutable authorization of one fixed External Report PDF.
 
@@ -1164,6 +1225,7 @@ class ExternalReportRelease(Base):
             name="ck_external_report_releases_context_object",
         ),
         CheckConstraint(
+            "evaluation_context_json is null or "
             "jsonb_typeof(evaluation_context_json) = 'object'",
             name="ck_external_report_releases_evaluation_object",
         ),
@@ -1175,17 +1237,23 @@ class ExternalReportRelease(Base):
             "length(trim(released_by)) > 0",
             name="ck_external_report_releases_released_by",
         ),
+        UniqueConstraint(
+            "artifact_id", name="uq_external_report_releases_artifact_id"
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    artifact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_report_artifacts.id")
+    )
     artifact_name: Mapped[str] = mapped_column(Text)
     format: Mapped[str] = mapped_column(String(16), server_default="pdf")
     pdf_bytes: Mapped[bytes] = mapped_column(LargeBinary)
     pdf_sha256: Mapped[str] = mapped_column(String(64))
     evaluated_on: Mapped[date] = mapped_column(Date)
     ruleset_version: Mapped[str] = mapped_column(String(64))
-    evaluation_context_json: Mapped[dict] = mapped_column(JSONB)
+    evaluation_context_json: Mapped[dict | None] = mapped_column(JSONB)
     provenance_mode: Mapped[str] = mapped_column(String(32))
     record_context_json: Mapped[dict] = mapped_column(JSONB)
     released_by: Mapped[str] = mapped_column(String(128))

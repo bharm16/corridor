@@ -1877,6 +1877,7 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a217_statement_",
+        migration_revision=_STATEMENT_LIFECYCLE_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(
             database=database.name
@@ -2083,6 +2084,7 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a230_multiscope_",
+        migration_revision=_STATEMENT_LIFECYCLE_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(
             database=database.name

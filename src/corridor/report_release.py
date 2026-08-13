@@ -9,16 +9,18 @@ but none may substitute a Report URL, output path, or regenerating callback.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
 from pathlib import PurePath
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor.export import to_pdf_bytes
-from corridor.models import ExternalReportRelease, Project
+from corridor.models import ExternalReportArtifact, ExternalReportRelease, Project
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.report import Report, assert_no_bare_cells, build_report, render
 
@@ -93,27 +95,25 @@ def render_external_report_pdf(
     )
 
 
-def release_external_report(
+def prepare_external_report(
     session: Session,
     *,
     project_id: int,
     rendered: RenderedExternalReport,
-    principal: HumanPrincipal,
-) -> ExternalReportRelease:
-    """Persist one immutable receipt for the exact already-rendered PDF.
+) -> ExternalReportArtifact:
+    """Store one fixed rendered PDF for a later, separate release decision.
 
-    No artifact path, ReportRun id, renderer, or delivery state crosses this
-    boundary.  The nested transaction makes a renderer/storage failure leave
-    no successfully sealed receipt in the caller's transaction.
+    This is the sole boundary that turns a Report and its PDF bytes into a
+    durable artifact.  A human release receives only this artifact identity,
+    so it cannot recreate a Report after the Ledger has changed.
     """
-    principal = require_human_principal(principal)
     if session.get(Project, project_id) is None:
         raise ReleaseRefusal(f"no project {project_id}")
     _validate_rendered_report(project_id, rendered)
     report = rendered.report
     evaluation = report.evaluation
     assert evaluation is not None
-    receipt = ExternalReportRelease(
+    artifact = ExternalReportArtifact(
         project_id=project_id,
         artifact_name=rendered.artifact_name,
         format="pdf",
@@ -126,11 +126,70 @@ def release_external_report(
             "document-only" if report.document_only else "all-supported-sources"
         ),
         record_context_json=_record_context(report),
-        released_by=principal.subject,
     )
     with session.begin_nested():
-        session.add(receipt)
+        session.add(artifact)
         session.flush()
+    return artifact
+
+
+def release_external_report(
+    session: Session,
+    *,
+    project_id: int,
+    artifact_id: int,
+    principal: HumanPrincipal,
+) -> ExternalReportRelease:
+    """Persist one immutable, human-authorized receipt for one stored PDF.
+
+    A renderer, Report, URL, output path, and ReportRun id are deliberately
+    absent from this boundary.  The release acts on an artifact prepared by a
+    separate command, which makes the person choose exact prior bytes rather
+    than whatever a later Report regeneration would produce.
+    """
+    principal = require_human_principal(principal)
+    if session.get(Project, project_id) is None:
+        raise ReleaseRefusal(f"no project {project_id}")
+    artifact = session.get(ExternalReportArtifact, artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise ReleaseRefusal(
+            f"no rendered External Report {artifact_id} in project {project_id}"
+        )
+    _validate_prepared_artifact(artifact)
+    existing = session.scalar(
+        select(ExternalReportRelease).where(
+            ExternalReportRelease.artifact_id == artifact.id
+        )
+    )
+    if existing is not None:
+        return existing
+    receipt = ExternalReportRelease(
+        project_id=project_id,
+        artifact_id=artifact.id,
+        artifact_name=artifact.artifact_name,
+        format=artifact.format,
+        pdf_bytes=bytes(artifact.pdf_bytes),
+        pdf_sha256=artifact.pdf_sha256,
+        evaluated_on=artifact.evaluated_on,
+        ruleset_version=artifact.ruleset_version,
+        evaluation_context_json=deepcopy(artifact.evaluation_context_json),
+        provenance_mode=artifact.provenance_mode,
+        record_context_json=deepcopy(artifact.record_context_json),
+        released_by=principal.subject,
+    )
+    try:
+        with session.begin_nested():
+            session.add(receipt)
+            session.flush()
+    except IntegrityError:
+        existing = session.scalar(
+            select(ExternalReportRelease).where(
+                ExternalReportRelease.artifact_id == artifact.id
+            )
+        )
+        if existing is None:
+            raise
+        return existing
     return receipt
 
 
@@ -220,6 +279,19 @@ def _validate_rendered_report(
         assert_no_bare_cells(report)
     except Exception as exc:
         raise ReleaseRefusal("released content lacks supported provenance") from exc
+
+
+def _validate_prepared_artifact(artifact: ExternalReportArtifact) -> None:
+    """Refuse a tampered stored artifact before it can be copied into history."""
+    if artifact.format != "pdf" or not artifact.pdf_bytes.startswith(b"%PDF-"):
+        raise ReleaseRefusal("stored External Report artifact is not a PDF")
+    if not artifact.pdf_bytes.rstrip():
+        raise ReleaseRefusal("stored External Report PDF bytes are empty")
+    _validate_artifact_name(artifact.artifact_name)
+    if not artifact.digest_is_valid:
+        raise ReleasedArtifactIntegrityError(
+            f"rendered External Report {artifact.id} does not match its SHA-256 digest"
+        )
 
 
 def _validate_artifact_name(artifact_name: object) -> None:

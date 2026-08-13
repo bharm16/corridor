@@ -109,6 +109,7 @@ from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.report_release import (
     ReleaseRefusal,
+    prepare_external_report,
     release_external_report,
     render_external_report_pdf,
 )
@@ -1268,20 +1269,46 @@ def root():
     return RedirectResponse("/work/nhhip-3c2", status_code=302)
 
 
+@app.post("/reports/{slug}/render")
+def render_report(
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """Render and retain one fixed PDF; this does not release it externally."""
+    project = _project(session, slug)
+    try:
+        artifact = prepare_external_report(
+            session,
+            project_id=project.id,
+            rendered=render_external_report_pdf(session, project.id),
+        )
+    except ReleaseRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return JSONResponse(
+        status_code=201,
+        content={
+            "artifact_id": artifact.id,
+            "artifact_name": artifact.artifact_name,
+            "pdf_sha256": artifact.pdf_sha256,
+        },
+    )
+
+
 @app.post("/reports/{slug}/release")
 def release_report(
     slug: str,
+    artifact_id: int = Form(...),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Seal one newly rendered PDF through the public release authority."""
+    """Human-authorize one previously rendered PDF without regenerating it."""
     project = _project(session, slug)
     try:
-        rendered = render_external_report_pdf(session, project.id)
         release = release_external_report(
             session,
             project_id=project.id,
-            rendered=rendered,
+            artifact_id=artifact_id,
             principal=principal,
         )
     except ReleaseRefusal as exc:

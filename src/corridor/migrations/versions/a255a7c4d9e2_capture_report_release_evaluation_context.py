@@ -4,10 +4,10 @@ Revision ID: a255a7c4d9e2
 Revises: f255a7c4d9e2
 
 The initial PDF receipt has separate date and ruleset columns.  This linear
-successor adds the exact threshold map as well, so an External Report can be
-read without guessing which Evaluation configuration produced it.  Any
-pre-successor receipt is honestly marked as having no recoverable threshold
-map rather than being silently assigned current defaults.
+successor adds a nullable threshold map without rewriting those immutable
+receipts.  Future releases record the exact Evaluation inputs; a receipt
+created before this successor remains honestly unexpanded rather than being
+silently assigned current defaults.
 """
 
 from typing import Sequence, Union
@@ -32,22 +32,10 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.execute(
-        """
-        update external_report_releases
-           set evaluation_context_json = jsonb_build_object(
-               'evaluated_on', evaluated_on::text,
-               'ruleset_version', ruleset_version,
-               'thresholds', null,
-               'legacy_unrecorded', true
-           )
-         where evaluation_context_json is null
-        """
-    )
-    op.alter_column("external_report_releases", "evaluation_context_json", nullable=False)
     op.create_check_constraint(
         "ck_external_report_releases_evaluation_object",
         "external_report_releases",
+        "evaluation_context_json is null or "
         "jsonb_typeof(evaluation_context_json) = 'object'",
     )
 

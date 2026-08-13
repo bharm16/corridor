@@ -14,7 +14,14 @@ from corridor.external_statements import (
     StatementTiming,
     record_external_party_statement,
 )
-from corridor.models import Dependency, DocPage, Document, ExternalOrg, Project
+from corridor.models import (
+    Dependency,
+    DocPage,
+    Document,
+    ExternalOrg,
+    ExternalReportArtifact,
+    Project,
+)
 from corridor.principals import HumanPrincipal
 from corridor.report import Cell, build_report
 from corridor.report_release import (
@@ -22,6 +29,7 @@ from corridor.report_release import (
     ReleaseRefusal,
     RenderedExternalReport,
     external_report_release_history,
+    prepare_external_report,
     release_external_report,
     render_external_report_pdf,
     retrieve_released_external_report,
@@ -85,13 +93,20 @@ def _rendered(session, project, *, today=date(2026, 8, 13), document_only=False)
     )
 
 
-def _release(session, project, **kwargs):
+def _prepare(session, project, *, rendered=None):
+    return prepare_external_report(
+        session,
+        project_id=project.id,
+        rendered=rendered or _rendered(session, project),
+    )
+
+
+def _release(session, project, *, artifact=None):
     return release_external_report(
         session,
         project_id=project.id,
-        rendered=_rendered(session, project),
+        artifact_id=(artifact or _prepare(session, project)).id,
         principal=TEST_PRINCIPAL,
-        **kwargs,
     )
 
 
@@ -132,14 +147,11 @@ def _record_statement_version(session, project):
 def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, project):
     rendered = _rendered(session, project)
 
-    release = release_external_report(
-        session,
-        project_id=project.id,
-        rendered=rendered,
-        principal=TEST_PRINCIPAL,
-    )
+    artifact = _prepare(session, project, rendered=rendered)
+    release = _release(session, project, artifact=artifact)
 
     assert release.format == "pdf"
+    assert release.artifact_id == artifact.id
     assert release.pdf_bytes == PDF_A
     assert release.pdf_sha256 == "a2231b868a02ee046abc6015b2ea72648450e70f4690c9c4614369bf45c3badd"
     assert release.evaluated_on == date(2026, 8, 13)
@@ -186,28 +198,77 @@ def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_change
     assert stored.record_context_json == release.record_context_json
 
 
+def test_release_uses_the_prepared_artifact_after_the_ledger_changes(
+    session, project
+):
+    artifact = _prepare(session, project)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.status = "closed"
+    session.flush()
+
+    release = _release(session, project, artifact=artifact)
+
+    assert release.artifact_id == artifact.id
+    assert release.pdf_bytes == artifact.pdf_bytes == PDF_A
+    assert release.record_context_json == artifact.record_context_json
+    assert release.record_context_json["dependencies"] == [
+        {
+            "dependency_id": dependency.id,
+            "ref_code": "DEP-RELEASE-1",
+            "current_statement_event_id": None,
+            "published_statement_event_id": None,
+        }
+    ]
+
+
+def test_retrying_the_same_artifact_returns_its_original_release(session, project):
+    artifact = _prepare(session, project)
+
+    first = _release(session, project, artifact=artifact)
+    retried = _release(session, project, artifact=artifact)
+
+    assert retried.id == first.id
+    assert retried.released_at == first.released_at
+    assert session.scalars(
+        select(ExternalReportRelease).where(
+            ExternalReportRelease.artifact_id == artifact.id
+        )
+    ).all() == [first]
+
+
 def test_changed_bytes_evaluation_mode_population_or_statement_version_must_create_a_new_release(
     session, project
 ):
     first = _release(session, project)
 
-    changed_bytes = release_external_report(
+    changed_bytes = _release(
         session,
-        project_id=project.id,
-        rendered=replace(_rendered(session, project), pdf_bytes=PDF_B),
-        principal=TEST_PRINCIPAL,
+        project,
+        artifact=_prepare(
+            session,
+            project,
+            rendered=replace(_rendered(session, project), pdf_bytes=PDF_B),
+        ),
     )
-    changed_evaluation = release_external_report(
+    changed_evaluation = _release(
         session,
-        project_id=project.id,
-        rendered=_rendered(session, project, today=date(2026, 8, 14)),
-        principal=TEST_PRINCIPAL,
+        project,
+        artifact=_prepare(
+            session,
+            project,
+            rendered=_rendered(session, project, today=date(2026, 8, 14)),
+        ),
     )
-    changed_mode = release_external_report(
+    changed_mode = _release(
         session,
-        project_id=project.id,
-        rendered=_rendered(session, project, document_only=True),
-        principal=TEST_PRINCIPAL,
+        project,
+        artifact=_prepare(
+            session,
+            project,
+            rendered=_rendered(session, project, document_only=True),
+        ),
     )
 
     dependency = session.scalars(
@@ -250,16 +311,16 @@ def test_release_refuses_non_pdf_bytes_bare_or_inconsistent_content_without_a_re
 
     for candidate in (no_pdf, bare, inconsistent):
         with pytest.raises(ReleaseRefusal):
-            release_external_report(
-                session,
-                project_id=project.id,
-                rendered=candidate,
-                principal=TEST_PRINCIPAL,
-            )
+            _prepare(session, project, rendered=candidate)
 
     assert session.scalars(
         select(ExternalReportRelease).where(
             ExternalReportRelease.project_id == project.id
+        )
+    ).all() == []
+    assert session.scalars(
+        select(ExternalReportArtifact).where(
+            ExternalReportArtifact.project_id == project.id
         )
     ).all() == []
 
@@ -312,11 +373,10 @@ def test_honestly_adverse_content_does_not_block_release(session, project):
     )
     rendered = _rendered(session, project)
 
-    release = release_external_report(
+    release = _release(
         session,
-        project_id=project.id,
-        rendered=rendered,
-        principal=TEST_PRINCIPAL,
+        project,
+        artifact=_prepare(session, project, rendered=rendered),
     )
 
     assert release.id is not None
@@ -376,14 +436,32 @@ def test_database_refuses_truncating_sealed_releases(session, project):
     assert retrieve_released_external_report(session, project.id, release.id).id == release.id
 
 
+def test_database_refuses_edits_or_truncation_of_rendered_artifacts(session, project):
+    artifact = _prepare(session, project)
+
+    with pytest.raises(Exception, match="immutable"):
+        with session.begin_nested():
+            session.execute(
+                text(
+                    "update external_report_artifacts "
+                    "set artifact_name = 'rewritten.pdf' where id = :artifact_id"
+                ),
+                {"artifact_id": artifact.id},
+            )
+    with pytest.raises(Exception, match="immutable"):
+        with session.begin_nested():
+            session.execute(text("truncate external_report_artifacts cascade"))
+
+    assert session.get(ExternalReportArtifact, artifact.id).digest_is_valid is True
+
+
 def test_real_renderer_bytes_are_the_bytes_the_release_service_seals(session, project):
     rendered = render_external_report_pdf(session, project.id, today=date(2026, 8, 13))
 
-    release = release_external_report(
+    release = _release(
         session,
-        project_id=project.id,
-        rendered=rendered,
-        principal=TEST_PRINCIPAL,
+        project,
+        artifact=_prepare(session, project, rendered=rendered),
     )
 
     assert rendered.pdf_bytes.startswith(b"%PDF-")
@@ -410,13 +488,13 @@ def test_renderer_failure_cannot_create_a_release_receipt(session, project, monk
     ).all() == []
 
 
-def test_release_control_delegates_to_the_public_service_and_returns_the_sealed_identity(
+def test_render_control_prepares_a_distinct_artifact(
     client, session, project, monkeypatch
 ):
     import corridor.web.app as web_app
 
     rendered = _rendered(session, project)
-    sealed = _release(session, project)
+    artifact = _prepare(session, project, rendered=rendered)
     calls = []
 
     monkeypatch.setattr(
@@ -428,13 +506,51 @@ def test_release_control_delegates_to_the_public_service_and_returns_the_sealed_
     )
     monkeypatch.setattr(
         web_app,
-        "release_external_report",
-        lambda _session, *, project_id, rendered, principal: (
-            calls.append(("release", project_id, rendered, principal)) or sealed
+        "prepare_external_report",
+        lambda _session, *, project_id, rendered: (
+            calls.append(("prepare", project_id, rendered)) or artifact
         ),
     )
 
-    response = client.post(f"/reports/{project.slug}/release")
+    response = client.post(f"/reports/{project.slug}/render")
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "artifact_id": artifact.id,
+        "artifact_name": artifact.artifact_name,
+        "pdf_sha256": artifact.pdf_sha256,
+    }
+    assert calls == [
+        ("render", project.id),
+        ("prepare", project.id, rendered),
+    ]
+
+
+def test_release_control_authorizes_a_prepared_artifact_without_rerendering(
+    client, session, project, monkeypatch
+):
+    import corridor.web.app as web_app
+
+    artifact = _prepare(session, project)
+    sealed = _release(session, project, artifact=artifact)
+    calls = []
+
+    monkeypatch.setattr(
+        web_app,
+        "render_external_report_pdf",
+        lambda *_args, **_kwargs: pytest.fail("release must not rerender a Report"),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "release_external_report",
+        lambda _session, *, project_id, artifact_id, principal: (
+            calls.append(("release", project_id, artifact_id, principal)) or sealed
+        ),
+    )
+
+    response = client.post(
+        f"/reports/{project.slug}/release", data={"artifact_id": artifact.id}
+    )
 
     assert response.status_code == 201
     assert response.json() == {
@@ -442,5 +558,4 @@ def test_release_control_delegates_to_the_public_service_and_returns_the_sealed_
         "artifact_name": sealed.artifact_name,
         "pdf_sha256": sealed.pdf_sha256,
     }
-    assert calls[0] == ("render", project.id)
-    assert calls[1] == ("release", project.id, rendered, TEST_PRINCIPAL)
+    assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]

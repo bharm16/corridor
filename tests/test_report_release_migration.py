@@ -17,7 +17,8 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f253a7c4d9e2"
-HEAD = "b255a7c4d9e2"
+RELEASE_PREDECESSOR = "f255a7c4d9e2"
+HEAD = "e255a7c4d9e2"
 RELEASE_COLUMNS = [
     "id",
     "project_id",
@@ -32,18 +33,37 @@ RELEASE_COLUMNS = [
     "released_by",
     "released_at",
     "evaluation_context_json",
+    "artifact_id",
+]
+ARTIFACT_COLUMNS = [
+    "id",
+    "project_id",
+    "artifact_name",
+    "format",
+    "pdf_bytes",
+    "pdf_sha256",
+    "evaluated_on",
+    "ruleset_version",
+    "evaluation_context_json",
+    "provenance_mode",
+    "record_context_json",
+    "rendered_at",
 ]
 
 
 def _upgrade(database_url: str, target: str) -> None:
-    completed = subprocess.run(
+    completed = _upgrade_result(database_url, target)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def _upgrade_result(database_url: str, target: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
         ["uv", "run", "alembic", "upgrade", target],
         cwd=ROOT,
         env={**os.environ, "DATABASE_URL": database_url},
         capture_output=True,
         text=True,
     )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _release_columns(connection) -> list[str]:
@@ -52,6 +72,17 @@ def _release_columns(connection) -> list[str]:
             "select column_name from information_schema.columns "
             "where table_schema = 'public' "
             "and table_name = 'external_report_releases' "
+            "order by ordinal_position"
+        )
+    ).scalars().all()
+
+
+def _artifact_columns(connection) -> list[str]:
+    return connection.execute(
+        text(
+            "select column_name from information_schema.columns "
+            "where table_schema = 'public' "
+            "and table_name = 'external_report_artifacts' "
             "order by ordinal_position"
         )
     ).scalars().all()
@@ -73,6 +104,7 @@ def test_release_schema_is_one_linear_head_on_a_fresh_database():
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == HEAD
                 assert _release_columns(connection) == RELEASE_COLUMNS
+                assert _artifact_columns(connection) == ARTIFACT_COLUMNS
                 assert connection.scalar(
                     text(
                         "select exists (select 1 from pg_trigger "
@@ -83,6 +115,24 @@ def test_release_schema_is_one_linear_head_on_a_fresh_database():
                     text(
                         "select exists (select 1 from pg_trigger "
                         "where tgname = 'external_report_releases_reject_truncate')"
+                    )
+                ) is True
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from pg_trigger "
+                        "where tgname = 'external_report_artifacts_are_immutable')"
+                    )
+                ) is True
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from pg_trigger "
+                        "where tgname = 'external_report_artifacts_reject_truncate')"
+                    )
+                ) is True
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from pg_constraint "
+                        "where conname = 'uq_external_report_releases_artifact_id')"
                     )
                 ) is True
                 assert connection.execute(
@@ -155,5 +205,144 @@ def test_release_successors_upgrade_the_immediate_predecessor_without_rewriting_
                 assert connection.scalar(
                     text("select count(*) from external_report_releases")
                 ) == 0
+        finally:
+            engine.dispose()
+
+
+def test_release_successors_preserve_an_existing_f255_receipt_without_backfill():
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="issue255_existing_release_",
+        migration_revision=RELEASE_PREDECESSOR,
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        rendered = database_url.render_as_string(hide_password=False)
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "insert into projects (slug, name, is_synthetic) "
+                        "values ('issue255-existing-release', "
+                        "'Issue 255 existing release', true)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "insert into external_report_releases "
+                        "(project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+                        "evaluated_on, ruleset_version, provenance_mode, "
+                        "record_context_json, released_by) "
+                        "select id, 'before-a255.pdf', 'pdf', "
+                        "decode('255044462d312e370a7072696f720a2525454f46', 'hex'), "
+                        "'07b7396f531418f26a52721f1250e82081e2bbb82b76a129e10e80a1b2288790', "
+                        "date '2026-08-13', 'v0.4', 'all-supported-sources', "
+                        "'{\"dependencies\":[],\"party_statements\":[]}'::jsonb, "
+                        "'local:predecessor' from projects "
+                        "where slug = 'issue255-existing-release'"
+                    )
+                )
+
+            _upgrade(rendered, "head")
+
+            with engine.connect() as connection:
+                assert connection.scalar(text("select version_num from alembic_version")) == HEAD
+                assert connection.execute(
+                    text(
+                        "select artifact_name, pdf_sha256, evaluation_context_json, "
+                        "artifact_id from external_report_releases"
+                    )
+                ).one() == (
+                    "before-a255.pdf",
+                    "07b7396f531418f26a52721f1250e82081e2bbb82b76a129e10e80a1b2288790",
+                    None,
+                    None,
+                )
+        finally:
+            engine.dispose()
+
+
+def test_idempotence_migration_refuses_duplicate_d255_release_history_atomically():
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="issue255_duplicate_d255_",
+        migration_revision="d255a7c4d9e2",
+    ) as database:
+        database_url = make_url(settings.database_url).set(database=database.name)
+        rendered = database_url.render_as_string(hide_password=False)
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "insert into projects (slug, name, is_synthetic) "
+                        "values ('issue255-duplicate-d255', 'Issue 255 duplicate d255', true)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "insert into external_report_artifacts "
+                        "(project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+                        "evaluated_on, ruleset_version, evaluation_context_json, "
+                        "provenance_mode, record_context_json) "
+                        "select id, 'd255.pdf', 'pdf', "
+                        "decode('255044462d312e370a7072696f720a2525454f46', 'hex'), "
+                        "'07b7396f531418f26a52721f1250e82081e2bbb82b76a129e10e80a1b2288790', "
+                        "date '2026-08-13', 'v0.4', '{\"thresholds\":{}}'::jsonb, "
+                        "'all-supported-sources', "
+                        "'{\"dependencies\":[],\"party_statements\":[]}'::jsonb "
+                        "from projects where slug = 'issue255-duplicate-d255'"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "insert into external_report_releases "
+                        "(project_id, artifact_id, artifact_name, format, pdf_bytes, "
+                        "pdf_sha256, evaluated_on, ruleset_version, evaluation_context_json, "
+                        "provenance_mode, record_context_json, released_by) "
+                        "select project_id, id, artifact_name, format, pdf_bytes, "
+                        "pdf_sha256, evaluated_on, ruleset_version, evaluation_context_json, "
+                        "provenance_mode, record_context_json, 'local:release-retry' "
+                        "from external_report_artifacts "
+                        "where artifact_name = 'd255.pdf'"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "insert into external_report_releases "
+                        "(project_id, artifact_id, artifact_name, format, pdf_bytes, "
+                        "pdf_sha256, evaluated_on, ruleset_version, evaluation_context_json, "
+                        "provenance_mode, record_context_json, released_by) "
+                        "select project_id, id, artifact_name, format, pdf_bytes, "
+                        "pdf_sha256, evaluated_on, ruleset_version, evaluation_context_json, "
+                        "provenance_mode, record_context_json, 'local:release-retry' "
+                        "from external_report_artifacts "
+                        "where artifact_name = 'd255.pdf'"
+                    )
+                )
+
+            refused = _upgrade_result(rendered, "head")
+
+            assert refused.returncode != 0
+            assert "has 2 immutable release receipts" in (
+                refused.stdout + refused.stderr
+            )
+            with engine.connect() as connection:
+                assert connection.scalar(text("select version_num from alembic_version")) == (
+                    "d255a7c4d9e2"
+                )
+                assert connection.scalar(
+                    text("select count(*) from external_report_releases")
+                ) == 2
+                assert connection.scalar(
+                    text(
+                        "select exists (select 1 from pg_constraint "
+                        "where conname = 'uq_external_report_releases_artifact_id')"
+                    )
+                ) is False
         finally:
             engine.dispose()
