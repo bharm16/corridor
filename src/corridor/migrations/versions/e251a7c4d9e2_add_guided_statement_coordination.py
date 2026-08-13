@@ -78,6 +78,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     raise RuntimeError(
-        "cannot downgrade guided statement coordination: grouping receipts "
-        "and roster-bound plans cannot be round-tripped safely"
+        "cannot downgrade statement contract: guided grouping receipts and "
+        "roster-bound plans cannot be round-tripped safely"
     )
