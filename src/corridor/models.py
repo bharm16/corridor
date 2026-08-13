@@ -898,8 +898,16 @@ class WorkDecision(Base):
             name="ck_work_decisions_exactly_one_subject",
         ),
         CheckConstraint(
-            "field in ('internal_owner', 'next_action', 'milestone_impact')",
+            "field in ('internal_owner', 'next_action', 'milestone_impact', 'deferral')",
             name="ck_work_decisions_field",
+        ),
+        CheckConstraint(
+            "(field <> 'deferral' and deferral_reason is null and deferral_return_date is null) "
+            "or (field = 'deferral' and ((after_value is null and deferral_reason is null "
+            "and deferral_return_date is null) or (after_value is not null "
+            "and deferral_reason in ('waiting_for_information', 'waiting_for_external_party', "
+            "'assigned_to_someone_else') and deferral_return_date is not null)))",
+            name="ck_work_decisions_deferral_shape",
         ),
         Index(
             "uq_work_decisions_one_root",
@@ -941,6 +949,21 @@ class WorkDecision(Base):
         String(64), server_default=text("null")
     )
     note: Mapped[str | None] = mapped_column(Text, server_default=text("null"))
+    # A deferral is a distinct Work Decision: unlike an unknown Action Due
+    # Date, it names both why immediate attention can wait and exactly when
+    # Corridor must put the item back in front of the coordinator.
+    deferral_reason: Mapped[str | None] = mapped_column(
+        String(64), server_default=text("null")
+    )
+    deferral_return_date: Mapped[date | None] = mapped_column(Date)
+    # The factual state a future return condition was set against.  These
+    # immutable observations let the work list reopen when the party's
+    # statement, its scope, or its Milestone Impact changes.
+    observed_statement_event_id: Mapped[int | None] = mapped_column(BigInteger)
+    observed_scope_decision_id: Mapped[int | None] = mapped_column(BigInteger)
+    observed_milestone_impact_decision_id: Mapped[int | None] = mapped_column(
+        BigInteger
+    )
 
 
 class RevisionComparisonRun(Base):
@@ -1231,6 +1254,8 @@ class Dependency(Base):
     next_action: Mapped[str | None] = mapped_column(Text)
     action_due_date: Mapped[date | None] = mapped_column(Date)
     action_due_date_reason: Mapped[str | None] = mapped_column(String(64))
+    deferral_reason: Mapped[str | None] = mapped_column(String(64))
+    deferral_return_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(
         _enum(*DEP_STATUSES, name="dep_status"),
         default="identified",
@@ -1287,6 +1312,8 @@ class CommitmentLineage(Base):
     next_action: Mapped[str | None] = mapped_column(Text)
     action_due_date: Mapped[date | None] = mapped_column(Date)
     action_due_date_reason: Mapped[str | None] = mapped_column(String(64))
+    deferral_reason: Mapped[str | None] = mapped_column(String(64))
+    deferral_return_date: Mapped[date | None] = mapped_column(Date)
     milestone_impact: Mapped[str | None] = mapped_column(String(32))
     milestone_ids: Mapped[list[int]] = mapped_column(
         ARRAY(BigInteger), default=list, server_default="{}"
@@ -1359,6 +1386,13 @@ class DependencyEvent(Base):
     # durable subject identity.  Closure is a distinct External Party fact;
     # it cannot become a Coordination Subject by borrowing this key.
     commitment_lineage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("commitment_lineages.id"), server_default=text("null")
+    )
+    # A closure is never a Coordination Subject, but it must name the one
+    # Commitment Lineage whose External Party fact it establishes as closed.
+    # Matching only on affected party would wrongly close every unresolved
+    # party-level Commitment.
+    closes_commitment_lineage_id: Mapped[int | None] = mapped_column(
         ForeignKey("commitment_lineages.id"), server_default=text("null")
     )
     supersedes_event_id: Mapped[int | None] = mapped_column(
