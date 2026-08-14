@@ -5,7 +5,7 @@ import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -692,7 +692,7 @@ def test_work_list_caps_immediate_cards_after_authoritative_work_and_orders_cand
         "Review a possible timing change."
     )
     assert work_list.immediate[4].candidate_decision == (
-        "Decide this statement's scope."
+        "Review who spoke, what timing is supported, and where this statement belongs."
     )
     assert all(item.kind != "candidate" for item in work_list.immediate[:2])
     assert work_list.candidate_backlog_total == 3
@@ -732,7 +732,9 @@ def test_candidate_lead_exposes_source_context_without_promoting_extracted_facts
     assert item.statement_event_id is None
     assert item.dependency_id is None
     assert item.timing_text is None
-    assert item.candidate_decision == "Decide this statement's scope."
+    assert item.candidate_decision == (
+        "Review who spoke, what timing is supported, and where this statement belongs."
+    )
     assert item.candidate_source is not None
     assert item.candidate_source.context_external_org == "Equistar"
     assert item.candidate_source.quote == quote
@@ -769,7 +771,11 @@ def test_coordinator_home_labels_candidate_source_context_without_inventing_a_da
     assert "meeting-notes/bounded-work-list.pdf" in response.text
     assert "2025-01-15" in response.text
     assert "page 1" in response.text
-    assert "Decide this statement&#39;s scope." in response.text
+    assert (
+        "Review who spoke, what timing is supported, and where this statement belongs."
+        in response.text
+    )
+    assert "Decide this statement&#39;s scope." not in response.text
     assert "2025-01-01" not in response.text
     assert "January 1" not in response.text
     assert f'href="/statements/{project.slug}/{candidate.id}/coordinate"' in response.text
@@ -842,6 +848,114 @@ def test_candidate_backlog_is_searchable_and_paginated_on_the_coordinator_home(
     assert "1 extracted statement" in searched.text
     assert "Air Products will be invited to a May workshop." in searched.text
     assert "General extracted statement 01." not in searched.text
+
+
+def test_authoritative_overflow_is_searchable_and_paginated_in_project_language(
+    client, session, project
+):
+    party = ExternalOrg(name="Overflow Utility work-list-test")
+    session.add(party)
+    session.flush()
+    session.add_all(
+        Dependency(
+            project_id=project.id,
+            ref_code=f"DEP-OVERFLOW-{number:02d}",
+            dep_type="utility_relocation",
+            title=f"North corridor relocation {number:02d}",
+            external_org_id=party.id,
+            resolution_strategy="relocate",
+            status="identified",
+        )
+        for number in range(1, 49)
+    )
+    session.flush()
+
+    first_page = client.get(f"/work/{project.slug}")
+
+    assert first_page.status_code == 200
+    assert "28 more work items" in first_page.text
+    assert "Page 1 of 2" in first_page.text
+    assert "Overflow Utility work-list-test" in first_page.text
+    assert "North corridor relocation 21" in first_page.text
+    assert "North corridor relocation 45" in first_page.text
+    assert "North corridor relocation 46" not in first_page.text
+    assert "DEP-OVERFLOW" not in first_page.text
+    assert "work_page=2" in first_page.text
+    assert 'name="work_search"' in first_page.text
+    assert 'name="statement_search"' in first_page.text
+
+    second_page = client.get(f"/work/{project.slug}?work_page=2")
+
+    assert "North corridor relocation 46" in second_page.text
+    assert "North corridor relocation 48" in second_page.text
+    assert "North corridor relocation 21" not in second_page.text
+
+    searched = client.get(
+        f"/work/{project.slug}?work_search=North+corridor+relocation+48"
+    )
+
+    assert searched.status_code == 200
+    assert "1 more work item" in searched.text
+    assert "North corridor relocation 48" in searched.text
+    assert "North corridor relocation 21" not in searched.text
+
+
+def test_deferred_statement_is_searchable_by_party_and_supported_wording(
+    client, session, project, party
+):
+    statement = _record_month_commitment(session, project, party)
+    defer_work(
+        session,
+        CoordinationSubject.statement(statement.commitment_lineage_id),
+        reason="waiting_for_external_party",
+        return_date=date(2099, 1, 1),
+        principal=RECORDER,
+    )
+
+    response = client.get(f"/work/{project.slug}?work_search=chain+of+title")
+
+    assert response.status_code == 200
+    assert "1 more work item" in response.text
+    assert party.name in response.text
+    assert "provide chain of title" in response.text
+    assert "commitment_lineage_id" not in response.text
+
+
+def test_candidate_work_list_build_has_a_bounded_query_count_at_review_scale(
+    session, project
+):
+    party = ExternalOrg(name="Scale Party work-list-test")
+    session.add(party)
+    session.flush()
+    specifications = [
+        {
+            "event_type": "commitment",
+            "event_date": date(2025, 1, 15),
+            "committed_date": "2025-05-01",
+            "external_org": party.name,
+            "stated_party": party.name,
+            "quote": f"{party.name} committed to finish in May, statement {number:02d}.",
+            "reason": "no_conflict_reference",
+        }
+        for number in range(1, 51)
+    ]
+    _record_pending_statement_candidates(session, project, specifications)
+    statements = 0
+
+    def count_statement(*_args):
+        nonlocal statements
+        statements += 1
+
+    connection = session.connection()
+    event.listen(connection, "before_cursor_execute", count_statement)
+    try:
+        work_list = build_work_list(session, project.id, today=date(2025, 2, 1))
+    finally:
+        event.remove(connection, "before_cursor_execute", count_statement)
+
+    assert len(work_list.immediate) == 20
+    assert work_list.candidate_backlog_total == 30
+    assert statements <= 12
 
 
 def test_coordinator_home_renders_the_public_work_list_and_guided_statement_link(

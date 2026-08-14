@@ -39,6 +39,7 @@
       {% if view.item.kind == "statement" %}External Party Commitment
       {% elif view.item.kind == "dependency" %}Dependency coordination
       {% else %}Extracted statement{% endif %}
+      {% if view.item.kind != "candidate" and view.item.display_name %} — {{ view.item.display_name }}{% endif %}
     </h3>
     {% if view.item.kind == "candidate" %}
       <p class="notice">Extracted for review — not yet in the Ledger.</p>
@@ -53,6 +54,7 @@
       </p>
       <p class="decision">{{ view.item.candidate_decision }}</p>
     {% else %}
+      {% if view.item.description %}<p>{{ view.item.description }}</p>{% endif %}
       {% if view.item.timing_text %}<p class="timing">Timing: {{ view.item.timing_text }}</p>{% endif %}
       <ul>{% for reason in view.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
       {% if view.item.return_date %}<p class="return">Returns {{ view.item.return_date }}.</p>{% endif %}
@@ -76,15 +78,38 @@
     <p class="empty">Nothing needs immediate coordination.</p>
   {% endfor %}
 
-  {% if backlog %}
-    <section class="backlog">
-      <h2>More Ledger work</h2>
-      <p class="muted">Accepted facts remain visible here. A return date appears when coordination is deferred.</p>
-      {% for view in backlog %}
-        {{ work_card(view) }}
-      {% endfor %}
-    </section>
-  {% endif %}
+  <section class="backlog" id="more-work">
+    <h2>More Ledger work</h2>
+    <p class="muted">Accepted facts remain visible here. A return date appears when coordination is deferred.</p>
+    <form class="search" method="get" action="/work/{{ project.slug }}">
+      <label for="work-search">Search party, Dependency, or statement</label>
+      <input id="work-search" name="work_search" value="{{ backlog_search }}">
+      <input type="hidden" name="statement_search" value="{{ candidate_search }}">
+      <input type="hidden" name="statement_page" value="{{ candidate_backlog_page }}">
+      <button type="submit">Search</button>
+    </form>
+    <p>{{ backlog_total }} more work item{% if backlog_total != 1 %}s{% endif %}</p>
+    {% for view in backlog %}
+      {{ work_card(view) }}
+    {% else %}
+      <p class="empty">No more Ledger work matches this search.</p>
+    {% endfor %}
+    {% if backlog_pages %}
+      <nav class="pager" aria-label="More Ledger work pages">
+        <span>
+          {% if backlog_page > 1 %}
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page - 1 }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page }}#more-work">Previous</a>
+          {% endif %}
+        </span>
+        <span>Page {{ backlog_page }} of {{ backlog_pages }}</span>
+        <span>
+          {% if backlog_page < backlog_pages %}
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page + 1 }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page }}#more-work">Next</a>
+          {% endif %}
+        </span>
+      </nav>
+    {% endif %}
+  </section>
 
   <section class="backlog" id="extracted-statements">
     <h2>All extracted statements</h2>
@@ -92,6 +117,8 @@
     <form class="search" method="get" action="/work/{{ project.slug }}">
       <label for="statement-search">Search source, context, or wording</label>
       <input id="statement-search" name="statement_search" value="{{ candidate_search }}">
+      <input type="hidden" name="work_search" value="{{ backlog_search }}">
+      <input type="hidden" name="work_page" value="{{ backlog_page }}">
       <button type="submit">Search</button>
     </form>
     <p>{{ candidate_backlog_total }} extracted statement{% if candidate_backlog_total != 1 %}s{% endif %}</p>
@@ -104,13 +131,13 @@
       <nav class="pager" aria-label="Extracted statement pages">
         <span>
           {% if candidate_backlog_page > 1 %}
-            <a href="/work/{{ project.slug }}?statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page - 1 }}#extracted-statements">Previous</a>
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page - 1 }}#extracted-statements">Previous</a>
           {% endif %}
         </span>
         <span>Page {{ candidate_backlog_page }} of {{ candidate_backlog_pages }}</span>
         <span>
           {% if candidate_backlog_page < candidate_backlog_pages %}
-            <a href="/work/{{ project.slug }}?statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page + 1 }}#extracted-statements">Next</a>
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page + 1 }}#extracted-statements">Next</a>
           {% endif %}
         </span>
       </nav>

@@ -1395,6 +1395,8 @@ def release_report(
 def coordinator_home(
     request: Request,
     slug: str,
+    work_search: str = "",
+    work_page: int = 1,
     statement_search: str = "",
     statement_page: int = 1,
     session: Session = Depends(get_session),
@@ -1404,6 +1406,8 @@ def coordinator_home(
     work_list = build_work_list(
         session,
         project.id,
+        backlog_search=work_search,
+        backlog_page=work_page,
         candidate_search=statement_search,
         candidate_page=statement_page,
     )
@@ -1437,6 +1441,10 @@ def coordinator_home(
             "project": project,
             "immediate": tuple(view(item) for item in work_list.immediate),
             "backlog": tuple(view(item) for item in work_list.backlog),
+            "backlog_total": work_list.backlog_total,
+            "backlog_page": work_list.backlog_page,
+            "backlog_pages": work_list.backlog_pages,
+            "backlog_search": work_list.backlog_search,
             "candidate_backlog": tuple(
                 view(item) for item in work_list.candidate_backlog
             ),

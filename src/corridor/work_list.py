@@ -37,6 +37,7 @@ from corridor.models import (
     DependencyEventTiming,
     Document,
     EvidenceLink,
+    ExternalOrg,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
     is_critical,
@@ -52,6 +53,7 @@ from corridor.work_decisions import (
 
 WORK_LIST_RULESET_VERSION = "work-list-v2"
 MAX_IMMEDIATE_WORK_ITEMS = 20
+WORK_BACKLOG_PAGE_SIZE = 25
 CANDIDATE_BACKLOG_PAGE_SIZE = 25
 
 _REASON_ORDER = {
@@ -114,6 +116,8 @@ class WorkItem:
     return_date: date | None = None
     candidate_source: CandidateSource | None = None
     candidate_decision: str | None = None
+    display_name: str | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,10 @@ class WorkList:
     ruleset_version: str
     immediate: tuple[WorkItem, ...]
     backlog: tuple[WorkItem, ...]
+    backlog_total: int
+    backlog_page: int
+    backlog_pages: int
+    backlog_search: str
     candidate_backlog: tuple[WorkItem, ...]
     candidate_backlog_total: int
     candidate_backlog_page: int
@@ -137,6 +145,8 @@ def build_work_list(
     project_id: int,
     *,
     today: date | None = None,
+    backlog_search: str = "",
+    backlog_page: int = 1,
     candidate_search: str = "",
     candidate_page: int = 1,
 ) -> WorkList:
@@ -220,6 +230,8 @@ def build_work_list(
             past_due=past_due,
             deferral_reason=lineage.deferral_reason,
             return_date=lineage.deferral_return_date,
+            display_name=event.stated_party,
+            description=event.description,
         )
         is_immediate = _is_immediate(lineage, evaluated_on) or _statement_changed(
             session, event, scope, lineage
@@ -236,6 +248,24 @@ def build_work_list(
     immediate.extend(candidate_leads[:open_slots])
     backlog.extend(overflow)
     backlog.sort(key=_item_sort_key)
+    normalized_backlog_search = " ".join(backlog_search.split())
+    if normalized_backlog_search:
+        backlog = [
+            item
+            for item in backlog
+            if _work_item_matches(item, normalized_backlog_search)
+        ]
+    backlog_total = len(backlog)
+    backlog_pages = (
+        backlog_total + WORK_BACKLOG_PAGE_SIZE - 1
+    ) // WORK_BACKLOG_PAGE_SIZE
+    resolved_backlog_page = max(1, backlog_page)
+    if backlog_pages:
+        resolved_backlog_page = min(resolved_backlog_page, backlog_pages)
+    backlog_start = (resolved_backlog_page - 1) * WORK_BACKLOG_PAGE_SIZE
+    backlog_page_items = backlog[
+        backlog_start : backlog_start + WORK_BACKLOG_PAGE_SIZE
+    ]
     candidate_backlog = candidate_leads[open_slots:] + remaining_candidates
     normalized_search = " ".join(candidate_search.split())
     if normalized_search:
@@ -260,7 +290,11 @@ def build_work_list(
         evaluated_on=evaluated_on,
         ruleset_version=WORK_LIST_RULESET_VERSION,
         immediate=tuple(immediate),
-        backlog=tuple(backlog),
+        backlog=tuple(backlog_page_items),
+        backlog_total=backlog_total,
+        backlog_page=resolved_backlog_page,
+        backlog_pages=backlog_pages,
+        backlog_search=normalized_backlog_search,
         candidate_backlog=tuple(candidate_backlog_page),
         candidate_backlog_total=candidate_backlog_total,
         candidate_backlog_page=resolved_page,
@@ -397,6 +431,18 @@ def _dependency_items(
         )
         .order_by(Dependency.id)
     ).all()
+    external_org_ids = {
+        dependency.external_org_id
+        for dependency in dependencies
+        if dependency.external_org_id is not None
+    }
+    external_org_names = dict(
+        session.execute(
+            select(ExternalOrg.id, ExternalOrg.name).where(
+                ExternalOrg.id.in_(external_org_ids)
+            )
+        ).all()
+    )
     disputed = contradicted_fields(session, [dependency.id for dependency in dependencies])
     items = []
     for dependency in dependencies:
@@ -428,6 +474,8 @@ def _dependency_items(
                     past_due=None,
                     deferral_reason=dependency.deferral_reason,
                     return_date=dependency.deferral_return_date,
+                    display_name=external_org_names.get(dependency.external_org_id),
+                    description=dependency.title,
                 ),
                 dependency,
             )
@@ -541,7 +589,9 @@ def _candidate_items(
     session: Session, project_id: int
 ) -> tuple[tuple[WorkItem, ...], tuple[WorkItem, ...]]:
     """Use verified proposal metadata only to choose what a human reads first."""
-    waiting_items = waiting_statements(session, project_id)
+    waiting_items = waiting_statements(
+        session, project_id, include_attachability=False
+    )
     document_ids = {
         waiting["candidate"].source_document_id for waiting in waiting_items
     }
@@ -587,7 +637,10 @@ def _candidate_items(
             candidate_decision=(
                 "Review a possible timing change."
                 if tier == 1
-                else "Decide this statement's scope."
+                else (
+                    "Review who spoke, what timing is supported, and where this "
+                    "statement belongs."
+                )
                 if tier == 2
                 else "Review this extracted statement."
             ),
@@ -667,5 +720,12 @@ def _candidate_matches(item: WorkItem, query: str) -> bool:
         source.document_date.isoformat() if source.document_date else None,
         f"page {source.page}" if source.page else None,
     )
+    haystack = " ".join(value for value in values if value).casefold()
+    return query.casefold() in haystack
+
+
+def _work_item_matches(item: WorkItem, query: str) -> bool:
+    """Search accepted project-language identity, never database identifiers."""
+    values = (item.display_name, item.description, item.timing_text)
     haystack = " ".join(value for value in values if value).casefold()
     return query.casefold() in haystack
