@@ -8,12 +8,12 @@ bundle can therefore prove an unqualified pass only when the measured run had
 neither assistance nor an error; it never turns an internal rehearsal into
 customer-usability evidence.
 
-The earlier SH 99 Admission replay already supplied the isolated-clone and
-mechanical-policy evidence, so this module reuses those mechanisms instead of
-adding a second coordinator service.  Direct database repair, raw technical
-identifiers, and a test-only screen were rejected for the timed journey; when
-the ordinary interface cannot complete a step, this module records that gap
-rather than patching around it.
+The earlier SH 99 Admission replay supplied the shared mechanical-policy
+evidence.  This successor treats that database as a read-only predecessor: it
+restores a data-only dump into a disposable database at the same revision,
+upgrades only the clone to the checkout's exact head, and rechecks the shared
+head and state after disposal.  Direct database repair, raw technical
+identifiers, and test-only screens remain disqualifying in the timed journey.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ from corridor.models import (
     DocPage,
     Document,
     EventAdmissionOutcome,
+    ExternalReportRelease,
     Project,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
@@ -202,6 +203,15 @@ class _CloneVerification:
 
     facts: dict[str, Any]
     released_pdf_bytes: bytes | None
+
+
+@dataclass(frozen=True)
+class _DurableRelease:
+    """Release bytes and receipt captured before broader semantic checks."""
+
+    row: ExternalReportRelease
+    facts: dict[str, Any]
+    pdf_bytes: bytes
 
 
 def publish_coordinator_rehearsal_bundle(
@@ -382,6 +392,7 @@ def _validate_capture_release(
         "ruleset_version",
         "provenance_mode",
         "released_by",
+        "released_by_display",
         "released_at",
         "record_context",
         "evaluation_context",
@@ -587,41 +598,60 @@ def run_sh99_coordinator_rehearsal(
                         release_identity = exc.release_identity
                         released_pdf_bytes = exc.released_pdf_bytes
                         page_image_fetches = exc.page_image_fetches
+                    durable_release: _DurableRelease | None = None
                     try:
-                        clone_verification = _verify_clone_result(
+                        durable_release = _capture_durable_release(
                             session,
                             project_slug=config.project_slug,
                             release_identity=release_identity,
                         )
-                        verification = clone_verification.facts
-                        verification["page_image_fetches"] = (
-                            _verify_page_image_fetches(
-                                page_image_fetches, scenario_source_receipts
+                        verification["release"] = durable_release.facts
+                        release_identity = {
+                            field: durable_release.facts[field]
+                            for field in ("release_id", "artifact_name", "sha256")
+                        }
+                        if (
+                            released_pdf_bytes is not None
+                            and released_pdf_bytes != durable_release.pdf_bytes
+                        ):
+                            raise ValueError(
+                                "ordinary reviewed bytes differ from durable release bytes"
                             )
-                        )
-                        if clone_verification.released_pdf_bytes is not None:
-                            if (
-                                released_pdf_bytes is not None
-                                and released_pdf_bytes
-                                != clone_verification.released_pdf_bytes
-                            ):
-                                raise ValueError(
-                                    "ordinary reviewed bytes differ from durable release bytes"
-                                )
-                            released_pdf_bytes = clone_verification.released_pdf_bytes
-                        release_identity = verification.get("release")
-                        if isinstance(release_identity, dict):
-                            release_identity = {
-                                field: release_identity[field]
-                                for field in ("release_id", "artifact_name", "sha256")
-                            }
-                    except (RuntimeError, ValueError) as exc:
+                        released_pdf_bytes = durable_release.pdf_bytes
+                    except (LookupError, RuntimeError, ValueError) as exc:
+                        durable_release = None
                         errors.append(f"post-rehearsal verification: {exc}")
                         verification = {
                             **verification,
                             "valid": False,
                             "error": str(exc),
                         }
+                    if durable_release is not None:
+                        try:
+                            clone_verification = _verify_clone_result(
+                                session,
+                                project_slug=config.project_slug,
+                                release=durable_release.row,
+                                expected_released_by=config.coordinator_subject,
+                                expected_released_by_display=(
+                                    config.coordinator_display_name
+                                ),
+                            )
+                            verification = {
+                                **clone_verification.facts,
+                                "release": durable_release.facts,
+                                "page_image_fetches": _verify_page_image_fetches(
+                                    page_image_fetches, scenario_source_receipts
+                                ),
+                                "valid": True,
+                            }
+                        except (RuntimeError, ValueError) as exc:
+                            errors.append(f"post-rehearsal verification: {exc}")
+                            verification = {
+                                **verification,
+                                "valid": False,
+                                "error": str(exc),
+                            }
             finally:
                 clone_engine.dispose()
             coverage = _run_scope_coverage(clone_url)
@@ -646,15 +676,51 @@ def run_sh99_coordinator_rehearsal(
     )
     if source_database_mutated:
         errors.append("shared source head or domain state changed during the replay")
+        verification["valid"] = False
     verification["automated_scope_coverage"] = coverage
     if coverage["returncode"] != 0:
         errors.append("selected and all-active scope coverage did not pass")
+        verification["valid"] = False
     if source_dump_sha256 is None:
         raise RuntimeError("source dump digest was not captured")
-    status = _rehearsal_status(
-        assistance=assistance,
-        errors=errors,
-        scenario_timings=scenario_timings,
+    deviations = _rehearsal_deviations(assistance, errors)
+    operations_receipt = {
+        "elapsed_seconds": operations_elapsed,
+        "backfill_elapsed_seconds": config.shared_backfill_elapsed_seconds,
+        "source_database_mutated": source_database_mutated,
+        "source_migration_head_before": source_head_before,
+        "source_migration_head_after": source_head_after,
+        "source_state_sha256_before": _json_sha256(source_state_before),
+        "source_state_sha256_after": _json_sha256(source_state_after),
+        "source_scenario_receipts_sha256_before": _json_sha256(
+            scenario_source_receipts
+        ),
+        "source_scenario_receipts_sha256_after": _json_sha256(
+            scenario_source_receipts_after
+        ),
+        "clone_upgrade": clone_upgrade,
+    }
+    coordinator_receipt = {
+        "elapsed_seconds": coordinator_elapsed,
+        "scenario_timings": scenario_timings,
+        "interactions": interactions,
+        "retries": [],
+    }
+    outcome_facts = {
+        "assistance": assistance,
+        "errors": errors,
+        "deviations": deviations,
+        "released_pdf": release_identity,
+    }
+    status = (
+        "passed"
+        if _semantic_unqualified_pass(
+            operations=operations_receipt,
+            coordinator=coordinator_receipt,
+            outcome=outcome_facts,
+            verification=verification,
+        )
+        else "failed"
     )
     inputs = {
         "source_revision": source["revision"],
@@ -690,34 +756,11 @@ def run_sh99_coordinator_rehearsal(
         config.output_dir,
         CoordinatorRehearsalCapture(
             inputs=inputs,
-            operations={
-                "elapsed_seconds": operations_elapsed,
-                "backfill_elapsed_seconds": config.shared_backfill_elapsed_seconds,
-                "source_database_mutated": source_database_mutated,
-                "source_migration_head_before": source_head_before,
-                "source_migration_head_after": source_head_after,
-                "source_state_sha256_before": _json_sha256(source_state_before),
-                "source_state_sha256_after": _json_sha256(source_state_after),
-                "source_scenario_receipts_sha256_before": _json_sha256(
-                    scenario_source_receipts
-                ),
-                "source_scenario_receipts_sha256_after": _json_sha256(
-                    scenario_source_receipts_after
-                ),
-                "clone_upgrade": clone_upgrade,
-            },
-            coordinator={
-                "elapsed_seconds": coordinator_elapsed,
-                "scenario_timings": scenario_timings,
-                "interactions": interactions,
-                "retries": [],
-            },
+            operations=operations_receipt,
+            coordinator=coordinator_receipt,
             outcome={
                 "status": status,
-                "assistance": assistance,
-                "errors": errors,
-                "deviations": _rehearsal_deviations(assistance, errors),
-                "released_pdf": release_identity,
+                **outcome_facts,
             },
             verification=verification,
             released_pdf_bytes=released_pdf_bytes,
@@ -1148,7 +1191,11 @@ def _run_ordinary_interface_journey(
             _record_interaction(progress.interactions, "save_equistar_statement")
             saved_equistar = client.post(
                 equistar_url,
-                data=_equistar_form(equistar_screen, config.coordinator_display_name),
+                data=_equistar_form(
+                    equistar_screen,
+                    config.coordinator_display_name,
+                    supporting=equistar_evidence,
+                ),
                 follow_redirects=False,
             )
             _require_response(
@@ -1489,8 +1536,18 @@ def _kinder_morgan_form(
     }
 
 
-def _equistar_form(screen_html: str, coordinator_display_name: str) -> dict[str, str]:
+def _equistar_form(
+    screen_html: str,
+    coordinator_display_name: str,
+    *,
+    supporting: _VisibleEvidence | None = None,
+) -> dict[str, str]:
     fields = _ScreenFields(screen_html)
+    if supporting is None:
+        supporting = _supporting_evidence_selection(
+            screen_html,
+            exact_quote=_EQUISTAR_QUOTE,
+        )
     return {
         **fields.hidden,
         "affected_external_org_id": fields.option_value("affected_external_org_id", "Equistar"),
@@ -1505,6 +1562,8 @@ def _equistar_form(screen_html: str, coordinator_display_name: str) -> dict[str,
         "new_timing_precision": "month",
         "new_timing_start_date": "2025-01-01",
         "new_timing_end_date": "2025-01-31",
+        "supporting_page_index": supporting.page_index,
+        "supporting_quote": _EQUISTAR_QUOTE,
         "scope_mode": "unknown",
         "internal_owner_roster_entry_id": fields.option_value(
             "internal_owner_roster_entry_id", coordinator_display_name
@@ -2054,11 +2113,79 @@ def _restore_override(key, previous: object, sentinel: object) -> None:
         app.dependency_overrides[key] = previous
 
 
-def _verify_clone_result(
+def _capture_durable_release(
     session: Session,
     *,
     project_slug: str,
     release_identity: dict[str, Any] | None,
+) -> _DurableRelease:
+    """Capture immutable release facts before any later scenario assertion."""
+
+    project = session.scalar(select(Project).where(Project.slug == project_slug))
+    if project is None:
+        raise RuntimeError("coordinator clone lost its project")
+    if not isinstance(release_identity, dict):
+        raise ValueError("coordinator flow did not produce a release receipt")
+    artifact_name = release_identity.get("artifact_name")
+    pdf_sha256 = release_identity.get("sha256")
+    if (
+        not isinstance(artifact_name, str)
+        or not artifact_name
+        or re.fullmatch(r"[0-9a-f]{64}", str(pdf_sha256)) is None
+    ):
+        raise ValueError("coordinator flow release identity is incomplete")
+    release_id = release_identity.get("release_id")
+    if isinstance(release_id, int) and not isinstance(release_id, bool):
+        release = retrieve_released_external_report(session, project.id, release_id)
+    else:
+        matching = list(
+            session.scalars(
+                select(ExternalReportRelease).where(
+                    ExternalReportRelease.project_id == project.id,
+                    ExternalReportRelease.artifact_name == artifact_name,
+                    ExternalReportRelease.pdf_sha256 == pdf_sha256,
+                )
+            )
+        )
+        if len(matching) != 1:
+            raise ValueError(
+                "durable release history does not identify exactly one reviewed PDF"
+            )
+        release = retrieve_released_external_report(
+            session, project.id, matching[0].id
+        )
+    if (
+        release.pdf_sha256 != pdf_sha256
+        or release.artifact_name != artifact_name
+    ):
+        raise ValueError("durable release disagrees with the ordinary reviewed PDF")
+    facts = {
+        "release_id": release.id,
+        "artifact_name": release.artifact_name,
+        "sha256": release.pdf_sha256,
+        "evaluated_on": release.evaluated_on.isoformat(),
+        "ruleset_version": release.ruleset_version,
+        "provenance_mode": release.provenance_mode,
+        "released_by": release.released_by,
+        "released_by_display": release.released_by_display,
+        "released_at": release.released_at.isoformat(),
+        "record_context": release.record_context_json,
+        "evaluation_context": release.evaluation_context_json,
+    }
+    return _DurableRelease(
+        row=release,
+        facts=facts,
+        pdf_bytes=bytes(release.pdf_bytes),
+    )
+
+
+def _verify_clone_result(
+    session: Session,
+    *,
+    project_slug: str,
+    release: ExternalReportRelease,
+    expected_released_by: str,
+    expected_released_by_display: str,
 ) -> _CloneVerification:
     """Read durable effects after timing stops; this is verifier work, not UI work."""
 
@@ -2161,29 +2288,35 @@ def _verify_clone_result(
         and abstention.dependency_event_id is None,
         "Candidate 7587 no longer has its Admission Abstention",
     )
-    candidate_7587_work = [
-        item
-        for item in (
-            *build_work_list(session, project.id, today=date(2025, 2, 1)).immediate,
-            *build_work_list(session, project.id, today=date(2025, 2, 1)).backlog,
+    candidate_7587_receipts = list(
+        session.scalars(
+            select(StatementCoordinationReceipt).where(
+                StatementCoordinationReceipt.candidate_id == 7587
+            )
         )
-        if item.candidate_id == 7587 or item.source_candidate_id == 7587
-    ]
-    _require(
-        not candidate_7587_work,
-        "Candidate 7587 created a Work Item or past-due derivation",
     )
-    if release_identity is None or not isinstance(release_identity.get("release_id"), int):
-        raise ValueError("coordinator flow did not produce a release receipt")
-    release = retrieve_released_external_report(session, project.id, release_identity["release_id"])
+    work_facts_7587 = _candidate_7587_work_facts(
+        build_work_list(session, project.id, today=date(2025, 2, 1))
+    )
     _require(
-        release.pdf_sha256 == release_identity.get("sha256")
-        and release.artifact_name == release_identity.get("artifact_name"),
-        "released PDF route response disagrees with its fixed receipt",
+        not candidate_7587_receipts
+        and work_facts_7587["forbidden_ledger_work_count"] == 0
+        and work_facts_7587["forbidden_past_due_count"] == 0,
+        "Candidate 7587 created a Commitment, Work Item, or past-due derivation",
+    )
+    _require(
+        release.project_id == project.id
+        and release.released_by == expected_released_by
+        and release.released_by_display == expected_released_by_display,
+        "released PDF does not freeze the exact coordinator actor and display",
     )
     open_party_statements = _open_party_statements(session, project.id)
     expected_party_statements = _party_statement_context(open_party_statements)
     released_party_statements = release.record_context_json.get("party_statements")
+    _require(
+        isinstance(released_party_statements, list),
+        "released PDF has no frozen party-statement context",
+    )
     expected_current_event_ids = {
         entry["current_statement_event_id"] for entry in expected_party_statements
     }
@@ -2197,14 +2330,22 @@ def _verify_clone_result(
         and len(released_open_party_statements) == len(expected_party_statements),
         "released PDF does not cover exactly every open unknown-scope statement",
     )
-    _require(
-        all(
-            entry["current_statement_event_id"] != abstention.dependency_event_id
-            for entry in released_party_statements
-        ),
-        "Candidate 7587 appeared in released report content",
+    serialized_context = _normalized_visible_text(
+        json.dumps(release.record_context_json, sort_keys=True)
     )
-    _require_report_pdf_contents(release.pdf_bytes, open_party_statements)
+    _require(
+        _normalized_visible_text(_AIR_PRODUCTS_INVITATION_QUOTE)
+        not in serialized_context,
+        "Candidate 7587 exact invitation appeared in released report context",
+    )
+    rendered_text = _require_report_pdf_contents(
+        release.pdf_bytes, open_party_statements
+    )
+    _require(
+        _normalized_visible_text(_AIR_PRODUCTS_INVITATION_QUOTE)
+        not in _normalized_visible_text(rendered_text),
+        "Candidate 7587 exact invitation appeared in released PDF content",
+    )
     facts = {
         "candidate_7296": {
             "state": candidates[7296].state,
@@ -2239,19 +2380,10 @@ def _verify_clone_result(
             "state": candidates[7587].state,
             "admission_outcome": abstention.outcome,
             "statement_event_id": abstention.dependency_event_id,
-            "work_item_count": len(candidate_7587_work),
-        },
-        "release": {
-            "release_id": release.id,
-            "artifact_name": release.artifact_name,
-            "sha256": release.pdf_sha256,
-            "evaluated_on": release.evaluated_on.isoformat(),
-            "ruleset_version": release.ruleset_version,
-            "provenance_mode": release.provenance_mode,
-            "released_by": release.released_by,
-            "released_at": release.released_at.isoformat(),
-            "record_context": release.record_context_json,
-            "evaluation_context": release.evaluation_context_json,
+            "coordination_receipt_count": len(candidate_7587_receipts),
+            **work_facts_7587,
+            "report_context_count": 0,
+            "released_pdf_count": 0,
         },
     }
     return _CloneVerification(facts=facts, released_pdf_bytes=bytes(release.pdf_bytes))
@@ -2327,6 +2459,37 @@ def _statement_work_item(work_list, event_id: int):
     )
 
 
+def _candidate_7587_work_facts(work_list) -> dict[str, int]:
+    """Separate the lawful pending source card from forbidden Ledger-derived work."""
+
+    all_items = (
+        *work_list.immediate,
+        *work_list.backlog,
+        *getattr(work_list, "candidate_backlog", ()),
+    )
+    pending_cards = [
+        item
+        for item in all_items
+        if item.kind == "candidate" and item.candidate_id == 7587
+    ]
+    ledger_items = [
+        item
+        for item in (*work_list.immediate, *work_list.backlog)
+        if item.kind != "candidate"
+        and (
+            item.candidate_id == 7587
+            or item.source_candidate_id == 7587
+        )
+    ]
+    return {
+        "pending_candidate_card_count": len(pending_cards),
+        "forbidden_ledger_work_count": len(ledger_items),
+        "forbidden_past_due_count": sum(
+            item.past_due is not None for item in ledger_items
+        ),
+    }
+
+
 def _open_party_statements(session: Session, project_id: int):
     """Read exactly the party-level statements the frozen Report must include."""
 
@@ -2355,7 +2518,7 @@ def _party_statement_context(statements) -> list[dict[str, int | None]]:
     ]
 
 
-def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> None:
+def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> str:
     """Check the retained rendered PDF names every required party-report field."""
 
     import fitz
@@ -2402,8 +2565,14 @@ def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> None:
             required.add("Date not yet known")
         if statement.plan.milestone_impact:
             required.add(statement.plan.milestone_impact.replace("_", " ").capitalize())
-    missing = sorted(value for value in required if value not in rendered_text)
+    normalized_rendered_text = _normalized_visible_text(rendered_text)
+    missing = sorted(
+        value
+        for value in required
+        if _normalized_visible_text(value) not in normalized_rendered_text
+    )
     _require(not missing, "released PDF omits required Report fields: " + ", ".join(missing))
+    return rendered_text
 
 
 def _run_scope_coverage(database_url: str) -> dict[str, Any]:
@@ -2431,20 +2600,6 @@ def _run_scope_coverage(database_url: str) -> dict[str, Any]:
         "output_sha256": _sha256(output.encode()),
         "covered_scope_modes": ["selected", "all_active"],
     }
-
-
-def _rehearsal_status(
-    *,
-    assistance: list[str],
-    errors: list[str],
-    scenario_timings: dict[str, float],
-) -> str:
-    targets = {"7296": 5 * 60, "7129_and_release": 3 * 60}
-    target_miss = any(
-        scenario_timings.get(name, float("inf")) > target
-        for name, target in targets.items()
-    )
-    return "passed" if not assistance and not errors and not target_miss else "failed"
 
 
 def _semantic_unqualified_pass(
@@ -2477,6 +2632,8 @@ def _semantic_unqualified_pass(
         and bool(release.get("artifact_name"))
         and re.fullmatch(r"[0-9a-f]{64}", str(release.get("sha256"))) is not None
         and isinstance(verified_release, dict)
+        and isinstance(verified_release.get("released_by_display"), str)
+        and bool(verified_release.get("released_by_display"))
         and all(
             release.get(field) == verified_release.get(field)
             for field in ("release_id", "artifact_name", "sha256")
@@ -2490,7 +2647,140 @@ def _semantic_unqualified_pass(
         and not coordinator.get("retries")
         and operations.get("source_database_mutated") is False
         and release_valid
-        and verification.get("valid") is True
+        and _semantic_verification_complete(coordinator, verification)
+    )
+
+
+def _semantic_verification_complete(
+    coordinator: dict[str, Any], verification: dict[str, Any]
+) -> bool:
+    """Require the concrete post-run facts behind a current-schema pass."""
+
+    candidate_7296 = verification.get("candidate_7296")
+    candidate_7129 = verification.get("candidate_7129")
+    candidate_7587 = verification.get("candidate_7587")
+    if not all(
+        isinstance(candidate, dict)
+        for candidate in (candidate_7296, candidate_7129, candidate_7587)
+    ):
+        return False
+    assert isinstance(candidate_7296, dict)
+    assert isinstance(candidate_7129, dict)
+    assert isinstance(candidate_7587, dict)
+    km_timings = candidate_7296.get("timings")
+    equistar_timing = candidate_7129.get("timing")
+    equistar_past_due = candidate_7129.get("past_due")
+    if not all(
+        isinstance(value, dict)
+        for value in (km_timings, equistar_timing, equistar_past_due)
+    ):
+        return False
+    assert isinstance(km_timings, dict)
+    km_previous = km_timings.get("previous")
+    km_new = km_timings.get("new")
+    if not isinstance(km_previous, dict) or not isinstance(km_new, dict):
+        return False
+    candidate_facts_valid = (
+        candidate_7296.get("state") == "accepted"
+        and candidate_7296.get("event_type") == "committed_date_change"
+        and candidate_7296.get("direction") == "later"
+        and candidate_7296.get("scope") == "unknown"
+        and candidate_7296.get("milestone_impact") == "not_yet_known"
+        and km_previous
+        == {
+            "text": "March 2026",
+            "precision": "month",
+            "start_date": "2026-03-01",
+            "end_date": "2026-03-31",
+        }
+        and km_new
+        == {
+            "text": "May 16th",
+            "precision": "day",
+            "start_date": "2026-05-16",
+            "end_date": "2026-05-16",
+        }
+        and candidate_7129.get("state") == "accepted"
+        and candidate_7129.get("event_type") == "commitment"
+        and candidate_7129.get("scope") == "unknown"
+        and equistar_timing
+        == {
+            "text": "01/2025",
+            "precision": "month",
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-31",
+        }
+        and equistar_past_due.get("evaluated_on") == "2025-02-01"
+        and equistar_past_due.get("due_after") == "2025-01-31"
+        and equistar_past_due.get("not_past_due_on") == "2025-01-31"
+        and candidate_7587.get("state") == "pending"
+        and candidate_7587.get("admission_outcome") == "abstained"
+        and candidate_7587.get("statement_event_id") is None
+        and candidate_7587.get("coordination_receipt_count") == 0
+        and candidate_7587.get("forbidden_ledger_work_count") == 0
+        and candidate_7587.get("forbidden_past_due_count") == 0
+        and candidate_7587.get("report_context_count") == 0
+        and candidate_7587.get("released_pdf_count") == 0
+    )
+    page_image_fetches = verification.get("page_image_fetches")
+    images_valid = isinstance(page_image_fetches, dict) and set(
+        page_image_fetches
+    ) == {"7296", "7129"}
+    if images_valid:
+        for receipt in page_image_fetches.values():
+            images_valid = bool(
+                isinstance(receipt, dict)
+                and set(receipt)
+                == {"url", "document_name", "registered_page", "sha256", "bytes"}
+                and str(receipt.get("url") or "").startswith("/page-image/")
+                and isinstance(receipt.get("document_name"), str)
+                and bool(receipt.get("document_name"))
+                and isinstance(receipt.get("registered_page"), int)
+                and not isinstance(receipt.get("registered_page"), bool)
+                and receipt["registered_page"] > 0
+                and re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("sha256")))
+                is not None
+                and isinstance(receipt.get("bytes"), int)
+                and not isinstance(receipt.get("bytes"), bool)
+                and receipt["bytes"] > 8
+            )
+            if not images_valid:
+                break
+    coverage = verification.get("automated_scope_coverage")
+    coverage_valid = (
+        isinstance(coverage, dict)
+        and coverage.get("returncode") == 0
+        and coverage.get("covered_scope_modes") == ["selected", "all_active"]
+    )
+    required_interactions = (
+        "save_kinder_morgan_statement",
+        "save_equistar_statement",
+        "open_external_report_release",
+        "render_fixed_pdf_for_review",
+        "review_fixed_pdf_preview",
+        "download_fixed_pdf_for_review",
+        "release_fixed_pdf",
+        "retrieve_released_pdf",
+        "reload_release_history",
+    )
+    interactions = coordinator.get("interactions")
+    interaction_positions: list[int] = []
+    if isinstance(interactions, list):
+        start = 0
+        for required in required_interactions:
+            try:
+                position = interactions.index(required, start)
+            except ValueError:
+                interaction_positions = []
+                break
+            interaction_positions.append(position)
+            start = position + 1
+    return bool(
+        verification.get("valid") is True
+        and candidate_facts_valid
+        and images_valid
+        and coverage_valid
+        and len(interaction_positions) == len(required_interactions)
     )
 
 

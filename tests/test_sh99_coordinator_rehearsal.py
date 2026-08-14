@@ -20,6 +20,8 @@ from corridor.sh99_coordinator_rehearsal import (
     SH99CoordinatorRehearsalConfig,
     _JourneyProgress,
     _fetch_evidence_page_image,
+    _candidate_7587_work_facts,
+    _equistar_form,
     _find_statement_screen,
     _kinder_morgan_form,
     _require_direct_migration_successor,
@@ -176,6 +178,93 @@ def _v3_operations(**overrides) -> dict:
     }
     values.update(overrides)
     return values
+
+
+def _release_facts(pdf_bytes: bytes) -> dict:
+    return {
+        "release_id": 81,
+        "artifact_name": "sh99.pdf",
+        "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+        "evaluated_on": "2026-08-13",
+        "ruleset_version": "v0.4",
+        "provenance_mode": "all-supported-sources",
+        "released_by": "local:sh99-coordinator",
+        "released_by_display": "SH 99 Coordinator",
+        "released_at": "2026-08-13T00:00:00+00:00",
+        "record_context": {"party_statements": []},
+        "evaluation_context": {"evaluated_on": "2026-08-13"},
+    }
+
+
+def _complete_verification(pdf_bytes: bytes) -> dict:
+    """Return the independently checked facts needed to earn a v3 pass."""
+
+    image_receipt = {
+        "url": "/page-image/1435/2",
+        "document_name": "source.pdf",
+        "registered_page": 2,
+        "sha256": "3" * 64,
+        "bytes": 128,
+    }
+    return {
+        "valid": True,
+        "candidate_7296": {
+            "state": "accepted",
+            "event_type": "committed_date_change",
+            "direction": "later",
+            "scope": "unknown",
+            "timings": {
+                "previous": {
+                    "text": "March 2026",
+                    "precision": "month",
+                    "start_date": "2026-03-01",
+                    "end_date": "2026-03-31",
+                },
+                "new": {
+                    "text": "May 16th",
+                    "precision": "day",
+                    "start_date": "2026-05-16",
+                    "end_date": "2026-05-16",
+                },
+            },
+            "milestone_impact": "not_yet_known",
+        },
+        "candidate_7129": {
+            "state": "accepted",
+            "event_type": "commitment",
+            "scope": "unknown",
+            "timing": {
+                "text": "01/2025",
+                "precision": "month",
+                "start_date": "2025-01-01",
+                "end_date": "2025-01-31",
+            },
+            "past_due": {
+                "evaluated_on": "2025-02-01",
+                "due_after": "2025-01-31",
+                "not_past_due_on": "2025-01-31",
+            },
+        },
+        "candidate_7587": {
+            "state": "pending",
+            "admission_outcome": "abstained",
+            "statement_event_id": None,
+            "coordination_receipt_count": 0,
+            "forbidden_ledger_work_count": 0,
+            "forbidden_past_due_count": 0,
+            "report_context_count": 0,
+            "released_pdf_count": 0,
+        },
+        "page_image_fetches": {
+            "7296": image_receipt,
+            "7129": {**image_receipt, "url": "/page-image/1453/2"},
+        },
+        "automated_scope_coverage": {
+            "returncode": 0,
+            "covered_scope_modes": ["selected", "all_active"],
+        },
+        "release": _release_facts(pdf_bytes),
+    }
 
 
 class _ScreenClient:
@@ -424,6 +513,15 @@ def _equistar_screen() -> str:
     """
 
 
+def test_equistar_form_uses_the_visible_supporting_evidence_ordinal():
+    form = _equistar_form(_equistar_screen(), "SH 99 Coordinator")
+
+    assert form["supporting_page_index"] == "0"
+    assert form["supporting_quote"] == EQUISTAR_QUOTE
+    assert "supporting_document_id" not in form
+    assert "supporting_page_no" not in form
+
+
 @pytest.mark.parametrize("history_parse_failure", [False, True])
 def test_ordinary_journey_retains_reviewed_bytes_immediately_after_release(
     monkeypatch, tmp_path, history_parse_failure
@@ -651,6 +749,89 @@ def test_v3_publication_refuses_a_caller_declared_pass_without_release_proof(tmp
         )
 
 
+def test_v3_publication_refuses_boolean_valid_without_semantic_verification(tmp_path):
+    pdf_bytes = b"%PDF-1.4\nrelease without semantic proof\n"
+    release = _release_facts(pdf_bytes)
+
+    with pytest.raises(ValueError, match="declared outcome status"):
+        publish_coordinator_rehearsal_bundle(
+            tmp_path / "forged-semantic-pass",
+            CoordinatorRehearsalCapture(
+                inputs=_v3_inputs(),
+                operations=_v3_operations(),
+                coordinator={
+                    "elapsed_seconds": 10.0,
+                    "scenario_timings": {"7296": 4.0, "7129_and_release": 5.0},
+                    "interactions": [
+                        "save_kinder_morgan_statement",
+                        "save_equistar_statement",
+                        "render_fixed_pdf_for_review",
+                        "release_fixed_pdf",
+                        "retrieve_released_pdf",
+                        "reload_release_history",
+                    ],
+                    "retries": [],
+                },
+                outcome={
+                    "status": "passed",
+                    "assistance": [],
+                    "errors": [],
+                    "deviations": [],
+                    "released_pdf": {
+                        field: release[field]
+                        for field in ("release_id", "artifact_name", "sha256")
+                    },
+                },
+                verification={"valid": True, "release": release},
+                released_pdf_bytes=pdf_bytes,
+            ),
+        )
+
+
+def test_v3_publication_derives_an_unqualified_pass_from_complete_evidence(tmp_path):
+    pdf_bytes = b"%PDF-1.4\ncomplete successor release\n"
+    release = _release_facts(pdf_bytes)
+    summary = publish_coordinator_rehearsal_bundle(
+        tmp_path / "passed",
+        CoordinatorRehearsalCapture(
+            inputs=_v3_inputs(),
+            operations=_v3_operations(),
+            coordinator={
+                "elapsed_seconds": 30.0,
+                "scenario_timings": {"7296": 12.0, "7129_and_release": 18.0},
+                "interactions": [
+                    "save_kinder_morgan_statement",
+                    "save_equistar_statement",
+                    "open_external_report_release",
+                    "render_fixed_pdf_for_review",
+                    "review_fixed_pdf_preview",
+                    "download_fixed_pdf_for_review",
+                    "release_fixed_pdf",
+                    "retrieve_released_pdf",
+                    "reload_release_history",
+                ],
+                "retries": [],
+            },
+            outcome={
+                "status": "passed",
+                "assistance": [],
+                "errors": [],
+                "deviations": [],
+                "released_pdf": {
+                    field: release[field]
+                    for field in ("release_id", "artifact_name", "sha256")
+                },
+            },
+            verification=_complete_verification(pdf_bytes),
+            released_pdf_bytes=pdf_bytes,
+        ),
+    )
+
+    receipt = json.loads((summary.bundle_dir / "receipt.json").read_text())
+    assert receipt["outcome"]["status"] == "passed"
+    assert receipt["outcome"]["unqualified_pass"] is True
+
+
 def test_clone_upgrade_pins_the_direct_predecessor_and_current_head():
     repo_root = Path(__file__).resolve().parents[1]
 
@@ -666,6 +847,38 @@ def test_clone_upgrade_pins_the_direct_predecessor_and_current_head():
             source_revision="d255a7c4d9e2",
             target_revision="f255b7c4d9e3",
         )
+
+
+def test_candidate_7587_pending_source_card_is_not_ledger_derived_work():
+    work_list = SimpleNamespace(
+        immediate=(
+            SimpleNamespace(
+                kind="candidate",
+                candidate_id=7587,
+                source_candidate_id=None,
+                statement_event_id=None,
+                past_due=None,
+            ),
+        ),
+        backlog=(),
+        candidate_backlog=(
+            SimpleNamespace(
+                kind="candidate",
+                candidate_id=7587,
+                source_candidate_id=None,
+                statement_event_id=None,
+                past_due=None,
+            ),
+        ),
+    )
+
+    facts = _candidate_7587_work_facts(work_list)
+
+    assert facts == {
+        "pending_candidate_card_count": 2,
+        "forbidden_ledger_work_count": 0,
+        "forbidden_past_due_count": 0,
+    }
 
 
 def test_assisted_rehearsal_is_sealed_but_never_called_an_unqualified_pass(tmp_path):
@@ -703,6 +916,7 @@ def test_assisted_rehearsal_is_sealed_but_never_called_an_unqualified_pass(tmp_p
                     "ruleset_version": "v0.4",
                     "provenance_mode": "all-supported-sources",
                     "released_by": "local:sh99-coordinator",
+                    "released_by_display": "SH 99 Coordinator",
                     "released_at": "2026-08-13T00:00:00+00:00",
                     "record_context": {"party_statements": []},
                     "evaluation_context": {"evaluated_on": "2026-08-13"},
@@ -735,6 +949,50 @@ def test_assisted_rehearsal_is_sealed_but_never_called_an_unqualified_pass(tmp_p
     assert (summary.bundle_dir / "released-report.pdf").read_bytes() == (
         b"%PDF-1.4\nfixed sh99 report\n"
     )
+
+
+def test_late_semantic_failure_still_seals_the_exact_durable_release(tmp_path):
+    pdf_bytes = b"%PDF-1.4\nreviewed and released before verifier failure\n"
+    release = _release_facts(pdf_bytes)
+    error = "Candidate 7587 exact invitation appeared in released report context"
+
+    summary = publish_coordinator_rehearsal_bundle(
+        tmp_path / "late-failure",
+        CoordinatorRehearsalCapture(
+            inputs=_v3_inputs(),
+            operations=_v3_operations(),
+            coordinator={
+                "elapsed_seconds": 20.0,
+                "scenario_timings": {"7296": 8.0, "7129_and_release": 12.0},
+                "interactions": ["release_fixed_pdf", "retrieve_released_pdf"],
+                "retries": [],
+            },
+            outcome={
+                "status": "failed",
+                "assistance": [],
+                "errors": [f"post-rehearsal verification: {error}"],
+                "deviations": [{"kind": "error", "detail": error}],
+                "released_pdf": {
+                    field: release[field]
+                    for field in ("release_id", "artifact_name", "sha256")
+                },
+            },
+            verification={"valid": False, "error": error, "release": release},
+            released_pdf_bytes=pdf_bytes,
+        ),
+    )
+
+    verified = verify_coordinator_rehearsal_bundle(
+        summary.bundle_dir,
+        expected_integrity_manifest_sha256=summary.integrity_manifest_sha256,
+    )
+    receipt = json.loads((summary.bundle_dir / "receipt.json").read_text())
+
+    assert verified.valid is True
+    assert receipt["outcome"]["status"] == "failed"
+    assert receipt["outcome"]["unqualified_pass"] is False
+    assert receipt["verification"]["release"] == release
+    assert (summary.bundle_dir / "released-report.pdf").read_bytes() == pdf_bytes
 
 
 def test_verify_refuses_tampered_fixed_pdf_bytes(tmp_path):
