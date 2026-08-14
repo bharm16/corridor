@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date
+import base64
 import hashlib
 
 import pytest
@@ -61,10 +62,18 @@ from corridor.work_decisions import (
     current_next_action_decision,
     set_next_action,
 )
-from corridor.web.app import app, get_human_principal, get_session
+from corridor.web.app import (
+    _supporting_statement_evidence,
+    app,
+    get_human_principal,
+    get_session,
+)
 
 
 RECORDER = HumanPrincipal("local:statement-coordinator")
+_PAGE_IMAGE_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 @pytest.fixture
@@ -123,6 +132,17 @@ def _document(session, project, name: str, page_text: str) -> Document:
     session.add(DocPage(document_id=document.id, page_no=1, text=page_text))
     session.flush()
     return document
+
+
+def _register_page_image(session, document: Document, image_path) -> None:
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    image_path.write_bytes(_PAGE_IMAGE_BYTES)
+    page.image_path = str(image_path)
 
 
 def _candidate(
@@ -1080,11 +1100,12 @@ def test_not_relevant_is_reasoned_reversible_and_never_creates_a_statement_or_pl
 
 
 def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
-    session, project, party, roster_entry
+    session, project, party, roster_entry, tmp_path
 ):
     """The browser exposes lifecycle commands but never rebuilds their logic."""
     undo_quote = "Kinder Morgan will complete relocation by June 1, 2026."
     undo_document = _document(session, project, "http-undo.pdf", undo_quote)
+    _register_page_image(session, undo_document, tmp_path / "http-undo.png")
     undo_candidate = _candidate(
         session,
         project,
@@ -1094,6 +1115,7 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
     )
     correct_quote = "Kinder Morgan will complete relocation by July 1, 2026."
     correct_document = _document(session, project, "http-correct.pdf", correct_quote)
+    _register_page_image(session, correct_document, tmp_path / "http-correct.png")
     correct_candidate = _candidate(
         session,
         project,
@@ -1104,6 +1126,11 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
     wrong_target_quote = "Kinder Morgan will complete relocation by August 1, 2026."
     wrong_target_document = _document(
         session, project, "http-wrong-correction-target.pdf", wrong_target_quote
+    )
+    _register_page_image(
+        session,
+        wrong_target_document,
+        tmp_path / "http-wrong-correction-target.png",
     )
     wrong_target_candidate = _candidate(
         session,
@@ -1246,11 +1273,379 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
         app.dependency_overrides.clear()
 
 
+def test_http_screen_shows_the_registered_source_page_without_accepting_party_suggestions(
+    session, project, party, roster_entry, tmp_path
+):
+    quote = "The March 2026 completion timeline seems unattainable."
+    page_text = (
+        "Kinder Morgan Management Meeting Highlights\n"
+        "Relocation schedule discussion\n"
+        f"{quote}\n"
+        "Propose extending completion to May 16th."
+    )
+    document = _document(session, project, "http-page-context.pdf", page_text)
+    page_image = tmp_path / "registered-page.png"
+    _register_page_image(session, document, page_image)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "slip",
+            "description": quote,
+            "external_org": party.name,
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            rendered_page = client.get(f"/page-image/{document.id}/1")
+
+        assert screen.status_code == 200
+        assert f'src="/page-image/{document.id}/1"' in screen.text
+        assert 'alt="Registered source page 1"' in screen.text
+        assert rendered_page.status_code == 200
+        assert rendered_page.headers["content-type"] == "image/png"
+        assert rendered_page.content == page_image.read_bytes()
+        assert "Complete registered page context" in screen.text
+        assert "Kinder Morgan Management Meeting Highlights" in screen.text
+        assert "Relocation schedule discussion" in screen.text
+        assert "Propose extending completion to May 16th." in screen.text
+        assert "Extracted context suggestion — not yet accepted" in screen.text
+        assert f'<option value="{party.id}">{party.name}</option>' in screen.text
+        assert f'<option value="{party.id}" selected>' not in screen.text
+        assert 'id="stated-party-words" name="stated_party" value=""' in screen.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("image_state", "text_source"),
+    (("absent", "text_layer"), ("missing", "ocr")),
+)
+def test_non_cell_page_without_an_available_image_is_disabled_and_refused(
+    session, project, tmp_path, image_state, text_source
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    diagnostic_context = "Extracted diagnostic context is not visual Evidence."
+    document = _document(
+        session,
+        project,
+        f"unavailable-{image_state}-page.pdf",
+        f"{quote}\n{diagnostic_context}",
+    )
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page.text_source = text_source
+    if image_state == "missing":
+        page.image_path = str(tmp_path / "missing-rendered-page.png")
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+
+        assert screen.status_code == 200
+        assert "Rendered source page unavailable" in screen.text
+        assert "retained for diagnosis only" in screen.text
+        assert diagnostic_context in screen.text
+        assert (
+            'name="supporting_page_index" value="0" disabled' in screen.text
+        )
+        with pytest.raises(
+            StatementCoordinationRefusal,
+            match="Save unavailable until every Candidate Evidence page",
+        ):
+            _supporting_statement_evidence(
+                session,
+                candidate,
+                {
+                    "supporting_page_index": "0",
+                    "supporting_quote": quote,
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_save_refuses_original_pdf_evidence_without_a_rendered_image(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(
+        session,
+        project,
+        "original-candidate-page-without-image.pdf",
+        quote,
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(party.id),
+                    "stated_party": party.name,
+                    "stated_external_org_id": str(party.id),
+                    "description": quote,
+                    "new_timing_text": "June 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-06-01",
+                    "new_timing_end_date": "2026-06-01",
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the June plan",
+                    "action_due_date": "2026-02-01",
+                },
+                follow_redirects=False,
+            )
+
+        assert screen.status_code == 200
+        assert "Save unavailable until every Candidate Evidence page" in screen.text
+        assert (
+            '<button type="submit" disabled>Save statement and Coordination Plan</button>'
+            in screen.text
+        )
+        assert response.status_code == 400
+        assert "Save unavailable until every Candidate Evidence page" in response.text
+        assert candidate.state == "pending"
+        assert session.scalar(
+            select(func.count())
+            .select_from(DependencyEvent)
+            .where(DependencyEvent.project_id == project.id)
+        ) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_flow_binds_an_additional_quote_to_the_visible_registered_page(
+    session, project, party, roster_entry
+):
+    party_quote = "Kinder Morgan Management Meeting Highlights"
+    statement_quote = "Will complete relocation by June 1, 2026."
+    document = _document(
+        session,
+        project,
+        "http-page-bound-support.xlsx",
+        f"{party_quote}\n{statement_quote}",
+    )
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page.text_source = "cells"
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=statement_quote,
+        fields={
+            "event_type": "commitment",
+            "description": statement_quote,
+            "external_org": party.name,
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            assert screen.status_code == 200
+            assert party_quote in screen.text
+            assert "read from registered cells" in screen.text
+            assert f'src="/page-image/{document.id}/1"' not in screen.text
+            assert 'name="supporting_page_index" value="0"' in screen.text
+            assert 'name="supporting_document_id"' not in screen.text
+            assert 'name="supporting_page_no"' not in screen.text
+
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(party.id),
+                    "stated_party": party.name,
+                    "stated_external_org_id": str(party.id),
+                    "description": statement_quote,
+                    "new_timing_text": "June 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-06-01",
+                    "new_timing_end_date": "2026-06-01",
+                    "supporting_page_index": "0",
+                    "supporting_quote": party_quote,
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the June plan",
+                    "action_due_date": "2026-02-01",
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+        assert candidate.state == "accepted"
+        assert session.scalar(
+            select(func.count())
+            .select_from(DependencyEventEvidence)
+            .join(DependencyEvent, DependencyEvent.id == DependencyEventEvidence.event_id)
+            .where(DependencyEvent.project_id == project.id)
+        ) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_form_adapter_refuses_when_any_original_candidate_evidence_is_filtered(
+    session, project, tmp_path
+):
+    supporting_quote = "Kinder Morgan Management Meeting Highlights"
+    visible_document = _document(
+        session,
+        project,
+        "visible-supporting-page.pdf",
+        supporting_quote,
+    )
+    _register_page_image(
+        session,
+        visible_document,
+        tmp_path / "visible-supporting-page.png",
+    )
+    filtered_document = _document(
+        session,
+        project,
+        "malformed-hidden-citation.pdf",
+        "This page must not receive the visible page selection.",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        visible_document,
+        quote=supporting_quote,
+        fields={"event_type": "commitment", "description": supporting_quote},
+    )
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {"document_id": filtered_document.id, "page": 1},
+            {
+                "document_id": visible_document.id,
+                "page": 1,
+                "quote": supporting_quote,
+                "verified": True,
+            },
+        ],
+    }
+
+    with pytest.raises(
+        StatementCoordinationRefusal,
+        match="Save unavailable until every Candidate Evidence page",
+    ):
+        _supporting_statement_evidence(
+            session,
+            candidate,
+            {
+                "supporting_page_index": "0",
+                "supporting_quote": supporting_quote,
+            },
+        )
+
+
+def test_http_flow_refuses_a_supporting_quote_not_on_the_selected_registered_page(
+    session, project, party, roster_entry, tmp_path
+):
+    statement_quote = "Will complete relocation by June 1, 2026."
+    document = _document(
+        session,
+        project,
+        "http-fail-closed-support.pdf",
+        f"Kinder Morgan Management Meeting Highlights\n{statement_quote}",
+    )
+    page_image = tmp_path / "fail-closed-registered-page.png"
+    _register_page_image(session, document, page_image)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=statement_quote,
+        fields={"event_type": "commitment", "description": statement_quote},
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(party.id),
+                    "stated_party": party.name,
+                    "stated_external_org_id": str(party.id),
+                    "description": statement_quote,
+                    "new_timing_text": "June 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-06-01",
+                    "new_timing_end_date": "2026-06-01",
+                    "supporting_page_index": "0",
+                    "supporting_quote": "Kinder Morgan fabricated supporting words",
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the June plan",
+                    "action_due_date": "2026-02-01",
+                },
+            )
+
+        assert response.status_code == 400
+        assert "quote was not found on its registered page" in response.text
+        assert candidate.state == "pending"
+        assert session.scalar(
+            select(func.count())
+            .select_from(DependencyEvent)
+            .where(DependencyEvent.project_id == project.id)
+        ) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
     session, project, party, roster_entry
 ):
     quote = "Kinder Morgan will complete relocation by June 1, 2026."
-    document = _document(session, project, "http-guided-flow.pdf", quote)
+    document = _document(session, project, "http-guided-flow.xlsx", quote)
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page.text_source = "cells"
     candidate = _candidate(
         session,
         project,
@@ -1270,6 +1665,11 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
             assert quote in screen.text
             assert "Scope not yet known" in screen.text
             assert "Dana Fields" in screen.text
+            assert "read from registered cells" in screen.text
+            assert (
+                '<button type="submit">Save statement and Coordination Plan</button>'
+                in screen.text
+            )
             assert 'name="scope_mode" value="unknown" required' in screen.text
             assert 'data-dependency-party="' in screen.text
             assert "Kinder Morgan crossing · Kinder Morgan" in screen.text
