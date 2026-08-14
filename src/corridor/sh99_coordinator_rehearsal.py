@@ -548,7 +548,7 @@ def run_sh99_coordinator_rehearsal(
     }
     with tempfile.TemporaryDirectory(prefix="corridor-sh99-coordinator-source-") as parent:
         dump_path = Path(parent) / "source.dump"
-        _dump_source_database(source_database, dump_path)
+        _dump_source_database(source_database, dump_path, compose_root=asset_root)
         source_dump_sha256 = _sha256(dump_path.read_bytes())
         with provision_database(
             config.postgres_admin_url,
@@ -559,7 +559,12 @@ def run_sh99_coordinator_rehearsal(
                 raise ValueError(
                     "disposable database was not provisioned at the source head"
                 )
-            _restore_source_database(source_database, dump_path, database.name)
+            _restore_source_database(
+                source_database,
+                dump_path,
+                database.name,
+                compose_root=asset_root,
+            )
             clone_url = _database_url(config.postgres_admin_url, database.name)
             clone_state_at_source = _read_project_state(clone_url, config.project_slug)
             if clone_state_at_source != source_state_before:
@@ -567,7 +572,9 @@ def run_sh99_coordinator_rehearsal(
                     "restored predecessor clone does not match the pinned source state"
                 )
             if _read_scenario_input_receipts(
-                clone_url, config.project_slug, asset_root=asset_root
+                clone_url,
+                config.project_slug,
+                asset_root=asset_root,
             ) != scenario_source_receipts:
                 raise ValueError(
                     "restored predecessor clone changed a scenario source receipt"
