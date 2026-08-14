@@ -7,7 +7,6 @@ from pathlib import Path
 import subprocess
 
 import pytest
-from sqlalchemy import create_engine, text
 
 from corridor.config import settings
 from corridor.m8_acceptance_bundle import publish_verified_bundle
@@ -18,6 +17,7 @@ from corridor.sh99_admission_acceptance import (
     SH99AdmissionAcceptanceConfig,
     _canonical_json,
     _json_sha256,
+    _read_project_state,
     _sha256,
     run_sh99_admission_acceptance,
     verify_sh99_admission_bundle,
@@ -44,21 +44,94 @@ def _worktree_is_clean() -> bool:
     ).stdout
 
 
-def _source_has_sh99_project() -> bool:
-    """The real replay needs the separately managed shared SH 99 source.
+# This is the lifecycle signature recorded by the sealed #248 pre-state.  It
+# gates that one-time replay; matching counts do not prove dataset identity.
+_EXPECTED_PRE_ADMISSION_LIFECYCLE_SIGNATURE = {
+    "document_count": 159,
+    "active_run_count": 148,
+    "active_run_declaration_count": 148,
+    "candidate_count": 3030,
+    "pending_candidate_count": 3030,
+    "dependency_count": 0,
+    "dependency_event_count": 0,
+    "policy_run_count": 0,
+    "dependency_admission_outcome_count": 0,
+    "event_admission_outcome_count": 0,
+    "admission_audit_count": 0,
+}
 
-    Ordinary test databases deliberately start empty.  Running the public
-    acceptance replay against one is not a product failure; it is simply not
-    the pinned shared-database operation this test is intended to rehearse.
-    """
-    engine = create_engine(settings.database_url)
+_ADMISSION_ARTIFACT_FIELDS = (
+    "dependency_count",
+    "dependency_event_count",
+    "policy_run_count",
+    "dependency_admission_outcome_count",
+    "event_admission_outcome_count",
+    "admission_audit_count",
+)
+
+
+def _classify_sh99_admission_lifecycle_signature(
+    lifecycle_signature: dict[str, int],
+) -> str:
+    if lifecycle_signature == _EXPECTED_PRE_ADMISSION_LIFECYCLE_SIGNATURE:
+        return "expected-pre-admission-signature"
+    if any(lifecycle_signature[name] for name in _ADMISSION_ARTIFACT_FIELDS):
+        return "admission-artifacts-present"
+    return "other"
+
+
+def _source_sh99_lifecycle_gate() -> str:
+    """Read the one-time #248 lifecycle signature without mutating its source."""
     try:
-        with engine.connect() as connection:
-            return connection.scalar(
-                text("select exists (select 1 from projects where slug = 'sh99-grand-parkway')")
-            ) is True
-    finally:
-        engine.dispose()
+        state = _read_project_state(settings.database_url, "sh99-grand-parkway")
+    except ValueError as error:
+        if str(error) == "no project with slug 'sh99-grand-parkway'":
+            return "missing"
+        raise
+    lifecycle = {
+        "document_count": len(state["documents"]),
+        "active_run_count": len(state["active_runs"]),
+        "active_run_declaration_count": len(state["active_run_declarations"]),
+        "candidate_count": len(state["candidates"]),
+        "pending_candidate_count": sum(
+            candidate["state"] == "pending" for candidate in state["candidates"]
+        ),
+        "dependency_count": len(state["ledger"]["dependencies"]),
+        "dependency_event_count": len(state["ledger"]["dependency_events"]),
+        "policy_run_count": len(state["policy_runs"]),
+        "dependency_admission_outcome_count": len(
+            state["dependency_admission_outcomes"]
+        ),
+        "event_admission_outcome_count": len(state["event_admission_outcomes"]),
+        "admission_audit_count": len(state["admission_audits"]),
+    }
+    return _classify_sh99_admission_lifecycle_signature(lifecycle)
+
+
+def _require_expected_pre_admission_lifecycle_signature() -> None:
+    lifecycle_gate = _source_sh99_lifecycle_gate()
+    if lifecycle_gate == "expected-pre-admission-signature":
+        if not _worktree_is_clean():
+            pytest.skip(
+                "the real SH 99 replay needs a clean checkout before using "
+                "the expected pre-Admission lifecycle signature"
+            )
+        return
+    if lifecycle_gate == "missing":
+        pytest.skip(
+            "the real SH 99 replay needs the separately managed source in the "
+            "expected #248 pre-Admission lifecycle state"
+        )
+    if lifecycle_gate == "admission-artifacts-present":
+        pytest.skip(
+            "the shared SH 99 source has Admission artifacts and cannot satisfy "
+            "the consumed one-time #248 gate; the sealed #248 bundle remains "
+            "the evidence for that gate"
+        )
+    pytest.skip(
+        "the shared SH 99 source does not have the expected #248 "
+        "pre-Admission lifecycle signature"
+    )
 
 
 def _config(tmp_path, *, expected_clean_git_revision: str) -> SH99AdmissionAcceptanceConfig:
@@ -71,15 +144,60 @@ def _config(tmp_path, *, expected_clean_git_revision: str) -> SH99AdmissionAccep
     )
 
 
-@pytest.mark.skipif(
-    not _worktree_is_clean() or not _source_has_sh99_project(),
-    reason=(
-        "the public replay needs a clean checkout and the separately managed "
-        "SH 99 source project"
-    ),
+def test_expected_pre_admission_counts_are_labeled_only_as_a_signature():
+    classification = _classify_sh99_admission_lifecycle_signature(
+        _EXPECTED_PRE_ADMISSION_LIFECYCLE_SIGNATURE
+    )
+
+    assert classification == "expected-pre-admission-signature"
+    assert "exact" not in classification
+
+
+@pytest.mark.parametrize(
+    "artifact_field",
+    [
+        "dependency_count",
+        "dependency_event_count",
+        "policy_run_count",
+        "dependency_admission_outcome_count",
+        "event_admission_outcome_count",
+        "admission_audit_count",
+    ],
 )
+def test_admission_artifacts_fail_closed_without_claiming_a_complete_state(
+    artifact_field,
+):
+    lifecycle_signature = {
+        **_EXPECTED_PRE_ADMISSION_LIFECYCLE_SIGNATURE,
+        artifact_field: 1,
+    }
+
+    assert _classify_sh99_admission_lifecycle_signature(
+        lifecycle_signature
+    ) == "admission-artifacts-present"
+
+
+def test_admission_artifact_skip_names_the_consumed_gate_without_claiming_completion(
+    monkeypatch,
+):
+    monkeypatch.setitem(
+        globals(),
+        "_source_sh99_lifecycle_gate",
+        lambda: "admission-artifacts-present",
+    )
+
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        _require_expected_pre_admission_lifecycle_signature()
+
+    reason = str(skipped.value)
+    assert "has Admission artifacts" in reason
+    assert "cannot satisfy the consumed one-time #248 gate" in reason
+    assert "post-Admission" not in reason
+
+
 def test_real_sh99_clone_replays_the_exact_shared_operation_twice(tmp_path):
     """The 3,030-Candidate SH 99 operation is proved only on an isolated clone."""
+    _require_expected_pre_admission_lifecycle_signature()
 
     summary = run_sh99_admission_acceptance(
         _config(tmp_path, expected_clean_git_revision=_git_revision())

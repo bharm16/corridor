@@ -353,9 +353,13 @@ def test_candidate_7587_abstains_when_affected_party_does_not_prove_stated_actor
     session, project, admitted
 ):
     """An invitation for Air Products is not an Air Products Commitment."""
-    air_products = ExternalOrg(name="Air Products")
-    session.add(air_products)
-    session.flush()
+    air_products = session.scalar(
+        select(ExternalOrg).where(ExternalOrg.name == "Air Products")
+    )
+    if air_products is None:
+        air_products = ExternalOrg(name="Air Products")
+        session.add(air_products)
+        session.flush()
     air_products_dependency = Dependency(
         project_id=project.id,
         ref_code="AIR-PRODUCTS-PL35",
