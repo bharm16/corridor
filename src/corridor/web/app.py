@@ -925,10 +925,7 @@ def _statement_coordination_screen(
         if receipt
         else None
     )
-    candidate_evidence = _candidate_statement_evidence(candidate)
-    for evidence in candidate_evidence:
-        document = session.get(Document, evidence["document_id"])
-        evidence["filename"] = document.filename if document else "registered document"
+    candidate_evidence = _candidate_statement_evidence(session, candidate)
     dependencies = session.execute(
         select(Dependency, ExternalOrg.name)
         .outerjoin(ExternalOrg, ExternalOrg.id == Dependency.external_org_id)
@@ -948,11 +945,6 @@ def _statement_coordination_screen(
         .order_by(ProjectRosterEntry.display_name)
     ).all()
     parties = session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
-    documents = session.scalars(
-        select(Document)
-        .where(Document.project_id == project.id)
-        .order_by(Document.filename)
-    ).all()
     milestones = session.scalars(
         select(Milestone)
         .where(Milestone.project_id == project.id)
@@ -991,7 +983,6 @@ def _statement_coordination_screen(
             ],
             "roster": roster,
             "parties": parties,
-            "documents": documents,
             "milestones": milestones,
             "receipt": receipt,
             "event": event,
@@ -1076,7 +1067,7 @@ def _statement_coordination_draft(
         description=_required_form_text(form, "description", "what the party said"),
         new_timing=_form_timing(form, "new_timing", required=True),
         previous_timing=_form_timing(form, "previous_timing", required=False),
-        evidence=_supporting_statement_evidence(form),
+        evidence=_supporting_statement_evidence(candidate, form),
         scope=_form_statement_scope(form),
         internal_owner_roster_entry_id=_required_positive_form_id(
             form, "internal_owner_roster_entry_id"
@@ -1143,16 +1134,38 @@ def _statement_fact_correction_draft(
     )
 
 
-def _candidate_statement_evidence(candidate: Candidate) -> tuple[dict, ...]:
-    """Render the extractor's immutable citation identity beside the form."""
+def _candidate_statement_evidence(
+    session: Session, candidate: Candidate
+) -> tuple[dict, ...]:
+    """Render the extractor's immutable citation and its registered page."""
     evidence = []
     for citation in (candidate.payload_json or {}).get("citations") or ():
         try:
+            document_id = int(citation["document_id"])
+            page_no = int(citation["page"])
+            document = session.get(Document, document_id)
+            page = (
+                session.scalar(
+                    select(DocPage).where(
+                        DocPage.document_id == document_id,
+                        DocPage.page_no == page_no,
+                    )
+                )
+                if document is not None and document.project_id == candidate.project_id
+                else None
+            )
             evidence.append(
                 {
-                    "document_id": int(citation["document_id"]),
-                    "page_no": int(citation["page"]),
+                    "document_id": document_id,
+                    "page_no": page_no,
                     "quote": str(citation["quote"]),
+                    "filename": (
+                        document.filename
+                        if document is not None
+                        and document.project_id == candidate.project_id
+                        else "registered document"
+                    ),
+                    "page_text": page.text if page is not None else None,
                 }
             )
         except (KeyError, TypeError, ValueError):
@@ -1160,24 +1173,30 @@ def _candidate_statement_evidence(candidate: Candidate) -> tuple[dict, ...]:
     return tuple(evidence)
 
 
-def _supporting_statement_evidence(form) -> tuple[CitedStatementEvidence, ...]:
-    document_ids = form.getlist("supporting_document_id")
-    page_numbers = form.getlist("supporting_page_no")
-    quotes = form.getlist("supporting_quote")
-    if not (len(document_ids) == len(page_numbers) == len(quotes)):
-        raise StatementCoordinationRefusal("supporting Evidence fields must arrive together")
-    evidence = []
-    for document_id, page_no, quote in zip(document_ids, page_numbers, quotes):
-        if not (str(document_id).strip() or str(page_no).strip() or str(quote).strip()):
-            continue
-        evidence.append(
-            CitedStatementEvidence(
-                _required_positive_value(document_id, "supporting_document_id"),
-                _required_positive_value(page_no, "supporting_page_no"),
-                _required_form_value(quote, "a supporting Evidence quote"),
-            )
+def _supporting_statement_evidence(
+    candidate: Candidate, form
+) -> tuple[CitedStatementEvidence, ...]:
+    """Bind optional supporting wording to a source page already on screen."""
+    page_index_value = str(form.get("supporting_page_index") or "").strip()
+    quote = str(form.get("supporting_quote") or "").strip()
+    if not page_index_value and not quote:
+        return ()
+    if not page_index_value or not quote:
+        raise StatementCoordinationRefusal(
+            "choose a visible registered source page and its exact supporting quote together"
         )
-    return tuple(evidence)
+    try:
+        page_index = int(page_index_value)
+        citation = ((candidate.payload_json or {}).get("citations") or ())[page_index]
+        if page_index < 0:
+            raise IndexError
+        document_id = int(citation["document_id"])
+        page_no = int(citation["page"])
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise StatementCoordinationRefusal(
+            "choose a visible registered source page for supporting Evidence"
+        ) from exc
+    return (CitedStatementEvidence(document_id, page_no, quote),)
 
 
 def _form_statement_scope(form) -> StatementScope:

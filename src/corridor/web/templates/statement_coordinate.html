@@ -13,6 +13,7 @@
   .saved { color:var(--ok); border:1px solid #94d5b2; background:#f1fff6; padding:.7rem; }
   .evidence,.choice { border:1px solid var(--line); border-radius:6px; padding:.75rem; margin:.6rem 0; background:var(--paper); }
   .quote { display:block; margin-top:.4rem; font-family:ui-monospace,monospace; white-space:pre-wrap; }
+  .page-context { margin:.65rem 0 0; padding:.65rem; border:1px solid var(--line); background:#fff; font:inherit; white-space:pre-wrap; }
   fieldset { margin:1rem 0; border:1px solid var(--line); border-radius:6px; padding:.8rem; }
   legend { font-weight:650; padding:0 .3rem; } label { display:block; margin:.55rem 0 .2rem; font-weight:600; }
   input,select,textarea { font:inherit; padding:.35rem .45rem; border:1px solid #bdbdbd; border-radius:4px; max-width:100%; }
@@ -65,11 +66,21 @@
     {% for evidence in candidate_evidence %}
       <section class="evidence">
         <span class="muted">{{ evidence.filename }} · registered page {{ evidence.page_no }}</span>
-        <span class="quote">{{ evidence.quote }}</span>
+        <span class="quote"><b>Candidate Evidence</b> — {{ evidence.quote }}</span>
+        <b>Complete registered page context</b>
+        {% if evidence.page_text is not none %}
+          <pre class="page-context">{{ evidence.page_text }}</pre>
+        {% else %}
+          <p class="error">This registered source page is unavailable. Save will remain fail closed.</p>
+        {% endif %}
       </section>
     {% else %}
       <p class="error">This Candidate has no complete Evidence identity and cannot be saved.</p>
     {% endfor %}
+
+    {% if candidate_party %}
+      <p class="choice"><b>Extracted context suggestion — not yet accepted:</b> {{ candidate_party }}. Choose the affected External Party and the External Party who spoke below.</p>
+    {% endif %}
 
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/coordinate">
       <input type="hidden" name="expected_candidate_state" value="pending">
@@ -85,15 +96,15 @@
         <div class="grid">
           <div><label for="affected-party">External Party affected</label>
             <select id="affected-party" name="affected_external_org_id" required>
-              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}" {% if party.name == candidate_party %}selected{% endif %}>{{ party.name }}</option>{% endfor %}
+              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
             </select></div>
           <div><label for="stated-party">External Party who spoke</label>
             <select id="stated-party" name="stated_external_org_id" required>
-              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}" {% if party.name == candidate_party %}selected{% endif %}>{{ party.name }}</option>{% endfor %}
+              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
             </select></div>
         </div>
         <label for="stated-party-words">Party wording in the Evidence</label>
-        <input id="stated-party-words" name="stated_party" value="{{ candidate_party }}" required>
+        <input id="stated-party-words" name="stated_party" value="" required>
         <label for="event-date">Statement date, if the Evidence says one</label>
         <input id="event-date" name="event_date" type="date" value="{{ candidate_fields.get('event_date', '') }}">
         <label for="description">What the External Party said</label>
@@ -113,9 +124,11 @@
           <div><label for="previous-timing-start">Earlier timing start</label><input id="previous-timing-start" name="previous_timing_start_date" type="date"></div>
           <div><label for="previous-timing-end">Earlier timing end</label><input id="previous-timing-end" name="previous_timing_end_date" type="date"></div>
         </div>
-        <label for="support-document">Another verified quote, when it supplies missing party or timing context</label>
-        <select id="support-document" name="supporting_document_id"><option value="">No additional quote</option>{% for document in documents %}<option value="{{ document.id }}">{{ document.filename }}</option>{% endfor %}</select>
-        <div class="grid"><div><label for="support-page">Page</label><input id="support-page" name="supporting_page_no" type="number" min="1"></div><div></div></div>
+        <label>Another verified quote, when it supplies missing party or timing context</label>
+        <p class="muted">Choose one of the registered source pages shown above. You never need to enter a document or page identifier.</p>
+        {% for evidence in candidate_evidence %}
+          <label class="check"><input type="radio" name="supporting_page_index" value="{{ loop.index0 }}" {% if evidence.page_text is none %}disabled{% endif %}> Use {{ evidence.filename }}, registered page {{ evidence.page_no }}</label>
+        {% endfor %}
         <label for="support-quote">Exact verified quote</label><textarea id="support-quote" name="supporting_quote"></textarea>
       </fieldset>
 

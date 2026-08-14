@@ -1246,6 +1246,169 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
         app.dependency_overrides.clear()
 
 
+def test_http_screen_shows_the_registered_source_page_without_accepting_party_suggestions(
+    session, project, party, roster_entry
+):
+    quote = "The March 2026 completion timeline seems unattainable."
+    page_text = (
+        "Kinder Morgan Management Meeting Highlights\n"
+        "Relocation schedule discussion\n"
+        f"{quote}\n"
+        "Propose extending completion to May 16th."
+    )
+    document = _document(session, project, "http-page-context.pdf", page_text)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "slip",
+            "description": quote,
+            "external_org": party.name,
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+
+        assert screen.status_code == 200
+        assert "Complete registered page context" in screen.text
+        assert "Kinder Morgan Management Meeting Highlights" in screen.text
+        assert "Relocation schedule discussion" in screen.text
+        assert "Propose extending completion to May 16th." in screen.text
+        assert "Extracted context suggestion — not yet accepted" in screen.text
+        assert f'<option value="{party.id}">{party.name}</option>' in screen.text
+        assert f'<option value="{party.id}" selected>' not in screen.text
+        assert 'id="stated-party-words" name="stated_party" value=""' in screen.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_flow_binds_an_additional_quote_to_the_visible_registered_page(
+    session, project, party, roster_entry
+):
+    party_quote = "Kinder Morgan Management Meeting Highlights"
+    statement_quote = "Will complete relocation by June 1, 2026."
+    document = _document(
+        session,
+        project,
+        "http-page-bound-support.pdf",
+        f"{party_quote}\n{statement_quote}",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=statement_quote,
+        fields={
+            "event_type": "commitment",
+            "description": statement_quote,
+            "external_org": party.name,
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            assert screen.status_code == 200
+            assert 'name="supporting_page_index" value="0"' in screen.text
+            assert 'name="supporting_document_id"' not in screen.text
+            assert 'name="supporting_page_no"' not in screen.text
+
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(party.id),
+                    "stated_party": party.name,
+                    "stated_external_org_id": str(party.id),
+                    "description": statement_quote,
+                    "new_timing_text": "June 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-06-01",
+                    "new_timing_end_date": "2026-06-01",
+                    "supporting_page_index": "0",
+                    "supporting_quote": party_quote,
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the June plan",
+                    "action_due_date": "2026-02-01",
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+        assert candidate.state == "accepted"
+        assert session.scalar(
+            select(func.count())
+            .select_from(DependencyEventEvidence)
+            .join(DependencyEvent, DependencyEvent.id == DependencyEventEvidence.event_id)
+            .where(DependencyEvent.project_id == project.id)
+        ) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_flow_refuses_a_supporting_quote_not_on_the_selected_registered_page(
+    session, project, party, roster_entry
+):
+    statement_quote = "Will complete relocation by June 1, 2026."
+    document = _document(
+        session,
+        project,
+        "http-fail-closed-support.pdf",
+        f"Kinder Morgan Management Meeting Highlights\n{statement_quote}",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=statement_quote,
+        fields={"event_type": "commitment", "description": statement_quote},
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(party.id),
+                    "stated_party": party.name,
+                    "stated_external_org_id": str(party.id),
+                    "description": statement_quote,
+                    "new_timing_text": "June 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-06-01",
+                    "new_timing_end_date": "2026-06-01",
+                    "supporting_page_index": "0",
+                    "supporting_quote": "Kinder Morgan fabricated supporting words",
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the June plan",
+                    "action_due_date": "2026-02-01",
+                },
+            )
+
+        assert response.status_code == 400
+        assert "quote was not found on its registered page" in response.text
+        assert candidate.state == "pending"
+        assert session.scalar(
+            select(func.count())
+            .select_from(DependencyEvent)
+            .where(DependencyEvent.project_id == project.id)
+        ) == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
     session, project, party, roster_entry
 ):
