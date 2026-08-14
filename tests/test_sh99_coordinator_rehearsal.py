@@ -584,11 +584,7 @@ def test_visible_supporting_evidence_fetches_the_ordinary_png_url():
     }
 
 
-def test_scenario_input_receipt_seals_exact_registered_page_and_image(tmp_path):
-    image_path = tmp_path / "out/page-images/doc/0002.png"
-    image_path.parent.mkdir(parents=True)
-    image_bytes = b"\x89PNG\r\n\x1a\nsource-page"
-    image_path.write_bytes(image_bytes)
+def _scenario_receipt_subject(*, image_path: str):
     quote = "Equistar to provide a chain of title in DOW’s name."
     page_text = f"Action Items:\n1. {quote}\n"
     document = SimpleNamespace(
@@ -600,7 +596,7 @@ def test_scenario_input_receipt_seals_exact_registered_page_and_image(tmp_path):
     page = SimpleNamespace(
         document_id=1435,
         page_no=2,
-        image_path="out/page-images/doc/0002.png",
+        image_path=image_path,
         text=page_text,
         text_source="text_layer",
     )
@@ -618,12 +614,29 @@ def test_scenario_input_receipt_seals_exact_registered_page_and_image(tmp_path):
             ]
         },
     )
+    return candidate, document, page, quote, page_text
+
+
+def test_scenario_input_receipt_seals_exact_registered_page_and_image(
+    monkeypatch, tmp_path
+):
+    checkout_root = tmp_path / "isolated-checkout"
+    checkout_root.mkdir()
+    monkeypatch.chdir(checkout_root)
+    asset_root = tmp_path / "runtime-root"
+    image_path = asset_root / "out/page-images/doc/0002.png"
+    image_path.parent.mkdir(parents=True)
+    image_bytes = b"\x89PNG\r\n\x1a\nsource-page"
+    image_path.write_bytes(image_bytes)
+    candidate, document, page, quote, page_text = _scenario_receipt_subject(
+        image_path="out/page-images/doc/0002.png"
+    )
 
     receipt = _scenario_input_receipt(
         candidate,
         document,
         page,
-        repo_root=tmp_path,
+        asset_root=asset_root,
         expected_quote=quote,
     )
 
@@ -643,6 +656,27 @@ def test_scenario_input_receipt_seals_exact_registered_page_and_image(tmp_path):
             "sha256": hashlib.sha256(image_bytes).hexdigest(),
         },
     }
+
+
+def test_scenario_input_receipt_refuses_an_image_outside_the_runtime_asset_root(
+    tmp_path,
+):
+    asset_root = tmp_path / "runtime-root"
+    asset_root.mkdir()
+    outside_image = tmp_path / "outside.png"
+    outside_image.write_bytes(b"\x89PNG\r\n\x1a\noutside")
+    candidate, document, page, quote, _page_text = _scenario_receipt_subject(
+        image_path="../outside.png"
+    )
+
+    with pytest.raises(ValueError, match="outside the runtime asset root"):
+        _scenario_input_receipt(
+            candidate,
+            document,
+            page,
+            asset_root=asset_root,
+            expected_quote=quote,
+        )
 
 
 def _equistar_screen() -> str:

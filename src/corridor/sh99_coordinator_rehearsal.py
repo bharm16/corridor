@@ -489,6 +489,7 @@ def run_sh99_coordinator_rehearsal(
     if provision_database is None:
         provision_database = _provision_database
     repo_root = Path(__file__).resolve().parents[2]
+    asset_root = Path.cwd().resolve()
     evaluation_thresholds = _v3_evaluation_thresholds()
     if asdict(Thresholds()) != evaluation_thresholds:
         raise RuntimeError(
@@ -519,7 +520,7 @@ def run_sh99_coordinator_rehearsal(
     scenario_source_receipts = _read_scenario_input_receipts(
         config.source_database_url,
         config.project_slug,
-        repo_root=repo_root,
+        asset_root=asset_root,
     )
     environment_details = _environment_details(
         config.source_database_url, source_head_before
@@ -566,7 +567,7 @@ def run_sh99_coordinator_rehearsal(
                     "restored predecessor clone does not match the pinned source state"
                 )
             if _read_scenario_input_receipts(
-                clone_url, config.project_slug, repo_root=repo_root
+                clone_url, config.project_slug, asset_root=asset_root
             ) != scenario_source_receipts:
                 raise ValueError(
                     "restored predecessor clone changed a scenario source receipt"
@@ -586,7 +587,7 @@ def run_sh99_coordinator_rehearsal(
                     "disposable clone domain state changed during the schema upgrade"
                 )
             if _read_scenario_input_receipts(
-                clone_url, config.project_slug, repo_root=repo_root
+                clone_url, config.project_slug, asset_root=asset_root
             ) != scenario_source_receipts:
                 raise ValueError(
                     "schema upgrade changed a scenario source receipt"
@@ -688,7 +689,7 @@ def run_sh99_coordinator_rehearsal(
     scenario_source_receipts_after = _read_scenario_input_receipts(
         config.source_database_url,
         config.project_slug,
-        repo_root=repo_root,
+        asset_root=asset_root,
     )
     source_database_mutated = (
         source_head_after != source_head_before
@@ -883,7 +884,7 @@ def _require_admitted_source_state(source_state: dict[str, Any]) -> None:
 
 
 def _read_scenario_input_receipts(
-    database_url: str, project_slug: str, *, repo_root: Path
+    database_url: str, project_slug: str, *, asset_root: Path
 ) -> dict[str, dict[str, Any]]:
     """Read and hash the three exact scenario pages without mutating the source."""
 
@@ -928,7 +929,7 @@ def _read_scenario_input_receipts(
                     candidate,
                     document,
                     page,
-                    repo_root=repo_root,
+                    asset_root=asset_root,
                     expected_quote=str(expected["quote"]),
                 )
             session.rollback()
@@ -942,7 +943,7 @@ def _scenario_input_receipt(
     document,
     page,
     *,
-    repo_root: Path,
+    asset_root: Path,
     expected_quote: str,
 ) -> dict[str, Any]:
     """Seal one exact cited DocPage and its ordinary page-image asset."""
@@ -968,7 +969,7 @@ def _scenario_input_receipt(
         )
     if not page.image_path:
         raise ValueError(f"scenario Candidate {candidate.id} has no registered page image")
-    root = Path(repo_root).resolve()
+    root = Path(asset_root).resolve()
     image_path = Path(page.image_path)
     if not image_path.is_absolute():
         image_path = root / image_path
@@ -978,7 +979,7 @@ def _scenario_input_receipt(
         image_bytes = image_path.read_bytes()
     except (OSError, ValueError) as exc:
         raise ValueError(
-            f"scenario Candidate {candidate.id} page image is absent or outside the checkout"
+            f"scenario Candidate {candidate.id} page image is absent or outside the runtime asset root"
         ) from exc
     if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ValueError(
