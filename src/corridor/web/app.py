@@ -1154,6 +1154,11 @@ def _candidate_statement_evidence(
                 if document is not None and document.project_id == candidate.project_id
                 else None
             )
+            has_page_image = bool(
+                page is not None
+                and page.image_path
+                and Path(page.image_path).is_file()
+            )
             evidence.append(
                 {
                     "document_id": document_id,
@@ -1169,10 +1174,13 @@ def _candidate_statement_evidence(
                     "page_text_source": (
                         page.text_source if page is not None else None
                     ),
-                    "has_page_image": bool(
+                    "has_page_image": has_page_image,
+                    "supporting_quote_available": bool(
                         page is not None
-                        and page.image_path
-                        and Path(page.image_path).exists()
+                        and (
+                            page.text_source == "cells"
+                            or has_page_image
+                        )
                     ),
                 }
             )
@@ -1199,10 +1207,14 @@ def _supporting_statement_evidence(
             raise IndexError
         visible_evidence = _candidate_statement_evidence(session, candidate)
         selected = visible_evidence[page_index]
-        if selected["page_text"] is None:
-            raise IndexError
+        if not selected["supporting_quote_available"]:
+            raise StatementCoordinationRefusal(
+                "the rendered source page is unavailable for supporting Evidence"
+            )
         document_id = int(selected["document_id"])
         page_no = int(selected["page_no"])
+    except StatementCoordinationRefusal:
+        raise
     except (IndexError, KeyError, TypeError, ValueError) as exc:
         raise StatementCoordinationRefusal(
             "choose a visible registered source page for supporting Evidence"

@@ -68,14 +68,17 @@
       <section class="evidence">
         <span class="muted">{{ evidence.filename }} · registered page {{ evidence.page_no }}</span>
         <span class="quote"><b>Candidate Evidence</b> — {{ evidence.quote }}</span>
-        <b>Complete registered page context</b>
-        {% if evidence.page_text is not none %}
+        {% if evidence.supporting_quote_available %}
+          <b>Complete registered page context</b>
           {% if evidence.has_page_image %}
             <img class="page-image" src="/page-image/{{ evidence.document_id }}/{{ evidence.page_no }}" alt="Registered source page {{ evidence.page_no }}" loading="lazy">
             <b>Extracted page text</b>
-          {% elif evidence.page_text_source == 'cells' %}
+          {% else %}
             <span class="muted"> · read from registered cells</span>
           {% endif %}
+          <pre class="page-context">{{ evidence.page_text }}</pre>
+        {% elif evidence.page_text is not none %}
+          <p class="error"><b>Rendered source page unavailable.</b> Extracted text is retained for diagnosis only and cannot be selected as supporting Evidence.</p>
           <pre class="page-context">{{ evidence.page_text }}</pre>
         {% else %}
           <p class="error">This registered source page is unavailable. Save will remain fail closed.</p>
@@ -134,7 +137,7 @@
         <label>Another verified quote, when it supplies missing party or timing context</label>
         <p class="muted">Choose one of the registered source pages shown above. You never need to enter a document or page identifier.</p>
         {% for evidence in candidate_evidence %}
-          <label class="check"><input type="radio" name="supporting_page_index" value="{{ loop.index0 }}" {% if evidence.page_text is none %}disabled{% endif %}> Use {{ evidence.filename }}, registered page {{ evidence.page_no }}</label>
+          <label class="check"><input type="radio" name="supporting_page_index" value="{{ loop.index0 }}" {% if not evidence.supporting_quote_available %}disabled{% endif %}> Use {{ evidence.filename }}, registered page {{ evidence.page_no }}</label>
         {% endfor %}
         <label for="support-quote">Exact verified quote</label><textarea id="support-quote" name="supporting_quote"></textarea>
       </fieldset>

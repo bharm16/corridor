@@ -71,6 +71,9 @@ from corridor.web.app import (
 
 
 RECORDER = HumanPrincipal("local:statement-coordinator")
+_PAGE_IMAGE_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 @pytest.fixture
@@ -129,6 +132,17 @@ def _document(session, project, name: str, page_text: str) -> Document:
     session.add(DocPage(document_id=document.id, page_no=1, text=page_text))
     session.flush()
     return document
+
+
+def _register_page_image(session, document: Document, image_path) -> None:
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    image_path.write_bytes(_PAGE_IMAGE_BYTES)
+    page.image_path = str(image_path)
 
 
 def _candidate(
@@ -1263,19 +1277,8 @@ def test_http_screen_shows_the_registered_source_page_without_accepting_party_su
         "Propose extending completion to May 16th."
     )
     document = _document(session, project, "http-page-context.pdf", page_text)
-    page = session.scalar(
-        select(DocPage).where(
-            DocPage.document_id == document.id,
-            DocPage.page_no == 1,
-        )
-    )
     page_image = tmp_path / "registered-page.png"
-    page_image.write_bytes(
-        base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-        )
-    )
-    page.image_path = str(page_image)
+    _register_page_image(session, document, page_image)
     candidate = _candidate(
         session,
         project,
@@ -1310,6 +1313,68 @@ def test_http_screen_shows_the_registered_source_page_without_accepting_party_su
         assert f'<option value="{party.id}">{party.name}</option>' in screen.text
         assert f'<option value="{party.id}" selected>' not in screen.text
         assert 'id="stated-party-words" name="stated_party" value=""' in screen.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("image_state", "text_source"),
+    (("absent", "text_layer"), ("missing", "ocr")),
+)
+def test_non_cell_page_without_an_available_image_is_disabled_and_refused(
+    session, project, tmp_path, image_state, text_source
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    diagnostic_context = "Extracted diagnostic context is not visual Evidence."
+    document = _document(
+        session,
+        project,
+        f"unavailable-{image_state}-page.pdf",
+        f"{quote}\n{diagnostic_context}",
+    )
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page.text_source = text_source
+    if image_state == "missing":
+        page.image_path = str(tmp_path / "missing-rendered-page.png")
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+
+        assert screen.status_code == 200
+        assert "Rendered source page unavailable" in screen.text
+        assert "retained for diagnosis only" in screen.text
+        assert diagnostic_context in screen.text
+        assert (
+            'name="supporting_page_index" value="0" disabled' in screen.text
+        )
+        with pytest.raises(
+            StatementCoordinationRefusal,
+            match="rendered source page is unavailable",
+        ):
+            _supporting_statement_evidence(
+                session,
+                candidate,
+                {
+                    "supporting_page_index": "0",
+                    "supporting_quote": quote,
+                },
+            )
     finally:
         app.dependency_overrides.clear()
 
@@ -1392,7 +1457,7 @@ def test_http_flow_binds_an_additional_quote_to_the_visible_registered_page(
 
 
 def test_form_adapter_resolves_supporting_quote_against_the_visible_page_list(
-    session, project
+    session, project, tmp_path
 ):
     supporting_quote = "Kinder Morgan Management Meeting Highlights"
     visible_document = _document(
@@ -1400,6 +1465,11 @@ def test_form_adapter_resolves_supporting_quote_against_the_visible_page_list(
         project,
         "visible-supporting-page.pdf",
         supporting_quote,
+    )
+    _register_page_image(
+        session,
+        visible_document,
+        tmp_path / "visible-supporting-page.png",
     )
     filtered_document = _document(
         session,
@@ -1442,7 +1512,7 @@ def test_form_adapter_resolves_supporting_quote_against_the_visible_page_list(
 
 
 def test_http_flow_refuses_a_supporting_quote_not_on_the_selected_registered_page(
-    session, project, party, roster_entry
+    session, project, party, roster_entry, tmp_path
 ):
     statement_quote = "Will complete relocation by June 1, 2026."
     document = _document(
@@ -1451,6 +1521,8 @@ def test_http_flow_refuses_a_supporting_quote_not_on_the_selected_registered_pag
         "http-fail-closed-support.pdf",
         f"Kinder Morgan Management Meeting Highlights\n{statement_quote}",
     )
+    page_image = tmp_path / "fail-closed-registered-page.png"
+    _register_page_image(session, document, page_image)
     candidate = _candidate(
         session,
         project,
