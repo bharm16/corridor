@@ -14,15 +14,31 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
 from pathlib import PurePath
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor.export import to_pdf_bytes
-from corridor.models import ExternalReportArtifact, ExternalReportRelease, Project
+from corridor.models import (
+    DependencyEvent,
+    ExternalReportArtifact,
+    ExternalReportRelease,
+    Project,
+    ProjectRosterEntry,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.report import Report, assert_no_bare_cells, build_report, render
+
+if TYPE_CHECKING:
+    from corridor.dependency_events import PublishedPartyStatement
+
+
+_UNRECORDED_ACTOR_DISPLAY = "Project person (display name not recorded)"
+_LEGACY_ACTOR_DISPLAY = (
+    "Project person (display name not retained in this legacy release)"
+)
 
 
 class ReleaseRefusal(ValueError):
@@ -47,12 +63,23 @@ class RenderedExternalReport:
 
 
 @dataclass(frozen=True)
+class ExternalReportCoveredPartyStatement:
+    """One frozen party-level statement described without technical identity."""
+
+    external_party: str
+    supported_statement: str
+    source_context: str
+    statement_version_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class ExternalReportReleaseHistory:
     """Project-language release history with the technical digest retained."""
 
     release_id: int
     artifact_name: str
     released_by: str
+    released_by_display: str
     released_at: datetime
     evaluated_on: date
     ruleset_version: str
@@ -60,6 +87,23 @@ class ExternalReportReleaseHistory:
     covered_dependency_count: int
     covered_records: tuple[str, ...]
     covered_statement_version_count: int
+    covered_party_statements: tuple[ExternalReportCoveredPartyStatement, ...]
+    pdf_sha256: str
+
+
+@dataclass(frozen=True)
+class ExternalReportArtifactReview:
+    """Frozen project-language context for one prepared PDF review."""
+
+    artifact_id: int
+    artifact_name: str
+    rendered_at: datetime
+    evaluated_on: date
+    ruleset_version: str
+    provenance_mode: str
+    covered_records: tuple[str, ...]
+    covered_statement_versions: tuple[int, ...]
+    covered_party_statements: tuple[ExternalReportCoveredPartyStatement, ...]
     pdf_sha256: str
 
 
@@ -133,6 +177,48 @@ def prepare_external_report(
     return artifact
 
 
+def review_prepared_external_report(
+    session: Session, project_id: int, artifact_id: int
+) -> ExternalReportArtifactReview:
+    """Read the exact retained context a person reviews before release."""
+    artifact = retrieve_prepared_external_report(session, project_id, artifact_id)
+    legacy_displays = _legacy_party_statement_displays(
+        session, project_id, (artifact.record_context_json,)
+    )
+    return ExternalReportArtifactReview(
+        artifact_id=artifact.id,
+        artifact_name=artifact.artifact_name,
+        rendered_at=artifact.rendered_at,
+        evaluated_on=artifact.evaluated_on,
+        ruleset_version=artifact.ruleset_version,
+        provenance_mode=artifact.provenance_mode,
+        covered_records=tuple(
+            entry["ref_code"]
+            for entry in artifact.record_context_json.get("dependencies", ())
+        ),
+        covered_statement_versions=_statement_version_ids(
+            artifact.record_context_json
+        ),
+        covered_party_statements=_covered_party_statements(
+            artifact.record_context_json, legacy_displays
+        ),
+        pdf_sha256=artifact.pdf_sha256,
+    )
+
+
+def retrieve_prepared_external_report(
+    session: Session, project_id: int, artifact_id: int
+) -> ExternalReportArtifact:
+    """Retrieve fixed pre-release bytes only after checking their digest."""
+    artifact = session.get(ExternalReportArtifact, artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise ReleaseRefusal(
+            f"no rendered External Report {artifact_id} in project {project_id}"
+        )
+    _validate_prepared_artifact(artifact)
+    return artifact
+
+
 def release_external_report(
     session: Session,
     *,
@@ -163,6 +249,12 @@ def release_external_report(
     )
     if existing is not None:
         return existing
+    released_by_display = session.scalar(
+        select(ProjectRosterEntry.display_name).where(
+            ProjectRosterEntry.project_id == project_id,
+            ProjectRosterEntry.principal_subject == principal.subject,
+        )
+    )
     receipt = ExternalReportRelease(
         project_id=project_id,
         artifact_id=artifact.id,
@@ -176,6 +268,7 @@ def release_external_report(
         provenance_mode=artifact.provenance_mode,
         record_context_json=deepcopy(artifact.record_context_json),
         released_by=principal.subject,
+        released_by_display=released_by_display or _UNRECORDED_ACTOR_DISPLAY,
     )
     try:
         with session.begin_nested():
@@ -212,17 +305,36 @@ def retrieve_released_external_report(
 def external_report_release_history(
     session: Session, project_id: int
 ) -> tuple[ExternalReportReleaseHistory, ...]:
-    """Read immutable release history without reopening a live Report."""
-    receipts = session.scalars(
-        select(ExternalReportRelease)
+    """Read immutable metadata without reopening a Report or loading PDF blobs."""
+    receipts = session.execute(
+        select(
+            ExternalReportRelease.id,
+            ExternalReportRelease.artifact_name,
+            ExternalReportRelease.released_by,
+            ExternalReportRelease.released_by_display,
+            ExternalReportRelease.released_at,
+            ExternalReportRelease.evaluated_on,
+            ExternalReportRelease.ruleset_version,
+            ExternalReportRelease.provenance_mode,
+            ExternalReportRelease.record_context_json,
+            ExternalReportRelease.pdf_sha256,
+        )
         .where(ExternalReportRelease.project_id == project_id)
         .order_by(ExternalReportRelease.released_at.desc(), ExternalReportRelease.id.desc())
     ).all()
+    legacy_displays = _legacy_party_statement_displays(
+        session,
+        project_id,
+        tuple(receipt.record_context_json for receipt in receipts),
+    )
     return tuple(
         ExternalReportReleaseHistory(
             release_id=receipt.id,
             artifact_name=receipt.artifact_name,
             released_by=receipt.released_by,
+            released_by_display=(
+                receipt.released_by_display or _LEGACY_ACTOR_DISPLAY
+            ),
             released_at=receipt.released_at,
             evaluated_on=receipt.evaluated_on,
             ruleset_version=receipt.ruleset_version,
@@ -236,6 +348,9 @@ def external_report_release_history(
             ),
             covered_statement_version_count=_statement_version_count(
                 receipt.record_context_json
+            ),
+            covered_party_statements=_covered_party_statements(
+                receipt.record_context_json, legacy_displays
             ),
             pdf_sha256=receipt.pdf_sha256,
         )
@@ -338,7 +453,18 @@ def _record_context(report: Report) -> dict:
         }
         for statement in publication.party_statements
     ]
-    return {"dependencies": dependencies, "party_statements": party_statements}
+    context = {"dependencies": dependencies, "party_statements": party_statements}
+    if publication.party_statements:
+        context["party_statement_display"] = [
+            {
+                "current_statement_event_id": statement.current_event.id,
+                **_party_statement_display_context(
+                    statement, publication.document_only
+                ),
+            }
+            for statement in publication.party_statements
+        ]
+    return context
 
 
 def _evaluation_context(report: Report) -> dict:
@@ -358,6 +484,10 @@ def _evaluation_context(report: Report) -> dict:
 
 
 def _statement_version_count(context: dict) -> int:
+    return len(_statement_version_ids(context))
+
+
+def _statement_version_ids(context: dict) -> tuple[int, ...]:
     version_ids = {
         entry[key]
         for group in ("dependencies", "party_statements")
@@ -365,4 +495,164 @@ def _statement_version_count(context: dict) -> int:
         for key in ("current_statement_event_id", "published_statement_event_id")
         if entry.get(key) is not None
     }
-    return len(version_ids)
+    return tuple(sorted(version_ids))
+
+
+def _covered_party_statements(
+    context: dict,
+    legacy_displays: dict[int, tuple[str, str, str]],
+) -> tuple[ExternalReportCoveredPartyStatement, ...]:
+    entries = tuple(context.get("party_statements", ()))
+    frozen_display = {
+        entry["current_statement_event_id"]: entry
+        for entry in context.get("party_statement_display", ())
+    }
+
+    def display(entry: dict) -> tuple[str, str, str]:
+        retained = frozen_display.get(entry.get("current_statement_event_id"))
+        if all(
+            retained and retained.get(key)
+            for key in ("external_party", "supported_statement", "source_context")
+        ):
+            return (
+                retained["external_party"],
+                retained["supported_statement"],
+                retained["source_context"],
+            )
+        published_event_id = entry.get("published_statement_event_id")
+        if published_event_id is not None:
+            return legacy_displays.get(
+                published_event_id,
+                (
+                    "External Party name not retained",
+                    "Statement wording not retained in this legacy release context",
+                    "Source context not retained in this legacy release context",
+                ),
+            )
+        current_display = legacy_displays.get(entry.get("current_statement_event_id"))
+        return (
+            (
+                current_display[0]
+                if current_display is not None
+                else "External Party name not retained"
+            ),
+            "Current statement unsupported in this provenance mode",
+            "Not published; source context not retained in this legacy release context",
+        )
+
+    covered = []
+    for entry in entries:
+        external_party, supported_statement, source_context = display(entry)
+        covered.append(
+            ExternalReportCoveredPartyStatement(
+                external_party=external_party,
+                supported_statement=supported_statement,
+                source_context=source_context,
+                statement_version_ids=tuple(
+                    sorted(
+                        {
+                            entry[key]
+                            for key in (
+                                "current_statement_event_id",
+                                "published_statement_event_id",
+                            )
+                            if entry.get(key) is not None
+                        }
+                    )
+                ),
+            )
+        )
+    return tuple(covered)
+
+
+def _legacy_party_statement_displays(
+    session: Session,
+    project_id: int,
+    contexts: tuple[dict, ...],
+) -> dict[int, tuple[str, str, str]]:
+    """Describe identity-only legacy contexts without inventing provenance.
+
+    Exact event wording and party remain safe to read by retained identity.
+    Cited filename, page, and quote did not travel in these old contexts, so
+    live Evidence and Document rows must never be substituted for them.
+    """
+    legacy_event_ids = set()
+    for context in contexts:
+        frozen_ids = {
+            entry.get("current_statement_event_id")
+            for entry in context.get("party_statement_display", ())
+        }
+        legacy_event_ids.update(
+            entry.get("published_statement_event_id")
+            or entry.get("current_statement_event_id")
+            for entry in context.get("party_statements", ())
+            if entry.get("current_statement_event_id") not in frozen_ids
+        )
+    legacy_event_ids.discard(None)
+    if not legacy_event_ids:
+        return {}
+
+    events_by_id = {
+        event.id: event
+        for event in session.scalars(
+            select(DependencyEvent).where(
+                DependencyEvent.project_id == project_id,
+                DependencyEvent.id.in_(legacy_event_ids),
+            )
+        )
+    }
+    displays: dict[int, tuple[str, str, str]] = {}
+    for event_id, event in events_by_id.items():
+        if event.source_kind == "verbal":
+            heard_on = (
+                event.event_date.isoformat()
+                if event.event_date
+                else "date not recorded"
+            )
+            source_context = f"Verbal statement · conversation {heard_on}"
+        else:
+            source_context = (
+                "Cited source context not retained in this legacy release context"
+            )
+        displays[event_id] = (
+            event.stated_party or "Unstated External Party",
+            event.description,
+            source_context,
+        )
+    return displays
+
+
+def _party_statement_display_context(
+    statement: PublishedPartyStatement, document_only: bool
+) -> dict[str, str]:
+    event = statement.event
+    current_event = statement.current_event
+    external_party = (
+        (event or current_event).stated_party or "Unstated External Party"
+    )
+    if event is None:
+        mode = "Documents only" if document_only else "selected provenance"
+        return {
+            "external_party": external_party,
+            "supported_statement": (
+                "Current statement unsupported in this provenance mode"
+            ),
+            "source_context": f"Not published in the {mode} Report",
+        }
+    cited = statement.cited_provenance
+    if cited is not None:
+        source_context = (
+            f"{cited.filename} · page {cited.page_no} · “{cited.quote}”"
+        )
+    else:
+        heard_on = (
+            event.event_date.isoformat()
+            if event.event_date is not None
+            else "date not recorded"
+        )
+        source_context = f"Verbal statement · conversation {heard_on}"
+    return {
+        "external_party": external_party,
+        "supported_statement": event.description,
+        "source_context": source_context,
+    }

@@ -6,19 +6,23 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
+from corridor.report_release import external_report_release_history
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f253a7c4d9e2"
-RELEASE_PREDECESSOR = "f255a7c4d9e2"
-HEAD = "e255a7c4d9e2"
+RELEASE_PREDECESSOR = "e255a7c4d9e2"
+HEAD = "f255b7c4d9e3"
 RELEASE_COLUMNS = [
     "id",
     "project_id",
@@ -34,6 +38,7 @@ RELEASE_COLUMNS = [
     "released_at",
     "evaluation_context_json",
     "artifact_id",
+    "released_by_display",
 ]
 ARTIFACT_COLUMNS = [
     "id",
@@ -151,6 +156,7 @@ def test_release_schema_is_one_linear_head_on_a_fresh_database():
                     "ck_external_report_releases_pdf_sha256",
                     "ck_external_report_releases_provenance_mode",
                     "ck_external_report_releases_released_by",
+                    "ck_external_report_releases_released_by_display",
                 ]
         finally:
             engine.dispose()
@@ -209,7 +215,7 @@ def test_release_successors_upgrade_the_immediate_predecessor_without_rewriting_
             engine.dispose()
 
 
-def test_release_successors_preserve_an_existing_f255_receipt_without_backfill():
+def test_release_actor_successor_preserves_an_existing_receipt_as_legacy():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
@@ -244,6 +250,14 @@ def test_release_successors_preserve_an_existing_f255_receipt_without_backfill()
                         "where slug = 'issue255-existing-release'"
                     )
                 )
+                connection.execute(
+                    text(
+                        "insert into project_roster_entries "
+                        "(project_id, principal_subject, display_name) "
+                        "select id, 'local:predecessor', 'Current Roster Name' "
+                        "from projects where slug = 'issue255-existing-release'"
+                    )
+                )
 
             _upgrade(rendered, "head")
 
@@ -252,14 +266,62 @@ def test_release_successors_preserve_an_existing_f255_receipt_without_backfill()
                 assert connection.execute(
                     text(
                         "select artifact_name, pdf_sha256, evaluation_context_json, "
-                        "artifact_id from external_report_releases"
+                        "artifact_id, released_by_display "
+                        "from external_report_releases"
                     )
                 ).one() == (
                     "before-a255.pdf",
                     "07b7396f531418f26a52721f1250e82081e2bbb82b76a129e10e80a1b2288790",
                     None,
                     None,
+                    None,
                 )
+
+            with Session(bind=engine) as session:
+                project_id = session.scalar(
+                    text(
+                        "select id from projects "
+                        "where slug = 'issue255-existing-release'"
+                    )
+                )
+                [history] = external_report_release_history(session, project_id)
+                assert history.released_by_display == (
+                    "Project person (display name not retained in this legacy release)"
+                )
+                assert history.released_by == "local:predecessor"
+
+            with pytest.raises(
+                IntegrityError,
+                match="ck_external_report_releases_released_by_display",
+            ):
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "insert into external_report_releases "
+                            "(project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+                            "evaluated_on, ruleset_version, provenance_mode, "
+                            "record_context_json, released_by) "
+                            "select id, 'after-f255-without-display.pdf', 'pdf', "
+                            "decode('255044462d312e370a7072696f720a2525454f46', 'hex'), "
+                            "'07b7396f531418f26a52721f1250e82081e2bbb82b76a129e10e80a1b2288790', "
+                            "date '2026-08-14', 'v0.4', 'all-supported-sources', "
+                            "'{\"dependencies\":[],\"party_statements\":[]}'::jsonb, "
+                            "'local:new-release' from projects "
+                            "where slug = 'issue255-existing-release'"
+                        )
+                    )
+
+            with engine.connect() as connection:
+                assert connection.scalar(
+                    text("select count(*) from external_report_releases")
+                ) == 1
+                assert connection.scalar(
+                    text(
+                        "select convalidated from pg_constraint "
+                        "where conname = "
+                        "'ck_external_report_releases_released_by_display'"
+                    )
+                ) is False
         finally:
             engine.dispose()
 

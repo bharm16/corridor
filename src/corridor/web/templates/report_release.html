@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>External Report release — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --ok:#067647; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:54rem; margin:2.5rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h2 { font-size:1.1rem; margin:2rem 0 .5rem; }
+  .lead,.muted { color:var(--muted); }
+  button { font:inherit; color:#fff; background:#111; border:1px solid #111;
+           border-radius:4px; padding:.45rem .75rem; cursor:pointer; }
+  .empty { color:var(--ok); }
+  .release { border:1px solid var(--line); border-radius:7px; padding:.85rem 1rem;
+             margin:.7rem 0; }
+  .release h3 { margin:0 0 .35rem; font-size:1rem; }
+  .release dl { display:grid; grid-template-columns:10rem 1fr; gap:.2rem .8rem; }
+  .release dt { color:var(--muted); }
+  .release dd { margin:0; overflow-wrap:anywhere; }
+  .statement { border-left:3px solid var(--line); padding:.2rem 0 .2rem .75rem;
+               margin:.45rem 0; }
+  .statement b,.statement span { display:block; }
+  code { font-size:.82rem; }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span><a href="/work/{{ project.slug }}">Back to coordination work</a></span>
+</header>
+
+<main>
+  <h1>External Report release</h1>
+  <p class="lead">
+    Render one fixed PDF, review those exact bytes, then explicitly release them.
+    Release does not send the PDF by email or document control.
+  </p>
+  {% if released %}
+    <p class="empty"><b>This exact PDF is now released and retained.</b></p>
+  {% endif %}
+  <form method="post" action="/reports/{{ project.slug }}/render">
+    <input type="hidden" name="ordinary" value="1">
+    <button type="submit">Render fixed PDF for review</button>
+  </form>
+
+  <h2>Immutable release history</h2>
+  {% for release in history %}
+    <section class="release">
+      <h3>{{ release.artifact_name }}</h3>
+      <dl>
+        <dt>Released by</dt><dd>{{ release.released_by_display }}</dd>
+        <dt>Released at</dt><dd>{{ release.released_at }}</dd>
+        <dt>Evaluation</dt><dd>{{ release.evaluated_on }} · {{ release.ruleset_version }}</dd>
+        <dt>Provenance</dt>
+        <dd>{{ "All supported sources" if release.provenance_mode == "all-supported-sources" else "Documents only" }}</dd>
+        <dt>Covered Dependencies</dt>
+        <dd>{{ release.covered_records|join(", ") if release.covered_records else "None" }}</dd>
+        <dt>Covered statement versions</dt>
+        <dd>
+          {% if release.covered_party_statements %}
+            {% for statement in release.covered_party_statements %}
+              <div class="statement">
+                <b>{{ statement.external_party }}</b>
+                <span>{{ statement.supported_statement }}</span>
+                <span class="muted">{{ statement.source_context }}</span>
+              </div>
+            {% endfor %}
+            <span class="muted">{{ release.covered_statement_version_count }} exact statement version{{ "" if release.covered_statement_version_count == 1 else "s" }} retained in the audit receipt.</span>
+          {% elif release.covered_statement_version_count %}
+            {{ release.covered_statement_version_count }} exact statement version{{ "" if release.covered_statement_version_count == 1 else "s" }} retained in the audit receipt.
+          {% else %}None{% endif %}
+        </dd>
+        <dt>SHA-256 digest</dt><dd><code>{{ release.pdf_sha256 }}</code></dd>
+      </dl>
+      <a href="/reports/{{ project.slug }}/releases/{{ release.release_id }}/download">Download released PDF</a>
+    </section>
+  {% else %}
+    <p class="empty">No External Report PDFs have been released.</p>
+  {% endfor %}
+</main>

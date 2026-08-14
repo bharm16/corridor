@@ -1,5 +1,7 @@
 """External Report release is a sealed artifact, not a live Report pointer."""
 
+import re
+from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timezone
 
@@ -16,11 +18,14 @@ from corridor.external_statements import (
 )
 from corridor.models import (
     Dependency,
+    DependencyEvent,
+    DependencyEventTiming,
     DocPage,
     Document,
     ExternalOrg,
     ExternalReportArtifact,
     Project,
+    ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal
 from corridor.report import Cell, build_report
@@ -30,6 +35,7 @@ from corridor.report_release import (
     RenderedExternalReport,
     external_report_release_history,
     prepare_external_report,
+    review_prepared_external_report,
     release_external_report,
     render_external_report_pdf,
     retrieve_released_external_report,
@@ -144,6 +150,40 @@ def _record_statement_version(session, project):
     )
 
 
+def _record_unknown_scope_statement(session, project):
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    assert party is not None
+    quote = "Release Test Utility will provide the cable reels in September 2026."
+    document = Document(
+        project_id=project.id,
+        sha256="c" * 64,
+        filename="weekly-utility-coordination-minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    session.add(DocPage(document_id=document.id, page_no=7, text=quote))
+    session.flush()
+    return record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2026, 8, 13),
+        description=quote,
+        new_timing=StatementTiming.month("September 2026", 2026, 9),
+        scope=StatementScope.unknown(),
+        created_by="local:statement-recorder",
+        evidence=CitedStatementEvidence(document.id, 7, quote),
+    )
+
+
 def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, project):
     rendered = _rendered(session, project)
 
@@ -167,6 +207,7 @@ def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, pr
     }
     assert release.provenance_mode == "all-supported-sources"
     assert release.released_by == TEST_PRINCIPAL.subject
+    assert release.released_by_display == "Project person (display name not recorded)"
     assert release.record_context_json == {
         "dependencies": [
             {
@@ -178,6 +219,201 @@ def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, pr
         ],
         "party_statements": [],
     }
+
+
+def test_prepared_report_review_uses_only_the_fixed_artifact_context(session, project):
+    statement = _record_statement_version(session, project)
+    artifact = _prepare(session, project)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.ref_code = "LIVE-REF-CHANGED-AFTER-RENDER"
+    session.flush()
+
+    review = review_prepared_external_report(session, project.id, artifact.id)
+
+    assert review.artifact_name == artifact.artifact_name
+    assert review.evaluated_on == date(2026, 8, 13)
+    assert review.ruleset_version == artifact.ruleset_version
+    assert review.provenance_mode == "all-supported-sources"
+    assert review.covered_records == ("DEP-RELEASE-1",)
+    assert review.covered_statement_versions == (statement.id,)
+    assert review.pdf_sha256 == artifact.pdf_sha256
+
+
+def test_prepared_report_review_names_unknown_scope_statement_and_frozen_source(
+    session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    artifact = _prepare(session, project)
+
+    review = review_prepared_external_report(session, project.id, artifact.id)
+
+    [covered_statement] = review.covered_party_statements
+    assert covered_statement.external_party == "Release Test Utility"
+    assert covered_statement.supported_statement == (
+        "Release Test Utility will provide the cable reels in September 2026."
+    )
+    assert covered_statement.source_context == (
+        "weekly-utility-coordination-minutes.pdf · page 7 · "
+        '“Release Test Utility will provide the cable reels in September 2026.”'
+    )
+    assert covered_statement.statement_version_ids == (statement.id,)
+
+
+def test_legacy_prepared_context_keeps_event_wording_without_inventing_a_citation(
+    session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    prepared = _prepare(session, project)
+    legacy_context = deepcopy(prepared.record_context_json)
+    legacy_context.pop("party_statement_display")
+    legacy = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="legacy-party-context.pdf",
+        format=prepared.format,
+        pdf_bytes=bytes(prepared.pdf_bytes),
+        pdf_sha256=prepared.pdf_sha256,
+        evaluated_on=prepared.evaluated_on,
+        ruleset_version=prepared.ruleset_version,
+        evaluation_context_json=deepcopy(prepared.evaluation_context_json),
+        provenance_mode=prepared.provenance_mode,
+        record_context_json=legacy_context,
+    )
+    session.add(legacy)
+    session.flush()
+
+    review = review_prepared_external_report(session, project.id, legacy.id)
+
+    [covered_statement] = review.covered_party_statements
+    assert covered_statement.external_party == "Release Test Utility"
+    assert covered_statement.supported_statement == statement.description
+    assert covered_statement.source_context == (
+        "Cited source context not retained in this legacy release context"
+    )
+    assert "weekly-utility-coordination-minutes.pdf" not in (
+        covered_statement.source_context
+    )
+    assert "page 7" not in covered_statement.source_context
+
+
+def test_new_and_legacy_verbal_source_context_hide_the_recorder_identity(
+    client, session, project
+):
+    predecessor = _record_unknown_scope_statement(session, project)
+    recorder_subject = "local:sensitive-statement-recorder"
+    statement = DependencyEvent(
+        project_id=project.id,
+        commitment_lineage_id=predecessor.commitment_lineage_id,
+        supersedes_event_id=predecessor.id,
+        affected_external_org_id=predecessor.affected_external_org_id,
+        stated_external_org_id=predecessor.stated_external_org_id,
+        attribution_state="resolved",
+        scope_mode="unknown",
+        event_type="committed_date_change",
+        source_kind="verbal",
+        stated_party=predecessor.stated_party,
+        event_date=date(2026, 8, 13),
+        description="Release Test Utility confirmed September 2026 by phone.",
+        created_by=recorder_subject,
+    )
+    session.add(statement)
+    session.flush()
+    session.add(
+        DependencyEventTiming(
+            event_id=statement.id,
+            kind="new",
+            text="September 2026",
+            precision="month",
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 30),
+        )
+    )
+    session.flush()
+    prepared = _prepare(session, project)
+    legacy_context = deepcopy(prepared.record_context_json)
+    legacy_context.pop("party_statement_display")
+    legacy = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="legacy-verbal-party-context.pdf",
+        format=prepared.format,
+        pdf_bytes=bytes(prepared.pdf_bytes),
+        pdf_sha256=prepared.pdf_sha256,
+        evaluated_on=prepared.evaluated_on,
+        ruleset_version=prepared.ruleset_version,
+        evaluation_context_json=deepcopy(prepared.evaluation_context_json),
+        provenance_mode=prepared.provenance_mode,
+        record_context_json=legacy_context,
+    )
+    session.add(legacy)
+    session.flush()
+
+    reviews = (
+        review_prepared_external_report(session, project.id, prepared.id),
+        review_prepared_external_report(session, project.id, legacy.id),
+    )
+
+    for review in reviews:
+        [covered_statement] = review.covered_party_statements
+        assert covered_statement.source_context == (
+            "Verbal statement · conversation 2026-08-13"
+        )
+        assert recorder_subject not in covered_statement.source_context
+
+    _release(session, project, artifact=prepared)
+    history_page = client.get(f"/reports/{project.slug}")
+    assert history_page.status_code == 200
+    assert "Verbal statement · conversation 2026-08-13" in history_page.text
+    assert recorder_subject not in history_page.text
+
+
+def test_legacy_document_only_context_does_not_publish_current_event_wording(
+    session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    page = session.scalars(
+        select(DocPage)
+        .join(Document, Document.id == DocPage.document_id)
+        .where(Document.project_id == project.id)
+    ).one()
+    page.text = "The registered page no longer supports the statement."
+    session.flush()
+    prepared = _prepare(
+        session,
+        project,
+        rendered=_rendered(session, project, document_only=True),
+    )
+    [recorded_statement] = prepared.record_context_json["party_statements"]
+    assert recorded_statement["current_statement_event_id"] == statement.id
+    assert recorded_statement["published_statement_event_id"] is None
+    legacy_context = deepcopy(prepared.record_context_json)
+    legacy_context.pop("party_statement_display")
+    legacy = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="legacy-document-only-party-context.pdf",
+        format=prepared.format,
+        pdf_bytes=bytes(prepared.pdf_bytes),
+        pdf_sha256=prepared.pdf_sha256,
+        evaluated_on=prepared.evaluated_on,
+        ruleset_version=prepared.ruleset_version,
+        evaluation_context_json=deepcopy(prepared.evaluation_context_json),
+        provenance_mode=prepared.provenance_mode,
+        record_context_json=legacy_context,
+    )
+    session.add(legacy)
+    session.flush()
+
+    review = review_prepared_external_report(session, project.id, legacy.id)
+
+    [covered_statement] = review.covered_party_statements
+    assert covered_statement.external_party == "Release Test Utility"
+    assert covered_statement.supported_statement == (
+        "Current statement unsupported in this provenance mode"
+    )
+    assert covered_statement.source_context == (
+        "Not published; source context not retained in this legacy release context"
+    )
+    assert statement.description not in covered_statement.supported_statement
 
 
 def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_changes(
@@ -333,10 +569,103 @@ def test_release_history_is_project_language_and_keeps_the_audit_digest(session,
     assert entry.release_id == release.id
     assert entry.artifact_name == "release-test-2026-08-13.pdf"
     assert entry.released_by == TEST_PRINCIPAL.subject
+    assert entry.released_by_display == "Project person (display name not recorded)"
     assert entry.evaluated_on == date(2026, 8, 13)
     assert entry.covered_dependency_count == 1
     assert entry.covered_records == ("DEP-RELEASE-1",)
     assert entry.pdf_sha256 == release.pdf_sha256
+
+
+def test_release_history_uses_roster_name_while_retaining_principal_for_audit(
+    client, session, project
+):
+    session.add(
+        ProjectRosterEntry(
+            project_id=project.id,
+            principal_subject=TEST_PRINCIPAL.subject,
+            display_name="Dana Fields",
+        )
+    )
+    session.flush()
+    release = _release(session, project)
+
+    [entry] = external_report_release_history(session, project.id)
+    page = client.get(f"/reports/{project.slug}")
+
+    assert entry.released_by_display == "Dana Fields"
+    assert entry.released_by == TEST_PRINCIPAL.subject
+    assert page.status_code == 200
+    assert "Released by</dt><dd>Dana Fields</dd>" in page.text
+    assert "Audit identity" not in page.text
+    assert TEST_PRINCIPAL.subject not in page.text
+    assert release.released_by == TEST_PRINCIPAL.subject
+
+
+def test_release_history_keeps_the_release_time_name_after_a_roster_edit(
+    session, project
+):
+    roster_entry = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject=TEST_PRINCIPAL.subject,
+        display_name="Dana Fields",
+    )
+    session.add(roster_entry)
+    session.flush()
+    release = _release(session, project)
+
+    roster_entry.display_name = "Dana Fields-Renamed"
+    session.flush()
+
+    [entry] = external_report_release_history(session, project.id)
+    assert entry.released_by_display == "Dana Fields"
+    assert entry.released_by == TEST_PRINCIPAL.subject
+    assert release.released_by_display == "Dana Fields"
+
+
+def test_release_history_keeps_the_release_time_name_after_roster_deletion(
+    session, project
+):
+    roster_entry = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject=TEST_PRINCIPAL.subject,
+        display_name="Dana Fields",
+    )
+    session.add(roster_entry)
+    session.flush()
+    release = _release(session, project)
+
+    session.delete(roster_entry)
+    session.flush()
+
+    [entry] = external_report_release_history(session, project.id)
+    assert entry.released_by_display == "Dana Fields"
+    assert entry.released_by == TEST_PRINCIPAL.subject
+    assert release.released_by_display == "Dana Fields"
+
+
+def test_release_history_metadata_query_does_not_load_retained_pdf_bytes(
+    session, project
+):
+    _release(session, project)
+    statements = []
+
+    def capture_sql(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().lower().startswith("select"):
+            statements.append(statement)
+
+    connection = session.get_bind()
+    event.listen(connection, "before_cursor_execute", capture_sql)
+    try:
+        external_report_release_history(session, project.id)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture_sql)
+
+    [history_sql] = [
+        statement
+        for statement in statements
+        if "external_report_releases" in statement
+    ]
+    assert "pdf_bytes" not in history_sql
 
 
 def test_honestly_adverse_content_does_not_block_release(session, project):
@@ -488,6 +817,139 @@ def test_renderer_failure_cannot_create_a_release_receipt(session, project, monk
     ).all() == []
 
 
+def test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an_identity(
+    client, project
+):
+    coordinator_home = client.get(f"/work/{project.slug}")
+    assert coordinator_home.status_code == 200
+    assert f'href="/reports/{project.slug}"' in coordinator_home.text
+    assert "Prepare External Report" in coordinator_home.text
+
+    workspace = client.get(f"/reports/{project.slug}")
+
+    assert workspace.status_code == 200
+    assert "Render fixed PDF for review" in workspace.text
+
+    response = client.post(
+        f"/reports/{project.slug}/render", data={"ordinary": "1"}
+    )
+
+    assert response.status_code == 201
+    assert "Review this fixed PDF" in response.text
+    assert "Evaluation" in response.text
+    assert "All supported sources" in response.text
+    assert "DEP-RELEASE-1" in response.text
+    assert "Covered statement versions" in response.text
+    assert "SHA-256 digest" in response.text
+    assert "Fixed External Report PDF preview" in response.text
+    assert "Download this exact PDF" in response.text
+    assert "Release this exact PDF" in response.text
+    assert "Artifact ID" not in response.text
+    assert 'name="artifact_id"' not in response.text
+    assert re.search(
+        rf'action="/reports/{project.slug}/prepared/\d+/release"', response.text
+    )
+    assert re.search(
+        rf'data="/reports/{project.slug}/prepared/\d+/preview"', response.text
+    )
+
+
+def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
+    client, session, project
+):
+    statement = _record_statement_version(session, project)
+    artifact = _prepare(session, project)
+
+    review = client.get(f"/reports/{project.slug}/prepared/{artifact.id}")
+    assert review.status_code == 200
+    assert artifact.artifact_name in review.text
+    assert "1 exact statement version retained in the audit receipt." in review.text
+    assert f">{statement.id}<" not in review.text
+
+    prepared_preview = client.get(
+        f"/reports/{project.slug}/prepared/{artifact.id}/preview"
+    )
+    assert prepared_preview.status_code == 200
+    assert prepared_preview.headers["content-disposition"].startswith("inline;")
+    assert prepared_preview.content == PDF_A
+
+    prepared_pdf = client.get(
+        f"/reports/{project.slug}/prepared/{artifact.id}/download"
+    )
+    assert prepared_pdf.status_code == 200
+    assert prepared_pdf.headers["content-disposition"].startswith("attachment;")
+    assert prepared_pdf.content == PDF_A
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.status = "closed"
+    session.flush()
+
+    released = client.post(
+        f"/reports/{project.slug}/prepared/{artifact.id}/release"
+    )
+
+    assert released.status_code == 201
+    assert "This exact PDF is now released and retained." in released.text
+    assert artifact.artifact_name in released.text
+    assert "Project person (display name not recorded)" in released.text
+    assert TEST_PRINCIPAL.subject not in released.text
+    assert "DEP-RELEASE-1" in released.text
+    assert artifact.pdf_sha256 in released.text
+    assert "Release does not send the PDF by email or document control." in released.text
+    download = re.search(
+        rf'href="(/reports/{project.slug}/releases/\d+/download)"', released.text
+    )
+    assert download is not None
+
+    released_pdf = client.get(download.group(1))
+
+    assert released_pdf.status_code == 200
+    assert released_pdf.headers["content-type"] == "application/pdf"
+    assert released_pdf.content == prepared_pdf.content == PDF_A
+
+    history = client.get(f"/reports/{project.slug}")
+    assert history.status_code == 200
+    assert artifact.artifact_name in history.text
+    assert TEST_PRINCIPAL.subject not in history.text
+    assert "DEP-RELEASE-1" in history.text
+    assert artifact.pdf_sha256 in history.text
+
+
+def test_ordinary_review_and_history_name_party_statements_without_raw_event_ids(
+    client, session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    artifact = _prepare(session, project)
+
+    review = client.get(f"/reports/{project.slug}/prepared/{artifact.id}")
+
+    assert review.status_code == 200
+    assert "Release Test Utility" in review.text
+    assert (
+        "Release Test Utility will provide the cable reels in September 2026."
+        in review.text
+    )
+    assert "weekly-utility-coordination-minutes.pdf" in review.text
+    assert "page 7" in review.text
+    assert f">{statement.id}<" not in review.text
+
+    released = client.post(
+        f"/reports/{project.slug}/prepared/{artifact.id}/release"
+    )
+
+    assert released.status_code == 201
+    assert "Release Test Utility" in released.text
+    assert (
+        "Release Test Utility will provide the cable reels in September 2026."
+        in released.text
+    )
+    assert "weekly-utility-coordination-minutes.pdf" in released.text
+    assert "page 7" in released.text
+    assert f">{statement.id}<" not in released.text
+
+
 def test_render_control_prepares_a_distinct_artifact(
     client, session, project, monkeypatch
 ):
@@ -559,3 +1021,65 @@ def test_release_control_authorizes_a_prepared_artifact_without_rerendering(
         "pdf_sha256": sealed.pdf_sha256,
     }
     assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]
+
+
+def test_ordinary_release_control_delegates_its_bound_artifact_without_rerendering(
+    client, session, project, monkeypatch
+):
+    import corridor.web.app as web_app
+
+    artifact = _prepare(session, project)
+    sealed = _release(session, project, artifact=artifact)
+    calls = []
+
+    monkeypatch.setattr(
+        web_app,
+        "render_external_report_pdf",
+        lambda *_args, **_kwargs: pytest.fail("release must not rerender a Report"),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "release_external_report",
+        lambda _session, *, project_id, artifact_id, principal: (
+            calls.append(("release", project_id, artifact_id, principal)) or sealed
+        ),
+    )
+
+    response = client.post(
+        f"/reports/{project.slug}/prepared/{artifact.id}/release"
+    )
+
+    assert response.status_code == 201
+    assert "This exact PDF is now released and retained." in response.text
+    assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]
+
+
+def test_ordinary_artifact_routes_refuse_another_project(
+    client, session, project
+):
+    other_project = Project(
+        slug="other-release-test",
+        name="Other Release Test",
+        is_synthetic=True,
+    )
+    session.add(other_project)
+    session.flush()
+    artifact = _prepare(session, project)
+
+    assert client.get(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}"
+    ).status_code == 409
+    assert client.get(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}/preview"
+    ).status_code == 409
+    assert client.get(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}/download"
+    ).status_code == 409
+    assert client.post(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}/release"
+    ).status_code == 409
+
+    release = _release(session, project, artifact=artifact)
+    assert client.get(
+        f"/reports/{other_project.slug}/releases/{release.id}/download"
+    ).status_code == 404
