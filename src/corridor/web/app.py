@@ -181,6 +181,12 @@ _WORK_REASON_COPY = {
     "external_closure_follow_up": "Confirm the project Next Action after the External Party closure.",
 }
 
+_CANDIDATE_EVIDENCE_UNAVAILABLE = (
+    "Save unavailable until every Candidate Evidence page has its registered "
+    "context: a rendered image for PDF or OCR pages, or registered cell text "
+    "for a worksheet."
+)
+
 
 def get_session():
     with SessionFactory() as session:
@@ -926,6 +932,9 @@ def _statement_coordination_screen(
         else None
     )
     candidate_evidence = _candidate_statement_evidence(session, candidate)
+    candidate_evidence_available = _candidate_statement_evidence_available(
+        candidate, candidate_evidence
+    )
     dependencies = session.execute(
         select(Dependency, ExternalOrg.name)
         .outerjoin(ExternalOrg, ExternalOrg.id == Dependency.external_org_id)
@@ -969,6 +978,10 @@ def _statement_coordination_screen(
             "candidate_fields": fields,
             "candidate_party": str(fields.get("external_org") or ""),
             "candidate_evidence": candidate_evidence,
+            "candidate_evidence_available": candidate_evidence_available,
+            "candidate_evidence_unavailable_message": (
+                _CANDIDATE_EVIDENCE_UNAVAILABLE
+            ),
             "dependencies": [
                 {
                     "id": dependency.id,
@@ -1193,6 +1206,9 @@ def _supporting_statement_evidence(
     session: Session, candidate: Candidate, form
 ) -> tuple[CitedStatementEvidence, ...]:
     """Bind optional supporting wording to a source page already on screen."""
+    visible_evidence = _candidate_statement_evidence(session, candidate)
+    if not _candidate_statement_evidence_available(candidate, visible_evidence):
+        raise StatementCoordinationRefusal(_CANDIDATE_EVIDENCE_UNAVAILABLE)
     page_index_value = str(form.get("supporting_page_index") or "").strip()
     quote = str(form.get("supporting_quote") or "").strip()
     if not page_index_value and not quote:
@@ -1205,7 +1221,6 @@ def _supporting_statement_evidence(
         page_index = int(page_index_value)
         if page_index < 0:
             raise IndexError
-        visible_evidence = _candidate_statement_evidence(session, candidate)
         selected = visible_evidence[page_index]
         if not selected["supporting_quote_available"]:
             raise StatementCoordinationRefusal(
@@ -1220,6 +1235,16 @@ def _supporting_statement_evidence(
             "choose a visible registered source page for supporting Evidence"
         ) from exc
     return (CitedStatementEvidence(document_id, page_no, quote),)
+
+
+def _candidate_statement_evidence_available(
+    candidate: Candidate, evidence: tuple[dict, ...]
+) -> bool:
+    """Whether every immutable Candidate citation has reviewable page context."""
+    citations = (candidate.payload_json or {}).get("citations") or ()
+    return bool(citations) and len(evidence) == len(citations) and all(
+        item["supporting_quote_available"] for item in evidence
+    )
 
 
 def _form_statement_scope(form) -> StatementScope:

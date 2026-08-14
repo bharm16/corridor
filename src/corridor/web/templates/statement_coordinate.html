@@ -92,6 +92,10 @@
       <p class="choice"><b>Extracted context suggestion — not yet accepted:</b> {{ candidate_party }}. Choose the affected External Party and the External Party who spoke below.</p>
     {% endif %}
 
+    {% if not candidate_evidence_available %}
+      <p class="error">{{ candidate_evidence_unavailable_message }}</p>
+    {% endif %}
+
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/coordinate">
       <input type="hidden" name="expected_candidate_state" value="pending">
       <input type="hidden" name="expected_commitment_lineage_id" value="">
@@ -164,7 +168,7 @@
         <label for="milestone-impact">Milestone Impact (required only for a date change)</label><select id="milestone-impact" name="milestone_impact"><option value="">Not a date change</option><option value="affects">affects</option><option value="does_not_affect">does not affect</option><option value="not_yet_known">not yet known</option></select>
         {% for milestone in milestones %}<label class="check"><input type="checkbox" name="milestone_id" value="{{ milestone.id }}"> {{ milestone.code }} — {{ milestone.name }}</label>{% endfor %}
       </fieldset>
-      <button type="submit">Save statement and Coordination Plan</button>
+      <button type="submit"{% if not candidate_evidence_available %} disabled{% endif %}>Save statement and Coordination Plan</button>
     </form>
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant">
       <fieldset>
