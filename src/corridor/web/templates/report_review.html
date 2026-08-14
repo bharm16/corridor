@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Review fixed PDF — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:54rem; margin:2.5rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  .lead,.muted { color:var(--muted); }
+  .artifact { border:1px solid var(--line); border-radius:7px; padding:1rem; }
+  dl { display:grid; grid-template-columns:11rem 1fr; gap:.3rem .8rem; }
+  dt { color:var(--muted); }
+  dd { margin:0; overflow-wrap:anywhere; }
+  code { font-size:.82rem; }
+  .preview { width:100%; min-height:36rem; border:1px solid var(--line);
+             border-radius:4px; margin-top:.5rem; }
+  .actions { display:flex; gap:.7rem; align-items:center; margin-top:1.2rem; }
+  button,.download { font:inherit; border:1px solid #111; border-radius:4px;
+                     padding:.45rem .75rem; cursor:pointer; text-decoration:none; }
+  button { color:#fff; background:#111; }
+  .download { color:#111; background:#fff; }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span><a href="/reports/{{ project.slug }}">External Report releases</a></span>
+</header>
+
+<main>
+  <h1>Review this fixed PDF</h1>
+  <p class="lead">
+    Download and review these exact retained bytes. Releasing will authorize this
+    PDF only; it will not regenerate the Report or send it anywhere.
+  </p>
+  <section class="artifact">
+    <h2>{{ review.artifact_name }}</h2>
+    <dl>
+      <dt>Evaluation</dt><dd>{{ review.evaluated_on }} · {{ review.ruleset_version }}</dd>
+      <dt>Rendered at</dt><dd>{{ review.rendered_at }}</dd>
+      <dt>Provenance</dt>
+      <dd>{{ "All supported sources" if review.provenance_mode == "all-supported-sources" else "Documents only" }}</dd>
+      <dt>Covered Dependencies</dt>
+      <dd>{{ review.covered_records|join(", ") if review.covered_records else "None" }}</dd>
+      <dt>Covered statement versions</dt>
+      <dd>{{ review.covered_statement_versions|join(", ") if review.covered_statement_versions else "None" }}</dd>
+      <dt>SHA-256 digest</dt><dd><code>{{ review.pdf_sha256 }}</code></dd>
+    </dl>
+    <h3>Fixed External Report PDF preview</h3>
+    <object class="preview"
+            data="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/preview"
+            type="application/pdf">
+      <p>This browser cannot preview the fixed PDF. Download it below to review it.</p>
+    </object>
+    <div class="actions">
+      <a class="download" href="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/download">Download this exact PDF</a>
+      <form method="post" action="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/release">
+        <button type="submit">Release this exact PDF</button>
+      </form>
+    </div>
+  </section>
+</main>

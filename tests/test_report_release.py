@@ -1,5 +1,6 @@
 """External Report release is a sealed artifact, not a live Report pointer."""
 
+import re
 from dataclasses import replace
 from datetime import date, datetime, timezone
 
@@ -30,6 +31,7 @@ from corridor.report_release import (
     RenderedExternalReport,
     external_report_release_history,
     prepare_external_report,
+    review_prepared_external_report,
     release_external_report,
     render_external_report_pdf,
     retrieve_released_external_report,
@@ -178,6 +180,26 @@ def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, pr
         ],
         "party_statements": [],
     }
+
+
+def test_prepared_report_review_uses_only_the_fixed_artifact_context(session, project):
+    statement = _record_statement_version(session, project)
+    artifact = _prepare(session, project)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.ref_code = "LIVE-REF-CHANGED-AFTER-RENDER"
+    session.flush()
+
+    review = review_prepared_external_report(session, project.id, artifact.id)
+
+    assert review.artifact_name == artifact.artifact_name
+    assert review.evaluated_on == date(2026, 8, 13)
+    assert review.ruleset_version == artifact.ruleset_version
+    assert review.provenance_mode == "all-supported-sources"
+    assert review.covered_records == ("DEP-RELEASE-1",)
+    assert review.covered_statement_versions == (statement.id,)
+    assert review.pdf_sha256 == artifact.pdf_sha256
 
 
 def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_changes(
@@ -488,6 +510,104 @@ def test_renderer_failure_cannot_create_a_release_receipt(session, project, monk
     ).all() == []
 
 
+def test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an_identity(
+    client, project
+):
+    coordinator_home = client.get(f"/work/{project.slug}")
+    assert coordinator_home.status_code == 200
+    assert f'href="/reports/{project.slug}"' in coordinator_home.text
+    assert "Prepare External Report" in coordinator_home.text
+
+    workspace = client.get(f"/reports/{project.slug}")
+
+    assert workspace.status_code == 200
+    assert "Render fixed PDF for review" in workspace.text
+
+    response = client.post(
+        f"/reports/{project.slug}/render", data={"ordinary": "1"}
+    )
+
+    assert response.status_code == 201
+    assert "Review this fixed PDF" in response.text
+    assert "Evaluation" in response.text
+    assert "All supported sources" in response.text
+    assert "DEP-RELEASE-1" in response.text
+    assert "Covered statement versions" in response.text
+    assert "SHA-256 digest" in response.text
+    assert "Fixed External Report PDF preview" in response.text
+    assert "Download this exact PDF" in response.text
+    assert "Release this exact PDF" in response.text
+    assert "Artifact ID" not in response.text
+    assert 'name="artifact_id"' not in response.text
+    assert re.search(
+        rf'action="/reports/{project.slug}/prepared/\d+/release"', response.text
+    )
+    assert re.search(
+        rf'data="/reports/{project.slug}/prepared/\d+/preview"', response.text
+    )
+
+
+def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
+    client, session, project
+):
+    statement = _record_statement_version(session, project)
+    artifact = _prepare(session, project)
+
+    review = client.get(f"/reports/{project.slug}/prepared/{artifact.id}")
+    assert review.status_code == 200
+    assert artifact.artifact_name in review.text
+    assert f">{statement.id}<" in review.text
+
+    prepared_preview = client.get(
+        f"/reports/{project.slug}/prepared/{artifact.id}/preview"
+    )
+    assert prepared_preview.status_code == 200
+    assert prepared_preview.headers["content-disposition"].startswith("inline;")
+    assert prepared_preview.content == PDF_A
+
+    prepared_pdf = client.get(
+        f"/reports/{project.slug}/prepared/{artifact.id}/download"
+    )
+    assert prepared_pdf.status_code == 200
+    assert prepared_pdf.headers["content-disposition"].startswith("attachment;")
+    assert prepared_pdf.content == PDF_A
+
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.status = "closed"
+    session.flush()
+
+    released = client.post(
+        f"/reports/{project.slug}/prepared/{artifact.id}/release"
+    )
+
+    assert released.status_code == 201
+    assert "This exact PDF is now released and retained." in released.text
+    assert artifact.artifact_name in released.text
+    assert TEST_PRINCIPAL.subject in released.text
+    assert "DEP-RELEASE-1" in released.text
+    assert artifact.pdf_sha256 in released.text
+    assert "Release does not send the PDF by email or document control." in released.text
+    download = re.search(
+        rf'href="(/reports/{project.slug}/releases/\d+/download)"', released.text
+    )
+    assert download is not None
+
+    released_pdf = client.get(download.group(1))
+
+    assert released_pdf.status_code == 200
+    assert released_pdf.headers["content-type"] == "application/pdf"
+    assert released_pdf.content == prepared_pdf.content == PDF_A
+
+    history = client.get(f"/reports/{project.slug}")
+    assert history.status_code == 200
+    assert artifact.artifact_name in history.text
+    assert TEST_PRINCIPAL.subject in history.text
+    assert "DEP-RELEASE-1" in history.text
+    assert artifact.pdf_sha256 in history.text
+
+
 def test_render_control_prepares_a_distinct_artifact(
     client, session, project, monkeypatch
 ):
@@ -558,4 +678,35 @@ def test_release_control_authorizes_a_prepared_artifact_without_rerendering(
         "artifact_name": sealed.artifact_name,
         "pdf_sha256": sealed.pdf_sha256,
     }
+    assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]
+
+
+def test_ordinary_release_control_delegates_its_bound_artifact_without_rerendering(
+    client, session, project, monkeypatch
+):
+    import corridor.web.app as web_app
+
+    artifact = _prepare(session, project)
+    sealed = _release(session, project, artifact=artifact)
+    calls = []
+
+    monkeypatch.setattr(
+        web_app,
+        "render_external_report_pdf",
+        lambda *_args, **_kwargs: pytest.fail("release must not rerender a Report"),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "release_external_report",
+        lambda _session, *, project_id, artifact_id, principal: (
+            calls.append(("release", project_id, artifact_id, principal)) or sealed
+        ),
+    )
+
+    response = client.post(
+        f"/reports/{project.slug}/prepared/{artifact.id}/release"
+    )
+
+    assert response.status_code == 201
+    assert "This exact PDF is now released and retained." in response.text
     assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]

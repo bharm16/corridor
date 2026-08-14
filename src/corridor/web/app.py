@@ -15,9 +15,16 @@ import json
 from datetime import date
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Form, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -108,10 +115,16 @@ from corridor.verbal import VerbalRefusal, record_verbal
 from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.report_release import (
+    NoSuchReleasedReport,
     ReleaseRefusal,
+    ReleasedArtifactIntegrityError,
+    external_report_release_history,
     prepare_external_report,
+    review_prepared_external_report,
     release_external_report,
     render_external_report_pdf,
+    retrieve_prepared_external_report,
+    retrieve_released_external_report,
 )
 from corridor.cohort import (
     CohortScopeViolation,
@@ -1336,9 +1349,155 @@ def root():
     return RedirectResponse("/work/nhhip-3c2", status_code=302)
 
 
+@app.get("/reports/{slug}", response_class=HTMLResponse)
+def reports(
+    request: Request,
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """Ordinary project-person entry point for fixed PDF release."""
+    project = _project(session, slug)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "report_release.html",
+        {
+            "project": project,
+            "history": external_report_release_history(session, project.id),
+        },
+    )
+
+
+@app.get("/reports/{slug}/prepared/{artifact_id}", response_class=HTMLResponse)
+def review_report(
+    request: Request,
+    slug: str,
+    artifact_id: int,
+    session: Session = Depends(get_session),
+):
+    """Review one retained PDF and only its frozen context."""
+    project = _project(session, slug)
+    try:
+        review = review_prepared_external_report(session, project.id, artifact_id)
+    except ReleaseRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return TEMPLATES.TemplateResponse(
+        request,
+        "report_review.html",
+        {"project": project, "review": review},
+    )
+
+
+@app.get("/reports/{slug}/prepared/{artifact_id}/download")
+def download_prepared_report(
+    slug: str,
+    artifact_id: int,
+    session: Session = Depends(get_session),
+):
+    """Download exactly the retained bytes awaiting a release decision."""
+    project = _project(session, slug)
+    try:
+        artifact = retrieve_prepared_external_report(
+            session, project.id, artifact_id
+        )
+    except ReleaseRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _pdf_download(bytes(artifact.pdf_bytes), artifact.artifact_name)
+
+
+@app.get("/reports/{slug}/prepared/{artifact_id}/preview")
+def preview_prepared_report(
+    slug: str,
+    artifact_id: int,
+    session: Session = Depends(get_session),
+):
+    """Display exactly the retained bytes awaiting a release decision."""
+    project = _project(session, slug)
+    try:
+        artifact = retrieve_prepared_external_report(
+            session, project.id, artifact_id
+        )
+    except ReleaseRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _pdf_response(
+        bytes(artifact.pdf_bytes), artifact.artifact_name, disposition="inline"
+    )
+
+
+@app.post(
+    "/reports/{slug}/prepared/{artifact_id}/release", response_class=HTMLResponse
+)
+def release_prepared_report(
+    request: Request,
+    slug: str,
+    artifact_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Authorize the artifact bound to the review control, without rerendering."""
+    project = _project(session, slug)
+    try:
+        receipt = release_external_report(
+            session,
+            project_id=project.id,
+            artifact_id=artifact_id,
+            principal=principal,
+        )
+    except ReleaseRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    history = external_report_release_history(session, project.id)
+    released = next(item for item in history if item.release_id == receipt.id)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "report_release.html",
+        {"project": project, "history": history, "released": released},
+        status_code=201,
+    )
+
+
+@app.get("/reports/{slug}/releases/{release_id}/download")
+def download_released_report(
+    slug: str,
+    release_id: int,
+    session: Session = Depends(get_session),
+):
+    """Retrieve the immutable bytes named by one historical release."""
+    project = _project(session, slug)
+    try:
+        receipt = retrieve_released_external_report(
+            session, project.id, release_id
+        )
+    except NoSuchReleasedReport as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ReleasedArtifactIntegrityError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _pdf_download(bytes(receipt.pdf_bytes), receipt.artifact_name)
+
+
+def _pdf_download(pdf_bytes: bytes, artifact_name: str) -> Response:
+    """Return fixed bytes with an encoded, non-executable download name."""
+    return _pdf_response(pdf_bytes, artifact_name, disposition="attachment")
+
+
+def _pdf_response(
+    pdf_bytes: bytes, artifact_name: str, *, disposition: Literal["inline", "attachment"]
+) -> Response:
+    """Return fixed bytes with an encoded, non-executable presentation name."""
+    encoded_name = quote(artifact_name, safe="")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_name}"
+        },
+    )
+
+
 @app.post("/reports/{slug}/render")
 def render_report(
+    request: Request,
     slug: str,
+    ordinary: str | None = Form(None),
     session: Session = Depends(get_session),
 ):
     """Render and retain one fixed PDF; this does not release it externally."""
@@ -1352,6 +1511,14 @@ def render_report(
     except ReleaseRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
     session.commit()
+    if ordinary is not None:
+        review = review_prepared_external_report(session, project.id, artifact.id)
+        return TEMPLATES.TemplateResponse(
+            request,
+            "report_review.html",
+            {"project": project, "review": review},
+            status_code=201,
+        )
     return JSONResponse(
         status_code=201,
         content={

@@ -63,6 +63,21 @@ class ExternalReportReleaseHistory:
     pdf_sha256: str
 
 
+@dataclass(frozen=True)
+class ExternalReportArtifactReview:
+    """Frozen project-language context for one prepared PDF review."""
+
+    artifact_id: int
+    artifact_name: str
+    rendered_at: datetime
+    evaluated_on: date
+    ruleset_version: str
+    provenance_mode: str
+    covered_records: tuple[str, ...]
+    covered_statement_versions: tuple[int, ...]
+    pdf_sha256: str
+
+
 def render_external_report_pdf(
     session: Session,
     project_id: int,
@@ -130,6 +145,42 @@ def prepare_external_report(
     with session.begin_nested():
         session.add(artifact)
         session.flush()
+    return artifact
+
+
+def review_prepared_external_report(
+    session: Session, project_id: int, artifact_id: int
+) -> ExternalReportArtifactReview:
+    """Read the exact retained context a person reviews before release."""
+    artifact = retrieve_prepared_external_report(session, project_id, artifact_id)
+    return ExternalReportArtifactReview(
+        artifact_id=artifact.id,
+        artifact_name=artifact.artifact_name,
+        rendered_at=artifact.rendered_at,
+        evaluated_on=artifact.evaluated_on,
+        ruleset_version=artifact.ruleset_version,
+        provenance_mode=artifact.provenance_mode,
+        covered_records=tuple(
+            entry["ref_code"]
+            for entry in artifact.record_context_json.get("dependencies", ())
+        ),
+        covered_statement_versions=_statement_version_ids(
+            artifact.record_context_json
+        ),
+        pdf_sha256=artifact.pdf_sha256,
+    )
+
+
+def retrieve_prepared_external_report(
+    session: Session, project_id: int, artifact_id: int
+) -> ExternalReportArtifact:
+    """Retrieve fixed pre-release bytes only after checking their digest."""
+    artifact = session.get(ExternalReportArtifact, artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise ReleaseRefusal(
+            f"no rendered External Report {artifact_id} in project {project_id}"
+        )
+    _validate_prepared_artifact(artifact)
     return artifact
 
 
@@ -358,6 +409,10 @@ def _evaluation_context(report: Report) -> dict:
 
 
 def _statement_version_count(context: dict) -> int:
+    return len(_statement_version_ids(context))
+
+
+def _statement_version_ids(context: dict) -> tuple[int, ...]:
     version_ids = {
         entry[key]
         for group in ("dependencies", "party_statements")
@@ -365,4 +420,4 @@ def _statement_version_count(context: dict) -> int:
         for key in ("current_statement_event_id", "published_statement_event_id")
         if entry.get(key) is not None
     }
-    return len(version_ids)
+    return tuple(sorted(version_ids))
