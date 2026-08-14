@@ -19,6 +19,7 @@ from corridor.sh99_coordinator_rehearsal import (
     CorruptSH99CoordinatorRehearsalBundle,
     SH99CoordinatorRehearsalConfig,
     _JourneyProgress,
+    _candidate_source_attribution_counts,
     _fetch_evidence_page_image,
     _candidate_7587_work_facts,
     _equistar_form,
@@ -120,6 +121,46 @@ def _write_frozen_v2_bundle(bundle_dir: Path) -> str:
     return hashlib.sha256(manifest_bytes).hexdigest()
 
 
+def _regenerate_bundle_manifest(bundle_dir: Path) -> str:
+    """Regenerate every public integrity identity after an adversarial edit."""
+
+    canonical = json.loads((bundle_dir / "canonical-content.json").read_text())
+    receipt = {"schema_version": BUNDLE_SCHEMA_VERSION, **canonical}
+    canonical_bytes = (
+        json.dumps(
+            canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
+        + b"\n"
+    )
+    receipt_bytes = (
+        json.dumps(
+            receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
+        + b"\n"
+    )
+    (bundle_dir / "canonical-content.json").write_bytes(canonical_bytes)
+    (bundle_dir / "receipt.json").write_bytes(receipt_bytes)
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    manifest["canonical_content_sha256"] = hashlib.sha256(
+        canonical_bytes.removesuffix(b"\n")
+    ).hexdigest()
+    manifest["files"] = {
+        name: {
+            "bytes": (bundle_dir / name).stat().st_size,
+            "sha256": hashlib.sha256((bundle_dir / name).read_bytes()).hexdigest(),
+        }
+        for name in BUNDLE_FILES
+    }
+    manifest_bytes = (
+        json.dumps(
+            manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
+        + b"\n"
+    )
+    (bundle_dir / "manifest.json").write_bytes(manifest_bytes)
+    return hashlib.sha256(manifest_bytes).hexdigest()
+
+
 def _v3_inputs() -> dict:
     return {
         "source_revision": "a" * 40,
@@ -133,8 +174,14 @@ def _v3_inputs() -> dict:
         "corpus_inputs": [],
         "active_runs": [],
         "policy_identities": [],
-        "report_publication": {"ruleset_version": "v0.4"},
-        "seeded_coordinator": {"subject": "local:sh99-coordinator"},
+        "report_publication": {
+            "ruleset_version": "v0.4",
+            "provenance_mode": "all-supported-sources",
+        },
+        "seeded_coordinator": {
+            "subject": "local:sh99-coordinator",
+            "display_name": "SH 99 Coordinator",
+        },
         "scenario_candidates": {"7296": 7296, "7129": 7129, "7587": 7587},
         "scenario_source_receipts": {
             candidate_id: {
@@ -192,7 +239,10 @@ def _release_facts(pdf_bytes: bytes) -> dict:
         "released_by_display": "SH 99 Coordinator",
         "released_at": "2026-08-13T00:00:00+00:00",
         "record_context": {"party_statements": []},
-        "evaluation_context": {"evaluated_on": "2026-08-13"},
+        "evaluation_context": {
+            "evaluated_on": "2026-08-13",
+            "ruleset_version": "v0.4",
+        },
     }
 
 
@@ -267,6 +317,42 @@ def _complete_verification(pdf_bytes: bytes) -> dict:
     }
 
 
+def _passing_capture(pdf_bytes: bytes) -> CoordinatorRehearsalCapture:
+    release = _release_facts(pdf_bytes)
+    return CoordinatorRehearsalCapture(
+        inputs=_v3_inputs(),
+        operations=_v3_operations(),
+        coordinator={
+            "elapsed_seconds": 30.0,
+            "scenario_timings": {"7296": 12.0, "7129_and_release": 18.0},
+            "interactions": [
+                "save_kinder_morgan_statement",
+                "save_equistar_statement",
+                "open_external_report_release",
+                "render_fixed_pdf_for_review",
+                "review_fixed_pdf_preview",
+                "download_fixed_pdf_for_review",
+                "release_fixed_pdf",
+                "retrieve_released_pdf",
+                "reload_release_history",
+            ],
+            "retries": [],
+        },
+        outcome={
+            "status": "passed",
+            "assistance": [],
+            "errors": [],
+            "deviations": [],
+            "released_pdf": {
+                field: release[field]
+                for field in ("release_id", "artifact_name", "sha256")
+            },
+        },
+        verification=_complete_verification(pdf_bytes),
+        released_pdf_bytes=pdf_bytes,
+    )
+
+
 class _ScreenClient:
     def __init__(self):
         self.seen = []
@@ -334,6 +420,60 @@ def test_visible_work_card_selection_uses_exact_source_context_without_candidate
 
     assert url == "/statements/sh99-grand-parkway/7129/coordinate"
     assert client.seen == [url]
+
+
+def test_visible_work_card_ignores_a_second_non_review_action():
+    card = _work_card(
+        href="/statements/sh99-grand-parkway/browser-carried/coordinate",
+        party="Equistar",
+        quote=EQUISTAR_QUOTE,
+        source="equistar-2024-12-04.pdf · 2024-12-04 · page 1",
+    ).replace(
+        "</section>",
+        '<a class="action" href="/documents/source-page">View source page</a></section>',
+    )
+    client = _ScreenClient()
+
+    url, _screen = _find_statement_screen(
+        client,
+        f"<main>{card}</main>",
+        party="Equistar",
+        exact_quote=EQUISTAR_QUOTE,
+        source_context=("equistar-2024-12-04.pdf", "2024-12-04"),
+        progress=_JourneyProgress.start(),
+    )
+
+    assert url == "/statements/sh99-grand-parkway/browser-carried/coordinate"
+    assert client.seen == [url]
+
+
+def test_visible_work_card_refuses_two_coordinate_review_actions():
+    card = _work_card(
+        href="/statements/sh99-grand-parkway/first-opaque/coordinate",
+        party="Equistar",
+        quote=EQUISTAR_QUOTE,
+        source="equistar-2024-12-04.pdf · 2024-12-04 · page 1",
+    ).replace(
+        "</section>",
+        (
+            '<a class="action" '
+            'href="/statements/sh99-grand-parkway/second-opaque/coordinate">'
+            "Review extracted statement</a></section>"
+        ),
+    )
+    client = _ScreenClient()
+
+    with pytest.raises(RuntimeError, match="exactly one visible statement review action"):
+        _find_statement_screen(
+            client,
+            f"<main>{card}</main>",
+            party="Equistar",
+            exact_quote=EQUISTAR_QUOTE,
+            source_context=("equistar-2024-12-04.pdf", "2024-12-04"),
+            progress=_JourneyProgress.start(),
+        )
+
+    assert client.seen == []
 
 
 @pytest.mark.parametrize("matching_card_count", [0, 2])
@@ -790,46 +930,118 @@ def test_v3_publication_refuses_boolean_valid_without_semantic_verification(tmp_
 
 def test_v3_publication_derives_an_unqualified_pass_from_complete_evidence(tmp_path):
     pdf_bytes = b"%PDF-1.4\ncomplete successor release\n"
-    release = _release_facts(pdf_bytes)
     summary = publish_coordinator_rehearsal_bundle(
         tmp_path / "passed",
-        CoordinatorRehearsalCapture(
-            inputs=_v3_inputs(),
-            operations=_v3_operations(),
-            coordinator={
-                "elapsed_seconds": 30.0,
-                "scenario_timings": {"7296": 12.0, "7129_and_release": 18.0},
-                "interactions": [
-                    "save_kinder_morgan_statement",
-                    "save_equistar_statement",
-                    "open_external_report_release",
-                    "render_fixed_pdf_for_review",
-                    "review_fixed_pdf_preview",
-                    "download_fixed_pdf_for_review",
-                    "release_fixed_pdf",
-                    "retrieve_released_pdf",
-                    "reload_release_history",
-                ],
-                "retries": [],
-            },
-            outcome={
-                "status": "passed",
-                "assistance": [],
-                "errors": [],
-                "deviations": [],
-                "released_pdf": {
-                    field: release[field]
-                    for field in ("release_id", "artifact_name", "sha256")
-                },
-            },
-            verification=_complete_verification(pdf_bytes),
-            released_pdf_bytes=pdf_bytes,
-        ),
+        _passing_capture(pdf_bytes),
     )
 
     receipt = json.loads((summary.bundle_dir / "receipt.json").read_text())
     assert receipt["outcome"]["status"] == "passed"
     assert receipt["outcome"]["unqualified_pass"] is True
+
+
+@pytest.mark.parametrize(
+    ("case", "mutations"),
+    (
+        (
+            "release ruleset",
+            {
+                ("verification", "release", "ruleset_version"): "forged-v9",
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "ruleset_version",
+                ): "forged-v9",
+            },
+        ),
+        (
+            "release provenance",
+            {
+                ("verification", "release", "provenance_mode"): "document-only",
+            },
+        ),
+        (
+            "release raw actor",
+            {
+                ("verification", "release", "released_by"): "local:forged",
+            },
+        ),
+        (
+            "release display actor",
+            {
+                (
+                    "verification",
+                    "release",
+                    "released_by_display",
+                ): "Forged Coordinator",
+            },
+        ),
+        (
+            "evaluation date",
+            {
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "evaluated_on",
+                ): "2026-08-12",
+            },
+        ),
+        (
+            "evaluation ruleset",
+            {
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "ruleset_version",
+                ): "forged-v9",
+            },
+        ),
+        (
+            "timezone-naive release",
+            {
+                (
+                    "verification",
+                    "release",
+                    "released_at",
+                ): "2026-08-13T00:00:00",
+            },
+        ),
+    ),
+)
+def test_v3_verifier_refuses_rehashed_release_metadata_mismatch(
+    tmp_path, case, mutations
+):
+    pdf_bytes = b"%PDF-1.4\nrelease metadata binding\n"
+    summary = publish_coordinator_rehearsal_bundle(
+        tmp_path / case.replace(" ", "-"),
+        _passing_capture(pdf_bytes),
+    )
+    canonical_path = summary.bundle_dir / "canonical-content.json"
+    canonical = json.loads(canonical_path.read_text())
+    for path, value in mutations.items():
+        target = canonical
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+    canonical_path.write_text(
+        json.dumps(
+            canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        + "\n"
+    )
+    regenerated_manifest_sha256 = _regenerate_bundle_manifest(summary.bundle_dir)
+
+    with pytest.raises(
+        CorruptSH99CoordinatorRehearsalBundle,
+        match="v3 coordinator receipt shape is absent or invalid",
+    ):
+        verify_coordinator_rehearsal_bundle(
+            summary.bundle_dir,
+            expected_integrity_manifest_sha256=regenerated_manifest_sha256,
+        )
 
 
 def test_clone_upgrade_pins_the_direct_predecessor_and_current_head():
@@ -881,6 +1093,73 @@ def test_candidate_7587_pending_source_card_is_not_ledger_derived_work():
     }
 
 
+def test_candidate_7587_attribution_counts_only_its_exact_source_signature():
+    invitation = (
+        "Air Products will be invited to the TxDOT-Utility Owners-DB Proposers "
+        "Workshop on May 8th, 2025. At this event, the DB Contractor PUAA process "
+        "will be explained."
+    )
+    source = {
+        "document_id": 1758,
+        "document_name": (
+            "Meeting Notes/Air Products/2025.04.14 GPB1 Air Products notes final.pdf"
+        ),
+        "page": 1,
+        "quote": invitation,
+    }
+    candidate_description = (
+        "Air Products will be invited to the TxDOT-Utility Owners-DB Proposers "
+        "Workshop, where the DB Contractor PUAA process will be explained."
+    )
+    published_paraphrase = (
+        "Air Products expects an invitation to the proposer workshop and a PUAA "
+        "process briefing."
+    )
+    legitimate_air_products = {
+        "external_party": "Air Products",
+        "supported_statement": "Air Products confirmed a separate crossing review.",
+        "source_context": (
+            "Meeting Notes/Air Products/2025.04.14 GPB1 Air Products notes final.pdf "
+            "· page 3 · “Air Products confirmed a separate crossing review.”"
+        ),
+    }
+    context = {"party_statement_display": [legitimate_air_products]}
+    legitimate_pdf = (
+        "External Party commitments Air Products [D1758 p.3] "
+        "Air Products confirmed a separate crossing review. [D1758 p.3]"
+    )
+
+    assert _candidate_source_attribution_counts(
+        context,
+        legitimate_pdf,
+        context_external_org="Air Products",
+        candidate_description=candidate_description,
+        source_receipt=source,
+    ) == {"report_context_count": 0, "released_pdf_count": 0}
+
+    context["party_statement_display"].append(
+        {
+            "external_party": "Air Products",
+            "supported_statement": published_paraphrase,
+            "source_context": (
+                f"{source['document_name']} · page 1 · “{invitation}”"
+            ),
+        }
+    )
+    contaminated_pdf = (
+        f"{legitimate_pdf}\nAir Products   [D1758 p.1]\n"
+        f"{published_paraphrase}\n[D1758 p.1]"
+    )
+
+    assert _candidate_source_attribution_counts(
+        context,
+        contaminated_pdf,
+        context_external_org="Air Products",
+        candidate_description=candidate_description,
+        source_receipt=source,
+    ) == {"report_context_count": 1, "released_pdf_count": 1}
+
+
 def test_assisted_rehearsal_is_sealed_but_never_called_an_unqualified_pass(tmp_path):
     """A release control needing a technical identifier is an honest failed rehearsal."""
 
@@ -919,7 +1198,10 @@ def test_assisted_rehearsal_is_sealed_but_never_called_an_unqualified_pass(tmp_p
                     "released_by_display": "SH 99 Coordinator",
                     "released_at": "2026-08-13T00:00:00+00:00",
                     "record_context": {"party_statements": []},
-                    "evaluation_context": {"evaluated_on": "2026-08-13"},
+                    "evaluation_context": {
+                        "evaluated_on": "2026-08-13",
+                        "ruleset_version": "v0.4",
+                    },
                 },
             },
             released_pdf_bytes=b"%PDF-1.4\nfixed sh99 report\n",

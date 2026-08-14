@@ -141,6 +141,9 @@ _SCENARIO_SOURCES = {
 _VISIBLE_EVIDENCE_HEADER = re.compile(
     r"^(?P<filename>.+?)\s+·\s+registered page\s+(?P<page>\d+)$"
 )
+_STATEMENT_COORDINATE_ROUTE = re.compile(
+    r"^/statements/[^/?#]+/[^/?#]+/coordinate$"
+)
 
 
 class CorruptSH99CoordinatorRehearsalBundle(ValueError):
@@ -632,6 +635,9 @@ def run_sh99_coordinator_rehearsal(
                                 session,
                                 project_slug=config.project_slug,
                                 release=durable_release.row,
+                                candidate_7587_source_receipt=(
+                                    scenario_source_receipts["7587"]
+                                ),
                                 expected_released_by=config.coordinator_subject,
                                 expected_released_by_display=(
                                     config.coordinator_display_name
@@ -1382,7 +1388,14 @@ def _find_statement_screen(
             "matching the visible party, exact wording, and source context",
             progress,
         )
-    url = matches[0].href
+    review_actions = _statement_review_actions(matches[0])
+    if len(review_actions) != 1:
+        raise _journey_failure(
+            "matched statement card does not expose exactly one visible statement "
+            "review action with its ordinary coordinate route",
+            progress,
+        )
+    url = review_actions[0]
     _record_interaction(progress.interactions, "open_statement_from_work_list")
     screen = client.get(url)
     _require_response(
@@ -1398,10 +1411,26 @@ def _find_statement_screen(
 class _VisibleWorkCard:
     """One immediate card as rendered to the coordinator."""
 
-    href: str
+    actions: tuple[tuple[str, str], ...]
     text: str
     quote: str
     source_context: str
+
+
+def _statement_review_actions(card: _VisibleWorkCard) -> list[str]:
+    """Select the paired visible purpose and opaque ordinary route."""
+
+    matches: list[str] = []
+    for href, visible_text in card.actions:
+        purpose_matches = (
+            _normalized_visible_text(visible_text) == "review extracted statement"
+        )
+        route_matches = _STATEMENT_COORDINATE_ROUTE.fullmatch(href) is not None
+        if purpose_matches != route_matches:
+            return []
+        if purpose_matches:
+            matches.append(href)
+    return matches
 
 
 class _ImmediateWorkCardParser(HTMLParser):
@@ -1416,7 +1445,10 @@ class _ImmediateWorkCardParser(HTMLParser):
         self._text: list[str] = []
         self._quote: list[str] = []
         self._source: list[str] = []
-        self._hrefs: list[str] = []
+        self._actions: list[tuple[str, str]] = []
+        self._action_depth: int | None = None
+        self._action_href = ""
+        self._action_text: list[str] = []
         self._in_quote = 0
         self._in_source = 0
         self.feed(source)
@@ -1438,15 +1470,22 @@ class _ImmediateWorkCardParser(HTMLParser):
             self._text = []
             self._quote = []
             self._source = []
-            self._hrefs = []
+            self._actions = []
         if self._card_depth is None:
             return
         if tag == "blockquote":
             self._in_quote += 1
         if tag == "p" and "source" in classes:
             self._in_source += 1
-        if tag == "a" and "action" in classes and values.get("href"):
-            self._hrefs.append(unescape(values["href"]))
+        if (
+            tag == "a"
+            and "action" in classes
+            and values.get("href")
+            and self._action_depth is None
+        ):
+            self._action_depth = len(self._stack)
+            self._action_href = unescape(values["href"])
+            self._action_text = []
 
     def handle_data(self, data: str) -> None:
         if self._card_depth is None:
@@ -1456,6 +1495,8 @@ class _ImmediateWorkCardParser(HTMLParser):
             self._quote.append(data)
         if self._in_source:
             self._source.append(data)
+        if self._action_depth is not None:
+            self._action_text.append(data)
 
     def handle_endtag(self, tag: str) -> None:
         if not self._stack:
@@ -1466,23 +1507,30 @@ class _ImmediateWorkCardParser(HTMLParser):
                 self._in_quote -= 1
             if tag == "p" and "source" in classes and self._in_source:
                 self._in_source -= 1
+            if tag == "a" and self._action_depth == len(self._stack):
+                self._actions.append(
+                    (self._action_href, " ".join(self._action_text))
+                )
+                self._action_depth = None
+                self._action_href = ""
+                self._action_text = []
             if (
                 tag == "section"
                 and open_tag == "section"
                 and len(self._stack) == self._card_depth
             ):
-                if len(self._hrefs) == 1:
-                    self.cards.append(
-                        _VisibleWorkCard(
-                            href=self._hrefs[0],
-                            text=" ".join(self._text),
-                            quote=" ".join(self._quote),
-                            source_context=" ".join(self._source),
-                        )
+                self.cards.append(
+                    _VisibleWorkCard(
+                        actions=tuple(self._actions),
+                        text=" ".join(self._text),
+                        quote=" ".join(self._quote),
+                        source_context=" ".join(self._source),
                     )
+                )
                 self._card_depth = None
                 self._in_quote = 0
                 self._in_source = 0
+                self._action_depth = None
         if tag == "section" and "backlog" in classes and self._backlog_depth:
             self._backlog_depth -= 1
         self._stack.pop()
@@ -2184,6 +2232,7 @@ def _verify_clone_result(
     *,
     project_slug: str,
     release: ExternalReportRelease,
+    candidate_7587_source_receipt: dict[str, Any],
     expected_released_by: str,
     expected_released_by_display: str,
 ) -> _CloneVerification:
@@ -2330,21 +2379,30 @@ def _verify_clone_result(
         and len(released_open_party_statements) == len(expected_party_statements),
         "released PDF does not cover exactly every open unknown-scope statement",
     )
-    serialized_context = _normalized_visible_text(
-        json.dumps(release.record_context_json, sort_keys=True)
-    )
-    _require(
-        _normalized_visible_text(_AIR_PRODUCTS_INVITATION_QUOTE)
-        not in serialized_context,
-        "Candidate 7587 exact invitation appeared in released report context",
-    )
     rendered_text = _require_report_pdf_contents(
         release.pdf_bytes, open_party_statements
     )
+    candidate_7587_attribution = _candidate_source_attribution_counts(
+        release.record_context_json,
+        rendered_text,
+        context_external_org=str(
+            (candidates[7587].payload_json or {}).get("fields", {}).get(
+                "external_org"
+            )
+            or ""
+        ),
+        candidate_description=str(
+            (candidates[7587].payload_json or {}).get("fields", {}).get(
+                "description"
+            )
+            or ""
+        ),
+        source_receipt=candidate_7587_source_receipt,
+    )
     _require(
-        _normalized_visible_text(_AIR_PRODUCTS_INVITATION_QUOTE)
-        not in _normalized_visible_text(rendered_text),
-        "Candidate 7587 exact invitation appeared in released PDF content",
+        candidate_7587_attribution["report_context_count"] == 0
+        and candidate_7587_attribution["released_pdf_count"] == 0,
+        "Candidate 7587 source attribution appeared in released Report evidence",
     )
     facts = {
         "candidate_7296": {
@@ -2382,8 +2440,7 @@ def _verify_clone_result(
             "statement_event_id": abstention.dependency_event_id,
             "coordination_receipt_count": len(candidate_7587_receipts),
             **work_facts_7587,
-            "report_context_count": 0,
-            "released_pdf_count": 0,
+            **candidate_7587_attribution,
         },
     }
     return _CloneVerification(facts=facts, released_pdf_bytes=bytes(release.pdf_bytes))
@@ -2516,6 +2573,78 @@ def _party_statement_context(statements) -> list[dict[str, int | None]]:
         }
         for statement in statements
     ]
+
+
+def _candidate_source_attribution_counts(
+    record_context: dict[str, Any],
+    rendered_text: str,
+    *,
+    context_external_org: str,
+    candidate_description: str,
+    source_receipt: dict[str, Any],
+) -> dict[str, int]:
+    """Count only one Candidate's full frozen source attribution signature."""
+
+    document_id = source_receipt.get("document_id")
+    document_name = source_receipt.get("document_name")
+    page = source_receipt.get("page")
+    quote = source_receipt.get("quote")
+    if (
+        not isinstance(document_id, int)
+        or isinstance(document_id, bool)
+        or not isinstance(document_name, str)
+        or not document_name
+        or not isinstance(page, int)
+        or isinstance(page, bool)
+        or page <= 0
+        or not isinstance(quote, str)
+        or not quote
+        or not isinstance(context_external_org, str)
+        or not context_external_org
+        or not isinstance(candidate_description, str)
+        or not candidate_description
+    ):
+        raise ValueError("Candidate source attribution receipt is incomplete")
+    expected_source_context = (
+        f"{document_name} · page {page} · “{quote}”"
+    )
+    displays = record_context.get("party_statement_display", ())
+    if not isinstance(displays, list):
+        raise ValueError("released Report party-statement display context is invalid")
+    matching_displays = [
+        entry
+        for entry in displays
+        if isinstance(entry, dict)
+        and _normalized_visible_text(str(entry.get("source_context") or ""))
+        == _normalized_visible_text(expected_source_context)
+    ]
+    normalized_pdf = _normalized_visible_text(rendered_text)
+    marker_pattern = re.escape(f"[d{document_id} p.{page}]".casefold())
+    display_signatures = {
+        (context_external_org, candidate_description),
+        *(
+            (
+                str(entry.get("external_party") or ""),
+                str(entry.get("supported_statement") or ""),
+            )
+            for entry in matching_displays
+        ),
+    }
+    pdf_count = 0
+    for displayed_party, statement in display_signatures:
+        normalized_party = _normalized_visible_text(displayed_party)
+        normalized_statement = _normalized_visible_text(statement)
+        if not normalized_party or not normalized_statement:
+            continue
+        pdf_pattern = re.compile(
+            rf"{re.escape(normalized_party)}\s+{marker_pattern}.{{0,2048}}?"
+            rf"{re.escape(normalized_statement)}\s+{marker_pattern}"
+        )
+        pdf_count += len(tuple(pdf_pattern.finditer(normalized_pdf)))
+    return {
+        "report_context_count": len(matching_displays),
+        "released_pdf_count": pdf_count,
+    }
 
 
 def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> str:
@@ -2868,6 +2997,7 @@ def _require_capture_shape(capture: CoordinatorRehearsalCapture) -> None:
     if not isinstance(capture.outcome["errors"], list):
         raise ValueError("rehearsal errors must be a list")
     _require_v3_integrity_receipts(capture)
+    _require_v3_release_metadata_bindings(capture)
 
 
 def _require_v3_integrity_receipts(capture: CoordinatorRehearsalCapture) -> None:
@@ -2948,6 +3078,56 @@ def _require_v3_integrity_receipts(capture: CoordinatorRehearsalCapture) -> None
         != operations.get("source_scenario_receipts_sha256_after")
     ):
         raise ValueError("predecessor clone or unchanged-source receipt is invalid")
+
+
+def _require_v3_release_metadata_bindings(
+    capture: CoordinatorRehearsalCapture,
+) -> None:
+    """Bind immutable release metadata to the independently sealed v3 inputs."""
+
+    publication = capture.inputs.get("report_publication")
+    coordinator = capture.inputs.get("seeded_coordinator")
+    if (
+        not isinstance(publication, dict)
+        or not all(
+            isinstance(publication.get(field), str) and bool(publication[field])
+            for field in ("ruleset_version", "provenance_mode")
+        )
+        or not isinstance(coordinator, dict)
+        or not all(
+            isinstance(coordinator.get(field), str) and bool(coordinator[field])
+            for field in ("subject", "display_name")
+        )
+    ):
+        raise ValueError("Report publication or seeded coordinator receipt is incomplete")
+    release = capture.verification.get("release")
+    if release is None:
+        return
+    evaluation = release.get("evaluation_context") if isinstance(release, dict) else None
+    if not isinstance(release, dict) or not isinstance(evaluation, dict):
+        raise ValueError("release evaluation receipt is incomplete")
+    if (
+        release.get("ruleset_version") != publication["ruleset_version"]
+        or release.get("provenance_mode") != publication["provenance_mode"]
+        or release.get("released_by") != coordinator["subject"]
+        or release.get("released_by_display") != coordinator["display_name"]
+        or evaluation.get("evaluated_on") != release.get("evaluated_on")
+        or evaluation.get("ruleset_version") != release.get("ruleset_version")
+    ):
+        raise ValueError("release metadata does not match its sealed inputs")
+    evaluated_on = release.get("evaluated_on")
+    released_at = release.get("released_at")
+    try:
+        parsed_evaluated_on = date.fromisoformat(evaluated_on)
+        parsed_released_at = datetime.fromisoformat(released_at)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("release evaluation or timestamp is not canonical ISO") from exc
+    if (
+        parsed_evaluated_on.isoformat() != evaluated_on
+        or parsed_released_at.tzinfo is None
+        or parsed_released_at.utcoffset() is None
+    ):
+        raise ValueError("release timestamp must retain an explicit timezone")
 
 
 def _canonical_json(value: Any) -> bytes:
