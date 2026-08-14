@@ -18,12 +18,50 @@
   .item ul { margin:.35rem 0 .7rem; padding-left:1.25rem; }
   .item li { margin:.2rem 0; }
   .timing { color:var(--warn); font-weight:600; }
+  .notice { color:var(--warn); font-weight:600; }
+  .source { color:var(--muted); font-size:.9rem; }
+  blockquote { border-left:3px solid var(--line); margin:.6rem 0; padding:.1rem 0 .1rem .8rem; }
+  .decision { font-weight:600; }
   .return { color:var(--muted); font-size:.9rem; }
   .action { display:inline-block; color:#fff; background:#111; border-radius:4px;
             padding:.35rem .65rem; text-decoration:none; font-size:.9rem; }
   .backlog .item { background:#fafafa; }
+  .search { display:flex; gap:.5rem; margin:.8rem 0; }
+  .search input { flex:1; min-width:10rem; padding:.45rem .55rem; }
+  .search button { padding:.45rem .7rem; }
+  .pager { display:flex; justify-content:space-between; align-items:center; margin-top:1rem; }
   .empty { color:var(--ok); }
 </style>
+
+{% macro work_card(view, extra_class="") -%}
+  <section class="item {{ extra_class }}">
+    <h3>
+      {% if view.item.kind == "statement" %}External Party Commitment
+      {% elif view.item.kind == "dependency" %}Dependency coordination
+      {% else %}Extracted statement{% endif %}
+      {% if view.item.kind != "candidate" and view.item.display_name %} — {{ view.item.display_name }}{% endif %}
+    </h3>
+    {% if view.item.kind == "candidate" %}
+      <p class="notice">Extracted for review — not yet in the Ledger.</p>
+      {% if view.item.candidate_source.context_external_org %}
+        <p>Extracted context / affected party: {{ view.item.candidate_source.context_external_org }}</p>
+      {% endif %}
+      <blockquote>{{ view.item.candidate_source.quote or "No cited wording was extracted." }}</blockquote>
+      <p class="source">
+        {{ view.item.candidate_source.document_name }}
+        {% if view.item.candidate_source.document_date %} · {{ view.item.candidate_source.document_date }}{% endif %}
+        {% if view.item.candidate_source.page %} · page {{ view.item.candidate_source.page }}{% endif %}
+      </p>
+      <p class="decision">{{ view.item.candidate_decision }}</p>
+    {% else %}
+      {% if view.item.description %}<p>{{ view.item.description }}</p>{% endif %}
+      {% if view.item.timing_text %}<p class="timing">Timing: {{ view.item.timing_text }}</p>{% endif %}
+      <ul>{% for reason in view.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+      {% if view.item.return_date %}<p class="return">Returns {{ view.item.return_date }}.</p>{% endif %}
+    {% endif %}
+    <a class="action" href="{{ view.action_url }}">{{ view.action_label }}</a>
+  </section>
+{%- endmacro %}
 
 <header>
   <b>{{ project.name }}</b>
@@ -35,32 +73,74 @@
   <p class="lead">Each card keeps the External Party fact and every current reason together.</p>
 
   {% for view in immediate %}
-    <section class="item">
-      <h3>
-        {% if view.item.kind == "statement" %}External Party Commitment
-        {% elif view.item.kind == "dependency" %}Dependency coordination
-        {% else %}External Party statement to place{% endif %}
-      </h3>
-      {% if view.item.timing_text %}<p class="timing">Timing: {{ view.item.timing_text }}</p>{% endif %}
-      <ul>{% for reason in view.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
-      <a class="action" href="{{ view.action_url }}">{{ view.action_label }}</a>
-    </section>
+    {{ work_card(view) }}
   {% else %}
     <p class="empty">Nothing needs immediate coordination.</p>
   {% endfor %}
 
-  {% if backlog %}
-    <section class="backlog">
-      <h2>Returning later</h2>
-      <p class="muted">These facts stay in the Ledger and return on their stated condition.</p>
-      {% for view in backlog %}
-        <section class="item">
-          <h3>{% if view.item.kind == "statement" %}External Party Commitment{% else %}Dependency coordination{% endif %}</h3>
-          <ul>{% for reason in view.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
-          {% if view.item.return_date %}<p class="return">Returns {{ view.item.return_date }}.</p>{% endif %}
-          <a href="{{ view.action_url }}">{{ view.action_label }}</a>
-        </section>
-      {% endfor %}
-    </section>
-  {% endif %}
+  <section class="backlog" id="more-work">
+    <h2>More Ledger work</h2>
+    <p class="muted">Accepted facts remain visible here. A return date appears when coordination is deferred.</p>
+    <form class="search" method="get" action="/work/{{ project.slug }}">
+      <label for="work-search">Search party, Dependency, or statement</label>
+      <input id="work-search" name="work_search" value="{{ backlog_search }}">
+      <input type="hidden" name="statement_search" value="{{ candidate_search }}">
+      <input type="hidden" name="statement_page" value="{{ candidate_backlog_page }}">
+      <button type="submit">Search</button>
+    </form>
+    <p>{{ backlog_total }} more work item{% if backlog_total != 1 %}s{% endif %}</p>
+    {% for view in backlog %}
+      {{ work_card(view) }}
+    {% else %}
+      <p class="empty">No more Ledger work matches this search.</p>
+    {% endfor %}
+    {% if backlog_pages %}
+      <nav class="pager" aria-label="More Ledger work pages">
+        <span>
+          {% if backlog_page > 1 %}
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page - 1 }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page }}#more-work">Previous</a>
+          {% endif %}
+        </span>
+        <span>Page {{ backlog_page }} of {{ backlog_pages }}</span>
+        <span>
+          {% if backlog_page < backlog_pages %}
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page + 1 }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page }}#more-work">Next</a>
+          {% endif %}
+        </span>
+      </nav>
+    {% endif %}
+  </section>
+
+  <section class="backlog" id="extracted-statements">
+    <h2>All extracted statements</h2>
+    <p class="muted">Search every remaining extracted statement. None is in the Ledger yet.</p>
+    <form class="search" method="get" action="/work/{{ project.slug }}">
+      <label for="statement-search">Search source, context, or wording</label>
+      <input id="statement-search" name="statement_search" value="{{ candidate_search }}">
+      <input type="hidden" name="work_search" value="{{ backlog_search }}">
+      <input type="hidden" name="work_page" value="{{ backlog_page }}">
+      <button type="submit">Search</button>
+    </form>
+    <p>{{ candidate_backlog_total }} extracted statement{% if candidate_backlog_total != 1 %}s{% endif %}</p>
+    {% for view in candidate_backlog %}
+      {{ work_card(view) }}
+    {% else %}
+      <p class="empty">No extracted statements match this search.</p>
+    {% endfor %}
+    {% if candidate_backlog_pages %}
+      <nav class="pager" aria-label="Extracted statement pages">
+        <span>
+          {% if candidate_backlog_page > 1 %}
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page - 1 }}#extracted-statements">Previous</a>
+          {% endif %}
+        </span>
+        <span>Page {{ candidate_backlog_page }} of {{ candidate_backlog_pages }}</span>
+        <span>
+          {% if candidate_backlog_page < candidate_backlog_pages %}
+            <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page + 1 }}#extracted-statements">Next</a>
+          {% endif %}
+        </span>
+      </nav>
+    {% endif %}
+  </section>
 </main>

@@ -14,6 +14,7 @@ internal action never changes, closes, or proves the External Party fact.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
@@ -443,6 +444,46 @@ def current_deferral_decision(
 ) -> WorkDecision | None:
     """The current explicit deferral, if immediate work was deliberately delayed."""
     return _tail(session, _coerce_subject(subject), DEFERRAL)
+
+
+def current_statement_decision_tails(
+    session: Session,
+    commitment_lineage_ids: Iterable[int],
+    *,
+    fields: Iterable[str],
+) -> dict[tuple[int, str], WorkDecision]:
+    """Return current statement-plan tails for a population in one read.
+
+    Population readers use the same lifecycle and successor predicates as the
+    single-subject services above.  This is only a batched read of attributable
+    Work Decisions; it neither trusts nor repairs their projection caches.
+    """
+    lineage_ids = frozenset(commitment_lineage_ids)
+    requested_fields = frozenset(fields)
+    if not lineage_ids or not requested_fields:
+        return {}
+    supported_fields = {INTERNAL_OWNER, NEXT_ACTION, MILESTONE_IMPACT, DEFERRAL}
+    if not requested_fields <= supported_fields:
+        raise ValueError("unknown Work Decision field")
+
+    successor = aliased(WorkDecision)
+    decisions = session.scalars(
+        select(WorkDecision)
+        .where(
+            WorkDecision.commitment_lineage_id.in_(lineage_ids),
+            WorkDecision.field.in_(requested_fields),
+            current_work_decision_filter(WorkDecision.id),
+            ~select(successor.id)
+            .where(successor.predecessor_decision_id == WorkDecision.id)
+            .exists(),
+        )
+        .order_by(WorkDecision.id)
+    ).all()
+    return {
+        (decision.commitment_lineage_id, decision.field): decision
+        for decision in decisions
+        if decision.commitment_lineage_id is not None
+    }
 
 
 def _close_next_action(

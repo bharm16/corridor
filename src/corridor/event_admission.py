@@ -547,7 +547,12 @@ class StatementUnplaceable(ValueError):
     """This Candidate cannot become an event on the named record."""
 
 
-def waiting_statements(session: Session, project_id: int) -> list[dict]:
+def waiting_statements(
+    session: Session,
+    project_id: int,
+    *,
+    include_attachability: bool = True,
+) -> list[dict]:
     """The statements the machine could not place, and why.
 
     One visible pile rather than a lane: a dated promise from a meeting
@@ -555,6 +560,12 @@ def waiting_statements(session: Session, project_id: int) -> list[dict]:
     is worse than showing a short list (ADR-0032). The reason comes from
     the newest run that abstained on the Candidate, in the machine's own
     vocabulary — the caller renders it in the reviewer's.
+
+    The interactive pile requests ``include_attachability`` so each button
+    reflects the exact statement-preparation guard. Population-wide readers
+    may omit that per-row projection: they still consume this function's
+    Active Run scope and latest Admission reason, while the guided mutation
+    revalidates attachability before writing.
     """
     reasons = dict(
         session.execute(
@@ -586,11 +597,13 @@ def waiting_statements(session: Session, project_id: int) -> list[dict]:
     waiting = []
     for candidate in candidates:
         fields = (candidate.payload_json or {}).get("fields", {})
-        try:
-            _prepare_statement_placement(session, project, candidate)
-            attachable = True
-        except StatementUnplaceable:
-            attachable = False
+        attachable = None
+        if include_attachability:
+            try:
+                _prepare_statement_placement(session, project, candidate)
+                attachable = True
+            except StatementUnplaceable:
+                attachable = False
         waiting.append(
             {
                 "candidate": candidate,

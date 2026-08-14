@@ -5,7 +5,7 @@ import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -28,7 +28,9 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    EventAdmissionOutcome,
     ExternalOrg,
+    PolicyRun,
     Project,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
@@ -118,6 +120,137 @@ def _record_month_commitment(session, project, party, *, speaker=None):
         created_by="local:coordinator",
         evidence=CitedStatementEvidence(document.id, 1, quote),
     )
+
+
+def _record_pending_statement_candidates(session, project, specifications):
+    """Record one Active Run and the Admission residue its public reader sees."""
+    document = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(
+            f"bounded-work-list-{project.slug}".encode()
+        ).hexdigest(),
+        filename="meeting-notes/bounded-work-list.pdf",
+        doc_type="minutes",
+        doc_date=date(2025, 1, 15),
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+
+    candidates = []
+    for page_no, specification in enumerate(specifications, start=1):
+        quote = specification["quote"]
+        session.add(DocPage(document_id=document.id, page_no=page_no, text=quote))
+        fields = {
+            "event_type": specification["event_type"],
+            "event_date": specification["event_date"].isoformat(),
+            "description": quote,
+            "external_org": specification.get("external_org", "Example Party"),
+        }
+        if "committed_date" in specification:
+            fields["committed_date"] = specification["committed_date"]
+        if "conflict_ref" in specification:
+            fields["conflict_ref"] = specification["conflict_ref"]
+        if "stated_party" in specification:
+            fields["stated_party"] = specification["stated_party"]
+        candidate = Candidate(
+            project_id=project.id,
+            kind="event",
+            payload_json={
+                "kind": "event",
+                "fields": fields,
+                "citations": [
+                    {
+                        "document_id": document.id,
+                        "page": page_no,
+                        "quote": quote,
+                        "verified": True,
+                    }
+                ],
+            },
+            source_document_id=document.id,
+            source_pages=[page_no],
+            confidence=specification.get("confidence", 0.5),
+            prompt_version="bounded-work-list-test",
+            model="test-model",
+            citations_verified=True,
+        )
+        candidates.append(candidate)
+
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="bounded-work-list-test",
+        candidate_count=len(candidates),
+        page_errors=0,
+        candidates=tuple(candidates),
+        model="test-model",
+    )
+    declare_active_run(session, document.id, run.id, principal=RECORDER)
+    admission_run = PolicyRun(
+        project_id=project.id,
+        family="event-admission",
+        policy_approval_id=None,
+        policy_version="bounded-work-list-test",
+        policy_sha256="a" * 64,
+        abstention_reason_version="bounded-work-list-test",
+        applied_count=0,
+        abstained_count=len(candidates),
+    )
+    session.add(admission_run)
+    session.flush()
+    session.add_all(
+        EventAdmissionOutcome(
+            policy_run_id=admission_run.id,
+            candidate_id=candidate.id,
+            outcome="abstained",
+            reason=specification["reason"],
+        )
+        for candidate, specification in zip(candidates, specifications, strict=True)
+    )
+    session.flush()
+    return tuple(candidates)
+
+
+def _record_deferred_month_commitments(session, project, party, count):
+    statements = []
+    for number in range(1, count + 1):
+        quote = f"{party.name} to provide accepted package {number:02d} (Due 01/2025)."
+        document = Document(
+            project_id=project.id,
+            sha256=hashlib.sha256(quote.encode()).hexdigest(),
+            filename=f"accepted/deferred-{number:02d}.pdf",
+            doc_type="minutes",
+            doc_date=date(2025, 1, 16),
+            parse_status="parsed",
+        )
+        session.add(document)
+        session.flush()
+        session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+        session.flush()
+        statement = record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=date(2025, 1, 16),
+            description=quote,
+            new_timing=StatementTiming.month("01/2025", 2025, 1),
+            scope=StatementScope.unknown(),
+            created_by=RECORDER.subject,
+            evidence=CitedStatementEvidence(document.id, 1, quote),
+        )
+        defer_work(
+            session,
+            CoordinationSubject.statement(statement.commitment_lineage_id),
+            reason="waiting_for_external_party",
+            return_date=date(2099, 1, 1),
+            principal=RECORDER,
+        )
+        statements.append(statement)
+    return tuple(statements)
 
 
 def test_month_precision_unknown_scope_is_one_party_level_past_due_work_item(
@@ -509,43 +642,21 @@ def test_work_list_orders_party_past_due_before_critical_dependency_and_unplaced
         resolution_strategy="relocate",
         status="identified",
     )
-    source = Document(
-        project_id=project.id,
-        sha256=hashlib.sha256(b"unplaced-work-list").hexdigest(),
-        filename="unplaced-work-list.pdf",
-        doc_type="minutes",
-        parse_status="parsed",
-    )
-    session.add_all((critical, source))
+    session.add(critical)
     session.flush()
-    quote = "External Party statement needs coordinator review."
-    session.add(DocPage(document_id=source.id, page_no=1, text=quote))
-    candidate = Candidate(
-        project_id=project.id,
-        kind="event",
-        payload_json={"kind": "event", "fields": {}, "citations": [{
-            "document_id": source.id,
-            "page": 1,
-            "quote": quote,
-            "verified": True,
-        }]},
-        source_document_id=source.id,
-        source_pages=[1],
-        confidence=0.9,
-        prompt_version="work-list-test",
-        model="test-model",
-        citations_verified=True,
-    )
-    run = record_extraction_run(
+    [candidate] = _record_pending_statement_candidates(
         session,
-        source,
-        prompt_version="work-list-test",
-        candidate_count=1,
-        page_errors=0,
-        candidates=(candidate,),
-        model="test-model",
+        project,
+        [
+            {
+                "event_type": "commitment",
+                "event_date": date(2025, 1, 20),
+                "committed_date": "2025-03-01",
+                "quote": "External Party statement needs coordinator review.",
+                "reason": "no_conflict_reference",
+            }
+        ],
     )
-    declare_active_run(session, source.id, run.id, principal=RECORDER)
 
     work_list = build_work_list(session, project.id, today=date(2025, 2, 1))
 
@@ -561,6 +672,360 @@ def test_work_list_orders_party_past_due_before_critical_dependency_and_unplaced
         "critical_missing_next_action",
     )
     assert work_list.immediate[2].candidate_id == candidate.id
+
+
+def test_work_list_caps_immediate_cards_after_authoritative_work_and_orders_candidate_leads(
+    session, project, party
+):
+    """Accepted facts stay ahead; Candidate metadata only selects what to read."""
+    statement = _record_month_commitment(session, project, party)
+    critical = Dependency(
+        project_id=project.id,
+        ref_code="DEP-BOUNDED-WORK-LIST",
+        dep_type="utility_relocation",
+        title="Critical relocation without a Coordination Plan",
+        resolution_strategy="relocate",
+        status="identified",
+    )
+    session.add(critical)
+    session.flush()
+
+    specifications = [
+        {
+            "event_type": "slip",
+            "event_date": date(2025, 1, 10),
+            "quote": "The January schedule may move to March.",
+            "reason": "event_type_outside_policy",
+            "confidence": 0.99,
+        },
+        {
+            "event_type": "slip",
+            "event_date": date(2025, 3, 10),
+            "quote": "The March schedule may move to May.",
+            "reason": "event_type_outside_policy",
+            "confidence": 0.01,
+        },
+    ]
+    specifications.extend(
+        {
+            "event_type": "commitment",
+            "event_date": date(2025, 4, day),
+            "committed_date": "2025-05-01",
+            "quote": f"Example Party expects to finish work in May, note {day}.",
+            "reason": "no_conflict_reference",
+            "confidence": (20 - day) / 100,
+        }
+        for day in range(1, 20)
+    )
+    candidates = _record_pending_statement_candidates(session, project, specifications)
+
+    work_list = build_work_list(session, project.id, today=date(2025, 6, 1))
+
+    assert len(work_list.immediate) == 20
+    assert work_list.immediate[0].statement_event_id == statement.id
+    assert work_list.immediate[1].dependency_id == critical.id
+    assert [item.candidate_id for item in work_list.immediate[2:5]] == [
+        candidates[1].id,
+        candidates[0].id,
+        candidates[-1].id,
+    ]
+    assert work_list.immediate[2].candidate_decision == (
+        "Review a possible timing change."
+    )
+    assert work_list.immediate[4].candidate_decision == (
+        "Review who spoke, what timing is supported, and where this statement belongs."
+    )
+    assert all(item.kind != "candidate" for item in work_list.immediate[:2])
+    assert work_list.candidate_backlog_total == 3
+    assert [item.candidate_id for item in work_list.candidate_backlog] == [
+        candidates[4].id,
+        candidates[3].id,
+        candidates[2].id,
+    ]
+
+
+def test_candidate_lead_exposes_source_context_without_promoting_extracted_facts(
+    session, project
+):
+    quote = (
+        "Equistar to provide a chain of title on the ROW agreement that is in "
+        "DOW's name (Due date of 01/2025)."
+    )
+    [candidate] = _record_pending_statement_candidates(
+        session,
+        project,
+        [
+            {
+                "event_type": "commitment",
+                "event_date": date(2024, 12, 4),
+                "committed_date": "2025-01-01",
+                "external_org": "Equistar",
+                "quote": quote,
+                "reason": "no_conflict_reference",
+            }
+        ],
+    )
+
+    work_list = build_work_list(session, project.id, today=date(2025, 2, 1))
+
+    [item] = work_list.immediate
+    assert item.candidate_id == candidate.id
+    assert item.statement_event_id is None
+    assert item.dependency_id is None
+    assert item.timing_text is None
+    assert item.candidate_decision == (
+        "Review who spoke, what timing is supported, and where this statement belongs."
+    )
+    assert item.candidate_source is not None
+    assert item.candidate_source.context_external_org == "Equistar"
+    assert item.candidate_source.quote == quote
+    assert item.candidate_source.document_name == "meeting-notes/bounded-work-list.pdf"
+    assert item.candidate_source.document_date == date(2025, 1, 15)
+    assert item.candidate_source.page == 1
+
+
+def test_coordinator_home_labels_candidate_source_context_without_inventing_a_day(
+    client, session, project
+):
+    quote = "Equistar to provide chain of title (Due date of 01/2025)."
+    [candidate] = _record_pending_statement_candidates(
+        session,
+        project,
+        [
+            {
+                "event_type": "commitment",
+                "event_date": date(2024, 12, 4),
+                "committed_date": "2025-01-01",
+                "external_org": "Equistar",
+                "quote": quote,
+                "reason": "no_conflict_reference",
+            }
+        ],
+    )
+
+    response = client.get(f"/work/{project.slug}")
+
+    assert response.status_code == 200
+    assert "Extracted for review — not yet in the Ledger." in response.text
+    assert "Extracted context / affected party: Equistar" in response.text
+    assert quote in response.text
+    assert "meeting-notes/bounded-work-list.pdf" in response.text
+    assert "2025-01-15" in response.text
+    assert "page 1" in response.text
+    assert (
+        "Review who spoke, what timing is supported, and where this statement belongs."
+        in response.text
+    )
+    assert "Decide this statement&#39;s scope." not in response.text
+    assert "2025-01-01" not in response.text
+    assert "January 1" not in response.text
+    assert f'href="/statements/{project.slug}/{candidate.id}/coordinate"' in response.text
+
+
+def test_candidate_backlog_is_searchable_and_paginated_on_the_coordinator_home(
+    client, session, project
+):
+    specifications = [
+        {
+            "event_type": "status_update",
+            "event_date": date(2025, 1, day),
+            "committed_date": "2025-02-01",
+            "external_org": f"Backlog Party {day:02d}",
+            "quote": f"General extracted statement {day:02d}.",
+            "reason": "event_type_outside_policy",
+        }
+        for day in range(1, 28)
+    ]
+    air_products = ExternalOrg(name="Air Products work-list-test")
+    session.add(air_products)
+    session.flush()
+    session.add(
+        Dependency(
+            project_id=project.id,
+            ref_code="DEP-AIR-PRODUCTS-BACKLOG",
+            source_ref="PL35",
+            dep_type="utility_relocation",
+            title="Air Products workshop context",
+            external_org_id=air_products.id,
+            status="identified",
+        )
+    )
+    session.flush()
+    specifications.append(
+        {
+            "event_type": "commitment",
+            "event_date": date(2025, 1, 28),
+            "committed_date": "2025-05-08",
+            "external_org": air_products.name,
+            "conflict_ref": "PL35",
+            "quote": "Air Products will be invited to a May workshop.",
+            "reason": "party_unstated",
+        }
+    )
+    candidates = _record_pending_statement_candidates(session, project, specifications)
+
+    first_page = client.get(f"/work/{project.slug}")
+
+    assert first_page.status_code == 200
+    assert "All extracted statements" in first_page.text
+    assert "28 extracted statements" in first_page.text
+    assert "Page 1 of 2" in first_page.text
+    assert "Air Products will be invited to a May workshop." in first_page.text
+    assert "General extracted statement 27." in first_page.text
+    assert "General extracted statement 04." in first_page.text
+    assert "General extracted statement 03." not in first_page.text
+    assert f'href="/statements/{project.slug}/{candidates[-1].id}/coordinate"' in first_page.text
+    assert f"statement_page=2" in first_page.text
+
+    second_page = client.get(f"/work/{project.slug}?statement_page=2")
+
+    assert "General extracted statement 03." in second_page.text
+    assert "General extracted statement 01." in second_page.text
+    assert "Air Products will be invited" not in second_page.text
+
+    searched = client.get(f"/work/{project.slug}?statement_search=Air+Products")
+
+    assert searched.status_code == 200
+    assert "1 extracted statement" in searched.text
+    assert "Air Products will be invited to a May workshop." in searched.text
+    assert "General extracted statement 01." not in searched.text
+
+
+def test_authoritative_overflow_is_searchable_and_paginated_in_project_language(
+    client, session, project
+):
+    party = ExternalOrg(name="Overflow Utility work-list-test")
+    session.add(party)
+    session.flush()
+    session.add_all(
+        Dependency(
+            project_id=project.id,
+            ref_code=f"DEP-OVERFLOW-{number:02d}",
+            dep_type="utility_relocation",
+            title=f"North corridor relocation {number:02d}",
+            external_org_id=party.id,
+            resolution_strategy="relocate",
+            status="identified",
+        )
+        for number in range(1, 49)
+    )
+    session.flush()
+
+    first_page = client.get(f"/work/{project.slug}")
+
+    assert first_page.status_code == 200
+    assert "28 more work items" in first_page.text
+    assert "Page 1 of 2" in first_page.text
+    assert "Overflow Utility work-list-test" in first_page.text
+    assert "North corridor relocation 21" in first_page.text
+    assert "North corridor relocation 45" in first_page.text
+    assert "North corridor relocation 46" not in first_page.text
+    assert "DEP-OVERFLOW" not in first_page.text
+    assert "work_page=2" in first_page.text
+    assert 'name="work_search"' in first_page.text
+    assert 'name="statement_search"' in first_page.text
+
+    second_page = client.get(f"/work/{project.slug}?work_page=2")
+
+    assert "North corridor relocation 46" in second_page.text
+    assert "North corridor relocation 48" in second_page.text
+    assert "North corridor relocation 21" not in second_page.text
+
+    searched = client.get(
+        f"/work/{project.slug}?work_search=North+corridor+relocation+48"
+    )
+
+    assert searched.status_code == 200
+    assert "1 more work item" in searched.text
+    assert "North corridor relocation 48" in searched.text
+    assert "North corridor relocation 21" not in searched.text
+
+
+def test_deferred_statement_is_searchable_by_party_and_supported_wording(
+    client, session, project, party
+):
+    statement = _record_month_commitment(session, project, party)
+    defer_work(
+        session,
+        CoordinationSubject.statement(statement.commitment_lineage_id),
+        reason="waiting_for_external_party",
+        return_date=date(2099, 1, 1),
+        principal=RECORDER,
+    )
+
+    response = client.get(f"/work/{project.slug}?work_search=chain+of+title")
+
+    assert response.status_code == 200
+    assert "1 more work item" in response.text
+    assert party.name in response.text
+    assert "provide chain of title" in response.text
+    assert "commitment_lineage_id" not in response.text
+
+
+def test_candidate_work_list_build_has_a_bounded_query_count_at_review_scale(
+    session, project
+):
+    party = ExternalOrg(name="Scale Party work-list-test")
+    session.add(party)
+    session.flush()
+    specifications = [
+        {
+            "event_type": "commitment",
+            "event_date": date(2025, 1, 15),
+            "committed_date": "2025-05-01",
+            "external_org": party.name,
+            "stated_party": party.name,
+            "quote": f"{party.name} committed to finish in May, statement {number:02d}.",
+            "reason": "no_conflict_reference",
+        }
+        for number in range(1, 51)
+    ]
+    _record_pending_statement_candidates(session, project, specifications)
+    statements = 0
+
+    def count_statement(*_args):
+        nonlocal statements
+        statements += 1
+
+    connection = session.connection()
+    event.listen(connection, "before_cursor_execute", count_statement)
+    try:
+        work_list = build_work_list(session, project.id, today=date(2025, 2, 1))
+    finally:
+        event.remove(connection, "before_cursor_execute", count_statement)
+
+    assert len(work_list.immediate) == 20
+    assert work_list.candidate_backlog_total == 30
+    assert statements <= 12
+
+
+def test_deferred_accepted_statement_backlog_has_a_bounded_query_count_at_scale(
+    session, project, party
+):
+    _record_deferred_month_commitments(session, project, party, 50)
+    statements = 0
+
+    def count_statement(*_args):
+        nonlocal statements
+        statements += 1
+
+    connection = session.connection()
+    event.listen(connection, "before_cursor_execute", count_statement)
+    try:
+        work_list = build_work_list(session, project.id, today=date(2025, 2, 1))
+    finally:
+        event.remove(connection, "before_cursor_execute", count_statement)
+
+    assert work_list.immediate == ()
+    assert work_list.backlog_total == 50
+    assert len(work_list.backlog) == 25
+    assert all(item.past_due is not None for item in work_list.backlog)
+    assert all(
+        item.past_due.source_evidence_link_ids
+        for item in work_list.backlog
+        if item.past_due is not None
+    )
+    assert statements <= 25
 
 
 def test_coordinator_home_renders_the_public_work_list_and_guided_statement_link(

@@ -5,7 +5,10 @@ Dependency facts.  Neither can safely stand in for the coordinator's work:
 an unknown-scope Commitment is real work but does not belong to an invented
 Dependency.  This module is the public read seam for that gap.  It groups
 current statement facts by Commitment Lineage, preserves timing precision, and
-returns derived Attention Reasons without storing flags or copying facts.
+returns derived Attention Reasons without storing flags or copying facts.  It
+also uses source-visible Candidate proposals only to select a bounded set for
+human review; those cards remain explicitly outside the Ledger, and every
+other actionable proposal stays searchable in the same read model.
 """
 
 from __future__ import annotations
@@ -25,27 +28,34 @@ from corridor.external_statements import (
 )
 from corridor.exceptions import contradicted_fields
 from corridor.models import (
+    Candidate,
     CommitmentLineage,
     Dependency,
     DependencyEvent,
     DependencyEventEvidence,
     DependencyEventScopeDecision,
     DependencyEventTiming,
+    Document,
     EvidenceLink,
+    ExternalOrg,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
+    WorkDecision,
     is_critical,
 )
 from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.work_decisions import (
-    CoordinationSubject,
-    current_deferral_decision,
-    current_milestone_impact_decision,
-    current_next_action_decision,
+    DEFERRAL,
+    MILESTONE_IMPACT,
+    NEXT_ACTION,
+    current_statement_decision_tails,
 )
 
 
-WORK_LIST_RULESET_VERSION = "work-list-v1"
+WORK_LIST_RULESET_VERSION = "work-list-v2"
+MAX_IMMEDIATE_WORK_ITEMS = 20
+WORK_BACKLOG_PAGE_SIZE = 25
+CANDIDATE_BACKLOG_PAGE_SIZE = 25
 
 _REASON_ORDER = {
     "past_due": 0,
@@ -80,6 +90,17 @@ class PastDueCommitment:
 
 
 @dataclass(frozen=True)
+class CandidateSource:
+    """Source-first context for a proposal that has no Ledger authority."""
+
+    context_external_org: str | None
+    quote: str | None
+    document_name: str
+    document_date: date | None
+    page: int | None
+
+
+@dataclass(frozen=True)
 class WorkItem:
     """One current coordinator question, never one row per reason."""
 
@@ -94,17 +115,39 @@ class WorkItem:
     past_due: PastDueCommitment | None
     deferral_reason: str | None = None
     return_date: date | None = None
+    candidate_source: CandidateSource | None = None
+    candidate_decision: str | None = None
+    display_name: str | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
 class WorkList:
-    """A time-bound, ruleset-named read of immediate and deferred work."""
+    """A bounded read of immediate, deferred, and extracted-statement work."""
 
     project_id: int
     evaluated_on: date
     ruleset_version: str
     immediate: tuple[WorkItem, ...]
     backlog: tuple[WorkItem, ...]
+    backlog_total: int
+    backlog_page: int
+    backlog_pages: int
+    backlog_search: str
+    candidate_backlog: tuple[WorkItem, ...]
+    candidate_backlog_total: int
+    candidate_backlog_page: int
+    candidate_backlog_pages: int
+    candidate_search: str
+
+
+@dataclass(frozen=True)
+class _StatementWorkState:
+    """Batched current facts needed to derive one population of statement work."""
+
+    evidence_ids_by_event: dict[int, tuple[int, ...]]
+    decision_tails: dict[tuple[int, str], WorkDecision]
+    receipts_by_decision: dict[int, StatementCoordinationReceipt]
 
 
 def build_work_list(
@@ -112,6 +155,10 @@ def build_work_list(
     project_id: int,
     *,
     today: date | None = None,
+    backlog_search: str = "",
+    backlog_page: int = 1,
+    candidate_search: str = "",
+    candidate_page: int = 1,
 ) -> WorkList:
     """Return current statement work without manufacturing Dependency facts.
 
@@ -154,12 +201,22 @@ def build_work_list(
     ).all()
 
     candidate_ids = _source_candidate_ids(session, project_id)
+    statement_state = _statement_work_state(session, rows)
     immediate: list[WorkItem] = []
     backlog: list[WorkItem] = []
     for event, timing, scope, lineage in rows:
         is_closed = event.commitment_lineage_id in closed_lineages
         reason_codes: list[str] = []
-        past_due = None if is_closed else _past_due(session, event, timing, evaluated_on)
+        past_due = (
+            None
+            if is_closed
+            else _past_due(
+                event,
+                timing,
+                evaluated_on,
+                statement_state.evidence_ids_by_event.get(event.id, ()),
+            )
+        )
         if past_due is not None:
             reason_codes.append("past_due")
         if not is_closed and event.event_type == "committed_date_change":
@@ -193,32 +250,84 @@ def build_work_list(
             past_due=past_due,
             deferral_reason=lineage.deferral_reason,
             return_date=lineage.deferral_return_date,
+            display_name=event.stated_party,
+            description=event.description,
         )
         is_immediate = _is_immediate(lineage, evaluated_on) or _statement_changed(
-            session, event, scope, lineage
+            event, scope, lineage, statement_state
         )
         (immediate if is_immediate else backlog).append(item)
 
     for item, projection in _dependency_items(session, project_id):
         (immediate if _is_immediate(projection, evaluated_on) else backlog).append(item)
-    immediate.extend(_unplaced_statement_items(session, project_id))
-
     immediate.sort(key=_item_sort_key)
+    candidate_leads, remaining_candidates = _candidate_items(session, project_id)
+    overflow = immediate[MAX_IMMEDIATE_WORK_ITEMS:]
+    immediate = immediate[:MAX_IMMEDIATE_WORK_ITEMS]
+    open_slots = MAX_IMMEDIATE_WORK_ITEMS - len(immediate)
+    immediate.extend(candidate_leads[:open_slots])
+    backlog.extend(overflow)
     backlog.sort(key=_item_sort_key)
+    normalized_backlog_search = " ".join(backlog_search.split())
+    if normalized_backlog_search:
+        backlog = [
+            item
+            for item in backlog
+            if _work_item_matches(item, normalized_backlog_search)
+        ]
+    backlog_total = len(backlog)
+    backlog_pages = (
+        backlog_total + WORK_BACKLOG_PAGE_SIZE - 1
+    ) // WORK_BACKLOG_PAGE_SIZE
+    resolved_backlog_page = max(1, backlog_page)
+    if backlog_pages:
+        resolved_backlog_page = min(resolved_backlog_page, backlog_pages)
+    backlog_start = (resolved_backlog_page - 1) * WORK_BACKLOG_PAGE_SIZE
+    backlog_page_items = backlog[
+        backlog_start : backlog_start + WORK_BACKLOG_PAGE_SIZE
+    ]
+    candidate_backlog = candidate_leads[open_slots:] + remaining_candidates
+    normalized_search = " ".join(candidate_search.split())
+    if normalized_search:
+        candidate_backlog = tuple(
+            item
+            for item in candidate_backlog
+            if _candidate_matches(item, normalized_search)
+        )
+    candidate_backlog_total = len(candidate_backlog)
+    candidate_backlog_pages = (
+        candidate_backlog_total + CANDIDATE_BACKLOG_PAGE_SIZE - 1
+    ) // CANDIDATE_BACKLOG_PAGE_SIZE
+    resolved_page = max(1, candidate_page)
+    if candidate_backlog_pages:
+        resolved_page = min(resolved_page, candidate_backlog_pages)
+    start = (resolved_page - 1) * CANDIDATE_BACKLOG_PAGE_SIZE
+    candidate_backlog_page = candidate_backlog[
+        start : start + CANDIDATE_BACKLOG_PAGE_SIZE
+    ]
     return WorkList(
         project_id=project_id,
         evaluated_on=evaluated_on,
         ruleset_version=WORK_LIST_RULESET_VERSION,
         immediate=tuple(immediate),
-        backlog=tuple(backlog),
+        backlog=tuple(backlog_page_items),
+        backlog_total=backlog_total,
+        backlog_page=resolved_backlog_page,
+        backlog_pages=backlog_pages,
+        backlog_search=normalized_backlog_search,
+        candidate_backlog=tuple(candidate_backlog_page),
+        candidate_backlog_total=candidate_backlog_total,
+        candidate_backlog_page=resolved_page,
+        candidate_backlog_pages=candidate_backlog_pages,
+        candidate_search=normalized_search,
     )
 
 
 def _past_due(
-    session: Session,
     event: DependencyEvent,
     timing: DependencyEventTiming,
     evaluated_on: date,
+    source_evidence_link_ids: tuple[int, ...],
 ) -> PastDueCommitment | None:
     due_after = party_commitment_due_after(timing)
     if due_after is None or evaluated_on <= due_after:
@@ -232,7 +341,7 @@ def _past_due(
         timing_id=timing.id,
         affected_external_org_id=event.affected_external_org_id,
         source_kind=event.source_kind,
-        source_evidence_link_ids=_source_evidence_link_ids(session, event),
+        source_evidence_link_ids=source_evidence_link_ids,
         due_after=due_after,
     )
 
@@ -281,15 +390,14 @@ def _is_immediate(
 
 
 def _statement_changed(
-    session: Session,
     event: DependencyEvent,
     scope: DependencyEventScopeDecision,
     lineage: CommitmentLineage,
+    state: _StatementWorkState,
 ) -> bool:
     """Return delayed work when the External Party fact it answered changes."""
-    subject = CoordinationSubject.statement(lineage.id)
-    deferral = current_deferral_decision(session, subject)
-    action = current_next_action_decision(session, subject)
+    deferral = state.decision_tails.get((lineage.id, DEFERRAL))
+    action = state.decision_tails.get((lineage.id, NEXT_ACTION))
     decision = (
         deferral
         if deferral is not None and deferral.after_value is not None
@@ -298,12 +406,12 @@ def _statement_changed(
     if decision is None:
         return False
 
-    receipt = session.scalar(
-        select(StatementCoordinationReceipt).where(
-            StatementCoordinationReceipt.next_action_decision_id == decision.id
-        )
+    receipt = state.receipts_by_decision.get(decision.id)
+    impact = (
+        state.decision_tails.get((lineage.id, MILESTONE_IMPACT))
+        if event.event_type == "committed_date_change"
+        else None
     )
-    impact = current_milestone_impact_decision(session, subject)
     if receipt is not None:
         return (
             receipt.dependency_event_id != event.id
@@ -342,6 +450,18 @@ def _dependency_items(
         )
         .order_by(Dependency.id)
     ).all()
+    external_org_ids = {
+        dependency.external_org_id
+        for dependency in dependencies
+        if dependency.external_org_id is not None
+    }
+    external_org_names = dict(
+        session.execute(
+            select(ExternalOrg.id, ExternalOrg.name).where(
+                ExternalOrg.id.in_(external_org_ids)
+            )
+        ).all()
+    )
     disputed = contradicted_fields(session, [dependency.id for dependency in dependencies])
     items = []
     for dependency in dependencies:
@@ -373,6 +493,8 @@ def _dependency_items(
                     past_due=None,
                     deferral_reason=dependency.deferral_reason,
                     return_date=dependency.deferral_return_date,
+                    display_name=external_org_names.get(dependency.external_org_id),
+                    description=dependency.title,
                 ),
                 dependency,
             )
@@ -429,20 +551,59 @@ def _source_candidate_ids(session: Session, project_id: int) -> dict[int, int]:
     return candidate_ids
 
 
-def _source_evidence_link_ids(
-    session: Session, event: DependencyEvent
-) -> tuple[int, ...]:
-    """Expose exact cited source identities without turning them into a Dependency."""
-    return tuple(
-        session.scalars(
-            select(DependencyEventEvidence.evidence_link_id)
-            .join(EvidenceLink, EvidenceLink.id == DependencyEventEvidence.evidence_link_id)
+def _statement_work_state(session: Session, rows) -> _StatementWorkState:
+    """Read current Evidence and plan observations once for all statement rows."""
+    event_ids = tuple(event.id for event, _timing, _scope, _lineage in rows)
+    lineage_ids = tuple(lineage.id for _event, _timing, _scope, lineage in rows)
+
+    evidence_ids_by_event: dict[int, list[int]] = {}
+    if event_ids:
+        evidence_rows = session.execute(
+            select(
+                DependencyEventEvidence.event_id,
+                DependencyEventEvidence.evidence_link_id,
+            )
+            .join(
+                EvidenceLink,
+                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            )
             .where(
-                DependencyEventEvidence.event_id == event.id,
+                DependencyEventEvidence.event_id.in_(event_ids),
                 EvidenceLink.verified.is_(True),
             )
-            .order_by(DependencyEventEvidence.evidence_link_id)
+            .order_by(
+                DependencyEventEvidence.event_id,
+                DependencyEventEvidence.evidence_link_id,
+            )
         ).all()
+        for event_id, evidence_link_id in evidence_rows:
+            evidence_ids_by_event.setdefault(event_id, []).append(evidence_link_id)
+
+    decision_tails = current_statement_decision_tails(
+        session,
+        lineage_ids,
+        fields=(DEFERRAL, NEXT_ACTION, MILESTONE_IMPACT),
+    )
+    decision_ids = tuple(decision.id for decision in decision_tails.values())
+    receipts_by_decision = (
+        {
+            receipt.next_action_decision_id: receipt
+            for receipt in session.scalars(
+                select(StatementCoordinationReceipt).where(
+                    StatementCoordinationReceipt.next_action_decision_id.in_(decision_ids)
+                )
+            ).all()
+        }
+        if decision_ids
+        else {}
+    )
+    return _StatementWorkState(
+        evidence_ids_by_event={
+            event_id: tuple(evidence_ids)
+            for event_id, evidence_ids in evidence_ids_by_event.items()
+        },
+        decision_tails=decision_tails,
+        receipts_by_decision=receipts_by_decision,
     )
 
 
@@ -482,19 +643,147 @@ def _is_provenance_backed_closure(
     return False
 
 
-def _unplaced_statement_items(session: Session, project_id: int) -> tuple[WorkItem, ...]:
-    """Candidates remain lower-priority work while a coordinator must place them."""
-    return tuple(
-        WorkItem(
+def _candidate_items(
+    session: Session, project_id: int
+) -> tuple[tuple[WorkItem, ...], tuple[WorkItem, ...]]:
+    """Use verified proposal metadata only to choose what a human reads first."""
+    waiting_items = waiting_statements(
+        session, project_id, include_attachability=False
+    )
+    document_ids = {
+        waiting["candidate"].source_document_id for waiting in waiting_items
+    }
+    documents = {
+        document.id: document
+        for document in session.scalars(
+            select(Document).where(Document.id.in_(document_ids))
+        ).all()
+    }
+    leads: list[tuple[int, date, int, WorkItem]] = []
+    remaining: list[tuple[date, int, WorkItem]] = []
+    for waiting in waiting_items:
+        candidate = waiting["candidate"]
+        document = documents[candidate.source_document_id]
+        fields = (candidate.payload_json or {}).get("fields", {})
+        event_type = fields.get("event_type")
+        tier = None
+        if candidate.citations_verified and event_type in (
+            "slip",
+            "committed_date_change",
+        ):
+            tier = 1
+        elif (
+            candidate.citations_verified
+            and event_type == "commitment"
+            and waiting["reason"] == "no_conflict_reference"
+        ):
+            tier = 2
+        source = _candidate_source(candidate, document, fields)
+        item = WorkItem(
             kind="candidate",
             commitment_lineage_id=None,
             statement_event_id=None,
             dependency_id=None,
-            candidate_id=item["candidate"].id,
+            candidate_id=candidate.id,
             source_candidate_id=None,
-            timing_text=item["committed_date"],
+            # Candidate timing is not yet a Ledger fact.  Its exact source
+            # wording belongs on the card; a normalized date never does.
+            timing_text=None,
             attention_reason_codes=("unplaced_statement",),
             past_due=None,
+            candidate_source=source,
+            candidate_decision=(
+                "Review a possible timing change."
+                if tier == 1
+                else (
+                    "Review who spoke, what timing is supported, and where this "
+                    "statement belongs."
+                )
+                if tier == 2
+                else "Review this extracted statement."
+            ),
         )
-        for item in waiting_statements(session, project_id)
+        if tier is None:
+            remaining.append(
+                (
+                    _candidate_context_date(
+                        fields.get("event_date"), document.doc_date
+                    ),
+                    candidate.id,
+                    item,
+                )
+            )
+            continue
+        leads.append(
+            (
+                tier,
+                _candidate_context_date(fields.get("event_date"), document.doc_date),
+                candidate.id,
+                item,
+            )
+        )
+
+    leads.sort(key=lambda row: (row[0], -row[1].toordinal(), row[2]))
+    remaining.sort(key=lambda row: (-row[0].toordinal(), row[1]))
+    return tuple(row[3] for row in leads), tuple(row[2] for row in remaining)
+
+
+def _candidate_source(
+    candidate: Candidate, document: Document, fields: dict
+) -> CandidateSource:
+    """Read wording and registry context without blessing extracted fields."""
+    citations = (candidate.payload_json or {}).get("citations") or ()
+    citation = next(
+        (
+            value
+            for value in citations
+            if value.get("document_id") == candidate.source_document_id
+            and value.get("quote")
+        ),
+        None,
     )
+    page = citation.get("page") if citation is not None else None
+    return CandidateSource(
+        context_external_org=(
+            str(fields.get("external_org")).strip()
+            if fields.get("external_org")
+            else None
+        ),
+        quote=str(citation.get("quote")).strip() if citation is not None else None,
+        document_name=document.filename,
+        document_date=document.doc_date,
+        page=page if isinstance(page, int) and page > 0 else None,
+    )
+
+
+def _candidate_context_date(value: object, document_date: date | None) -> date:
+    """Order only by the source event context, never a proposed timing."""
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+    return document_date or date.min
+
+
+def _candidate_matches(item: WorkItem, query: str) -> bool:
+    """Search human-readable source context, never policy or record ids."""
+    source = item.candidate_source
+    if source is None:
+        return False
+    values = (
+        source.context_external_org,
+        source.quote,
+        source.document_name,
+        source.document_date.isoformat() if source.document_date else None,
+        f"page {source.page}" if source.page else None,
+    )
+    haystack = " ".join(value for value in values if value).casefold()
+    return query.casefold() in haystack
+
+
+def _work_item_matches(item: WorkItem, query: str) -> bool:
+    """Search accepted project-language identity, never database identifiers."""
+    values = (item.display_name, item.description, item.timing_text)
+    haystack = " ".join(value for value in values if value).casefold()
+    return query.casefold() in haystack
