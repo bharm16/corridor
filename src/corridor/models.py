@@ -1238,7 +1238,8 @@ class ExternalReportRelease(Base):
             name="ck_external_report_releases_released_by",
         ),
         CheckConstraint(
-            "released_by_display is null or length(trim(released_by_display)) > 0",
+            "released_by_display is not null "
+            "and length(trim(released_by_display)) > 0",
             name="ck_external_report_releases_released_by_display",
         ),
         UniqueConstraint(

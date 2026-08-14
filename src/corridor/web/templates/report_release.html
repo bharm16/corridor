@@ -74,8 +74,6 @@
           {% else %}None{% endif %}
         </dd>
         <dt>SHA-256 digest</dt><dd><code>{{ release.pdf_sha256 }}</code></dd>
-        <dt>Audit identity</dt>
-        <dd><details><summary>Show retained principal</summary><code>{{ release.released_by }}</code></details></dd>
       </dl>
       <a href="/reports/{{ project.slug }}/releases/{{ release.release_id }}/download">Download released PDF</a>
     </section>

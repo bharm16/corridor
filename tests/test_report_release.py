@@ -18,6 +18,8 @@ from corridor.external_statements import (
 )
 from corridor.models import (
     Dependency,
+    DependencyEvent,
+    DependencyEventTiming,
     DocPage,
     Document,
     ExternalOrg,
@@ -295,6 +297,76 @@ def test_legacy_prepared_context_keeps_event_wording_without_inventing_a_citatio
     assert "page 7" not in covered_statement.source_context
 
 
+def test_new_and_legacy_verbal_source_context_hide_the_recorder_identity(
+    client, session, project
+):
+    predecessor = _record_unknown_scope_statement(session, project)
+    recorder_subject = "local:sensitive-statement-recorder"
+    statement = DependencyEvent(
+        project_id=project.id,
+        commitment_lineage_id=predecessor.commitment_lineage_id,
+        supersedes_event_id=predecessor.id,
+        affected_external_org_id=predecessor.affected_external_org_id,
+        stated_external_org_id=predecessor.stated_external_org_id,
+        attribution_state="resolved",
+        scope_mode="unknown",
+        event_type="committed_date_change",
+        source_kind="verbal",
+        stated_party=predecessor.stated_party,
+        event_date=date(2026, 8, 13),
+        description="Release Test Utility confirmed September 2026 by phone.",
+        created_by=recorder_subject,
+    )
+    session.add(statement)
+    session.flush()
+    session.add(
+        DependencyEventTiming(
+            event_id=statement.id,
+            kind="new",
+            text="September 2026",
+            precision="month",
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 30),
+        )
+    )
+    session.flush()
+    prepared = _prepare(session, project)
+    legacy_context = deepcopy(prepared.record_context_json)
+    legacy_context.pop("party_statement_display")
+    legacy = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="legacy-verbal-party-context.pdf",
+        format=prepared.format,
+        pdf_bytes=bytes(prepared.pdf_bytes),
+        pdf_sha256=prepared.pdf_sha256,
+        evaluated_on=prepared.evaluated_on,
+        ruleset_version=prepared.ruleset_version,
+        evaluation_context_json=deepcopy(prepared.evaluation_context_json),
+        provenance_mode=prepared.provenance_mode,
+        record_context_json=legacy_context,
+    )
+    session.add(legacy)
+    session.flush()
+
+    reviews = (
+        review_prepared_external_report(session, project.id, prepared.id),
+        review_prepared_external_report(session, project.id, legacy.id),
+    )
+
+    for review in reviews:
+        [covered_statement] = review.covered_party_statements
+        assert covered_statement.source_context == (
+            "Verbal statement · conversation 2026-08-13"
+        )
+        assert recorder_subject not in covered_statement.source_context
+
+    _release(session, project, artifact=prepared)
+    history_page = client.get(f"/reports/{project.slug}")
+    assert history_page.status_code == 200
+    assert "Verbal statement · conversation 2026-08-13" in history_page.text
+    assert recorder_subject not in history_page.text
+
+
 def test_legacy_document_only_context_does_not_publish_current_event_wording(
     session, project
 ):
@@ -524,8 +596,8 @@ def test_release_history_uses_roster_name_while_retaining_principal_for_audit(
     assert entry.released_by == TEST_PRINCIPAL.subject
     assert page.status_code == 200
     assert "Released by</dt><dd>Dana Fields</dd>" in page.text
-    assert "Audit identity" in page.text
-    assert TEST_PRINCIPAL.subject in page.text
+    assert "Audit identity" not in page.text
+    assert TEST_PRINCIPAL.subject not in page.text
     assert release.released_by == TEST_PRINCIPAL.subject
 
 
@@ -569,43 +641,6 @@ def test_release_history_keeps_the_release_time_name_after_roster_deletion(
     assert entry.released_by_display == "Dana Fields"
     assert entry.released_by == TEST_PRINCIPAL.subject
     assert release.released_by_display == "Dana Fields"
-
-
-def test_legacy_release_history_does_not_borrow_a_current_roster_name(
-    session, project
-):
-    roster_entry = ProjectRosterEntry(
-        project_id=project.id,
-        principal_subject=TEST_PRINCIPAL.subject,
-        display_name="Current Roster Name",
-    )
-    session.add(roster_entry)
-    session.flush()
-    artifact = _prepare(session, project)
-    release = ExternalReportRelease(
-        project_id=project.id,
-        artifact_id=None,
-        artifact_name=artifact.artifact_name,
-        format=artifact.format,
-        pdf_bytes=bytes(artifact.pdf_bytes),
-        pdf_sha256=artifact.pdf_sha256,
-        evaluated_on=artifact.evaluated_on,
-        ruleset_version=artifact.ruleset_version,
-        evaluation_context_json=deepcopy(artifact.evaluation_context_json),
-        provenance_mode=artifact.provenance_mode,
-        record_context_json=deepcopy(artifact.record_context_json),
-        released_by=TEST_PRINCIPAL.subject,
-        released_by_display=None,
-    )
-    session.add(release)
-    session.flush()
-
-    [entry] = external_report_release_history(session, project.id)
-
-    assert entry.released_by_display == (
-        "Project person (display name not retained in this legacy release)"
-    )
-    assert entry.released_by == TEST_PRINCIPAL.subject
 
 
 def test_release_history_metadata_query_does_not_load_retained_pdf_bytes(
@@ -859,7 +894,7 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     assert "This exact PDF is now released and retained." in released.text
     assert artifact.artifact_name in released.text
     assert "Project person (display name not recorded)" in released.text
-    assert TEST_PRINCIPAL.subject in released.text
+    assert TEST_PRINCIPAL.subject not in released.text
     assert "DEP-RELEASE-1" in released.text
     assert artifact.pdf_sha256 in released.text
     assert "Release does not send the PDF by email or document control." in released.text
@@ -877,7 +912,7 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     history = client.get(f"/reports/{project.slug}")
     assert history.status_code == 200
     assert artifact.artifact_name in history.text
-    assert TEST_PRINCIPAL.subject in history.text
+    assert TEST_PRINCIPAL.subject not in history.text
     assert "DEP-RELEASE-1" in history.text
     assert artifact.pdf_sha256 in history.text
 

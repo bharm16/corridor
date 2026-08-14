@@ -25,10 +25,15 @@ def upgrade() -> None:
         "external_report_releases",
         sa.Column("released_by_display", sa.Text(), nullable=True),
     )
-    op.create_check_constraint(
-        "ck_external_report_releases_released_by_display",
-        "external_report_releases",
-        "released_by_display is null or length(trim(released_by_display)) > 0",
+    op.execute(
+        """
+        alter table external_report_releases
+        add constraint ck_external_report_releases_released_by_display
+        check (
+            released_by_display is not null
+            and length(trim(released_by_display)) > 0
+        ) not valid
+        """
     )
 
 

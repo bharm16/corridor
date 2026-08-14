@@ -609,9 +609,7 @@ def _legacy_party_statement_displays(
                 if event.event_date
                 else "date not recorded"
             )
-            source_context = (
-                f"Verbal · recorded by {event.created_by} · conversation {heard_on}"
-            )
+            source_context = f"Verbal statement · conversation {heard_on}"
         else:
             source_context = (
                 "Cited source context not retained in this legacy release context"
@@ -647,10 +645,12 @@ def _party_statement_display_context(
             f"{cited.filename} · page {cited.page_no} · “{cited.quote}”"
         )
     else:
-        source_context = (
-            f"Verbal · recorded by {event.created_by} · "
-            f"conversation {event.event_date.isoformat()}"
+        heard_on = (
+            event.event_date.isoformat()
+            if event.event_date is not None
+            else "date not recorded"
         )
+        source_context = f"Verbal statement · conversation {heard_on}"
     return {
         "external_party": external_party,
         "supported_statement": event.description,
