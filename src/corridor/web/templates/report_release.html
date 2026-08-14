@@ -21,6 +21,9 @@
   .release dl { display:grid; grid-template-columns:10rem 1fr; gap:.2rem .8rem; }
   .release dt { color:var(--muted); }
   .release dd { margin:0; overflow-wrap:anywhere; }
+  .statement { border-left:3px solid var(--line); padding:.2rem 0 .2rem .75rem;
+               margin:.45rem 0; }
+  .statement b,.statement span { display:block; }
   code { font-size:.82rem; }
 </style>
 
@@ -48,15 +51,31 @@
     <section class="release">
       <h3>{{ release.artifact_name }}</h3>
       <dl>
-        <dt>Released by</dt><dd>{{ release.released_by }}</dd>
+        <dt>Released by</dt><dd>{{ release.released_by_display }}</dd>
         <dt>Released at</dt><dd>{{ release.released_at }}</dd>
         <dt>Evaluation</dt><dd>{{ release.evaluated_on }} · {{ release.ruleset_version }}</dd>
         <dt>Provenance</dt>
         <dd>{{ "All supported sources" if release.provenance_mode == "all-supported-sources" else "Documents only" }}</dd>
         <dt>Covered Dependencies</dt>
         <dd>{{ release.covered_records|join(", ") if release.covered_records else "None" }}</dd>
-        <dt>Covered statement versions</dt><dd>{{ release.covered_statement_version_count }}</dd>
+        <dt>Covered statement versions</dt>
+        <dd>
+          {% if release.covered_party_statements %}
+            {% for statement in release.covered_party_statements %}
+              <div class="statement">
+                <b>{{ statement.external_party }}</b>
+                <span>{{ statement.supported_statement }}</span>
+                <span class="muted">{{ statement.source_context }}</span>
+              </div>
+            {% endfor %}
+            <span class="muted">{{ release.covered_statement_version_count }} exact statement version{{ "" if release.covered_statement_version_count == 1 else "s" }} retained in the audit receipt.</span>
+          {% elif release.covered_statement_version_count %}
+            {{ release.covered_statement_version_count }} exact statement version{{ "" if release.covered_statement_version_count == 1 else "s" }} retained in the audit receipt.
+          {% else %}None{% endif %}
+        </dd>
         <dt>SHA-256 digest</dt><dd><code>{{ release.pdf_sha256 }}</code></dd>
+        <dt>Audit identity</dt>
+        <dd><details><summary>Show retained principal</summary><code>{{ release.released_by }}</code></details></dd>
       </dl>
       <a href="/reports/{{ project.slug }}/releases/{{ release.release_id }}/download">Download released PDF</a>
     </section>

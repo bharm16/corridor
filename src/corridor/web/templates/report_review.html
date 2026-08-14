@@ -12,6 +12,9 @@
   h1 { font-size:1.55rem; margin:0 0 .25rem; }
   .lead,.muted { color:var(--muted); }
   .artifact { border:1px solid var(--line); border-radius:7px; padding:1rem; }
+  .statement { border-left:3px solid var(--line); padding:.2rem 0 .2rem .75rem;
+               margin:.45rem 0; }
+  .statement b,.statement span { display:block; }
   dl { display:grid; grid-template-columns:11rem 1fr; gap:.3rem .8rem; }
   dt { color:var(--muted); }
   dd { margin:0; overflow-wrap:anywhere; }
@@ -46,7 +49,20 @@
       <dt>Covered Dependencies</dt>
       <dd>{{ review.covered_records|join(", ") if review.covered_records else "None" }}</dd>
       <dt>Covered statement versions</dt>
-      <dd>{{ review.covered_statement_versions|join(", ") if review.covered_statement_versions else "None" }}</dd>
+      <dd>
+        {% if review.covered_party_statements %}
+          {% for statement in review.covered_party_statements %}
+            <div class="statement">
+              <b>{{ statement.external_party }}</b>
+              <span>{{ statement.supported_statement }}</span>
+              <span class="muted">{{ statement.source_context }}</span>
+            </div>
+          {% endfor %}
+          <span class="muted">{{ review.covered_statement_versions|length }} exact statement version{{ "" if review.covered_statement_versions|length == 1 else "s" }} retained in the audit receipt.</span>
+        {% elif review.covered_statement_versions %}
+          {{ review.covered_statement_versions|length }} exact statement version{{ "" if review.covered_statement_versions|length == 1 else "s" }} retained in the audit receipt.
+        {% else %}None{% endif %}
+      </dd>
       <dt>SHA-256 digest</dt><dd><code>{{ review.pdf_sha256 }}</code></dd>
     </dl>
     <h3>Fixed External Report PDF preview</h3>

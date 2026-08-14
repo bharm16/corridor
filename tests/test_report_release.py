@@ -1,6 +1,7 @@
 """External Report release is a sealed artifact, not a live Report pointer."""
 
 import re
+from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timezone
 
@@ -22,6 +23,7 @@ from corridor.models import (
     ExternalOrg,
     ExternalReportArtifact,
     Project,
+    ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal
 from corridor.report import Cell, build_report
@@ -146,6 +148,40 @@ def _record_statement_version(session, project):
     )
 
 
+def _record_unknown_scope_statement(session, project):
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    assert party is not None
+    quote = "Release Test Utility will provide the cable reels in September 2026."
+    document = Document(
+        project_id=project.id,
+        sha256="c" * 64,
+        filename="weekly-utility-coordination-minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    session.add(DocPage(document_id=document.id, page_no=7, text=quote))
+    session.flush()
+    return record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=party.name,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2026, 8, 13),
+        description=quote,
+        new_timing=StatementTiming.month("September 2026", 2026, 9),
+        scope=StatementScope.unknown(),
+        created_by="local:statement-recorder",
+        evidence=CitedStatementEvidence(document.id, 7, quote),
+    )
+
+
 def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, project):
     rendered = _rendered(session, project)
 
@@ -200,6 +236,59 @@ def test_prepared_report_review_uses_only_the_fixed_artifact_context(session, pr
     assert review.covered_records == ("DEP-RELEASE-1",)
     assert review.covered_statement_versions == (statement.id,)
     assert review.pdf_sha256 == artifact.pdf_sha256
+
+
+def test_prepared_report_review_names_unknown_scope_statement_and_frozen_source(
+    session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    artifact = _prepare(session, project)
+
+    review = review_prepared_external_report(session, project.id, artifact.id)
+
+    [covered_statement] = review.covered_party_statements
+    assert covered_statement.external_party == "Release Test Utility"
+    assert covered_statement.supported_statement == (
+        "Release Test Utility will provide the cable reels in September 2026."
+    )
+    assert covered_statement.source_context == (
+        "weekly-utility-coordination-minutes.pdf · page 7 · "
+        '“Release Test Utility will provide the cable reels in September 2026.”'
+    )
+    assert covered_statement.statement_version_ids == (statement.id,)
+
+
+def test_legacy_prepared_context_names_its_exact_stored_statement_version(
+    session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    prepared = _prepare(session, project)
+    legacy_context = deepcopy(prepared.record_context_json)
+    legacy_context.pop("party_statement_display")
+    legacy = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="legacy-party-context.pdf",
+        format=prepared.format,
+        pdf_bytes=bytes(prepared.pdf_bytes),
+        pdf_sha256=prepared.pdf_sha256,
+        evaluated_on=prepared.evaluated_on,
+        ruleset_version=prepared.ruleset_version,
+        evaluation_context_json=deepcopy(prepared.evaluation_context_json),
+        provenance_mode=prepared.provenance_mode,
+        record_context_json=legacy_context,
+    )
+    session.add(legacy)
+    session.flush()
+
+    review = review_prepared_external_report(session, project.id, legacy.id)
+
+    [covered_statement] = review.covered_party_statements
+    assert covered_statement.external_party == "Release Test Utility"
+    assert covered_statement.supported_statement == statement.description
+    assert covered_statement.source_context == (
+        "weekly-utility-coordination-minutes.pdf · page 7 · "
+        '“Release Test Utility will provide the cable reels in September 2026.”'
+    )
 
 
 def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_changes(
@@ -355,10 +444,61 @@ def test_release_history_is_project_language_and_keeps_the_audit_digest(session,
     assert entry.release_id == release.id
     assert entry.artifact_name == "release-test-2026-08-13.pdf"
     assert entry.released_by == TEST_PRINCIPAL.subject
+    assert entry.released_by_display == "Project person (display name not recorded)"
     assert entry.evaluated_on == date(2026, 8, 13)
     assert entry.covered_dependency_count == 1
     assert entry.covered_records == ("DEP-RELEASE-1",)
     assert entry.pdf_sha256 == release.pdf_sha256
+
+
+def test_release_history_uses_roster_name_while_retaining_principal_for_audit(
+    client, session, project
+):
+    session.add(
+        ProjectRosterEntry(
+            project_id=project.id,
+            principal_subject=TEST_PRINCIPAL.subject,
+            display_name="Dana Fields",
+        )
+    )
+    session.flush()
+    release = _release(session, project)
+
+    [entry] = external_report_release_history(session, project.id)
+    page = client.get(f"/reports/{project.slug}")
+
+    assert entry.released_by_display == "Dana Fields"
+    assert entry.released_by == TEST_PRINCIPAL.subject
+    assert page.status_code == 200
+    assert "Released by</dt><dd>Dana Fields</dd>" in page.text
+    assert "Audit identity" in page.text
+    assert TEST_PRINCIPAL.subject in page.text
+    assert release.released_by == TEST_PRINCIPAL.subject
+
+
+def test_release_history_metadata_query_does_not_load_retained_pdf_bytes(
+    session, project
+):
+    _release(session, project)
+    statements = []
+
+    def capture_sql(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().lower().startswith("select"):
+            statements.append(statement)
+
+    connection = session.get_bind()
+    event.listen(connection, "before_cursor_execute", capture_sql)
+    try:
+        external_report_release_history(session, project.id)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture_sql)
+
+    [history_sql] = [
+        statement
+        for statement in statements
+        if "external_report_releases" in statement
+    ]
+    assert "pdf_bytes" not in history_sql
 
 
 def test_honestly_adverse_content_does_not_block_release(session, project):
@@ -556,7 +696,8 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     review = client.get(f"/reports/{project.slug}/prepared/{artifact.id}")
     assert review.status_code == 200
     assert artifact.artifact_name in review.text
-    assert f">{statement.id}<" in review.text
+    assert "1 exact statement version retained in the audit receipt." in review.text
+    assert f">{statement.id}<" not in review.text
 
     prepared_preview = client.get(
         f"/reports/{project.slug}/prepared/{artifact.id}/preview"
@@ -585,6 +726,7 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     assert released.status_code == 201
     assert "This exact PDF is now released and retained." in released.text
     assert artifact.artifact_name in released.text
+    assert "Project person (display name not recorded)" in released.text
     assert TEST_PRINCIPAL.subject in released.text
     assert "DEP-RELEASE-1" in released.text
     assert artifact.pdf_sha256 in released.text
@@ -606,6 +748,39 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     assert TEST_PRINCIPAL.subject in history.text
     assert "DEP-RELEASE-1" in history.text
     assert artifact.pdf_sha256 in history.text
+
+
+def test_ordinary_review_and_history_name_party_statements_without_raw_event_ids(
+    client, session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    artifact = _prepare(session, project)
+
+    review = client.get(f"/reports/{project.slug}/prepared/{artifact.id}")
+
+    assert review.status_code == 200
+    assert "Release Test Utility" in review.text
+    assert (
+        "Release Test Utility will provide the cable reels in September 2026."
+        in review.text
+    )
+    assert "weekly-utility-coordination-minutes.pdf" in review.text
+    assert "page 7" in review.text
+    assert f">{statement.id}<" not in review.text
+
+    released = client.post(
+        f"/reports/{project.slug}/prepared/{artifact.id}/release"
+    )
+
+    assert released.status_code == 201
+    assert "Release Test Utility" in released.text
+    assert (
+        "Release Test Utility will provide the cable reels in September 2026."
+        in released.text
+    )
+    assert "weekly-utility-coordination-minutes.pdf" in released.text
+    assert "page 7" in released.text
+    assert f">{statement.id}<" not in released.text
 
 
 def test_render_control_prepares_a_distinct_artifact(
@@ -710,3 +885,34 @@ def test_ordinary_release_control_delegates_its_bound_artifact_without_rerenderi
     assert response.status_code == 201
     assert "This exact PDF is now released and retained." in response.text
     assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]
+
+
+def test_ordinary_artifact_routes_refuse_another_project(
+    client, session, project
+):
+    other_project = Project(
+        slug="other-release-test",
+        name="Other Release Test",
+        is_synthetic=True,
+    )
+    session.add(other_project)
+    session.flush()
+    artifact = _prepare(session, project)
+
+    assert client.get(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}"
+    ).status_code == 409
+    assert client.get(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}/preview"
+    ).status_code == 409
+    assert client.get(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}/download"
+    ).status_code == 409
+    assert client.post(
+        f"/reports/{other_project.slug}/prepared/{artifact.id}/release"
+    ).status_code == 409
+
+    release = _release(session, project, artifact=artifact)
+    assert client.get(
+        f"/reports/{other_project.slug}/releases/{release.id}/download"
+    ).status_code == 404
