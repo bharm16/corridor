@@ -32,6 +32,16 @@ class ProvisionedDatabase:
         return self.migration_head
 
 
+@dataclass(frozen=True)
+class DatabaseUpgradeReceipt:
+    """Exact before/after identity for one guarded disposable-DB upgrade."""
+
+    database_name: str
+    from_revision: str
+    to_revision: str
+    verified_revision: str
+
+
 DatabaseProvisioner = Callable[[str], Any]
 
 
@@ -170,15 +180,77 @@ def read_migration_head(
             "could not read Alembic head"
             + (f": {detail[-1]}" if detail else "")
         )
+    revisions = []
     for line in completed.stdout.splitlines():
         line = line.strip()
         if not line:
             continue
         match = re.match(r"^([0-9a-f]+) \(", line)
         if match:
-            return match.group(1)
-        return line.split()[0]
-    raise error_cls("could not determine Alembic head")
+            revisions.append(match.group(1))
+        else:
+            revisions.append(line.split()[0])
+    if len(revisions) != 1:
+        raise error_cls("could not determine exactly one Alembic revision")
+    return revisions[0]
+
+
+def upgrade_provisioned_postgres(
+    database: ProvisionedDatabase,
+    *,
+    admin_url: str,
+    repo_root: Path,
+    error_cls: type[Exception],
+    database_prefix: str,
+    expected_current_revision: str,
+    target_revision: str,
+) -> DatabaseUpgradeReceipt:
+    """Upgrade only an explicitly named disposable database between exact pins."""
+
+    if (
+        not database_prefix
+        or not database.name.startswith(database_prefix)
+        or database.name == database_prefix
+        or re.fullmatch(r"[A-Za-z0-9_]+", database.name) is None
+    ):
+        raise error_cls("database is outside the disposable namespace")
+    if database.current_revision != expected_current_revision:
+        raise error_cls("provisioned database does not carry the expected source revision")
+    parsed = make_url(admin_url)
+    if parsed.get_backend_name() != "postgresql":
+        raise error_cls("M8 acceptance requires PostgreSQL")
+    require_local_postgres_host(parsed.host, error_cls=error_cls)
+    database_url = parsed.set(database=database.name)
+    rendered_url = database_url.render_as_string(hide_password=False)
+    observed_before = read_migration_head(
+        rendered_url,
+        repo_root=repo_root,
+        error_cls=error_cls,
+    )
+    if observed_before != expected_current_revision:
+        raise error_cls("disposable database is not at the expected source revision")
+    bound_engine = database.session_factory.kw.get("bind")
+    if bound_engine is not None:
+        bound_engine.dispose()
+    _apply_schema_migrations(
+        database_url,
+        repo_root=repo_root,
+        error_cls=error_cls,
+        revision=target_revision,
+    )
+    observed_after = read_migration_head(
+        rendered_url,
+        repo_root=repo_root,
+        error_cls=error_cls,
+    )
+    if observed_after != target_revision:
+        raise error_cls("disposable database did not reach the exact target revision")
+    return DatabaseUpgradeReceipt(
+        database_name=database.name,
+        from_revision=observed_before,
+        to_revision=target_revision,
+        verified_revision=observed_after,
+    )
 
 
 def _disposable_database_name(database_prefix: str) -> str:

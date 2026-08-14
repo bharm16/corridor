@@ -16,6 +16,7 @@ from corridor.sh99_coordinator_rehearsal import (
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_MIGRATION_REVISION = re.compile(r"^[0-9a-f]{12}$")
 
 
 def _sha256(value: str) -> str:
@@ -34,6 +35,14 @@ def _non_negative_seconds(value: str) -> float:
     return seconds
 
 
+def _migration_revision(value: str) -> str:
+    if _MIGRATION_REVISION.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError(
+            "must be exactly 12 lowercase hexadecimal characters"
+        )
+    return value
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sh99-coordinator-rehearsal")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -45,6 +54,12 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("--source-database-url", required=True)
     replay.add_argument("--postgres-admin-url", required=True)
     replay.add_argument("--expected-clean-git-revision", required=True)
+    replay.add_argument(
+        "--expected-source-migration-head", required=True, type=_migration_revision
+    )
+    replay.add_argument(
+        "--expected-target-migration-head", required=True, type=_migration_revision
+    )
     replay.add_argument("--shared-admission-receipt-path", required=True, type=Path)
     replay.add_argument("--expected-shared-admission-receipt-sha256", required=True, type=_sha256)
     replay.add_argument("--approved-shared-state-receipt", required=True)
@@ -75,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
                     source_database_url=args.source_database_url,
                     postgres_admin_url=args.postgres_admin_url,
                     expected_clean_git_revision=args.expected_clean_git_revision,
+                    expected_source_migration_head=args.expected_source_migration_head,
+                    expected_target_migration_head=args.expected_target_migration_head,
                     shared_admission_receipt_path=args.shared_admission_receipt_path,
                     expected_shared_admission_receipt_sha256=(
                         args.expected_shared_admission_receipt_sha256
