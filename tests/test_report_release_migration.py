@@ -17,8 +17,8 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f253a7c4d9e2"
-RELEASE_PREDECESSOR = "f255a7c4d9e2"
-HEAD = "e255a7c4d9e2"
+RELEASE_PREDECESSOR = "e255a7c4d9e2"
+HEAD = "f255b7c4d9e3"
 RELEASE_COLUMNS = [
     "id",
     "project_id",
@@ -34,6 +34,7 @@ RELEASE_COLUMNS = [
     "released_at",
     "evaluation_context_json",
     "artifact_id",
+    "released_by_display",
 ]
 ARTIFACT_COLUMNS = [
     "id",
@@ -151,6 +152,7 @@ def test_release_schema_is_one_linear_head_on_a_fresh_database():
                     "ck_external_report_releases_pdf_sha256",
                     "ck_external_report_releases_provenance_mode",
                     "ck_external_report_releases_released_by",
+                    "ck_external_report_releases_released_by_display",
                 ]
         finally:
             engine.dispose()
@@ -209,7 +211,7 @@ def test_release_successors_upgrade_the_immediate_predecessor_without_rewriting_
             engine.dispose()
 
 
-def test_release_successors_preserve_an_existing_f255_receipt_without_backfill():
+def test_release_actor_successor_preserves_an_existing_receipt_as_legacy():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
@@ -252,11 +254,13 @@ def test_release_successors_preserve_an_existing_f255_receipt_without_backfill()
                 assert connection.execute(
                     text(
                         "select artifact_name, pdf_sha256, evaluation_context_json, "
-                        "artifact_id from external_report_releases"
+                        "artifact_id, released_by_display "
+                        "from external_report_releases"
                     )
                 ).one() == (
                     "before-a255.pdf",
                     "07b7396f531418f26a52721f1250e82081e2bbb82b76a129e10e80a1b2288790",
+                    None,
                     None,
                     None,
                 )

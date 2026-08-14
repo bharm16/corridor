@@ -205,6 +205,7 @@ def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, pr
     }
     assert release.provenance_mode == "all-supported-sources"
     assert release.released_by == TEST_PRINCIPAL.subject
+    assert release.released_by_display == "Project person (display name not recorded)"
     assert release.record_context_json == {
         "dependencies": [
             {
@@ -258,7 +259,7 @@ def test_prepared_report_review_names_unknown_scope_statement_and_frozen_source(
     assert covered_statement.statement_version_ids == (statement.id,)
 
 
-def test_legacy_prepared_context_names_its_exact_stored_statement_version(
+def test_legacy_prepared_context_keeps_event_wording_without_inventing_a_citation(
     session, project
 ):
     statement = _record_unknown_scope_statement(session, project)
@@ -286,9 +287,61 @@ def test_legacy_prepared_context_names_its_exact_stored_statement_version(
     assert covered_statement.external_party == "Release Test Utility"
     assert covered_statement.supported_statement == statement.description
     assert covered_statement.source_context == (
-        "weekly-utility-coordination-minutes.pdf · page 7 · "
-        '“Release Test Utility will provide the cable reels in September 2026.”'
+        "Cited source context not retained in this legacy release context"
     )
+    assert "weekly-utility-coordination-minutes.pdf" not in (
+        covered_statement.source_context
+    )
+    assert "page 7" not in covered_statement.source_context
+
+
+def test_legacy_document_only_context_does_not_publish_current_event_wording(
+    session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    page = session.scalars(
+        select(DocPage)
+        .join(Document, Document.id == DocPage.document_id)
+        .where(Document.project_id == project.id)
+    ).one()
+    page.text = "The registered page no longer supports the statement."
+    session.flush()
+    prepared = _prepare(
+        session,
+        project,
+        rendered=_rendered(session, project, document_only=True),
+    )
+    [recorded_statement] = prepared.record_context_json["party_statements"]
+    assert recorded_statement["current_statement_event_id"] == statement.id
+    assert recorded_statement["published_statement_event_id"] is None
+    legacy_context = deepcopy(prepared.record_context_json)
+    legacy_context.pop("party_statement_display")
+    legacy = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="legacy-document-only-party-context.pdf",
+        format=prepared.format,
+        pdf_bytes=bytes(prepared.pdf_bytes),
+        pdf_sha256=prepared.pdf_sha256,
+        evaluated_on=prepared.evaluated_on,
+        ruleset_version=prepared.ruleset_version,
+        evaluation_context_json=deepcopy(prepared.evaluation_context_json),
+        provenance_mode=prepared.provenance_mode,
+        record_context_json=legacy_context,
+    )
+    session.add(legacy)
+    session.flush()
+
+    review = review_prepared_external_report(session, project.id, legacy.id)
+
+    [covered_statement] = review.covered_party_statements
+    assert covered_statement.external_party == "Release Test Utility"
+    assert covered_statement.supported_statement == (
+        "Current statement unsupported in this provenance mode"
+    )
+    assert covered_statement.source_context == (
+        "Not published; source context not retained in this legacy release context"
+    )
+    assert statement.description not in covered_statement.supported_statement
 
 
 def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_changes(
@@ -474,6 +527,85 @@ def test_release_history_uses_roster_name_while_retaining_principal_for_audit(
     assert "Audit identity" in page.text
     assert TEST_PRINCIPAL.subject in page.text
     assert release.released_by == TEST_PRINCIPAL.subject
+
+
+def test_release_history_keeps_the_release_time_name_after_a_roster_edit(
+    session, project
+):
+    roster_entry = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject=TEST_PRINCIPAL.subject,
+        display_name="Dana Fields",
+    )
+    session.add(roster_entry)
+    session.flush()
+    release = _release(session, project)
+
+    roster_entry.display_name = "Dana Fields-Renamed"
+    session.flush()
+
+    [entry] = external_report_release_history(session, project.id)
+    assert entry.released_by_display == "Dana Fields"
+    assert entry.released_by == TEST_PRINCIPAL.subject
+    assert release.released_by_display == "Dana Fields"
+
+
+def test_release_history_keeps_the_release_time_name_after_roster_deletion(
+    session, project
+):
+    roster_entry = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject=TEST_PRINCIPAL.subject,
+        display_name="Dana Fields",
+    )
+    session.add(roster_entry)
+    session.flush()
+    release = _release(session, project)
+
+    session.delete(roster_entry)
+    session.flush()
+
+    [entry] = external_report_release_history(session, project.id)
+    assert entry.released_by_display == "Dana Fields"
+    assert entry.released_by == TEST_PRINCIPAL.subject
+    assert release.released_by_display == "Dana Fields"
+
+
+def test_legacy_release_history_does_not_borrow_a_current_roster_name(
+    session, project
+):
+    roster_entry = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject=TEST_PRINCIPAL.subject,
+        display_name="Current Roster Name",
+    )
+    session.add(roster_entry)
+    session.flush()
+    artifact = _prepare(session, project)
+    release = ExternalReportRelease(
+        project_id=project.id,
+        artifact_id=None,
+        artifact_name=artifact.artifact_name,
+        format=artifact.format,
+        pdf_bytes=bytes(artifact.pdf_bytes),
+        pdf_sha256=artifact.pdf_sha256,
+        evaluated_on=artifact.evaluated_on,
+        ruleset_version=artifact.ruleset_version,
+        evaluation_context_json=deepcopy(artifact.evaluation_context_json),
+        provenance_mode=artifact.provenance_mode,
+        record_context_json=deepcopy(artifact.record_context_json),
+        released_by=TEST_PRINCIPAL.subject,
+        released_by_display=None,
+    )
+    session.add(release)
+    session.flush()
+
+    [entry] = external_report_release_history(session, project.id)
+
+    assert entry.released_by_display == (
+        "Project person (display name not retained in this legacy release)"
+    )
+    assert entry.released_by == TEST_PRINCIPAL.subject
 
 
 def test_release_history_metadata_query_does_not_load_retained_pdf_bytes(

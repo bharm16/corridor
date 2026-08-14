@@ -23,9 +23,6 @@ from sqlalchemy.orm import Session
 from corridor.export import to_pdf_bytes
 from corridor.models import (
     DependencyEvent,
-    DependencyEventEvidence,
-    Document,
-    EvidenceLink,
     ExternalReportArtifact,
     ExternalReportRelease,
     Project,
@@ -36,6 +33,12 @@ from corridor.report import Report, assert_no_bare_cells, build_report, render
 
 if TYPE_CHECKING:
     from corridor.dependency_events import PublishedPartyStatement
+
+
+_UNRECORDED_ACTOR_DISPLAY = "Project person (display name not recorded)"
+_LEGACY_ACTOR_DISPLAY = (
+    "Project person (display name not retained in this legacy release)"
+)
 
 
 class ReleaseRefusal(ValueError):
@@ -246,6 +249,12 @@ def release_external_report(
     )
     if existing is not None:
         return existing
+    released_by_display = session.scalar(
+        select(ProjectRosterEntry.display_name).where(
+            ProjectRosterEntry.project_id == project_id,
+            ProjectRosterEntry.principal_subject == principal.subject,
+        )
+    )
     receipt = ExternalReportRelease(
         project_id=project_id,
         artifact_id=artifact.id,
@@ -259,6 +268,7 @@ def release_external_report(
         provenance_mode=artifact.provenance_mode,
         record_context_json=deepcopy(artifact.record_context_json),
         released_by=principal.subject,
+        released_by_display=released_by_display or _UNRECORDED_ACTOR_DISPLAY,
     )
     try:
         with session.begin_nested():
@@ -301,6 +311,7 @@ def external_report_release_history(
             ExternalReportRelease.id,
             ExternalReportRelease.artifact_name,
             ExternalReportRelease.released_by,
+            ExternalReportRelease.released_by_display,
             ExternalReportRelease.released_at,
             ExternalReportRelease.evaluated_on,
             ExternalReportRelease.ruleset_version,
@@ -311,22 +322,6 @@ def external_report_release_history(
         .where(ExternalReportRelease.project_id == project_id)
         .order_by(ExternalReportRelease.released_at.desc(), ExternalReportRelease.id.desc())
     ).all()
-    principals = {receipt.released_by for receipt in receipts}
-    roster_names = (
-        dict(
-            session.execute(
-                select(
-                    ProjectRosterEntry.principal_subject,
-                    ProjectRosterEntry.display_name,
-                ).where(
-                    ProjectRosterEntry.project_id == project_id,
-                    ProjectRosterEntry.principal_subject.in_(principals),
-                )
-            ).all()
-        )
-        if principals
-        else {}
-    )
     legacy_displays = _legacy_party_statement_displays(
         session,
         project_id,
@@ -337,9 +332,8 @@ def external_report_release_history(
             release_id=receipt.id,
             artifact_name=receipt.artifact_name,
             released_by=receipt.released_by,
-            released_by_display=roster_names.get(
-                receipt.released_by,
-                "Project person (display name not recorded)",
+            released_by_display=(
+                receipt.released_by_display or _LEGACY_ACTOR_DISPLAY
             ),
             released_at=receipt.released_at,
             evaluated_on=receipt.evaluated_on,
@@ -525,16 +519,25 @@ def _covered_party_statements(
                 retained["supported_statement"],
                 retained["source_context"],
             )
-        event_id = entry.get("published_statement_event_id") or entry.get(
-            "current_statement_event_id"
-        )
-        return legacy_displays.get(
-            event_id,
+        published_event_id = entry.get("published_statement_event_id")
+        if published_event_id is not None:
+            return legacy_displays.get(
+                published_event_id,
+                (
+                    "External Party name not retained",
+                    "Statement wording not retained in this legacy release context",
+                    "Source context not retained in this legacy release context",
+                ),
+            )
+        current_display = legacy_displays.get(entry.get("current_statement_event_id"))
+        return (
             (
-                "External Party name not retained",
-                "Statement wording not retained in this legacy release context",
-                "Source context not retained in this legacy release context",
+                current_display[0]
+                if current_display is not None
+                else "External Party name not retained"
             ),
+            "Current statement unsupported in this provenance mode",
+            "Not published; source context not retained in this legacy release context",
         )
 
     covered = []
@@ -567,7 +570,12 @@ def _legacy_party_statement_displays(
     project_id: int,
     contexts: tuple[dict, ...],
 ) -> dict[int, tuple[str, str, str]]:
-    """Describe identity-only legacy contexts from their exact immutable events."""
+    """Describe identity-only legacy contexts without inventing provenance.
+
+    Exact event wording and party remain safe to read by retained identity.
+    Cited filename, page, and quote did not travel in these old contexts, so
+    live Evidence and Document rows must never be substituted for them.
+    """
     legacy_event_ids = set()
     for context in contexts:
         frozen_ids = {
@@ -593,32 +601,9 @@ def _legacy_party_statement_displays(
             )
         )
     }
-    cited_by_event_id: dict[int, tuple[EvidenceLink, Document]] = {}
-    for event_id, evidence, document in session.execute(
-        select(DependencyEventEvidence.event_id, EvidenceLink, Document)
-        .join(
-            EvidenceLink,
-            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
-        )
-        .join(Document, Document.id == EvidenceLink.document_id)
-        .where(
-            DependencyEventEvidence.event_id.in_(legacy_event_ids),
-            EvidenceLink.verified.is_(True),
-            Document.project_id == project_id,
-        )
-        .order_by(DependencyEventEvidence.event_id, EvidenceLink.id)
-    ):
-        cited_by_event_id.setdefault(event_id, (evidence, document))
-
     displays: dict[int, tuple[str, str, str]] = {}
     for event_id, event in events_by_id.items():
-        citation = cited_by_event_id.get(event_id)
-        if citation is not None:
-            evidence, document = citation
-            source_context = (
-                f"{document.filename} · page {evidence.page_no} · “{evidence.quote}”"
-            )
-        elif event.source_kind == "verbal":
+        if event.source_kind == "verbal":
             heard_on = (
                 event.event_date.isoformat()
                 if event.event_date

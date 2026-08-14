@@ -1237,6 +1237,10 @@ class ExternalReportRelease(Base):
             "length(trim(released_by)) > 0",
             name="ck_external_report_releases_released_by",
         ),
+        CheckConstraint(
+            "released_by_display is null or length(trim(released_by_display)) > 0",
+            name="ck_external_report_releases_released_by_display",
+        ),
         UniqueConstraint(
             "artifact_id", name="uq_external_report_releases_artifact_id"
         ),
@@ -1257,6 +1261,7 @@ class ExternalReportRelease(Base):
     provenance_mode: Mapped[str] = mapped_column(String(32))
     record_context_json: Mapped[dict] = mapped_column(JSONB)
     released_by: Mapped[str] = mapped_column(String(128))
+    released_by_display: Mapped[str | None] = mapped_column(Text)
     released_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
