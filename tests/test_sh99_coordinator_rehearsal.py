@@ -520,10 +520,10 @@ def _guided_screen() -> str:
       <form method="post">
         <input type="hidden" name="expected_candidate_state" value="pending">
         <select name="affected_external_org_id">
-          <option value="41">Kinder Morgan</option>
+          <option value="affected-party-option">Kinder Morgan Tejas Pipeline</option>
         </select>
         <select name="stated_external_org_id">
-          <option value="41">Kinder Morgan</option>
+          <option value="stated-party-option">Kinder Morgan Tejas Pipeline</option>
         </select>
         <select name="internal_owner_roster_entry_id">
           <option value="7">SH 99 Coordinator</option>
@@ -545,13 +545,88 @@ def _guided_screen() -> str:
     """
 
 
-def test_kinder_morgan_form_selects_visible_enabled_evidence_by_browser_ordinal():
+def test_kinder_morgan_form_resolves_canonical_party_and_visible_enabled_evidence():
     form = _kinder_morgan_form(_guided_screen(), "SH 99 Coordinator")
 
+    assert form["affected_external_org_id"] == "affected-party-option"
+    assert form["stated_external_org_id"] == "stated-party-option"
     assert form["supporting_page_index"] == "1"
     assert form["supporting_quote"] == "Kinder Morgan Management Meeting Highlights"
     assert "supporting_document_id" not in form
     assert "supporting_page_no" not in form
+
+
+def _party_fields(*options: tuple[str, str]):
+    rendered_options = "".join(
+        f'<option value="{value}">{label}</option>' for value, label in options
+    )
+    return rehearsal._ScreenFields(
+        f'<select name="affected_external_org_id">{rendered_options}</select>'
+    )
+
+
+def test_external_party_option_prefers_one_normalized_exact_visible_match():
+    fields = _party_fields(
+        ("expanded-option", "Kinder Morgan Tejas Pipeline"),
+        ("second-expanded-option", "Kinder Morgan Texas Pipeline"),
+        ("exact-option", "  KINDER   MORGAN "),
+    )
+
+    assert (
+        fields.external_party_option_value(
+            "affected_external_org_id", "Kinder Morgan"
+        )
+        == "exact-option"
+    )
+
+
+def test_external_party_option_allows_one_whole_prefix_expansion():
+    fields = _party_fields(
+        ("canonical-option", "Kinder Morgan Tejas Pipeline"),
+        ("unrelated-option", "Equistar"),
+    )
+
+    assert (
+        fields.external_party_option_value(
+            "affected_external_org_id", "Kinder Morgan"
+        )
+        == "canonical-option"
+    )
+
+
+def test_external_party_option_refuses_ambiguous_whole_prefix_expansions():
+    fields = _party_fields(
+        ("tejas-option", "Kinder Morgan Tejas Pipeline"),
+        ("texas-option", "Kinder Morgan Texas Pipeline"),
+    )
+
+    with pytest.raises(ValueError, match="one unambiguous visible External Party"):
+        fields.external_party_option_value(
+            "affected_external_org_id", "Kinder Morgan"
+        )
+
+
+def test_external_party_option_refuses_a_nonmatch():
+    fields = _party_fields(
+        ("near-option", "Kinder Morganson Pipeline"),
+        ("unrelated-option", "Equistar"),
+    )
+
+    with pytest.raises(ValueError, match="one unambiguous visible External Party"):
+        fields.external_party_option_value(
+            "affected_external_org_id", "Kinder Morgan"
+        )
+
+
+def test_generic_option_selection_remains_visible_exact_only():
+    fields = rehearsal._ScreenFields(
+        '<select name="internal_owner_roster_entry_id">'
+        '<option value="coordinator-option">SH 99 Coordinator</option>'
+        "</select>"
+    )
+
+    with pytest.raises(ValueError, match="does not offer"):
+        fields.option_value("internal_owner_roster_entry_id", "SH 99")
 
 
 def test_visible_supporting_evidence_fetches_the_ordinary_png_url():

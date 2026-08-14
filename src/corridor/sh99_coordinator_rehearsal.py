@@ -1580,9 +1580,13 @@ def _kinder_morgan_form(
         )
     return {
         **fields.hidden,
-        "affected_external_org_id": fields.option_value("affected_external_org_id", "Kinder Morgan"),
+        "affected_external_org_id": fields.external_party_option_value(
+            "affected_external_org_id", "Kinder Morgan"
+        ),
         "stated_party": "Kinder Morgan",
-        "stated_external_org_id": fields.option_value("stated_external_org_id", "Kinder Morgan"),
+        "stated_external_org_id": fields.external_party_option_value(
+            "stated_external_org_id", "Kinder Morgan"
+        ),
         "event_date": "2025-01-16",
         "description": (
             "Kinder Morgan stated that the March 2026 completion timeline appears "
@@ -1622,9 +1626,13 @@ def _equistar_form(
         )
     return {
         **fields.hidden,
-        "affected_external_org_id": fields.option_value("affected_external_org_id", "Equistar"),
+        "affected_external_org_id": fields.external_party_option_value(
+            "affected_external_org_id", "Equistar"
+        ),
         "stated_party": "Equistar",
-        "stated_external_org_id": fields.option_value("stated_external_org_id", "Equistar"),
+        "stated_external_org_id": fields.external_party_option_value(
+            "stated_external_org_id", "Equistar"
+        ),
         "event_date": "2024-12-04",
         "description": (
             "Equistar committed to provide a chain of title for the ROW agreement "
@@ -1687,6 +1695,36 @@ class _ScreenFields(HTMLParser):
             if text == label and value:
                 return value
         raise ValueError(f"coordinator screen does not offer {label!r} for {field}")
+
+    def external_party_option_value(self, field: str, suggestion: str) -> str:
+        """Resolve one visible External Party without interpreting its opaque value."""
+
+        normalized_suggestion = _normalized_visible_text(suggestion)
+        options = [
+            (value, _normalized_visible_text(text))
+            for value, text in self.options.get(field, [])
+            if value
+        ]
+        exact = [
+            value
+            for value, normalized_text in options
+            if normalized_text == normalized_suggestion
+        ]
+        if len(exact) == 1:
+            return exact[0]
+        if not exact and normalized_suggestion:
+            prefix = f"{normalized_suggestion} "
+            expanded = [
+                value
+                for value, normalized_text in options
+                if normalized_text.startswith(prefix)
+            ]
+            if len(expanded) == 1:
+                return expanded[0]
+        raise ValueError(
+            "coordinator screen does not offer one unambiguous visible External "
+            f"Party for {suggestion!r} in {field}"
+        )
 
 
 @dataclass(frozen=True)

@@ -36,11 +36,13 @@ set. After clone disposal, the command re-reads the shared migration head, domai
 state, and scenario receipts.
 
 The timed segment matches immediate cards by visible party, exact wording,
-document, and source date. It selects an enabled registered Evidence block through
-its browser-carried ordinal and fetches the ordinary PNG URL. It saves the Kinder
-Morgan date change and Equistar month commitment, renders and reviews one fixed PDF,
-follows the bound release form, retrieves the released bytes, and reloads immutable
-history. The second timer stops only after retrieval and history readback.
+document, and source date. External Party selects prefer an exact normalized visible
+label and otherwise accept only one whole-prefix canonical expansion; all other
+selects remain exact-only. The flow selects an enabled registered Evidence block
+through its browser-carried ordinal and fetches the ordinary PNG URL. It saves the
+Kinder Morgan date change and Equistar month commitment, renders and reviews one
+fixed PDF, follows the bound release form, retrieves the released bytes, and reloads
+immutable history. The second timer stops only after retrieval and history readback.
 
 Post-run verification checks both source-preserving Kinder Morgan timings, exact
 Milestone Impact, Equistar's January month boundary, unknown scope, the frozen
