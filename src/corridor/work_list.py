@@ -40,14 +40,15 @@ from corridor.models import (
     ExternalOrg,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
+    WorkDecision,
     is_critical,
 )
 from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.work_decisions import (
-    CoordinationSubject,
-    current_deferral_decision,
-    current_milestone_impact_decision,
-    current_next_action_decision,
+    DEFERRAL,
+    MILESTONE_IMPACT,
+    NEXT_ACTION,
+    current_statement_decision_tails,
 )
 
 
@@ -140,6 +141,15 @@ class WorkList:
     candidate_search: str
 
 
+@dataclass(frozen=True)
+class _StatementWorkState:
+    """Batched current facts needed to derive one population of statement work."""
+
+    evidence_ids_by_event: dict[int, tuple[int, ...]]
+    decision_tails: dict[tuple[int, str], WorkDecision]
+    receipts_by_decision: dict[int, StatementCoordinationReceipt]
+
+
 def build_work_list(
     session: Session,
     project_id: int,
@@ -191,12 +201,22 @@ def build_work_list(
     ).all()
 
     candidate_ids = _source_candidate_ids(session, project_id)
+    statement_state = _statement_work_state(session, rows)
     immediate: list[WorkItem] = []
     backlog: list[WorkItem] = []
     for event, timing, scope, lineage in rows:
         is_closed = event.commitment_lineage_id in closed_lineages
         reason_codes: list[str] = []
-        past_due = None if is_closed else _past_due(session, event, timing, evaluated_on)
+        past_due = (
+            None
+            if is_closed
+            else _past_due(
+                event,
+                timing,
+                evaluated_on,
+                statement_state.evidence_ids_by_event.get(event.id, ()),
+            )
+        )
         if past_due is not None:
             reason_codes.append("past_due")
         if not is_closed and event.event_type == "committed_date_change":
@@ -234,7 +254,7 @@ def build_work_list(
             description=event.description,
         )
         is_immediate = _is_immediate(lineage, evaluated_on) or _statement_changed(
-            session, event, scope, lineage
+            event, scope, lineage, statement_state
         )
         (immediate if is_immediate else backlog).append(item)
 
@@ -304,10 +324,10 @@ def build_work_list(
 
 
 def _past_due(
-    session: Session,
     event: DependencyEvent,
     timing: DependencyEventTiming,
     evaluated_on: date,
+    source_evidence_link_ids: tuple[int, ...],
 ) -> PastDueCommitment | None:
     due_after = party_commitment_due_after(timing)
     if due_after is None or evaluated_on <= due_after:
@@ -321,7 +341,7 @@ def _past_due(
         timing_id=timing.id,
         affected_external_org_id=event.affected_external_org_id,
         source_kind=event.source_kind,
-        source_evidence_link_ids=_source_evidence_link_ids(session, event),
+        source_evidence_link_ids=source_evidence_link_ids,
         due_after=due_after,
     )
 
@@ -370,15 +390,14 @@ def _is_immediate(
 
 
 def _statement_changed(
-    session: Session,
     event: DependencyEvent,
     scope: DependencyEventScopeDecision,
     lineage: CommitmentLineage,
+    state: _StatementWorkState,
 ) -> bool:
     """Return delayed work when the External Party fact it answered changes."""
-    subject = CoordinationSubject.statement(lineage.id)
-    deferral = current_deferral_decision(session, subject)
-    action = current_next_action_decision(session, subject)
+    deferral = state.decision_tails.get((lineage.id, DEFERRAL))
+    action = state.decision_tails.get((lineage.id, NEXT_ACTION))
     decision = (
         deferral
         if deferral is not None and deferral.after_value is not None
@@ -387,12 +406,12 @@ def _statement_changed(
     if decision is None:
         return False
 
-    receipt = session.scalar(
-        select(StatementCoordinationReceipt).where(
-            StatementCoordinationReceipt.next_action_decision_id == decision.id
-        )
+    receipt = state.receipts_by_decision.get(decision.id)
+    impact = (
+        state.decision_tails.get((lineage.id, MILESTONE_IMPACT))
+        if event.event_type == "committed_date_change"
+        else None
     )
-    impact = current_milestone_impact_decision(session, subject)
     if receipt is not None:
         return (
             receipt.dependency_event_id != event.id
@@ -532,20 +551,59 @@ def _source_candidate_ids(session: Session, project_id: int) -> dict[int, int]:
     return candidate_ids
 
 
-def _source_evidence_link_ids(
-    session: Session, event: DependencyEvent
-) -> tuple[int, ...]:
-    """Expose exact cited source identities without turning them into a Dependency."""
-    return tuple(
-        session.scalars(
-            select(DependencyEventEvidence.evidence_link_id)
-            .join(EvidenceLink, EvidenceLink.id == DependencyEventEvidence.evidence_link_id)
+def _statement_work_state(session: Session, rows) -> _StatementWorkState:
+    """Read current Evidence and plan observations once for all statement rows."""
+    event_ids = tuple(event.id for event, _timing, _scope, _lineage in rows)
+    lineage_ids = tuple(lineage.id for _event, _timing, _scope, lineage in rows)
+
+    evidence_ids_by_event: dict[int, list[int]] = {}
+    if event_ids:
+        evidence_rows = session.execute(
+            select(
+                DependencyEventEvidence.event_id,
+                DependencyEventEvidence.evidence_link_id,
+            )
+            .join(
+                EvidenceLink,
+                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            )
             .where(
-                DependencyEventEvidence.event_id == event.id,
+                DependencyEventEvidence.event_id.in_(event_ids),
                 EvidenceLink.verified.is_(True),
             )
-            .order_by(DependencyEventEvidence.evidence_link_id)
+            .order_by(
+                DependencyEventEvidence.event_id,
+                DependencyEventEvidence.evidence_link_id,
+            )
         ).all()
+        for event_id, evidence_link_id in evidence_rows:
+            evidence_ids_by_event.setdefault(event_id, []).append(evidence_link_id)
+
+    decision_tails = current_statement_decision_tails(
+        session,
+        lineage_ids,
+        fields=(DEFERRAL, NEXT_ACTION, MILESTONE_IMPACT),
+    )
+    decision_ids = tuple(decision.id for decision in decision_tails.values())
+    receipts_by_decision = (
+        {
+            receipt.next_action_decision_id: receipt
+            for receipt in session.scalars(
+                select(StatementCoordinationReceipt).where(
+                    StatementCoordinationReceipt.next_action_decision_id.in_(decision_ids)
+                )
+            ).all()
+        }
+        if decision_ids
+        else {}
+    )
+    return _StatementWorkState(
+        evidence_ids_by_event={
+            event_id: tuple(evidence_ids)
+            for event_id, evidence_ids in evidence_ids_by_event.items()
+        },
+        decision_tails=decision_tails,
+        receipts_by_decision=receipts_by_decision,
     )
 
 

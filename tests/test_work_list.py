@@ -212,6 +212,47 @@ def _record_pending_statement_candidates(session, project, specifications):
     return tuple(candidates)
 
 
+def _record_deferred_month_commitments(session, project, party, count):
+    statements = []
+    for number in range(1, count + 1):
+        quote = f"{party.name} to provide accepted package {number:02d} (Due 01/2025)."
+        document = Document(
+            project_id=project.id,
+            sha256=hashlib.sha256(quote.encode()).hexdigest(),
+            filename=f"accepted/deferred-{number:02d}.pdf",
+            doc_type="minutes",
+            doc_date=date(2025, 1, 16),
+            parse_status="parsed",
+        )
+        session.add(document)
+        session.flush()
+        session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+        session.flush()
+        statement = record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            source_kind="cited",
+            event_date=date(2025, 1, 16),
+            description=quote,
+            new_timing=StatementTiming.month("01/2025", 2025, 1),
+            scope=StatementScope.unknown(),
+            created_by=RECORDER.subject,
+            evidence=CitedStatementEvidence(document.id, 1, quote),
+        )
+        defer_work(
+            session,
+            CoordinationSubject.statement(statement.commitment_lineage_id),
+            reason="waiting_for_external_party",
+            return_date=date(2099, 1, 1),
+            principal=RECORDER,
+        )
+        statements.append(statement)
+    return tuple(statements)
+
+
 def test_month_precision_unknown_scope_is_one_party_level_past_due_work_item(
     session, project, party
 ):
@@ -956,6 +997,35 @@ def test_candidate_work_list_build_has_a_bounded_query_count_at_review_scale(
     assert len(work_list.immediate) == 20
     assert work_list.candidate_backlog_total == 30
     assert statements <= 12
+
+
+def test_deferred_accepted_statement_backlog_has_a_bounded_query_count_at_scale(
+    session, project, party
+):
+    _record_deferred_month_commitments(session, project, party, 50)
+    statements = 0
+
+    def count_statement(*_args):
+        nonlocal statements
+        statements += 1
+
+    connection = session.connection()
+    event.listen(connection, "before_cursor_execute", count_statement)
+    try:
+        work_list = build_work_list(session, project.id, today=date(2025, 2, 1))
+    finally:
+        event.remove(connection, "before_cursor_execute", count_statement)
+
+    assert work_list.immediate == ()
+    assert work_list.backlog_total == 50
+    assert len(work_list.backlog) == 25
+    assert all(item.past_due is not None for item in work_list.backlog)
+    assert all(
+        item.past_due.source_evidence_link_ids
+        for item in work_list.backlog
+        if item.past_due is not None
+    )
+    assert statements <= 25
 
 
 def test_coordinator_home_renders_the_public_work_list_and_guided_statement_link(
