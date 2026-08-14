@@ -1395,16 +1395,23 @@ def release_report(
 def coordinator_home(
     request: Request,
     slug: str,
+    statement_search: str = "",
+    statement_page: int = 1,
     session: Session = Depends(get_session),
 ):
     """The coordinator's short, project-language entry point."""
     project = _project(session, slug)
-    work_list = build_work_list(session, project.id)
+    work_list = build_work_list(
+        session,
+        project.id,
+        candidate_search=statement_search,
+        candidate_page=statement_page,
+    )
 
     def view(item):
         if item.kind == "candidate":
             action_url = f"/statements/{project.slug}/{item.candidate_id}/coordinate"
-            action_label = "Coordinate statement"
+            action_label = "Review extracted statement"
         elif item.kind == "dependency":
             action_url = f"/ledger/{project.slug}/{item.dependency_id}"
             action_label = "Open Dependency"
@@ -1430,6 +1437,13 @@ def coordinator_home(
             "project": project,
             "immediate": tuple(view(item) for item in work_list.immediate),
             "backlog": tuple(view(item) for item in work_list.backlog),
+            "candidate_backlog": tuple(
+                view(item) for item in work_list.candidate_backlog
+            ),
+            "candidate_backlog_total": work_list.candidate_backlog_total,
+            "candidate_backlog_page": work_list.candidate_backlog_page,
+            "candidate_backlog_pages": work_list.candidate_backlog_pages,
+            "candidate_search": work_list.candidate_search,
         },
     )
 
