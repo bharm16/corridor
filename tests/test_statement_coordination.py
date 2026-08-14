@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date
+import base64
 import hashlib
 
 import pytest
@@ -61,7 +62,12 @@ from corridor.work_decisions import (
     current_next_action_decision,
     set_next_action,
 )
-from corridor.web.app import app, get_human_principal, get_session
+from corridor.web.app import (
+    _supporting_statement_evidence,
+    app,
+    get_human_principal,
+    get_session,
+)
 
 
 RECORDER = HumanPrincipal("local:statement-coordinator")
@@ -1247,7 +1253,7 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
 
 
 def test_http_screen_shows_the_registered_source_page_without_accepting_party_suggestions(
-    session, project, party, roster_entry
+    session, project, party, roster_entry, tmp_path
 ):
     quote = "The March 2026 completion timeline seems unattainable."
     page_text = (
@@ -1257,6 +1263,19 @@ def test_http_screen_shows_the_registered_source_page_without_accepting_party_su
         "Propose extending completion to May 16th."
     )
     document = _document(session, project, "http-page-context.pdf", page_text)
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page_image = tmp_path / "registered-page.png"
+    page_image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    )
+    page.image_path = str(page_image)
     candidate = _candidate(
         session,
         project,
@@ -1275,8 +1294,14 @@ def test_http_screen_shows_the_registered_source_page_without_accepting_party_su
             screen = client.get(
                 f"/statements/{project.slug}/{candidate.id}/coordinate"
             )
+            rendered_page = client.get(f"/page-image/{document.id}/1")
 
         assert screen.status_code == 200
+        assert f'src="/page-image/{document.id}/1"' in screen.text
+        assert 'alt="Registered source page 1"' in screen.text
+        assert rendered_page.status_code == 200
+        assert rendered_page.headers["content-type"] == "image/png"
+        assert rendered_page.content == page_image.read_bytes()
         assert "Complete registered page context" in screen.text
         assert "Kinder Morgan Management Meeting Highlights" in screen.text
         assert "Relocation schedule discussion" in screen.text
@@ -1297,9 +1322,16 @@ def test_http_flow_binds_an_additional_quote_to_the_visible_registered_page(
     document = _document(
         session,
         project,
-        "http-page-bound-support.pdf",
+        "http-page-bound-support.xlsx",
         f"{party_quote}\n{statement_quote}",
     )
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page.text_source = "cells"
     candidate = _candidate(
         session,
         project,
@@ -1319,6 +1351,9 @@ def test_http_flow_binds_an_additional_quote_to_the_visible_registered_page(
                 f"/statements/{project.slug}/{candidate.id}/coordinate"
             )
             assert screen.status_code == 200
+            assert party_quote in screen.text
+            assert "read from registered cells" in screen.text
+            assert f'src="/page-image/{document.id}/1"' not in screen.text
             assert 'name="supporting_page_index" value="0"' in screen.text
             assert 'name="supporting_document_id"' not in screen.text
             assert 'name="supporting_page_no"' not in screen.text
@@ -1354,6 +1389,56 @@ def test_http_flow_binds_an_additional_quote_to_the_visible_registered_page(
         ) == 2
     finally:
         app.dependency_overrides.clear()
+
+
+def test_form_adapter_resolves_supporting_quote_against_the_visible_page_list(
+    session, project
+):
+    supporting_quote = "Kinder Morgan Management Meeting Highlights"
+    visible_document = _document(
+        session,
+        project,
+        "visible-supporting-page.pdf",
+        supporting_quote,
+    )
+    filtered_document = _document(
+        session,
+        project,
+        "malformed-hidden-citation.pdf",
+        "This page must not receive the visible page selection.",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        visible_document,
+        quote=supporting_quote,
+        fields={"event_type": "commitment", "description": supporting_quote},
+    )
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "citations": [
+            {"document_id": filtered_document.id, "page": 1},
+            {
+                "document_id": visible_document.id,
+                "page": 1,
+                "quote": supporting_quote,
+                "verified": True,
+            },
+        ],
+    }
+
+    evidence = _supporting_statement_evidence(
+        session,
+        candidate,
+        {
+            "supporting_page_index": "0",
+            "supporting_quote": supporting_quote,
+        },
+    )
+
+    assert evidence == (
+        CitedStatementEvidence(visible_document.id, 1, supporting_quote),
+    )
 
 
 def test_http_flow_refuses_a_supporting_quote_not_on_the_selected_registered_page(

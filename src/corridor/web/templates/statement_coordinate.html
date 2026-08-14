@@ -13,6 +13,7 @@
   .saved { color:var(--ok); border:1px solid #94d5b2; background:#f1fff6; padding:.7rem; }
   .evidence,.choice { border:1px solid var(--line); border-radius:6px; padding:.75rem; margin:.6rem 0; background:var(--paper); }
   .quote { display:block; margin-top:.4rem; font-family:ui-monospace,monospace; white-space:pre-wrap; }
+  .page-image { display:block; width:100%; height:auto; margin:.65rem 0; border:1px solid var(--line); background:#fff; }
   .page-context { margin:.65rem 0 0; padding:.65rem; border:1px solid var(--line); background:#fff; font:inherit; white-space:pre-wrap; }
   fieldset { margin:1rem 0; border:1px solid var(--line); border-radius:6px; padding:.8rem; }
   legend { font-weight:650; padding:0 .3rem; } label { display:block; margin:.55rem 0 .2rem; font-weight:600; }
@@ -69,6 +70,12 @@
         <span class="quote"><b>Candidate Evidence</b> — {{ evidence.quote }}</span>
         <b>Complete registered page context</b>
         {% if evidence.page_text is not none %}
+          {% if evidence.has_page_image %}
+            <img class="page-image" src="/page-image/{{ evidence.document_id }}/{{ evidence.page_no }}" alt="Registered source page {{ evidence.page_no }}" loading="lazy">
+            <b>Extracted page text</b>
+          {% elif evidence.page_text_source == 'cells' %}
+            <span class="muted"> · read from registered cells</span>
+          {% endif %}
           <pre class="page-context">{{ evidence.page_text }}</pre>
         {% else %}
           <p class="error">This registered source page is unavailable. Save will remain fail closed.</p>

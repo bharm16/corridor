@@ -634,7 +634,7 @@ async def save_coordinated_statement(
     try:
         result = coordinate_statement(
             session,
-            _statement_coordination_draft(candidate, form),
+            _statement_coordination_draft(session, candidate, form),
             principal=principal,
         )
     except StaleStatementCoordination as exc:
@@ -1052,7 +1052,7 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
 
 
 def _statement_coordination_draft(
-    candidate: Candidate, form
+    session: Session, candidate: Candidate, form
 ) -> StatementCoordinationDraft:
     return StatementCoordinationDraft(
         candidate_id=candidate.id,
@@ -1067,7 +1067,7 @@ def _statement_coordination_draft(
         description=_required_form_text(form, "description", "what the party said"),
         new_timing=_form_timing(form, "new_timing", required=True),
         previous_timing=_form_timing(form, "previous_timing", required=False),
-        evidence=_supporting_statement_evidence(candidate, form),
+        evidence=_supporting_statement_evidence(session, candidate, form),
         scope=_form_statement_scope(form),
         internal_owner_roster_entry_id=_required_positive_form_id(
             form, "internal_owner_roster_entry_id"
@@ -1166,6 +1166,14 @@ def _candidate_statement_evidence(
                         else "registered document"
                     ),
                     "page_text": page.text if page is not None else None,
+                    "page_text_source": (
+                        page.text_source if page is not None else None
+                    ),
+                    "has_page_image": bool(
+                        page is not None
+                        and page.image_path
+                        and Path(page.image_path).exists()
+                    ),
                 }
             )
         except (KeyError, TypeError, ValueError):
@@ -1174,7 +1182,7 @@ def _candidate_statement_evidence(
 
 
 def _supporting_statement_evidence(
-    candidate: Candidate, form
+    session: Session, candidate: Candidate, form
 ) -> tuple[CitedStatementEvidence, ...]:
     """Bind optional supporting wording to a source page already on screen."""
     page_index_value = str(form.get("supporting_page_index") or "").strip()
@@ -1187,11 +1195,14 @@ def _supporting_statement_evidence(
         )
     try:
         page_index = int(page_index_value)
-        citation = ((candidate.payload_json or {}).get("citations") or ())[page_index]
         if page_index < 0:
             raise IndexError
-        document_id = int(citation["document_id"])
-        page_no = int(citation["page"])
+        visible_evidence = _candidate_statement_evidence(session, candidate)
+        selected = visible_evidence[page_index]
+        if selected["page_text"] is None:
+            raise IndexError
+        document_id = int(selected["document_id"])
+        page_no = int(selected["page_no"])
     except (IndexError, KeyError, TypeError, ValueError) as exc:
         raise StatementCoordinationRefusal(
             "choose a visible registered source page for supporting Evidence"
