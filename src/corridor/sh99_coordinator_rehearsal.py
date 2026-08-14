@@ -64,7 +64,7 @@ from corridor.models import (
     ProjectRosterEntry,
     StatementCoordinationReceipt,
 )
-from corridor.exceptions import RULESET_VERSION
+from corridor.exceptions import RULESET_VERSION, Thresholds
 from corridor.principals import HumanPrincipal
 from corridor.report_release import retrieve_released_external_report
 from corridor.sh99_admission_acceptance import (
@@ -95,6 +95,16 @@ CLAIM_BOUNDARY = {
     "provisional_targets": True,
 }
 DATABASE_PREFIX = "corridor_sh99_coordinator_rehearsal_"
+
+# Bundle v3 is the immutable #265 replay contract.  Keep these values frozen
+# here instead of consulting future exception-engine defaults while verifying
+# an already sealed bundle.  A new replay whose ordinary Report policy changes
+# must publish a successor schema rather than reinterpret v3 evidence.
+_V3_EVALUATION_THRESHOLD_ITEMS = (
+    ("stale_days", 14),
+    ("due_soon_days", 30),
+    ("action_due_soon_days", 7),
+)
 _KINDER_MORGAN_QUOTE = (
     "The March 2026 completion timeline seems unattainable. "
     "Propose extending to May 16th."
@@ -479,6 +489,11 @@ def run_sh99_coordinator_rehearsal(
     if provision_database is None:
         provision_database = _provision_database
     repo_root = Path(__file__).resolve().parents[2]
+    evaluation_thresholds = _v3_evaluation_thresholds()
+    if asdict(Thresholds()) != evaluation_thresholds:
+        raise RuntimeError(
+            "ordinary Report Evaluation defaults no longer match the frozen v3 contract"
+        )
     source = _require_clean_source(config.expected_clean_git_revision)
     checkout_head = _source_migration_head()
     if checkout_head != config.expected_target_migration_head:
@@ -750,6 +765,7 @@ def run_sh99_coordinator_rehearsal(
         "report_publication": {
             "ruleset_version": RULESET_VERSION,
             "provenance_mode": "all-supported-sources",
+            "evaluation_thresholds": evaluation_thresholds,
         },
         "seeded_coordinator": {
             "subject": config.coordinator_subject,
@@ -3093,6 +3109,7 @@ def _require_v3_release_metadata_bindings(
             isinstance(publication.get(field), str) and bool(publication[field])
             for field in ("ruleset_version", "provenance_mode")
         )
+        or publication.get("evaluation_thresholds") != _v3_evaluation_thresholds()
         or not isinstance(coordinator, dict)
         or not all(
             isinstance(coordinator.get(field), str) and bool(coordinator[field])
@@ -3113,6 +3130,7 @@ def _require_v3_release_metadata_bindings(
         or release.get("released_by_display") != coordinator["display_name"]
         or evaluation.get("evaluated_on") != release.get("evaluated_on")
         or evaluation.get("ruleset_version") != release.get("ruleset_version")
+        or evaluation.get("thresholds") != publication["evaluation_thresholds"]
     ):
         raise ValueError("release metadata does not match its sealed inputs")
     evaluated_on = release.get("evaluated_on")
@@ -3128,6 +3146,12 @@ def _require_v3_release_metadata_bindings(
         or parsed_released_at.utcoffset() is None
     ):
         raise ValueError("release timestamp must retain an explicit timezone")
+
+
+def _v3_evaluation_thresholds() -> dict[str, int]:
+    """Return the exact ordinary Report Evaluation policy sealed by bundle v3."""
+
+    return dict(_V3_EVALUATION_THRESHOLD_ITEMS)
 
 
 def _canonical_json(value: Any) -> bytes:

@@ -177,6 +177,11 @@ def _v3_inputs() -> dict:
         "report_publication": {
             "ruleset_version": "v0.4",
             "provenance_mode": "all-supported-sources",
+            "evaluation_thresholds": {
+                "stale_days": 14,
+                "due_soon_days": 30,
+                "action_due_soon_days": 7,
+            },
         },
         "seeded_coordinator": {
             "subject": "local:sh99-coordinator",
@@ -242,6 +247,11 @@ def _release_facts(pdf_bytes: bytes) -> dict:
         "evaluation_context": {
             "evaluated_on": "2026-08-13",
             "ruleset_version": "v0.4",
+            "thresholds": {
+                "stale_days": 14,
+                "due_soon_days": 30,
+                "action_due_soon_days": 7,
+            },
         },
     }
 
@@ -1009,6 +1019,90 @@ def test_v3_publication_derives_an_unqualified_pass_from_complete_evidence(tmp_p
                 ): "2026-08-13T00:00:00",
             },
         ),
+        (
+            "stale threshold",
+            {
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "thresholds",
+                    "stale_days",
+                ): 15,
+            },
+        ),
+        (
+            "due-soon threshold",
+            {
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "thresholds",
+                    "due_soon_days",
+                ): 31,
+            },
+        ),
+        (
+            "action threshold",
+            {
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "thresholds",
+                    "action_due_soon_days",
+                ): 8,
+            },
+        ),
+        (
+            "unsealed threshold",
+            {
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "thresholds",
+                    "unsealed_days",
+                ): 99,
+            },
+        ),
+        (
+            "rehashed stale threshold policy",
+            {
+                (
+                    "inputs",
+                    "report_publication",
+                    "evaluation_thresholds",
+                    "stale_days",
+                ): 15,
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "thresholds",
+                    "stale_days",
+                ): 15,
+            },
+        ),
+        (
+            "rehashed unsealed threshold policy",
+            {
+                (
+                    "inputs",
+                    "report_publication",
+                    "evaluation_thresholds",
+                    "unsealed_days",
+                ): 99,
+                (
+                    "verification",
+                    "release",
+                    "evaluation_context",
+                    "thresholds",
+                    "unsealed_days",
+                ): 99,
+            },
+        ),
     ),
 )
 def test_v3_verifier_refuses_rehashed_release_metadata_mismatch(
@@ -1201,6 +1295,11 @@ def test_assisted_rehearsal_is_sealed_but_never_called_an_unqualified_pass(tmp_p
                     "evaluation_context": {
                         "evaluated_on": "2026-08-13",
                         "ruleset_version": "v0.4",
+                        "thresholds": {
+                            "stale_days": 14,
+                            "due_soon_days": 30,
+                            "action_due_soon_days": 7,
+                        },
                     },
                 },
             },
