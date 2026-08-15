@@ -1186,15 +1186,14 @@ def _guided_party_resolution(
         else {}
     )
     source_party = candidate_fields.get("external_org")
-    if not isinstance(source_party, str) or normalize(source_party) != normalize(
-        stated_party
-    ):
+    if not isinstance(source_party, str) or source_party.strip() != stated_party:
         raise StatementCoordinationRefusal(
             "guided resolution requires the Candidate's exact source party wording"
         )
     return EvidenceBoundPartyResolution(
         mode="guided_evidence_bound",
         project_id=project_id,
+        candidate_id=draft.candidate_id,
         stated_party=stated_party,
         stated_external_org_id=draft.stated_external_org_id,
         principal=principal.subject,

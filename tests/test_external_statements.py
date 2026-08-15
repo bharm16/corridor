@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
 from corridor.models import (
+    Candidate,
     Dependency,
     DependencyEvidenceSufficiency,
     DependencyEvent,
@@ -241,12 +242,26 @@ def test_shared_writer_refuses_a_guided_resolution_bound_to_different_facts(
     selected_party = ExternalOrg(name="Equistar Pipeline Resolution Test")
     session.add(selected_party)
     session.flush()
+    candidate = Candidate(
+        project_id=project.id,
+        kind="event",
+        payload_json={"fields": {"external_org": "Equistar"}},
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=0.9,
+        prompt_version="guided-resolution-test",
+        model="test-model",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush()
     evidence = CitedStatementEvidence(
         document.id, 1, "Equistar will complete relocation."
     )
     resolution = EvidenceBoundPartyResolution(
         mode="guided_evidence_bound",
         project_id=project.id,
+        candidate_id=candidate.id,
         stated_party="Equistar",
         stated_external_org_id=selected_party.id,
         principal="local:statement-coordinator",
@@ -299,7 +314,7 @@ def test_shared_writer_refuses_cross_project_evidence_in_a_guided_resolution(
         record_external_party_statement,
     )
 
-    project, _, _, _ = statement_record
+    project, _, source_document, _ = statement_record
     selected_party = ExternalOrg(name="Equistar Pipeline Cross Project Test")
     other_project = Project(
         slug=f"other-statement-project-{project.id}",
@@ -307,6 +322,19 @@ def test_shared_writer_refuses_cross_project_evidence_in_a_guided_resolution(
         is_synthetic=True,
     )
     session.add_all([selected_party, other_project])
+    session.flush()
+    candidate = Candidate(
+        project_id=project.id,
+        kind="event",
+        payload_json={"fields": {"external_org": "Equistar"}},
+        source_document_id=source_document.id,
+        source_pages=[1],
+        confidence=0.9,
+        prompt_version="guided-resolution-test",
+        model="test-model",
+        citations_verified=True,
+    )
+    session.add(candidate)
     session.flush()
     other_document = Document(
         project_id=other_project.id,
@@ -331,6 +359,7 @@ def test_shared_writer_refuses_cross_project_evidence_in_a_guided_resolution(
     resolution = EvidenceBoundPartyResolution(
         mode="guided_evidence_bound",
         project_id=project.id,
+        candidate_id=candidate.id,
         stated_party="Equistar",
         stated_external_org_id=selected_party.id,
         principal="local:statement-coordinator",

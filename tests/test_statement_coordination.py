@@ -1683,6 +1683,7 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
         assert receipt is not None
         assert receipt.accepted_facts_json["party_resolution"] == {
             "mode": "guided_evidence_bound",
+            "candidate_id": candidate.id,
             "stated_party": "Kinder Morgan",
             "stated_external_org_id": canonical_party.id,
             "principal": RECORDER.subject,
@@ -1710,8 +1711,9 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
         app.dependency_overrides.clear()
 
 
-def test_http_guided_save_refuses_partial_party_words_as_a_statement_resolution(
-    session, project, roster_entry
+@pytest.mark.parametrize("submitted_party", ("Morgan", "kinder morgan", "Kinder-Morgan"))
+def test_http_guided_save_refuses_inexact_party_words_as_a_statement_resolution(
+    session, project, roster_entry, submitted_party
 ):
     canonical_party = ExternalOrg(name="Kinder Morgan Tejas Pipeline")
     session.add(canonical_party)
@@ -1750,7 +1752,7 @@ def test_http_guided_save_refuses_partial_party_words_as_a_statement_resolution(
                 f"/statements/{project.slug}/{candidate.id}/coordinate",
                 data={
                     "affected_external_org_id": str(canonical_party.id),
-                    "stated_party": "Morgan",
+                    "stated_party": submitted_party,
                     "stated_external_org_id": str(canonical_party.id),
                     "description": statement_quote,
                     "new_timing_text": "June 1, 2026",
@@ -1768,7 +1770,6 @@ def test_http_guided_save_refuses_partial_party_words_as_a_statement_resolution(
             )
 
         assert response.status_code == 400
-        assert "exact source party wording" in response.text
         assert candidate.state == "pending"
         assert canonical_party.aliases == []
         assert session.scalars(

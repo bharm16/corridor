@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from corridor.identity import is_project_side_party, normalize_party
 from corridor.models import (
+    Candidate,
     CommitmentLineage,
     Dependency,
     DependencyEvent,
@@ -118,6 +119,7 @@ class EvidenceBoundPartyResolution:
 
     mode: str
     project_id: int
+    candidate_id: int
     stated_party: str
     stated_external_org_id: int
     principal: str
@@ -126,6 +128,7 @@ class EvidenceBoundPartyResolution:
     def as_json(self) -> dict:
         return {
             "mode": self.mode,
+            "candidate_id": self.candidate_id,
             "stated_party": self.stated_party.strip(),
             "stated_external_org_id": self.stated_external_org_id,
             "principal": self.principal,
@@ -510,6 +513,7 @@ def validate_external_party_statement_draft(
     }
     if normalize_party(party) not in registered_spellings:
         _require_evidence_bound_party_resolution(
+            session,
             party_resolution,
             project_id=project.id,
             stated_party=party,
@@ -539,6 +543,7 @@ def validate_external_party_statement_draft(
 
 
 def _require_evidence_bound_party_resolution(
+    session: Session,
     resolution: EvidenceBoundPartyResolution | None,
     *,
     project_id: int,
@@ -552,6 +557,12 @@ def _require_evidence_bound_party_resolution(
         raise StatementRefusal(
             "the stated-party wording does not resolve to the stated External Party"
         )
+    candidate = session.get(Candidate, resolution.candidate_id)
+    source_party = (
+        ((candidate.payload_json or {}).get("fields") or {}).get("external_org")
+        if candidate is not None and candidate.project_id == project_id
+        else None
+    )
     expected = (
         source_kind == "cited"
         and resolution.mode == "guided_evidence_bound"
@@ -560,10 +571,12 @@ def _require_evidence_bound_party_resolution(
         and resolution.stated_external_org_id == stated_external_org_id
         and resolution.principal == str(resolution_principal or "").strip()
         and resolution.evidence == evidence
+        and isinstance(source_party, str)
+        and source_party.strip() == stated_party.strip()
     )
-    party_words = normalize(stated_party)
+    party_words = stated_party.strip()
     if not expected or not party_words or not any(
-        party_words in normalize(item.quote) for item in evidence
+        party_words in item.quote for item in evidence
     ):
         raise StatementRefusal(
             "the guided party resolution does not match this statement and its Evidence"
