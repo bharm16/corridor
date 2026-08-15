@@ -1784,6 +1784,70 @@ def test_http_guided_save_refuses_inexact_party_words_as_a_statement_resolution(
         app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize("submitted_party", ("kinder morgan", "Kinder-Morgan"))
+def test_http_guided_save_requires_exact_evidence_words_for_a_registered_party(
+    session, project, roster_entry, submitted_party
+):
+    canonical_party = ExternalOrg(name="Kinder Morgan")
+    session.add(canonical_party)
+    session.flush()
+    statement_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(
+        session,
+        project,
+        "http-registered-party-exact-words.xlsx",
+        statement_quote,
+    )
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page.text_source = "cells"
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=statement_quote,
+        fields={
+            "event_type": "commitment",
+            "description": statement_quote,
+            "external_org": submitted_party,
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(canonical_party.id),
+                    "stated_party": submitted_party,
+                    "stated_external_org_id": str(canonical_party.id),
+                    "description": statement_quote,
+                    "new_timing_text": "June 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-06-01",
+                    "new_timing_end_date": "2026-06-01",
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the completion plan",
+                    "action_due_date": "2026-02-01",
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 400
+        assert candidate.state == "pending"
+        assert session.scalars(
+            select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+        ).all() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_form_adapter_refuses_when_any_original_candidate_evidence_is_filtered(
     session, project, tmp_path
 ):

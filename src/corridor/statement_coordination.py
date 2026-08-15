@@ -1087,9 +1087,10 @@ def _require_fact_evidence_support(
     evidence: tuple[CitedStatementEvidence, ...],
 ) -> None:
     """Make each corrected attribution and timing fact point back to a quote."""
-    quotes = tuple(normalize(item.quote) for item in evidence)
-    party = normalize(draft.stated_party)
-    if not party or not any(party in quote for quote in quotes):
+    raw_quotes = tuple(item.quote for item in evidence)
+    party = draft.stated_party.strip()
+    quotes = tuple(normalize(quote) for quote in raw_quotes)
+    if not party or not any(party in quote for quote in raw_quotes):
         raise StatementCoordinationRefusal(
             "verified Evidence must name the stated External Party"
         )
