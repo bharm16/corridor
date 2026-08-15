@@ -453,6 +453,7 @@ def _record_context(report: Report) -> dict:
         }
         for statement in publication.party_statements
     ]
+    report_fields = _party_statement_report_fields(report)
     context = {"dependencies": dependencies, "party_statements": party_statements}
     if publication.party_statements:
         context["party_statement_display"] = [
@@ -461,10 +462,41 @@ def _record_context(report: Report) -> dict:
                 **_party_statement_display_context(
                     statement, publication.document_only
                 ),
+                **(
+                    {"report_fields": report_fields[statement.current_event.id]}
+                    if statement.current_event.id in report_fields
+                    else {}
+                ),
             }
             for statement in publication.party_statements
         ]
     return context
+
+
+def _party_statement_report_fields(report: Report) -> dict[int, dict[str, str]]:
+    """Copy the exact visible statement row from the frozen Report artifact."""
+    publication = report.statement_publication
+    assert publication is not None
+    visible_statements = tuple(
+        statement for statement in publication.party_statements if not statement.is_closed
+    )
+    section = next(
+        (
+            candidate
+            for candidate in report.sections
+            if candidate.title == "External Party commitments"
+        ),
+        None,
+    )
+    rows = tuple(section.rows) if section is not None else ()
+    if len(rows) != len(visible_statements):
+        raise ReleaseRefusal(
+            "the frozen Report statement identities do not match its visible rows"
+        )
+    return {
+        statement.current_event.id: {cell.label: cell.value for cell in row}
+        for statement, row in zip(visible_statements, rows, strict=True)
+    }
 
 
 def _evaluation_context(report: Report) -> dict:

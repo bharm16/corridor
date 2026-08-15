@@ -1215,7 +1215,8 @@ def render(report: Report) -> str:
             kind = "derivation"
         title = html.escape(p.quote if isinstance(p, Assertion) else p.drill)
         return (
-            f'<td class="{kind}">{html.escape(cell.value)}'
+            f'<td class="{kind}" data-label="{html.escape(cell.label)}">'
+            f'{html.escape(cell.value)}'
             f'<span class="marker" title="{title}">{html.escape(p.marker)}</span></td>'
         )
 
@@ -1230,9 +1231,15 @@ def render(report: Report) -> str:
         body = "".join(
             "<tr>" + "".join(cell_html(c) for c in row) + "</tr>" for row in section.rows
         )
+        table_class = (
+            ' class="party-statements"'
+            if section.title == "External Party commitments"
+            else ""
+        )
         return (
             f"<h2>{html.escape(section.title)}</h2>{note}"
-            f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+            f"<table{table_class}><thead><tr>{head}</tr></thead>"
+            f"<tbody>{body}</tbody></table>"
         )
 
     summary = "".join(
@@ -1287,6 +1294,16 @@ def render(report: Report) -> str:
       border-bottom: 1px solid var(--line); padding: .3rem .5rem; }}
  td {{ border-bottom: 1px solid #f2f2f2; padding: .3rem .5rem; vertical-align: top;
       font-variant-numeric: tabular-nums; }}
+ .party-statements thead {{ display: none; }}
+ .party-statements tbody, .party-statements tr {{ display: block; }}
+ .party-statements tr {{ border: 1px solid var(--line); border-radius: 4px;
+                         margin: 0 0 .7rem; padding: .25rem;
+                         break-inside: avoid; page-break-inside: avoid; }}
+ .party-statements td {{ display: inline-block; box-sizing: border-box; width: 49%;
+                         border: 0; padding: .3rem .5rem; }}
+ .party-statements td::before {{ content: attr(data-label); display: block;
+                                 color: var(--muted); font-size: .72rem;
+                                 font-weight: 600; margin-bottom: .05rem; }}
  .marker {{ color: #06c; font-size: .72em; margin-left: .35rem; cursor: help;
            white-space: nowrap; }}
  .derivation .marker {{ color: #690; }}

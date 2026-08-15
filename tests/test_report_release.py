@@ -261,6 +261,80 @@ def test_prepared_report_review_names_unknown_scope_statement_and_frozen_source(
     assert covered_statement.statement_version_ids == (statement.id,)
 
 
+def test_prepared_report_freezes_unknown_scope_statement_plan_display(
+    session, project
+):
+    from corridor.work_decisions import (
+        CoordinationSubject,
+        assign_internal_owner,
+        set_next_action,
+    )
+
+    statement = _record_unknown_scope_statement(session, project)
+    subject = CoordinationSubject.statement(statement.commitment_lineage_id)
+    assign_internal_owner(
+        session, subject, "Dana Fields", principal=TEST_PRINCIPAL
+    )
+    set_next_action(
+        session,
+        subject,
+        "Confirm the cable-reel delivery",
+        due_date_unknown_reason="awaiting_external_information",
+        principal=TEST_PRINCIPAL,
+    )
+    rendered = render_external_report_pdf(
+        session, project.id, today=date(2026, 8, 13)
+    )
+    import pymupdf
+
+    with pymupdf.open(stream=rendered.pdf_bytes, filetype="pdf") as pdf:
+        pdf_text = " ".join(
+            "\n".join(page.get_text() for page in pdf).split()
+        )
+    for expected in (
+        "Internal Owner Dana Fields",
+        "Next Action Confirm the cable-reel delivery",
+        "Action Due Date not yet known (awaiting external information)",
+    ):
+        assert expected in pdf_text
+    artifact = _prepare(session, project, rendered=rendered)
+
+    [display] = artifact.record_context_json["party_statement_display"]
+    assert display["report_fields"] == {
+        "External Party": "Release Test Utility",
+        "Supported statement": (
+            "Release Test Utility will provide the cable reels in September 2026."
+        ),
+        "Timing": "September 2026",
+        "Timing precision": "month",
+        "Statement type": "Commitment",
+        "Commitment Scope": "Scope not yet known",
+        "Open / past-due status": "Open · not past due",
+        "Internal Owner": "Dana Fields",
+        "Next Action": "Confirm the cable-reel delivery",
+        "Action Due": (
+            "Date not yet known (awaiting external information)"
+        ),
+        "Milestone Impact": "Not applicable",
+    }
+
+    assign_internal_owner(
+        session, subject, "Changed after prepare", principal=TEST_PRINCIPAL
+    )
+    set_next_action(
+        session,
+        subject,
+        "Changed after prepare",
+        due_date=date(2026, 8, 14),
+        principal=TEST_PRINCIPAL,
+    )
+
+    assert display["report_fields"]["Internal Owner"] == "Dana Fields"
+    assert display["report_fields"]["Next Action"] == (
+        "Confirm the cable-reel delivery"
+    )
+
+
 def test_legacy_prepared_context_keeps_event_wording_without_inventing_a_citation(
     session, project
 ):
