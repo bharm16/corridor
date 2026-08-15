@@ -871,6 +871,77 @@ def test_correcting_statement_facts_appends_a_successor_and_marks_its_plan_for_r
     ]
 
 
+def test_fact_correction_can_bind_new_source_words_to_the_same_selected_party(
+    session, project, roster_entry
+):
+    party = ExternalOrg(name="Kinder Morgan Tejas Pipeline")
+    session.add(party)
+    session.flush()
+    original_quote = (
+        "Kinder Morgan Tejas Pipeline will complete relocation by June 1, 2026."
+    )
+    corrected_quote = "Kinder Morgan will complete relocation by July 1, 2026."
+    document = _document(
+        session,
+        project,
+        "correct-statement-local-party-resolution.pdf",
+        f"{original_quote}\n{corrected_quote}",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=original_quote,
+        fields={"event_type": "commitment", "description": original_quote},
+    )
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=original_quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, original_quote),),
+        ),
+        principal=RECORDER,
+    )
+
+    successor = correct_statement_facts(
+        session,
+        StatementFactCorrectionDraft(
+            candidate_id=candidate.id,
+            expected_statement_event_id=result.event.id,
+            affected_external_org_id=party.id,
+            stated_party="Kinder Morgan",
+            stated_external_org_id=party.id,
+            event_date=date(2025, 1, 17),
+            description=corrected_quote,
+            new_timing=StatementTiming.day("July 1, 2026", date(2026, 7, 1)),
+            previous_timing=None,
+            evidence=(CitedStatementEvidence(document.id, 1, corrected_quote),),
+        ),
+        principal=RECORDER,
+    )
+
+    assert successor.stated_party == "Kinder Morgan"
+    assert successor.stated_external_org_id == party.id
+    assert party.aliases == []
+    lineage = session.get(CommitmentLineage, result.event.commitment_lineage_id)
+    assert lineage.plan_needs_review is True
+    correction_audit = session.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.action == audit.CORRECT_STATEMENT_FACTS,
+            AuditLog.entity_id == result.event.commitment_lineage_id,
+        )
+        .order_by(AuditLog.id.desc())
+    )
+    assert correction_audit.after_json["party_resolution"]["mode"] == (
+        "guided_evidence_bound"
+    )
+
+
 @pytest.mark.parametrize(
     ("dependent_kind", "message"),
     (
@@ -1520,6 +1591,114 @@ def test_http_flow_binds_an_additional_quote_to_the_visible_registered_page(
             .join(DependencyEvent, DependencyEvent.id == DependencyEventEvidence.event_id)
             .where(DependencyEvent.project_id == project.id)
         ) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_guided_save_binds_source_party_words_to_the_selected_party_without_registering_an_alias(
+    session, project, roster_entry, tmp_path
+):
+    """The coordinator may make one Evidence-bound attribution, not a registry edit."""
+    canonical_party = ExternalOrg(name="Kinder Morgan Tejas Pipeline")
+    session.add(canonical_party)
+    session.flush()
+    party_quote = "Kinder Morgan Management Meeting Highlights"
+    statement_quote = (
+        "The March 2026 completion timeline seems unattainable. "
+        "Propose extending to May 16th."
+    )
+    document = _document(
+        session,
+        project,
+        "http-statement-local-party-resolution.pdf",
+        f"{party_quote}\n{statement_quote}",
+    )
+    _register_page_image(session, document, tmp_path / "statement-local-party.png")
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=statement_quote,
+        fields={
+            "event_type": "slip",
+            "description": statement_quote,
+            "external_org": "Kinder Morgan",
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(canonical_party.id),
+                    "stated_party": "Kinder Morgan",
+                    "stated_external_org_id": str(canonical_party.id),
+                    "description": statement_quote,
+                    "new_timing_text": "May 16th",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-05-16",
+                    "new_timing_end_date": "2026-05-16",
+                    "previous_timing_text": "March 2026",
+                    "previous_timing_precision": "month",
+                    "previous_timing_start_date": "2026-03-01",
+                    "previous_timing_end_date": "2026-03-31",
+                    "supporting_page_index": "0",
+                    "supporting_quote": party_quote,
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the revised completion plan",
+                    "action_due_date": "2026-02-01",
+                    "milestone_impact": "not_yet_known",
+                },
+                follow_redirects=False,
+            )
+
+        assert screen.status_code == 200
+        assert "does not register a name for future Documents" in screen.text
+        assert response.status_code == 303
+        event = session.scalar(
+            select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+        )
+        assert event is not None
+        assert event.stated_party == "Kinder Morgan"
+        assert event.stated_external_org_id == canonical_party.id
+        assert canonical_party.aliases == []
+        receipt = session.scalar(
+            select(StatementCoordinationReceipt).where(
+                StatementCoordinationReceipt.candidate_id == candidate.id
+            )
+        )
+        assert receipt is not None
+        assert receipt.accepted_facts_json["party_resolution"] == {
+            "mode": "guided_evidence_bound",
+            "stated_party": "Kinder Morgan",
+            "stated_external_org_id": canonical_party.id,
+            "principal": RECORDER.subject,
+            "evidence": [
+                {
+                    "document_id": document.id,
+                    "page_no": 1,
+                    "quote": statement_quote,
+                },
+                {
+                    "document_id": document.id,
+                    "page_no": 1,
+                    "quote": party_quote,
+                },
+            ],
+        }
+        coordination_audit = session.get(AuditLog, receipt.audit_log_id)
+        assert coordination_audit.after_json["party_resolution"] == (
+            receipt.accepted_facts_json["party_resolution"]
+        )
+        undo_statement_coordination(session, receipt.id, principal=RECORDER)
+        assert candidate.state == "pending"
+        assert canonical_party.aliases == []
     finally:
         app.dependency_overrides.clear()
 

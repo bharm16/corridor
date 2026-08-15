@@ -5,6 +5,7 @@ than the command's helper calls or query shape.  Each fixture owns a real
 Postgres transaction, matching the rest of the database test suite.
 """
 
+from dataclasses import replace
 from datetime import date
 import hashlib
 
@@ -179,6 +180,108 @@ def test_shared_writer_refuses_an_unregistered_page_or_quote(
                 scope=StatementScope.selected((dependency.id,)),
                 created_by="local:statement-coordinator",
                 evidence=evidence,
+            )
+
+    assert session.scalars(select(DependencyEvent)).all() == []
+
+
+def test_shared_writer_refuses_non_alias_party_words_without_guided_resolution(
+    session, statement_record
+):
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, _, document, _ = statement_record
+    selected_party = ExternalOrg(name="Equistar Pipeline")
+    session.add(selected_party)
+    session.flush()
+
+    with pytest.raises(
+        StatementRefusal,
+        match="stated-party wording does not resolve",
+    ):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=selected_party.id,
+            stated_party="Equistar",
+            stated_external_org_id=selected_party.id,
+            source_kind="cited",
+            event_date=None,
+            description="Equistar will complete relocation.",
+            new_timing=StatementTiming.month("January 2025", 2025, 1),
+            scope=StatementScope.unknown(),
+            created_by="local:statement-coordinator",
+            evidence=CitedStatementEvidence(
+                document.id, 1, "Equistar will complete relocation."
+            ),
+        )
+
+    assert session.scalars(select(DependencyEvent)).all() == []
+
+
+def test_shared_writer_refuses_a_guided_resolution_bound_to_different_facts(
+    session, statement_record
+):
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        EvidenceBoundPartyResolution,
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, party, document, _ = statement_record
+    selected_party = ExternalOrg(name="Equistar Pipeline Resolution Test")
+    session.add(selected_party)
+    session.flush()
+    evidence = CitedStatementEvidence(
+        document.id, 1, "Equistar will complete relocation."
+    )
+    resolution = EvidenceBoundPartyResolution(
+        mode="guided_evidence_bound",
+        project_id=project.id,
+        stated_party="Equistar",
+        stated_external_org_id=selected_party.id,
+        principal="local:statement-coordinator",
+        evidence=(evidence,),
+    )
+    mismatches = (
+        replace(resolution, project_id=project.id + 1000),
+        replace(resolution, stated_party="Different Utility"),
+        replace(resolution, stated_external_org_id=party.id),
+        replace(resolution, principal="local:different-coordinator"),
+        replace(
+            resolution,
+            evidence=(CitedStatementEvidence(document.id, 1, "January 2025"),),
+        ),
+    )
+
+    for mismatch in mismatches:
+        with pytest.raises(
+            StatementRefusal,
+            match="guided party resolution does not match",
+        ):
+            record_external_party_statement(
+                session,
+                project_id=project.id,
+                affected_external_org_id=selected_party.id,
+                stated_party="Equistar",
+                stated_external_org_id=selected_party.id,
+                source_kind="cited",
+                event_date=None,
+                description="Equistar will complete relocation.",
+                new_timing=StatementTiming.month("January 2025", 2025, 1),
+                scope=StatementScope.unknown(),
+                created_by="local:statement-coordinator",
+                evidence=evidence,
+                party_resolution=mismatch,
             )
 
     assert session.scalars(select(DependencyEvent)).all() == []
