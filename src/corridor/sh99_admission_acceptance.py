@@ -286,9 +286,15 @@ def _database_url(admin_url: str, database_name: str) -> str:
     )
 
 
-def _dump_source_database(source_database: dict[str, str], dump_path: Path) -> None:
+def _dump_source_database(
+    source_database: dict[str, str],
+    dump_path: Path,
+    *,
+    compose_root: Path | None = None,
+) -> None:
     """Capture PostgreSQL 16 data inside the local Compose service, read only."""
 
+    runtime_compose_root = Path(compose_root).resolve() if compose_root else REPO_ROOT
     with dump_path.open("wb") as output:
         completed = subprocess.run(
             [
@@ -308,7 +314,7 @@ def _dump_source_database(source_database: dict[str, str], dump_path: Path) -> N
                 "--dbname",
                 source_database["database"],
             ],
-            cwd=REPO_ROOT,
+            cwd=runtime_compose_root,
             stdout=output,
             stderr=subprocess.PIPE,
             text=False,
@@ -323,10 +329,15 @@ def _dump_source_database(source_database: dict[str, str], dump_path: Path) -> N
 
 
 def _restore_source_database(
-    source_database: dict[str, str], dump_path: Path, database_name: str
+    source_database: dict[str, str],
+    dump_path: Path,
+    database_name: str,
+    *,
+    compose_root: Path | None = None,
 ) -> None:
     """Restore the captured data only into an already-migrated disposable clone."""
 
+    runtime_compose_root = Path(compose_root).resolve() if compose_root else REPO_ROOT
     with dump_path.open("rb") as source:
         completed = subprocess.run(
             [
@@ -346,7 +357,7 @@ def _restore_source_database(
                 "--dbname",
                 database_name,
             ],
-            cwd=REPO_ROOT,
+            cwd=runtime_compose_root,
             stdin=source,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

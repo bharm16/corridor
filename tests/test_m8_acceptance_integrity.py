@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import sessionmaker
 
 import corridor.m8_acceptance_database as acceptance_database
 from corridor.config import settings
@@ -87,6 +88,93 @@ def test_migration_head_is_read_from_the_disposable_database(monkeypatch):
         assert not _database_exists(database_name)
     finally:
         _drop_database_if_present(database_name)
+
+
+def test_guarded_upgrade_moves_only_the_named_disposable_database(monkeypatch):
+    prefix = "corridor_sh99_coordinator_rehearsal_"
+    provisioned = acceptance_database.ProvisionedDatabase(
+        name=f"{prefix}unit",
+        session_factory=sessionmaker(),
+        postgres_version="16.9",
+        migration_head="e255a7c4d9e2",
+    )
+    heads = iter(("e255a7c4d9e2", "f255b7c4d9e3"))
+    seen = []
+
+    monkeypatch.setattr(
+        acceptance_database,
+        "read_migration_head",
+        lambda database_url, **_kwargs: (seen.append(("read", database_url)), next(heads))[1],
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "_apply_schema_migrations",
+        lambda database_url, **kwargs: seen.append(
+            ("upgrade", database_url.render_as_string(hide_password=False), kwargs)
+        ),
+    )
+
+    receipt = acceptance_database.upgrade_provisioned_postgres(
+        provisioned,
+        admin_url="postgresql+psycopg://corridor:corridor@localhost:5433/corridor",
+        repo_root=REPO_ROOT,
+        error_cls=AcceptanceError,
+        database_prefix=prefix,
+        expected_current_revision="e255a7c4d9e2",
+        target_revision="f255b7c4d9e3",
+    )
+
+    assert receipt == acceptance_database.DatabaseUpgradeReceipt(
+        database_name=f"{prefix}unit",
+        from_revision="e255a7c4d9e2",
+        to_revision="f255b7c4d9e3",
+        verified_revision="f255b7c4d9e3",
+    )
+    assert all(make_url(item[1]).database == f"{prefix}unit" for item in seen)
+    assert seen[1][0] == "upgrade"
+    assert seen[1][2]["revision"] == "f255b7c4d9e3"
+
+
+def test_guarded_upgrade_rejects_a_database_outside_the_disposable_prefix(monkeypatch):
+    provisioned = acceptance_database.ProvisionedDatabase(
+        name="corridor",
+        session_factory=sessionmaker(),
+        postgres_version="16.9",
+        migration_head="e255a7c4d9e2",
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "_apply_schema_migrations",
+        lambda *_args, **_kwargs: pytest.fail("shared database migration was attempted"),
+    )
+
+    with pytest.raises(AcceptanceError, match="outside the disposable namespace"):
+        acceptance_database.upgrade_provisioned_postgres(
+            provisioned,
+            admin_url=settings.database_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+            database_prefix="corridor_sh99_coordinator_rehearsal_",
+            expected_current_revision="e255a7c4d9e2",
+            target_revision="f255b7c4d9e3",
+        )
+
+
+def test_read_migration_head_rejects_multiple_current_revisions(monkeypatch):
+    monkeypatch.setattr(
+        acceptance_database.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type(
+            "Completed", (), {"returncode": 0, "stdout": "aaa111 (head)\nbbb222 (head)\n", "stderr": ""}
+        )(),
+    )
+
+    with pytest.raises(AcceptanceError, match="exactly one Alembic revision"):
+        acceptance_database.read_migration_head(
+            settings.database_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+        )
 
 
 def test_bundle_verifier_rejects_unmanifested_nested_content(tmp_path):

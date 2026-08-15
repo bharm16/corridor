@@ -16,8 +16,10 @@ from corridor.sh99_admission_acceptance import (
     CorruptSH99AdmissionBundle,
     SH99AdmissionAcceptanceConfig,
     _canonical_json,
+    _dump_source_database,
     _json_sha256,
     _read_project_state,
+    _restore_source_database,
     _sha256,
     run_sh99_admission_acceptance,
     verify_sh99_admission_bundle,
@@ -289,6 +291,60 @@ def test_replay_refuses_a_shared_database_at_a_different_migration_head(monkeypa
             _config(tmp_path, expected_clean_git_revision="a" * 40)
         )
     assert not (tmp_path / "bundle").exists()
+
+
+def test_dump_source_database_uses_the_explicit_runtime_compose_root(
+    monkeypatch, tmp_path
+):
+    dump_path = tmp_path / "source.dump"
+    seen: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        seen["cwd"] = kwargs["cwd"]
+        seen["argv"] = kwargs["args"][0] if "args" in kwargs else args[0]
+        kwargs["stdout"].write(b"dump-bytes")
+        return subprocess.CompletedProcess(
+            seen["argv"], 0, stdout=b"", stderr=b""
+        )
+
+    monkeypatch.setattr("corridor.sh99_admission_acceptance.subprocess.run", fake_run)
+
+    _dump_source_database(
+        {"database": "corridor", "username": "corridor"},
+        dump_path,
+        compose_root=tmp_path,
+    )
+
+    assert seen["cwd"] == tmp_path.resolve()
+    assert dump_path.read_bytes() == b"dump-bytes"
+
+
+def test_restore_source_database_uses_the_explicit_runtime_compose_root(
+    monkeypatch, tmp_path
+):
+    dump_path = tmp_path / "source.dump"
+    dump_path.write_bytes(b"dump-bytes")
+    seen: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        seen["cwd"] = kwargs["cwd"]
+        seen["argv"] = kwargs["args"][0] if "args" in kwargs else args[0]
+        seen["stdin_bytes"] = kwargs["stdin"].read()
+        return subprocess.CompletedProcess(
+            seen["argv"], 0, stdout=b"", stderr=b""
+        )
+
+    monkeypatch.setattr("corridor.sh99_admission_acceptance.subprocess.run", fake_run)
+
+    _restore_source_database(
+        {"database": "corridor", "username": "corridor"},
+        dump_path,
+        "corridor_clone",
+        compose_root=tmp_path,
+    )
+
+    assert seen["cwd"] == tmp_path.resolve()
+    assert seen["stdin_bytes"] == b"dump-bytes"
 
 
 def test_public_verifier_rejects_a_tampered_real_sh99_receipt(tmp_path):

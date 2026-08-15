@@ -48,6 +48,10 @@ def test_replay_pins_the_prior_admission_receipt_and_shared_operations_time(
             "postgresql+psycopg://corridor:corridor@localhost:5433/corridor",
             "--expected-clean-git-revision",
             "33" * 13 + "3",
+            "--expected-source-migration-head",
+            "e255a7c4d9e2",
+            "--expected-target-migration-head",
+            "f255b7c4d9e3",
             "--shared-admission-receipt-path",
             str(admission_bundle / "validation-passed.json"),
             "--expected-shared-admission-receipt-sha256",
@@ -63,6 +67,8 @@ def test_replay_pins_the_prior_admission_receipt_and_shared_operations_time(
 
     [config] = seen
     assert config.shared_admission_receipt_path == admission_bundle / "validation-passed.json"
+    assert config.expected_source_migration_head == "e255a7c4d9e2"
+    assert config.expected_target_migration_head == "f255b7c4d9e3"
     assert config.expected_shared_admission_receipt_sha256 == "44" * 32
     assert config.shared_backfill_elapsed_seconds == 291.0
     assert config.approved_shared_state_receipt == "https://example.test/receipt"

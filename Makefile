@@ -129,9 +129,9 @@ sh99-admission-acceptance:
 
 # Run the bounded coordinator exercise only on a disposable clone. It verifies the
 # prior Admission bundle first, separates shared operations/backfill time from the
-# timed coordinator flow, and records assistance or failure rather than calling it
-# a customer-validation pass:
-#   make sh99-coordinator-rehearsal ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --shared-admission-receipt-path=<validation-passed.json> --expected-shared-admission-receipt-sha256=<sha> --approved-shared-state-receipt=<immutable-url> --shared-backfill-elapsed-seconds=291 --output-dir=<new-dir>"
+# timed coordinator flow, upgrades only the clone between explicit migration pins,
+# and records assistance or failure honestly:
+#   make sh99-coordinator-rehearsal ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-source-migration-head=e255a7c4d9e2 --expected-target-migration-head=f255b7c4d9e3 --shared-admission-receipt-path=<validation-passed.json> --expected-shared-admission-receipt-sha256=<sha> --approved-shared-state-receipt=<immutable-url> --shared-backfill-elapsed-seconds=291 --output-dir=<new-dir>"
 #   make sh99-coordinator-rehearsal ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
 sh99-coordinator-rehearsal:
 	uv run python -m corridor.sh99_coordinator_rehearsal_cli $(ARGS)
