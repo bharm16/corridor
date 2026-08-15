@@ -289,6 +289,9 @@ def test_command_records_the_7296_shape_with_additional_verified_party_context(
     assert result.receipt.internal_owner_decision_id == result.internal_owner_decision.id
     assert result.receipt.next_action_decision_id == result.next_action_decision.id
     assert result.receipt.milestone_impact_decision_id == result.milestone_impact_decision.id
+    assert "party_resolution" not in result.receipt.accepted_facts_json
+    coordination_audit = session.get(AuditLog, result.receipt.audit_log_id)
+    assert "party_resolution" not in coordination_audit.after_json
     assert session.scalar(
         select(func.count()).select_from(DependencyEventScope).where(
             DependencyEventScope.event_id == result.event.id
@@ -892,7 +895,11 @@ def test_fact_correction_can_bind_new_source_words_to_the_same_selected_party(
         project,
         document,
         quote=original_quote,
-        fields={"event_type": "commitment", "description": original_quote},
+        fields={
+            "event_type": "commitment",
+            "description": original_quote,
+            "external_org": "Kinder Morgan",
+        },
     )
     result = coordinate_statement(
         session,
@@ -1699,6 +1706,79 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
         undo_statement_coordination(session, receipt.id, principal=RECORDER)
         assert candidate.state == "pending"
         assert canonical_party.aliases == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_guided_save_refuses_partial_party_words_as_a_statement_resolution(
+    session, project, roster_entry
+):
+    canonical_party = ExternalOrg(name="Kinder Morgan Tejas Pipeline")
+    session.add(canonical_party)
+    session.flush()
+    party_quote = "Kinder Morgan Management Meeting Highlights"
+    statement_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(
+        session,
+        project,
+        "http-partial-party-resolution.xlsx",
+        f"{party_quote}\n{statement_quote}",
+    )
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == 1,
+        )
+    )
+    page.text_source = "cells"
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=statement_quote,
+        fields={
+            "event_type": "commitment",
+            "description": statement_quote,
+            "external_org": "Kinder Morgan",
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/coordinate",
+                data={
+                    "affected_external_org_id": str(canonical_party.id),
+                    "stated_party": "Morgan",
+                    "stated_external_org_id": str(canonical_party.id),
+                    "description": statement_quote,
+                    "new_timing_text": "June 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-06-01",
+                    "new_timing_end_date": "2026-06-01",
+                    "supporting_page_index": "0",
+                    "supporting_quote": party_quote,
+                    "scope_mode": "unknown",
+                    "internal_owner_roster_entry_id": str(roster_entry.id),
+                    "next_action": "Confirm the completion plan",
+                    "action_due_date": "2026-02-01",
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 400
+        assert "exact source party wording" in response.text
+        assert candidate.state == "pending"
+        assert canonical_party.aliases == []
+        assert session.scalars(
+            select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+        ).all() == []
+        assert session.scalars(
+            select(StatementCoordinationReceipt).where(
+                StatementCoordinationReceipt.candidate_id == candidate.id
+            )
+        ).all() == []
     finally:
         app.dependency_overrides.clear()
 

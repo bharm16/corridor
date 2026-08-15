@@ -287,6 +287,76 @@ def test_shared_writer_refuses_a_guided_resolution_bound_to_different_facts(
     assert session.scalars(select(DependencyEvent)).all() == []
 
 
+def test_shared_writer_refuses_cross_project_evidence_in_a_guided_resolution(
+    session, statement_record
+):
+    from corridor.external_statements import (
+        CitedStatementEvidence,
+        EvidenceBoundPartyResolution,
+        StatementRefusal,
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    project, _, _, _ = statement_record
+    selected_party = ExternalOrg(name="Equistar Pipeline Cross Project Test")
+    other_project = Project(
+        slug=f"other-statement-project-{project.id}",
+        name="Other statement project",
+        is_synthetic=True,
+    )
+    session.add_all([selected_party, other_project])
+    session.flush()
+    other_document = Document(
+        project_id=other_project.id,
+        sha256=hashlib.sha256(f"other:{project.id}".encode()).hexdigest(),
+        filename="other-project-minutes.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(other_document)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=other_document.id,
+            page_no=1,
+            text="Equistar will complete relocation.",
+        )
+    )
+    session.flush()
+    evidence = CitedStatementEvidence(
+        other_document.id, 1, "Equistar will complete relocation."
+    )
+    resolution = EvidenceBoundPartyResolution(
+        mode="guided_evidence_bound",
+        project_id=project.id,
+        stated_party="Equistar",
+        stated_external_org_id=selected_party.id,
+        principal="local:statement-coordinator",
+        evidence=(evidence,),
+    )
+
+    with pytest.raises(StatementRefusal, match="belongs to another project"):
+        record_external_party_statement(
+            session,
+            project_id=project.id,
+            affected_external_org_id=selected_party.id,
+            stated_party="Equistar",
+            stated_external_org_id=selected_party.id,
+            source_kind="cited",
+            event_date=None,
+            description="Equistar will complete relocation.",
+            new_timing=StatementTiming.month("January 2025", 2025, 1),
+            scope=StatementScope.unknown(),
+            created_by="local:statement-coordinator",
+            evidence=evidence,
+            party_resolution=resolution,
+        )
+
+    assert session.scalars(select(DependencyEvent)).all() == []
+
+
 def test_shared_writer_requires_an_exact_quote_on_cells_text(
     session, statement_record
 ):
