@@ -1203,7 +1203,7 @@ def render(report: Report) -> str:
     """Rendering enforces the rule; it is not a convention to remember."""
     assert_no_bare_cells(report)
 
-    def cell_html(cell: Cell) -> str:
+    def cell_html(cell: Cell, *, include_label: bool = False) -> str:
         p = cell.provenance
         if isinstance(p, Assertion):
             kind = "assertion"
@@ -1214,9 +1214,11 @@ def render(report: Report) -> str:
         else:
             kind = "derivation"
         title = html.escape(p.quote if isinstance(p, Assertion) else p.drill)
+        label_attribute = (
+            f' data-label="{html.escape(cell.label)}"' if include_label else ""
+        )
         return (
-            f'<td class="{kind}" data-label="{html.escape(cell.label)}">'
-            f'{html.escape(cell.value)}'
+            f'<td class="{kind}"{label_attribute}>{html.escape(cell.value)}'
             f'<span class="marker" title="{title}">{html.escape(p.marker)}</span></td>'
         )
 
@@ -1228,14 +1230,16 @@ def render(report: Report) -> str:
                 f"<h2>{html.escape(section.title)}</h2>{note}"
                 f'<p class="empty">{html.escape(section.empty_message)}</p>'
             )
+        is_party_statements = section.title == "External Party commitments"
         body = "".join(
-            "<tr>" + "".join(cell_html(c) for c in row) + "</tr>" for row in section.rows
+            "<tr>"
+            + "".join(
+                cell_html(c, include_label=is_party_statements) for c in row
+            )
+            + "</tr>"
+            for row in section.rows
         )
-        table_class = (
-            ' class="party-statements"'
-            if section.title == "External Party commitments"
-            else ""
-        )
+        table_class = ' class="party-statements"' if is_party_statements else ""
         return (
             f"<h2>{html.escape(section.title)}</h2>{note}"
             f"<table{table_class}><thead><tr>{head}</tr></thead>"
