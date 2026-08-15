@@ -671,7 +671,9 @@ def test_document_only_reports_keep_their_own_cited_history(
     )
 
     assert document_only.diff.is_first_report
-    assert "2026-08-15" not in render(document_only)
+    rendered = render(document_only)
+    assert '<td class="assertion">2026-06-15' in rendered
+    assert '<td class="verbal">2026-08-15' not in rendered
     record_run(
         session,
         project.id,
