@@ -1362,6 +1362,29 @@ def test_report_publishes_open_unknown_scope_party_commitments_with_their_plans(
         entry["current_event_id"]
         for entry in captured["external_party_commitments"].values()
     } == {january.id, due_soon.id, changed.id}
+    from corridor.export import to_pdf_bytes
+    import pymupdf
+
+    pdf_bytes = to_pdf_bytes(render(report))
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
+        pdf_text = "\n".join(page.get_text() for page in pdf)
+    normalized_pdf_text = " ".join(pdf_text.split())
+    for expected in (
+        "Statement type",
+        "Committed Date Change · later",
+        "Commitment Scope",
+        "Scope not yet known",
+        "Open / past-due status",
+        "Internal Owner",
+        "Dana Fields",
+        "Next Action",
+        "Confirm the revised delivery plan",
+        "Action Due",
+        "2025-02-15",
+        "Milestone Impact",
+        "Not yet known",
+    ):
+        assert expected in normalized_pdf_text
     assert_no_bare_cells(report)
 
 
