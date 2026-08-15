@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from corridor import audit
 from corridor.external_statements import (
     CitedStatementEvidence,
+    EvidenceBoundPartyResolution,
     StatementRefusal,
     StatementScope,
     StatementTiming,
@@ -40,6 +41,7 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventScope,
     DependencyEventScopeDecision,
+    ExternalOrg,
     ProjectRosterEntry,
     ReportRun,
     StatementCoordinationReceipt,
@@ -207,6 +209,9 @@ def coordinate_statement(
             )
             _require_evidence_support(draft, all_evidence)
             _require_plan_shape(draft)
+            party_resolution = _guided_party_resolution(
+                session, candidate.project_id, draft, all_evidence, recorder
+            )
 
             event = record_external_party_statement(
                 session,
@@ -224,6 +229,7 @@ def coordinate_statement(
                 evidence=all_evidence[0],
                 supporting_evidence=all_evidence[1:],
                 commitment_lineage_id=draft.expected.commitment_lineage_id,
+                party_resolution=party_resolution,
             )
             scope_decision = _current_scope_decision(session, event.id)
             if scope_decision is None:
@@ -279,6 +285,7 @@ def coordinate_statement(
                         if milestone_impact_decision is not None
                         else None
                     ),
+                    **_party_resolution_audit(party_resolution),
                 },
             )
             receipt = StatementCoordinationReceipt(
@@ -298,7 +305,12 @@ def coordinate_statement(
                 audit_log_id=audit_entry.id,
                 expected_predecessors_json=draft.expected.as_json(),
                 accepted_facts_json=_accepted_facts(
-                    draft, event, scope_decision.id, roster_entry.id, all_evidence
+                    draft,
+                    event,
+                    scope_decision.id,
+                    roster_entry.id,
+                    all_evidence,
+                    party_resolution,
                 ),
                 candidate_payload_sha256=_payload_sha256(candidate),
                 recorded_by=recorder.subject,
@@ -703,6 +715,9 @@ def correct_statement_facts(
             )
             evidence = _deduplicate_evidence(draft.evidence)
             _require_fact_evidence_support(draft, evidence)
+            party_resolution = _guided_party_resolution(
+                session, predecessor.project_id, draft, evidence, recorder
+            )
             successor = record_external_party_statement(
                 session,
                 project_id=predecessor.project_id,
@@ -720,6 +735,7 @@ def correct_statement_facts(
                 supporting_evidence=evidence[1:],
                 commitment_lineage_id=predecessor.commitment_lineage_id,
                 allow_party_correction=True,
+                party_resolution=party_resolution,
                 _scope_snapshot_dependency_ids=scope_ids,
             )
             audit.record(
@@ -729,7 +745,10 @@ def correct_statement_facts(
                 entity_type=audit.COMMITMENT_LINEAGE,
                 entity_id=predecessor.commitment_lineage_id,
                 before={"statement_event_id": predecessor.id},
-                after={"statement_event_id": successor.id},
+                after={
+                    "statement_event_id": successor.id,
+                    **_party_resolution_audit(party_resolution),
+                },
             )
     except StaleStatementCoordination:
         raise
@@ -1068,9 +1087,10 @@ def _require_fact_evidence_support(
     evidence: tuple[CitedStatementEvidence, ...],
 ) -> None:
     """Make each corrected attribution and timing fact point back to a quote."""
-    quotes = tuple(normalize(item.quote) for item in evidence)
-    party = normalize(draft.stated_party)
-    if not party or not any(party in quote for quote in quotes):
+    raw_quotes = tuple(item.quote for item in evidence)
+    party = draft.stated_party.strip()
+    quotes = tuple(normalize(quote) for quote in raw_quotes)
+    if not party or not any(party in quote for quote in raw_quotes):
         raise StatementCoordinationRefusal(
             "verified Evidence must name the stated External Party"
         )
@@ -1101,8 +1121,9 @@ def _accepted_facts(
     scope_decision_id: int,
     roster_entry_id: int,
     evidence: tuple[CitedStatementEvidence, ...],
+    party_resolution: EvidenceBoundPartyResolution | None,
 ) -> dict:
-    return {
+    facts = {
         "affected_external_org_id": draft.affected_external_org_id,
         "stated_party": draft.stated_party.strip(),
         "stated_external_org_id": draft.stated_external_org_id,
@@ -1135,6 +1156,58 @@ def _accepted_facts(
             for item in evidence
         ],
     }
+    if party_resolution is not None:
+        facts["party_resolution"] = party_resolution.as_json()
+    return facts
+
+
+def _guided_party_resolution(
+    session: Session,
+    project_id: int,
+    draft: StatementCoordinationDraft | StatementFactCorrectionDraft,
+    evidence: tuple[CitedStatementEvidence, ...],
+    principal: HumanPrincipal,
+) -> EvidenceBoundPartyResolution | None:
+    selected_party = session.get(ExternalOrg, draft.stated_external_org_id)
+    if selected_party is None:
+        raise StatementCoordinationRefusal("the selected External Party no longer exists")
+    stated_party = draft.stated_party.strip()
+    registered_spellings = {
+        normalize(value)
+        for value in (selected_party.name, *(selected_party.aliases or []))
+        if value
+    }
+    if normalize(stated_party) in registered_spellings:
+        return None
+
+    candidate = session.get(Candidate, draft.candidate_id)
+    candidate_fields = (
+        (candidate.payload_json or {}).get("fields", {})
+        if candidate is not None and candidate.project_id == project_id
+        else {}
+    )
+    source_party = candidate_fields.get("external_org")
+    if not isinstance(source_party, str) or source_party.strip() != stated_party:
+        raise StatementCoordinationRefusal(
+            "guided resolution requires the Candidate's exact source party wording"
+        )
+    return EvidenceBoundPartyResolution(
+        mode="guided_evidence_bound",
+        project_id=project_id,
+        candidate_id=draft.candidate_id,
+        stated_party=stated_party,
+        stated_external_org_id=draft.stated_external_org_id,
+        principal=principal.subject,
+        evidence=evidence,
+    )
+
+
+def _party_resolution_audit(
+    party_resolution: EvidenceBoundPartyResolution | None,
+) -> dict[str, dict]:
+    if party_resolution is None:
+        return {}
+    return {"party_resolution": party_resolution.as_json()}
 
 
 def _timing_json(timing: StatementTiming | None) -> dict | None:

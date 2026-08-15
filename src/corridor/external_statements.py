@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from corridor.identity import is_project_side_party, normalize_party
 from corridor.models import (
+    Candidate,
     CommitmentLineage,
     Dependency,
     DependencyEvent,
@@ -39,7 +40,7 @@ from corridor.statement_lifecycle import (
     current_scope_decision_filter as current_lifecycle_scope_decision_filter,
     current_statement_event_filter,
 )
-from corridor.verify import quote_appears_on, threshold_for
+from corridor.verify import normalize, quote_appears_on, threshold_for
 
 
 class StatementRefusal(ValueError):
@@ -107,6 +108,41 @@ class CitedStatementEvidence:
     quote: str
 
 
+@dataclass(frozen=True)
+class EvidenceBoundPartyResolution:
+    """One human-guided binding of source wording to a registered party.
+
+    This is statement-local provenance, not a registry alias.  The shared
+    writer revalidates every field before it permits otherwise-unregistered
+    source wording to name the selected External Party.
+    """
+
+    mode: str
+    project_id: int
+    candidate_id: int
+    stated_party: str
+    stated_external_org_id: int
+    principal: str
+    evidence: tuple[CitedStatementEvidence, ...]
+
+    def as_json(self) -> dict:
+        return {
+            "mode": self.mode,
+            "candidate_id": self.candidate_id,
+            "stated_party": self.stated_party.strip(),
+            "stated_external_org_id": self.stated_external_org_id,
+            "principal": self.principal,
+            "evidence": [
+                {
+                    "document_id": item.document_id,
+                    "page_no": item.page_no,
+                    "quote": item.quote.strip(),
+                }
+                for item in self.evidence
+            ],
+        }
+
+
 def record_external_party_statement(
     session: Session,
     *,
@@ -125,6 +161,7 @@ def record_external_party_statement(
     supporting_evidence: tuple[CitedStatementEvidence, ...] = (),
     commitment_lineage_id: int | None = None,
     allow_party_correction: bool = False,
+    party_resolution: EvidenceBoundPartyResolution | None = None,
     _scope_snapshot_dependency_ids: tuple[int, ...] | None = None,
 ) -> DependencyEvent:
     """Append one attributable External Party Commitment or Date Change.
@@ -146,6 +183,8 @@ def record_external_party_statement(
         previous_timing=previous_timing,
         evidence=evidence,
         supporting_evidence=supporting_evidence,
+        party_resolution=party_resolution,
+        resolution_principal=created_by,
     )
     lock_project(session, project.id)
 
@@ -441,6 +480,8 @@ def validate_external_party_statement_draft(
     previous_timing: StatementTiming | None = None,
     evidence: CitedStatementEvidence | None = None,
     supporting_evidence: tuple[CitedStatementEvidence, ...] = (),
+    party_resolution: EvidenceBoundPartyResolution | None = None,
+    resolution_principal: str | None = None,
 ) -> Project:
     """Validate the statement facts shared by policy, preview, and writer.
 
@@ -467,11 +508,19 @@ def validate_external_party_statement_draft(
     stated = session.get(ExternalOrg, stated_external_org_id)
     if stated is None:
         raise StatementRefusal("the affected and stated External Parties must exist")
-    if normalize_party(party) not in {
+    registered_spellings = {
         normalize_party(name) for name in (stated.name, *(stated.aliases or [])) if name
-    }:
-        raise StatementRefusal(
-            "the stated-party wording does not resolve to the stated External Party"
+    }
+    if normalize_party(party) not in registered_spellings:
+        _require_evidence_bound_party_resolution(
+            session,
+            party_resolution,
+            project_id=project.id,
+            stated_party=party,
+            stated_external_org_id=stated.id,
+            source_kind=source_kind,
+            evidence=_all_cited_evidence(evidence, supporting_evidence),
+            resolution_principal=resolution_principal,
         )
     if is_project_side_party(project, party):
         raise StatementRefusal(
@@ -491,6 +540,47 @@ def validate_external_party_statement_draft(
     for cited_evidence in _all_cited_evidence(evidence, supporting_evidence):
         validate_cited_statement_evidence(session, cited_evidence, project.id)
     return project
+
+
+def _require_evidence_bound_party_resolution(
+    session: Session,
+    resolution: EvidenceBoundPartyResolution | None,
+    *,
+    project_id: int,
+    stated_party: str,
+    stated_external_org_id: int,
+    source_kind: str,
+    evidence: tuple[CitedStatementEvidence, ...],
+    resolution_principal: str | None,
+) -> None:
+    if resolution is None:
+        raise StatementRefusal(
+            "the stated-party wording does not resolve to the stated External Party"
+        )
+    candidate = session.get(Candidate, resolution.candidate_id)
+    source_party = (
+        ((candidate.payload_json or {}).get("fields") or {}).get("external_org")
+        if candidate is not None and candidate.project_id == project_id
+        else None
+    )
+    expected = (
+        source_kind == "cited"
+        and resolution.mode == "guided_evidence_bound"
+        and resolution.project_id == project_id
+        and resolution.stated_party.strip() == stated_party.strip()
+        and resolution.stated_external_org_id == stated_external_org_id
+        and resolution.principal == str(resolution_principal or "").strip()
+        and resolution.evidence == evidence
+        and isinstance(source_party, str)
+        and source_party.strip() == stated_party.strip()
+    )
+    party_words = stated_party.strip()
+    if not expected or not party_words or not any(
+        party_words in item.quote for item in evidence
+    ):
+        raise StatementRefusal(
+            "the guided party resolution does not match this statement and its Evidence"
+        )
 
 
 def _all_cited_evidence(

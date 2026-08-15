@@ -119,6 +119,7 @@
         </div>
         <label for="stated-party-words">Party wording in the Evidence</label>
         <input id="stated-party-words" name="stated_party" value="" required>
+        <p class="muted">Choosing a registered External Party resolves this Evidence wording for this statement. It does not register a name for future Documents.</p>
         <label for="event-date">Statement date, if the Evidence says one</label>
         <input id="event-date" name="event_date" type="date" value="{{ candidate_fields.get('event_date', '') }}">
         <label for="description">What the External Party said</label>
