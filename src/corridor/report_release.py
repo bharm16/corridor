@@ -9,6 +9,7 @@ but none may substitute a Report URL, output path, or regenerating callback.
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -16,6 +17,7 @@ from hashlib import sha256
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
+import pymupdf
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,6 +40,19 @@ if TYPE_CHECKING:
 _UNRECORDED_ACTOR_DISPLAY = "Project person (display name not recorded)"
 _LEGACY_ACTOR_DISPLAY = (
     "Project person (display name not retained in this legacy release)"
+)
+_PARTY_STATEMENT_REPORT_FIELDS = (
+    ("external_party", "External Party"),
+    ("supported_statement", "Supported statement"),
+    ("timing", "Timing"),
+    ("timing_precision", "Timing precision"),
+    ("statement_type", "Statement type"),
+    ("commitment_scope", "Commitment Scope"),
+    ("open_status", "Open / past-due status"),
+    ("internal_owner", "Internal Owner"),
+    ("next_action", "Next Action"),
+    ("action_due", "Action Due"),
+    ("milestone_impact", "Milestone Impact"),
 )
 
 
@@ -157,6 +172,8 @@ def prepare_external_report(
     report = rendered.report
     evaluation = report.evaluation
     assert evaluation is not None
+    record_context = _record_context(report)
+    _validate_party_statement_pdf_context(rendered.pdf_bytes, record_context)
     artifact = ExternalReportArtifact(
         project_id=project_id,
         artifact_name=rendered.artifact_name,
@@ -169,7 +186,7 @@ def prepare_external_report(
         provenance_mode=(
             "document-only" if report.document_only else "all-supported-sources"
         ),
-        record_context_json=_record_context(report),
+        record_context_json=record_context,
     )
     with session.begin_nested():
         session.add(artifact)
@@ -442,6 +459,9 @@ def _record_context(report: Report) -> dict:
         }
         for dependency_id, statement in sorted(publication.by_dependency.items())
     ]
+    visible_party_statements = tuple(
+        statement for statement in publication.party_statements if not statement.is_closed
+    )
     party_statements = [
         {
             "commitment_lineage_id": statement.current_event.commitment_lineage_id,
@@ -451,11 +471,11 @@ def _record_context(report: Report) -> dict:
             ),
             "scope_decision_id": statement.scope_decision.id,
         }
-        for statement in publication.party_statements
+        for statement in visible_party_statements
     ]
     report_fields = _party_statement_report_fields(report)
     context = {"dependencies": dependencies, "party_statements": party_statements}
-    if publication.party_statements:
+    if visible_party_statements:
         context["party_statement_display"] = [
             {
                 "current_statement_event_id": statement.current_event.id,
@@ -468,13 +488,13 @@ def _record_context(report: Report) -> dict:
                     else {}
                 ),
             }
-            for statement in publication.party_statements
+            for statement in visible_party_statements
         ]
     return context
 
 
 def _party_statement_report_fields(report: Report) -> dict[int, dict[str, str]]:
-    """Copy the exact visible statement row from the frozen Report artifact."""
+    """Copy visible statement rows under stable release-context field names."""
     publication = report.statement_publication
     assert publication is not None
     visible_statements = tuple(
@@ -493,10 +513,59 @@ def _party_statement_report_fields(report: Report) -> dict[int, dict[str, str]]:
         raise ReleaseRefusal(
             "the frozen Report statement identities do not match its visible rows"
         )
-    return {
-        statement.current_event.id: {cell.label: cell.value for cell in row}
-        for statement, row in zip(visible_statements, rows, strict=True)
-    }
+    expected_labels = {label for _, label in _PARTY_STATEMENT_REPORT_FIELDS}
+    result = {}
+    for statement, row in zip(visible_statements, rows, strict=True):
+        values_by_label = {cell.label: cell.value for cell in row}
+        if len(values_by_label) != len(row) or set(values_by_label) != expected_labels:
+            raise ReleaseRefusal(
+                "the frozen Report statement row does not match the release field contract"
+            )
+        result[statement.current_event.id] = {
+            field_id: values_by_label[label]
+            for field_id, label in _PARTY_STATEMENT_REPORT_FIELDS
+        }
+    return result
+
+
+def _validate_party_statement_pdf_context(pdf_bytes: bytes, context: dict) -> None:
+    """Prove retained statement fields are visible in the exact prepared bytes."""
+    displays = tuple(context.get("party_statement_display", ()))
+    if not displays:
+        return
+    try:
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
+            visible_text = _normalized_visible_text(
+                "\n".join(page.get_text() for page in pdf)
+            )
+    except Exception as exc:
+        raise ReleaseRefusal(
+            "External Report PDF cannot be read to verify its frozen statement fields"
+        ) from exc
+
+    field_labels = dict(_PARTY_STATEMENT_REPORT_FIELDS)
+    expected_pairs: Counter[str] = Counter()
+    for display in displays:
+        fields = display.get("report_fields")
+        if not isinstance(fields, dict) or set(fields) != set(field_labels):
+            raise ReleaseRefusal(
+                "frozen External Party statement fields are incomplete"
+            )
+        for field_id, value in fields.items():
+            expected_pairs[
+                _normalized_visible_text(f"{field_labels[field_id]} {value}")
+            ] += 1
+    if any(
+        visible_text.count(expected) < count
+        for expected, count in expected_pairs.items()
+    ):
+        raise ReleaseRefusal(
+            "PDF does not contain its frozen External Party statement fields"
+        )
+
+
+def _normalized_visible_text(value: object) -> str:
+    return " ".join(str(value).split()).casefold()
 
 
 def _evaluation_context(report: Report) -> dict:

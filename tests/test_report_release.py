@@ -14,6 +14,7 @@ from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
     StatementTiming,
+    record_external_party_closure,
     record_external_party_statement,
 )
 from corridor.models import (
@@ -96,6 +97,17 @@ def _rendered(session, project, *, today=date(2026, 8, 13), document_only=False)
         artifact_name=f"{project.slug}-{today.isoformat()}.pdf",
         pdf_bytes=PDF_A,
         report=report,
+    )
+
+
+def _rendered_real(
+    session, project, *, today=date(2026, 8, 13), document_only=False
+):
+    return render_external_report_pdf(
+        session,
+        project.id,
+        today=today,
+        document_only=document_only,
     )
 
 
@@ -245,7 +257,7 @@ def test_prepared_report_review_names_unknown_scope_statement_and_frozen_source(
     session, project
 ):
     statement = _record_unknown_scope_statement(session, project)
-    artifact = _prepare(session, project)
+    artifact = _prepare(session, project, rendered=_rendered_real(session, project))
 
     review = review_prepared_external_report(session, project.id, artifact.id)
 
@@ -301,21 +313,21 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(
 
     [display] = artifact.record_context_json["party_statement_display"]
     assert display["report_fields"] == {
-        "External Party": "Release Test Utility",
-        "Supported statement": (
+        "external_party": "Release Test Utility",
+        "supported_statement": (
             "Release Test Utility will provide the cable reels in September 2026."
         ),
-        "Timing": "September 2026",
-        "Timing precision": "month",
-        "Statement type": "Commitment",
-        "Commitment Scope": "Scope not yet known",
-        "Open / past-due status": "Open · not past due",
-        "Internal Owner": "Dana Fields",
-        "Next Action": "Confirm the cable-reel delivery",
-        "Action Due": (
+        "timing": "September 2026",
+        "timing_precision": "month",
+        "statement_type": "Commitment",
+        "commitment_scope": "Scope not yet known",
+        "open_status": "Open · not past due",
+        "internal_owner": "Dana Fields",
+        "next_action": "Confirm the cable-reel delivery",
+        "action_due": (
             "Date not yet known (awaiting external information)"
         ),
-        "Milestone Impact": "Not applicable",
+        "milestone_impact": "Not applicable",
     }
 
     assign_internal_owner(
@@ -329,17 +341,81 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(
         principal=TEST_PRINCIPAL,
     )
 
-    assert display["report_fields"]["Internal Owner"] == "Dana Fields"
-    assert display["report_fields"]["Next Action"] == (
+    assert display["report_fields"]["internal_owner"] == "Dana Fields"
+    assert display["report_fields"]["next_action"] == (
         "Confirm the cable-reel delivery"
     )
+
+
+def test_prepare_refuses_a_pdf_that_omits_frozen_statement_plan_fields(
+    session, project
+):
+    pdf_without_statement = render_external_report_pdf(
+        session, project.id, today=date(2026, 8, 13)
+    )
+    _record_unknown_scope_statement(session, project)
+    report_with_statement = build_report(
+        session, project.id, today=date(2026, 8, 13)
+    )
+    mismatched = RenderedExternalReport(
+        artifact_name=pdf_without_statement.artifact_name,
+        pdf_bytes=pdf_without_statement.pdf_bytes,
+        report=report_with_statement,
+    )
+
+    with pytest.raises(
+        ReleaseRefusal,
+        match="PDF does not contain its frozen External Party statement fields",
+    ):
+        _prepare(session, project, rendered=mismatched)
+
+
+def test_prepared_report_excludes_a_closed_unknown_scope_statement(
+    session, project
+):
+    statement = _record_unknown_scope_statement(session, project)
+    closure_quote = "Release Test Utility confirms the cable reels were delivered."
+    closure_document = Document(
+        project_id=project.id,
+        sha256="d" * 64,
+        filename="cable-reel-closure.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(closure_document)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=closure_document.id,
+            page_no=1,
+            text=closure_quote,
+        )
+    )
+    session.flush()
+    record_external_party_closure(
+        session,
+        project_id=project.id,
+        commitment_lineage_id=statement.commitment_lineage_id,
+        source_kind="cited",
+        event_date=date(2026, 8, 14),
+        description=closure_quote,
+        created_by="local:statement-recorder",
+        evidence=CitedStatementEvidence(closure_document.id, 1, closure_quote),
+    )
+
+    artifact = _prepare(session, project)
+    review = review_prepared_external_report(session, project.id, artifact.id)
+
+    assert artifact.record_context_json["party_statements"] == []
+    assert "party_statement_display" not in artifact.record_context_json
+    assert review.covered_party_statements == ()
 
 
 def test_legacy_prepared_context_keeps_event_wording_without_inventing_a_citation(
     session, project
 ):
     statement = _record_unknown_scope_statement(session, project)
-    prepared = _prepare(session, project)
+    prepared = _prepare(session, project, rendered=_rendered_real(session, project))
     legacy_context = deepcopy(prepared.record_context_json)
     legacy_context.pop("party_statement_display")
     legacy = ExternalReportArtifact(
@@ -404,7 +480,7 @@ def test_new_and_legacy_verbal_source_context_hide_the_recorder_identity(
         )
     )
     session.flush()
-    prepared = _prepare(session, project)
+    prepared = _prepare(session, project, rendered=_rendered_real(session, project))
     legacy_context = deepcopy(prepared.record_context_json)
     legacy_context.pop("party_statement_display")
     legacy = ExternalReportArtifact(
@@ -455,7 +531,7 @@ def test_legacy_document_only_context_does_not_publish_current_event_wording(
     prepared = _prepare(
         session,
         project,
-        rendered=_rendered(session, project, document_only=True),
+        rendered=_rendered_real(session, project, document_only=True),
     )
     [recorded_statement] = prepared.record_context_json["party_statements"]
     assert recorded_statement["current_statement_event_id"] == statement.id
@@ -774,7 +850,7 @@ def test_honestly_adverse_content_does_not_block_release(session, project):
         created_by="local:statement-recorder",
         evidence=CitedStatementEvidence(document.id, 1, quote),
     )
-    rendered = _rendered(session, project)
+    rendered = _rendered_real(session, project)
 
     release = _release(
         session,
@@ -995,7 +1071,7 @@ def test_ordinary_review_and_history_name_party_statements_without_raw_event_ids
     client, session, project
 ):
     statement = _record_unknown_scope_statement(session, project)
-    artifact = _prepare(session, project)
+    artifact = _prepare(session, project, rendered=_rendered_real(session, project))
 
     review = client.get(f"/reports/{project.slug}/prepared/{artifact.id}")
 
