@@ -51,20 +51,27 @@ text layer; February (run 33766) read 707 rows, 3 unverified — the known
 City verification-blocked rows — 28 pages all text layer. Spend across
 both: 413,844 input tokens (113,620 cached) / 12,608 output, on the order
 of cents, consistent with ADR-0024's benchmark. Noted here because
-Extraction Runs store neither tokens nor cost. Declaring them Active is
-the operator's signature and remains open (#172).
+Extraction Runs store neither tokens nor cost. The operator declared both
+Active as `local:bryceharmon` on 2026-08-07: declaration 3422 names the
+December run and declaration 3423 names the February run. The
+[pinned capture replay](https://github.com/bharm16/corridor/issues/172#issuecomment-5220794045)
+found no mechanical divergence. The later
+[read-only closure audit](https://github.com/bharm16/corridor/issues/172#issuecomment-5337119239)
+confirms those declarations and cohort receipt 75: 17 City members over those runs
+and comparison 8071, with content digest
+`abe1661b20dbf09667e68695f7e7cdf31dbc20d39ef8f53d30ce1c1514dd8c62`.
+The human adjudication and follow-up rehearsal remains separate (#165).
 
-**1. A trusted, runnable City cohort.** Register document identities and the RID-sourced
-supersession chain from the live RID index (doc 237 today has no `registry_id`; no live
-supersession edge exists). Make Active Run declaration attributable and append-preserving —
-`declare_active_run` currently records no principal. Extract December and February fresh
-under v3 — `make extract` is project-scoped and would run all five matrices; the rehearsal
-needs document-scoped extraction — and note the spend in this record, because Extraction
-Runs store neither tokens nor cost. Create the Revision Comparison pinned to those two
-exact runs, derive the cohort membership deterministically, persist it as a pinned set,
-and give the queue a bounded-cohort lane; today it has none.
+**1. A trusted, runnable City cohort (delivered).** At decision time, document 237 had
+no `registry_id`, no live supersession edge existed, Active Run declaration recorded no
+principal, extraction was project-scoped, and the queue had no bounded-cohort lane. The
+delivered slice registered the RID-sourced identities and supersession chain, made Active
+Run declaration attributable and append-preserving, added document-scoped extraction,
+and pinned the real December/February comparison and 17-member cohort described above.
+Extraction Runs still store neither tokens nor cost, so the spend remains recorded in this
+rehearsal document.
 
-**2. Work Decisions end to end.** Semantics settled 2026-08-06: **completion** records the
+**2. Work Decisions end to end (delivered).** Semantics settled 2026-08-06: **completion** records the
 project's judgment the action was carried out — still not proof of external fact —
 and **cancellation** withdraws it as no-longer-intended; both append, both leave no current
 Next Action unless a successor is recorded. **Current values** are a projection of the
