@@ -167,7 +167,19 @@ There was never a tradeoff about which projects to *have*; the only real decisio
 
 **TxDOT letting proposals.** Bid proposals carry filled utility tables with real stationing (`Cinco MUD 1 crossing SBFR at STA 2414+50`), railroad DOT crossing numbers, and right-of-way parcel tables. Free, loginless, curl-able. Three cautions from verification: the artifact is **not** reliably numbered `SP 000-225` (the number varies per project — grep the title *"Important Notice to Contractors"* and the phrase *"have not been cleared"*); the **column schema has at least three variants**, including a four-column layout with no stationing; and the base rate is **6.25%**, not the 17% first claimed — budget ~16 downloads at ~7 MB each per usable record set.
 
-**FDOT Utility Work Schedules (Form 710-010-05).** [ftp.fdot.gov](https://ftp.fdot.gov/public/folder/hkswlk59g0qrnsajuh3xxg/permitsandorutilityworkschedu/), organized district → FPID → per-owner PDF, mandated per project so coverage is systematic. Section C carries `Act. No. | Work Activity Description | Dependent Activity | Calendar Days Prior to/During` — a per-owner dependency record with **explicit dependency edges and durations**. See §7.6. Caveats: the folder 403s so filenames must be found via search indexing; the PDFs are scanner output and need OCR, so a first-pass `pdftotext` returning little would wrongly suggest they're blank.
+**FDOT Utility Work Schedules (Form 710-010-05).** FDOT project procurement
+libraries publish filled schedules alongside their project artifacts. The current
+[District One library](https://www.fdot.gov/procurement/marketingD1/default.shtm),
+for example, links a filled
+[City of Sebring schedule](https://fdotwww.blob.core.windows.net/sitefinity/docs/default-source/procuement_marketingd1/documents/fy26-27/ad--27112/452621-1-52-01-city-of-sebring-uws-water.pdf)
+shows the actual schema: plan identity, UAO contacts and signatures, special
+conditions, then `Act. No. | Utility Facility | From/To Station/Offset | Utility Work
+Activity Description | Dependent Activity | TCP Phase | Consecutive Calendar Days
+Prior to/During Construction`. This is a per-owner dependency record with **explicit
+dependency edges and durations**, plus written notice obligations for starting,
+stopping, resuming, and completing work. It is not a calendar forecast: the activity
+rows carry durations relative to construction rather than planned start and finish
+dates. See §7.6.
 
 ### 7.3 Stream — confirmed
 
@@ -183,6 +195,17 @@ There was never a tradeoff about which projects to *have*; the only real decisio
 - [Cabot Water & Wastewater Commission](https://cabotwaterworks.com/documents/1057/Commission_Meeting_Packet_2026-02-26.pdf) — minutes plus a capital project ledger across four named ARDOT projects.
 
 **Transit and program status reporting.**
+
+- **NHHIP 3C-2 Project Development Status and Procurement Process Summaries** — the
+  official [pre-procurement page](https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/nhhip-3c2/pre-procurement.html)
+  now publishes six dated editions from June 30, 2025 through July 21, 2026, plus a
+  February redline. Register the six dated editions in the NHHIP corpus plan as
+  `status_report` / `stream`. They are project-matched and genuinely recurring, but
+  remain a high-level program comparator: the utility section names coordination
+  state, expected UCM/SUE deliverables, owners, and selected program-level relocation
+  dates; it does not provide one current milestone, owner action, or forecast per
+  utility conflict. It therefore supplements rather than replaces a populated
+  utility-owner worklist.
 
 - **HART Honolulu monthly progress reports** — a *Utility Agreements Status Matrix* republished monthly, with variance computed in days (Airport Section Utilities: 228, 217, 219, 228, 216, 372 days late). Verified honestly: only **11 editions carry the matrix** (Mar-Dec 2012 consecutive, plus Nov 2014), not the 23 first claimed; five early editions are scanned images needing OCR.
 - **Purple Line FTA monitoring reports** — 24 monthly editions, a dedicated *Utility and Third Party Agreements* section with per-owner narrative: CSX, WMATA, Verizon, WSSC, Pepco, MARC, Washington Gas.
