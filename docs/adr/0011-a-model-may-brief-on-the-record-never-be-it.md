@@ -24,11 +24,11 @@ Four constraints, each inherited from a boundary this system already enforces:
 
    **Project-scope amendment (#127, 2026-08-19).** A project Briefing floors
    the rule buckets from the Evaluation's shared facet view, each with its
-   count and exact individual Exception refs underneath. Citing the bucket
-   therefore covers every instance in it; an individual instance may still be
-   cited when its detail matters. A one-Dependency Briefing keeps the
-   instance-level floor. This changes the unit of coverage, not the rule:
-   every fired Exception remains in or under the Briefing.
+   count and exact individual Exception refs underneath, so citing a bucket
+   covers every instance while individual instances remain citable when their
+   detail matters and a one-Dependency Briefing keeps its instance-level
+   floor — the unit of coverage changes, but every fired Exception remains in
+   or under the Briefing.
 
 ## Considered options
 
