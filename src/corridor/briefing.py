@@ -60,7 +60,7 @@ from corridor.verify import quote_appears_on, threshold_for
 # superseded successor rather than edited, because an overwritten prompt
 # cannot say what produced the output a reader is holding.
 PROMPT_VERSION = "briefing_v2"
-PROMPT = Path("prompts/briefing_v2.md")
+PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "briefing_v2.md"
 
 SENTENCE_SCHEMA = {
     "type": "object",

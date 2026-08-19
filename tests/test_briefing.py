@@ -356,6 +356,18 @@ def test_the_prompt_supplies_the_citables_by_reference(session, dependency):
         assert ref in user
 
 
+def test_the_prompt_is_loaded_from_its_checkout_not_the_process_cwd(
+    session, dependency, tmp_path, monkeypatch
+):
+    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    monkeypatch.chdir(tmp_path)
+
+    briefing = brief(session, dependency.id, client=client, today=TODAY)
+
+    assert not briefing.refused
+    assert "The final floor line is not negotiable" in client.calls[0]["system"]
+
+
 def test_the_prompt_attributes_a_verbal_backed_committed_date(session, dependency):
     committed_date = TODAY + timedelta(days=60)
     event = DependencyEvent(
