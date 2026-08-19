@@ -4,7 +4,7 @@ The exception engine is deterministic by construction and blind by
 measurement — the record is full of prose no rule reads. A model may read
 all of it, and this module is what its reading is allowed to be: the
 paragraph a sharp deputy would write, where every sentence stands on a
-citation, the fired Exceptions are a floor it may explain but never bury,
+citation, the deterministic floor is something it may explain but never bury,
 and the whole thing is a view — regenerable, stamped, never the record.
 
 The division of labour is ADR-0006's, one layer up. The model composes
@@ -59,8 +59,8 @@ from corridor.verify import quote_appears_on, threshold_for
 # prompts are different readings. The prompt file is kept beside any
 # superseded successor rather than edited, because an overwritten prompt
 # cannot say what produced the output a reader is holding.
-PROMPT_VERSION = "briefing_v1"
-PROMPT = Path("prompts/briefing_v1.md")
+PROMPT_VERSION = "briefing_v2"
+PROMPT = Path("prompts/briefing_v2.md")
 
 SENTENCE_SCHEMA = {
     "type": "object",
@@ -77,7 +77,7 @@ SENTENCE_SCHEMA = {
                     "text": {"type": "string"},
                     # References into the citables the prompt supplied —
                     # E<n> evidence, A<n> assertions, V<n> verbals, X<n>
-                    # exceptions.
+                    # exception instances, or XB<n> project buckets.
                     "cites": {"type": "array", "items": {"type": "string"}},
                 },
             },
@@ -96,12 +96,14 @@ class Citable:
     """
 
     ref: str
-    kind: str  # "evidence" | "assertion" | "exception"
+    kind: str  # evidence | assertion | verbal | exception | exception_bucket
     text: str
     quote: str | None = None
     page_text: str | None = None
     text_source: str | None = None
     dependency_id: int | None = None
+    count: int | None = None
+    covers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -176,12 +178,11 @@ def brief_project(
 ) -> Briefing:
     """One narrative over every record in the project (#119).
 
-    The floor widens with the scope: every fired Exception across every
-    record must be cited by a surviving sentence, or the draft is refused
-    whole — a briefing that covers one record's problems while burying
-    another's is the partially honest briefing ADR-0011 rules out. Cost
-    stays one read and one model call per invocation; there is no
-    per-record fan-out and no batch path.
+    The floor changes unit with the scope: every fired rule bucket must be
+    cited by a surviving sentence, and every individual Exception remains
+    underneath its bucket. Omitting a bucket refuses the draft whole. Cost
+    stays one read and one model call per invocation; there is no per-record
+    fan-out and no batch path.
     """
     from corridor.models import Project
 
@@ -220,6 +221,7 @@ def brief_project(
             statement_publication=publication,
         ),
         publication=publication,
+        project_scope=True,
     )
 
 
@@ -231,6 +233,7 @@ def _brief(
     client,
     evaluation: Evaluation,
     publication: StatementPublication,
+    project_scope: bool = False,
 ) -> Briefing:
     if evaluation.statement_publication is not publication:
         raise ValueError(
@@ -241,7 +244,11 @@ def _brief(
             "the briefing evaluation and statement publication describe different statement provenance"
         )
     citables, floor, committed_dates = _assemble(
-        session, dependencies, evaluation, publication
+        session,
+        dependencies,
+        evaluation,
+        publication,
+        project_scope=project_scope,
     )
     if not citables:
         # Nothing to cite means nothing a sentence could stand on: the
@@ -262,7 +269,7 @@ def _brief(
 
     result = client.complete(
         system=PROMPT.read_text(),
-        user=_user_message(dependencies, citables, committed_dates),
+        user=_user_message(dependencies, citables, committed_dates, floor),
         schema=SENTENCE_SCHEMA,
     )
     drafted = [
@@ -283,9 +290,9 @@ def _brief(
         thresholds=evaluation.thresholds,
     )
 
-    # The floor, judged on the sentences that survived: a fired Exception
-    # cited only by a withheld sentence is a buried Exception, and there
-    # is no partially honest briefing (ADR-0011 constraint 4).
+    # The floor, judged on the sentences that survived: one Dependency uses
+    # Exception instances; a project uses the facet buckets that put every
+    # instance underneath. There is no partially honest briefing.
     cited = {ref for sentence in kept for ref in sentence.cites}
     missing = [ref for ref in floor if ref not in cited]
     if missing:
@@ -308,6 +315,8 @@ def _assemble(
     dependencies: list[Dependency],
     evaluation: Evaluation,
     publication: StatementPublication,
+    *,
+    project_scope: bool,
 ) -> tuple[list[Citable], tuple[str, ...], dict[int, date | None]]:
     """Everything a sentence may stand on, and which refs are the floor.
 
@@ -322,7 +331,8 @@ def _assemble(
     """
     citables: list[Citable] = []
     floor: list[str] = []
-    counters = {"E": 0, "A": 0, "V": 0, "X": 0}
+    counters = {"E": 0, "A": 0, "V": 0, "X": 0, "XB": 0}
+    instance_refs = {}
     committed_dates = publication.committed_dates
     memberships = current_statement_evidence_memberships(
         session, (dependency.id for dependency in dependencies)
@@ -423,7 +433,9 @@ def _assemble(
 
         for exception in evaluation.for_dependency(dependency.id):
             x = ref("X")
-            floor.append(x)
+            instance_refs[exception] = x
+            if not project_scope:
+                floor.append(x)
             days = (
                 f" ({exception.quantity_days}d)"
                 if exception.quantity_days is not None
@@ -440,6 +452,26 @@ def _assemble(
                 )
             )
 
+    if project_scope:
+        for facet in evaluation.facets():
+            bucket_ref = ref("XB")
+            covered_refs = tuple(
+                instance_refs[exception] for exception in facet.exceptions
+            )
+            floor.append(bucket_ref)
+            citables.append(
+                Citable(
+                    ref=bucket_ref,
+                    kind="exception_bucket",
+                    text=(
+                        f"{facet.rule}: {facet.count} record(s); covers "
+                        + ", ".join(f"[{covered}]" for covered in covered_refs)
+                    ),
+                    count=facet.count,
+                    covers=covered_refs,
+                )
+            )
+
     return citables, tuple(floor), committed_dates
 
 
@@ -447,6 +479,7 @@ def _user_message(
     dependencies: list[Dependency],
     citables: list[Citable],
     committed_dates: dict[int, date | None],
+    floor: tuple[str, ...],
 ) -> str:
     verbal_sources = {
         citable.dependency_id: citable
@@ -469,10 +502,11 @@ def _user_message(
     lines.append("You may cite ONLY these, by ref:")
     for citable in citables:
         lines.append(f"  [{citable.ref}] {citable.text}")
-    floor = ", ".join(c.ref for c in citables if c.kind == "exception")
+    floor_refs = ", ".join(floor)
     lines.append("")
     lines.append(
-        f"Every one of these must be cited by at least one sentence: {floor or '(none fired)'}."
+        "Every one of these must be cited by at least one sentence: "
+        f"{floor_refs or '(none fired)'}."
     )
     return "\n".join(lines)
 
@@ -542,8 +576,8 @@ def render(briefing: Briefing) -> str:
     if briefing.refused:
         lines.append(f"REFUSED: {briefing.refusal_reason}")
         lines.append(
-            "The fired Exceptions are the floor (ADR-0011); a draft that "
-            "buries one is not shown at all."
+            "The deterministic floor is mandatory (ADR-0011); a draft that "
+            "buries an Exception or project bucket is not shown at all."
         )
     else:
         for sentence in briefing.sentences:

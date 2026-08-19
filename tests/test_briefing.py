@@ -651,26 +651,133 @@ def second_dependency(session, project, dependency):
 
 
 def project_floor(session, project):
-    """Every fired Exception across the project, in the refs the component
-    assigns — read off the same engine, like the single-record helper."""
-    from corridor.exceptions import evaluate
+    """The project's rule facets, in the bucket refs the component assigns."""
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.exceptions import evaluate_project
 
-    return [f"X{i + 1}" for i in range(len(evaluate(session, project.id, today=TODAY)))]
+    dependencies = list(
+        session.scalars(
+            select(Dependency)
+            .where(
+                Dependency.project_id == project.id,
+                Dependency.dismissed_at.is_(None),
+            )
+            .order_by(Dependency.ref_code)
+        )
+    )
+    publication = published_dependency_statements(
+        session,
+        (dependency.id for dependency in dependencies),
+        project_id=project.id,
+    )
+    evaluation = evaluate_project(
+        session,
+        project.id,
+        today=TODAY,
+        statement_publication=publication,
+    )
+    return [f"XB{i + 1}" for i in range(len(evaluation.facets()))]
+
+
+def test_a_project_briefing_accepts_one_floor_citation_per_exception_bucket(
+    session, project, dependency, second_dependency
+):
+    """At project scope the floor is the rule facets, while each bucket
+    still names the individual Exception refs it places underneath."""
+    from corridor.briefing import brief_project
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.exceptions import evaluate_project
+
+    publication = published_dependency_statements(
+        session,
+        (dependency.id, second_dependency.id),
+        project_id=project.id,
+    )
+    facets = evaluate_project(
+        session,
+        project.id,
+        today=TODAY,
+        statement_publication=publication,
+    ).facets()
+    bucket_refs = [f"XB{i + 1}" for i in range(len(facets))]
+    covering = [(f"Bucket {ref} holds.", [ref]) for ref in bucket_refs]
+
+    briefing = brief_project(
+        session,
+        project.id,
+        client=StubClient([drafted(*covering)]),
+        today=TODAY,
+    )
+
+    assert not briefing.refused
+    buckets = [
+        citable
+        for citable in briefing.citables
+        if citable.kind == "exception_bucket"
+    ]
+    assert briefing.floor == tuple(bucket_refs), (
+        [facet.rule for facet in facets],
+        [bucket.text for bucket in buckets],
+    )
+    assert [bucket.ref for bucket in buckets] == bucket_refs
+    assert [bucket.count for bucket in buckets] == [facet.count for facet in facets]
+    assert all(bucket.covers for bucket in buckets)
+    assert {covered for bucket in buckets for covered in bucket.covers} == {
+        citable.ref
+        for citable in briefing.citables
+        if citable.kind == "exception"
+    }
+
+
+def test_the_project_prompt_requires_buckets_and_keeps_instances_optional(
+    session, project, dependency, second_dependency
+):
+    from corridor.briefing import brief_project
+    from corridor.dependency_events import published_dependency_statements
+    from corridor.exceptions import evaluate_project
+
+    publication = published_dependency_statements(
+        session,
+        (dependency.id, second_dependency.id),
+        project_id=project.id,
+    )
+    facet_count = len(
+        evaluate_project(
+            session,
+            project.id,
+            today=TODAY,
+            statement_publication=publication,
+        ).facets()
+    )
+    bucket_refs = [f"XB{i + 1}" for i in range(facet_count)]
+    client = StubClient(
+        [drafted(*[(f"Bucket {ref} holds.", [ref]) for ref in bucket_refs])]
+    )
+
+    briefing = brief_project(session, project.id, client=client, today=TODAY)
+
+    floor_line = next(
+        line
+        for line in client.calls[0]["user"].splitlines()
+        if line.startswith("Every one of these")
+    )
+    assert all(ref in floor_line for ref in briefing.floor)
+    assert all(ref.startswith("XB") for ref in briefing.floor)
+    assert not any(
+        citable.ref in floor_line
+        for citable in briefing.citables
+        if citable.kind == "exception"
+    )
 
 
 def test_a_project_briefing_floors_every_records_exceptions(
     session, project, dependency, second_dependency
 ):
-    """The floor widens to the whole project: a draft covering one
-    record's Exceptions while burying another record's is refused whole,
-    exactly as on the single path."""
+    """A draft that omits any project rule bucket is refused whole."""
     from corridor.briefing import brief_project
 
     refs = project_floor(session, project)
-    assert len(refs) > len(floor_refs(session, dependency)), (
-        "the second record must add fired Exceptions, or this test "
-        "proves nothing about widening"
-    )
+    assert len(refs) > 1
 
     covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
     briefing = brief_project(
@@ -705,7 +812,6 @@ def test_project_citables_attribute_their_record(
     assert "DEP-00001" in user
     assert "DEP-00002" in user
     assert len({c.ref for c in briefing.citables}) == len(briefing.citables)
-    by_ref = {c.ref: c for c in briefing.citables}
     assert any("DEP-00002" in c.text for c in briefing.citables if c.kind == "exception")
     assert briefing.floor == tuple(refs)
 
@@ -782,3 +888,48 @@ def test_a_dismissed_record_is_not_narrated(session, project, dependency):
     assert "0 records" in briefing.ref_code
     assert briefing.sentences == ()
     assert client.calls == []
+
+
+def test_live_nhhip_project_floor_is_bounded_by_buckets(session):
+    """The populated project is the scale regression from #127.
+
+    Fresh databases skip because they deliberately carry no production corpus;
+    the shared corpus proves every live Exception remains under a bounded facet
+    floor without making a model call in the test suite.
+    """
+    from corridor.briefing import brief_project
+
+    project = session.scalars(
+        select(Project).where(Project.slug == "nhhip-3c2")
+    ).first()
+    if project is None:
+        pytest.skip("the shared NHHIP corpus is not present")
+
+    class FloorCoveringClient:
+        model = "scripted-floor-coverer"
+
+        def complete(self, *, system, user, schema, images=(), logprobs=False):
+            floor_line = next(
+                line
+                for line in user.splitlines()
+                if line.startswith("Every one of these")
+            )
+            refs = floor_line.rsplit(":", 1)[1].strip().removesuffix(".").split(", ")
+            return drafted(*[(f"Bucket {ref} holds.", [ref]) for ref in refs])
+
+    briefing = brief_project(
+        session,
+        project.id,
+        client=FloorCoveringClient(),
+        today=TODAY,
+    )
+
+    assert not briefing.refused
+    assert briefing.floor
+    assert all(ref.startswith("XB") for ref in briefing.floor)
+    assert len(
+        [citable for citable in briefing.citables if citable.kind == "exception"]
+    ) > len(briefing.floor)
+    assert {sentence.cites[0] for sentence in briefing.sentences} == set(
+        briefing.floor
+    )
