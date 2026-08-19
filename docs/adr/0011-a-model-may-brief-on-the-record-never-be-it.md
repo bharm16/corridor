@@ -22,6 +22,14 @@ Four constraints, each inherited from a boundary this system already enforces:
 
 4. **The floor is not negotiable.** Every fired Exception appears in or under the Briefing; the model may explain one, contextualize one, or argue one is less alarming than it looks — it may never omit or bury one. The deterministic list is the floor the narrative stands on, and the model does not get to talk the floor out of the report.
 
+   **Project-scope amendment (#127, 2026-08-19).** A project Briefing floors
+   the rule buckets from the Evaluation's shared facet view, each with its
+   count and exact individual Exception refs underneath, so citing a bucket
+   covers every instance while individual instances remain citable when their
+   detail matters and a one-Dependency Briefing keeps its instance-level
+   floor — the unit of coverage changes, but every fired Exception remains in
+   or under the Briefing.
+
 ## Considered options
 
 **Let the model replace the rule engine** — hand it the evidence, let it decide what is concerning. Rejected on all three moat properties at once: the same record on two days would brief two ways, which turns the week-over-week diff into noise; "why is this flagged" would answer with plausible prose instead of a checkable fact; and the standing of the output in a dispute would rest on a system that cannot show its work. The objection is not that models are careless — it is that this corpus has *measured* the failure class: the validation gate (#68) caught transcribed values that were not on the page at self-reported confidences of 0.98 and 0.99, which is why ADR-0006 lets code do everything a lookup can do and confines the model to what code cannot. This ADR draws the identical line one layer up: arithmetic and set membership are lookups over the record — code's; reading prose across 1,629 events and saying what it amounts to is not — the model's.
