@@ -109,7 +109,7 @@ A claim produced by computing over Ledger records rather than by reading a docum
 _Avoid_: aggregate, rollup, summary (when meaning the provenance class)
 
 **Work Decision**:
-An attributable project-team decision, recorded at a stated time, that establishes or changes project-controlled coordination state for exactly one subject: one Dependency or one accepted External Party Commitment or Committed Date Change, never both. It proves only what the project decided and when: it is not Evidence, states nothing about what a document or External Party said, and can never set Criticality, a Resolution Strategy, Ready, or an External Party's status or commitment. Later Work Decisions supersede but never erase earlier ones. What a report publishes is an Assertion (what a document said), a Derivation (what the rules computed), a Work Decision (what the project decided) or a Verbal (what an External Party told a recorder).
+An attributable project-team decision, recorded at a stated time, that establishes or changes project-controlled coordination state for exactly one subject: one Dependency or one accepted External Party Commitment or Committed Date Change, never both. It proves only what the project decided and when: it is not Evidence, states nothing about what a document or External Party said, and can never set Criticality, a Resolution Strategy, Ready, or an External Party's status or commitment. A software agent may enter the exact choice a named human explicitly made, but cannot originate the choice under that human's identity; operating the interface is not decision authorship (ADR-0041). Later Work Decisions supersede but never erase earlier ones. What a report publishes is an Assertion (what a document said), a Derivation (what the rules computed), a Work Decision (what the project decided) or a Verbal (what an External Party told a recorder).
 _Avoid_: workflow state, attribution, direction (carries contractual-authority weight in construction), audit entry
 
 **Coordination Plan**:
@@ -239,7 +239,7 @@ The outcome when a named automation cannot prove a proposed write eligible under
 _Avoid_: rejection, failure, automatic Adjudication, low-confidence Admission
 
 **Adjudication**:
-The human act of settling what the machine could not — a Dispute, a flagged row, an unplaced statement — or dismissing junk with a reason. Chosen work on a live row, never a gate in front of the list (ADR-0029).
+The human act of settling what the machine could not — a Dispute, a flagged row, an unplaced statement — or dismissing junk with a reason. A software agent may enter the exact choice a named human explicitly made, but interface operation alone is not Adjudication (ADR-0041). Chosen work on a live row, never a gate in front of the list (ADR-0029).
 An internal term; customer actions say what the person is actually deciding.
 _Avoid_: review, triage, approval, curation (as generic customer work)
 

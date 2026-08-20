@@ -102,10 +102,29 @@ artifact outside Corridor; and time the work — the timed sample is an acceptan
 measurement of this slice, not its own engineering issue, and it is the only sanctioned
 source for any future effort estimate.
 
-## In parallel, not gated
+**The original slice-3 attempt failed (audited 2026-08-20).** The durable record
+shows that all 17 receipt-75 Candidates were accepted on August 7, 2026, but no
+Work Decisions followed and only one later Report exists. The timing/fallback
+protocol required by #165 was not predefined before the first Adjudication, so
+that sample cannot be reconstructed or passed retroactively. Issue #165 is closed
+as a failed/partial historical attempt, not as completed. The supervised successor
+rehearsal is #279; its first exploration stopped honestly when the consumed cohort
+rendered Queue empty. Issue #280 owns the agent-ready product prerequisite: keep
+the exact admitted cohort actionable for Coordination Plan work without resetting
+Candidates, substituting a cohort, or rewriting history.
 
-Submit the records requests already tracked: #151 (NHHIP recurring utility-status
-artifacts) and #7 (email correspondence, both projects). Their returns are more likely
-than the old agreements to supply actionability. Before returns arrive, verify #149's
-boundary holds: a sequencing document entering a supported project must be refused or
-visibly quarantined, never lossily ingested.
+## Public-data follow-up, re-decided 2026-08-20
+
+The August 20 official-source audit supersedes the earlier direction to submit #151
+and #7 immediately in parallel. TxDOT now publishes six NHHIP status summaries and a
+larger utility RID bundle than the local corpus represents, while FDOT publishes
+additional utility schedule and plan artifacts for the held-out project. Run the
+pinned rehearsal without changing its accepted cohort; afterward register and ingest
+the newly public material, then re-evaluate and narrow #151 against the remaining
+utility-owner status, coordination-log, and dated-clearance gap. The bounded search
+still found no public DOT-to-utility correspondence for either project, so #7 remains
+a likely separate human request rather than part of this rehearsal.
+
+Before any returns or new public intake enter a supported project, verify #149's
+boundary holds: a sequencing document must be refused or visibly quarantined, never
+lossily ingested.

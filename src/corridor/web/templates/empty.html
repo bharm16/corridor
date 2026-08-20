@@ -26,6 +26,20 @@
   .coordinate-forms input { font:inherit; padding:.25rem .4rem;
                             border:1px solid #ddd; border-radius:3px; flex:1; }
   .coordinate-forms input[type=date] { flex:0 0 auto; }
+  .cohort-progress { text-align:left; width:min(46rem, calc(100vw - 2rem));
+                     margin:0 auto; }
+  .cohort-progress > p { text-align:center; }
+  .cohort-progress ol { list-style:none; padding:0; margin:1rem 0; display:grid;
+                        gap:.55rem; }
+  .cohort-progress li { border:1px solid #ddd; border-radius:6px;
+                        padding:.7rem .85rem; }
+  .cohort-progress .rowhead { display:flex; gap:.55rem; align-items:baseline; }
+  .cohort-progress .rowhead .state { margin-left:auto; color:#666;
+                                     font-size:.82rem; }
+  .cohort-progress .context { color:#666; font-size:.85rem; margin:.2rem 0; }
+  .cohort-progress .gaps { color:#9a3412; font-size:.85rem; margin:.2rem 0; }
+  .cohort-progress .refusal { color:#b42318; font-weight:600; }
+  .cohort-progress a { color:#111; font-weight:600; }
   kbd { font:11px ui-monospace, monospace; background:#f0f0f0; border:1px solid #ddd;
         border-bottom-width:2px; border-radius:3px; padding:0 .3rem; }
 </style>
@@ -36,7 +50,59 @@
   </nav>
   {% if lane != "rehearsal" %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
   {% include "_coordinate.html" %}
-  {% if lane == "candidate" and ordinary_reviews %}
+  {% if lane == "rehearsal" and rail %}
+    {% set admitted = rail|selectattr("dependency_id")|list %}
+    {% set active_admitted = admitted|rejectattr("dismissed")|list %}
+    {% set needs_coordination = active_admitted|selectattr("coordination_gaps")|list %}
+    {% set unresolved = rail|selectattr("admission_refusal")|list %}
+    <section class="cohort-progress" aria-labelledby="cohort-progress-heading">
+      <h1 id="cohort-progress-heading">Candidate review complete</h1>
+      {% if needs_coordination %}
+        <p>{{ needs_coordination|length }} admitted Dependenc{{ 'y' if needs_coordination|length == 1 else 'ies' }} need{{ 's' if needs_coordination|length == 1 else '' }} coordination.</p>
+      {% elif unresolved %}
+        <p>{{ unresolved|length }} cohort member{{ '' if unresolved|length == 1 else 's' }} {{ 'has' if unresolved|length == 1 else 'have' }} no trustworthy admitted Dependency link.</p>
+      {% elif active_admitted %}
+        <p>Every admitted Dependency currently has a Coordination Plan.</p>
+      {% elif admitted %}
+        <p>No admitted Dependencies remain open for coordination.</p>
+      {% else %}
+        <p>No Dependencies were admitted from this cohort.</p>
+      {% endif %}
+      <p>Cohort receipt #{{ cohort_receipt.id }} remains the exact scope.
+        Candidate outcomes and admitted records stay preserved.</p>
+      <h2>Cohort records</h2>
+      <ol>
+        {% for entry in rail %}
+          <li>
+            <div class="rowhead">
+              <b>{{ entry.utility_id }}</b>
+              <span>{{ entry.utility_type }} · {{ entry.station }}</span>
+              <span class="state">{{ entry.state }}</span>
+            </div>
+            {% if entry.dependency_id %}
+              <p class="context">
+                {{ entry.dependency_ref }} · {{ entry.dependency_title }}
+              </p>
+              {% if entry.dismissed %}
+                <p class="context">Dismissed by a recorded act; no Coordination Plan can be changed.</p>
+              {% else %}
+                {% if entry.coordination_gaps %}
+                  <p class="gaps">Needs {{ entry.coordination_gaps|join(", ") }}</p>
+                  <a href="{{ lane_url }}&coordinate={{ entry.dependency_id }}">Continue coordination</a>
+                {% else %}
+                  <a href="/ledger/{{ project.slug }}/{{ entry.dependency_id }}">Review coordination</a>
+                {% endif %}
+              {% endif %}
+            {% elif entry.admission_refusal and entry.state in ["accepted", "merged"] %}
+              <p class="refusal">{{ entry.admission_refusal }}</p>
+            {% else %}
+              <p class="context">{{ entry.state|capitalize }}; no admitted Dependency to coordinate.</p>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    </section>
+  {% elif lane == "candidate" and ordinary_reviews %}
     <h1>Ordinary review</h1>
     {% for view in ordinary_reviews %}
       <section class="review">

@@ -2586,7 +2586,12 @@ def test_the_action_lifecycle_runs_from_the_record_view(
 # --- The rehearsal queue lane (#175) ----------------------------------------
 
 
-def _rehearsal_receipt(session, project):
+def _rehearsal_receipt(
+    session,
+    project,
+    *,
+    added_rows=(("W4", "1110+00"),),
+):
     """A receipt derived through the real service: W4 in, W1 out."""
     import hashlib as _hashlib
     from datetime import date as _date
@@ -2677,7 +2682,7 @@ def _rehearsal_receipt(session, project):
     predecessor_run, _ = run(december, [("W1", "1102+20")], "rehearsal_v1.dec")
     successor_run, candidates = run(
         february,
-        [("W1", "1102+20"), ("W4", "1110+00")],
+        [("W1", "1102+20"), *added_rows],
         "rehearsal_v1.feb",
     )
     register_supersessions(
@@ -2839,6 +2844,406 @@ def test_accept_flows_into_the_coordination_strip_and_back(
     session.refresh(dep)
     assert dep.internal_owner == "Dana Fields"
     assert dep.next_action == "Confirm the crossing schedule"
+
+
+def test_decided_rehearsal_cohort_resumes_admitted_dependency_coordination(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+
+    page = client.get(lane).text
+
+    assert "Candidate review complete" in page
+    assert "1 admitted Dependency needs coordination" in page
+    assert "Admitted" in page
+    assert "internal owner" in page
+    assert "Continue coordination" in page
+    assert f"coordinate={dependency_id}" in page
+    assert "Queue empty" not in page
+
+    continued = client.get(f"{lane}&coordinate={dependency_id}").text
+    assert "Admitted" in continued
+    assert "internal owner" in continued
+    assert 'name="owner"' in continued
+    assert 'name="action"' in continued
+
+
+def test_decided_rehearsal_cohort_keeps_coordinated_dependency_openable(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    client.post(
+        f"/dependencies/{dependency_id}/owner",
+        data={"slug": project.slug, "owner": "Dana Fields"},
+        follow_redirects=False,
+    )
+    client.post(
+        f"/dependencies/{dependency_id}/action",
+        data={
+            "slug": project.slug,
+            "action": "Confirm the crossing schedule",
+            "due_date_unknown_reason": "awaiting_schedule_information",
+        },
+        follow_redirects=False,
+    )
+
+    page = client.get(lane).text
+
+    assert "Candidate review complete" in page
+    assert "Every admitted Dependency currently has a Coordination Plan" in page
+    assert "Review coordination" in page
+    assert f'href="/ledger/{project.slug}/{dependency_id}"' in page
+    assert 'name="owner"' not in page
+    assert "Queue empty" not in page
+
+    detail = client.get(f"/ledger/{project.slug}/{dependency_id}").text
+    assert "Internal Owner" in detail
+    assert "completed" in detail
+    assert "cancel action" in detail
+
+
+def test_rehearsal_cohort_summary_flag_clears_default_coordinate_focus(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+
+    page = client.get(f"{lane}&summary=1").text
+
+    assert "Candidate review complete" in page
+    assert "Continue coordination" in page
+    assert f"coordinate={dependency_id}" in page
+    assert 'name="owner"' not in page
+
+
+def test_decided_rehearsal_cohort_does_not_hide_a_mixed_unresolved_member(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(
+        session,
+        project,
+        added_rows=(("W4", "1110+00"), ("W5", "1112+00")),
+    )
+    w4 = next(c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4")
+    w5 = next(c for c in candidates if c.payload_json["fields"]["utility_id"] == "W5")
+    accepted = client.post(
+        f"/candidates/{w4.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    client.post(
+        f"/dependencies/{dependency_id}/owner",
+        data={"slug": project.slug, "owner": "Dana Fields"},
+        follow_redirects=False,
+    )
+    client.post(
+        f"/dependencies/{dependency_id}/action",
+        data={
+            "slug": project.slug,
+            "action": "Confirm the crossing schedule",
+            "due_date_unknown_reason": "awaiting_schedule_information",
+        },
+        follow_redirects=False,
+    )
+    w5.state = "accepted"
+    session.flush([w5])
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal"
+        f"&cohort_receipt_id={receipt.id}&summary=1"
+    ).text
+
+    assert "Every admitted Dependency currently has a Coordination Plan" not in page
+    assert "1 cohort member has no trustworthy admitted Dependency link" in page
+    assert "Admitted record unavailable" in page
+
+
+def test_decided_rehearsal_cohort_orders_incomplete_before_coordinated(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(
+        session,
+        project,
+        added_rows=(("W4", "1110+00"), ("W5", "1112+00")),
+    )
+    by_utility_id = {
+        candidate.payload_json["fields"]["utility_id"]: candidate
+        for candidate in candidates
+    }
+    admitted = {}
+    for utility_id in ("W4", "W5"):
+        response = client.post(
+            f"/candidates/{by_utility_id[utility_id].id}/accept",
+            data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+            follow_redirects=False,
+        )
+        admitted[utility_id] = int(
+            response.headers["location"].rsplit("coordinate=", 1)[1]
+        )
+    client.post(
+        f"/dependencies/{admitted['W4']}/owner",
+        data={"slug": project.slug, "owner": "Dana Fields"},
+        follow_redirects=False,
+    )
+    client.post(
+        f"/dependencies/{admitted['W4']}/action",
+        data={
+            "slug": project.slug,
+            "action": "Confirm the crossing schedule",
+            "due_date_unknown_reason": "awaiting_schedule_information",
+        },
+        follow_redirects=False,
+    )
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal"
+        f"&cohort_receipt_id={receipt.id}&summary=1"
+    ).text
+
+    assert page.index("W5") < page.index("W4")
+    assert "1 admitted Dependency needs coordination" in page
+
+
+def test_rehearsal_cohort_focuses_the_first_missing_coordination_field(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    client.post(
+        f"/dependencies/{dependency_id}/owner",
+        data={"slug": project.slug, "owner": "Dana Fields"},
+        follow_redirects=False,
+    )
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    ).text
+    owner_input = page.split('name="owner"', 1)[1].split(">", 1)[0]
+    action_input = page.split('name="action"', 1)[1].split(">", 1)[0]
+
+    assert "autofocus" not in owner_input
+    assert "autofocus" in action_input
+
+
+def test_decided_rehearsal_cohort_names_when_nothing_was_admitted(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    rejected = client.post(
+        f"/candidates/{member.id}/reject",
+        data={
+            "slug": project.slug,
+            "cohort_receipt_id": str(receipt.id),
+            "reason": "duplicate",
+        },
+        follow_redirects=False,
+    )
+    assert rejected.status_code == 303
+
+    page = client.get(lane).text
+
+    assert "Candidate review complete" in page
+    assert "No Dependencies were admitted from this cohort" in page
+    assert "W4" in page
+    assert "rejected" in page
+    assert "Queue empty" not in page
+
+
+def test_decided_rehearsal_cohort_fails_closed_on_missing_admission_link(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    member.state = "accepted"
+    session.flush([member])
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    ).text
+
+    assert "Candidate review complete" in page
+    assert "W4" in page
+    assert "Admitted record unavailable" in page
+    assert f'href="/ledger/{project.slug}/' not in page
+    assert "Queue empty" not in page
+
+
+def test_decided_rehearsal_cohort_links_a_merged_member_to_its_exact_dependency(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    target = Dependency(
+        project_id=project.id,
+        ref_code="DEP-MERGED-W4",
+        dep_type="utility_relocation",
+        title="City water crossing",
+        status="identified",
+    )
+    session.add(target)
+    session.flush()
+    merged = client.post(
+        f"/candidates/{member.id}/merge",
+        data={
+            "slug": project.slug,
+            "cohort_receipt_id": str(receipt.id),
+            "dependency_id": str(target.id),
+        },
+        follow_redirects=False,
+    )
+    assert merged.status_code == 303
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    ).text
+
+    assert "W4" in page
+    assert "merged" in page
+    assert f"coordinate={target.id}" in page
+    assert "Continue coordination" in page
+
+
+def test_decided_rehearsal_cohort_preserves_a_dismissed_admission_outcome(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    dismissed = client.post(
+        f"/ledger/{project.slug}/{dependency_id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+    assert dismissed.status_code == 303
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    ).text
+
+    assert "W4" in page
+    assert "No admitted Dependencies remain open for coordination" in page
+    assert "Dismissed by a recorded act" in page
+    assert f'href="/ledger/{project.slug}/{dependency_id}"' not in page
+    assert "Continue coordination" not in page
+
+
+def test_rehearsal_cohort_does_not_open_a_dismissed_dependency(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    client.post(
+        f"/ledger/{project.slug}/{dependency_id}/dismiss",
+        data={"reason": "duplicate"},
+        follow_redirects=False,
+    )
+
+    page = client.get(f"{lane}&coordinate={dependency_id}").text
+
+    assert "Dismissed by a recorded act" in page
+    assert "Admitted" not in page
+    assert 'name="owner"' not in page
+
+
+def test_rehearsal_cohort_does_not_open_a_dependency_outside_its_receipt(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={
+            "slug": project.slug,
+            "cohort_receipt_id": str(receipt.id),
+        },
+        follow_redirects=False,
+    )
+    admitted_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    outsider = Dependency(
+        project_id=project.id,
+        ref_code="DEP-OUTSIDE-COHORT",
+        dep_type="utility_relocation",
+        title="Outside the pinned receipt",
+        status="identified",
+    )
+    session.add(outsider)
+    session.flush()
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal"
+        f"&cohort_receipt_id={receipt.id}&coordinate={outsider.id}"
+    ).text
+
+    assert "1 admitted Dependency needs coordination" in page
+    assert f"coordinate={admitted_id}" in page
+    assert "DEP-OUTSIDE-COHORT" not in page
+    assert "Outside the pinned receipt" not in page
+    assert 'name="owner"' not in page
 
 
 def test_redirect_to_never_leaves_the_app(session, client, project):
@@ -3009,6 +3414,28 @@ def test_the_event_lane_reads_exactly_the_receipt(session, client, project):
     assert 'name="merge_sibling_ids"' in page
     assert "ucm-feb.pdf" in page
     assert 'name="event_cohort_receipt_id"' in page
+
+
+def test_event_lane_accept_still_opens_the_admitted_dependency(
+    session, client, project
+):
+    receipt, candidates = _event_cohort_lane(session, project)
+    accepted = client.post(
+        f"/candidates/{candidates['pl7_b'].id}/accept",
+        data={
+            "slug": project.slug,
+            "event_cohort_receipt_id": str(receipt.id),
+            "merge_sibling_ids": [str(candidates["pl7_a"].id)],
+        },
+        follow_redirects=False,
+    )
+
+    assert accepted.status_code == 303
+    assert "coordinate=" in accepted.headers["location"]
+    page = client.get(accepted.headers["location"]).text
+    assert "Admitted" in page
+    assert 'name="owner"' in page
+    assert 'name="action"' in page
 
 
 def test_the_event_lane_boundary_refuses_a_non_member_mutation(
