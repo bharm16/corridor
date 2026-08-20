@@ -57,7 +57,11 @@
 <header>
   <b>{{ view.dependency.ref_code }}
     {%- if view.dependency.source_ref %} · {{ view.dependency.source_ref }}{% endif %}</b>
-  <span><a href="/ledger/{{ project.slug }}">← ledger</a></span>
+  {% if return_to %}
+    <span><a href="{{ return_to }}">Back to cohort coordination</a></span>
+  {% else %}
+    <span><a href="/ledger/{{ project.slug }}">← ledger</a></span>
+  {% endif %}
 </header>
 
 <main>

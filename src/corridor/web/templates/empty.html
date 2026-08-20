@@ -20,6 +20,7 @@
                 border-radius:6px; padding:.7rem .9rem; margin:.8rem auto;
                 width:min(42rem, calc(100vw - 2rem)); }
   .coordinate-head { display:flex; gap:.6rem; align-items:baseline; }
+  .coordinate-head .record { color:#06c; font-size:.82rem; }
   .coordinate-head .skip { margin-left:auto; color:#333; font-size:.82rem; }
   .coordinate-forms { display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem; }
   .coordinate-forms form { display:flex; gap:.4rem; }
@@ -90,7 +91,7 @@
                   <p class="gaps">Needs {{ entry.coordination_gaps|join(", ") }}</p>
                   <a href="{{ lane_url }}&coordinate={{ entry.dependency_id }}">Continue coordination</a>
                 {% else %}
-                  <a href="/ledger/{{ project.slug }}/{{ entry.dependency_id }}">Review coordination</a>
+                  <a href="/ledger/{{ project.slug }}/{{ entry.dependency_id }}?return_to={{ summary_url|urlencode }}">Review coordination</a>
                 {% endif %}
               {% endif %}
             {% elif entry.admission_refusal and entry.state in ["accepted", "merged"] %}

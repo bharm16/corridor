@@ -15,7 +15,7 @@ import json
 from datetime import date
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException
 from fastapi.responses import (
@@ -229,6 +229,50 @@ def _safe_return(redirect_to: str, fallback: str) -> str:
     if candidate:
         raise HTTPException(400, "redirect_to must be a same-app path")
     return fallback
+
+
+def _safe_cohort_return(
+    return_to: str,
+    *,
+    project: Project,
+    dependency_id: int,
+    session: Session,
+) -> str:
+    """Only this Dependency's exact pinned rehearsal context may return."""
+
+    candidate = _safe_return(return_to, "")
+    parsed = urlsplit(candidate)
+    values = parse_qs(parsed.query, keep_blank_values=True)
+    allowed_keys = {"lane", "cohort_receipt_id", "coordinate", "summary"}
+    if (
+        parsed.path != f"/queue/{project.slug}"
+        or parsed.fragment
+        or set(values) - allowed_keys
+        or values.get("lane") != ["rehearsal"]
+        or len(values.get("cohort_receipt_id", ())) != 1
+        or (("coordinate" in values) == ("summary" in values))
+    ):
+        raise HTTPException(400, "return_to must name this cohort context")
+    try:
+        receipt_id = int(values["cohort_receipt_id"][0])
+    except (TypeError, ValueError):
+        raise HTTPException(400, "return_to must name this cohort context")
+    receipt = session.get(CohortReceipt, receipt_id)
+    if receipt is None or receipt.project_id != project.id:
+        raise HTTPException(400, "return_to must name this cohort context")
+    rail = build_cohort_rail(session, receipt, None)
+    if dependency_id not in cohort_openable_dependency_ids(rail):
+        raise HTTPException(400, "return_to must name this cohort context")
+    if "coordinate" in values:
+        try:
+            coordinate_id = int(values["coordinate"][0])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "return_to must name this cohort context")
+        if values["coordinate"] != [str(coordinate_id)] or coordinate_id != dependency_id:
+            raise HTTPException(400, "return_to must name this cohort context")
+    elif values.get("summary") != ["1"]:
+        raise HTTPException(400, "return_to must name this cohort context")
+    return candidate
 
 
 def _decision_location(
@@ -2033,6 +2077,7 @@ def dependency_detail(
     request: Request,
     slug: str,
     dependency_id: int,
+    return_to: str = "",
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -2042,6 +2087,16 @@ def dependency_detail(
         raise HTTPException(404, "no such dependency")
     if view.dependency.project_id != project.id:
         raise HTTPException(404, "no such dependency in this project")
+    safe_return = (
+        _safe_cohort_return(
+            return_to,
+            project=project,
+            dependency_id=dependency_id,
+            session=session,
+        )
+        if return_to
+        else ""
+    )
     owner_decision = current_internal_owner_decision(session, dependency_id)
     action_decision = current_next_action_decision(session, dependency_id)
     return TEMPLATES.TemplateResponse(
@@ -2052,6 +2107,7 @@ def dependency_detail(
             "view": view,
             "owner_decision": owner_decision,
             "action_decision": action_decision,
+            "return_to": safe_return,
             "disputes": {
                 d.field_name: d
                 for d in disputes_for(
