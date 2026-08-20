@@ -96,7 +96,10 @@ from corridor.web.queue import (
     build_supersession_review_view,
     build_view,
     change_strip,
+    cohort_openable_dependency_ids,
+    default_cohort_dependency_id,
     member_classification,
+    next_incomplete_cohort_dependency_id,
     next_candidate,
     pending_counts,
 )
@@ -254,6 +257,32 @@ def _decision_location(
             url += f"&coordinate={coordinate_dependency_id}"
         return url
     return _queue_location(slug, historical_document_id)
+
+
+def _cohort_summary_location(lane_url: str) -> str:
+    """Explicitly clear a deep-linked cohort item without leaving the lane."""
+
+    return f"{lane_url}&summary=1"
+
+
+def _next_cohort_coordinate_url(
+    lane_url: str,
+    rail,
+    current_dependency_id: int | None,
+) -> str:
+    """Skip forward inside the incomplete admitted set, then fall back."""
+
+    summary_url = _cohort_summary_location(lane_url)
+    if current_dependency_id is None:
+        return summary_url
+    next_dependency_id = next_incomplete_cohort_dependency_id(
+        rail, current_dependency_id
+    )
+    return (
+        f"{lane_url}&coordinate={next_dependency_id}"
+        if next_dependency_id is not None
+        else summary_url
+    )
 
 
 def _require_cohort_scope(
@@ -1634,6 +1663,7 @@ def queue(
     event_cohort_receipt_id: int | None = None,
     candidate_id: int | None = None,
     coordinate: int | None = None,
+    summary: int = 0,
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -1719,6 +1749,18 @@ def queue(
             },
         )
 
+    lane_url = f"/queue/{slug}?lane=candidate"
+    if cohort_receipt is not None:
+        lane_url = (
+            f"/queue/{slug}?lane=rehearsal&cohort_receipt_id={cohort_receipt.id}"
+        )
+    if event_cohort_receipt is not None:
+        lane_url = (
+            f"/queue/{slug}?lane=events"
+            f"&event_cohort_receipt_id={event_cohort_receipt.id}"
+        )
+    summary_url = _cohort_summary_location(lane_url)
+
     candidate = None
     if candidate_id is not None:
         # Direct selection from the rail: still resolved through the same
@@ -1742,35 +1784,6 @@ def queue(
             allowed_candidate_ids=allowed_candidate_ids,
         )
 
-    coordinate_dependency = None
-    if coordinate is not None and (
-        cohort_receipt is not None or event_cohort_receipt is not None
-    ):
-        coordinate_dependency = session.get(Dependency, coordinate)
-        if (
-            coordinate_dependency is None
-            or coordinate_dependency.project_id != project.id
-        ):
-            coordinate_dependency = None
-
-    lane_url = f"/queue/{slug}?lane=candidate"
-    if cohort_receipt is not None:
-        lane_url = (
-            f"/queue/{slug}?lane=rehearsal&cohort_receipt_id={cohort_receipt.id}"
-        )
-    if event_cohort_receipt is not None:
-        lane_url = (
-            f"/queue/{slug}?lane=events"
-            f"&event_cohort_receipt_id={event_cohort_receipt.id}"
-        )
-
-    if candidate is None and coordinate_dependency is None:
-        return TEMPLATES.TemplateResponse(
-            request,
-            "empty.html",
-            lane_context,
-        )
-
     rail = (
         build_cohort_rail(
             session,
@@ -1780,6 +1793,55 @@ def queue(
         if cohort_receipt is not None
         else None
     )
+
+    coordinate_dependency = None
+    openable_dependency_ids = frozenset(cohort_openable_dependency_ids(rail))
+    if coordinate is not None and (
+        cohort_receipt is not None or event_cohort_receipt is not None
+    ):
+        coordinate_dependency = session.get(Dependency, coordinate)
+        if (
+            coordinate_dependency is None
+            or coordinate_dependency.project_id != project.id
+            or (
+                cohort_receipt is not None
+                and coordinate_dependency.id not in openable_dependency_ids
+            )
+        ):
+            coordinate_dependency = None
+    if (
+        candidate is None
+        and coordinate_dependency is None
+        and cohort_receipt is not None
+        and coordinate is None
+        and not summary
+    ):
+        default_coordinate_id = default_cohort_dependency_id(rail)
+        if default_coordinate_id is not None:
+            coordinate_dependency = session.get(Dependency, default_coordinate_id)
+    next_coordinate_url = (
+        lane_url
+        if candidate is not None
+        else _next_cohort_coordinate_url(
+            lane_url,
+            rail,
+            coordinate_dependency.id if coordinate_dependency is not None else None,
+        )
+    )
+
+    if candidate is None and coordinate_dependency is None:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "empty.html",
+            {
+                **lane_context,
+                "rail": rail,
+                "lane_url": lane_url,
+                "summary_url": summary_url,
+                "next_coordinate_url": next_coordinate_url,
+            },
+        )
+
     if candidate is None:
         # Every member decided, but a coordination strip is still open for
         # the last admitted record.
@@ -1791,6 +1853,8 @@ def queue(
                 "rail": rail,
                 "coordinate_dependency": coordinate_dependency,
                 "lane_url": lane_url,
+                "summary_url": summary_url,
+                "next_coordinate_url": next_coordinate_url,
             },
         )
 
@@ -1846,6 +1910,8 @@ def queue(
             ),
             "coordinate_dependency": coordinate_dependency,
             "lane_url": lane_url,
+            "summary_url": summary_url,
+            "next_coordinate_url": next_coordinate_url,
             **lane_context,
         },
     )

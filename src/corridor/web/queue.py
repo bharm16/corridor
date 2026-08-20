@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor import audit
 from corridor.merge import rank_matches
 from corridor.models import Candidate, Dependency, DocPage, Document
 from corridor.storage import stored_pdf
@@ -339,6 +340,12 @@ class RailEntry:
     utility_type: str
     state: str
     current: bool
+    dependency_id: int | None
+    dependency_ref: str | None
+    dependency_title: str | None
+    coordination_gaps: tuple[str, ...]
+    admission_refusal: str | None
+    dismissed: bool
 
 
 @dataclass
@@ -373,20 +380,41 @@ def build_cohort_rail(
             Candidate.extraction_run_id == receipt.successor_extraction_run_id
         )
     ).all()
-    by_utility: dict[str, Candidate] = {}
+    candidates_by_utility: dict[str, list[Candidate]] = {}
     for candidate in candidates:
         fields = (candidate.payload_json or {}).get("fields", {})
         utility_id = fields.get("utility_id")
         if utility_id is not None:
-            by_utility[str(utility_id)] = candidate
+            candidates_by_utility.setdefault(str(utility_id), []).append(candidate)
+
+    admitted_by_candidate, invalid_admission_links = (
+        _admitted_dependencies_by_candidate(
+            session,
+            receipt.project_id,
+            {candidate.id for candidate in candidates},
+        )
+    )
 
     group_order = {key: index for index, (key, _) in enumerate(RAIL_GROUPS)}
     entries = []
     for member in receipt.members:
-        candidate = by_utility.get(member["utility_id"])
+        matching_candidates = candidates_by_utility.get(member["utility_id"], [])
+        candidate = matching_candidates[0] if len(matching_candidates) == 1 else None
         fields = (
             (candidate.payload_json or {}).get("fields", {}) if candidate else {}
         )
+        dependency = (
+            admitted_by_candidate.get(candidate.id) if candidate is not None else None
+        )
+        admission_refusal = None
+        if len(matching_candidates) > 1:
+            admission_refusal = "Cohort member resolves to multiple Candidates"
+        elif candidate is None:
+            admission_refusal = "Cohort member Candidate unavailable"
+        elif candidate.state in {"accepted", "merged"} and dependency is None:
+            admission_refusal = "Admitted record unavailable"
+        if candidate is not None and candidate.id in invalid_admission_links:
+            admission_refusal = "Admitted record unavailable"
         entries.append(
             RailEntry(
                 candidate_id=candidate.id if candidate else None,
@@ -399,12 +427,153 @@ def build_cohort_rail(
                     candidate is not None
                     and candidate.id == current_candidate_id
                 ),
+                dependency_id=dependency.id if dependency is not None else None,
+                dependency_ref=dependency.ref_code if dependency is not None else None,
+                dependency_title=dependency.title if dependency is not None else None,
+                coordination_gaps=(
+                    _coordination_gaps(dependency) if dependency is not None else ()
+                ),
+                admission_refusal=admission_refusal,
+                dismissed=(
+                    dependency is not None and dependency.dismissed_at is not None
+                ),
             )
         )
     entries.sort(
-        key=lambda e: (group_order.get(e.classification, 99), e.utility_id)
+        key=lambda entry: (
+            _rail_work_rank(entry),
+            group_order.get(entry.classification, 99),
+            entry.utility_id,
+        )
     )
     return entries
+
+
+def _rail_work_rank(entry: RailEntry) -> int:
+    """Candidate work first, then unresolved and completed cohort history."""
+
+    if entry.state == "pending":
+        return 0
+    if entry.dependency_id is not None and entry.coordination_gaps:
+        return 1
+    if entry.admission_refusal is not None:
+        return 2
+    if entry.dependency_id is not None and not entry.dismissed:
+        return 3
+    return 4
+
+
+def cohort_openable_dependency_ids(
+    rail: list[RailEntry] | None,
+) -> tuple[int, ...]:
+    """Admitted, current Dependencies that this exact cohort may open."""
+
+    return tuple(
+        entry.dependency_id
+        for entry in rail or ()
+        if (
+            entry.dependency_id is not None
+            and not entry.dismissed
+            and entry.admission_refusal is None
+        )
+    )
+
+
+def default_cohort_dependency_id(rail: list[RailEntry] | None) -> int | None:
+    """The first admitted Dependency whose current plan is incomplete."""
+
+    return next(
+        (
+            entry.dependency_id
+            for entry in rail or ()
+            if (
+                entry.dependency_id is not None
+                and not entry.dismissed
+                and entry.admission_refusal is None
+                and entry.coordination_gaps
+            )
+        ),
+        None,
+    )
+
+
+def next_incomplete_cohort_dependency_id(
+    rail: list[RailEntry] | None,
+    current_dependency_id: int | None,
+) -> int | None:
+    """The incomplete admitted Dependency after the current one, if any."""
+
+    if current_dependency_id is None:
+        return None
+    incomplete_ids = [
+        entry.dependency_id
+        for entry in rail or ()
+        if (
+            entry.dependency_id is not None
+            and not entry.dismissed
+            and entry.admission_refusal is None
+            and entry.coordination_gaps
+        )
+    ]
+    try:
+        index = incomplete_ids.index(current_dependency_id)
+    except ValueError:
+        return None
+    return (
+        incomplete_ids[index + 1]
+        if index + 1 < len(incomplete_ids)
+        else None
+    )
+
+
+def _admitted_dependencies_by_candidate(
+    session: Session,
+    project_id: int,
+    candidate_ids: set[int],
+) -> tuple[dict[int, Dependency], frozenset[int]]:
+    """Resolve cohort Candidates through typed, attributable Admission history."""
+
+    dependencies = session.scalars(
+        select(Dependency).where(Dependency.project_id == project_id)
+    ).all()
+    records = audit.admission_records_for_dependencies(
+        session, (dependency.id for dependency in dependencies)
+    )
+    resolved: dict[int, Dependency] = {}
+    invalid: set[int] = set()
+    for dependency in dependencies:
+        for record in records.get(dependency.id, ()):
+            candidate_id = record.candidate_id
+            if candidate_id not in candidate_ids:
+                continue
+            if not record.candidate_link_valid or not record.attributable:
+                invalid.add(candidate_id)
+                continue
+            existing = resolved.get(candidate_id)
+            if existing is not None and existing.id != dependency.id:
+                invalid.add(candidate_id)
+                resolved.pop(candidate_id, None)
+                continue
+            if candidate_id not in invalid:
+                resolved[candidate_id] = dependency
+    return resolved, frozenset(invalid)
+
+
+def _coordination_gaps(dependency: Dependency) -> tuple[str, ...]:
+    """Current plan gaps from the Work Decision projections."""
+
+    if dependency.dismissed_at is not None:
+        return ()
+    gaps = []
+    if not dependency.internal_owner:
+        gaps.append("Internal Owner")
+    if not dependency.next_action:
+        gaps.append("Next Action")
+    elif not (
+        dependency.action_due_date or dependency.action_due_date_reason
+    ):
+        gaps.append("Action Due Date")
+    return tuple(gaps)
 
 
 def change_strip(session, receipt, candidate: Candidate) -> list[ChangeEntry]:
