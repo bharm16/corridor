@@ -2,6 +2,7 @@ import json
 from copy import deepcopy
 from datetime import date
 from hashlib import sha256
+from html import unescape
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,6 +41,8 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
     Project,
+    ReportRun,
+    WorkDecision,
 )
 from corridor.operative_support import designate_publication_support
 from corridor.principals import HumanPrincipal
@@ -2913,11 +2916,12 @@ def test_decided_rehearsal_cohort_keeps_coordinated_dependency_openable(
     assert "Candidate review complete" in page
     assert "Every admitted Dependency currently has a Coordination Plan" in page
     assert "Review coordination" in page
-    assert f'href="/ledger/{project.slug}/{dependency_id}"' in page
+    detail_url = _link_href(page, "Review coordination")
+    assert detail_url.startswith(f"/ledger/{project.slug}/{dependency_id}?return_to=")
     assert 'name="owner"' not in page
     assert "Queue empty" not in page
 
-    detail = client.get(f"/ledger/{project.slug}/{dependency_id}").text
+    detail = client.get(detail_url).text
     assert "Internal Owner" in detail
     assert "completed" in detail
     assert "cancel action" in detail
@@ -3062,6 +3066,139 @@ def test_rehearsal_cohort_focuses_the_first_missing_coordination_field(
 
     assert "autofocus" not in owner_input
     assert "autofocus" in action_input
+
+
+def _link_href(page: str, label: str) -> str:
+    before_link_end = page.split(f">{label}</a>", 1)[0]
+    return unescape(before_link_end.rsplit('href="', 1)[1].split('"', 1)[0])
+
+
+def test_rehearsal_cohort_exposes_record_evidence_and_exact_return(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+    before_work_decisions = session.scalar(
+        select(func.count()).select_from(WorkDecision)
+    )
+    before_reports = session.scalar(select(func.count()).select_from(ReportRun))
+    before_candidate_state = member.state
+
+    coordination = client.get(lane).text
+    record_url = _link_href(coordination, "View record and Evidence")
+
+    assert record_url.startswith(f"/ledger/{project.slug}/{dependency_id}?return_to=")
+    detail = client.get(record_url)
+    assert detail.status_code == 200
+    assert "Back to cohort coordination" in detail.text
+    assert "feb.pdf" in detail.text
+    return_url = _link_href(detail.text, "Back to cohort coordination")
+    assert return_url == f"{lane}&coordinate={dependency_id}"
+
+    returned = client.get(return_url).text
+    assert "Admitted" in returned
+    assert 'name="owner"' in returned
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+    assert (
+        session.scalar(select(func.count()).select_from(WorkDecision))
+        == before_work_decisions
+    )
+    assert session.scalar(select(func.count()).select_from(ReportRun)) == before_reports
+    session.refresh(member)
+    assert member.state == before_candidate_state
+
+
+def test_dependency_detail_refuses_an_unsafe_cohort_return(
+    session, client, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-RETURN-SAFE",
+        dep_type="utility_relocation",
+        title="Safe return test",
+        status="identified",
+    )
+    session.add(dependency)
+    session.flush()
+
+    for unsafe in (
+        "https://example.com/",
+        "//example.com/cohort",
+        "/queue/other-project?lane=rehearsal&cohort_receipt_id=1",
+        f"/queue/{project.slug}?lane=candidate",
+    ):
+        response = client.get(
+            f"/ledger/{project.slug}/{dependency.id}",
+            params={"return_to": unsafe},
+        )
+        assert response.status_code == 400
+        assert "example.com" not in response.text
+
+
+def test_coordinated_cohort_record_returns_to_the_cohort_summary(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    client.post(
+        f"/dependencies/{dependency_id}/owner",
+        data={"slug": project.slug, "owner": "Dana Fields"},
+        follow_redirects=False,
+    )
+    client.post(
+        f"/dependencies/{dependency_id}/action",
+        data={
+            "slug": project.slug,
+            "action": "Confirm the crossing schedule",
+            "due_date_unknown_reason": "awaiting_schedule_information",
+        },
+        follow_redirects=False,
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+
+    summary = client.get(f"{lane}&summary=1").text
+    detail_url = _link_href(summary, "Review coordination")
+    detail = client.get(detail_url).text
+
+    assert "Back to cohort coordination" in detail
+    assert _link_href(detail, "Back to cohort coordination") == f"{lane}&summary=1"
+
+
+def test_dependency_detail_without_cohort_context_returns_to_ledger(
+    session, client, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-LEDGER-BACK",
+        dep_type="utility_relocation",
+        title="Ordinary detail",
+        status="identified",
+    )
+    session.add(dependency)
+    session.flush()
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+
+    assert "Back to cohort coordination" not in page
+    assert f'href="/ledger/{project.slug}">← ledger</a>' in page
 
 
 def test_decided_rehearsal_cohort_names_when_nothing_was_admitted(

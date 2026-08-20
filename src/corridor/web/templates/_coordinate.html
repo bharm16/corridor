@@ -10,6 +10,8 @@
   <div class="coordinate-head">
     <b>Admitted {{ coordinate_dependency.ref_code }}</b>
     — {{ coordinate_dependency.title }}
+    <a class="record"
+       href="/ledger/{{ project.slug }}/{{ coordinate_dependency.id }}?return_to={{ (lane_url ~ '&coordinate=' ~ coordinate_dependency.id)|urlencode }}">View record and Evidence</a>
     <a class="skip" href="{{ next_coordinate_url }}">skip →
       {% if next_coordinate_url != summary_url %}next item{% else %}cohort summary{% endif %}
       <kbd>Esc</kbd></a>
