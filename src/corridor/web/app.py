@@ -2206,13 +2206,16 @@ def assign_owner(
     """
     project = _project(session, slug)
     _project_dependency(session, project, dependency_id)
+    return_location = _safe_return(
+        redirect_to, f"/ledger/{slug}/{dependency_id}"
+    )
     try:
         assign_internal_owner(session, dependency_id, owner, principal=principal)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
-        _safe_return(redirect_to, f"/ledger/{slug}/{dependency_id}"),
+        return_location,
         status_code=303,
     )
 
@@ -2231,6 +2234,9 @@ def record_next_action(
     """One submit, one Work Decision: the action and its date together."""
     project = _project(session, slug)
     _project_dependency(session, project, dependency_id)
+    return_location = _safe_return(
+        redirect_to, f"/ledger/{slug}/{dependency_id}"
+    )
     parsed = None
     if due_date.strip():
         try:
@@ -2250,7 +2256,7 @@ def record_next_action(
         raise HTTPException(400, str(exc))
     session.commit()
     return RedirectResponse(
-        _safe_return(redirect_to, f"/ledger/{slug}/{dependency_id}"),
+        return_location,
         status_code=303,
     )
 
@@ -2262,12 +2268,16 @@ def close_next_action(
     slug: str = Form(...),
     no_follow_up_reason: str = Form(""),
     cancellation_reason: str = Form(""),
+    redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Completion and cancellation are distinct decisions, never one button."""
     project = _project(session, slug)
     _project_dependency(session, project, dependency_id)
+    return_location = _safe_return(
+        redirect_to, f"/ledger/{slug}/{dependency_id}"
+    )
     try:
         if outcome == "complete":
             complete_next_action(
@@ -2287,7 +2297,7 @@ def close_next_action(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     session.commit()
-    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    return RedirectResponse(return_location, status_code=303)
 
 
 @app.post("/dependencies/{dependency_id}/evidence/{link_id}/satisfies")

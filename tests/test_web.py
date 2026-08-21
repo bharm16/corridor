@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import date
 from hashlib import sha256
 from html import unescape
+from html.parser import HTMLParser
 
 import pytest
 from fastapi.testclient import TestClient
@@ -3074,6 +3075,182 @@ def _link_href(page: str, label: str) -> str:
     return unescape(before_link_end.rsplit('href="', 1)[1].split('"', 1)[0])
 
 
+class _RenderedForm(HTMLParser):
+    """Read submitted input values from one form the user can see."""
+
+    def __init__(self, action: str):
+        super().__init__()
+        self.action = action
+        self.in_form = False
+        self.found = False
+        self.data: dict[str, str] = {}
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "form":
+            self.in_form = attributes.get("action") == self.action
+            self.found = self.found or self.in_form
+        elif self.in_form and tag == "input" and attributes.get("name"):
+            self.data[attributes["name"]] = attributes.get("value", "")
+
+    def handle_endtag(self, tag):
+        if tag == "form" and self.in_form:
+            self.in_form = False
+
+
+def _rendered_form_data(page: str, action: str) -> dict[str, str]:
+    form = _RenderedForm(action)
+    form.feed(page)
+    assert form.found, f"no rendered form posts to {action}"
+    return form.data
+
+
+def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    accepted = client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    record_url = _link_href(
+        client.get(lane).text,
+        "View record and Evidence",
+    )
+    detail = client.get(record_url).text
+    return_url = _link_href(detail, "Back to cohort coordination")
+    action = f"/dependencies/{dependency_id}/owner"
+    form = _rendered_form_data(detail, action)
+
+    assert form["redirect_to"] == return_url
+    form["owner"] = "Dana Fields"
+    response = client.post(action, data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == return_url
+    dependency = session.get(Dependency, dependency_id)
+    session.refresh(dependency)
+    assert dependency.internal_owner == "Dana Fields"
+
+    detail = client.get(record_url).text
+    action = f"/dependencies/{dependency_id}/action"
+    form = _rendered_form_data(detail, action)
+    assert form["redirect_to"] == return_url
+    form.update(
+        {
+            "action": "Confirm the crossing schedule",
+            "due_date": "",
+            "due_date_unknown_reason": "awaiting_schedule_information",
+        }
+    )
+    response = client.post(action, data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == return_url
+    next_action = session.scalar(
+        select(WorkDecision).where(
+            WorkDecision.dependency_id == dependency_id,
+            WorkDecision.decision_type == "set_next_action",
+        )
+    )
+    assert next_action is not None
+    assert json.loads(next_action.after_value) == {
+        "action": "Confirm the crossing schedule",
+        "due_date": None,
+    }
+    assert next_action.action_due_date_reason == "awaiting_schedule_information"
+
+    record_url = _link_href(
+        client.get(f"{lane}&summary=1").text,
+        "Review coordination",
+    )
+    detail = client.get(record_url).text
+    return_url = _link_href(detail, "Back to cohort coordination")
+    assert return_url == f"{lane}&summary=1"
+    action = f"/dependencies/{dependency_id}/action/complete"
+    form = _rendered_form_data(detail, action)
+    assert form["redirect_to"] == return_url
+    form["no_follow_up_reason"] = "no_immediate_follow_up"
+    response = client.post(action, data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == return_url
+    completion = session.scalar(
+        select(WorkDecision).where(
+            WorkDecision.dependency_id == dependency_id,
+            WorkDecision.decision_type == "complete_next_action",
+        )
+    )
+    assert completion is not None
+    assert completion.predecessor_decision_id == next_action.id
+    assert completion.after_value is None
+    assert completion.no_follow_up_reason == "no_immediate_follow_up"
+
+    detail = client.get(record_url).text
+    action = f"/dependencies/{dependency_id}/action"
+    form = _rendered_form_data(detail, action)
+    assert form["redirect_to"] == return_url
+    form.update(
+        {
+            "action": "Prepare the targeted status request",
+            "due_date": "",
+            "due_date_unknown_reason": "awaiting_external_information",
+        }
+    )
+    response = client.post(action, data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == return_url
+    successor = session.scalar(
+        select(WorkDecision)
+        .where(
+            WorkDecision.dependency_id == dependency_id,
+            WorkDecision.decision_type == "set_next_action",
+        )
+        .order_by(WorkDecision.id.desc())
+    )
+    assert successor is not None
+    assert successor.id != next_action.id
+    assert successor.predecessor_decision_id == completion.id
+    assert json.loads(successor.after_value) == {
+        "action": "Prepare the targeted status request",
+        "due_date": None,
+    }
+    assert successor.action_due_date_reason == "awaiting_external_information"
+
+    detail = client.get(record_url).text
+    action = f"/dependencies/{dependency_id}/action/cancel"
+    form = _rendered_form_data(detail, action)
+    assert form["redirect_to"] == return_url
+    form.update(
+        {
+            "no_follow_up_reason": "return_condition_recorded",
+            "cancellation_reason": "superseded",
+        }
+    )
+    response = client.post(action, data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == return_url
+    cancellation = session.scalar(
+        select(WorkDecision).where(
+            WorkDecision.dependency_id == dependency_id,
+            WorkDecision.decision_type == "cancel_next_action",
+        )
+    )
+    assert cancellation is not None
+    assert cancellation.predecessor_decision_id == successor.id
+    assert cancellation.after_value is None
+    assert cancellation.no_follow_up_reason == "return_condition_recorded"
+    assert cancellation.cancellation_reason == "superseded"
+
+
 def test_rehearsal_cohort_exposes_record_evidence_and_exact_return(
     session, client, project
 ):
@@ -3470,7 +3647,88 @@ def test_rehearsal_cohort_does_not_open_a_dependency_outside_its_receipt(
     assert 'name="owner"' not in page
 
 
-def test_redirect_to_never_leaves_the_app(session, client, project):
+_COORDINATION_FORM_SUBMISSIONS = (
+    ("owner", {"owner": "Dana Fields"}),
+    (
+        "action",
+        {
+            "action": "Replace the current action",
+            "due_date": "",
+            "due_date_unknown_reason": "date_not_yet_known",
+        },
+    ),
+    (
+        "action/complete",
+        {"no_follow_up_reason": "no_immediate_follow_up"},
+    ),
+    (
+        "action/cancel",
+        {
+            "no_follow_up_reason": "return_condition_recorded",
+            "cancellation_reason": "no_longer_needed",
+        },
+    ),
+)
+
+
+def _seed_next_action_from_detail(client, detail_url: str, dependency_id: int):
+    action_path = f"/dependencies/{dependency_id}/action"
+    form = _rendered_form_data(client.get(detail_url).text, action_path)
+    form.update(
+        {
+            "action": "Confirm the crossing schedule",
+            "due_date": "",
+            "due_date_unknown_reason": "awaiting_schedule_information",
+        }
+    )
+    response = client.post(action_path, data=form, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == detail_url
+
+
+@pytest.mark.parametrize(
+    ("path_suffix", "submitted"),
+    _COORDINATION_FORM_SUBMISSIONS,
+)
+def test_direct_coordination_forms_fall_back_to_dependency_detail(
+    session, client, project, path_suffix, submitted
+):
+    dep = Dependency(
+        project_id=project.id,
+        ref_code="WD-WEB-DIRECT",
+        dep_type="utility_relocation",
+        title="Direct detail fallback",
+        status="identified",
+    )
+    session.add(dep)
+    session.flush()
+    detail_url = f"/ledger/{project.slug}/{dep.id}"
+
+    if path_suffix in {"action/complete", "action/cancel"}:
+        _seed_next_action_from_detail(client, detail_url, dep.id)
+
+    action_path = f"/dependencies/{dep.id}/{path_suffix}"
+    form = _rendered_form_data(client.get(detail_url).text, action_path)
+    assert "redirect_to" not in form
+    form.update(submitted)
+
+    response = client.post(action_path, data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == detail_url
+
+
+@pytest.mark.parametrize(
+    ("path_suffix", "submitted"),
+    _COORDINATION_FORM_SUBMISSIONS,
+)
+@pytest.mark.parametrize(
+    "unsafe_return",
+    ("https://example.com/escape", "//example.com/escape"),
+)
+def test_unsafe_coordination_form_return_is_rejected_before_any_write(
+    session, client, project, path_suffix, submitted, unsafe_return
+):
     dep = Dependency(
         project_id=project.id,
         ref_code="WD-WEB-RD",
@@ -3481,13 +3739,37 @@ def test_redirect_to_never_leaves_the_app(session, client, project):
     session.add(dep)
     session.flush()
 
-    for evil in ("https://example.com/", "//example.com/x"):
-        response = client.post(
-            f"/dependencies/{dep.id}/owner",
-            data={"slug": project.slug, "owner": "Dana", "redirect_to": evil},
-            follow_redirects=False,
-        )
-        assert response.status_code == 400
+    detail_url = f"/ledger/{project.slug}/{dep.id}"
+    if path_suffix in {"action/complete", "action/cancel"}:
+        _seed_next_action_from_detail(client, detail_url, dep.id)
+
+    action_path = f"/dependencies/{dep.id}/{path_suffix}"
+    form = _rendered_form_data(client.get(detail_url).text, action_path)
+    form.update(submitted)
+    form["redirect_to"] = unsafe_return
+    before_decisions = session.scalar(select(func.count()).select_from(WorkDecision))
+    before_projection = (
+        dep.internal_owner,
+        dep.next_action,
+        dep.action_due_date,
+        dep.action_due_date_reason,
+    )
+
+    response = client.post(action_path, data=form, follow_redirects=False)
+
+    assert response.status_code == 400
+    assert "example.com" not in response.text
+    assert (
+        session.scalar(select(func.count()).select_from(WorkDecision))
+        == before_decisions
+    )
+    session.refresh(dep)
+    assert (
+        dep.internal_owner,
+        dep.next_action,
+        dep.action_due_date,
+        dep.action_due_date_reason,
+    ) == before_projection
 
 
 # ── The event lane (#199): explicit revision choice, one gesture ─────────

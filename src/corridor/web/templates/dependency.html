@@ -97,6 +97,9 @@
   <form class="inline" method="post"
         action="/dependencies/{{ view.dependency.id }}/owner">
     <input type="hidden" name="slug" value="{{ project.slug }}">
+    {% if return_to %}
+      <input type="hidden" name="redirect_to" value="{{ return_to }}">
+    {% endif %}
     <input name="owner" placeholder="named person"
            value="{{ view.dependency.internal_owner or '' }}">
     <button type="submit">assign owner</button>
@@ -121,6 +124,9 @@
   <form class="inline" method="post"
         action="/dependencies/{{ view.dependency.id }}/action">
     <input type="hidden" name="slug" value="{{ project.slug }}">
+    {% if return_to %}
+      <input type="hidden" name="redirect_to" value="{{ return_to }}">
+    {% endif %}
     <input name="action" placeholder="what happens next"
            value="{{ view.dependency.next_action or '' }}">
     <input name="due_date" type="date"
@@ -137,6 +143,9 @@
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/complete">
       <input type="hidden" name="slug" value="{{ project.slug }}">
+      {% if return_to %}
+        <input type="hidden" name="redirect_to" value="{{ return_to }}">
+      {% endif %}
       <select name="no_follow_up_reason" required>
         <option value="">why no immediate follow-up?</option>
         <option value="awaiting_external_information">awaiting external information</option>
@@ -148,6 +157,9 @@
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/cancel">
       <input type="hidden" name="slug" value="{{ project.slug }}">
+      {% if return_to %}
+        <input type="hidden" name="redirect_to" value="{{ return_to }}">
+      {% endif %}
       <select name="no_follow_up_reason" required>
         <option value="">why no immediate follow-up?</option>
         <option value="awaiting_external_information">awaiting external information</option>
