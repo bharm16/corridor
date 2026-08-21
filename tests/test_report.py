@@ -1207,6 +1207,116 @@ def test_coordination_prints_project_decisions_as_project_decisions(
     assert_no_bare_cells(report)
 
 
+def test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together(
+    session,
+):
+    """The fixed PDF must preserve prose, provenance, and logical rows."""
+    import pymupdf
+
+    from corridor.export import to_pdf_bytes
+    from corridor.work_decisions import assign_internal_owner, set_next_action
+
+    project = Project(
+        slug="dense-report-layout",
+        name="Dense External Report Layout",
+        is_synthetic=True,
+    )
+    session.add(project)
+    session.flush()
+
+    dependencies = []
+    for index in range(1, 18):
+        party = ExternalOrg(name=f"UtilityParty{index:02d}")
+        dependency = Dependency(
+            project_id=project.id,
+            ref_code=f"REFROW{index:02d}",
+            source_ref=f"SRCROW{index:02d}",
+            dep_type="utility_relocation",
+            title=f"Dense report layout record {index:02d}",
+            station_from=f"{1000 + index}+01",
+            station_to=f"{1000 + index}+09",
+            external_org_id=None,
+            status="identified",
+        )
+        session.add_all((party, dependency))
+        session.flush()
+        dependency.external_org_id = party.id
+        dependencies.append(dependency)
+    session.flush()
+
+    recorder = HumanPrincipal("local:report-layout-verifier")
+    long_action = (
+        "Review the complete public utility status record, reconcile every "
+        "facility-specific date and unresolved handoff, then prepare the "
+        "targeted follow-up request without omitting its decision provenance"
+    )
+    assign_internal_owner(
+        session,
+        dependencies[0].id,
+        "Bryce Harmon",
+        principal=recorder,
+    )
+    set_next_action(
+        session,
+        dependencies[0].id,
+        long_action,
+        due_date_unknown_reason="awaiting_external_information",
+        principal=recorder,
+    )
+
+    report = build_report(session, project.id, today=date(2026, 8, 21))
+    coordination_action = section(report, "Coordination").rows[0][2]
+    milestone_at_risk = section(report, "Milestone readiness").rows[0][4]
+    exception_whys = [row[3] for row in section(report, "Exceptions").rows]
+    exception_whys[0].value = (
+        "The current coordination record cannot establish readiness because its "
+        "facility-specific completion date, responsible handoff, and cited closure "
+        "evidence all remain unresolved in the published project record"
+    )
+    appendix_rows = section(report, "Appendix").rows
+    pdf_bytes = to_pdf_bytes(render(report))
+
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
+        assert pdf.page_count > 1
+        page_text = [
+            " ".join(page.get_text().split()).replace("- ", "-")
+            for page in pdf
+        ]
+        compact_page_text = ["".join(text.split()) for text in page_text]
+        all_text = " ".join(page_text)
+
+        for cell in (coordination_action, milestone_at_risk, *exception_whys):
+            published_cell = " ".join(
+                f"{cell.value} {cell.provenance.marker}".split()
+            )
+            assert published_cell in all_text
+
+        for row in appendix_rows:
+            source_id = row[1].value
+            source_pages = [
+                page_number
+                for page_number, text in enumerate(compact_page_text)
+                if source_id in text
+            ]
+            assert len(source_pages) == 1
+            row_page = compact_page_text[source_pages[0]]
+            for cell in row:
+                published_cell = "".join(
+                    f"{cell.value} {cell.provenance.marker}".split()
+                )
+                assert published_cell in row_page
+
+        report_margin_points = 1.5 * 72 / 2.54
+        for page in pdf:
+            assert page.rect.width == pytest.approx(595.276, abs=0.1)
+            assert page.rect.height == pytest.approx(841.89, abs=0.1)
+            for x0, _y0, x1, _y1, text, *_rest in page.get_text("blocks"):
+                if not text.strip():
+                    continue
+                assert x0 >= report_margin_points - 1
+                assert x1 <= page.rect.width - report_margin_points + 1
+
+
 def test_a_decision_cell_over_no_receipts_is_bare(session):
     from corridor.report import WorkDecision as WorkDecisionProvenance
 

@@ -1231,6 +1231,16 @@ def render(report: Report) -> str:
                 f'<p class="empty">{html.escape(section.empty_message)}</p>'
             )
         is_party_statements = section.title == "External Party commitments"
+        table_classes = {
+            "Milestone readiness": "milestone-readiness",
+            "Critical items": "critical-items",
+            "Coordination": "coordination",
+            "External Party commitments": "party-statements",
+            "Exceptions": "exceptions",
+            "Changes since last report": "changes",
+            "Aging": "aging",
+            "Appendix — full ledger": "appendix",
+        }
         body = "".join(
             "<tr>"
             + "".join(
@@ -1239,7 +1249,9 @@ def render(report: Report) -> str:
             + "</tr>"
             for row in section.rows
         )
-        table_class = ' class="party-statements"' if is_party_statements else ""
+        table_class = (
+            f' class="report-table {table_classes.get(section.title, "generic")}"'
+        )
         return (
             f"<h2>{html.escape(section.title)}</h2>{note}"
             f"<table{table_class}><thead><tr>{head}</tr></thead>"
@@ -1279,8 +1291,9 @@ def render(report: Report) -> str:
 <title>Readiness — {html.escape(report.project_name)}</title>
 <style>
  :root {{ --line:#e2e2e2; --muted:#666; --warn:#b54708; }}
- body {{ font: 13px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 60rem;
-        color: #111; background:#fff; padding: 0 1.5rem; }}
+ * {{ box-sizing: border-box; }}
+ body {{ font: 13px/1.5 system-ui, sans-serif; margin: 0; max-width: none;
+        width: 100%; color: #111; background:#fff; padding: 0; }}
  h1 {{ font-size: 1.5rem; margin-bottom: .2rem; }}
  h2 {{ font-size: .85rem; text-transform: uppercase; letter-spacing: .04em;
       color: var(--muted); margin: 2.2rem 0 .5rem; border-bottom: 1px solid var(--line);
@@ -1293,11 +1306,46 @@ def render(report: Report) -> str:
  .verbal {{ background:#eff8ff; }}
  .note {{ color: var(--muted); font-size: .82rem; margin: .2rem 0 .6rem; }}
  .empty {{ color: var(--muted); font-style: italic; }}
- table {{ border-collapse: collapse; width: 100%; margin-bottom: .5rem; }}
+ table {{ border-collapse: collapse; table-layout: fixed; width: 100%;
+          max-width: 100%; margin-bottom: .5rem; }}
  th {{ text-align: left; font-size: .78rem; color: var(--muted); font-weight: 600;
       border-bottom: 1px solid var(--line); padding: .3rem .5rem; }}
  td {{ border-bottom: 1px solid #f2f2f2; padding: .3rem .5rem; vertical-align: top;
-      font-variant-numeric: tabular-nums; }}
+      font-variant-numeric: tabular-nums; overflow-wrap: anywhere; word-wrap: break-word; }}
+ .report-table tbody tr {{ break-inside: avoid; page-break-inside: avoid; }}
+ .milestone-readiness th:nth-child(1) {{ width: 24%; }}
+ .milestone-readiness th:nth-child(2) {{ width: 12%; }}
+ .milestone-readiness th:nth-child(n+3):nth-child(-n+6) {{ width: 11%; }}
+ .milestone-readiness th:nth-child(7) {{ width: 20%; }}
+ .critical-items th:nth-child(1) {{ width: 13%; }}
+ .critical-items th:nth-child(2) {{ width: 22%; }}
+ .critical-items th:nth-child(3), .critical-items th:nth-child(4) {{ width: 14%; }}
+ .critical-items th:nth-child(5) {{ width: 12%; }}
+ .critical-items th:nth-child(6) {{ width: 25%; }}
+ .coordination th:nth-child(1) {{ width: 15%; }}
+ .coordination th:nth-child(2) {{ width: 20%; }}
+ .coordination th:nth-child(3) {{ width: 45%; }}
+ .coordination th:nth-child(4) {{ width: 20%; }}
+ .exceptions th:nth-child(1) {{ width: 22%; }}
+ .exceptions th:nth-child(2) {{ width: 12%; }}
+ .exceptions th:nth-child(3) {{ width: 22%; }}
+ .exceptions th:nth-child(4) {{ width: 44%; }}
+ .changes th:nth-child(1) {{ width: 15%; }}
+ .changes th:nth-child(2) {{ width: 20%; }}
+ .changes th:nth-child(3) {{ width: 65%; }}
+ .aging th:nth-child(1) {{ width: 15%; }}
+ .aging th:nth-child(2) {{ width: 35%; }}
+ .aging th:nth-child(3), .aging th:nth-child(4) {{ width: 25%; }}
+ .appendix {{ font-size: 9px; line-height: 1.35; }}
+ .appendix th, .appendix td {{ padding: .25rem; }}
+ .appendix th:nth-child(1) {{ width: 12%; }}
+ .appendix th:nth-child(2) {{ width: 11%; }}
+ .appendix th:nth-child(3) {{ width: 18%; }}
+ .appendix th:nth-child(4) {{ width: 15%; }}
+ .appendix th:nth-child(5) {{ width: 10%; }}
+ .appendix th:nth-child(6) {{ width: 7%; }}
+ .appendix th:nth-child(7) {{ width: 27%; }}
+ .appendix .marker {{ display: block; margin: .08rem 0 0; }}
  .party-statements thead {{ display: none; }}
  .party-statements tbody, .party-statements tr {{ display: block; }}
  .party-statements tr {{ border: 1px solid var(--line); border-radius: 4px;
@@ -1309,10 +1357,13 @@ def render(report: Report) -> str:
                                  color: var(--muted); font-size: .72rem;
                                  font-weight: 600; margin-bottom: .05rem; }}
  .marker {{ color: #06c; font-size: .72em; margin-left: .35rem; cursor: help;
-           white-space: nowrap; }}
+           white-space: normal; overflow-wrap: anywhere; word-wrap: break-word; }}
  .derivation .marker {{ color: #690; }}
  footer {{ margin-top: 3rem; color: var(--muted); font-size: .8rem;
           border-top: 1px solid var(--line); padding-top: .8rem; }}
+ @media screen {{
+   body {{ margin: 2rem auto; max-width: 60rem; padding: 0 1.5rem; }}
+ }}
  @page {{ size: A4; margin: 1.5cm; }}
 </style>
 <h1>Readiness — {html.escape(report.project_name)}</h1>
