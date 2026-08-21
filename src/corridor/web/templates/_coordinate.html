@@ -12,6 +12,10 @@
     — {{ coordinate_dependency.title }}
     <a class="record"
        href="/ledger/{{ project.slug }}/{{ coordinate_dependency.id }}?return_to={{ (lane_url ~ '&coordinate=' ~ coordinate_dependency.id)|urlencode }}">View record and Evidence</a>
+    {% if cohort_receipt %}
+      <a class="report" href="/reports/{{ project.slug }}" target="_blank"
+         rel="noopener">Prepare Report (opens in new tab)</a>
+    {% endif %}
     <a class="skip" href="{{ next_coordinate_url }}">skip →
       {% if next_coordinate_url != summary_url %}next item{% else %}cohort summary{% endif %}
       <kbd>Esc</kbd></a>

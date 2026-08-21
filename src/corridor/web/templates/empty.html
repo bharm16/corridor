@@ -21,6 +21,7 @@
                 width:min(42rem, calc(100vw - 2rem)); }
   .coordinate-head { display:flex; gap:.6rem; align-items:baseline; }
   .coordinate-head .record { color:#06c; font-size:.82rem; }
+  .coordinate-head .report { color:#06c; font-size:.82rem; }
   .coordinate-head .skip { margin-left:auto; color:#333; font-size:.82rem; }
   .coordinate-forms { display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem; }
   .coordinate-forms form { display:flex; gap:.4rem; }
@@ -71,6 +72,10 @@
       {% endif %}
       <p>Cohort receipt #{{ cohort_receipt.id }} remains the exact scope.
         Candidate outcomes and admitted records stay preserved.</p>
+      {% if not coordinate_dependency %}
+        <p><a class="report" href="/reports/{{ project.slug }}" target="_blank"
+              rel="noopener">Prepare Report (opens in new tab)</a></p>
+      {% endif %}
       <h2>Cohort records</h2>
       <ol>
         {% for entry in rail %}

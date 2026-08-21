@@ -39,6 +39,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalReportArtifact,
     ExternalOrg,
     Project,
     ReportRun,
@@ -3201,6 +3202,92 @@ def test_dependency_detail_without_cohort_context_returns_to_ledger(
     assert f'href="/ledger/{project.slug}">← ledger</a>' in page
 
 
+def _anchor_before_label(page: str, label: str) -> str:
+    return page.split(f">{label}</a>", 1)[0].rsplit("<a ", 1)[1]
+
+
+def test_rehearsal_coordination_opens_the_existing_report_workspace_in_a_new_tab(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    client.post(
+        f"/candidates/{member.id}/accept",
+        data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
+        follow_redirects=False,
+    )
+    lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
+    before_artifacts = session.scalar(
+        select(func.count()).select_from(ExternalReportArtifact)
+    )
+    before_reports = session.scalar(select(func.count()).select_from(ReportRun))
+    before_decisions = session.scalar(select(func.count()).select_from(WorkDecision))
+    before_audit = session.scalar(select(func.count()).select_from(AuditLog))
+    before_state = member.state
+
+    page = client.get(lane).text
+    anchor = _anchor_before_label(page, "Prepare Report (opens in new tab)")
+
+    assert f'href="/reports/{project.slug}"' in anchor
+    assert 'target="_blank"' in anchor
+    assert 'rel="noopener"' in anchor
+    workspace = client.get(f"/reports/{project.slug}")
+    assert workspace.status_code == 200
+    assert "Render fixed PDF for review" in workspace.text
+    assert (
+        session.scalar(select(func.count()).select_from(ExternalReportArtifact))
+        == before_artifacts
+    )
+    assert session.scalar(select(func.count()).select_from(ReportRun)) == before_reports
+    assert (
+        session.scalar(select(func.count()).select_from(WorkDecision))
+        == before_decisions
+    )
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+    session.refresh(member)
+    assert member.state == before_state
+
+
+def test_rehearsal_cohort_summary_keeps_report_navigation_available(
+    session, client, project
+):
+    receipt, candidates = _rehearsal_receipt(session, project)
+    member = next(
+        c for c in candidates if c.payload_json["fields"]["utility_id"] == "W4"
+    )
+    client.post(
+        f"/candidates/{member.id}/reject",
+        data={
+            "slug": project.slug,
+            "cohort_receipt_id": str(receipt.id),
+            "reason": "duplicate",
+        },
+        follow_redirects=False,
+    )
+
+    page = client.get(
+        f"/queue/{project.slug}?lane=rehearsal"
+        f"&cohort_receipt_id={receipt.id}&summary=1"
+    ).text
+    anchor = _anchor_before_label(page, "Prepare Report (opens in new tab)")
+
+    assert f'href="/reports/{project.slug}"' in anchor
+    assert 'target="_blank"' in anchor
+    assert 'rel="noopener"' in anchor
+
+
+def test_ordinary_candidate_lane_does_not_gain_cohort_report_navigation(
+    client, session, project, document
+):
+    make_candidate(session, project, document)
+
+    page = client.get(f"/queue/{project.slug}?lane=candidate").text
+
+    assert "Prepare Report (opens in new tab)" not in page
+
+
 def test_decided_rehearsal_cohort_names_when_nothing_was_admitted(
     session, client, project
 ):
@@ -3573,6 +3660,7 @@ def test_event_lane_accept_still_opens_the_admitted_dependency(
     assert "Admitted" in page
     assert 'name="owner"' in page
     assert 'name="action"' in page
+    assert "Prepare Report (opens in new tab)" not in page
 
 
 def test_the_event_lane_boundary_refuses_a_non_member_mutation(
