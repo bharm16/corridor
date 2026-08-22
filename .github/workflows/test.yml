@@ -25,11 +25,15 @@ jobs:
           --health-retries 12
     env:
       DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_HUMAN_PRINCIPAL: local:ci
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
       - run: uv sync --locked
       - run: uv run alembic upgrade head
-      - run: uv run pytest
+      # Real-corpus PDFs are content-addressed local artifacts, not repository
+      # files. The complete suite, including that marker, is run locally.
+      - run: uv run pytest -m "not real_corpus"
