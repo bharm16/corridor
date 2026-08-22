@@ -144,7 +144,7 @@ evidence-investigator:
 
 # Freeze and invisibly run current Unplaced Statement work, or capture one
 # later independent human outcome. Needs OPENAI_API_KEY for `run`:
-#   make evidence-shadow ARGS="run <project-slug> --limit=25"
+#   make evidence-shadow ARGS="run <project-slug> --candidate-id=<id> --selection-rule=operator-declared:<rule> --manifest-path=<new-json>"
 #   make evidence-shadow ARGS="capture <shadow-case-id>"
 evidence-shadow:
 	uv run python -m corridor.evidence_investigator_shadow_cli $(ARGS)

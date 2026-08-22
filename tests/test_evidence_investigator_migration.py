@@ -17,7 +17,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "d256f1a8b4c7"
-HEAD = "e256a7c4d9e2"
+HEAD = "f256b8d5e1f3"
 
 
 def _upgrade(database_url: str, target: str) -> None:
@@ -158,6 +158,15 @@ def test_evidence_investigator_schema_is_one_linear_head_on_a_fresh_database():
                     "receipt_sha256",
                     "evaluated_at",
                 ]
+                assert _columns(
+                    connection, "evidence_investigation_candidate_review_starts"
+                ) == [
+                    "id",
+                    "project_id",
+                    "candidate_id",
+                    "principal",
+                    "observed_at",
+                ]
                 assert _constraint_columns(
                     connection, "uq_evidence_investigation_shadow_case_identity"
                 ) == [
@@ -177,6 +186,7 @@ def test_evidence_investigator_schema_is_one_linear_head_on_a_fresh_database():
                     "evidence_investigation_review_observations_append_only",
                     "evidence_investigation_shadow_outcomes_append_only",
                     "evidence_investigation_evaluation_receipts_append_only",
+                    "evidence_investigation_candidate_review_starts_append_only",
                 ):
                     assert connection.scalar(
                         text(

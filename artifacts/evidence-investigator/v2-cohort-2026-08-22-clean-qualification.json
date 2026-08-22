@@ -1,0 +1,10 @@
+{
+  "detected_at": "2026-08-22T20:28:00+00:00",
+  "manifest_path": "artifacts/evidence-investigator/v2-cohort-2026-08-22-clean.json",
+  "manifest_sha256": "5bec97a90666398603cc16c1c40c5c14190e643778a4acf9eb91689dcbbde19b",
+  "promotion_eligible": false,
+  "reason": "cohort was frozen before candidate-level pre-shadow review-start receipts existed",
+  "receipt_sha256": "2fb9ab1d02390f79595b467d2bc64a78a433584b45e9212601a6c3a130d47c31",
+  "schema_version": "evidence-investigator-v2-cohort-refusal-v1",
+  "status": "insufficient_prospective_proof"
+}

@@ -2102,6 +2102,20 @@ class EvidenceInvestigationReviewObservation(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class EvidenceInvestigationCandidateReviewStart(Base):
+    """First ordinary coordinator review observed before any shadow freeze."""
+
+    __tablename__ = "evidence_investigation_candidate_review_starts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id"), unique=True, index=True
+    )
+    principal: Mapped[str] = mapped_column(String(128))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class EvidenceInvestigationShadowOutcome(Base):
     """Later independent human label associated without touching the run."""
 
