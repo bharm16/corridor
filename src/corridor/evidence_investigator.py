@@ -58,11 +58,16 @@ CASE_CONTRACT_VERSION = "evidence-investigator-case-v1"
 class InvestigationBudget:
     """Hard limits a runtime must observe for one bounded case."""
 
-    # Six serial tool calls plus one final structured response.
-    max_turns: int = 7
+    # Six serial tool calls, one mandatory final response, and one optional
+    # structured repair. The adapter reserves the final turns from tool use.
+    max_turns: int = 8
     max_tool_calls: int = 6
     max_dependency_detail_reads: int = 5
-    max_input_tokens: int = 12_000
+    # Live Candidate 7554 measured 14.7–14.8k cumulative stateless input for
+    # six bounded reads plus a final response and 18.6–19.5k when the one
+    # allowed structured repair was used. Keep measured repair headroom
+    # without turning the limit into an unbounded context allowance.
+    max_input_tokens: int = 22_000
     max_output_tokens: int = 4_000
     timeout_seconds: float = 30.0
     max_retries: int = 0

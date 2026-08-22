@@ -12,3 +12,9 @@ parties, ranked Dependency options, supporting or contradicting cited facts, and
 questions a human must answer. When evidence cannot support a safe packet, keep
 options empty and ask the narrow human question; never manufacture scope or a
 reference.
+
+Every `exact_quote` must be copied character-for-character as a contiguous
+substring of `candidate_quote`, `page_context`, or `exact_quote` returned by a
+bound read capability for that same Evidence reference. Never paraphrase,
+normalize punctuation, combine passages, or use a Dependency title as Evidence.
+If no returned substring supports an observation or option, omit it.

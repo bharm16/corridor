@@ -1083,6 +1083,202 @@ def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
     assert step.usage_json == {"input_tokens": 50, "output_tokens": 20}
 
 
+def test_direct_transport_reserves_a_final_turn_inside_the_measured_token_budget(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+    requests = 0
+    evidence_ref = None
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal requests, evidence_ref
+        requests += 1
+        payload = json.loads(request.content)
+        if evidence_ref is None:
+            case = json.loads(payload["input"][0]["content"])
+            [evidence_ref] = case["evidence_refs"]
+        if requests <= 6:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "completed",
+                    "usage": {"input_tokens": 2_000, "output_tokens": 20},
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "read_candidate_evidence",
+                            "call_id": f"call-{requests}",
+                            "arguments": json.dumps(
+                                {
+                                    "evidence_ref": evidence_ref,
+                                    "focus": "party, timing, and location",
+                                    "max_chars": 500,
+                                }
+                            ),
+                        }
+                    ],
+                },
+            )
+        assert payload["tool_choice"] == "none"
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "usage": {"input_tokens": 2_000, "output_tokens": 20},
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {
+                                        "source_findings": [],
+                                        "possible_parties": [],
+                                        "dependency_options": [],
+                                        "human_questions": [
+                                            "Which option should the human inspect?"
+                                        ],
+                                    }
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    runtime = DirectResponsesInvestigationRuntime(
+        model="investigator-test",
+        api_key="not-a-real-key",
+        base_url="https://example.test/v1",
+        prompt="immutable test prompt",
+        client=client,
+    )
+    receipt = asyncio.run(
+        run_receipted_investigation(
+            session,
+            candidate.id,
+            runtime=runtime,
+            identity=RuntimeIdentity(
+                adapter="direct-responses-v1",
+                model="investigator-test",
+                prompt_version="evidence-investigator-v1",
+                transport_gate_sha256=TRANSPORT_GATE["sha256"],
+            ),
+            budget=InvestigationBudget(),
+        )
+    )
+    asyncio.run(client.aclose())
+
+    assert requests == 7
+    assert receipt.run.terminal_status == "human_judgment_needed"
+    assert receipt.run.usage_json["input_tokens"] == 14_000
+
+
+def test_direct_transport_repairs_a_paraphrase_within_the_repair_budget(
+    session, project
+):
+    candidate, quote = _unplaced_statement(session, project)
+    requests = 0
+    evidence_ref = None
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal requests, evidence_ref
+        requests += 1
+        payload = json.loads(request.content)
+        if evidence_ref is None:
+            case = json.loads(payload["input"][0]["content"])
+            [evidence_ref] = case["evidence_refs"]
+        if requests == 1:
+            output = [
+                {
+                    "type": "function_call",
+                    "name": "read_candidate_evidence",
+                    "call_id": "read-evidence",
+                    "arguments": json.dumps(
+                        {
+                            "evidence_ref": evidence_ref,
+                            "focus": "party and timing",
+                            "max_chars": 500,
+                        }
+                    ),
+                }
+            ]
+        else:
+            if requests == 3:
+                repair = payload["input"][-1]["content"]
+                assert "copy exact_quote verbatim" in repair
+            exact_quote = "Enterprise expects completion in June 2026."
+            if requests == 3:
+                exact_quote = quote
+            output = [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps(
+                                {
+                                    "source_findings": [
+                                        {
+                                            "evidence_ref": evidence_ref,
+                                            "exact_quote": exact_quote,
+                                            "observation": "The source states timing.",
+                                        }
+                                    ],
+                                    "possible_parties": [],
+                                    "dependency_options": [],
+                                    "human_questions": [
+                                        "Which Dependency should the human inspect?"
+                                    ],
+                                }
+                            ),
+                        }
+                    ],
+                }
+            ]
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "usage": {"input_tokens": 7_000, "output_tokens": 100},
+                "output": output,
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    runtime = DirectResponsesInvestigationRuntime(
+        model="investigator-test",
+        api_key="not-a-real-key",
+        base_url="https://example.test/v1",
+        prompt="immutable test prompt",
+        client=client,
+    )
+    receipt = asyncio.run(
+        run_receipted_investigation(
+            session,
+            candidate.id,
+            runtime=runtime,
+            identity=RuntimeIdentity(
+                adapter="direct-responses-v1",
+                model="investigator-test",
+                prompt_version="evidence-investigator-v1",
+                transport_gate_sha256=TRANSPORT_GATE["sha256"],
+            ),
+            budget=InvestigationBudget(),
+        )
+    )
+    asyncio.run(client.aclose())
+
+    assert requests == 3
+    assert receipt.run.terminal_status == "human_judgment_needed"
+    assert receipt.result.packet is not None
+    assert receipt.run.usage_json["input_tokens"] == 21_000
+    assert receipt.run.usage_json["repairs"] == 1
+
+
 def test_prospective_shadow_freezes_before_review_and_associates_hidden_outcome(
     session, project
 ):

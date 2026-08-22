@@ -156,11 +156,18 @@ class DirectResponsesInvestigationRuntime:
         ]
         steps: list[InvestigationStep] = []
         input_tokens = output_tokens = repairs = 0
+        tool_calls = 0
         own_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=budget.timeout_seconds)
         try:
             for turn in range(1, budget.max_turns + 1):
-                payload = self._payload(input_items, tools, budget)
+                allow_tools = (
+                    tool_calls < budget.max_tool_calls
+                    and turn <= budget.max_turns - budget.max_repairs - 1
+                )
+                payload = self._payload(
+                    input_items, tools, budget, allow_tools=allow_tools
+                )
                 started = time.monotonic()
                 response = await client.post(
                     f"{self.base_url}/responses",
@@ -179,6 +186,7 @@ class DirectResponsesInvestigationRuntime:
                     if len(calls) != 1:
                         raise RuntimeError("parallel tool calls are forbidden")
                     call = calls[0]
+                    tool_calls += 1
                     arguments = json.loads(call.get("arguments") or "{}")
                     try:
                         result, step = await self._invoke_tool(
@@ -249,19 +257,55 @@ class DirectResponsesInvestigationRuntime:
                 packet_data = _output_json(body)
                 packet = _packet_from_json(packet_data)
                 validation_error = tools.validate_packet(packet)
-                if validation_error and repairs < budget.max_repairs:
-                    repairs += 1
-                    input_items.extend(output)
-                    input_items.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Repair the packet without adding authority or new references. "
-                                f"Validator error: {validation_error}"
+                if validation_error:
+                    steps.append(
+                        InvestigationStep(
+                            step_type="validation",
+                            name="packet_validator",
+                            opaque_references=tuple(
+                                sorted(set(_opaque_refs(packet_data)))
                             ),
-                        }
+                            normalized_arguments={},
+                            result_summary={
+                                "status": "repairable"
+                                if repairs < budget.max_repairs
+                                else "refused",
+                                "error": validation_error,
+                            },
+                            usage={
+                                "input_tokens": int(usage.get("input_tokens", 0)),
+                                "output_tokens": int(usage.get("output_tokens", 0)),
+                            },
+                            elapsed_ms=elapsed_ms,
+                            request_sha256=sha256_json(payload),
+                            result_sha256=sha256_json(packet_data),
+                        )
                     )
-                    continue
+                    if repairs < budget.max_repairs:
+                        repairs += 1
+                        input_items.extend(output)
+                        input_items.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Repair the packet without adding authority or new references. "
+                                    "For every Evidence fact, copy exact_quote verbatim from a "
+                                    "candidate_quote, page_context, or exact_quote returned by a "
+                                    "bound read tool; otherwise remove that fact or option. "
+                                    f"Validator error: {validation_error}"
+                                ),
+                            }
+                        )
+                        continue
+                    return InvestigationRuntimeAbstention(
+                        reason="validation_failure",
+                        detail="The repaired packet failed deterministic validation.",
+                        turns=turn,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        repairs=repairs,
+                        steps=tuple(steps),
+                    )
                 steps.append(
                     InvestigationStep(
                         step_type="model",
@@ -309,7 +353,7 @@ class DirectResponsesInvestigationRuntime:
             if own_client:
                 await client.aclose()
 
-    def _payload(self, input_items, tools, budget) -> dict:
+    def _payload(self, input_items, tools, budget, *, allow_tools: bool) -> dict:
         return {
             "model": self.model,
             "instructions": self.prompt,
@@ -324,7 +368,7 @@ class DirectResponsesInvestigationRuntime:
                 }
                 for name, schema in tools.schemas.items()
             ],
-            "tool_choice": "auto",
+            "tool_choice": "auto" if allow_tools else "none",
             "parallel_tool_calls": False,
             "max_tool_calls": budget.max_tool_calls,
             "max_output_tokens": budget.max_output_tokens,
