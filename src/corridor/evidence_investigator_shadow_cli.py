@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -21,7 +22,8 @@ from corridor.evidence_investigator_runtime import (
 )
 from corridor.evidence_investigator_shadow import (
     capture_shadow_outcome,
-    run_shadow_batch,
+    run_v2_shadow_cohort,
+    write_shadow_cohort_manifest,
 )
 from corridor.models import Project
 
@@ -31,7 +33,9 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run")
     run.add_argument("project_slug")
-    run.add_argument("--limit", type=int, default=25)
+    run.add_argument("--candidate-id", type=int, action="append", required=True)
+    run.add_argument("--selection-rule", required=True)
+    run.add_argument("--manifest-path", type=Path, required=True)
     capture = commands.add_parser("capture")
     capture.add_argument("shadow_case_id")
     args = parser.parse_args()
@@ -61,25 +65,30 @@ def main() -> None:
                     base_url=settings.openai_base_url,
                 )
 
-            results = asyncio.run(
-                run_shadow_batch(
+            cohort = asyncio.run(
+                run_v2_shadow_cohort(
                     session,
                     project.id,
+                    candidate_ids=tuple(args.candidate_id),
+                    selection_rule=args.selection_rule,
                     runtime_factory=runtime_factory,
                     identity=identity,
                     budget=InvestigationBudget(),
-                    limit=args.limit,
                 )
             )
+            write_shadow_cohort_manifest(cohort, args.manifest_path)
             output = {
                 "project": project.slug,
+                "cohort_id": cohort.manifest["cohort_id"],
+                "manifest_path": str(args.manifest_path),
+                "manifest_sha256": cohort.manifest["manifest_sha256"],
                 "cases": [
                     {
                         "shadow_case_id": item.case.public_id,
                         "run_id": item.investigation.run.public_id,
                         "status": item.execution.execution_status,
                     }
-                    for item in results
+                    for item in cohort.results
                 ],
                 "hidden": True,
             }

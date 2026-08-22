@@ -32,12 +32,15 @@ from corridor.evidence_investigator_runtime import (
     PROMPT_SHA256,
     RuntimeIdentity,
     TRANSPORT_GATE,
+    configured_runtime_identity,
     run_receipted_investigation,
 )
 from corridor.evidence_investigator_shadow import (
     capture_shadow_outcome,
     observe_shadow_review,
     run_shadow_batch,
+    run_v2_shadow_cohort,
+    write_shadow_cohort_manifest,
 )
 from corridor.evidence_investigator_evaluation import (
     EvaluationRefusal,
@@ -1528,6 +1531,94 @@ def test_one_human_outcome_cannot_be_counted_by_two_shadow_cases(session, projec
         ValueError, match="human outcome already captured for another shadow case"
     ):
         capture_shadow_outcome(session, cases[1].case.public_id)
+
+
+def test_v2_cohort_freezes_an_explicit_hidden_reproducible_manifest(
+    session, project, tmp_path
+):
+    outcome_count = session.query(EvidenceInvestigationShadowOutcome).count()
+    first, _quote = _unplaced_statement(session, project)
+    second, _quote = _unplaced_statement(
+        session, project, quote="CenterPoint needs a human scope decision in May 2027."
+    )
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("What is supported?",)),
+                turns=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+
+    cohort = asyncio.run(
+        run_v2_shadow_cohort(
+            session,
+            project.id,
+            candidate_ids=(second.id, first.id),
+            selection_rule="operator-declared:two-current-unplaced-statements",
+            runtime_factory=StubRuntime,
+            identity=configured_runtime_identity("cohort-test"),
+            budget=InvestigationBudget(),
+        )
+    )
+    path = tmp_path / "cohort.json"
+    write_shadow_cohort_manifest(cohort, path)
+    manifest = json.loads(path.read_text())
+
+    assert manifest["project"] == {"id": project.id, "slug": project.slug}
+    assert manifest["candidate_ids"] == [second.id, first.id]
+    assert manifest["selection_rule"].startswith("operator-declared:")
+    assert manifest["prompt_version"] == "evidence-investigator-v2"
+    assert manifest["prompt_sha256"] == PROMPT_SHA256
+    assert manifest["adapter_contract_version"] == ADAPTER_CONTRACT_VERSION
+    assert len(manifest["read_fingerprints"]) == 2
+    assert len(manifest["dataset_membership"]) == 2
+    assert manifest["execution_summary"] == {"validated_packet": 2}
+    assert len(manifest["manifest_sha256"]) == 64
+    assert all(item["hidden"] for item in manifest["dataset_membership"])
+    assert session.query(EvidenceInvestigationShadowOutcome).count() == outcome_count
+    with pytest.raises(FileExistsError):
+        write_shadow_cohort_manifest(cohort, path)
+
+
+def test_v2_cohort_refuses_implicit_cross_project_or_mixed_configuration(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+    other = Project(slug="other-v2-cohort", name="Other v2 cohort", is_synthetic=True)
+    session.add(other)
+    session.flush([other])
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            raise AssertionError("refusal must happen before runtime")
+
+    with pytest.raises(ValueError, match="current Unplaced Statement"):
+        asyncio.run(
+            run_v2_shadow_cohort(
+                session,
+                other.id,
+                candidate_ids=(candidate.id,),
+                selection_rule="operator-declared:foreign",
+                runtime_factory=StubRuntime,
+                identity=configured_runtime_identity("cohort-test"),
+                budget=InvestigationBudget(),
+            )
+        )
+    mixed = _identity(model="cohort-test")
+    with pytest.raises(ValueError, match="sealed Evidence Investigator v2"):
+        asyncio.run(
+            run_v2_shadow_cohort(
+                session,
+                project.id,
+                candidate_ids=(candidate.id,),
+                selection_rule="operator-declared:mixed",
+                runtime_factory=StubRuntime,
+                identity=mixed,
+                budget=InvestigationBudget(),
+            )
+        )
 
 
 def test_shadow_capture_refuses_counting_one_human_outcome_twice_for_one_candidate(

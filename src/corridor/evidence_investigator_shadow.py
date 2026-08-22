@@ -12,9 +12,11 @@ keeps immutable case, execution, review, and outcome identities separate.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import select
@@ -29,6 +31,7 @@ from corridor.evidence_investigator import (
 from corridor.evidence_investigator_runtime import (
     ReceiptedInvestigation,
     RuntimeIdentity,
+    configured_runtime_identity,
     sha256_json,
     run_receipted_investigation,
 )
@@ -43,6 +46,7 @@ from corridor.models import (
     EvidenceInvestigationShadowCase,
     EvidenceInvestigationShadowExecution,
     EvidenceInvestigationShadowOutcome,
+    Project,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
 )
@@ -61,6 +65,14 @@ class ShadowExecutionResult:
     investigation: ReceiptedInvestigation
 
 
+@dataclass(frozen=True)
+class V2ShadowCohort:
+    """One exact hidden prospective dataset and its immutable local manifest."""
+
+    manifest: dict
+    results: tuple[ShadowExecutionResult, ...]
+
+
 async def run_shadow_batch(
     session: Session,
     project_id: int,
@@ -69,22 +81,34 @@ async def run_shadow_batch(
     identity: RuntimeIdentity,
     budget: InvestigationBudget,
     limit: int = 25,
+    candidate_ids: tuple[int, ...] | None = None,
 ) -> tuple[ShadowExecutionResult, ...]:
     """Freeze and invisibly run current unplaced Candidate Work Items."""
     work = build_work_list(session, project_id)
-    candidate_ids: list[int] = []
+    eligible_candidate_ids: list[int] = []
     for item in (*work.immediate, *work.candidate_backlog):
         if (
             item.kind == "candidate"
             and item.candidate_id is not None
             and "unplaced_statement" in item.attention_reason_codes
-            and item.candidate_id not in candidate_ids
+            and item.candidate_id not in eligible_candidate_ids
         ):
-            candidate_ids.append(item.candidate_id)
-        if len(candidate_ids) == limit:
+            eligible_candidate_ids.append(item.candidate_id)
+        if candidate_ids is None and len(eligible_candidate_ids) == limit:
             break
+    if candidate_ids is None:
+        selected_candidate_ids = eligible_candidate_ids
+    else:
+        if not candidate_ids or len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("explicit shadow Candidate ids must be non-empty and unique")
+        if set(candidate_ids) - set(eligible_candidate_ids):
+            raise ValueError(
+                "every selected Candidate must be a current Unplaced Statement "
+                "Work Item in the bound project"
+            )
+        selected_candidate_ids = list(candidate_ids)
     results: list[ShadowExecutionResult] = []
-    for candidate_id in candidate_ids:
+    for candidate_id in selected_candidate_ids:
         prepared = prepare_investigation(session, candidate_id)
         if isinstance(prepared, InvestigationAbstention):
             continue
@@ -176,6 +200,101 @@ async def run_shadow_batch(
         session.flush([execution])
         results.append(ShadowExecutionResult(shadow_case, execution, investigation))
     return tuple(results)
+
+
+async def run_v2_shadow_cohort(
+    session: Session,
+    project_id: int,
+    *,
+    candidate_ids: tuple[int, ...],
+    selection_rule: str,
+    runtime_factory: Callable[[], InvestigationRuntime],
+    identity: RuntimeIdentity,
+    budget: InvestigationBudget,
+) -> V2ShadowCohort:
+    """Freeze and execute one explicit, configuration-verifiable v2 cohort."""
+    if not selection_rule.startswith("operator-declared:"):
+        raise ValueError("the v2 cohort requires an operator-declared selection rule")
+    if identity != configured_runtime_identity(identity.model):
+        raise ValueError("the cohort must use the sealed Evidence Investigator v2")
+    project = session.get(Project, project_id)
+    if project is None:
+        raise ValueError("shadow cohort project does not exist")
+    selected_at = datetime.now(timezone.utc)
+    results = await run_shadow_batch(
+        session,
+        project_id,
+        runtime_factory=runtime_factory,
+        identity=identity,
+        budget=budget,
+        limit=len(candidate_ids),
+        candidate_ids=candidate_ids,
+    )
+    if tuple(item.case.candidate_id for item in results) != candidate_ids:
+        raise ValueError(
+            "one or more selected frozen cases already exists or could not execute"
+        )
+    summary: dict[str, int] = {}
+    semantic_reasons = {
+        "insufficient_evidence",
+        "ambiguous_scope",
+        "ambiguous_party",
+    }
+    membership = []
+    for item in results:
+        reason = item.investigation.run.reason
+        if item.investigation.result.packet is not None:
+            category = "validated_packet"
+        elif reason in semantic_reasons:
+            category = "semantic_abstention"
+        else:
+            category = "harness_failure"
+        summary[category] = summary.get(category, 0) + 1
+        membership.append(
+            {
+                "shadow_case_id": item.case.public_id,
+                "run_id": item.investigation.run.public_id,
+                "candidate_id": item.case.candidate_id,
+                "category": category,
+                "terminal_status": item.investigation.run.terminal_status,
+                "reason": reason,
+                "hidden": True,
+                "non_authoritative": True,
+            }
+        )
+    content = {
+        "schema_version": "evidence-investigator-v2-shadow-cohort-v1",
+        "cohort_id": str(uuid.uuid4()),
+        "project": {"id": project.id, "slug": project.slug},
+        "selected_at": selected_at.isoformat(),
+        "selection_rule": selection_rule,
+        "candidate_ids": list(candidate_ids),
+        "model": identity.model,
+        "prompt_version": identity.prompt_version,
+        "prompt_sha256": identity.prompt_sha256,
+        "adapter_contract_version": identity.adapter_contract_version,
+        "transport_gate_sha256": identity.transport_gate_sha256,
+        "budget": asdict(budget),
+        "active_run_ids": [item.case.extraction_run_id for item in results],
+        "read_fingerprints": [item.case.read_fingerprint for item in results],
+        "dataset_membership": membership,
+        "execution_summary": summary,
+    }
+    return V2ShadowCohort(
+        manifest={**content, "manifest_sha256": sha256_json(content)},
+        results=results,
+    )
+
+
+def write_shadow_cohort_manifest(cohort: V2ShadowCohort, path: Path) -> None:
+    """Create one local manifest without overwriting an earlier cohort receipt."""
+    content = {key: value for key, value in cohort.manifest.items() if key != "manifest_sha256"}
+    if sha256_json(content) != cohort.manifest.get("manifest_sha256"):
+        raise ValueError("shadow cohort manifest changed after it was sealed")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(cohort.manifest, stream, indent=2, sort_keys=True)
+        stream.write("\n")
 
 
 def observe_shadow_review(
