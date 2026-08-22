@@ -158,8 +158,23 @@ def test_dedupe_hint_is_org_type_and_station_range():
 # ---------------------------------------------------------------------------
 
 LOCK = Path("corpus/manifest.lock.json")
+
+
+def _locked_corpus_is_present(lock_path: Path) -> bool:
+    if not lock_path.exists():
+        return False
+    lock = json.loads(lock_path.read_text())
+    paths = [
+        Path(record["local_path"])
+        for record in lock.get("sources", {}).values()
+        if record.get("local_path")
+    ]
+    return bool(paths) and all(path.exists() for path in paths)
+
+
 real_corpus = pytest.mark.skipif(
-    not LOCK.exists(), reason="corpus not fetched; run `make corpus`"
+    not _locked_corpus_is_present(LOCK),
+    reason="corpus not fetched; run `make corpus`",
 )
 
 

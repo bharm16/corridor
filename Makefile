@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance sh99-coordinator-rehearsal minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 # One command from a clean clone.
 boot:
@@ -135,6 +135,24 @@ sh99-admission-acceptance:
 #   make sh99-coordinator-rehearsal ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
 sh99-coordinator-rehearsal:
 	uv run python -m corridor.sh99_coordinator_rehearsal_cli $(ARGS)
+
+# Run one current Unplaced Statement Candidate through the hidden, read-only
+# Evidence Investigator and append a terminal local receipt. Needs OPENAI_API_KEY:
+#   make evidence-investigator ARGS="<candidate-id>"
+evidence-investigator:
+	uv run python -m corridor.evidence_investigator_cli $(ARGS)
+
+# Freeze and invisibly run current Unplaced Statement work, or capture one
+# later independent human outcome. Needs OPENAI_API_KEY for `run`:
+#   make evidence-shadow ARGS="run <project-slug> --limit=25"
+#   make evidence-shadow ARGS="capture <shadow-case-id>"
+evidence-shadow:
+	uv run python -m corridor.evidence_investigator_shadow_cli $(ARGS)
+
+# Grade an explicit shadow run set into immutable JSON and Markdown receipts:
+#   make evidence-shadow-eval ARGS="--run=<run-id> --human-scores=<json> --output-dir=<new-dir>"
+evidence-shadow-eval:
+	uv run python -m corridor.evidence_investigator_evaluation_cli $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 minutes:

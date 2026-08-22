@@ -822,8 +822,23 @@ def test_candidates_are_added_to_the_session(session, project, tmp_path):
 # silently stops reading SR 789 fails here rather than in a run.
 
 FDOT_LOCK = Path("corpus/fdot-sr789.lock.json")
+
+
+def _locked_corpus_is_present(lock_path: Path) -> bool:
+    if not lock_path.exists():
+        return False
+    lock = json.loads(lock_path.read_text())
+    paths = [
+        Path(record["local_path"])
+        for record in lock.get("sources", {}).values()
+        if record.get("local_path")
+    ]
+    return bool(paths) and all(path.exists() for path in paths)
+
+
 real_corpus = pytest.mark.skipif(
-    not FDOT_LOCK.exists(), reason="corpus not fetched; run `make corpus`"
+    not _locked_corpus_is_present(FDOT_LOCK),
+    reason="corpus not fetched; run `make corpus`",
 )
 
 

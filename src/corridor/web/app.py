@@ -176,6 +176,7 @@ from corridor.statement_lifecycle import (
     current_candidate_disposition,
     current_lineage_statement,
 )
+from corridor.evidence_investigator_shadow import observe_shadow_review
 from corridor.work_list import build_work_list
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -703,11 +704,16 @@ def coordinate_statement_screen(
     request: Request,
     slug: str,
     candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Show source Evidence and plain-language choices for one Unplaced Statement."""
     project = _project(session, slug)
     candidate = _project_statement_candidate(session, project, candidate_id)
+    if observe_shadow_review(
+        session, candidate.id, boundary="start", principal=principal
+    ) is not None:
+        session.commit()
     return _statement_coordination_screen(request, session, project, candidate)
 
 
@@ -749,6 +755,7 @@ async def save_coordinated_statement(
             error=str(exc),
             status_code=400,
         )
+    observe_shadow_review(session, candidate.id, boundary="end", principal=principal)
     session.commit()
     return RedirectResponse(
         f"/statements/{project.slug}/{candidate_id}/coordinate",
@@ -807,6 +814,7 @@ async def mark_waiting_statement_not_relevant(
         return _statement_coordination_screen(
             request, session, project, candidate, error=str(exc), status_code=400
         )
+    observe_shadow_review(session, candidate.id, boundary="end", principal=principal)
     session.commit()
     return RedirectResponse(
         f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303

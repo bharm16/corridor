@@ -816,13 +816,19 @@ def _provision_database(admin_url: str, migration_revision: str):
 def _require_direct_migration_successor(
     repo_root: Path, *, source_revision: str, target_revision: str
 ) -> None:
-    """Require the explicit clone upgrade to be the checkout's sole direct edge."""
+    """Require an explicit direct edge retained beneath the checkout's sole head."""
 
     scripts = ScriptDirectory.from_config(AlembicConfig(str(repo_root / "alembic.ini")))
     heads = tuple(scripts.get_heads())
     target = scripts.get_revision(target_revision)
-    if heads != (target_revision,):
-        raise ValueError("expected target migration is not the checkout's sole head")
+    revisions_to_target = {
+        revision.revision
+        for revision in scripts.walk_revisions(
+            base=target_revision, head=heads[0] if len(heads) == 1 else "heads"
+        )
+    }
+    if len(heads) != 1 or target_revision not in revisions_to_target:
+        raise ValueError("expected target migration is not beneath the checkout's sole head")
     if target is None or target.down_revision != source_revision:
         raise ValueError("expected source migration is not the target's direct predecessor")
 
