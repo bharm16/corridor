@@ -128,6 +128,18 @@ class RuntimeIdentity:
             raise ValueError("runtime identity fields must be non-empty")
 
 
+def configured_runtime_identity(model: str) -> RuntimeIdentity:
+    """Return the one sealed production identity shared by operator commands."""
+    return RuntimeIdentity(
+        adapter=ADAPTER,
+        adapter_contract_version=ADAPTER_CONTRACT_VERSION,
+        model=model,
+        prompt_version=PROMPT_VERSION,
+        prompt_sha256=PROMPT_SHA256,
+        transport_gate_sha256=TRANSPORT_GATE["sha256"],
+    )
+
+
 @dataclass(frozen=True)
 class ReceiptedInvestigation:
     run: EvidenceInvestigationRun

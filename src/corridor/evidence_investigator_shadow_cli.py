@@ -16,13 +16,8 @@ from corridor.config import settings
 from corridor.db import Session
 from corridor.evidence_investigator import InvestigationBudget
 from corridor.evidence_investigator_runtime import (
-    ADAPTER,
-    ADAPTER_CONTRACT_VERSION,
-    PROMPT_SHA256,
-    PROMPT_VERSION,
-    TRANSPORT_GATE,
     DirectResponsesInvestigationRuntime,
-    RuntimeIdentity,
+    configured_runtime_identity,
 )
 from corridor.evidence_investigator_shadow import (
     capture_shadow_outcome,
@@ -55,13 +50,8 @@ def main() -> None:
             )
             if project is None:
                 raise SystemExit(f"unknown project {args.project_slug!r}")
-            identity = RuntimeIdentity(
-                adapter=ADAPTER,
-                adapter_contract_version=ADAPTER_CONTRACT_VERSION,
-                model=settings.evidence_investigator_model,
-                prompt_version=PROMPT_VERSION,
-                prompt_sha256=PROMPT_SHA256,
-                transport_gate_sha256=TRANSPORT_GATE["sha256"],
+            identity = configured_runtime_identity(
+                settings.evidence_investigator_model
             )
 
             def runtime_factory():
