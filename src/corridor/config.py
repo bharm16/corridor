@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # the numbers incomparable, which is why it lives in config rather than
     # being hardcoded at a call site.
     llm_model: str = "gpt-5.6-luna"
+    # Separate lineage: changing this never changes Candidate extraction model
+    # identity, and every investigator receipt records it independently.
+    evidence_investigator_model: str = "gpt-5.6-luna"
 
 
 settings = Settings()

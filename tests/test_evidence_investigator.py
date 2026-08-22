@@ -2,11 +2,14 @@
 
 import asyncio
 import hashlib
+import json
 from dataclasses import fields as dataclass_fields
 from datetime import date
 
 import pytest
+import httpx
 from sqlalchemy import delete
+from sqlalchemy.orm import attributes
 
 from corridor.db import Session, engine
 from corridor.evidence_investigator import (
@@ -22,6 +25,23 @@ from corridor.evidence_investigator import (
     SourceFinding,
     investigate_candidate,
 )
+from corridor.evidence_investigator_runtime import (
+    DirectResponsesInvestigationRuntime,
+    RuntimeIdentity,
+    TRANSPORT_GATE,
+    run_receipted_investigation,
+)
+from corridor.evidence_investigator_shadow import (
+    capture_shadow_outcome,
+    observe_shadow_review,
+    run_shadow_batch,
+)
+from corridor.evidence_investigator_evaluation import (
+    EvaluationRefusal,
+    EvaluationRules,
+    evaluate_shadow_runs,
+    verify_evaluation_receipt,
+)
 from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
@@ -36,11 +56,18 @@ from corridor.models import (
     DocPage,
     Document,
     EventAdmissionOutcome,
+    EvidenceInvestigationPacketReceipt,
+    EvidenceInvestigationRun,
+    EvidenceInvestigationShadowCase,
+    EvidenceInvestigationShadowExecution,
+    EvidenceInvestigationShadowOutcome,
+    EvidenceInvestigationEvaluationReceipt,
     ExternalOrg,
     PolicyRun,
     Project,
 )
 from corridor.principals import HumanPrincipal
+from corridor.statement_coordination import mark_statement_not_relevant
 
 RECORDER = HumanPrincipal("local:evidence-investigator-test")
 
@@ -660,7 +687,7 @@ def test_turn_output_token_retry_repair_and_timeout_budgets_fail_closed(
             )
 
     overages = (
-        UsageRuntime(turns=5),
+        UsageRuntime(turns=InvestigationBudget().max_turns + 1),
         UsageRuntime(output_tokens=4_001),
         UsageRuntime(retries=1),
         UsageRuntime(repairs=2),
@@ -918,3 +945,320 @@ def test_party_context_exposes_current_unknown_scope_evidence_without_staling_ca
 
     assert result.status == "options_available"
     assert result.packet.possible_parties[0].supporting_facts[0].exact_quote == quote
+
+
+def test_receipted_investigation_appends_one_terminal_non_authoritative_result(
+    session, project
+):
+    run_count = session.query(EvidenceInvestigationRun).count()
+    packet_count = session.query(EvidenceInvestigationPacketReceipt).count()
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("What should the human decide?",)),
+                turns=1,
+                input_tokens=120,
+                output_tokens=30,
+            )
+
+    identity = RuntimeIdentity(
+        adapter="stub-contract-v1",
+        model="stub-investigator",
+        prompt_version="evidence-investigator-test-v1",
+        transport_gate_sha256="a" * 64,
+    )
+    first = asyncio.run(
+        run_receipted_investigation(
+            session,
+            candidate.id,
+            runtime=StubRuntime(),
+            identity=identity,
+            budget=InvestigationBudget(),
+        )
+    )
+    second = asyncio.run(
+        run_receipted_investigation(
+            session,
+            candidate.id,
+            runtime=StubRuntime(),
+            identity=identity,
+            budget=InvestigationBudget(),
+        )
+    )
+
+    assert first.run.public_id != second.run.public_id
+    assert first.run.terminal_status == "human_judgment_needed"
+    assert first.run.model == "stub-investigator"
+    assert first.run.prompt_version == "evidence-investigator-test-v1"
+    assert len(first.run.candidate_payload_sha256) == 64
+    assert first.run.candidate_payload_sha256 == second.run.candidate_payload_sha256
+    assert session.query(EvidenceInvestigationRun).count() == run_count + 2
+    packets = session.query(EvidenceInvestigationPacketReceipt).order_by(
+        EvidenceInvestigationPacketReceipt.id.desc()
+    ).limit(2).all()
+    assert session.query(EvidenceInvestigationPacketReceipt).count() == packet_count + 2
+    assert len(packets) == 2
+    assert all(packet.non_authoritative for packet in packets)
+    assert all(packet.validator_outcome == "valid" for packet in packets)
+
+
+def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["store"] is False
+        assert payload["parallel_tool_calls"] is False
+        assert payload["max_tool_calls"] == 6
+        assert payload["text"]["format"]["strict"] is True
+        assert all(tool["strict"] is True for tool in payload["tools"])
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "usage": {"input_tokens": 50, "output_tokens": 20},
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {
+                                        "source_findings": [],
+                                        "possible_parties": [],
+                                        "dependency_options": [],
+                                        "human_questions": [
+                                            "Which registered party made this statement?"
+                                        ],
+                                    }
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    runtime = DirectResponsesInvestigationRuntime(
+        model="investigator-test",
+        api_key="not-a-real-key",
+        base_url="https://example.test/v1",
+        prompt="immutable test prompt",
+        client=client,
+    )
+    receipt = asyncio.run(
+        run_receipted_investigation(
+            session,
+            candidate.id,
+            runtime=runtime,
+            identity=RuntimeIdentity(
+                adapter="direct-responses-v1",
+                model="investigator-test",
+                prompt_version="evidence-investigator-v1",
+                transport_gate_sha256=TRANSPORT_GATE["sha256"],
+            ),
+            budget=InvestigationBudget(),
+        )
+    )
+    asyncio.run(client.aclose())
+
+    assert receipt.run.usage_json == {
+        "turns": 1,
+        "input_tokens": 50,
+        "output_tokens": 20,
+        "retries": 0,
+        "repairs": 0,
+    }
+    assert receipt.run.terminal_status == "human_judgment_needed"
+
+
+def test_prospective_shadow_freezes_before_review_and_associates_hidden_outcome(
+    session, project
+):
+    case_count = session.query(EvidenceInvestigationShadowCase).count()
+    execution_count = session.query(EvidenceInvestigationShadowExecution).count()
+    outcome_count = session.query(EvidenceInvestigationShadowOutcome).count()
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("Is this relevant?",)),
+                turns=1,
+                input_tokens=80,
+                output_tokens=20,
+            )
+
+    identity = RuntimeIdentity(
+        adapter="stub-contract-v1",
+        model="shadow-test",
+        prompt_version="evidence-investigator-test-v1",
+        transport_gate_sha256="b" * 64,
+    )
+    [shadow] = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            runtime_factory=StubRuntime,
+            identity=identity,
+            budget=InvestigationBudget(),
+        )
+    )
+    duplicate = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            runtime_factory=StubRuntime,
+            identity=identity,
+            budget=InvestigationBudget(),
+        )
+    )
+
+    assert duplicate == ()
+    assert shadow.case.candidate_id == candidate.id
+    assert shadow.execution.execution_status == "human_judgment_needed"
+    assert session.query(EvidenceInvestigationShadowCase).count() == case_count + 1
+    assert (
+        session.query(EvidenceInvestigationShadowExecution).count()
+        == execution_count + 1
+    )
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+
+    observe_shadow_review(
+        session, candidate.id, boundary="start", principal=RECORDER
+    )
+    mark_statement_not_relevant(
+        session,
+        candidate.id,
+        reason="outside_project_scope",
+        confirmed=True,
+        principal=RECORDER,
+    )
+    observe_shadow_review(session, candidate.id, boundary="end", principal=RECORDER)
+    outcome = capture_shadow_outcome(session, shadow.case.public_id)
+
+    assert outcome.candidate_disposition == "not_relevant"
+    assert outcome.scope_mode is None
+    assert outcome.unresolved is False
+    assert "not_relevant" in outcome.strata_json
+    assert outcome.review_seconds is not None
+    assert session.query(EvidenceInvestigationShadowOutcome).count() == outcome_count + 1
+
+
+def test_shadow_evaluation_writes_reproducible_machine_and_human_receipts(
+    session, project, tmp_path
+):
+    evaluation_count = session.query(EvidenceInvestigationEvaluationReceipt).count()
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("Is this relevant?",)),
+                turns=1,
+                input_tokens=60,
+                output_tokens=15,
+            )
+
+    identity = RuntimeIdentity(
+        adapter="stub-contract-v1",
+        model="evaluation-test",
+        prompt_version="evidence-investigator-test-v1",
+        transport_gate_sha256="c" * 64,
+    )
+    [shadow] = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            runtime_factory=StubRuntime,
+            identity=identity,
+            budget=InvestigationBudget(),
+        )
+    )
+    mark_statement_not_relevant(
+        session,
+        candidate.id,
+        reason="outside_project_scope",
+        confirmed=True,
+        principal=RECORDER,
+    )
+    capture_shadow_outcome(session, shadow.case.public_id)
+    scores = {
+        shadow.case.public_id: {
+            "packet_usefulness": 3,
+            "correct_abstention": None,
+            "misleading_ranking": False,
+            "review_effort": "bounded",
+        }
+    }
+    evaluation = evaluate_shadow_runs(
+        session,
+        [shadow.investigation.run.public_id],
+        rules=EvaluationRules(min_cases=1, required_strata=("not_relevant",)),
+        human_scores=scores,
+        output_dir=tmp_path,
+    )
+
+    assert evaluation.receipt.status == "passed"
+    assert evaluation.receipt.gates_json["schema_valid"] is True
+    assert evaluation.receipt.gates_json["citation_valid"] is True
+    assert evaluation.receipt.identity_json["ui_enabled"] is False
+    assert json.loads(evaluation.machine_path.read_text())["status"] == "passed"
+    assert "No coordinator UI was enabled" in evaluation.summary_path.read_text()
+    assert (
+        session.query(EvidenceInvestigationEvaluationReceipt).count()
+        == evaluation_count + 1
+    )
+
+    insufficient = evaluate_shadow_runs(
+        session,
+        [shadow.investigation.run.public_id],
+        rules=EvaluationRules(min_cases=2, required_strata=("not_relevant",)),
+        human_scores=scores,
+        output_dir=tmp_path / "insufficient",
+    )
+    assert insufficient.receipt.status == "insufficient"
+    assert "sample_size" in insufficient.receipt.limitations_json
+    assert verify_evaluation_receipt(evaluation.receipt) is True
+
+    original_status = shadow.execution.execution_status
+    shadow.execution.execution_status = "stale"
+    with session.no_autoflush:
+        stale = evaluate_shadow_runs(
+            session,
+            [shadow.investigation.run.public_id],
+            rules=EvaluationRules(min_cases=1, required_strata=("not_relevant",)),
+            human_scores=scores,
+            output_dir=tmp_path / "stale",
+        )
+    attributes.set_committed_value(
+        shadow.execution, "execution_status", original_status
+    )
+    assert stale.receipt.status == "failed"
+    assert stale.receipt.gates_json["zero_stale_packets"] is False
+
+    original_case = shadow.case.case_json
+    shadow.case.case_json = {**original_case, "later_human_outcome": "not_relevant"}
+    with session.no_autoflush, pytest.raises(EvaluationRefusal, match="later human answer"):
+        evaluate_shadow_runs(
+            session,
+            [shadow.investigation.run.public_id],
+            rules=EvaluationRules(min_cases=1, required_strata=("not_relevant",)),
+            human_scores=scores,
+            output_dir=tmp_path / "contaminated",
+        )
+    attributes.set_committed_value(shadow.case, "case_json", original_case)
+
+    original_summary = evaluation.receipt.summary_markdown
+    evaluation.receipt.summary_markdown = original_summary + "tampered"
+    assert verify_evaluation_receipt(evaluation.receipt) is False
+    attributes.set_committed_value(
+        evaluation.receipt, "summary_markdown", original_summary
+    )

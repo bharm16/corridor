@@ -1940,6 +1940,203 @@ class Candidate(Base):
     )
 
 
+class EvidenceInvestigationRun(Base):
+    """One immutable terminal attempt by the non-authoritative investigator."""
+
+    __tablename__ = "evidence_investigation_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "terminal_status in ('options_available', 'human_judgment_needed', "
+            "'abstained', 'failed')",
+            name="ck_evidence_investigation_runs_terminal_status",
+        ),
+        CheckConstraint(
+            "length(candidate_payload_sha256) = 64 and "
+            "length(transport_gate_sha256) = 64",
+            name="ck_evidence_investigation_runs_hashes",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    extraction_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("extraction_runs.id")
+    )
+    terminal_status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(String(128))
+    detail: Mapped[str | None] = mapped_column(Text)
+    adapter: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    tool_contract_version: Mapped[str] = mapped_column(String(128))
+    validator_version: Mapped[str] = mapped_column(String(128))
+    transport_gate_sha256: Mapped[str] = mapped_column(String(64))
+    candidate_payload_sha256: Mapped[str] = mapped_column(String(64))
+    read_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    budget_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EvidenceInvestigationStepReceipt(Base):
+    """Redacted ordered transport/tool metadata for one investigation."""
+
+    __tablename__ = "evidence_investigation_step_receipts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "ordinal", name="uq_investigation_step_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_runs.id"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    step_type: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(128))
+    opaque_references_json: Mapped[list] = mapped_column(JSONB)
+    normalized_arguments_json: Mapped[dict] = mapped_column(JSONB)
+    result_summary_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    elapsed_ms: Mapped[int] = mapped_column(Integer)
+    request_sha256: Mapped[str] = mapped_column(String(64))
+    result_sha256: Mapped[str] = mapped_column(String(64))
+
+
+class EvidenceInvestigationPacketReceipt(Base):
+    """Validated structured packet; explicitly never Ledger authority."""
+
+    __tablename__ = "evidence_investigation_packet_receipts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_runs.id"), unique=True
+    )
+    packet_json: Mapped[dict] = mapped_column(JSONB)
+    validator_outcome: Mapped[str] = mapped_column(String(32))
+    packet_sha256: Mapped[str] = mapped_column(String(64))
+    non_authoritative: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+
+
+class EvidenceInvestigationShadowCase(Base):
+    """Exact prospective model-visible case frozen before human review."""
+
+    __tablename__ = "evidence_investigation_shadow_cases"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "read_fingerprint",
+            "model",
+            "prompt_version",
+            name="uq_evidence_investigation_shadow_case_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    extraction_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("extraction_runs.id")
+    )
+    candidate_payload_sha256: Mapped[str] = mapped_column(String(64))
+    read_fingerprint: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    case_json: Mapped[dict] = mapped_column(JSONB)
+    registered_evidence_json: Mapped[list] = mapped_column(JSONB)
+    option_population_json: Mapped[dict] = mapped_column(JSONB)
+    option_population_sha256: Mapped[str] = mapped_column(String(64))
+    frozen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EvidenceInvestigationShadowExecution(Base):
+    """Immutable association of one frozen case with its later terminal run."""
+
+    __tablename__ = "evidence_investigation_shadow_executions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    shadow_case_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_shadow_cases.id"), unique=True
+    )
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_runs.id"), unique=True
+    )
+    execution_status: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EvidenceInvestigationReviewObservation(Base):
+    """Server-observed review boundary, separate from runtime/waiting time."""
+
+    __tablename__ = "evidence_investigation_review_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "shadow_case_id", "boundary", name="uq_shadow_review_boundary"
+        ),
+        CheckConstraint(
+            "boundary in ('start', 'end')", name="ck_shadow_review_boundary"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    shadow_case_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_shadow_cases.id"), index=True
+    )
+    boundary: Mapped[str] = mapped_column(String(16))
+    principal: Mapped[str] = mapped_column(String(128))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EvidenceInvestigationShadowOutcome(Base):
+    """Later independent human label associated without touching the run."""
+
+    __tablename__ = "evidence_investigation_shadow_outcomes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    shadow_case_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_shadow_cases.id"), unique=True
+    )
+    candidate_disposition: Mapped[str | None] = mapped_column(String(32))
+    scope_mode: Mapped[str | None] = mapped_column(String(32))
+    selected_dependency_ids_json: Mapped[list] = mapped_column(JSONB)
+    correction: Mapped[bool] = mapped_column(Boolean)
+    undo: Mapped[bool] = mapped_column(Boolean)
+    unresolved: Mapped[bool] = mapped_column(Boolean)
+    outcome_identities_json: Mapped[dict] = mapped_column(JSONB)
+    strata_json: Mapped[list] = mapped_column(JSONB)
+    review_seconds: Mapped[float | None] = mapped_column(Float)
+    outcome_sha256: Mapped[str] = mapped_column(String(64))
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EvidenceInvestigationEvaluationReceipt(Base):
+    """Versioned, immutable deterministic shadow evaluation receipt."""
+
+    __tablename__ = "evidence_investigation_evaluation_receipts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    evaluation_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))
+    selected_run_ids_json: Mapped[list] = mapped_column(JSONB)
+    identity_json: Mapped[dict] = mapped_column(JSONB)
+    metrics_json: Mapped[dict] = mapped_column(JSONB)
+    strata_json: Mapped[dict] = mapped_column(JSONB)
+    human_scores_json: Mapped[dict] = mapped_column(JSONB)
+    gates_json: Mapped[dict] = mapped_column(JSONB)
+    limitations_json: Mapped[list] = mapped_column(JSONB)
+    summary_markdown: Mapped[str] = mapped_column(Text)
+    receipt_sha256: Mapped[str] = mapped_column(String(64))
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class CandidateDisposition(Base):
     """One human disposition of an Unplaced Statement Candidate.
 

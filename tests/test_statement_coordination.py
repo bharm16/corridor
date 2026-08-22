@@ -877,11 +877,11 @@ def test_correcting_statement_facts_appends_a_successor_and_marks_its_plan_for_r
 def test_fact_correction_can_bind_new_source_words_to_the_same_selected_party(
     session, project, roster_entry
 ):
-    party = ExternalOrg(name="Kinder Morgan Tejas Pipeline")
+    party = ExternalOrg(name="Kinder Morgan Tejas Pipeline statement-coordination-test")
     session.add(party)
     session.flush()
     original_quote = (
-        "Kinder Morgan Tejas Pipeline will complete relocation by June 1, 2026."
+        "Kinder Morgan Tejas Pipeline statement-coordination-test will complete relocation by June 1, 2026."
     )
     corrected_quote = "Kinder Morgan will complete relocation by July 1, 2026."
     document = _document(
@@ -1606,7 +1606,9 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
     session, project, roster_entry, tmp_path
 ):
     """The coordinator may make one Evidence-bound attribution, not a registry edit."""
-    canonical_party = ExternalOrg(name="Kinder Morgan Tejas Pipeline")
+    canonical_party = ExternalOrg(
+        name="Kinder Morgan Tejas Pipeline statement-coordination-test"
+    )
     session.add(canonical_party)
     session.flush()
     party_quote = "Kinder Morgan Management Meeting Highlights"
@@ -1715,7 +1717,9 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
 def test_http_guided_save_refuses_inexact_party_words_as_a_statement_resolution(
     session, project, roster_entry, submitted_party
 ):
-    canonical_party = ExternalOrg(name="Kinder Morgan Tejas Pipeline")
+    canonical_party = ExternalOrg(
+        name="Kinder Morgan Tejas Pipeline statement-coordination-test"
+    )
     session.add(canonical_party)
     session.flush()
     party_quote = "Kinder Morgan Management Meeting Highlights"

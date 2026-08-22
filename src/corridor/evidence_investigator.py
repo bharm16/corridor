@@ -56,7 +56,8 @@ CASE_CONTRACT_VERSION = "evidence-investigator-case-v1"
 class InvestigationBudget:
     """Hard limits a runtime must observe for one bounded case."""
 
-    max_turns: int = 4
+    # Six serial tool calls plus one final structured response.
+    max_turns: int = 7
     max_tool_calls: int = 6
     max_dependency_detail_reads: int = 5
     max_input_tokens: int = 12_000
@@ -221,6 +222,21 @@ class InvestigationPacket:
 
 
 @dataclass(frozen=True)
+class InvestigationStep:
+    """Locally redacted metadata for one model or tool step."""
+
+    step_type: str
+    name: str
+    opaque_references: tuple[str, ...]
+    normalized_arguments: dict
+    result_summary: dict
+    usage: dict
+    elapsed_ms: int
+    request_sha256: str
+    result_sha256: str
+
+
+@dataclass(frozen=True)
 class InvestigationRunOutput:
     """Runtime output plus locally measurable budget consumption."""
 
@@ -230,6 +246,7 @@ class InvestigationRunOutput:
     output_tokens: int
     retries: int = 0
     repairs: int = 0
+    steps: tuple[InvestigationStep, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +260,7 @@ class InvestigationRuntimeAbstention:
     output_tokens: int
     retries: int = 0
     repairs: int = 0
+    steps: tuple[InvestigationStep, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -272,6 +290,14 @@ class InvestigationRuntime(Protocol):
         tools: InvestigationTools,
         budget: InvestigationBudget,
     ) -> InvestigationRunOutput | InvestigationRuntimeAbstention: ...
+
+
+@dataclass(frozen=True)
+class PreparedInvestigation:
+    """One server-bound case whose opaque namespace must not be rebuilt."""
+
+    bound: _BoundCase
+    case: InvestigationCase
 
 
 INVESTIGATION_CASE_SCHEMA = {
@@ -892,12 +918,19 @@ async def investigate_candidate(
     *,
     runtime: InvestigationRuntime,
     budget: InvestigationBudget,
+    prepared: PreparedInvestigation | None = None,
 ) -> InvestigationResult | InvestigationAbstention:
     """Return one validated hidden packet or an explicit terminal Abstention."""
-    prepared = _prepare_case(session, candidate_id)
-    if isinstance(prepared, InvestigationAbstention):
-        return prepared
-    bound, case = prepared
+    if prepared is None:
+        prepared_result = prepare_investigation(session, candidate_id)
+        if isinstance(prepared_result, InvestigationAbstention):
+            return prepared_result
+        prepared = prepared_result
+    elif prepared.bound.candidate_id != candidate_id:
+        return _preflight_abstention(
+            "candidate_ineligible", "prepared investigation belongs to another Candidate"
+        )
+    bound, case = prepared.bound, prepared.case
     tools = InvestigationTools(session, bound, budget)
     try:
         output = await asyncio.wait_for(
@@ -935,6 +968,10 @@ async def investigate_candidate(
                 "insufficient_evidence",
                 "ambiguous_scope",
                 "ambiguous_party",
+                "authority_gap",
+                "runtime_failure",
+                "validation_failure",
+                "budget_exhaustion",
             }
             or not output.detail.strip()
         ):
@@ -984,6 +1021,17 @@ async def investigate_candidate(
         validator_version=VALIDATOR_VERSION,
         packet=output.packet,
     )
+
+
+def prepare_investigation(
+    session: Session, candidate_id: int
+) -> PreparedInvestigation | InvestigationAbstention:
+    """Freeze one exact model-visible case and its server-owned bindings."""
+    prepared = _prepare_case(session, candidate_id)
+    if isinstance(prepared, InvestigationAbstention):
+        return prepared
+    bound, case = prepared
+    return PreparedInvestigation(bound=bound, case=case)
 
 
 def _prepare_case(
@@ -1128,7 +1176,7 @@ def _read_fingerprint(session: Session, bound: _BoundCase) -> str:
     active_run = active_run_for_document(session, bound.source_document_id)
     declaration = current_active_run_declaration(session, bound.source_document_id)
     evidence = []
-    for ref in sorted(bound.candidate_evidence_refs):
+    for ordinal, ref in enumerate(sorted(bound.candidate_evidence_refs), start=1):
         binding = bound.evidence_by_ref[ref]
         page = session.scalar(
             select(DocPage).where(
@@ -1138,7 +1186,10 @@ def _read_fingerprint(session: Session, bound: _BoundCase) -> str:
         )
         evidence.append(
             {
-                "ref": ref,
+                # The opaque reference includes a per-run nonce. Freshness is
+                # a property of server state, so bind the stable citation
+                # ordinal instead or identical reads would always look stale.
+                "ordinal": ordinal,
                 "document_id": binding.document_id,
                 "page_no": binding.page_no,
                 "candidate_quote": binding.candidate_quote,
