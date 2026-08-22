@@ -5,6 +5,7 @@ import hashlib
 import json
 from dataclasses import fields as dataclass_fields
 from datetime import date
+from pathlib import Path
 
 import pytest
 import httpx
@@ -1046,6 +1047,24 @@ def test_runtime_refuses_prompt_bytes_that_do_not_match_receipt_identity(
             )
         )
     asyncio.run(runtime._client.aclose())
+
+
+def test_runtime_loads_the_sealed_v2_prompt_independent_of_process_cwd(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+
+    runtime = DirectResponsesInvestigationRuntime(
+        model="investigator-test",
+        api_key="not-a-real-key",
+    )
+
+    assert runtime.prompt == (
+        Path(__file__).resolve().parents[1]
+        / "prompts"
+        / "evidence_investigator_v2.md"
+    ).read_text(encoding="utf-8")
+    assert runtime.prompt_sha256 == PROMPT_SHA256
 
 
 def test_evaluator_refuses_mixed_or_unverifiable_configuration(

@@ -51,7 +51,9 @@ from corridor.models import (
 )
 
 PROMPT_VERSION = "evidence-investigator-v2"
-PROMPT_PATH = Path("prompts/evidence_investigator_v2.md")
+PROMPT_PATH = (
+    Path(__file__).resolve().parents[2] / "prompts" / "evidence_investigator_v2.md"
+)
 PROMPT_SHA256 = "b5c57c83708d6305db4b614080922ab2b9733f6e275a2d04214e3ccdf3c14906"
 ADAPTER = "direct-responses-v2"
 ADAPTER_CONTRACT_VERSION = "direct-responses-contract-v2"
@@ -177,7 +179,9 @@ class DirectResponsesInvestigationRuntime:
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
-        self.prompt = prompt if prompt is not None else PROMPT_PATH.read_text()
+        self.prompt = (
+            prompt if prompt is not None else PROMPT_PATH.read_text(encoding="utf-8")
+        )
         self.prompt_sha256 = hashlib.sha256(self.prompt.encode()).hexdigest()
         if prompt is None and self.prompt_sha256 != PROMPT_SHA256:
             raise RuntimeError("sealed v2 prompt bytes do not match PROMPT_SHA256")
