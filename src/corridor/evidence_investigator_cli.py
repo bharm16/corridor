@@ -1,4 +1,9 @@
-"""Operator-only entry point for one hidden, receipted investigation."""
+"""Operator-only entry point for one hidden, receipted investigation.
+
+Calling the domain operation directly left transport identity and terminal
+receipts to operator convention. This narrow CLI pins both and deliberately
+has no coordinator-facing route.
+"""
 
 from __future__ import annotations
 

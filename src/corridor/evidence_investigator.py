@@ -8,9 +8,11 @@ current case before a runtime starts and exposes five capability-scoped reads
 using opaque, per-run references.  A deterministic validator, not the model,
 decides whether the returned option packet is safe to retain.
 
-``investigate_candidate`` is the only public operation.  The runtime owns a
-model loop; Corridor owns case selection, reads, budgets, freshness, and the
-shape of the non-authoritative result.
+``investigate_candidate`` remains the only operation that can execute a
+runtime. ``prepare_investigation`` lets the hidden prospective cohort freeze
+that same bound case first; it exposes no read capability or writer. Corridor
+owns case selection, reads, budgets, freshness, and the non-authoritative
+result shape while the injected runtime owns only its model loop.
 """
 
 from __future__ import annotations
@@ -931,6 +933,13 @@ async def investigate_candidate(
             "candidate_ineligible", "prepared investigation belongs to another Candidate"
         )
     bound, case = prepared.bound, prepared.case
+    if _read_fingerprint(session, bound) != case.read_fingerprint:
+        return InvestigationAbstention(
+            status="abstained",
+            reason="stale_input",
+            detail="the frozen case changed before investigation execution",
+            read_fingerprint=case.read_fingerprint,
+        )
     tools = InvestigationTools(session, bound, budget)
     try:
         output = await asyncio.wait_for(

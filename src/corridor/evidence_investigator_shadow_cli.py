@@ -1,4 +1,8 @@
-"""Operator commands for the prospective hidden investigator cohort."""
+"""Operator commands for the prospective hidden investigator cohort.
+
+Retrospective replay was rejected because it can expose later answers. These
+commands allow only prospective batch freezing and exact later label capture.
+"""
 
 from __future__ import annotations
 

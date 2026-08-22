@@ -3,6 +3,10 @@
 The domain investigation contract remains in :mod:`evidence_investigator`.
 This module owns transport policy and durable terminal receipts; it receives
 no writer other than the three receipt tables below.
+
+The earlier one-shot ``StructuredClient`` could not run a tool loop or retain
+terminal attempt metadata. This separate direct Responses adapter preserves
+that extraction seam while making every investigation attempt locally legible.
 """
 
 from __future__ import annotations
@@ -51,14 +55,15 @@ PROMPT_PATH = Path("prompts/evidence_investigator_v1.md")
 ADAPTER = "direct-responses-v1"
 
 
-def _canonical(value: object) -> bytes:
+def canonical_json_bytes(value: object) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
 
 
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical(value)).hexdigest()
+def sha256_json(value: object) -> str:
+    """One canonical JSON digest shared by every investigator receipt layer."""
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def transport_gate_receipt() -> dict:
@@ -84,7 +89,7 @@ def transport_gate_receipt() -> dict:
             "max_repairs",
         ],
     }
-    return {**contract, "sha256": _sha256(contract)}
+    return {**contract, "sha256": sha256_json(contract)}
 
 
 TRANSPORT_GATE = transport_gate_receipt()
@@ -177,7 +182,14 @@ class DirectResponsesInvestigationRuntime:
                     arguments = json.loads(call.get("arguments") or "{}")
                     try:
                         result, step = await self._invoke_tool(
-                            tools, call.get("name", ""), arguments, elapsed_ms
+                            tools,
+                            call.get("name", ""),
+                            arguments,
+                            elapsed_ms,
+                            {
+                                "input_tokens": int(usage.get("input_tokens", 0)),
+                                "output_tokens": int(usage.get("output_tokens", 0)),
+                            },
                         )
                     except (ValueError, TypeError) as exc:
                         steps.append(
@@ -203,8 +215,8 @@ class DirectResponsesInvestigationRuntime:
                                     ),
                                 },
                                 elapsed_ms=elapsed_ms,
-                                request_sha256=_sha256(arguments),
-                                result_sha256=_sha256(
+                                request_sha256=sha256_json(arguments),
+                                result_sha256=sha256_json(
                                     {
                                         "status": "refused",
                                         "error_type": type(exc).__name__,
@@ -262,8 +274,8 @@ class DirectResponsesInvestigationRuntime:
                             "output_tokens": int(usage.get("output_tokens", 0)),
                         },
                         elapsed_ms=elapsed_ms,
-                        request_sha256=_sha256(payload),
-                        result_sha256=_sha256(packet_data),
+                        request_sha256=sha256_json(payload),
+                        result_sha256=sha256_json(packet_data),
                     )
                 )
                 return InvestigationRunOutput(
@@ -327,7 +339,9 @@ class DirectResponsesInvestigationRuntime:
             "store": False,
         }
 
-    async def _invoke_tool(self, tools, name: str, arguments: dict, elapsed_ms: int):
+    async def _invoke_tool(
+        self, tools, name: str, arguments: dict, elapsed_ms: int, usage: dict
+    ):
         if name not in tools.schemas:
             raise ValueError("the model requested an unavailable capability")
         method = getattr(tools, name)
@@ -344,10 +358,10 @@ class DirectResponsesInvestigationRuntime:
             opaque_references=tuple(sorted(set(_opaque_refs({"arguments": arguments, "result": result})))),
             normalized_arguments=json.loads(json.dumps(arguments)),
             result_summary=summary,
-            usage={},
+            usage=usage,
             elapsed_ms=elapsed_ms,
-            request_sha256=_sha256(arguments),
-            result_sha256=_sha256(result),
+            request_sha256=sha256_json(arguments),
+            result_sha256=sha256_json(result),
         )
         return result, step
 
@@ -436,7 +450,7 @@ async def run_receipted_investigation(
     candidate = session.get(Candidate, candidate_id)
     if candidate is None:
         raise ValueError("Candidate does not exist; no receipt identity can be bound")
-    payload_sha256 = hashlib.sha256(_canonical(candidate.payload_json)).hexdigest()
+    payload_sha256 = sha256_json(candidate.payload_json)
     started_at = datetime.now(timezone.utc)
     observed = _ObservedRuntime(runtime)
     runtime_gate = getattr(runtime, "transport_gate_sha256", None)
@@ -488,7 +502,7 @@ async def run_receipted_investigation(
                 run_id=run.id,
                 packet_json=packet,
                 validator_outcome="valid",
-                packet_sha256=_sha256(packet),
+                packet_sha256=sha256_json(packet),
                 non_authoritative=True,
             )
         )

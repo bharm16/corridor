@@ -3,12 +3,15 @@
 Cases are frozen before the runtime sees them. Later coordinator decisions are
 associated by exact Candidate identity and never copied into the original case
 or packet.
+
+Replay was rejected as the default because later adjudicated rows leak answers
+into model input. This module therefore freezes current state prospectively and
+keeps immutable case, execution, review, and outcome identities separate.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -26,6 +29,7 @@ from corridor.evidence_investigator import (
 from corridor.evidence_investigator_runtime import (
     ReceiptedInvestigation,
     RuntimeIdentity,
+    sha256_json,
     run_receipted_investigation,
 )
 from corridor.models import (
@@ -48,16 +52,6 @@ from corridor.statement_lifecycle import (
     current_lineage_statement,
 )
 from corridor.work_list import build_work_list
-
-
-def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
-
-
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical(value)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -139,14 +133,14 @@ async def run_shadow_batch(
             project_id=project_id,
             candidate_id=candidate_id,
             extraction_run_id=candidate.extraction_run_id,
-            candidate_payload_sha256=_sha256(candidate.payload_json),
+            candidate_payload_sha256=sha256_json(candidate.payload_json),
             read_fingerprint=prepared.case.read_fingerprint,
             model=identity.model,
             prompt_version=identity.prompt_version,
             case_json=asdict(prepared.case),
             registered_evidence_json=evidence,
             option_population_json=option_population,
-            option_population_sha256=_sha256(option_population),
+            option_population_sha256=sha256_json(option_population),
             frozen_at=frozen_at,
         )
         session.add(shadow_case)
@@ -160,7 +154,10 @@ async def run_shadow_batch(
             prepared=prepared,
         )
         status = investigation.run.terminal_status
-        if investigation.run.read_fingerprint != shadow_case.read_fingerprint:
+        if (
+            investigation.run.reason == "stale_input"
+            or investigation.run.read_fingerprint != shadow_case.read_fingerprint
+        ):
             status = "stale"
         execution = EvidenceInvestigationShadowExecution(
             shadow_case_id=shadow_case.id,
@@ -324,6 +321,42 @@ def capture_shadow_outcome(
         "scope_decision_id": scope.id if scope else None,
         "reversal_ids": reversal_ids,
     }
+    human_outcome_identity = sha256_json(
+        {
+            "candidate_id": candidate.id,
+            "candidate_disposition_id": identities["candidate_disposition_id"],
+            "statement_coordination_receipt_id": identities[
+                "statement_coordination_receipt_id"
+            ],
+            "reversal_ids": reversal_ids,
+            "unresolved": unresolved,
+        }
+    )
+    duplicate = session.scalar(
+        select(EvidenceInvestigationShadowOutcome).where(
+            EvidenceInvestigationShadowOutcome.human_outcome_identity
+            == human_outcome_identity
+        )
+    )
+    if duplicate is not None and duplicate.shadow_case_id != shadow_case.id:
+        raise ValueError("human outcome already captured for another shadow case")
+    duplicate = session.scalar(
+        select(EvidenceInvestigationShadowOutcome)
+        .join(
+            EvidenceInvestigationShadowCase,
+            EvidenceInvestigationShadowCase.id
+            == EvidenceInvestigationShadowOutcome.shadow_case_id,
+        )
+        .where(
+            EvidenceInvestigationShadowCase.candidate_id == candidate.id,
+            EvidenceInvestigationShadowOutcome.shadow_case_id != shadow_case.id,
+            EvidenceInvestigationShadowOutcome.outcome_identities_json == identities,
+        )
+    )
+    if duplicate is not None:
+        raise ValueError(
+            "human outcome already captured for another shadow case on this Candidate"
+        )
     content = {
         "candidate_disposition": disposition.disposition if disposition else None,
         "scope_mode": scope.scope_mode if scope else None,
@@ -337,6 +370,7 @@ def capture_shadow_outcome(
     }
     outcome = EvidenceInvestigationShadowOutcome(
         shadow_case_id=shadow_case.id,
+        human_outcome_identity=human_outcome_identity,
         candidate_disposition=content["candidate_disposition"],
         scope_mode=content["scope_mode"],
         selected_dependency_ids_json=selected_dependency_ids,
@@ -346,7 +380,7 @@ def capture_shadow_outcome(
         outcome_identities_json=identities,
         strata_json=sorted(strata),
         review_seconds=review_seconds,
-        outcome_sha256=_sha256(content),
+        outcome_sha256=sha256_json(content),
         captured_at=datetime.now(timezone.utc),
     )
     session.add(outcome)

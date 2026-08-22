@@ -22,7 +22,7 @@ from corridor.report_release import external_report_release_history
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f253a7c4d9e2"
 RELEASE_PREDECESSOR = "e255a7c4d9e2"
-HEAD = "c256e0f7a3b6"
+HEAD = "d256f1a8b4c7"
 RELEASE_COLUMNS = [
     "id",
     "project_id",

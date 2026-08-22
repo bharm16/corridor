@@ -1,4 +1,9 @@
-"""Deterministic, locally owned evaluation of prospective shadow runs."""
+"""Deterministic, locally owned evaluation of prospective shadow runs.
+
+Provider-hosted evals were considered and rejected because Corridor must bind
+local receipt identities, later human outcomes, and contamination checks. This
+module grades only immutable local artifacts and never enables coordinator UI.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.evidence_investigator import TOOL_CONTRACT_VERSION, VALIDATOR_VERSION
+from corridor.evidence_investigator_runtime import sha256_json
 from corridor.models import (
     Dependency,
     EvidenceInvestigationEvaluationReceipt,
@@ -26,14 +31,18 @@ from corridor.models import (
 
 EVALUATION_VERSION = "evidence-investigator-shadow-eval-v1"
 GRADING_RULES_VERSION = "evidence-investigator-deterministic-graders-v1"
-ALL_STRATA = (
+EVALUATION_STRATA = (
     "single_dependency",
+    "multiple_dependencies",
     "unknown_scope",
     "not_relevant",
     "party_ambiguity",
     "timing_ambiguity",
     "later_corrected",
     "unresolved",
+)
+REQUIRED_STRATA = tuple(
+    stratum for stratum in EVALUATION_STRATA if stratum != "multiple_dependencies"
 )
 ALLOWED_TOOLS = {
     "read_candidate_evidence",
@@ -66,7 +75,7 @@ class EvaluationRefusal(ValueError):
 @dataclass(frozen=True)
 class EvaluationRules:
     min_cases: int = 20
-    required_strata: tuple[str, ...] = ALL_STRATA
+    required_strata: tuple[str, ...] = REQUIRED_STRATA
     no_agent_baseline_seconds: float | None = None
     max_review_time_ratio: float | None = None
 
@@ -76,16 +85,6 @@ class EvaluationArtifact:
     receipt: EvidenceInvestigationEvaluationReceipt
     machine_path: Path
     summary_path: Path
-
-
-def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
-
-
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical(value)).hexdigest()
 
 
 def evaluate_shadow_runs(
@@ -147,7 +146,7 @@ def evaluate_shadow_runs(
             raise EvaluationRefusal("run and shadow case identities do not match")
         if _contains_key(case.case_json, {"later_human_outcome", "human_answer"}):
             raise EvaluationRefusal("a model-visible snapshot contains a later human answer")
-        if packet is not None and _sha256(packet.packet_json) != packet.packet_sha256:
+        if packet is not None and sha256_json(packet.packet_json) != packet.packet_sha256:
             raise EvaluationRefusal("a selected packet receipt was tampered")
         rows.append((run, execution, case, outcome, packet, steps))
 
@@ -163,7 +162,7 @@ def evaluate_shadow_runs(
     top_one_hits = top_three_hits = containment_labels = 0
     runtime_failures = budget_exhaustions = stale_packets = 0
     write_attempts = cross_project_references = 0
-    strata_counts = {stratum: 0 for stratum in ALL_STRATA}
+    strata_counts = {stratum: 0 for stratum in EVALUATION_STRATA}
     unresolved_labels = 0
 
     for run, execution, case, outcome, packet, steps in rows:
@@ -353,7 +352,7 @@ def evaluate_shadow_runs(
         gates_json=gates,
         limitations_json=limitations,
         summary_markdown=summary,
-        receipt_sha256=_sha256(content),
+        receipt_sha256=sha256_json(content),
         evaluated_at=evaluated_at,
     )
     session.add(receipt)
@@ -378,7 +377,7 @@ def verify_evaluation_receipt(receipt: EvidenceInvestigationEvaluationReceipt) -
         "limitations": receipt.limitations_json,
         "summary_markdown": receipt.summary_markdown,
     }
-    return _sha256(content) == receipt.receipt_sha256
+    return sha256_json(content) == receipt.receipt_sha256
 
 
 def _packet_facts(packet: dict) -> list[dict]:
@@ -414,9 +413,17 @@ def _validate_human_scores(scores: dict, case_ids: set[str]) -> None:
         "review_effort",
         "grader",
     }
+    required = {
+        "packet_usefulness",
+        "correct_abstention",
+        "misleading_ranking",
+        "review_effort",
+    }
     for value in scores.values():
         if not isinstance(value, dict) or set(value) - allowed:
             raise EvaluationRefusal("human scores do not match the local grading contract")
+        if not required <= set(value):
+            raise EvaluationRefusal("required human score fields are missing")
 
 
 def _summary(status, metrics, strata, gates, limitations, identity) -> str:

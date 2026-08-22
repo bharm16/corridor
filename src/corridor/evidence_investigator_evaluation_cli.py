@@ -1,4 +1,9 @@
-"""Publish one explicit local Evidence Investigator shadow evaluation."""
+"""Publish one explicit local Evidence Investigator shadow evaluation.
+
+Ad-hoc notebooks were rejected because they cannot reproduce an exact selected
+run set or seal failed gates. This CLI delegates to the local deterministic
+grader and emits both machine-readable and human-readable receipts.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,7 @@ from pathlib import Path
 
 from corridor.db import Session
 from corridor.evidence_investigator_evaluation import (
-    ALL_STRATA,
+    REQUIRED_STRATA,
     EvaluationRules,
     evaluate_shadow_runs,
 )
@@ -27,7 +32,7 @@ def main() -> None:
     scores = json.loads(args.human_scores.read_text())
     rules = EvaluationRules(
         min_cases=args.min_cases,
-        required_strata=tuple(args.strata) if args.strata else ALL_STRATA,
+        required_strata=tuple(args.strata) if args.strata else REQUIRED_STRATA,
         no_agent_baseline_seconds=args.no_agent_baseline_seconds,
         max_review_time_ratio=args.max_review_time_ratio,
     )

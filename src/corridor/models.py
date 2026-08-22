@@ -2103,6 +2103,7 @@ class EvidenceInvestigationShadowOutcome(Base):
     shadow_case_id: Mapped[int] = mapped_column(
         ForeignKey("evidence_investigation_shadow_cases.id"), unique=True
     )
+    human_outcome_identity: Mapped[str] = mapped_column(String(64), unique=True)
     candidate_disposition: Mapped[str | None] = mapped_column(String(32))
     scope_mode: Mapped[str | None] = mapped_column(String(32))
     selected_dependency_ids_json: Mapped[list] = mapped_column(JSONB)

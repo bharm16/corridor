@@ -58,6 +58,7 @@ from corridor.models import (
     EventAdmissionOutcome,
     EvidenceInvestigationPacketReceipt,
     EvidenceInvestigationRun,
+    EvidenceInvestigationStepReceipt,
     EvidenceInvestigationShadowCase,
     EvidenceInvestigationShadowExecution,
     EvidenceInvestigationShadowOutcome,
@@ -1076,6 +1077,10 @@ def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
         "repairs": 0,
     }
     assert receipt.run.terminal_status == "human_judgment_needed"
+    [step] = session.query(EvidenceInvestigationStepReceipt).filter_by(
+        run_id=receipt.run.id
+    ).all()
+    assert step.usage_json == {"input_tokens": 50, "output_tokens": 20}
 
 
 def test_prospective_shadow_freezes_before_review_and_associates_hidden_outcome(
@@ -1150,6 +1155,160 @@ def test_prospective_shadow_freezes_before_review_and_associates_hidden_outcome(
     assert "not_relevant" in outcome.strata_json
     assert outcome.review_seconds is not None
     assert session.query(EvidenceInvestigationShadowOutcome).count() == outcome_count + 1
+
+
+def test_shadow_records_stale_when_bound_state_changes_during_execution(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class MutatingRuntime:
+        async def run(self, case, tools, budget):
+            candidate.payload_json = {
+                **candidate.payload_json,
+                "post_freeze_change": True,
+            }
+            session.flush([candidate])
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("Which state is current?",)),
+                turns=1,
+                input_tokens=20,
+                output_tokens=10,
+            )
+
+    [shadow] = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            runtime_factory=MutatingRuntime,
+            identity=RuntimeIdentity(
+                adapter="stub-contract-v1",
+                model="stale-test",
+                prompt_version="evidence-investigator-test-v1",
+                transport_gate_sha256="d" * 64,
+            ),
+            budget=InvestigationBudget(),
+        )
+    )
+
+    assert shadow.investigation.run.reason == "stale_input"
+    assert shadow.execution.execution_status == "stale"
+    assert shadow.investigation.result.packet is None
+
+
+def test_one_human_outcome_cannot_be_counted_by_two_shadow_cases(session, project):
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("Is this relevant?",)),
+                turns=1,
+                input_tokens=20,
+                output_tokens=10,
+            )
+
+    cases = []
+    for model in ("duplicate-label-a", "duplicate-label-b"):
+        [shadow] = asyncio.run(
+            run_shadow_batch(
+                session,
+                project.id,
+                runtime_factory=StubRuntime,
+                identity=RuntimeIdentity(
+                    adapter="stub-contract-v1",
+                    model=model,
+                    prompt_version="evidence-investigator-test-v1",
+                    transport_gate_sha256="e" * 64,
+                ),
+                budget=InvestigationBudget(),
+            )
+        )
+        cases.append(shadow)
+    mark_statement_not_relevant(
+        session,
+        candidate.id,
+        reason="outside_project_scope",
+        confirmed=True,
+        principal=RECORDER,
+    )
+    capture_shadow_outcome(session, cases[0].case.public_id)
+
+    with pytest.raises(
+        ValueError, match="human outcome already captured for another shadow case"
+    ):
+        capture_shadow_outcome(session, cases[1].case.public_id)
+
+
+def test_shadow_capture_refuses_counting_one_human_outcome_twice_for_one_candidate(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("Is this relevant?",)),
+                turns=1,
+                input_tokens=80,
+                output_tokens=20,
+            )
+
+    first_identity = RuntimeIdentity(
+        adapter="stub-contract-v1",
+        model="shadow-test",
+        prompt_version="evidence-investigator-test-v1",
+        transport_gate_sha256="d" * 64,
+    )
+    [first_shadow] = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            runtime_factory=StubRuntime,
+            identity=first_identity,
+            budget=InvestigationBudget(),
+        )
+    )
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "fields": {
+            **candidate.payload_json["fields"],
+            "description": "Reworded proposal after the hidden run",
+        },
+    }
+    attributes.flag_modified(candidate, "payload_json")
+    second_identity = RuntimeIdentity(
+        adapter="stub-contract-v1",
+        model="shadow-test",
+        prompt_version="evidence-investigator-test-v2",
+        transport_gate_sha256="e" * 64,
+    )
+    [second_shadow] = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            runtime_factory=StubRuntime,
+            identity=second_identity,
+            budget=InvestigationBudget(),
+        )
+    )
+
+    mark_statement_not_relevant(
+        session,
+        candidate.id,
+        reason="outside_project_scope",
+        confirmed=True,
+        principal=RECORDER,
+    )
+
+    first_outcome = capture_shadow_outcome(session, first_shadow.case.public_id)
+
+    assert first_outcome.candidate_disposition == "not_relevant"
+    with pytest.raises(
+        ValueError,
+        match="human outcome already captured for another shadow case",
+    ):
+        capture_shadow_outcome(session, second_shadow.case.public_id)
 
 
 def test_shadow_evaluation_writes_reproducible_machine_and_human_receipts(
@@ -1262,3 +1421,12 @@ def test_shadow_evaluation_writes_reproducible_machine_and_human_receipts(
     attributes.set_committed_value(
         evaluation.receipt, "summary_markdown", original_summary
     )
+
+    with pytest.raises(EvaluationRefusal, match="required human score fields"):
+        evaluate_shadow_runs(
+            session,
+            [shadow.investigation.run.public_id],
+            rules=EvaluationRules(min_cases=1, required_strata=("not_relevant",)),
+            human_scores={shadow.case.public_id: {"packet_usefulness": 3}},
+            output_dir=tmp_path / "partial-human-score",
+        )
