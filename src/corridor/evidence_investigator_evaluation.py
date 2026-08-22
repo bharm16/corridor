@@ -115,6 +115,24 @@ def evaluate_shadow_runs(
     )
     if {run.public_id for run in runs} != set(run_public_ids):
         raise EvaluationRefusal("one or more selected run ids do not exist")
+    configurations = {
+        (
+            run.model,
+            run.prompt_version,
+            run.prompt_sha256,
+            run.adapter_contract_version,
+            run.transport_gate_sha256,
+            sha256_json(run.budget_json),
+        )
+        for run in runs
+    }
+    if len(configurations) != 1 or any(
+        value is None or value == "" for value in next(iter(configurations))
+    ):
+        raise EvaluationRefusal(
+            "promotion cohorts require one exact configuration; legacy or mixed "
+            "configuration is ineligible"
+        )
     rows = []
     for run in runs:
         execution = session.scalar(
@@ -316,6 +334,10 @@ def evaluate_shadow_runs(
         "case_fingerprints": sorted(row[2].read_fingerprint for row in rows),
         "models": sorted({row[0].model for row in rows}),
         "prompt_versions": sorted({row[0].prompt_version for row in rows}),
+        "prompt_sha256": runs[0].prompt_sha256,
+        "adapter_contract_version": runs[0].adapter_contract_version,
+        "transport_gate_sha256": runs[0].transport_gate_sha256,
+        "budget_sha256": sha256_json(runs[0].budget_json),
         "tool_contract_versions": sorted({row[0].tool_contract_version for row in rows}),
         "validator_versions": sorted({row[0].validator_version for row in rows}),
         "dataset_membership": sorted(row[2].public_id for row in rows),

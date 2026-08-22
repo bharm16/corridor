@@ -50,9 +50,11 @@ from corridor.models import (
     EvidenceInvestigationStepReceipt,
 )
 
-PROMPT_VERSION = "evidence-investigator-v1"
-PROMPT_PATH = Path("prompts/evidence_investigator_v1.md")
-ADAPTER = "direct-responses-v1"
+PROMPT_VERSION = "evidence-investigator-v2"
+PROMPT_PATH = Path("prompts/evidence_investigator_v2.md")
+PROMPT_SHA256 = "b5c57c83708d6305db4b614080922ab2b9733f6e275a2d04214e3ccdf3c14906"
+ADAPTER = "direct-responses-v2"
+ADAPTER_CONTRACT_VERSION = "direct-responses-contract-v2"
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -70,6 +72,7 @@ def transport_gate_receipt() -> dict:
     """Synthetic, content-free proof of the direct Responses wire contract."""
     contract = {
         "adapter": ADAPTER,
+        "adapter_contract_version": ADAPTER_CONTRACT_VERSION,
         "store": False,
         "strict_tools": True,
         "strict_final_schema": True,
@@ -79,14 +82,18 @@ def transport_gate_receipt() -> dict:
         "handoffs": False,
         "hosted_tools": False,
         "serial_execution": True,
+        "reserved_final_response_turn": True,
+        "single_structured_repair": True,
         "budget_fields": [
             "max_turns",
             "max_tool_calls",
+            "max_dependency_detail_reads",
             "max_input_tokens",
             "max_output_tokens",
             "timeout_seconds",
             "max_retries",
             "max_repairs",
+            "max_shortlisted_dependencies",
         ],
     }
     return {**contract, "sha256": sha256_json(contract)}
@@ -98,14 +105,26 @@ TRANSPORT_GATE = transport_gate_receipt()
 @dataclass(frozen=True)
 class RuntimeIdentity:
     adapter: str
+    adapter_contract_version: str
     model: str
     prompt_version: str
+    prompt_sha256: str
     transport_gate_sha256: str
 
     def __post_init__(self) -> None:
-        if len(self.transport_gate_sha256) != 64:
-            raise ValueError("transport gate identity must be a SHA-256 digest")
-        if not all((self.adapter, self.model, self.prompt_version)):
+        if any(
+            len(value) != 64
+            for value in (self.prompt_sha256, self.transport_gate_sha256)
+        ):
+            raise ValueError("prompt and transport identities must be SHA-256 digests")
+        if not all(
+            (
+                self.adapter,
+                self.adapter_contract_version,
+                self.model,
+                self.prompt_version,
+            )
+        ):
             raise ValueError("runtime identity fields must be non-empty")
 
 
@@ -129,6 +148,8 @@ class DirectResponsesInvestigationRuntime:
     """One serial tool-calling agent over the stateless Responses API."""
 
     transport_gate_sha256 = TRANSPORT_GATE["sha256"]
+    adapter = ADAPTER
+    adapter_contract_version = ADAPTER_CONTRACT_VERSION
 
     def __init__(
         self,
@@ -145,6 +166,9 @@ class DirectResponsesInvestigationRuntime:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.prompt = prompt if prompt is not None else PROMPT_PATH.read_text()
+        self.prompt_sha256 = hashlib.sha256(self.prompt.encode()).hexdigest()
+        if prompt is None and self.prompt_sha256 != PROMPT_SHA256:
+            raise RuntimeError("sealed v2 prompt bytes do not match PROMPT_SHA256")
         self._client = client
 
     async def run(self, case, tools, budget):
@@ -500,6 +524,21 @@ async def run_receipted_investigation(
     runtime_gate = getattr(runtime, "transport_gate_sha256", None)
     if runtime_gate is not None and runtime_gate != identity.transport_gate_sha256:
         raise ValueError("runtime does not match the synthetic transport gate")
+    runtime_adapter = getattr(runtime, "adapter", None)
+    runtime_adapter_contract = getattr(runtime, "adapter_contract_version", None)
+    if runtime_adapter is not None and runtime_adapter != identity.adapter:
+        raise ValueError("runtime adapter does not match the receipt identity")
+    if (
+        runtime_adapter_contract is not None
+        and runtime_adapter_contract != identity.adapter_contract_version
+    ):
+        raise ValueError("runtime adapter contract does not match the receipt identity")
+    runtime_prompt_sha256 = getattr(runtime, "prompt_sha256", None)
+    if (
+        runtime_prompt_sha256 is not None
+        and runtime_prompt_sha256 != identity.prompt_sha256
+    ):
+        raise ValueError("runtime prompt bytes do not match the receipt identity")
     result = await investigate_candidate(
         session,
         candidate_id,
@@ -525,8 +564,10 @@ async def run_receipted_investigation(
         reason=getattr(result, "reason", None),
         detail=getattr(result, "detail", None),
         adapter=identity.adapter,
+        adapter_contract_version=identity.adapter_contract_version,
         model=identity.model,
         prompt_version=identity.prompt_version,
+        prompt_sha256=identity.prompt_sha256,
         tool_contract_version=TOOL_CONTRACT_VERSION,
         validator_version=result.validator_version,
         transport_gate_sha256=identity.transport_gate_sha256,

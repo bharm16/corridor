@@ -18,7 +18,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b230e4f5a6b7"
 REASON_PROJECTION_PREDECESSOR = "c249d7e1f4a3"
-HEAD = "d256f1a8b4c7"
+HEAD = "e256a7c4d9e2"
 WORK_LIST_PREDECESSOR = "e253a7c4d9e2"
 
 

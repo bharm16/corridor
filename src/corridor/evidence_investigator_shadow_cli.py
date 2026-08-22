@@ -17,6 +17,8 @@ from corridor.db import Session
 from corridor.evidence_investigator import InvestigationBudget
 from corridor.evidence_investigator_runtime import (
     ADAPTER,
+    ADAPTER_CONTRACT_VERSION,
+    PROMPT_SHA256,
     PROMPT_VERSION,
     TRANSPORT_GATE,
     DirectResponsesInvestigationRuntime,
@@ -55,8 +57,10 @@ def main() -> None:
                 raise SystemExit(f"unknown project {args.project_slug!r}")
             identity = RuntimeIdentity(
                 adapter=ADAPTER,
+                adapter_contract_version=ADAPTER_CONTRACT_VERSION,
                 model=settings.evidence_investigator_model,
                 prompt_version=PROMPT_VERSION,
+                prompt_sha256=PROMPT_SHA256,
                 transport_gate_sha256=TRANSPORT_GATE["sha256"],
             )
 

@@ -26,7 +26,9 @@ from corridor.evidence_investigator import (
     investigate_candidate,
 )
 from corridor.evidence_investigator_runtime import (
+    ADAPTER_CONTRACT_VERSION,
     DirectResponsesInvestigationRuntime,
+    PROMPT_SHA256,
     RuntimeIdentity,
     TRANSPORT_GATE,
     run_receipted_investigation,
@@ -71,6 +73,19 @@ from corridor.principals import HumanPrincipal
 from corridor.statement_coordination import mark_statement_not_relevant
 
 RECORDER = HumanPrincipal("local:evidence-investigator-test")
+
+
+def _identity(**overrides):
+    values = {
+        "adapter": "stub-contract-v1",
+        "adapter_contract_version": "stub-contract-v1",
+        "model": "stub-investigator",
+        "prompt_version": "evidence-investigator-test-v1",
+        "prompt_sha256": "1" * 64,
+        "transport_gate_sha256": "a" * 64,
+    }
+    values.update(overrides)
+    return RuntimeIdentity(**values)
 
 
 @pytest.fixture
@@ -964,12 +979,7 @@ def test_receipted_investigation_appends_one_terminal_non_authoritative_result(
                 output_tokens=30,
             )
 
-    identity = RuntimeIdentity(
-        adapter="stub-contract-v1",
-        model="stub-investigator",
-        prompt_version="evidence-investigator-test-v1",
-        transport_gate_sha256="a" * 64,
-    )
+    identity = _identity()
     first = asyncio.run(
         run_receipted_investigation(
             session,
@@ -993,6 +1003,8 @@ def test_receipted_investigation_appends_one_terminal_non_authoritative_result(
     assert first.run.terminal_status == "human_judgment_needed"
     assert first.run.model == "stub-investigator"
     assert first.run.prompt_version == "evidence-investigator-test-v1"
+    assert first.run.prompt_sha256 == "1" * 64
+    assert first.run.adapter_contract_version == "stub-contract-v1"
     assert len(first.run.candidate_payload_sha256) == 64
     assert first.run.candidate_payload_sha256 == second.run.candidate_payload_sha256
     assert session.query(EvidenceInvestigationRun).count() == run_count + 2
@@ -1003,6 +1015,74 @@ def test_receipted_investigation_appends_one_terminal_non_authoritative_result(
     assert len(packets) == 2
     assert all(packet.non_authoritative for packet in packets)
     assert all(packet.validator_outcome == "valid" for packet in packets)
+
+
+def test_runtime_refuses_prompt_bytes_that_do_not_match_receipt_identity(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+    runtime = DirectResponsesInvestigationRuntime(
+        model="investigator-test",
+        api_key="not-a-real-key",
+        prompt="bytes that do not match the sealed v2 identity",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: None)),
+    )
+
+    with pytest.raises(ValueError, match="prompt bytes"):
+        asyncio.run(
+            run_receipted_investigation(
+                session,
+                candidate.id,
+                runtime=runtime,
+                identity=RuntimeIdentity(
+                    adapter="direct-responses-v2",
+                    adapter_contract_version=ADAPTER_CONTRACT_VERSION,
+                    model="investigator-test",
+                    prompt_version="evidence-investigator-v2",
+                    prompt_sha256=PROMPT_SHA256,
+                    transport_gate_sha256=TRANSPORT_GATE["sha256"],
+                ),
+                budget=InvestigationBudget(),
+            )
+        )
+    asyncio.run(runtime._client.aclose())
+
+
+def test_evaluator_refuses_mixed_or_unverifiable_configuration(
+    session, project, tmp_path
+):
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("What is supported?",)),
+                turns=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+
+    runs = []
+    for prompt_sha256 in ("1" * 64, "2" * 64):
+        [shadow] = asyncio.run(
+            run_shadow_batch(
+                session,
+                project.id,
+                runtime_factory=StubRuntime,
+                identity=_identity(prompt_sha256=prompt_sha256),
+                budget=InvestigationBudget(),
+            )
+        )
+        runs.append(shadow.investigation.run.public_id)
+
+    with pytest.raises(EvaluationRefusal, match="one exact configuration"):
+        evaluate_shadow_runs(
+            session,
+            runs,
+            rules=EvaluationRules(min_cases=1, required_strata=()),
+            human_scores={},
+            output_dir=tmp_path,
+        )
 
 
 def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
@@ -1059,9 +1139,11 @@ def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
             candidate.id,
             runtime=runtime,
             identity=RuntimeIdentity(
-                adapter="direct-responses-v1",
+                adapter="direct-responses-v2",
+                adapter_contract_version=ADAPTER_CONTRACT_VERSION,
                 model="investigator-test",
-                prompt_version="evidence-investigator-v1",
+                prompt_version="evidence-investigator-test-v2",
+                prompt_sha256=hashlib.sha256(b"immutable test prompt").hexdigest(),
                 transport_gate_sha256=TRANSPORT_GATE["sha256"],
             ),
             budget=InvestigationBudget(),
@@ -1077,6 +1159,10 @@ def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
         "repairs": 0,
     }
     assert receipt.run.terminal_status == "human_judgment_needed"
+    assert receipt.run.prompt_sha256 == hashlib.sha256(
+        b"immutable test prompt"
+    ).hexdigest()
+    assert receipt.run.adapter_contract_version == ADAPTER_CONTRACT_VERSION
     [step] = session.query(EvidenceInvestigationStepReceipt).filter_by(
         run_id=receipt.run.id
     ).all()
@@ -1162,9 +1248,11 @@ def test_direct_transport_reserves_a_final_turn_inside_the_measured_token_budget
             candidate.id,
             runtime=runtime,
             identity=RuntimeIdentity(
-                adapter="direct-responses-v1",
+                adapter="direct-responses-v2",
+                adapter_contract_version=ADAPTER_CONTRACT_VERSION,
                 model="investigator-test",
-                prompt_version="evidence-investigator-v1",
+                prompt_version="evidence-investigator-test-v2",
+                prompt_sha256=hashlib.sha256(b"immutable test prompt").hexdigest(),
                 transport_gate_sha256=TRANSPORT_GATE["sha256"],
             ),
             budget=InvestigationBudget(),
@@ -1262,9 +1350,11 @@ def test_direct_transport_repairs_a_paraphrase_within_the_repair_budget(
             candidate.id,
             runtime=runtime,
             identity=RuntimeIdentity(
-                adapter="direct-responses-v1",
+                adapter="direct-responses-v2",
+                adapter_contract_version=ADAPTER_CONTRACT_VERSION,
                 model="investigator-test",
-                prompt_version="evidence-investigator-v1",
+                prompt_version="evidence-investigator-test-v2",
+                prompt_sha256=hashlib.sha256(b"immutable test prompt").hexdigest(),
                 transport_gate_sha256=TRANSPORT_GATE["sha256"],
             ),
             budget=InvestigationBudget(),
@@ -1296,12 +1386,7 @@ def test_prospective_shadow_freezes_before_review_and_associates_hidden_outcome(
                 output_tokens=20,
             )
 
-    identity = RuntimeIdentity(
-        adapter="stub-contract-v1",
-        model="shadow-test",
-        prompt_version="evidence-investigator-test-v1",
-        transport_gate_sha256="b" * 64,
-    )
+    identity = _identity(model="shadow-test", transport_gate_sha256="b" * 64)
     [shadow] = asyncio.run(
         run_shadow_batch(
             session,
@@ -1377,12 +1462,7 @@ def test_shadow_records_stale_when_bound_state_changes_during_execution(
             session,
             project.id,
             runtime_factory=MutatingRuntime,
-            identity=RuntimeIdentity(
-                adapter="stub-contract-v1",
-                model="stale-test",
-                prompt_version="evidence-investigator-test-v1",
-                transport_gate_sha256="d" * 64,
-            ),
+            identity=_identity(model="stale-test", transport_gate_sha256="d" * 64),
             budget=InvestigationBudget(),
         )
     )
@@ -1411,12 +1491,7 @@ def test_one_human_outcome_cannot_be_counted_by_two_shadow_cases(session, projec
                 session,
                 project.id,
                 runtime_factory=StubRuntime,
-                identity=RuntimeIdentity(
-                    adapter="stub-contract-v1",
-                    model=model,
-                    prompt_version="evidence-investigator-test-v1",
-                    transport_gate_sha256="e" * 64,
-                ),
+                identity=_identity(model=model, transport_gate_sha256="e" * 64),
                 budget=InvestigationBudget(),
             )
         )
@@ -1450,12 +1525,7 @@ def test_shadow_capture_refuses_counting_one_human_outcome_twice_for_one_candida
                 output_tokens=20,
             )
 
-    first_identity = RuntimeIdentity(
-        adapter="stub-contract-v1",
-        model="shadow-test",
-        prompt_version="evidence-investigator-test-v1",
-        transport_gate_sha256="d" * 64,
-    )
+    first_identity = _identity(model="shadow-test", transport_gate_sha256="d" * 64)
     [first_shadow] = asyncio.run(
         run_shadow_batch(
             session,
@@ -1473,10 +1543,10 @@ def test_shadow_capture_refuses_counting_one_human_outcome_twice_for_one_candida
         },
     }
     attributes.flag_modified(candidate, "payload_json")
-    second_identity = RuntimeIdentity(
-        adapter="stub-contract-v1",
+    second_identity = _identity(
         model="shadow-test",
         prompt_version="evidence-investigator-test-v2",
+        prompt_sha256="2" * 64,
         transport_gate_sha256="e" * 64,
     )
     [second_shadow] = asyncio.run(
@@ -1522,12 +1592,7 @@ def test_shadow_evaluation_writes_reproducible_machine_and_human_receipts(
                 output_tokens=15,
             )
 
-    identity = RuntimeIdentity(
-        adapter="stub-contract-v1",
-        model="evaluation-test",
-        prompt_version="evidence-investigator-test-v1",
-        transport_gate_sha256="c" * 64,
-    )
+    identity = _identity(model="evaluation-test", transport_gate_sha256="c" * 64)
     [shadow] = asyncio.run(
         run_shadow_batch(
             session,

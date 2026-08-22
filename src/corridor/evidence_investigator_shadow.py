@@ -98,6 +98,10 @@ async def run_shadow_batch(
                 EvidenceInvestigationShadowCase.model == identity.model,
                 EvidenceInvestigationShadowCase.prompt_version
                 == identity.prompt_version,
+                EvidenceInvestigationShadowCase.prompt_sha256
+                == identity.prompt_sha256,
+                EvidenceInvestigationShadowCase.adapter_contract_version
+                == identity.adapter_contract_version,
             )
         )
         if existing is not None:
@@ -137,6 +141,10 @@ async def run_shadow_batch(
             read_fingerprint=prepared.case.read_fingerprint,
             model=identity.model,
             prompt_version=identity.prompt_version,
+            prompt_sha256=identity.prompt_sha256,
+            adapter_contract_version=identity.adapter_contract_version,
+            transport_gate_sha256=identity.transport_gate_sha256,
+            budget_json=asdict(budget),
             case_json=asdict(prepared.case),
             registered_evidence_json=evidence,
             option_population_json=option_population,
