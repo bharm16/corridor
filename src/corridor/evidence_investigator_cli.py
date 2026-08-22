@@ -16,7 +16,7 @@ from corridor.config import settings
 from corridor.db import Session
 from corridor.evidence_investigator import InvestigationBudget
 from corridor.evidence_investigator_runtime import (
-    DirectResponsesInvestigationRuntime,
+    configured_direct_runtime,
     configured_runtime_identity,
     run_receipted_investigation,
 )
@@ -26,7 +26,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("candidate_id", type=int)
     args = parser.parse_args()
-    runtime = DirectResponsesInvestigationRuntime(
+    runtime = configured_direct_runtime(
         model=settings.evidence_investigator_model,
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,

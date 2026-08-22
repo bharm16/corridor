@@ -1,0 +1,14 @@
+{
+  "candidate_id": 7554,
+  "contaminated_manifest_path": "artifacts/evidence-investigator/v2-cohort-2026-08-22.json",
+  "contaminated_manifest_sha256": "9afe20f70ebad9ed10458bdced8d008ae1344e16785dea58e4fcf511848cac72",
+  "detected_at": "2026-08-22T20:20:00+00:00",
+  "prior_human_outcome_identity": "eec16720eaf683a9a28416779798db08c53c4c1f7654817f0942666130cf7afb",
+  "prior_outcome_captured_at": "2026-08-22T05:19:05.236351+00:00",
+  "prior_shadow_case_id": "4d6298a1-6d7d-4731-a9c1-8fafdec5bd6f",
+  "promotion_eligible": false,
+  "reason": "selected Candidate had a prior human outcome before the v2 freeze",
+  "receipt_sha256": "a884d8242b714b7a700ba7d61bca3a35d13a8967e44164f92e1ae500e1be683e",
+  "schema_version": "evidence-investigator-v2-cohort-refusal-v1",
+  "status": "refused"
+}

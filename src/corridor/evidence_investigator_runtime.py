@@ -450,6 +450,17 @@ class DirectResponsesInvestigationRuntime:
         return result, step
 
 
+def configured_direct_runtime(
+    *, model: str, api_key: str, base_url: str
+) -> DirectResponsesInvestigationRuntime:
+    """Build the sealed production transport shared by operator entry points."""
+    return DirectResponsesInvestigationRuntime(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+    )
+
+
 def _output_json(body: dict) -> dict:
     if body.get("status") == "incomplete":
         raise RuntimeError("the model response was incomplete")

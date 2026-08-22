@@ -17,7 +17,7 @@ from corridor.config import settings
 from corridor.db import Session
 from corridor.evidence_investigator import InvestigationBudget
 from corridor.evidence_investigator_runtime import (
-    DirectResponsesInvestigationRuntime,
+    configured_direct_runtime,
     configured_runtime_identity,
 )
 from corridor.evidence_investigator_shadow import (
@@ -59,7 +59,7 @@ def main() -> None:
             )
 
             def runtime_factory():
-                return DirectResponsesInvestigationRuntime(
+                return configured_direct_runtime(
                     model=settings.evidence_investigator_model,
                     api_key=settings.openai_api_key,
                     base_url=settings.openai_base_url,
@@ -79,9 +79,9 @@ def main() -> None:
             write_shadow_cohort_manifest(cohort, args.manifest_path)
             output = {
                 "project": project.slug,
-                "cohort_id": cohort.manifest["cohort_id"],
+                "cohort_id": cohort.manifest.cohort_id,
                 "manifest_path": str(args.manifest_path),
-                "manifest_sha256": cohort.manifest["manifest_sha256"],
+                "manifest_sha256": cohort.manifest.manifest_sha256,
                 "cases": [
                     {
                         "shadow_case_id": item.case.public_id,

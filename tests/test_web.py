@@ -40,6 +40,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    EvidenceInvestigationCandidateReviewStart,
     ExternalReportArtifact,
     ExternalOrg,
     Project,
@@ -4632,6 +4633,27 @@ def test_the_pile_names_what_each_statement_needs(session, client, project):
     # The reviewer sees what was actually said, not a candidate id.
     assert "Tejas committed on the crossing" in page
     assert "2025-01-16" in page
+
+
+def test_ordinary_statement_review_records_pre_shadow_start_without_exposing_packet(
+    session, client, project
+):
+    candidate = _unplaced_statement(session, project)
+
+    response = client.get(
+        f"/statements/{project.slug}/{candidate.id}/coordinate"
+    )
+
+    assert response.status_code == 200
+    start = session.scalar(
+        select(EvidenceInvestigationCandidateReviewStart).where(
+            EvidenceInvestigationCandidateReviewStart.candidate_id == candidate.id
+        )
+    )
+    assert start is not None
+    assert start.principal == TEST_PRINCIPAL.subject
+    assert "Evidence Investigator" not in response.text
+    assert "dependency_options" not in response.text
 
 
 def test_the_queue_points_at_the_pile_without_becoming_it(

@@ -1621,6 +1621,74 @@ def test_v2_cohort_refuses_implicit_cross_project_or_mixed_configuration(
         )
 
 
+def test_v2_cohort_refuses_a_candidate_with_an_earlier_human_outcome(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+
+    class FirstRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("What is supported?",)),
+                turns=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+
+    [earlier] = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            candidate_ids=(candidate.id,),
+            runtime_factory=FirstRuntime,
+            identity=_identity(model="earlier-shadow"),
+            budget=InvestigationBudget(),
+        )
+    )
+    capture_shadow_outcome(session, earlier.case.public_id)
+
+    class ForbiddenRuntime:
+        async def run(self, case, tools, budget):
+            raise AssertionError("contaminated case reached the runtime")
+
+    with pytest.raises(ValueError, match="before any prior human review or outcome"):
+        asyncio.run(
+            run_v2_shadow_cohort(
+                session,
+                project.id,
+                candidate_ids=(candidate.id,),
+                selection_rule="operator-declared:contaminated",
+                runtime_factory=ForbiddenRuntime,
+                identity=configured_runtime_identity("cohort-test"),
+                budget=InvestigationBudget(),
+            )
+        )
+
+
+def test_v2_cohort_refuses_a_candidate_reviewed_before_its_shadow_freeze(
+    session, project
+):
+    candidate, _quote = _unplaced_statement(session, project)
+    observe_shadow_review(session, candidate.id, boundary="start", principal=RECORDER)
+
+    class ForbiddenRuntime:
+        async def run(self, case, tools, budget):
+            raise AssertionError("previously reviewed case reached the runtime")
+
+    with pytest.raises(ValueError, match="before any prior human review or outcome"):
+        asyncio.run(
+            run_v2_shadow_cohort(
+                session,
+                project.id,
+                candidate_ids=(candidate.id,),
+                selection_rule="operator-declared:reviewed-before-freeze",
+                runtime_factory=ForbiddenRuntime,
+                identity=configured_runtime_identity("cohort-test"),
+                budget=InvestigationBudget(),
+            )
+        )
+
+
 def test_shadow_capture_refuses_counting_one_human_outcome_twice_for_one_candidate(
     session, project
 ):
