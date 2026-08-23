@@ -60,7 +60,7 @@ from corridor.verify import normalize
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v2"
 UNKNOWN_SCOPE_POLICY_VERSION = "event-admission-v3-unknown-scope"
 FAMILY = "event-admission"
-ABSTENTION_REASON_VERSION = "event-admission-abstentions-v2"
+ABSTENTION_REASON_VERSION = "event-admission-abstentions-v3"
 UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v4"
 MACHINE_ACTOR = "corridor:event-admission"
 
@@ -216,6 +216,20 @@ def run_event_admission(
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    policy_sha256 = policy.canonical_sha256(policy_json)
+    registry_sha256 = _predecessor_registry_sha256(session, project.id)
+    prior_abstentions: dict[int, EventAdmissionOutcome] = {}
+    for outcome in session.scalars(
+        select(EventAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.policy_version == EVENT_ADMISSION_POLICY_VERSION,
+            EventAdmissionOutcome.outcome == OUTCOME_ABSTAINED,
+        )
+        .order_by(EventAdmissionOutcome.id)
+    ):
+        prior_abstentions[outcome.candidate_id] = outcome
 
     # Every verdict first, then one receipt written with its final counts:
     # the receipt table is immutable, so a run row is never updated after
@@ -234,9 +248,23 @@ def run_event_admission(
         ]
     ] = []
     abstentions: list[EventAdmissionAbstention] = []
+    abstention_inputs: dict[int, dict] = {}
     for candidate in candidates:
+        input_receipt = _predecessor_input_receipt(
+            candidate,
+            policy_sha256=policy_sha256,
+            registry_sha256=registry_sha256,
+        )
+        prior = prior_abstentions.get(candidate.id)
+        if (
+            prior is not None
+            and isinstance(prior.eligibility_json, dict)
+            and prior.eligibility_json.get("input") == input_receipt
+        ):
+            continue
         verdict = _evaluate(session, project, candidate)
         if isinstance(verdict, str):
+            abstention_inputs[candidate.id] = input_receipt
             abstentions.append(
                 EventAdmissionAbstention(
                     candidate_id=candidate.id, reason=verdict
@@ -277,7 +305,7 @@ def run_event_admission(
             family=FAMILY,
             policy_approval_id=None,
             policy_version=EVENT_ADMISSION_POLICY_VERSION,
-            policy_sha256=policy.canonical_sha256(policy_json),
+            policy_sha256=policy_sha256,
             abstention_reason_version=ABSTENTION_REASON_VERSION,
             applied_count=len(admissible),
             abstained_count=len(abstentions),
@@ -286,12 +314,19 @@ def run_event_admission(
         session.flush([run])
 
         for abstention in abstentions:
+            eligibility = {
+                "input": abstention_inputs[abstention.candidate_id],
+                "verdict": abstention.reason,
+                "reason_version": ABSTENTION_REASON_VERSION,
+            }
             session.add(
                 EventAdmissionOutcome(
                     policy_run_id=run.id,
                     candidate_id=abstention.candidate_id,
                     outcome=OUTCOME_ABSTAINED,
                     reason=abstention.reason,
+                    eligibility_json=eligibility,
+                    eligibility_sha256=policy.canonical_sha256(eligibility),
                 )
             )
 
@@ -357,6 +392,58 @@ def run_event_admission(
         abstained_count=len(abstentions),
         abstentions=abstentions,
     )
+
+
+def _predecessor_registry_sha256(session: Session, project_id: int) -> str:
+    """Fingerprint every registered fact the predecessor resolver can consult."""
+    dependencies = session.scalars(
+        select(Dependency)
+        .where(Dependency.project_id == project_id)
+        .order_by(Dependency.id)
+    ).all()
+    organizations = session.scalars(select(ExternalOrg).order_by(ExternalOrg.id)).all()
+    return policy.canonical_sha256(
+        {
+            "dependencies": [
+                {
+                    "id": dependency.id,
+                    "source_ref": dependency.source_ref,
+                    "external_org_id": dependency.external_org_id,
+                    "status": dependency.status,
+                }
+                for dependency in dependencies
+            ],
+            "organizations": [
+                {
+                    "id": organization.id,
+                    "name": organization.name,
+                    "aliases": sorted(organization.aliases or []),
+                }
+                for organization in organizations
+            ],
+        }
+    )
+
+
+def _predecessor_input_receipt(
+    candidate: Candidate,
+    *,
+    policy_sha256: str,
+    registry_sha256: str,
+) -> dict:
+    """Exact unchanged input that makes one predecessor Abstention reusable."""
+    return {
+        "receipt_version": "event-admission-v2-input-v1",
+        "project_id": candidate.project_id,
+        "candidate_id": candidate.id,
+        "source_document_id": candidate.source_document_id,
+        "active_extraction_run_id": candidate.extraction_run_id,
+        "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
+        "citations_verified": candidate.citations_verified,
+        "candidate_state": candidate.state,
+        "policy_sha256": policy_sha256,
+        "registry_sha256": registry_sha256,
+    }
 
 
 def _run_unknown_scope_admission(

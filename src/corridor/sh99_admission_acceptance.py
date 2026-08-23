@@ -9,6 +9,12 @@ This boundary captures a read-only, content-addressed PostgreSQL data snapshot,
 restores it into a newly migrated disposable PostgreSQL 16 database, and invokes
 the exact ``make admission ARGS=\"load sh99-grand-parkway\"`` command twice.
 The shared database is read only throughout; only the disposable clone changes.
+
+The post-activation seal reuses that same capture and command boundary while
+pinning the current acceptance, activation, Active Runs, Candidate, Work Item,
+and every permitted write identity. A separate clone framework was rejected:
+two implementations of the production-like boundary would make their receipts
+comparable in name while proving different operations.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ import subprocess
 import tempfile
 from typing import Any
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, or_, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
@@ -44,6 +50,7 @@ from corridor.models import (
     ActiveRunDeclaration,
     Assertion,
     Candidate,
+    CandidateDisposition,
     CommitmentLineage,
     Dependency,
     DependencyAdmissionOutcome,
@@ -54,11 +61,15 @@ from corridor.models import (
     DependencyEventTiming,
     Document,
     EventAdmissionOutcome,
+    EventAdmissionAcceptanceReceipt,
+    EventAdmissionActivation,
     EvidenceLink,
     ExternalOrg,
     ExtractionRun,
     PolicyRun,
     Project,
+    ReportRun,
+    WorkDecision,
 )
 from corridor.m8_acceptance_publication import publish_directory_once
 
@@ -66,7 +77,25 @@ from corridor.m8_acceptance_publication import publish_directory_once
 SNAPSHOT_SCHEMA_VERSION = "corridor.sh99-real-admission-source-snapshot.v1"
 BUNDLE_SCHEMA_VERSION = "corridor.sh99-real-admission-bundle.v1"
 DATABASE_PREFIX = "corridor_sh99_real_admission_acceptance_"
+SHARED_SEAL_DATABASE_PREFIX = "corridor_sh99_shared_admission_seal_"
 BUNDLE_FILES = ("receipt.json", "canonical-content.json", "environment.json")
+SHARED_SEAL_SCHEMA_VERSION = "corridor.sh99-shared-admission-seal.v1"
+SHARED_SEAL_BUNDLE_FILES = (
+    "receipt.json",
+    "receipt.md",
+    "canonical-content.json",
+    "environment.json",
+)
+SHARED_SEAL_APPROVAL_GATE = (
+    "This passing seal does not authorize a shared Ledger write. A designated "
+    "human must approve the exact source revision, current acceptance receipt, "
+    "activation, Candidate, Active Runs, and manifest SHA-256."
+)
+HISTORICAL_ACCEPTANCE_RECEIPT = (
+    156,
+    "2343632bcb8adcd8c50796f2f70ee1c00e7d7ef188bc40b195ac9018b6263cdf",
+)
+HISTORICAL_ACTIVATION_ID = 140
 HUMAN_APPROVAL_GATE = (
     "No shared SH 99 database was changed. A designated human must separately "
     "approve any shared-database Admission operation."
@@ -95,6 +124,158 @@ class SH99AdmissionAcceptanceSummary:
     integrity_manifest_sha256: str
     canonical_content_sha256: str
     database_name: str
+
+
+@dataclass(frozen=True)
+class SH99SharedAdmissionSealConfig:
+    """Exact caller-held pins for the post-activation shared-operation seal."""
+
+    project_slug: str
+    source_database_url: str
+    expected_clean_git_revision: str
+    output_dir: Path
+    postgres_admin_url: str
+    expected_acceptance_receipt_id: int
+    expected_acceptance_receipt_sha256: str
+    expected_activation_id: int
+    expected_active_runs: tuple[tuple[int, int], ...]
+    expected_candidate_id: int
+
+
+@dataclass(frozen=True)
+class SH99SharedAdmissionSealSummary:
+    bundle_dir: Path
+    manifest_path: Path
+    integrity_manifest_sha256: str
+    canonical_content_sha256: str
+    database_name: str
+
+
+def run_sh99_shared_admission_seal(
+    config: SH99SharedAdmissionSealConfig,
+    *,
+    provision_database: DatabaseProvisioner | None = None,
+) -> SH99SharedAdmissionSealSummary:
+    """Seal the exact ordinary shared Admission path on an isolated clone."""
+    if provision_database is None:
+        provision_database = _provision_shared_seal_database
+    source = _require_clean_source(config.expected_clean_git_revision)
+    source_head = _source_migration_head()
+    source_database = _source_database(config.source_database_url)
+    shared_head = read_migration_head(
+        config.source_database_url, repo_root=REPO_ROOT, error_cls=ValueError
+    )
+    if shared_head != source_head:
+        raise ValueError("shared database migration head does not match checked-out source")
+
+    with tempfile.TemporaryDirectory(prefix="corridor-sh99-shared-seal-") as parent:
+        dump_path = Path(parent) / "source.dump"
+        evaluated_on = date.today()
+        source_state = _read_shared_seal_state(
+            config.source_database_url,
+            config.project_slug,
+            evaluated_on=evaluated_on,
+        )
+        pins = _require_shared_seal_pins(
+            source_state,
+            config,
+            source_revision=source["revision"],
+            migration_head=source_head,
+        )
+        _dump_source_database(source_database, dump_path)
+        source_snapshot = {
+            "schema_version": SHARED_SEAL_SCHEMA_VERSION,
+            "source": {
+                **source,
+                "migration_head": source_head,
+                "database_name": source_database["database"],
+                "postgres_version": source_state["postgres_version"],
+            },
+            "project_slug": config.project_slug,
+            "source_dump_sha256": _sha256(dump_path.read_bytes()),
+            "source_state_sha256": _json_sha256(source_state),
+            "pins": pins,
+            "before": source_state,
+        }
+
+        with provision_database(config.postgres_admin_url) as database:
+            database_name = database.name
+            if database.migration_head != source_head:
+                raise ValueError(
+                    "disposable database migration head does not match checked-out source"
+                )
+            _restore_source_database(source_database, dump_path, database.name)
+            clone_url = _database_url(config.postgres_admin_url, database.name)
+            clone_before = _read_shared_seal_state(
+                clone_url, config.project_slug, evaluated_on=evaluated_on
+            )
+            if clone_before != source_state:
+                raise ValueError("restored SH 99 clone does not match its pinned source state")
+
+            first_operation = _run_shared_operation(clone_url, config.project_slug)
+            after_first = _read_shared_seal_state(
+                clone_url, config.project_slug, evaluated_on=evaluated_on
+            )
+            second_operation = _run_shared_operation(clone_url, config.project_slug)
+            after_second = _read_shared_seal_state(
+                clone_url, config.project_slug, evaluated_on=evaluated_on
+            )
+            first_run = _shared_seal_run_receipt(
+                clone_before, after_first, first_operation
+            )
+            second_run = _shared_seal_run_receipt(
+                after_first, after_second, second_operation
+            )
+            exact_outcome = _require_shared_seal_outcomes(
+                clone_before,
+                after_first,
+                after_second,
+                first_run,
+                second_run,
+                project_slug=config.project_slug,
+                expected_candidate_id=config.expected_candidate_id,
+            )
+
+    canonical = {
+        "schema_version": SHARED_SEAL_SCHEMA_VERSION,
+        "source_snapshot": {
+            key: value for key, value in source_snapshot.items() if key != "before"
+        },
+        "first_run": first_run,
+        "second_run": second_run,
+        "after_second_state_sha256": _json_sha256(after_second),
+        "exact_outcome": exact_outcome,
+        "human_approval_gate": SHARED_SEAL_APPROVAL_GATE,
+    }
+    receipt = {
+        **canonical,
+        "source_snapshot": source_snapshot,
+        "after_first": after_first,
+        "after_second": after_second,
+    }
+    environment = {
+        "schema_version": SHARED_SEAL_SCHEMA_VERSION,
+        "replayed_at": datetime.now(timezone.utc).isoformat(),
+        "source_revision": source["revision"],
+        "migration_head": source_head,
+        "source_dump_sha256": source_snapshot["source_dump_sha256"],
+        "source_state_sha256": source_snapshot["source_state_sha256"],
+        "shared_database_mutated": False,
+    }
+    manifest_path, manifest_sha256, canonical_sha256 = _write_shared_seal_bundle(
+        config.output_dir,
+        environment=environment,
+        receipt=receipt,
+        receipt_markdown=_shared_seal_markdown(canonical),
+        canonical_content=canonical,
+    )
+    return SH99SharedAdmissionSealSummary(
+        bundle_dir=config.output_dir,
+        manifest_path=manifest_path,
+        integrity_manifest_sha256=manifest_sha256,
+        canonical_content_sha256=canonical_sha256,
+        database_name=database_name,
+    )
 
 
 def run_sh99_admission_acceptance(
@@ -222,12 +403,36 @@ def verify_sh99_admission_bundle(
     )
 
 
+def verify_sh99_shared_admission_seal_bundle(
+    bundle_dir: Path, *, expected_integrity_manifest_sha256: str
+) -> VerificationResult:
+    """Verify a shared-operation seal without opening PostgreSQL."""
+    return verify_bundle(
+        bundle_dir,
+        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+        bundle_schema_version=SHARED_SEAL_SCHEMA_VERSION,
+        bundle_files=SHARED_SEAL_BUNDLE_FILES,
+        corrupt_bundle_error_cls=CorruptSH99AdmissionBundle,
+        sha256=_sha256,
+        json_sha256=_json_sha256,
+    )
+
+
 def _provision_database(admin_url: str):
     return provision_disposable_postgres(
         admin_url,
         repo_root=REPO_ROOT,
         error_cls=ValueError,
         database_prefix=DATABASE_PREFIX,
+    )
+
+
+def _provision_shared_seal_database(admin_url: str):
+    return provision_disposable_postgres(
+        admin_url,
+        repo_root=REPO_ROOT,
+        error_cls=ValueError,
+        database_prefix=SHARED_SEAL_DATABASE_PREFIX,
     )
 
 
@@ -423,6 +628,280 @@ def _read_project_state(database_url: str, project_slug: str) -> dict[str, Any]:
         engine.dispose()
 
 
+def _read_shared_seal_state(
+    database_url: str,
+    project_slug: str,
+    *,
+    evaluated_on: date | None = None,
+) -> dict[str, Any]:
+    engine = create_engine(database_url, poolclass=NullPool, future=True)
+    try:
+        with Session(engine) as session:
+            session.execute(text("set transaction read only"))
+            state = _shared_seal_state(
+                session, project_slug, evaluated_on=evaluated_on
+            )
+            session.rollback()
+            return state
+    finally:
+        engine.dispose()
+
+
+def _shared_seal_state(
+    session: Session,
+    project_slug: str,
+    *,
+    evaluated_on: date | None = None,
+) -> dict[str, Any]:
+    from corridor.event_admission import _normal_policy_version
+    from corridor.work_list import build_work_list
+
+    state = _project_state(session, project_slug)
+    project_id = state["project"]["id"]
+    candidate_ids = [candidate["id"] for candidate in state["candidates"]]
+    dependency_ids = [dependency["id"] for dependency in state["ledger"]["dependencies"]]
+    lineage_ids = [
+        lineage["id"] for lineage in state["ledger"]["commitment_lineages"]
+    ]
+
+    candidate_dispositions = [
+        _row(item)
+        for item in session.scalars(
+            select(CandidateDisposition)
+            .where(CandidateDisposition.candidate_id.in_(candidate_ids))
+            .order_by(CandidateDisposition.id)
+        )
+    ]
+    work_decisions = [
+        _row(item)
+        for item in session.scalars(
+            select(WorkDecision)
+            .where(
+                or_(
+                    WorkDecision.dependency_id.in_(dependency_ids),
+                    WorkDecision.commitment_lineage_id.in_(lineage_ids),
+                )
+            )
+            .order_by(WorkDecision.id)
+        )
+    ]
+    report_runs = [
+        _row(item)
+        for item in session.scalars(
+            select(ReportRun)
+            .where(ReportRun.project_id == project_id)
+            .order_by(ReportRun.id)
+        )
+    ]
+    acceptance_receipts = [
+        _row(item)
+        for item in session.scalars(
+            select(EventAdmissionAcceptanceReceipt)
+            .where(EventAdmissionAcceptanceReceipt.project_id == project_id)
+            .order_by(EventAdmissionAcceptanceReceipt.id)
+        )
+    ]
+    activations = [
+        _row(item)
+        for item in session.scalars(
+            select(EventAdmissionActivation)
+            .where(EventAdmissionActivation.project_id == project_id)
+            .order_by(EventAdmissionActivation.id)
+        )
+    ]
+    relevant_audits = [
+        _row(item)
+        for item in session.scalars(
+            select(audit.AuditLog)
+            .where(
+                or_(
+                    (
+                        (audit.AuditLog.entity_type == audit.DEPENDENCY)
+                        & audit.AuditLog.entity_id.in_(dependency_ids)
+                    ),
+                    (
+                        (audit.AuditLog.entity_type == audit.COMMITMENT_LINEAGE)
+                        & audit.AuditLog.entity_id.in_(lineage_ids)
+                    ),
+                    (
+                        (audit.AuditLog.entity_type == audit.CANDIDATE)
+                        & audit.AuditLog.entity_id.in_(candidate_ids)
+                    ),
+                )
+            )
+            .order_by(audit.AuditLog.id)
+        )
+    ]
+    event_evidence_link_ids = [
+        membership["evidence_link_id"]
+        for membership in state["ledger"]["dependency_event_evidence"]
+    ]
+    statement_evidence_links = [
+        _row(item)
+        for item in session.scalars(
+            select(EvidenceLink)
+            .where(EvidenceLink.id.in_(event_evidence_link_ids))
+            .order_by(EvidenceLink.id)
+        )
+    ]
+    work = build_work_list(
+        session, project_id, today=evaluated_on or date.today()
+    )
+    return {
+        "postgres_version": str(session.scalar(text("show server_version"))),
+        "current_event_admission_policy": _normal_policy_version(
+            session, project_id
+        ),
+        "project_state": state,
+        "candidate_dispositions": candidate_dispositions,
+        "work_decisions": work_decisions,
+        "report_runs": report_runs,
+        "event_admission_acceptance_receipts": acceptance_receipts,
+        "event_admission_activations": activations,
+        "relevant_audits": relevant_audits,
+        "statement_evidence_links": statement_evidence_links,
+        "work_list": {
+            "evaluated_on": work.evaluated_on.isoformat(),
+            "ruleset_version": work.ruleset_version,
+            "immediate": [_seal_work_item(item) for item in work.immediate],
+            "backlog": [_seal_work_item(item) for item in work.backlog],
+        },
+    }
+
+
+def _seal_work_item(item: Any) -> dict[str, Any]:
+    return {
+        "kind": item.kind,
+        "commitment_lineage_id": item.commitment_lineage_id,
+        "statement_event_id": item.statement_event_id,
+        "dependency_id": item.dependency_id,
+        "candidate_id": item.candidate_id,
+        "source_candidate_id": item.source_candidate_id,
+        "timing_text": item.timing_text,
+        "attention_reasons": list(item.attention_reason_codes),
+    }
+
+
+def _require_shared_seal_pins(
+    state: dict[str, Any],
+    config: SH99SharedAdmissionSealConfig,
+    *,
+    source_revision: str,
+    migration_head: str,
+) -> dict[str, Any]:
+    project_state = state["project_state"]
+    receipts = {
+        item["id"]: item
+        for item in state["event_admission_acceptance_receipts"]
+    }
+    activations = {
+        item["id"]: item for item in state["event_admission_activations"]
+    }
+    historical_id, historical_sha256 = HISTORICAL_ACCEPTANCE_RECEIPT
+    historical = receipts.get(historical_id)
+    if historical is None or historical.get("receipt_sha256") != historical_sha256:
+        raise ValueError("historical acceptance receipt 156 changed or disappeared")
+    historical_activation = activations.get(HISTORICAL_ACTIVATION_ID)
+    if (
+        historical_activation is None
+        or historical_activation.get("acceptance_receipt_id") != historical_id
+        or historical_activation.get("action") != "activate"
+    ):
+        raise ValueError("historical activation 140 changed or disappeared")
+
+    receipt = receipts.get(config.expected_acceptance_receipt_id)
+    if (
+        receipt is None
+        or receipt.get("status") != "passed"
+        or receipt.get("receipt_sha256")
+        != config.expected_acceptance_receipt_sha256
+        or receipt.get("source_revision") != source_revision
+        or receipt.get("migration_head") != migration_head
+    ):
+        raise ValueError("current acceptance receipt does not match the caller pins")
+    activation = activations.get(config.expected_activation_id)
+    latest_activation_id = max(activations) if activations else None
+    if (
+        activation is None
+        or config.expected_activation_id != latest_activation_id
+        or activation.get("acceptance_receipt_id") != receipt["id"]
+        or activation.get("action") != "activate"
+        or activation.get("policy_version") != receipt["policy_version"]
+    ):
+        raise ValueError("current activation does not match the caller pins")
+    if state["current_event_admission_policy"] != receipt["policy_version"]:
+        raise ValueError("current Event Admission policy does not match the receipt")
+
+    active_runs = {
+        item["document_id"]: item["extraction_run_id"]
+        for item in project_state["active_runs"]
+    }
+    expected_active_runs = dict(config.expected_active_runs)
+    if len(expected_active_runs) != len(config.expected_active_runs):
+        raise ValueError("expected Active Run pins repeat a Document")
+    if any(
+        active_runs.get(document_id) != extraction_run_id
+        for document_id, extraction_run_id in expected_active_runs.items()
+    ):
+        raise ValueError("current Active Runs do not match the caller pins")
+
+    candidate = next(
+        (
+            item
+            for item in project_state["candidates"]
+            if item["id"] == config.expected_candidate_id
+        ),
+        None,
+    )
+    if candidate is None or candidate.get("state") != "pending":
+        raise ValueError("expected Candidate is absent or no longer pending")
+    if candidate.get("extraction_run_id") not in expected_active_runs.values():
+        raise ValueError("expected Candidate does not belong to an approved Active Run")
+    payload = candidate.get("payload_json") or {}
+    fields = payload.get("fields") or {}
+    citations = payload.get("citations") or []
+    if (
+        fields.get("event_type") != "commitment"
+        or fields.get("stated_party") != "Equistar"
+        or fields.get("external_org") != "Equistar"
+        or fields.get("conflict_ref") not in (None, "")
+        or (fields.get("committed_date") or {}).get("text") != "01/2025"
+        or (fields.get("committed_date") or {}).get("precision") != "month"
+        or candidate.get("citations_verified") is not True
+        or len(citations) != 1
+        or citations[0].get("verified") is not True
+        or fields.get("description") != citations[0].get("quote")
+    ):
+        raise ValueError("expected Candidate facts do not match the sealed class")
+    return {
+        "historical_acceptance_receipt_id": historical_id,
+        "historical_acceptance_receipt_sha256": historical_sha256,
+        "historical_activation_id": HISTORICAL_ACTIVATION_ID,
+        "acceptance_receipt_id": receipt["id"],
+        "acceptance_receipt_sha256": receipt["receipt_sha256"],
+        "activation_id": activation["id"],
+        "policy_version": receipt["policy_version"],
+        "policy_sha256": receipt["policy_sha256"],
+        "active_runs": [
+            {"document_id": document_id, "extraction_run_id": extraction_run_id}
+            for document_id, extraction_run_id in sorted(expected_active_runs.items())
+        ],
+        "candidate_id": candidate["id"],
+        "candidate_payload_sha256": _json_sha256(payload),
+        "evidence": {
+            "document_id": citations[0].get("document_id"),
+            "page": citations[0].get("page"),
+            "quote": citations[0].get("quote"),
+            "quote_sha256": _sha256(
+                str(citations[0].get("quote") or "").encode()
+            ),
+        },
+        "stated_party": fields["stated_party"],
+        "affected_party": fields["external_org"],
+        "timing": fields["committed_date"],
+    }
+
+
 def _project_state(session: Session, project_slug: str) -> dict[str, Any]:
     project = session.scalar(select(Project).where(Project.slug == project_slug))
     if project is None:
@@ -594,7 +1073,9 @@ def _run_receipt(
     }
 
 
-def _created_ledger_identities(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[int]]:
+def _created_ledger_identities(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, list[Any]]:
     collections = {
         "active_run_declarations": (before["active_run_declarations"], after["active_run_declarations"]),
         "dependencies": (before["ledger"]["dependencies"], after["ledger"]["dependencies"]),
@@ -605,10 +1086,18 @@ def _created_ledger_identities(before: dict[str, Any], after: dict[str, Any]) ->
         "dependency_event_timings": (before["ledger"]["dependency_event_timings"], after["ledger"]["dependency_event_timings"]),
         "dependency_event_scope_decisions": (before["ledger"]["dependency_event_scope_decisions"], after["ledger"]["dependency_event_scope_decisions"]),
         "dependency_event_scopes": (before["ledger"]["dependency_event_scopes"], after["ledger"]["dependency_event_scopes"]),
-        "dependency_event_evidence": (before["ledger"]["dependency_event_evidence"], after["ledger"]["dependency_event_evidence"]),
         "admission_audits": (before["admission_audits"], after["admission_audits"]),
     }
-    return {name: _new_identifiers(old, new) for name, (old, new) in collections.items()}
+    identities = {
+        name: _new_identifiers(old, new)
+        for name, (old, new) in collections.items()
+    }
+    identities["dependency_event_evidence"] = _new_composite_identifiers(
+        before["ledger"]["dependency_event_evidence"],
+        after["ledger"]["dependency_event_evidence"],
+        fields=("event_id", "evidence_link_id"),
+    )
+    return identities
 
 
 def _new_rows(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -618,6 +1107,268 @@ def _new_rows(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list
 
 def _new_identifiers(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[int]:
     return [item["id"] for item in _new_rows(before, after)]
+
+
+def _new_composite_identifiers(
+    before: list[dict[str, Any]],
+    after: list[dict[str, Any]],
+    *,
+    fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    old = {tuple(item[field] for field in fields) for item in before}
+    return [
+        {field: item[field] for field in fields}
+        for item in after
+        if tuple(item[field] for field in fields) not in old
+    ]
+
+
+def _shared_seal_run_receipt(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    before_project = before["project_state"]
+    after_project = after["project_state"]
+    return {
+        "operation": operation,
+        "created_ledger_identities": _created_ledger_identities(
+            before_project, after_project
+        ),
+        "created_candidate_disposition_ids": _new_identifiers(
+            before["candidate_dispositions"], after["candidate_dispositions"]
+        ),
+        "created_work_decision_ids": _new_identifiers(
+            before["work_decisions"], after["work_decisions"]
+        ),
+        "created_report_run_ids": _new_identifiers(
+            before["report_runs"], after["report_runs"]
+        ),
+        "created_statement_evidence_link_ids": _new_identifiers(
+            before["statement_evidence_links"], after["statement_evidence_links"]
+        ),
+        "created_relevant_audit_ids": _new_identifiers(
+            before["relevant_audits"], after["relevant_audits"]
+        ),
+        "policy_runs": _new_rows(
+            before_project["policy_runs"], after_project["policy_runs"]
+        ),
+        "dependency_outcomes": _new_rows(
+            before_project["dependency_admission_outcomes"],
+            after_project["dependency_admission_outcomes"],
+        ),
+        "event_outcomes": _new_rows(
+            before_project["event_admission_outcomes"],
+            after_project["event_admission_outcomes"],
+        ),
+        "candidate_state_changes": _candidate_state_changes(
+            before_project["candidates"], after_project["candidates"]
+        ),
+        "work_list": after["work_list"],
+    }
+
+
+def _candidate_state_changes(
+    before: list[dict[str, Any]], after: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    old = {item["id"]: item for item in before}
+    changes = []
+    for item in after:
+        prior = old.get(item["id"])
+        if prior is None:
+            continue
+        values = {
+            "state": (prior.get("state"), item.get("state")),
+            "merged_into": (prior.get("merged_into"), item.get("merged_into")),
+            "adjudicated_at": (
+                prior.get("adjudicated_at"),
+                item.get("adjudicated_at"),
+            ),
+        }
+        if any(before_value != after_value for before_value, after_value in values.values()):
+            changes.append(
+                {
+                    "candidate_id": item["id"],
+                    **{
+                        name: {"before": pair[0], "after": pair[1]}
+                        for name, pair in values.items()
+                        if pair[0] != pair[1]
+                    },
+                }
+            )
+    return changes
+
+
+def _require_shared_seal_outcomes(
+    before: dict[str, Any],
+    after_first: dict[str, Any],
+    after_second: dict[str, Any],
+    first_run: dict[str, Any],
+    second_run: dict[str, Any],
+    *,
+    project_slug: str,
+    expected_candidate_id: int,
+) -> dict[str, Any]:
+    expected_command = ["make", "admission", f"ARGS=load {project_slug}"]
+    if first_run["operation"]["argv"] != expected_command:
+        raise ValueError("first replay did not use the exact ordinary Admission command")
+    if second_run["operation"]["argv"] != expected_command:
+        raise ValueError("second replay did not use the exact ordinary Admission command")
+    if "0 conflicts and 1 statements on the record" not in first_run["operation"]["stdout"]:
+        raise ValueError("first replay did not admit exactly one statement and no conflict")
+    if "0 conflicts and 0 statements on the record" not in second_run["operation"]["stdout"]:
+        raise ValueError("second replay was not an idempotent zero-write load")
+
+    identities = first_run["created_ledger_identities"]
+    expected_counts = {
+        "active_run_declarations": 0,
+        "dependencies": 0,
+        "assertions": 0,
+        "evidence_links": 0,
+        "dependency_events": 1,
+        "commitment_lineages": 1,
+        "dependency_event_timings": 1,
+        "dependency_event_scope_decisions": 1,
+        "dependency_event_scopes": 0,
+        "dependency_event_evidence": 1,
+        "admission_audits": 0,
+    }
+    if {name: len(values) for name, values in identities.items()} != expected_counts:
+        raise ValueError("first replay did not create the exact Ledger identity set")
+    if len(first_run["created_candidate_disposition_ids"]) != 1:
+        raise ValueError("first replay did not create exactly one Candidate disposition")
+    if len(first_run["created_statement_evidence_link_ids"]) != 1:
+        raise ValueError("first replay did not create exactly one statement Evidence link")
+    if len(first_run["created_relevant_audit_ids"]) != 1:
+        raise ValueError("first replay did not create exactly one attributable audit entry")
+    if first_run["created_work_decision_ids"] or first_run["created_report_run_ids"]:
+        raise ValueError("first replay created an unauthorized Work Decision or Report Run")
+    if any(
+        outcome.get("outcome") in {"admitted", "merged"}
+        for outcome in first_run["dependency_outcomes"]
+    ):
+        raise ValueError("Dependency Admission changed the Ledger")
+
+    admitted_outcomes = [
+        outcome
+        for outcome in first_run["event_outcomes"]
+        if outcome.get("outcome") == "admitted"
+    ]
+    if (
+        len(admitted_outcomes) != 1
+        or admitted_outcomes[0].get("candidate_id") != expected_candidate_id
+    ):
+        raise ValueError("Event Admission did not admit only the expected Candidate")
+    if any(
+        outcome.get("outcome") != "abstained"
+        for outcome in first_run["event_outcomes"]
+        if outcome is not admitted_outcomes[0]
+    ):
+        raise ValueError("another Event Candidate received a non-Abstention outcome")
+    candidate_changes = first_run["candidate_state_changes"]
+    if len(candidate_changes) != 1:
+        raise ValueError("first replay changed a Candidate other than the expected one")
+    [candidate_change] = candidate_changes
+    if (
+        candidate_change.get("candidate_id") != expected_candidate_id
+        or candidate_change.get("state")
+        != {"before": "pending", "after": "accepted"}
+        or candidate_change.get("adjudicated_at", {}).get("before") is not None
+        or not candidate_change.get("adjudicated_at", {}).get("after")
+        or "merged_into" in candidate_change
+    ):
+        raise ValueError("expected Candidate did not receive only its Admission state")
+
+    after_project = after_first["project_state"]
+    event_id = identities["dependency_events"][0]
+    lineage_id = identities["commitment_lineages"][0]
+    scope_decision_id = identities["dependency_event_scope_decisions"][0]
+    timing_id = identities["dependency_event_timings"][0]
+    event = _row_with_id(after_project["ledger"]["dependency_events"], event_id)
+    lineage = _row_with_id(after_project["ledger"]["commitment_lineages"], lineage_id)
+    scope = _row_with_id(
+        after_project["ledger"]["dependency_event_scope_decisions"],
+        scope_decision_id,
+    )
+    timing = _row_with_id(
+        after_project["ledger"]["dependency_event_timings"], timing_id
+    )
+    organizations = {
+        item["id"]: item for item in after_project["organizations"]
+    }
+    if (
+        event.get("commitment_lineage_id") != lineage_id
+        or event.get("event_type") != "commitment"
+        or event.get("source_kind") != "cited"
+        or organizations[event["stated_external_org_id"]]["name"] != "Equistar"
+        or organizations[event["affected_external_org_id"]]["name"] != "Equistar"
+        or scope.get("scope_mode") != "unknown"
+        or timing.get("text") != "01/2025"
+        or timing.get("precision") != "month"
+    ):
+        raise ValueError("admitted Commitment facts do not match the sealed Candidate")
+    if lineage.get("project_id") != after_project["project"]["id"]:
+        raise ValueError("admitted Commitment Lineage belongs to another project")
+
+    work_items = [
+        item
+        for lane in ("immediate", "backlog")
+        for item in after_first["work_list"][lane]
+        if item.get("source_candidate_id") == expected_candidate_id
+    ]
+    if len(work_items) != 1:
+        raise ValueError("admitted Commitment did not create exactly one Work Item")
+    [work_item] = work_items
+    if (
+        work_item.get("commitment_lineage_id") != lineage_id
+        or work_item.get("statement_event_id") != event_id
+        or work_item.get("dependency_id") is not None
+        or work_item.get("attention_reasons")
+        != [
+            "past_due",
+            "unknown_scope",
+            "missing_internal_owner",
+            "missing_next_action",
+        ]
+    ):
+        raise ValueError("admitted Commitment Work Item contains non-residual work")
+
+    duplicate_collections = (
+        *second_run["created_ledger_identities"].values(),
+        second_run["created_candidate_disposition_ids"],
+        second_run["created_work_decision_ids"],
+        second_run["created_report_run_ids"],
+        second_run["created_statement_evidence_link_ids"],
+        second_run["created_relevant_audit_ids"],
+        second_run["dependency_outcomes"],
+        second_run["event_outcomes"],
+        second_run["candidate_state_changes"],
+    )
+    if any(duplicate_collections):
+        raise ValueError("second replay created duplicate Admission state or outcomes")
+    if after_second["work_list"] != after_first["work_list"]:
+        raise ValueError("second replay changed the residual Work Item")
+    return {
+        "candidate_id": expected_candidate_id,
+        "commitment_lineage_id": lineage_id,
+        "statement_event_id": event_id,
+        "scope_decision_id": scope_decision_id,
+        "timing_id": timing_id,
+        "candidate_disposition_id": first_run["created_candidate_disposition_ids"][0],
+        "statement_evidence_link_id": first_run[
+            "created_statement_evidence_link_ids"
+        ][0],
+        "audit_log_id": first_run["created_relevant_audit_ids"][0],
+        "work_item": work_item,
+        "second_run_zero_new_outcomes": True,
+    }
+
+
+def _row_with_id(rows: list[dict[str, Any]], identifier: int) -> dict[str, Any]:
+    row = next((item for item in rows if item.get("id") == identifier), None)
+    if row is None:
+        raise ValueError(f"sealed identity {identifier} disappeared from clone state")
+    return row
 
 
 def _protected_cases(first_run: dict[str, Any], after_second_run: dict[str, Any]) -> dict[str, Any]:
@@ -830,6 +1581,68 @@ def _write_bundle(
         temp_prefix="corridor-sh99-real-admission-bundle",
         self_verification_failure="new real SH 99 Admission bundle failed self-verification",
     )
+
+
+def _write_shared_seal_bundle(
+    output_dir: Path,
+    *,
+    environment: dict[str, Any],
+    receipt: dict[str, Any],
+    receipt_markdown: bytes,
+    canonical_content: dict[str, Any],
+) -> tuple[Path, str, str]:
+    return publish_verified_bundle(
+        output_dir,
+        exports={
+            "environment.json": environment,
+            "receipt.json": receipt,
+            "receipt.md": receipt_markdown,
+            "canonical-content.json": canonical_content,
+        },
+        canonical_content=canonical_content,
+        bundle_schema_version=SHARED_SEAL_SCHEMA_VERSION,
+        bundle_files=SHARED_SEAL_BUNDLE_FILES,
+        error_cls=ValueError,
+        corrupt_bundle_error_cls=CorruptSH99AdmissionBundle,
+        canonical_json=_canonical_json,
+        sha256=_sha256,
+        json_sha256=_json_sha256,
+        temp_prefix="corridor-sh99-shared-admission-seal",
+        self_verification_failure="new shared Admission seal failed self-verification",
+    )
+
+
+def _shared_seal_markdown(canonical: dict[str, Any]) -> bytes:
+    snapshot = canonical["source_snapshot"]
+    pins = snapshot["pins"]
+    exact = canonical["exact_outcome"]
+    work_item = exact["work_item"]
+    lines = [
+        "# SH99 shared Admission seal",
+        "",
+        "This receipt proves the exact ordinary Admission command on a disposable clone.",
+        "It does not authorize a shared Ledger write.",
+        "",
+        f"- Source revision: `{snapshot['source']['revision']}`",
+        f"- Migration head: `{snapshot['source']['migration_head']}`",
+        f"- PostgreSQL: `{snapshot['source']['postgres_version']}`",
+        f"- Source-state SHA-256: `{snapshot['source_state_sha256']}`",
+        f"- Acceptance receipt: `{pins['acceptance_receipt_id']}`",
+        f"- Activation: `{pins['activation_id']}`",
+        f"- Policy: `{pins['policy_version']}`",
+        f"- Policy SHA-256: `{pins['policy_sha256']}`",
+        f"- Candidate: `{exact['candidate_id']}`",
+        f"- Commitment Lineage on clone: `{exact['commitment_lineage_id']}`",
+        f"- Statement event on clone: `{exact['statement_event_id']}`",
+        f"- Commitment Scope: `not yet known`",
+        f"- Work Item Attention Reasons: `{', '.join(work_item['attention_reasons'])}`",
+        "- First run: 0 Dependencies and exactly 1 Commitment",
+        "- Second run: no new Ledger, Candidate, audit, Work Decision, Report, or policy outcome",
+        "",
+        SHARED_SEAL_APPROVAL_GATE,
+        "",
+    ]
+    return "\n".join(lines).encode()
 
 
 def _canonical_json(value: Any) -> bytes:

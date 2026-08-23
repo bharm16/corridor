@@ -691,6 +691,47 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
     assert session.get(Candidate, pending_candidate.id).state == "pending"
 
 
+def test_activated_normal_processing_does_not_repeat_identical_abstention_outcomes(
+    session, project
+):
+    receipt_json = _activation_receipt(
+        project, gates={"eligible_case_observed": True}
+    )
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=receipt_json["source_revision"],
+        migration_head=receipt_json["migration_head"],
+        receipt_json=receipt_json,
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(
+        session,
+        project,
+        [_event(ref=None, event_type="response", committed_date=None)],
+    )
+
+    first = run_event_admission(session, project.id)
+    after_first = session.scalars(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id
+        )
+    ).all()
+    second = run_event_admission(session, project.id)
+    after_second = session.scalars(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id
+        )
+    ).all()
+
+    assert first.abstained_count == 1
+    assert second.abstained_count == 0
+    assert len(after_first) == 2
+    assert len(after_second) == 2
+
+
 def test_activated_extension_preserves_predecessor_selected_scope_behavior(
     session, project, admitted
 ):
