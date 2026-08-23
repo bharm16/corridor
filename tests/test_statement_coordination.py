@@ -1644,9 +1644,10 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
         document,
         quote=statement_quote,
         fields={
-            "event_type": "slip",
+            "event_type": "committed_date_change",
             "description": statement_quote,
-            "external_org": "Kinder Morgan",
+            "external_org": "DOW",
+            "stated_party": "Kinder Morgan",
         },
     )
     app.dependency_overrides[get_session] = lambda: session
@@ -1684,7 +1685,7 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
 
         assert screen.status_code == 200
         assert "does not register a name for future Documents" in screen.text
-        assert response.status_code == 303
+        assert response.status_code == 303, response.text
         event = session.scalar(
             select(DependencyEvent).where(DependencyEvent.project_id == project.id)
         )

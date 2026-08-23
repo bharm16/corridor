@@ -188,11 +188,11 @@ def run_extraction(
     min_page_chars: int,
     to_candidate: Callable,
     items_key: str,
-    noun: str,
+    noun: Noun,
     client_factory: Callable | None = None,
     session_factory: Callable | None = None,
 ) -> int:
-    """`make <command> ARGS="<slug> [limit]"` for a pooled extractor.
+    """Run a pooled extractor over a project or exact registered Documents.
 
     This was written twice, 96 lines each, differing on six: the slug
     default, the `doc_type` filter, the `items_key`, and the noun in three
@@ -206,6 +206,10 @@ def run_extraction(
     whole runner without an API key or a committed database. Two adapters
     justify each seam: the real client and the real session factory in
     production, a stub and a transaction-scoped session in the suite.
+
+    Repeated ``--document-id`` arguments form an all-or-nothing selection.
+    Every id is validated before the model client exists, so a missing,
+    duplicated, cross-project, or wrong-type Document cannot widen the run.
     """
     import sys
     import time
@@ -214,8 +218,9 @@ def run_extraction(
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 
-    slug = argv[0] if argv else default_slug
-    limit = int(argv[1]) if len(argv) > 1 else None
+    slug, limit, document_ids = _parse_runner_args(argv, default_slug=default_slug)
+    if slug is None:
+        return 1
 
     with (session_factory or DefaultSessionFactory)() as session:
         project = session.scalars(
@@ -225,11 +230,20 @@ def run_extraction(
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
-        documents = session.scalars(
-            select(Document)
-            .where(Document.project_id == project.id, Document.doc_type == doc_type)
-            .order_by(Document.doc_date)
-        ).all()
+        documents = _selected_documents(
+            session,
+            project_id=project.id,
+            doc_type=doc_type,
+            requested_ids=document_ids,
+        )
+        if documents is None:
+            return 1
+        if not document_ids:
+            documents = session.scalars(
+                select(Document)
+                .where(Document.project_id == project.id, Document.doc_type == doc_type)
+                .order_by(Document.doc_date)
+            ).all()
 
         # Resume: a killed run leaves whole documents done, so skip those and
         # pick up where it stopped instead of duplicating their candidates.
@@ -300,3 +314,106 @@ def run_extraction(
         )
         print(load_and_report(session, project), flush=True)
     return 0
+
+
+def _parse_runner_args(
+    argv: list[str], *, default_slug: str
+) -> tuple[str | None, int | None, list[int]]:
+    import sys
+
+    positional: list[str] = []
+    document_ids: list[int] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--document-id":
+            if index + 1 >= len(argv):
+                print("--document-id requires an integer value", file=sys.stderr)
+                return None, None, []
+            try:
+                document_ids.append(int(argv[index + 1]))
+            except ValueError:
+                print("--document-id must be an integer", file=sys.stderr)
+                return None, None, []
+            index += 2
+            continue
+        positional.append(token)
+        index += 1
+
+    if len(positional) > 2:
+        print("usage: <slug> [limit] [--document-id <id> ...]", file=sys.stderr)
+        return None, None, []
+
+    slug = positional[0] if positional else default_slug
+    if document_ids and len(positional) == 2:
+        print("limit cannot be combined with explicit document selection", file=sys.stderr)
+        return None, None, []
+    if len(positional) == 2:
+        try:
+            limit = int(positional[1])
+        except ValueError:
+            print("limit must be an integer", file=sys.stderr)
+            return None, None, []
+    else:
+        limit = None
+    return slug, limit, document_ids
+
+
+def _selected_documents(
+    session: Session,
+    *,
+    project_id: int,
+    doc_type: str,
+    requested_ids: list[int],
+) -> list[Document] | None:
+    import sys
+
+    if not requested_ids:
+        return []
+
+    duplicates = [
+        document_id
+        for document_id in requested_ids
+        if requested_ids.count(document_id) > 1
+    ]
+    if duplicates:
+        repeated = sorted(set(duplicates))
+        print(
+            "duplicate document selection is not allowed: "
+            + ", ".join(str(document_id) for document_id in repeated),
+            file=sys.stderr,
+        )
+        return None
+
+    documents = {
+        document.id: document
+        for document in session.scalars(
+            select(Document).where(Document.id.in_(requested_ids))
+        ).all()
+    }
+    missing = [document_id for document_id in requested_ids if document_id not in documents]
+    if missing:
+        print(
+            "selected documents do not exist: "
+            + ", ".join(str(document_id) for document_id in missing),
+            file=sys.stderr,
+        )
+        return None
+
+    ordered: list[Document] = []
+    for document_id in requested_ids:
+        document = documents[document_id]
+        if document.project_id != project_id:
+            print(
+                f"document {document_id} belongs to another project",
+                file=sys.stderr,
+            )
+            return None
+        if document.doc_type != doc_type:
+            print(
+                f"document {document_id} is {document.doc_type!r}, not {doc_type!r}",
+                file=sys.stderr,
+            )
+            return None
+        ordered.append(document)
+    return ordered
