@@ -252,7 +252,14 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
 
 
 def test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded():
-    state = _read_shared_seal_state(settings.database_url, "sh99-grand-parkway")
+    try:
+        state = _read_shared_seal_state(
+            settings.database_url, "sh99-grand-parkway"
+        )
+    except ValueError as error:
+        if str(error) == "no project with slug 'sh99-grand-parkway'":
+            pytest.skip("the separately managed SH99 source is not present")
+        raise
     candidate = next(
         item
         for item in state["project_state"]["candidates"]
