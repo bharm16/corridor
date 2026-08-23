@@ -42,6 +42,7 @@ from corridor.models import (
     DependencyEventScope,
     DependencyEventScopeDecision,
     ExternalOrg,
+    EventAdmissionOutcome,
     ProjectRosterEntry,
     ReportRun,
     StatementCoordinationReceipt,
@@ -987,7 +988,7 @@ def _check_expected_predecessors(
 def _require_candidate_owns_lineage(
     session: Session, candidate_id: int, event: DependencyEvent
 ) -> None:
-    """Bind Correct to the Candidate whose active guided Save owns the lineage."""
+    """Bind Correct to the Candidate whose accepted receipt owns the lineage."""
     candidate = session.get(Candidate, candidate_id)
     if (
         candidate is None
@@ -1012,7 +1013,15 @@ def _require_candidate_owns_lineage(
         )
         .limit(1)
     )
-    if receipt is None:
+    admission = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id,
+            EventAdmissionOutcome.commitment_lineage_id == event.commitment_lineage_id,
+            EventAdmissionOutcome.dependency_event_id == event.id,
+            EventAdmissionOutcome.outcome == "admitted",
+        )
+    )
+    if receipt is None and admission is None:
         raise StatementCoordinationRefusal(
             "the statement Candidate does not own this correction target"
         )

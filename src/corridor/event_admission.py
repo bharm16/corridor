@@ -20,8 +20,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from pathlib import Path
+import subprocess
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor import audit
@@ -38,8 +41,13 @@ from corridor.external_statements import (
 )
 from corridor.models import (
     Candidate,
+    CandidateDisposition,
     Dependency,
     DependencyEvent,
+    DependencyEventScopeDecision,
+    Document,
+    EventAdmissionAcceptanceReceipt,
+    EventAdmissionActivation,
     EventAdmissionOutcome,
     ExternalOrg,
     PolicyRun,
@@ -47,10 +55,13 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.verify import normalize
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v2"
+UNKNOWN_SCOPE_POLICY_VERSION = "event-admission-v3-unknown-scope"
 FAMILY = "event-admission"
 ABSTENTION_REASON_VERSION = "event-admission-abstentions-v2"
+UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v3"
 MACHINE_ACTOR = "corridor:event-admission"
 
 OUTCOME_ADMITTED = "admitted"
@@ -75,6 +86,32 @@ ABSTENTION_REASONS = frozenset(
         "party_mismatch",
         "project_side_actor",
         "statement_draft_invalid",
+    }
+)
+
+UNKNOWN_SCOPE_ABSTENTION_REASONS = frozenset(
+    {
+        "citations_unverified",
+        "event_type_outside_policy",
+        "description_missing",
+        "description_not_in_evidence",
+        "timing_missing",
+        "timing_invalid",
+        "timing_not_in_evidence",
+        "previous_timing_present",
+        "conflict_reference_present",
+        "party_unstated",
+        "stated_party_unresolved",
+        "stated_party_ambiguous",
+        "stated_party_not_in_evidence",
+        "affected_party_unresolved",
+        "affected_party_ambiguous",
+        "affected_party_disagreement",
+        "project_side_actor",
+        "statement_draft_invalid",
+        "stale_active_run_or_candidate",
+        "cross_project_association",
+        "write_integrity_failure",
     }
 )
 
@@ -109,8 +146,27 @@ class PreparedStatementPlacement:
     evidence: CitedStatementEvidence
 
 
+@dataclass(frozen=True)
+class UnknownScopeAdmission:
+    candidate: Candidate
+    fields: dict
+    event_date: date | None
+    new_timing: StatementTiming
+    stated_party: str
+    stated_external_org_id: int
+    evidence: CitedStatementEvidence
+    input_receipt: dict
+
+
+class UnknownScopeWriteIntegrity(RuntimeError):
+    """An eligible row could not produce its exact protected write set."""
+
+
 def run_event_admission(
-    session: Session, project_id: int
+    session: Session,
+    project_id: int,
+    *,
+    policy_version: str | None = None,
 ) -> EventAdmissionResult:
     """Attach what the minutes say to the conflicts they name.
 
@@ -121,8 +177,30 @@ def run_event_admission(
     project = session.get(Project, project_id)
     if project is None:
         raise ValueError(f"project {project_id} does not exist")
+    selected_version = policy_version or _normal_policy_version(session, project_id)
+    if policy_version is None and selected_version == UNKNOWN_SCOPE_POLICY_VERSION:
+        predecessor = run_event_admission(
+            session,
+            project_id,
+            policy_version=EVENT_ADMISSION_POLICY_VERSION,
+        )
+        extension = run_event_admission(
+            session,
+            project_id,
+            policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+        )
+        return EventAdmissionResult(
+            run_id=extension.run_id,
+            admitted_count=predecessor.admitted_count + extension.admitted_count,
+            abstained_count=extension.abstained_count,
+            abstentions=extension.abstentions,
+        )
+    if selected_version == UNKNOWN_SCOPE_POLICY_VERSION:
+        return _run_unknown_scope_admission(session, project)
+    if selected_version != EVENT_ADMISSION_POLICY_VERSION:
+        raise ValueError(f"unsupported Event Admission policy {selected_version!r}")
     lock_project(session, project_id)
-    policy_json = _canonical_policy(project)
+    policy_json = _canonical_policy(project, EVENT_ADMISSION_POLICY_VERSION)
 
     # Only candidates from declared Active Runs of current documents —
     # the same scope the dependency policy, the pile, and the human
@@ -280,6 +358,208 @@ def run_event_admission(
     )
 
 
+def _run_unknown_scope_admission(
+    session: Session, project: Project
+) -> EventAdmissionResult:
+    """Apply only ADR-0042's exact party-level Commitment class."""
+    lock_project(session, project.id)
+    policy_json = _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+    policy_sha256 = policy.canonical_sha256(policy_json)
+
+    from corridor.supersession import actionable_candidate_query
+
+    candidates = session.scalars(
+        actionable_candidate_query(project.id)
+        .where(Candidate.kind == "event", Candidate.state == "pending")
+        .order_by(Candidate.id)
+    ).all()
+    prior_abstentions: dict[int, EventAdmissionOutcome] = {}
+    for outcome in session.scalars(
+        select(EventAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.policy_version == UNKNOWN_SCOPE_POLICY_VERSION,
+            EventAdmissionOutcome.outcome == OUTCOME_ABSTAINED,
+        )
+        .order_by(EventAdmissionOutcome.id)
+    ):
+        prior_abstentions[outcome.candidate_id] = outcome
+    registry_sha256 = policy.canonical_sha256(
+        [
+            {"id": org.id, "name": org.name, "aliases": sorted(org.aliases or [])}
+            for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id))
+        ]
+    )
+
+    prepared: list[UnknownScopeAdmission] = []
+    abstentions: list[EventAdmissionAbstention] = []
+    abstention_inputs: dict[int, dict] = {}
+    for candidate in candidates:
+        input_receipt = _unknown_scope_input_receipt(
+            candidate,
+            policy_sha256=policy_sha256,
+            external_org_registry_sha256=registry_sha256,
+        )
+        prior = prior_abstentions.get(candidate.id)
+        if (
+            prior is not None
+            and isinstance(prior.eligibility_json, dict)
+            and prior.eligibility_json.get("input") == input_receipt
+        ):
+            continue
+        verdict = _evaluate_unknown_scope(
+            session, project, candidate, input_receipt=input_receipt
+        )
+        if isinstance(verdict, str):
+            abstention_inputs[candidate.id] = input_receipt
+            abstentions.append(
+                EventAdmissionAbstention(
+                    candidate_id=candidate.id,
+                    reason=verdict,
+                    reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+                )
+            )
+        else:
+            prepared.append(verdict)
+
+    admitted: list[
+        tuple[
+            UnknownScopeAdmission,
+            DependencyEvent,
+            DependencyEventScopeDecision,
+            CandidateDisposition,
+        ]
+    ] = []
+    with session.begin_nested():
+        for placement in prepared:
+            try:
+                with session.begin_nested():
+                    event = record_external_party_statement(
+                        session,
+                        project_id=project.id,
+                        affected_external_org_id=placement.stated_external_org_id,
+                        stated_party=placement.stated_party,
+                        stated_external_org_id=placement.stated_external_org_id,
+                        source_kind="cited",
+                        event_date=placement.event_date,
+                        description=str(placement.fields.get("description") or ""),
+                        new_timing=placement.new_timing,
+                        previous_timing=None,
+                        scope=StatementScope.unknown(),
+                        created_by=MACHINE_ACTOR,
+                        evidence=placement.evidence,
+                    )
+                    scope_decision = session.scalar(
+                        select(DependencyEventScopeDecision).where(
+                            DependencyEventScopeDecision.event_id == event.id
+                        )
+                    )
+                    if scope_decision is None or scope_decision.scope_mode != "unknown":
+                        raise UnknownScopeWriteIntegrity(
+                            "unknown-scope admission did not create its exact scope decision"
+                        )
+                    disposition = CandidateDisposition(
+                        candidate_id=placement.candidate.id,
+                        disposition="accepted",
+                        reason=None,
+                        recorded_by=MACHINE_ACTOR,
+                    )
+                    session.add(disposition)
+                    placement.candidate.state = "accepted"
+                    placement.candidate.adjudicated_at = datetime.now(timezone.utc)
+                    session.flush([disposition, placement.candidate])
+                admitted.append((placement, event, scope_decision, disposition))
+            except (StatementRefusal, IntegrityError, UnknownScopeWriteIntegrity):
+                abstention_inputs[placement.candidate.id] = placement.input_receipt
+                abstentions.append(
+                    EventAdmissionAbstention(
+                        candidate_id=placement.candidate.id,
+                        reason="write_integrity_failure",
+                        reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+                    )
+                )
+
+        run = PolicyRun(
+            project_id=project.id,
+            family=FAMILY,
+            policy_approval_id=None,
+            policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+            policy_sha256=policy_sha256,
+            abstention_reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+            applied_count=len(admitted),
+            abstained_count=len(abstentions),
+        )
+        session.add(run)
+        session.flush([run])
+
+        for abstention in abstentions:
+            eligibility = {
+                "input": abstention_inputs[abstention.candidate_id],
+                "verdict": abstention.reason,
+                "reason_version": UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+            }
+            session.add(
+                EventAdmissionOutcome(
+                    policy_run_id=run.id,
+                    candidate_id=abstention.candidate_id,
+                    outcome=OUTCOME_ABSTAINED,
+                    reason=abstention.reason,
+                    eligibility_json=eligibility,
+                    eligibility_sha256=policy.canonical_sha256(eligibility),
+                )
+            )
+
+        for placement, event, scope_decision, disposition in admitted:
+            audit_entry = audit.record(
+                session,
+                actor=MACHINE_ACTOR,
+                action=audit.ADMIT_EVENT,
+                entity_type=audit.COMMITMENT_LINEAGE,
+                entity_id=event.commitment_lineage_id,
+                after={
+                    "policy_run_id": run.id,
+                    "candidate_id": placement.candidate.id,
+                    "commitment_lineage_id": event.commitment_lineage_id,
+                    "dependency_event_id": event.id,
+                    "scope_decision_id": scope_decision.id,
+                    "candidate_disposition_id": disposition.id,
+                    "policy_sha256": run.policy_sha256,
+                },
+            )
+            eligibility = _unknown_scope_eligibility_receipt(
+                placement,
+                event=event,
+                scope_decision=scope_decision,
+                disposition=disposition,
+                audit_log_id=audit_entry.id,
+                policy_json=policy_json,
+                policy_sha256=policy_sha256,
+            )
+            session.add(
+                EventAdmissionOutcome(
+                    policy_run_id=run.id,
+                    candidate_id=placement.candidate.id,
+                    outcome=OUTCOME_ADMITTED,
+                    dependency_event_id=event.id,
+                    commitment_lineage_id=event.commitment_lineage_id,
+                    scope_decision_id=scope_decision.id,
+                    candidate_disposition_id=disposition.id,
+                    audit_log_id=audit_entry.id,
+                    eligibility_json=eligibility,
+                    eligibility_sha256=policy.canonical_sha256(eligibility),
+                )
+            )
+        session.flush()
+
+    return EventAdmissionResult(
+        run_id=run.id,
+        admitted_count=len(admitted),
+        abstained_count=len(abstentions),
+        abstentions=abstentions,
+    )
+
+
 def _evaluate(
     session: Session, project: Project, candidate: Candidate
 ) -> str | tuple[
@@ -403,6 +683,177 @@ def _evaluate(
     )
 
 
+def _evaluate_unknown_scope(
+    session: Session,
+    project: Project,
+    candidate: Candidate,
+    *,
+    input_receipt: dict,
+) -> str | UnknownScopeAdmission:
+    """Prove ADR-0042's class without consulting model-derived confidence."""
+    document = session.get(Document, candidate.source_document_id)
+    if (
+        candidate.project_id != project.id
+        or document is None
+        or document.project_id != project.id
+    ):
+        return "cross_project_association"
+    if not candidate.citations_verified:
+        return "citations_unverified"
+
+    fields = (candidate.payload_json or {}).get("fields", {})
+    if not isinstance(fields, dict) or fields.get("event_type") != "commitment":
+        return "event_type_outside_policy"
+    if not str(fields.get("description") or "").strip():
+        return "description_missing"
+    if fields.get("previous_timing") is not None:
+        return "previous_timing_present"
+    if str(fields.get("conflict_ref") or "").strip():
+        return "conflict_reference_present"
+
+    raw_timing = fields.get("committed_date")
+    if raw_timing is None or raw_timing == "":
+        return "timing_missing"
+    new_timing = _timing_from_candidate(raw_timing)
+    if new_timing is None:
+        return "timing_invalid"
+    raw_event_date = fields.get("event_date")
+    event_date = _parse_date(raw_event_date) if raw_event_date else None
+    if raw_event_date and event_date is None:
+        return "timing_invalid"
+
+    stated_party = str(fields.get("stated_party") or "").strip()
+    affected_party = str(fields.get("external_org") or "").strip()
+    if not stated_party or not affected_party:
+        return "party_unstated"
+    if identity.is_project_side_party(project, stated_party):
+        return "project_side_actor"
+    stated_matches = _external_orgs_for_party(session, stated_party)
+    if not stated_matches:
+        return "stated_party_unresolved"
+    if len(stated_matches) != 1:
+        return "stated_party_ambiguous"
+    affected_matches = _external_orgs_for_party(session, affected_party)
+    if not affected_matches:
+        return "affected_party_unresolved"
+    if len(affected_matches) != 1:
+        return "affected_party_ambiguous"
+    [stated_external_org] = stated_matches
+    [affected_external_org] = affected_matches
+    if stated_external_org.id != affected_external_org.id:
+        return "affected_party_disagreement"
+
+    evidence = _candidate_evidence(candidate)
+    if evidence is None:
+        return "citations_unverified"
+    evidence_text = normalize(evidence.quote)
+    if normalize(str(fields.get("description") or "")) not in evidence_text:
+        return "description_not_in_evidence"
+    if normalize(new_timing.text) not in evidence_text:
+        return "timing_not_in_evidence"
+    if normalize(stated_party) not in evidence_text:
+        return "stated_party_not_in_evidence"
+    try:
+        validate_external_party_statement_draft(
+            session,
+            project_id=project.id,
+            stated_party=stated_party,
+            stated_external_org_id=stated_external_org.id,
+            source_kind="cited",
+            event_date=event_date,
+            description=str(fields.get("description") or ""),
+            new_timing=new_timing,
+            previous_timing=None,
+            evidence=evidence,
+        )
+    except StatementRefusal as exc:
+        message = str(exc)
+        if "Evidence" in message or "quote" in message or "page" in message:
+            return "citations_unverified"
+        if "timing" in message or "calendar bounds" in message:
+            return "timing_invalid"
+        return "statement_draft_invalid"
+    return UnknownScopeAdmission(
+        candidate=candidate,
+        fields=fields,
+        event_date=event_date,
+        new_timing=new_timing,
+        stated_party=stated_party,
+        stated_external_org_id=stated_external_org.id,
+        evidence=evidence,
+        input_receipt=input_receipt,
+    )
+
+
+def _unknown_scope_input_receipt(
+    candidate: Candidate,
+    *,
+    policy_sha256: str,
+    external_org_registry_sha256: str,
+) -> dict:
+    """Exact deterministic inputs that make an unchanged Abstention idempotent."""
+    return {
+        "receipt_version": "event-admission-unknown-scope-input-v1",
+        "project_id": candidate.project_id,
+        "candidate_id": candidate.id,
+        "source_document_id": candidate.source_document_id,
+        "active_extraction_run_id": candidate.extraction_run_id,
+        "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
+        "citations_verified": candidate.citations_verified,
+        "candidate_state": candidate.state,
+        "policy_sha256": policy_sha256,
+        "external_org_registry_sha256": external_org_registry_sha256,
+    }
+
+
+def _unknown_scope_eligibility_receipt(
+    placement: UnknownScopeAdmission,
+    *,
+    event: DependencyEvent,
+    scope_decision: DependencyEventScopeDecision,
+    disposition: CandidateDisposition,
+    audit_log_id: int,
+    policy_json: dict,
+    policy_sha256: str,
+) -> dict:
+    candidate = placement.candidate
+    timing = placement.new_timing
+    return {
+        "receipt_version": "event-admission-unknown-scope-eligibility-v1",
+        "project_id": candidate.project_id,
+        "candidate_id": candidate.id,
+        "source_document_id": candidate.source_document_id,
+        "active_extraction_run_id": candidate.extraction_run_id,
+        "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
+        "input": placement.input_receipt,
+        "evidence": {
+            "document_id": placement.evidence.document_id,
+            "page": placement.evidence.page_no,
+            "quote": placement.evidence.quote.strip(),
+            "quote_sha256": policy.canonical_sha256(placement.evidence.quote.strip()),
+        },
+        "resolved_external_party_id": placement.stated_external_org_id,
+        "stated_party": placement.stated_party,
+        "timing": {
+            "text": timing.text,
+            "precision": timing.precision,
+            "start_date": timing.start_date.isoformat() if timing.start_date else None,
+            "end_date": timing.end_date.isoformat() if timing.end_date else None,
+        },
+        "policy_version": UNKNOWN_SCOPE_POLICY_VERSION,
+        "policy_sha256": policy_sha256,
+        "reason_version": UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        "policy": policy_json,
+        "created": {
+            "commitment_lineage_id": event.commitment_lineage_id,
+            "statement_event_id": event.id,
+            "scope_decision_id": scope_decision.id,
+            "candidate_disposition_id": disposition.id,
+            "audit_log_id": audit_log_id,
+        },
+    }
+
+
 def _parse_date(value: object) -> date | None:
     if isinstance(value, date):
         return value
@@ -454,6 +905,19 @@ def _external_org_for_party(session: Session, party: str) -> ExternalOrg | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def _external_orgs_for_party(session: Session, party: str) -> list[ExternalOrg]:
+    wanted = identity.normalize_party(party)
+    return [
+        org
+        for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id))
+        if any(
+            identity.normalize_party(name) == wanted
+            for name in (org.name, *(org.aliases or []))
+            if name
+        )
+    ]
+
+
 def _candidate_evidence(candidate: Candidate) -> CitedStatementEvidence | None:
     """Select the event's one canonical verified page citation."""
     for citation in (candidate.payload_json or {}).get("citations", []):
@@ -501,6 +965,21 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
             Path(__file__).parent
             / "migrations/versions/a217e4f3a2b1_external_party_statement_shape.py",
         ),
+        (
+            "corridor.migrations.b257d0f7a315",
+            Path(__file__).parent
+            / "migrations/versions/b257d0f7a315_unknown_scope_event_admission.py",
+        ),
+        (
+            "corridor.migrations.c257e1a8b426",
+            Path(__file__).parent
+            / "migrations/versions/c257e1a8b426_seal_event_admission_acceptance.py",
+        ),
+        (
+            "corridor.migrations.d257f2b9c537",
+            Path(__file__).parent
+            / "migrations/versions/d257f2b9c537_guard_event_admission_activation.py",
+        ),
     )
     return tuple((name, path.read_bytes()) for name, path in paths)
 
@@ -511,31 +990,130 @@ def _rules_digest() -> str:
     return policy.digest_of_sources(_rule_source_bytes)
 
 
-def _canonical_policy(project: Project) -> dict:
-    """What the approval is approving — the rules, exactly.
+def _current_source_revision() -> str | None:
+    """Return the deployed checkout revision, or no identity on uncertainty."""
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    revision = completed.stdout.strip()
+    if completed.returncode != 0 or len(revision) != 40:
+        return None
+    return revision
 
-    Three things move this digest, and each must pause the policy until
-    a principal authorizes the replacement: the stated configuration,
-    the project's project-side parties (they decide which events may
-    carry a commitment), and the deployed bytes of the deciding code.
+
+def _current_migration_head(session: Session) -> str | None:
+    """Return one exact database revision; ambiguity suspends the extension."""
+    revisions = tuple(
+        session.scalars(text("select version_num from alembic_version")).all()
+    )
+    return str(revisions[0]) if len(revisions) == 1 else None
+
+
+def _acceptance_receipt_is_current(
+    session: Session, receipt: EventAdmissionAcceptanceReceipt
+) -> bool:
+    """Require the runtime source and schema identities proved by the receipt."""
+    return (
+        receipt.source_revision == _current_source_revision()
+        and receipt.migration_head == _current_migration_head(session)
+    )
+
+
+def _normal_policy_version(session: Session, project_id: int) -> str:
+    """Read the latest append-only activation act; suspension restores v2."""
+    row = session.execute(
+        select(EventAdmissionActivation, EventAdmissionAcceptanceReceipt)
+        .join(
+            EventAdmissionAcceptanceReceipt,
+            EventAdmissionAcceptanceReceipt.id
+            == EventAdmissionActivation.acceptance_receipt_id,
+        )
+        .where(EventAdmissionActivation.project_id == project_id)
+        .order_by(EventAdmissionActivation.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return EVENT_ADMISSION_POLICY_VERSION
+    latest, receipt = row
+    newest_receipt_id = session.scalar(
+        select(EventAdmissionAcceptanceReceipt.id)
+        .where(EventAdmissionAcceptanceReceipt.project_id == project_id)
+        .order_by(EventAdmissionAcceptanceReceipt.id.desc())
+        .limit(1)
+    )
+    project = session.get(Project, project_id)
+    if (
+        project is not None
+        and latest.action == "activate"
+        and latest.policy_version == UNKNOWN_SCOPE_POLICY_VERSION
+        and receipt.id == newest_receipt_id
+        and receipt.status == "passed"
+        and _acceptance_receipt_is_current(session, receipt)
+        and receipt.policy_sha256
+        == policy.canonical_sha256(
+            _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+        )
+    ):
+        return UNKNOWN_SCOPE_POLICY_VERSION
+    return EVENT_ADMISSION_POLICY_VERSION
+
+
+def _canonical_policy(project: Project, policy_version: str) -> dict:
+    """The exact rules a real-state acceptance receipt proves.
+
+    Three things move this digest, and each suspends the extension until a new
+    passing receipt and append-only activation exist: the stated configuration,
+    the project's project-side parties (they decide which events may carry a
+    Commitment), and the deployed bytes of the deciding code.
     """
+    unknown_scope = policy_version == UNKNOWN_SCOPE_POLICY_VERSION
+    if not unknown_scope and policy_version != EVENT_ADMISSION_POLICY_VERSION:
+        raise ValueError(f"unsupported Event Admission policy {policy_version!r}")
     return {
-        "policy_version": EVENT_ADMISSION_POLICY_VERSION,
-        "abstention_reason_version": ABSTENTION_REASON_VERSION,
-        "admissible_event_types": list(ADMISSIBLE_EVENT_TYPES),
-        "abstention_reasons": sorted(ABSTENTION_REASONS),
+        "policy_version": policy_version,
+        "abstention_reason_version": (
+            UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION
+            if unknown_scope
+            else ABSTENTION_REASON_VERSION
+        ),
+        "admissible_event_types": (
+            ["commitment"] if unknown_scope else list(ADMISSIBLE_EVENT_TYPES)
+        ),
+        "scope_mode": "unknown" if unknown_scope else "selected",
+        "abstention_reasons": sorted(
+            UNKNOWN_SCOPE_ABSTENTION_REASONS if unknown_scope else ABSTENTION_REASONS
+        ),
         "project_side_parties": sorted(
             str(p) for p in (project.project_side_parties or [])
         ),
-        "checks": [
-            "citations_verified",
-            "event_type_admissible",
-            "source_timing_explicit_and_parseable",
-            "reference_resolves_to_exactly_one_dependency",
-            "affected_party_matches_scope",
-            "stated_party_is_resolved",
-            "actor_is_not_project_side",
-        ],
+        "checks": (
+            [
+                "current_candidate_from_declared_active_run",
+                "registered_evidence_quote_verified",
+                "one_commitment_only",
+                "nonempty_supported_description",
+                "one_supported_timing_at_stated_precision",
+                "one_registered_non_project_stated_party",
+                "affected_party_equals_stated_party",
+                "no_previous_timing",
+                "no_conflict_reference",
+                "ordinary_statement_validators",
+            ]
+            if unknown_scope
+            else [
+                "citations_verified",
+                "event_type_admissible",
+                "source_timing_explicit_and_parseable",
+                "reference_resolves_to_exactly_one_dependency",
+                "affected_party_matches_scope",
+                "stated_party_is_resolved",
+                "actor_is_not_project_side",
+            ]
+        ),
         "rules_digest_method": "sha256-rule-source-files-v1",
         "rules_digest": _rules_digest(),
     }

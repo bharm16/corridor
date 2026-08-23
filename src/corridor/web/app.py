@@ -1,8 +1,12 @@
-"""The adjudication queue.
+"""The adjudication queue and residual coordination work.
 
-The only path from a Candidate into the Ledger is a human keystroke, and
-this is that keystroke. Everything here is shaped by throughput: one
-candidate at a time, hands on the keyboard, evidence beside the claim.
+Ambiguous Candidates enter the Ledger only through a human keystroke here.
+An exact mechanically admitted statement instead arrives as a read-only fact
+whose remaining scope, owner, and Next Action decisions are made through the
+same work surface. Splitting those residual decisions into a second app was
+rejected because it would duplicate the Work List's one-current-question seam.
+Everything here is shaped by throughput: one question at a time, hands on the
+keyboard, evidence beside the claim.
 
 `m` (merge) is deliberately absent. Merge ranking is M3, and accepting a
 duplicate instead of merging corrupts the ledger — so the action is shown
@@ -75,11 +79,13 @@ from corridor.models import (
     CommitmentLineage,
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
     DocPage,
     Document,
     EvidenceLink,
+    EventAdmissionOutcome,
     ExternalOrg,
     Milestone,
     Project,
@@ -111,7 +117,9 @@ from corridor.disputes import (
     settle_dispute,
 )
 from corridor.event_admission import (
+    MACHINE_ACTOR,
     StatementUnplaceable,
+    UNKNOWN_SCOPE_POLICY_VERSION,
     attach_statement,
     waiting_statements,
 )
@@ -139,6 +147,7 @@ from corridor.cohort import (
 )
 from corridor.models import CohortReceipt, EventCohortReceipt
 from corridor.work_decisions import (
+    CoordinationSubject,
     assign_internal_owner,
     cancel_next_action,
     complete_next_action,
@@ -204,6 +213,13 @@ _CANDIDATE_EVIDENCE_UNAVAILABLE = (
     "Save unavailable until every Candidate Evidence page has its registered "
     "context: a rendered image for PDF or OCR pages, or registered cell text "
     "for a worksheet."
+)
+
+_STATEMENT_NEXT_ACTION_CHOICES = (
+    "Confirm the External Party and Commitment Scope",
+    "Confirm the stated timing with the External Party",
+    "Coordinate the selected Dependencies",
+    "Obtain additional Evidence for this statement",
 )
 
 
@@ -712,7 +728,7 @@ def coordinate_statement_screen(
     """Show source Evidence and plain-language choices for one Unplaced Statement."""
     project = _project(session, slug)
     candidate = _project_statement_candidate(session, project, candidate_id)
-    if observe_shadow_review(
+    if candidate.state == "pending" and observe_shadow_review(
         session, candidate.id, boundary="start", principal=principal
     ) is not None:
         session.commit()
@@ -762,6 +778,167 @@ async def save_coordinated_statement(
     return RedirectResponse(
         f"/statements/{project.slug}/{candidate_id}/coordinate",
         status_code=303,
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/admitted/scope")
+async def save_admitted_statement_scope(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Append only the residual Commitment Scope decision."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    context = _mechanically_admitted_statement_context(session, project, candidate)
+    if context is None:
+        raise HTTPException(404, "no mechanically admitted statement in this project")
+    form = await request.form()
+    mode = str(form.get("scope_mode") or "").strip()
+    try:
+        if context["decision"] != "scope":
+            raise StatementCoordinationRefusal(
+                "Commitment Scope is no longer the next unresolved decision"
+            )
+        if context["authority_gap"] is not None:
+            raise StatementCoordinationRefusal(context["authority_gap"])
+        dependency_ids = tuple(
+            _positive_form_id(value, "dependency_id")
+            for value in form.getlist("dependency_id")
+        )
+        if mode == "unknown":
+            if dependency_ids:
+                raise StatementCoordinationRefusal(
+                    "not-yet-known scope cannot name Dependencies"
+                )
+            scope = StatementScope.unknown()
+        elif mode == "one":
+            if len(dependency_ids) != 1:
+                raise StatementCoordinationRefusal(
+                    "one-Dependency scope must choose exactly one Dependency"
+                )
+            scope = StatementScope.selected(dependency_ids)
+        elif mode == "selected":
+            scope = StatementScope.selected(dependency_ids)
+        elif mode == "all_active":
+            if dependency_ids:
+                raise StatementCoordinationRefusal(
+                    "all-active scope derives its registered snapshot"
+                )
+            scope = StatementScope.all_active()
+        else:
+            raise StatementCoordinationRefusal("choose an explicit Commitment Scope")
+        correct_statement_scope(
+            session,
+            StatementScopeCorrection(
+                candidate_id=candidate.id,
+                event_id=context["event"].id,
+                expected_scope_decision_id=context["scope"].id,
+                scope=scope,
+            ),
+            principal=principal,
+        )
+    except (StatementCoordinationRefusal, ValueError) as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/admitted/owner")
+async def save_admitted_statement_owner(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Assign an Internal Owner from the registered project roster."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    context = _mechanically_admitted_statement_context(session, project, candidate)
+    if context is None:
+        raise HTTPException(404, "no mechanically admitted statement in this project")
+    form = await request.form()
+    try:
+        if context["decision"] != "owner":
+            raise StatementCoordinationRefusal(
+                "Internal Owner is no longer the next unresolved decision"
+            )
+        roster_id = _required_positive_form_id(form, "internal_owner_roster_entry_id")
+        roster_entry = session.get(ProjectRosterEntry, roster_id)
+        if (
+            roster_entry is None
+            or roster_entry.project_id != project.id
+            or not roster_entry.active
+        ):
+            raise StatementCoordinationRefusal(
+                "Internal Owner must come from the active project roster"
+            )
+        assign_internal_owner(
+            session,
+            CoordinationSubject.statement(context["lineage"].id),
+            roster_entry.display_name,
+            principal=principal,
+        )
+    except (StatementCoordinationRefusal, ValueError) as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/admitted/next-action")
+async def save_admitted_statement_next_action(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Append the structured project-language Next Action and return timing."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    context = _mechanically_admitted_statement_context(session, project, candidate)
+    if context is None:
+        raise HTTPException(404, "no mechanically admitted statement in this project")
+    form = await request.form()
+    try:
+        if context["decision"] != "next_action":
+            raise StatementCoordinationRefusal(
+                "Next Action is no longer the next unresolved decision"
+            )
+        action = str(form.get("next_action") or "").strip()
+        if action not in _STATEMENT_NEXT_ACTION_CHOICES:
+            raise StatementCoordinationRefusal(
+                "Next Action must be one structured project-language choice"
+            )
+        set_next_action(
+            session,
+            CoordinationSubject.statement(context["lineage"].id),
+            action,
+            due_date=_optional_form_date(form, "action_due_date"),
+            due_date_unknown_reason=(
+                str(form.get("action_due_date_unknown_reason") or "").strip()
+                or None
+            ),
+            principal=principal,
+        )
+    except (StatementCoordinationRefusal, ValueError) as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
     )
 
 
@@ -1002,6 +1179,129 @@ def _active_statement_coordination_receipt(
     )
 
 
+def _mechanically_admitted_statement_context(
+    session: Session, project: Project, candidate: Candidate
+) -> dict | None:
+    """Read the accepted facts and exactly one remaining human decision."""
+    row = session.execute(
+        select(EventAdmissionOutcome, PolicyRun)
+        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.policy_version == UNKNOWN_SCOPE_POLICY_VERSION,
+            EventAdmissionOutcome.candidate_id == candidate.id,
+            EventAdmissionOutcome.outcome == "admitted",
+            EventAdmissionOutcome.dependency_event_id.is_not(None),
+        )
+        .order_by(EventAdmissionOutcome.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    outcome, policy_run = row
+    event = session.get(DependencyEvent, outcome.dependency_event_id)
+    if (
+        candidate.state != "accepted"
+        or event is None
+        or event.project_id != project.id
+        or event.commitment_lineage_id != outcome.commitment_lineage_id
+    ):
+        return None
+    scope = session.scalar(
+        select(DependencyEventScopeDecision)
+        .where(
+            DependencyEventScopeDecision.event_id == event.id,
+            current_scope_decision_filter(),
+        )
+        .order_by(DependencyEventScopeDecision.id.desc())
+        .limit(1)
+    )
+    lineage = session.get(CommitmentLineage, event.commitment_lineage_id)
+    if scope is None or lineage is None:
+        return None
+
+    evidence = tuple(
+        {
+            "filename": document.filename,
+            "page_no": link.page_no,
+            "quote": link.quote,
+        }
+        for _membership, link, document in session.execute(
+            select(DependencyEventEvidence, EvidenceLink, Document)
+            .join(
+                EvidenceLink,
+                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            )
+            .join(Document, Document.id == EvidenceLink.document_id)
+            .where(
+                DependencyEventEvidence.event_id == event.id,
+                EvidenceLink.verified.is_(True),
+                Document.project_id == project.id,
+            )
+            .order_by(DependencyEventEvidence.evidence_link_id)
+        ).all()
+    )
+    dependencies = tuple(
+        session.scalars(
+            select(Dependency)
+            .where(
+                Dependency.project_id == project.id,
+                Dependency.external_org_id == event.affected_external_org_id,
+                Dependency.dismissed_at.is_(None),
+                Dependency.status != "closed",
+            )
+            .order_by(Dependency.ref_code)
+        ).all()
+    )
+    roster = tuple(
+        session.scalars(
+            select(ProjectRosterEntry)
+            .where(
+                ProjectRosterEntry.project_id == project.id,
+                ProjectRosterEntry.active.is_(True),
+            )
+            .order_by(ProjectRosterEntry.display_name)
+        ).all()
+    )
+    decision = (
+        "scope"
+        if scope.scope_mode == "unknown" and scope.decided_by == MACHINE_ACTOR
+        else "owner"
+        if not lineage.internal_owner
+        else "next_action"
+        if not lineage.next_action
+        else None
+    )
+    authority_gap = None
+    if not evidence:
+        decision = "blocked"
+        authority_gap = (
+            "Verified statement Evidence is unavailable; residual decisions remain pending."
+        )
+    elif decision == "scope" and not dependencies:
+        authority_gap = (
+            "No active Dependency choices are registered for this External Party; "
+            "Commitment Scope remains not yet known."
+        )
+    elif decision == "owner" and not roster:
+        authority_gap = (
+            "No active project roster choices are available; Internal Owner remains pending."
+        )
+    return {
+        "event": event,
+        "lineage": lineage,
+        "scope": scope,
+        "outcome": outcome,
+        "policy_run": policy_run,
+        "evidence": evidence,
+        "dependencies": dependencies,
+        "roster": roster,
+        "decision": decision,
+        "authority_gap": authority_gap,
+        "next_action_choices": _STATEMENT_NEXT_ACTION_CHOICES,
+    }
+
+
 def _statement_coordination_screen(
     request: Request,
     session: Session,
@@ -1012,6 +1312,14 @@ def _statement_coordination_screen(
     status_code: int = 200,
 ):
     """The browser reads facts; the command remains the one mutation seam."""
+    admitted = _mechanically_admitted_statement_context(session, project, candidate)
+    if admitted is not None:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "statement_admitted_coordinate.html",
+            {**admitted, "project": project, "candidate": candidate, "error": error},
+            status_code=status_code,
+        )
     receipt = (
         _active_statement_coordination_receipt(session, candidate.id)
         if candidate.state == "accepted"
@@ -1088,12 +1396,7 @@ def _statement_coordination_screen(
             "guided_save_available": (
                 candidate_evidence_available and candidate_timing["available"]
             ),
-            "next_action_choices": (
-                "Confirm the External Party and Commitment Scope",
-                "Confirm the stated timing with the External Party",
-                "Coordinate the selected Dependencies",
-                "Obtain additional Evidence for this statement",
-            ),
+            "next_action_choices": _STATEMENT_NEXT_ACTION_CHOICES,
             "candidate_evidence": candidate_evidence,
             "candidate_evidence_available": candidate_evidence_available,
             "candidate_evidence_unavailable_message": (
@@ -1545,6 +1848,16 @@ def _optional_positive_form_id(form, name: str) -> int | None:
 
 
 def _required_positive_value(value, name: str) -> int:
+    try:
+        identity = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise StatementCoordinationRefusal(f"{name} must be a positive identity") from exc
+    if identity <= 0:
+        raise StatementCoordinationRefusal(f"{name} must be a positive identity")
+    return identity
+
+
+def _positive_form_id(value: object, name: str) -> int:
     try:
         identity = int(str(value).strip())
     except (TypeError, ValueError) as exc:

@@ -226,7 +226,7 @@ The ordered service that creates and read-verifies one exact Revision Comparison
 _Avoid_: automatic Adjudication, comparison write-back, implicit approval
 
 **Unplaced Statement**:
-A statement from the minutes the event-admission policy could not safely scope — the reference names nothing, names several, or the stated party does not match. Kept and shown as specific work rather than dropped, because a dated commitment is what the record most needs; a coordinator uses suggested and searchable human-readable matches to select one or more Dependencies, preserves it at party level with scope not yet known, or marks it not relevant (ADR-0032, ADR-0035, ADR-0036).
+A statement from the minutes the event-admission policy could not safely establish or scope — attribution or timing is unsupported, a present reference resolves ambiguously, or the stated party does not match. A missing reference alone is not an Unplaced Statement when exact Evidence and deterministic policy can preserve an attributable Commitment at scope not yet known (ADR-0042). The remaining residue is kept and shown as specific work rather than dropped; a coordinator resolves only the unsupported attribution, timing, or scope decision, or marks it Not Relevant (ADR-0032, ADR-0035, ADR-0036).
 _Avoid_: orphan event, unmatched event, statement queue (it is a pile a reviewer empties, never a lane)
 
 **Candidate**:

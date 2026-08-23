@@ -9,6 +9,7 @@ from sqlalchemy import event, select
 
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
+from corridor.event_admission import UNKNOWN_SCOPE_POLICY_VERSION, run_event_admission
 from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
@@ -44,7 +45,7 @@ from corridor.work_decisions import (
     defer_work,
     set_next_action,
 )
-from corridor.web.app import app, get_session
+from corridor.web.app import app, get_human_principal, get_session
 
 
 RECORDER = HumanPrincipal("local:work-list-coordinator")
@@ -67,6 +68,7 @@ def client(session):
         yield session
 
     app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
@@ -210,6 +212,37 @@ def _record_pending_statement_candidates(session, project, specifications):
     )
     session.flush()
     return tuple(candidates)
+
+
+def _mechanically_admit_unknown_scope(session, project, party):
+    quote = f"{party.name} will provide the chain of title in June 2025."
+    [candidate] = _record_pending_statement_candidates(
+        session,
+        project,
+        [
+            {
+                "event_type": "commitment",
+                "event_date": date(2025, 1, 16),
+                "committed_date": {
+                    "text": "June 2025",
+                    "precision": "month",
+                    "start_date": "2025-06-01",
+                    "end_date": "2025-06-30",
+                },
+                "external_org": party.name,
+                "stated_party": party.name,
+                "quote": quote,
+                "reason": "no_conflict_reference",
+            }
+        ],
+    )
+    result = run_event_admission(
+        session,
+        project.id,
+        policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+    )
+    assert result.admitted_count == 1
+    return candidate
 
 
 def _record_deferred_month_commitments(session, project, party, count):
@@ -1174,3 +1207,175 @@ def test_coordinator_home_links_an_accepted_commitment_to_its_guided_plan(
     assert response.status_code == 200
     assert f'href="{guided_url}"' in response.text
     assert client.get(guided_url).status_code == 200
+
+
+def test_mechanically_admitted_commitment_links_to_its_residual_work(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+
+    work_list = build_work_list(session, project.id, today=date(2025, 5, 1))
+    [item] = work_list.immediate
+    assert item.kind == "statement"
+    assert item.source_candidate_id == candidate.id
+    assert item.attention_reason_codes == (
+        "unknown_scope",
+        "missing_internal_owner",
+        "missing_next_action",
+    )
+
+    page = client.get(f"/work/{project.slug}")
+    assert page.status_code == 200
+    assert f'href="/statements/{project.slug}/{candidate.id}/coordinate"' in page.text
+    assert "Review extracted statement" not in page.text
+    assert "Open statement plan" in page.text
+
+
+def test_mechanical_commitment_screen_renders_facts_read_only_and_only_scope_first(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    session.add(
+        Dependency(
+            project_id=project.id,
+            ref_code="EQ-READ-ONLY",
+            source_ref="EQ-READ-ONLY",
+            dep_type="utility_relocation",
+            title="Equistar read-only screen choice",
+            status="identified",
+            external_org_id=party.id,
+        )
+    )
+    session.flush()
+    response = client.get(
+        f"/statements/{project.slug}/{candidate.id}/coordinate"
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "Accepted External Party Commitment" in body
+    assert party.name in body
+    assert "June 2025" in body
+    assert "month precision" in body
+    assert "Commitment Scope not yet known" in body
+    assert UNKNOWN_SCOPE_POLICY_VERSION in body
+    assert "Verified Evidence" in body
+    assert f"{party.name} will provide the chain of title in June 2025." in body
+    assert 'name="scope_mode"' in body
+    assert 'value="one"' in body
+    assert 'value="selected"' in body
+    assert 'value="all_active"' in body
+    assert 'value="unknown"' in body
+    assert 'name="affected_external_org_id"' not in body
+    assert 'name="stated_external_org_id"' not in body
+    assert 'name="description"' not in body
+    assert 'name="new_timing_precision"' not in body
+    assert 'name="internal_owner_roster_entry_id"' not in body
+    assert 'name="next_action"' not in body
+    assert "Evidence Investigator" not in body
+    assert "confidence" not in body.lower()
+    assert 'name="scope_mode" value="unknown" checked' not in body
+
+
+def test_mechanical_commitment_with_no_dependency_choices_stays_pending_with_gap(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+
+    response = client.get(f"/statements/{project.slug}/{candidate.id}/coordinate")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "No active Dependency choices are registered for this External Party" in body
+    assert 'name="scope_mode"' not in body
+    assert "Save Commitment Scope" not in body
+    assert "No initial Commitment decision remains unresolved." not in body
+
+    refused = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
+        data={"scope_mode": "all_active"},
+    )
+    assert refused.status_code == 400
+    assert "Commitment Scope remains not yet known" in refused.text
+
+
+def test_mechanical_commitment_asks_owner_then_structured_next_action(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="EQ-1",
+        source_ref="EQ-1",
+        dep_type="utility_relocation",
+        title="Equistar line",
+        status="identified",
+        external_org_id=party.id,
+    )
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:work-list-owner",
+        display_name="Work List Owner",
+    )
+    session.add_all((dependency, owner))
+    session.flush()
+
+    scoped = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
+        data={"scope_mode": "one", "dependency_id": str(dependency.id)},
+        follow_redirects=False,
+    )
+    assert scoped.status_code == 303
+    owner_page = client.get(scoped.headers["location"]).text
+    assert "Choose the Internal Owner" in owner_page
+    assert 'name="internal_owner_roster_entry_id"' in owner_page
+    assert 'name="scope_mode"' not in owner_page
+    assert 'name="next_action"' not in owner_page
+
+    owned = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/owner",
+        data={"internal_owner_roster_entry_id": str(owner.id)},
+        follow_redirects=False,
+    )
+    assert owned.status_code == 303
+    action_page = client.get(owned.headers["location"]).text
+    assert "Choose the Next Action" in action_page
+    assert 'name="next_action"' in action_page
+    assert 'name="action_due_date"' in action_page
+    assert 'name="action_due_date_unknown_reason"' in action_page
+    assert 'name="internal_owner_roster_entry_id"' not in action_page
+    assert 'name="scope_mode"' not in action_page
+
+
+def test_human_can_confirm_scope_is_still_unknown_then_assign_owner(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="EQ-UNKNOWN",
+        source_ref="EQ-UNKNOWN",
+        dep_type="utility_relocation",
+        title="Available choice deliberately not selected",
+        status="identified",
+        external_org_id=party.id,
+    )
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:unknown-scope-owner",
+        display_name="Unknown Scope Owner",
+    )
+    session.add_all((dependency, owner))
+    session.flush()
+
+    response = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
+        data={"scope_mode": "unknown"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    page = client.get(response.headers["location"]).text
+    assert "Commitment Scope not yet known" in page
+    assert "Choose the Internal Owner" in page
+    assert 'name="scope_mode"' not in page

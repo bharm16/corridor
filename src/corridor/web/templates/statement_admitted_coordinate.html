@@ -1,0 +1,128 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Coordinate accepted Commitment — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:52rem; margin:2.5rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.5rem; margin:0 0 .3rem; }
+  h2 { font-size:1.05rem; margin:1.6rem 0 .55rem; }
+  .lead,.muted { color:var(--muted); }
+  .accepted { color:var(--ok); font-weight:650; }
+  .error,.gap { color:var(--warn); font-weight:600; }
+  dl { display:grid; grid-template-columns:max-content 1fr; gap:.35rem .9rem; }
+  dt { color:var(--muted); }
+  dd { margin:0; }
+  .evidence,fieldset { border:1px solid var(--line); border-radius:7px; padding:.8rem 1rem; margin:.7rem 0; }
+  blockquote { margin:.5rem 0 0; border-left:3px solid var(--line); padding-left:.75rem; }
+  legend { font-weight:650; padding:0 .3rem; }
+  label { display:block; margin:.5rem 0; }
+  select,input,button { font:inherit; padding:.4rem .55rem; }
+  button { border:1px solid #111; background:#111; color:#fff; border-radius:4px; }
+  .dependency { margin-left:1.5rem; }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <a href="/work/{{ project.slug }}">back to Work List</a>
+</header>
+
+<main>
+  <h1>Accepted External Party Commitment</h1>
+  <p class="accepted">The statement is already in the Ledger. Only its remaining project decision is editable here.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <section aria-label="Accepted facts">
+    <h2>Accepted facts — read only</h2>
+    <dl>
+      <dt>Statement</dt><dd>{{ event.description }}</dd>
+      <dt>External Party</dt><dd>{{ event.stated_party }}</dd>
+      <dt>Timing</dt><dd>{{ event.new_timing.text }} — {{ event.new_timing.precision }} precision</dd>
+      <dt>Statement date</dt><dd>{{ event.event_date or "Not stated" }}</dd>
+      <dt>Commitment Scope</dt>
+      <dd>
+        {% if scope.scope_mode == "unknown" %}Commitment Scope not yet known
+        {% elif scope.scope_mode == "all_active" %}All Dependencies active for this External Party at the decision time
+        {% else %}Selected Dependencies{% endif %}
+      </dd>
+      <dt>Admission path</dt><dd>{{ policy_run.policy_version }}</dd>
+      <dt>Policy receipt</dt><dd>{{ policy_run.policy_sha256 }}</dd>
+    </dl>
+  </section>
+
+  <h2>Verified Evidence</h2>
+  {% for item in evidence %}
+    <section class="evidence">
+      <span class="muted">{{ item.filename }} · registered page {{ item.page_no }}</span>
+      <blockquote>{{ item.quote }}</blockquote>
+    </section>
+  {% else %}
+    <p class="gap">Verified statement Evidence is unavailable; residual decisions remain pending.</p>
+  {% endfor %}
+
+  {% if authority_gap %}<p class="gap">{{ authority_gap }}</p>{% endif %}
+
+  {% if decision == "scope" %}
+    {% if not authority_gap %}
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/scope">
+        <fieldset>
+          <legend>Choose the Commitment Scope</legend>
+          <p class="muted">Choose only what the Evidence and project record support. Nothing is preselected.</p>
+          <label><input type="radio" name="scope_mode" value="one" required> One Dependency</label>
+          <label><input type="radio" name="scope_mode" value="selected"> Selected Dependencies</label>
+          <label><input type="radio" name="scope_mode" value="all_active"> All active Dependencies for this External Party</label>
+          <label><input type="radio" name="scope_mode" value="unknown"> Keep Commitment Scope not yet known</label>
+          {% for dependency in dependencies %}
+            <label class="dependency"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.ref_code }} — {{ dependency.title }}</label>
+          {% endfor %}
+          <button type="submit">Save Commitment Scope</button>
+        </fieldset>
+      </form>
+    {% endif %}
+  {% elif decision == "owner" %}
+    {% if not authority_gap %}
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/owner">
+        <fieldset>
+          <legend>Choose the Internal Owner</legend>
+          <select name="internal_owner_roster_entry_id" required>
+            <option value="">Choose a project-team member</option>
+            {% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}
+          </select>
+          <button type="submit"{% if not roster %} disabled{% endif %}>Save Internal Owner</button>
+        </fieldset>
+      </form>
+    {% endif %}
+  {% elif decision == "next_action" %}
+    <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/next-action">
+      <fieldset>
+        <legend>Choose the Next Action</legend>
+        <select name="next_action" required>
+          <option value="">Choose the project response</option>
+          {% for choice in next_action_choices %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}
+        </select>
+        <label>Action Due Date <input name="action_due_date" type="date"></label>
+        <label>If no date, why?
+          <select name="action_due_date_unknown_reason">
+            <option value="">Choose only when no date is known</option>
+            <option value="awaiting_external_information">awaiting external information</option>
+            <option value="awaiting_schedule_information">awaiting schedule information</option>
+            <option value="date_not_yet_known">date not yet known</option>
+          </select>
+        </label>
+        <button type="submit">Save Next Action</button>
+      </fieldset>
+    </form>
+  {% elif decision == "blocked" %}
+    <p class="gap">No residual decision can be recorded until the stated authority gap is repaired.</p>
+  {% else %}
+    <p class="accepted">No initial Commitment decision remains unresolved.</p>
+    <dl>
+      <dt>Internal Owner</dt><dd>{{ lineage.internal_owner }}</dd>
+      <dt>Next Action</dt><dd>{{ lineage.next_action }}</dd>
+      <dt>Action Due Date</dt><dd>{{ lineage.action_due_date or lineage.action_due_date_reason }}</dd>
+    </dl>
+  {% endif %}
+</main>
