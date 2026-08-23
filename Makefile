@@ -124,6 +124,10 @@ m8-acceptance:
 # or performs shared SH 99 mutation:
 #   make sh99-admission-acceptance ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --expected-clean-git-revision=<sha> --output-dir=<new-dir> --postgres-admin-url=<url>"
 #   make sh99-admission-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+# Seal the current post-activation shared-operation plan on a disposable clone;
+# repeat --expected-active-run once per approved Document/Extraction Run pair:
+#   make sh99-admission-acceptance ARGS="seal --project-slug=sh99-grand-parkway --source-database-url=<url> --expected-clean-git-revision=<sha> --output-dir=<new-dir> --postgres-admin-url=<url> --expected-acceptance-receipt-id=<id> --expected-acceptance-receipt-sha256=<sha> --expected-activation-id=<id> --expected-active-run=1435:193811 --expected-active-run=1438:193812 --expected-candidate-id=405519"
+#   make sh99-admission-acceptance ARGS="verify-seal <bundle-dir> --expected-manifest-sha256=<sha>"
 sh99-admission-acceptance:
 	uv run python -m corridor.sh99_admission_acceptance_cli $(ARGS)
 
