@@ -12,6 +12,7 @@ as unavailable rather than faked.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -177,6 +178,7 @@ from corridor.statement_lifecycle import (
     current_lineage_statement,
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
+from corridor.verify import normalize
 from corridor.work_list import build_work_list
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -1047,13 +1049,19 @@ def _statement_coordination_screen(
         )
         .order_by(ProjectRosterEntry.display_name)
     ).all()
-    parties = session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
+    parties = list(
+        session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all()
+    )
     milestones = session.scalars(
         select(Milestone)
         .where(Milestone.project_id == project.id)
         .order_by(Milestone.code)
     ).all()
     fields = (candidate.payload_json or {}).get("fields") or {}
+    candidate_party = str(fields.get("external_org") or "")
+    candidate_timing = _candidate_statement_timing_defaults(
+        fields, candidate_evidence
+    )
     disposition = current_candidate_disposition(session, candidate.id)
     not_relevant = (
         disposition
@@ -1070,7 +1078,22 @@ def _statement_coordination_screen(
             "project": project,
             "candidate": candidate,
             "candidate_fields": fields,
-            "candidate_party": str(fields.get("external_org") or ""),
+            "candidate_party": candidate_party,
+            "candidate_affected_party_id": _evidence_backed_party_id(
+                parties, candidate_party, candidate_evidence
+            ),
+            "candidate_description": str(fields.get("description") or ""),
+            "candidate_event_date": str(fields.get("event_date") or ""),
+            "candidate_timing": candidate_timing,
+            "guided_save_available": (
+                candidate_evidence_available and candidate_timing["available"]
+            ),
+            "next_action_choices": (
+                "Confirm the External Party and Commitment Scope",
+                "Confirm the stated timing with the External Party",
+                "Coordinate the selected Dependencies",
+                "Obtain additional Evidence for this statement",
+            ),
             "candidate_evidence": candidate_evidence,
             "candidate_evidence_available": candidate_evidence_available,
             "candidate_evidence_unavailable_message": (
@@ -1100,6 +1123,122 @@ def _statement_coordination_screen(
         },
         status_code=status_code,
     )
+
+
+def _evidence_backed_party_id(
+    parties: list[ExternalOrg], candidate_party: str, evidence: tuple[dict, ...]
+) -> int | None:
+    """Resolve one exact registered party only when its name is on the Evidence."""
+    key = normalize(candidate_party)
+    if not key:
+        return None
+    matches = [
+        party
+        for party in parties
+        if key
+        in {
+            normalize(value)
+            for value in (party.name, *(party.aliases or ()))
+            if value
+        }
+    ]
+    visible_text = normalize(
+        " ".join(
+            str(value or "")
+            for item in evidence
+            for value in (item.get("quote"), item.get("page_text"))
+        )
+    )
+    if len(matches) != 1 or key not in visible_text:
+        return None
+    return matches[0].id
+
+
+def _candidate_statement_timing_defaults(
+    fields: dict, evidence: tuple[dict, ...]
+) -> dict[str, str | bool]:
+    """Expose existing timing as a choice; never ask for a new transcription."""
+    raw = fields.get("committed_date")
+    try:
+        parsed = date.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        parsed = None
+    exact_wording = str(evidence[0].get("quote") or "") if evidence else ""
+    if parsed is None:
+        parsed = _exact_date_from_evidence(
+            " ".join(
+                str(value or "")
+                for item in evidence
+                for value in (item.get("quote"), item.get("page_text"))
+            ),
+            str(fields.get("event_date") or ""),
+        )
+    return {
+        "available": bool(parsed and exact_wording),
+        "text": exact_wording,
+        "start_date": parsed.isoformat() if parsed else "",
+        "end_date": parsed.isoformat() if parsed else "",
+    }
+
+
+_MONTH_NUMBER = {
+    name.casefold(): number
+    for number, name in enumerate(
+        (
+            "",
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        )
+    )
+    if name
+}
+_NAMED_DAY = re.compile(
+    r"\b(" + "|".join(_MONTH_NUMBER) + r")\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)(\d{4})\b",
+    re.IGNORECASE,
+)
+_NUMERIC_DAY = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b")
+
+
+def _exact_date_from_evidence(text: str, event_date: str) -> date | None:
+    """Return one explicit day already written in Evidence, without guessing."""
+    named = _NAMED_DAY.search(text)
+    if named:
+        try:
+            return date(
+                int(named.group(3)),
+                _MONTH_NUMBER[named.group(1).casefold()],
+                int(named.group(2)),
+            )
+        except ValueError:
+            return None
+    year = None
+    try:
+        year = date.fromisoformat(event_date).year if event_date else None
+    except ValueError:
+        pass
+    for numeric in _NUMERIC_DAY.finditer(text):
+        month, day = int(numeric.group(1)), int(numeric.group(2))
+        raw_year = numeric.group(3)
+        if raw_year is None and year is None:
+            continue
+        resolved_year = int(raw_year) if raw_year else year
+        if resolved_year is not None and resolved_year < 100:
+            resolved_year += 2000
+        try:
+            return date(resolved_year, month, day)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _statement_coordination_history(session: Session, candidate_id: int) -> tuple[dict, ...]:

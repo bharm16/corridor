@@ -1395,9 +1395,23 @@ def test_http_screen_shows_the_registered_source_page_without_accepting_party_su
         assert "Relocation schedule discussion" in screen.text
         assert "Propose extending completion to May 16th." in screen.text
         assert "Extracted context suggestion — not yet accepted" in screen.text
-        assert f'<option value="{party.id}">{party.name}</option>' in screen.text
-        assert f'<option value="{party.id}" selected>' not in screen.text
-        assert 'id="stated-party-words" name="stated_party" value=""' in screen.text
+        affected_options = screen.text.split('id="affected-party"', 1)[1].split(
+            "</select>", 1
+        )[0]
+        stated_options = screen.text.split('id="stated-party"', 1)[1].split(
+            "</select>", 1
+        )[0]
+        assert f'<option value="{party.id}" selected>{party.name}</option>' in affected_options
+        assert f'<option value="{party.id}" selected>' not in stated_options
+        assert 'id="stated-party-words"' not in screen.text
+        assert 'type="hidden" name="stated_party"' in screen.text
+        assert '<textarea id="description"' not in screen.text
+        assert 'type="hidden" name="description"' in screen.text
+        assert '<input id="new-timing-text"' not in screen.text
+        assert 'type="hidden" name="new_timing_text"' in screen.text
+        assert '<textarea id="support-quote"' not in screen.text
+        assert '<textarea id="next-action"' not in screen.text
+        assert '<select id="next-action" name="next_action" required>' in screen.text
     finally:
         app.dependency_overrides.clear()
 
@@ -1445,9 +1459,10 @@ def test_non_cell_page_without_an_available_image_is_disabled_and_refused(
         assert "Rendered source page unavailable" in screen.text
         assert "retained for diagnosis only" in screen.text
         assert diagnostic_context in screen.text
-        assert (
-            'name="supporting_page_index" value="0" disabled' in screen.text
-        )
+        supporting_control = screen.text.split(
+            'name="supporting_page_index" value="0"', 1
+        )[1].split(">", 1)[0]
+        assert "disabled" in supporting_control
         with pytest.raises(
             StatementCoordinationRefusal,
             match="Save unavailable until every Candidate Evidence page",

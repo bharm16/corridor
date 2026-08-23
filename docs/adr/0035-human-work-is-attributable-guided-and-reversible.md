@@ -71,6 +71,27 @@ decide, the cited page appears beside the question. Missing stated-party or timi
 context must be supplied by verified Evidence, possibly another verified quote;
 the coordinator's confirmation by itself is not factual support.
 
+## Known facts are shown; only unresolved decisions are asked
+
+Corridor never asks a person to retype a fact already present in registered
+Evidence or the Candidate. Evidence wording, extracted descriptions, dates, and
+other existing values render as read-only context and remain bound to the Save
+server-side. A customer workflow must not present a blank text field for a known
+fact.
+
+Human work begins only at a real unresolved decision. The product presents that
+decision as a bounded, project-language choice: resolve an ambiguous External
+Party, choose Commitment Scope, choose an Internal Owner from the roster, choose
+a structured Next Action or date state, judge Milestone Impact, request
+clarification, or mark the Candidate Not Relevant with a reason. Free text may be
+an optional note; it is never the required mechanism for supplying a fact or Work
+Decision that Corridor can already name as a structured choice.
+
+If Corridor lacks supported facts or cannot offer a safe structured choice, the
+Candidate stays pending with the specific Evidence or authority gap. The product
+does not turn that gap into an empty form and ask the user to reconstruct the
+record manually.
+
 ## A Coordination Plan is one guided Save
 
 The coordinator creates or changes a **Coordination Plan** with one form and
