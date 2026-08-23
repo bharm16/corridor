@@ -403,6 +403,51 @@ def test_identical_unknown_scope_abstention_does_not_duplicate_policy_outcome(
             _event(ref=None, org="Other Party", stated_party=PIPELINE),
             "affected_party_disagreement",
         ),
+        (
+            _event(
+                ref=None,
+                description=(
+                    "Tejas Pipeline will proceed after TxDOT confirms the exhibit."
+                ),
+                committed_date={
+                    "text": "after TxDOT confirms the exhibit",
+                    "precision": "approximate",
+                    "start_date": None,
+                    "end_date": None,
+                },
+            ),
+            "non_commitment_language",
+        ),
+        (
+            _event(
+                ref=None,
+                description=(
+                    "Tejas Pipeline will be invited to the utility workshop on May 8."
+                ),
+                committed_date={
+                    "text": "May 8",
+                    "precision": "day",
+                    "start_date": "2025-05-08",
+                    "end_date": "2025-05-08",
+                },
+            ),
+            "non_commitment_language",
+        ),
+        (
+            _event(
+                ref=None,
+                description=(
+                    "Tejas Pipeline scheduled a meeting with TxDOT for May 8."
+                ),
+                committed_date={
+                    "text": "May 8",
+                    "precision": "day",
+                    "start_date": "2025-05-08",
+                    "end_date": "2025-05-08",
+                },
+            ),
+            "non_commitment_language",
+        ),
     ],
 )
 def test_unknown_scope_policy_names_each_failed_predicate(

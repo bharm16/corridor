@@ -153,7 +153,7 @@ def test_verified_quote_is_the_page_literal_contiguous_span(session, document):
                     event(
                         event_type="commitment",
                         description="Equistar committed to the chain of title.",
-                        external_org="DOW",
+                        external_org="Equistar",
                         stated_party="Equistar",
                         committed_date={
                             "text": "01/2025",
@@ -174,6 +174,42 @@ def test_verified_quote_is_the_page_literal_contiguous_span(session, document):
     assert candidate.citations_verified is True
     assert citation["quote"] == "Equistar said “chain of title by 01/2025”."
     assert citation["quote"] in page.text
+
+
+def test_commitment_description_is_the_exact_evidence_span_not_a_paraphrase(
+    session, document
+):
+    quote = "Equistar to provide chain of title by 01/2025."
+    page = session.scalar(select(DocPage).where(DocPage.document_id == document.id))
+    page.text = LONG_PAGE_PREFIX + quote
+    client = StubClient(
+        [
+            {
+                "events": [
+                    event(
+                        event_type="commitment",
+                        description=(
+                            "Equistar will provide chain-of-title documentation "
+                            "by January 2025."
+                        ),
+                        external_org="Equistar",
+                        stated_party="Equistar",
+                        committed_date={
+                            "text": "01/2025",
+                            "precision": "month",
+                            "start_date": "2025-01-01",
+                            "end_date": "2025-01-31",
+                        },
+                        quote=quote,
+                    )
+                ]
+            }
+        ]
+    )
+
+    [candidate] = extract_document(session, document, client=client)
+
+    assert candidate.payload_json["fields"]["description"] == quote
 
 
 def test_an_unknown_event_type_is_dropped(session, document):
@@ -219,7 +255,7 @@ def test_stated_and_affected_parties_and_month_precision_are_preserved(
                     event(
                         event_type="commitment",
                         description="Equistar will provide chain-of-title material for DOW.",
-                        external_org="DOW",
+                        external_org="Equistar",
                         stated_party="Equistar",
                         committed_date={
                             "text": "01/2025",
@@ -241,7 +277,7 @@ def test_stated_and_affected_parties_and_month_precision_are_preserved(
     [candidate] = extract_document(session, document, client=client)
 
     fields = candidate.payload_json["fields"]
-    assert fields["external_org"] == "DOW"
+    assert fields["external_org"] == "Equistar"
     assert fields["stated_party"] == "Equistar"
     assert fields["committed_date"] == {
         "text": "01/2025",
