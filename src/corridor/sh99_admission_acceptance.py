@@ -96,6 +96,9 @@ HISTORICAL_ACCEPTANCE_RECEIPT = (
     "2343632bcb8adcd8c50796f2f70ee1c00e7d7ef188bc40b195ac9018b6263cdf",
 )
 HISTORICAL_ACTIVATION_ID = 140
+HISTORICAL_ACTIVATION_SHA256 = (
+    "8bd9eb909949f3b8b505af920900f33d47eb36317c7b690f4e729ea89c1c40f5"
+)
 HUMAN_APPROVAL_GATE = (
     "No shared SH 99 database was changed. A designated human must separately "
     "approve any shared-database Admission operation."
@@ -160,6 +163,7 @@ def run_sh99_shared_admission_seal(
     if provision_database is None:
         provision_database = _provision_shared_seal_database
     source = _require_clean_source(config.expected_clean_git_revision)
+    origin_main_revision = _require_origin_main_revision(source["revision"])
     source_head = _source_migration_head()
     source_database = _source_database(config.source_database_url)
     shared_head = read_migration_head(
@@ -187,6 +191,7 @@ def run_sh99_shared_admission_seal(
             "schema_version": SHARED_SEAL_SCHEMA_VERSION,
             "source": {
                 **source,
+                "origin_main_revision": origin_main_revision,
                 "migration_head": source_head,
                 "database_name": source_database["database"],
                 "postgres_version": source_state["postgres_version"],
@@ -455,6 +460,13 @@ def _git(*args: str) -> str:
     ).stdout.strip()
 
 
+def _require_origin_main_revision(source_revision: str) -> str:
+    origin_main_revision = _git("rev-parse", "origin/main")
+    if source_revision != origin_main_revision:
+        raise ValueError("shared Admission seal requires HEAD to equal origin/main")
+    return origin_main_revision
+
+
 def _source_migration_head() -> str:
     completed = subprocess.run(
         ["uv", "run", "alembic", "heads"],
@@ -654,6 +666,7 @@ def _shared_seal_state(
     evaluated_on: date | None = None,
 ) -> dict[str, Any]:
     from corridor.event_admission import _normal_policy_version
+    from corridor.supersession import actionable_candidate_query
     from corridor.work_list import build_work_list
 
     state = _project_state(session, project_slug)
@@ -747,10 +760,21 @@ def _shared_seal_state(
     work = build_work_list(
         session, project_id, today=evaluated_on or date.today()
     )
+    actionable_pending_event_candidate_ids = [
+        candidate.id
+        for candidate in session.scalars(
+            actionable_candidate_query(project_id)
+            .where(Candidate.kind == "event", Candidate.state == "pending")
+            .order_by(Candidate.id)
+        )
+    ]
     return {
         "postgres_version": str(session.scalar(text("show server_version"))),
         "current_event_admission_policy": _normal_policy_version(
             session, project_id
+        ),
+        "actionable_pending_event_candidate_ids": (
+            actionable_pending_event_candidate_ids
         ),
         "project_state": state,
         "candidate_dispositions": candidate_dispositions,
@@ -806,6 +830,7 @@ def _require_shared_seal_pins(
         historical_activation is None
         or historical_activation.get("acceptance_receipt_id") != historical_id
         or historical_activation.get("action") != "activate"
+        or _json_sha256(historical_activation) != HISTORICAL_ACTIVATION_SHA256
     ):
         raise ValueError("historical activation 140 changed or disappeared")
 
@@ -877,6 +902,7 @@ def _require_shared_seal_pins(
         "historical_acceptance_receipt_id": historical_id,
         "historical_acceptance_receipt_sha256": historical_sha256,
         "historical_activation_id": HISTORICAL_ACTIVATION_ID,
+        "historical_activation_sha256": HISTORICAL_ACTIVATION_SHA256,
         "acceptance_receipt_id": receipt["id"],
         "acceptance_receipt_sha256": receipt["receipt_sha256"],
         "activation_id": activation["id"],
@@ -1259,10 +1285,17 @@ def _require_shared_seal_outcomes(
         or admitted_outcomes[0].get("candidate_id") != expected_candidate_id
     ):
         raise ValueError("Event Admission did not admit only the expected Candidate")
+    population = set(before["actionable_pending_event_candidate_ids"])
+    outcomes_by_candidate: dict[int, list[dict[str, Any]]] = {}
+    for outcome in first_run["event_outcomes"]:
+        outcomes_by_candidate.setdefault(outcome["candidate_id"], []).append(outcome)
+    if set(outcomes_by_candidate) != population:
+        raise ValueError("Event Admission did not record an outcome for every Candidate")
     if any(
         outcome.get("outcome") != "abstained"
-        for outcome in first_run["event_outcomes"]
-        if outcome is not admitted_outcomes[0]
+        for candidate_id, outcomes in outcomes_by_candidate.items()
+        if candidate_id != expected_candidate_id
+        for outcome in outcomes
     ):
         raise ValueError("another Event Candidate received a non-Abstention outcome")
     candidate_changes = first_run["candidate_state_changes"]

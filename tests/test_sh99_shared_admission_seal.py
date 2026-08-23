@@ -43,6 +43,7 @@ from corridor.sh99_admission_acceptance import (
     HISTORICAL_ACCEPTANCE_RECEIPT,
     SH99SharedAdmissionSealConfig,
     _read_shared_seal_state,
+    _require_origin_main_revision,
     _require_shared_seal_pins,
     _require_shared_seal_outcomes,
     _shared_seal_run_receipt,
@@ -86,7 +87,14 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
     )
     session.add(document)
     session.flush()
-    session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+    other_quote = "Equistar provided a status response without a Commitment."
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=1,
+            text=f"{quote}\n{other_quote}",
+        )
+    )
     candidate = Candidate(
         project_id=project.id,
         kind="event",
@@ -122,13 +130,40 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
         model="gpt-test",
         citations_verified=True,
     )
+    other_candidate = Candidate(
+        project_id=project.id,
+        kind="event",
+        payload_json={
+            "kind": "event",
+            "fields": {
+                "event_type": "response",
+                "description": other_quote,
+                "external_org": equistar.name,
+            },
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": other_quote,
+                    "verified": True,
+                    "whole_row": False,
+                }
+            ],
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=0.99,
+        prompt_version="minutes_v3",
+        model="gpt-test",
+        citations_verified=True,
+    )
     run = record_extraction_run(
         session,
         document,
         prompt_version="minutes_v3",
-        candidate_count=1,
+        candidate_count=2,
         page_errors=0,
-        candidates=(candidate,),
+        candidates=(candidate, other_candidate),
         model="gpt-test",
         schema_version="minutes_v3",
     )
@@ -198,6 +233,23 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
     assert exact["candidate_id"] == candidate.id
     assert exact["second_run_zero_new_outcomes"] is True
 
+    missing_outcome = deepcopy(first_receipt)
+    missing_outcome["event_outcomes"] = [
+        outcome
+        for outcome in missing_outcome["event_outcomes"]
+        if outcome["candidate_id"] != other_candidate.id
+    ]
+    with pytest.raises(ValueError, match="outcome for every Candidate"):
+        _require_shared_seal_outcomes(
+            before,
+            after_first,
+            after_second,
+            missing_outcome,
+            second_receipt,
+            project_slug=project.slug,
+            expected_candidate_id=candidate.id,
+        )
+
 
 def test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded():
     state = _read_shared_seal_state(settings.database_url, "sh99-grand-parkway")
@@ -261,6 +313,31 @@ def test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded():
             source_revision=receipt["source_revision"],
             migration_head=receipt["migration_head"],
         )
+
+    corrupted_activation = deepcopy(state)
+    historical_activation = next(
+        item
+        for item in corrupted_activation["event_admission_activations"]
+        if item["id"] == 140
+    )
+    historical_activation["reason"] = "changed historical reason"
+    with pytest.raises(ValueError, match="historical activation 140"):
+        _require_shared_seal_pins(
+            corrupted_activation,
+            config,
+            source_revision=receipt["source_revision"],
+            migration_head=receipt["migration_head"],
+        )
+
+
+def test_shared_seal_requires_the_exact_origin_main_revision(monkeypatch):
+    monkeypatch.setattr(
+        "corridor.sh99_admission_acceptance._git",
+        lambda *args: "a" * 40,
+    )
+    assert _require_origin_main_revision("a" * 40) == "a" * 40
+    with pytest.raises(ValueError, match="HEAD to equal origin/main"):
+        _require_origin_main_revision("b" * 40)
 
 
 def test_shared_seal_bundle_is_database_free_and_tamper_evident(tmp_path):
