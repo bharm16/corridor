@@ -16,7 +16,7 @@ recording what was said about them on this date.
 - `commitment` — a party stated it will do something, with timing words the
   page actually supports
 - `response` — a party answered a question or supplied information
-- `slip` — a date moved later than a previously stated one
+- `committed_date_change` — an attributable commitment's timing moved earlier or later
 - `escalation` — an issue was raised to management, or a deadline was flagged at risk
 - `status_change` — a conflict moved between states (identified, in design, resolved, protect-in-place)
 - `closure` — a conflict was resolved, cleared, or closed out
@@ -36,9 +36,13 @@ attendees only when the page shows the table; do not infer.
 
 2. **Keep the speaker separate from the affected party.** `stated_party` is
    the External Party who made the statement. `external_org` is the External
-   Party affected by the statement. If the page only supports one party, use
-   that same name in both fields. If the speaker is not an External Party, or
-   the page does not support who spoke, return null for `stated_party`.
+   Party whose Commitment, status, or act the statement describes. A named
+   subject is not automatically the affected party: in “Equistar will provide
+   chain-of-title material for the agreement in DOW's name,” Equistar is both
+   `stated_party` and `external_org`; DOW remains in the description. If the
+   page only supports one party, use that same name in both fields. If the
+   speaker is not an External Party, or the page does not support who spoke,
+   return null for `stated_party`.
 
 3. **Preserve timing wording and precision.** `committed_date` is either null
    or an object with:
@@ -63,9 +67,9 @@ attendees only when the page shows the table; do not infer.
    restate the project schedule at nearly every meeting. Record those as
    `status_change` at most, and only when the page shows them changing.
 
-8. **A `slip` requires the page itself to show the movement** — an old date
-   and a new one, or explicit language that a date moved. Do not infer a
-   slip by comparing against another meeting.
+8. **A `committed_date_change` requires the page itself to show the movement**
+   — an old timing and a new one, or explicit language that the timing moved.
+   Do not infer a Committed Date Change by comparing against another meeting.
 
 9. If the page records no event, return an empty list. Attendee tables,
    agendas, and boilerplate headers are not events.

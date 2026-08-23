@@ -3,7 +3,14 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.extract_minutes import PROMPT_VERSION, extract_document
-from corridor.models import Candidate, Dependency, DocPage, Document, Project
+from corridor.models import (
+    Candidate,
+    Dependency,
+    DependencyEvent,
+    DocPage,
+    Document,
+    Project,
+)
 
 PAGE_TEXT = (
     "Air Liquide Meeting Notes\n"
@@ -136,6 +143,39 @@ def test_a_fabricated_quote_is_kept_but_unverified(session, document):
     assert candidate.citations_verified is False
 
 
+def test_verified_quote_is_the_page_literal_contiguous_span(session, document):
+    page = session.scalar(select(DocPage).where(DocPage.document_id == document.id))
+    page.text = LONG_PAGE_PREFIX + "Equistar said “chain of title by 01/2025”."
+    client = StubClient(
+        [
+            {
+                "events": [
+                    event(
+                        event_type="commitment",
+                        description="Equistar committed to the chain of title.",
+                        external_org="DOW",
+                        stated_party="Equistar",
+                        committed_date={
+                            "text": "01/2025",
+                            "precision": "month",
+                            "start_date": "2025-01-01",
+                            "end_date": "2025-01-31",
+                        },
+                        quote='Equistar said "chain of title by 01/2025".',
+                    )
+                ]
+            }
+        ]
+    )
+
+    [candidate] = extract_document(session, document, client=client)
+
+    [citation] = candidate.payload_json["citations"]
+    assert candidate.citations_verified is True
+    assert citation["quote"] == "Equistar said “chain of title by 01/2025”."
+    assert citation["quote"] in page.text
+
+
 def test_an_unknown_event_type_is_dropped(session, document):
     """The schema constrains this, but a model can still return junk."""
     client = StubClient([{"events": [event(event_type="meeting_happened")]}])
@@ -232,6 +272,21 @@ def test_stated_and_affected_parties_and_month_precision_are_preserved(
         (
             event(
                 event_type="response",
+                description="TxDOT scheduled a meeting with Equistar for January 14.",
+                external_org="Equistar",
+                stated_party="TxDOT",
+                committed_date=None,
+                quote="TxDOT scheduled a meeting with Equistar for January 14.",
+            ),
+            {
+                "event_type": "response",
+                "external_org": "Equistar",
+                "stated_party": "TxDOT",
+            },
+        ),
+        (
+            event(
+                event_type="response",
                 description="TxDOT invited Equistar to the follow-up review.",
                 external_org="Equistar",
                 stated_party="TxDOT",
@@ -312,6 +367,8 @@ def test_minutes_candidate_fields_are_not_cleaned_into_exact_commitments(
         "conflict_ref": item["conflict_ref"],
         **expected,
     }
+    assert candidate.state == "pending"
+    assert session.scalars(select(DependencyEvent)).all() == []
 
 
 def test_the_schema_restricts_event_type_to_the_ledgers_own_enum(session, document):

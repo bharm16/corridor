@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from corridor.candidates import dedupe_hint, propose
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import EVENT_TYPES, Candidate, DocPage, Document
-from corridor.verify import quote_appears_on
+from corridor.verify import literal_quote_on_page
 
 PROMPT_VERSION = "minutes_v2"
 PROMPT_PATH = Path("prompts/minutes_v2.md")
@@ -135,7 +135,10 @@ def _to_candidate(
     if not quote or event_type not in EVENT_TYPES:
         return None
 
-    verified = quote_appears_on(quote, page.text or "")
+    literal_quote = literal_quote_on_page(quote, page.text or "")
+    verified = literal_quote is not None
+    if literal_quote is not None:
+        quote = literal_quote
 
     fields = {
         key: value

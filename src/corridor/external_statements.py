@@ -47,6 +47,23 @@ class StatementRefusal(ValueError):
     """The proposed statement would manufacture a fact the record lacks."""
 
 
+def candidate_stated_party_wording(
+    candidate: Candidate | None, project_id: int
+) -> str | None:
+    """Read speaker wording without collapsing it into affected-party context.
+
+    minutes_v2 names the speaker explicitly. Historical Candidates used
+    ``external_org`` for both roles, so that field remains a read-only fallback.
+    """
+    if candidate is None or candidate.project_id != project_id:
+        return None
+    fields = (candidate.payload_json or {}).get("fields") or {}
+    if not isinstance(fields, dict):
+        return None
+    value = fields.get("stated_party") or fields.get("external_org")
+    return value if isinstance(value, str) else None
+
+
 _STATEMENT_SCOPE_POLICY_ACTORS = frozenset(
     {"corridor:event-admission", "corridor:statement-migration-v1"}
 )
@@ -558,11 +575,7 @@ def _require_evidence_bound_party_resolution(
             "the stated-party wording does not resolve to the stated External Party"
         )
     candidate = session.get(Candidate, resolution.candidate_id)
-    source_party = (
-        ((candidate.payload_json or {}).get("fields") or {}).get("external_org")
-        if candidate is not None and candidate.project_id == project_id
-        else None
-    )
+    source_party = candidate_stated_party_wording(candidate, project_id)
     expected = (
         source_kind == "cited"
         and resolution.mode == "guided_evidence_bound"
