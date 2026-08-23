@@ -153,7 +153,7 @@ def test_verified_quote_is_the_page_literal_contiguous_span(session, document):
                     event(
                         event_type="commitment",
                         description="Equistar committed to the chain of title.",
-                        external_org="DOW",
+                        external_org="Equistar",
                         stated_party="Equistar",
                         committed_date={
                             "text": "01/2025",
@@ -255,7 +255,7 @@ def test_stated_and_affected_parties_and_month_precision_are_preserved(
                     event(
                         event_type="commitment",
                         description="Equistar will provide chain-of-title material for DOW.",
-                        external_org="DOW",
+                        external_org="Equistar",
                         stated_party="Equistar",
                         committed_date={
                             "text": "01/2025",
@@ -277,7 +277,7 @@ def test_stated_and_affected_parties_and_month_precision_are_preserved(
     [candidate] = extract_document(session, document, client=client)
 
     fields = candidate.payload_json["fields"]
-    assert fields["external_org"] == "DOW"
+    assert fields["external_org"] == "Equistar"
     assert fields["stated_party"] == "Equistar"
     assert fields["committed_date"] == {
         "text": "01/2025",

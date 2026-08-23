@@ -61,7 +61,7 @@ EVENT_ADMISSION_POLICY_VERSION = "event-admission-v2"
 UNKNOWN_SCOPE_POLICY_VERSION = "event-admission-v3-unknown-scope"
 FAMILY = "event-admission"
 ABSTENTION_REASON_VERSION = "event-admission-abstentions-v2"
-UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v3"
+UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v4"
 MACHINE_ACTOR = "corridor:event-admission"
 
 OUTCOME_ADMITTED = "admitted"
@@ -95,6 +95,7 @@ UNKNOWN_SCOPE_ABSTENTION_REASONS = frozenset(
         "event_type_outside_policy",
         "description_missing",
         "description_not_in_evidence",
+        "non_commitment_language",
         "timing_missing",
         "timing_invalid",
         "timing_not_in_evidence",
@@ -704,8 +705,11 @@ def _evaluate_unknown_scope(
     fields = (candidate.payload_json or {}).get("fields", {})
     if not isinstance(fields, dict) or fields.get("event_type") != "commitment":
         return "event_type_outside_policy"
-    if not str(fields.get("description") or "").strip():
+    description = str(fields.get("description") or "").strip()
+    if not description:
         return "description_missing"
+    if _has_non_commitment_language(description):
+        return "non_commitment_language"
     if fields.get("previous_timing") is not None:
         return "previous_timing_present"
     if str(fields.get("conflict_ref") or "").strip():
@@ -783,6 +787,28 @@ def _evaluate_unknown_scope(
         evidence=evidence,
         input_receipt=input_receipt,
     )
+
+
+def _has_non_commitment_language(description: str) -> bool:
+    """Fail closed on exact phrases that describe plans, invitations, or meetings.
+
+    These phrases do not prove an attributable External Party Commitment even
+    when a model labels the Candidate as one. False positives remain pending
+    for human placement; they never delete or rewrite the Candidate.
+    """
+    text = f" {normalize(description)} "
+    markers = (
+        " after ",
+        " provided this ",
+        " subject to ",
+        " if ",
+        " invited ",
+        " invitation ",
+        " scheduled a meeting ",
+        " meeting is scheduled ",
+        " meeting was scheduled ",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _unknown_scope_input_receipt(
