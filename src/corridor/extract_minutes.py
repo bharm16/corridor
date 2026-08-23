@@ -6,6 +6,11 @@ extractor emits **event candidates**, not new dependencies. A note saying
 already hold; creating a second record for it is the duplicate-corruption
 the merge search exists to prevent.
 
+Minutes also collapse two facts easily: who spoke, and who the statement
+affected. The extractor therefore preserves the stated External Party
+separately from the affected one, and keeps the timing words at the day,
+month, or approximate precision the page actually supports.
+
 Per page, like the agreement extractor: the page number is ours, only the
 quote comes from the model, and the quote is checked against the exact text
 the model saw.
@@ -23,10 +28,21 @@ from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import EVENT_TYPES, Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
 
-PROMPT_VERSION = "minutes_v1"
-PROMPT_PATH = Path("prompts/minutes_v1.md")
+PROMPT_VERSION = "minutes_v2"
+PROMPT_PATH = Path("prompts/minutes_v2.md")
 
 MIN_PAGE_CHARS = 200
+TIMING_SCHEMA = {
+    "type": ["object", "null"],
+    "additionalProperties": False,
+    "required": ["text", "precision", "start_date", "end_date"],
+    "properties": {
+        "text": {"type": "string"},
+        "precision": {"type": "string", "enum": ["day", "month", "approximate"]},
+        "start_date": {"type": ["string", "null"]},
+        "end_date": {"type": ["string", "null"]},
+    },
+}
 
 SCHEMA = {
     "type": "object",
@@ -43,6 +59,7 @@ SCHEMA = {
                     "description",
                     "event_date",
                     "external_org",
+                    "stated_party",
                     "conflict_ref",
                     "station_from",
                     "station_to",
@@ -55,10 +72,11 @@ SCHEMA = {
                     "description": {"type": "string"},
                     "event_date": {"type": ["string", "null"]},
                     "external_org": {"type": ["string", "null"]},
+                    "stated_party": {"type": ["string", "null"]},
                     "conflict_ref": {"type": ["string", "null"]},
                     "station_from": {"type": ["string", "null"]},
                     "station_to": {"type": ["string", "null"]},
-                    "committed_date": {"type": ["string", "null"]},
+                    "committed_date": TIMING_SCHEMA,
                     "quote": {"type": "string"},
                     "confidence": {"type": "number"},
                 },
@@ -126,6 +144,7 @@ def _to_candidate(
             ("description", item.get("description")),
             ("event_date", item.get("event_date")),
             ("external_org", item.get("external_org")),
+            ("stated_party", item.get("stated_party")),
             ("conflict_ref", item.get("conflict_ref")),
             ("station_from", item.get("station_from")),
             ("station_to", item.get("station_to")),
@@ -162,7 +181,7 @@ def _to_candidate(
 
 
 def main(argv: list[str]) -> int:
-    """`make minutes ARGS="<slug> [limit]"`"""
+    """Extract all notes, or exact notes selected by repeated --document-id."""
     from corridor.extract_batch import Noun, run_extraction
 
     return run_extraction(

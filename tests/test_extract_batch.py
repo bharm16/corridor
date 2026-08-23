@@ -11,9 +11,14 @@ import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
-from corridor.extraction_runs import active_run_for_document
+from corridor.extraction_runs import (
+    active_run_for_document,
+    declare_active_run,
+    record_extraction_run,
+)
 from corridor.extract_batch import Noun, run_extraction
 from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
+from corridor.principals import HumanPrincipal
 
 PROMPT_VERSION = "batch_test_v1"
 SCHEMA = {"type": "object"}
@@ -376,6 +381,149 @@ def test_the_limit_stops_after_n_documents(session, project, capsys):
     _run(session, project, StubClient(), argv=[project.slug, "2"])
 
     assert len(_candidates(session, project)) == 2
+
+
+def test_explicit_document_ids_bound_the_minutes_run(session, project):
+    first = add_note(session, project, "notes-a.pdf", "a" * 64)
+    selected = add_note(session, project, "notes-b.pdf", "b" * 64)
+    skipped = add_note(session, project, "notes-c.pdf", "c" * 64)
+
+    _run(
+        session,
+        project,
+        StubClient(),
+        argv=[project.slug, "--document-id", str(selected.id), "--document-id", str(first.id)],
+    )
+
+    assert {c.source_document_id for c in _candidates(session, project)} == {
+        first.id,
+        selected.id,
+    }
+    assert skipped.id not in {c.source_document_id for c in _candidates(session, project)}
+
+
+def test_new_prompt_version_appends_history_without_replacing_the_active_run(
+    session, project
+):
+    document = add_note(session, project, "historical-notes.pdf", "a" * 64)
+    historical = Candidate(
+        project_id=project.id,
+        kind="event",
+        payload_json={"kind": "event", "fields": {"description": "Old reading"}},
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="minutes_v1",
+        model="historical-model",
+        citations_verified=True,
+    )
+    historical_run = record_extraction_run(
+        session,
+        document,
+        prompt_version="minutes_v1",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(historical,),
+        model="historical-model",
+        schema_version="minutes_v1",
+    )
+    declare_active_run(
+        session,
+        document.id,
+        historical_run.id,
+        principal=HumanPrincipal("local:minutes-v1-owner"),
+    )
+    original_payload = historical.payload_json.copy()
+
+    assert _run(session, project, StubClient()) == 0
+
+    runs = _runs(session, project)
+    assert [(run.prompt_version, run.model) for run in runs] == [
+        ("minutes_v1", "historical-model"),
+        (PROMPT_VERSION, "stub-model"),
+    ]
+    session.refresh(historical)
+    assert historical.payload_json == original_payload
+    assert historical.prompt_version == "minutes_v1"
+    assert active_run_for_document(session, document.id).id == historical_run.id
+
+
+@pytest.mark.parametrize(
+    "argv_builder",
+    [
+        pytest.param(
+            lambda project, docs: [
+                project.slug,
+                "--document-id",
+                str(docs["selected"].id),
+                "--document-id",
+                str(docs["selected"].id),
+            ],
+            id="duplicate-selection",
+        ),
+        pytest.param(
+            lambda project, docs: [
+                project.slug,
+                "--document-id",
+                str(docs["missing_id"]),
+            ],
+            id="missing-selection",
+        ),
+        pytest.param(
+            lambda project, docs: [
+                project.slug,
+                "--document-id",
+                str(docs["wrong_type"].id),
+            ],
+            id="wrong-type-selection",
+        ),
+        pytest.param(
+            lambda project, docs: [
+                project.slug,
+                "--document-id",
+                str(docs["other_project"].id),
+            ],
+            id="cross-project-selection",
+        ),
+    ],
+)
+def test_invalid_document_selection_is_refused_before_model_calls(
+    session, project, argv_builder
+):
+    selected = add_note(session, project, "notes-a.pdf", "a" * 64)
+    wrong_type = Document(
+        project_id=project.id,
+        sha256="d" * 64,
+        filename="agreement.pdf",
+        doc_type="agreement",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(wrong_type)
+    other_project = Project(slug="other-project", name="Other", is_synthetic=True)
+    session.add(other_project)
+    session.flush()
+    other_document = add_note(session, other_project, "notes-b.pdf", "b" * 64)
+    client = StubClient()
+
+    result = _run(
+        session,
+        project,
+        client,
+        argv=argv_builder(
+            project,
+            {
+                "selected": selected,
+                "wrong_type": wrong_type,
+                "other_project": other_document,
+                "missing_id": other_document.id + 9999,
+            },
+        ),
+    )
+
+    assert result == 1
+    assert client.calls == 0
+    assert _candidates(session, project) == []
 
 
 def test_a_failed_document_does_not_block_clean_siblings(

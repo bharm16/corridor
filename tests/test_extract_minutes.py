@@ -20,6 +20,7 @@ PAGE_TEXT = (
     "2. Discussion on Conflict Resolution Strategies -\n"
     "   a. PL41 - protect-in-place.\n"
 )
+LONG_PAGE_PREFIX = "Meeting recap and attendance details. " * 8
 
 
 class StubClient:
@@ -168,6 +169,151 @@ def test_prompt_version_and_model_are_recorded(session, document):
     assert candidate.model == "gpt-5.6-luna"
 
 
+def test_stated_and_affected_parties_and_month_precision_are_preserved(
+    session, document
+):
+    client = StubClient(
+        [
+            {
+                "events": [
+                    event(
+                        event_type="commitment",
+                        description="Equistar will provide chain-of-title material for DOW.",
+                        external_org="DOW",
+                        stated_party="Equistar",
+                        committed_date={
+                            "text": "01/2025",
+                            "precision": "month",
+                            "start_date": "2025-01-01",
+                            "end_date": "2025-01-31",
+                        },
+                        quote="Equistar will provide chain-of-title material for DOW by 01/2025.",
+                    )
+                ]
+            }
+        ]
+    )
+    session.scalar(select(DocPage).where(DocPage.document_id == document.id)).text = (
+        LONG_PAGE_PREFIX
+        + "Equistar will provide chain-of-title material for DOW by 01/2025."
+    )
+
+    [candidate] = extract_document(session, document, client=client)
+
+    fields = candidate.payload_json["fields"]
+    assert fields["external_org"] == "DOW"
+    assert fields["stated_party"] == "Equistar"
+    assert fields["committed_date"] == {
+        "text": "01/2025",
+        "precision": "month",
+        "start_date": "2025-01-01",
+        "end_date": "2025-01-31",
+    }
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        (
+            event(
+                event_type="status_change",
+                description="LJA will send the draft utility agreement.",
+                external_org="Air Liquide",
+                stated_party="LJA",
+                committed_date=None,
+                quote="LJA will send the draft utility agreement.",
+            ),
+            {
+                "event_type": "status_change",
+                "external_org": "Air Liquide",
+                "stated_party": "LJA",
+            },
+        ),
+        (
+            event(
+                event_type="response",
+                description="TxDOT invited Equistar to the follow-up review.",
+                external_org="Equistar",
+                stated_party="TxDOT",
+                committed_date=None,
+                quote="TxDOT invited Equistar to the follow-up review.",
+            ),
+            {
+                "event_type": "response",
+                "external_org": "Equistar",
+                "stated_party": "TxDOT",
+            },
+        ),
+        (
+            event(
+                event_type="response",
+                description="Kinder Morgan will proceed after TxDOT confirms the ROW exhibit.",
+                external_org="Kinder Morgan",
+                stated_party="Kinder Morgan",
+                committed_date={
+                    "text": "after TxDOT confirms the ROW exhibit",
+                    "precision": "approximate",
+                    "start_date": None,
+                    "end_date": None,
+                },
+                quote="Kinder Morgan will proceed after TxDOT confirms the ROW exhibit.",
+            ),
+            {
+                "event_type": "response",
+                "external_org": "Kinder Morgan",
+                "stated_party": "Kinder Morgan",
+                "committed_date": {
+                    "text": "after TxDOT confirms the ROW exhibit",
+                    "precision": "approximate",
+                    "start_date": None,
+                    "end_date": None,
+                },
+            },
+        ),
+        (
+            event(
+                event_type="response",
+                description="The notes say material would arrive in January, but do not say who promised it.",
+                stated_party=None,
+                committed_date={
+                    "text": "01/2025",
+                    "precision": "month",
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-31",
+                },
+                quote="Material would arrive in 01/2025.",
+            ),
+            {
+                "event_type": "response",
+                "external_org": "Air Liquide",
+                "committed_date": {
+                    "text": "01/2025",
+                    "precision": "month",
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-31",
+                },
+            },
+        ),
+    ],
+)
+def test_minutes_candidate_fields_are_not_cleaned_into_exact_commitments(
+    session, document, item, expected
+):
+    session.scalar(select(DocPage).where(DocPage.document_id == document.id)).text = (
+        LONG_PAGE_PREFIX + item["quote"]
+    )
+    [candidate] = extract_document(session, document, client=StubClient([{"events": [item]}]))
+
+    assert candidate.payload_json["fields"] == {
+        "description": item["description"],
+        "event_date": item["event_date"],
+        "station_from": item["station_from"],
+        "station_to": item["station_to"],
+        "conflict_ref": item["conflict_ref"],
+        **expected,
+    }
+
+
 def test_the_schema_restricts_event_type_to_the_ledgers_own_enum(session, document):
     from corridor.models import EVENT_TYPES
 
@@ -181,6 +327,26 @@ def test_the_schema_restricts_event_type_to_the_ledgers_own_enum(session, docume
 
 def test_an_empty_response_is_not_a_crash(session, document):
     assert extract_document(session, document, client=StubClient([{}])) == []
+
+
+def test_the_schema_requires_stated_party_and_structured_timing(session, document):
+    client = StubClient([{"events": []}])
+    extract_document(session, document, client=client)
+    properties = client.calls[0]["schema"]["properties"]["events"]["items"][
+        "properties"
+    ]
+    assert properties["stated_party"]["type"] == ["string", "null"]
+    assert properties["committed_date"] == {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+        "required": ["text", "precision", "start_date", "end_date"],
+        "properties": {
+            "text": {"type": "string"},
+            "precision": {"type": "string", "enum": ["day", "month", "approximate"]},
+            "start_date": {"type": ["string", "null"]},
+            "end_date": {"type": ["string", "null"]},
+        },
+    }
 
 
 # --------------------------------------------------------------- concurrency
@@ -255,7 +421,7 @@ def test_batched_extraction_pools_pages_across_documents(session, document):
         to_candidate=_to_candidate,
         items_key="events",
         max_workers=4,
-        prompt_version="minutes_v1",
+        prompt_version=PROMPT_VERSION,
         commit=False,
     )
     # Both documents' pages went out in one pooled batch.
