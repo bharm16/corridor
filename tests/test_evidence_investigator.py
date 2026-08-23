@@ -115,7 +115,9 @@ def project(session):
     return project
 
 
-def _unplaced_statement(session, project, *, quote=None, kind="event"):
+def _unplaced_statement(
+    session, project, *, quote=None, page_text=None, kind="event"
+):
     quote = quote or (
         "Kinder Morgan expects the relocation to finish near Station 6609+00 "
         "during June 2026."
@@ -134,7 +136,7 @@ def _unplaced_statement(session, project, *, quote=None, kind="event"):
         DocPage(
             document_id=document.id,
             page_no=1,
-            text=quote,
+            text=page_text if page_text is not None else quote,
             text_source="cells",
         )
     )
@@ -198,6 +200,106 @@ def _unplaced_statement(session, project, *, quote=None, kind="event"):
     )
     session.flush()
     return candidate, quote
+
+
+def test_investigator_issues_a_literal_page_quote_for_a_normalized_citation(
+    session, project
+):
+    stored_quote = "Kinder Morgan will finish in June 2026."
+    literal_page_quote = "Kinder   Morgan will finish in June 2026."
+    candidate, _quote = _unplaced_statement(
+        session,
+        project,
+        quote=stored_quote,
+        page_text=f"Meeting notes\n{literal_page_quote}\nEnd notes",
+    )
+
+    class Runtime:
+        async def run(self, case, tools, budget):
+            [evidence_ref] = case.evidence_refs
+            evidence = await tools.read_candidate_evidence(
+                evidence_ref, focus="exact commitment wording", max_chars=500
+            )
+            return InvestigationRunOutput(
+                packet=InvestigationPacket(
+                    source_findings=(
+                        SourceFinding(
+                            evidence_ref=evidence_ref,
+                            exact_quote=evidence.candidate_quote,
+                            observation="The source states a month-level Commitment.",
+                        ),
+                    ),
+                    possible_parties=(),
+                    dependency_options=(),
+                    human_questions=("Which Commitment Scope applies?",),
+                ),
+                turns=2,
+                input_tokens=50,
+                output_tokens=20,
+            )
+
+    result = asyncio.run(
+        investigate_candidate(
+            session,
+            candidate.id,
+            runtime=Runtime(),
+            budget=InvestigationBudget(),
+        )
+    )
+
+    assert result.status == "human_judgment_needed"
+    assert result.packet.source_findings[0].exact_quote == literal_page_quote
+
+
+def test_investigator_does_not_present_a_fuzzy_near_miss_as_an_exact_quote(
+    session, project
+):
+    stored_quote = "Kinder Morgan will finish in June 2026."
+    literal_page_quote = "Kinder Morgan will finish in July 2026."
+    candidate, _quote = _unplaced_statement(
+        session,
+        project,
+        quote=stored_quote,
+        page_text=f"Meeting notes\n{literal_page_quote}\nEnd notes",
+    )
+
+    class Runtime:
+        async def run(self, case, tools, budget):
+            [evidence_ref] = case.evidence_refs
+            evidence = await tools.read_candidate_evidence(
+                evidence_ref, focus="exact commitment wording", max_chars=500
+            )
+            assert evidence.candidate_quote is None
+            assert literal_page_quote in evidence.page_context
+            return InvestigationRunOutput(
+                packet=InvestigationPacket(
+                    source_findings=(
+                        SourceFinding(
+                            evidence_ref=evidence_ref,
+                            exact_quote=literal_page_quote,
+                            observation="The page states different timing.",
+                        ),
+                    ),
+                    possible_parties=(),
+                    dependency_options=(),
+                    human_questions=("Which timing is attributable?",),
+                ),
+                turns=2,
+                input_tokens=50,
+                output_tokens=20,
+            )
+
+    result = asyncio.run(
+        investigate_candidate(
+            session,
+            candidate.id,
+            runtime=Runtime(),
+            budget=InvestigationBudget(),
+        )
+    )
+
+    assert result.status == "human_judgment_needed"
+    assert result.packet.source_findings[0].exact_quote == literal_page_quote
 
 
 def test_investigate_candidate_binds_capabilities_and_validates_unaccepted_options(
