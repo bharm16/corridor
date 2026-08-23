@@ -28,8 +28,8 @@ from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import EVENT_TYPES, Candidate, DocPage, Document
 from corridor.verify import literal_quote_on_page
 
-PROMPT_VERSION = "minutes_v2"
-PROMPT_PATH = Path("prompts/minutes_v2.md")
+PROMPT_VERSION = "minutes_v3"
+PROMPT_PATH = Path("prompts/minutes_v3.md")
 
 MIN_PAGE_CHARS = 200
 TIMING_SCHEMA = {
@@ -144,7 +144,12 @@ def _to_candidate(
         key: value
         for key, value in (
             ("event_type", event_type),
-            ("description", item.get("description")),
+            (
+                "description",
+                quote
+                if event_type in {"commitment", "committed_date_change"}
+                else item.get("description"),
+            ),
             ("event_date", item.get("event_date")),
             ("external_org", item.get("external_org")),
             ("stated_party", item.get("stated_party")),

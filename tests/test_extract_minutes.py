@@ -176,6 +176,42 @@ def test_verified_quote_is_the_page_literal_contiguous_span(session, document):
     assert citation["quote"] in page.text
 
 
+def test_commitment_description_is_the_exact_evidence_span_not_a_paraphrase(
+    session, document
+):
+    quote = "Equistar to provide chain of title by 01/2025."
+    page = session.scalar(select(DocPage).where(DocPage.document_id == document.id))
+    page.text = LONG_PAGE_PREFIX + quote
+    client = StubClient(
+        [
+            {
+                "events": [
+                    event(
+                        event_type="commitment",
+                        description=(
+                            "Equistar will provide chain-of-title documentation "
+                            "by January 2025."
+                        ),
+                        external_org="Equistar",
+                        stated_party="Equistar",
+                        committed_date={
+                            "text": "01/2025",
+                            "precision": "month",
+                            "start_date": "2025-01-01",
+                            "end_date": "2025-01-31",
+                        },
+                        quote=quote,
+                    )
+                ]
+            }
+        ]
+    )
+
+    [candidate] = extract_document(session, document, client=client)
+
+    assert candidate.payload_json["fields"]["description"] == quote
+
+
 def test_an_unknown_event_type_is_dropped(session, document):
     """The schema constrains this, but a model can still return junk."""
     client = StubClient([{"events": [event(event_type="meeting_happened")]}])
