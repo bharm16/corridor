@@ -188,7 +188,7 @@ def run_extraction(
     min_page_chars: int,
     to_candidate: Callable,
     items_key: str,
-    noun: str,
+    noun: Noun,
     client_factory: Callable | None = None,
     session_factory: Callable | None = None,
 ) -> int:
