@@ -779,6 +779,48 @@ def test_one_party_under_two_registered_names_is_one_conflict(
     ]
 
 
+def test_identical_party_disagreement_abstention_does_not_duplicate_outcomes(
+    session, project
+):
+    first_document = _document(session, project, filename="party-a.pdf")
+    second_document = _document(session, project, filename="party-b.pdf")
+    _run(
+        session,
+        first_document,
+        [_candidate(first_document, _fields("SHARED", org="Party A"))],
+    )
+    _run(
+        session,
+        second_document,
+        [_candidate(second_document, _fields("SHARED", org="Party B"))],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+
+    first = run_dependency_admission(session, project.id)
+    after_first = session.scalars(
+        select(DependencyAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            DependencyAdmissionOutcome.reason == "revisions_disagree_on_party",
+        )
+    ).all()
+    second = run_dependency_admission(session, project.id)
+    after_second = session.scalars(
+        select(DependencyAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            DependencyAdmissionOutcome.reason == "revisions_disagree_on_party",
+        )
+    ).all()
+
+    assert first.abstained_count == 2
+    assert second.abstained_count == 0
+    assert len(after_first) == 2
+    assert len(after_second) == 2
+
+
 def test_an_unregistered_spelling_stays_its_own_party(session, project):
     """Nothing guesses. A spelling nobody has registered surfaces as a
     row to look at rather than silently merging two companies."""

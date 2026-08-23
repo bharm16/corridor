@@ -521,7 +521,7 @@ def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
 
 
 def _activation_receipt(
-    project, *, gates, source_revision=None, migration_head="d257f2b9c537"
+    project, *, gates, source_revision=None, migration_head="e314a3d8c6f2"
 ):
     source_revision = source_revision or _current_source_revision()
     policy_sha256 = policy.canonical_sha256(
@@ -596,7 +596,7 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -624,7 +624,7 @@ def test_database_rejects_activation_for_a_failed_receipt(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -652,7 +652,7 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -739,7 +739,7 @@ def test_activated_extension_preserves_predecessor_selected_scope_behavior(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": True},
@@ -761,7 +761,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
@@ -771,7 +771,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision="b" * 40,
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -801,7 +801,7 @@ def test_deployed_rule_digest_drift_suspends_activation(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
