@@ -110,41 +110,48 @@
         <div class="grid">
           <div><label for="affected-party">External Party affected</label>
             <select id="affected-party" name="affected_external_org_id" required>
-              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
+              <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}" {% if party.id == candidate_affected_party_id %}selected{% endif %}>{{ party.name }}</option>{% endfor %}
             </select></div>
           <div><label for="stated-party">External Party who spoke</label>
             <select id="stated-party" name="stated_external_org_id" required>
               <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
             </select></div>
         </div>
-        <label for="stated-party-words">Party wording in the Evidence</label>
-        <input id="stated-party-words" name="stated_party" value="" required>
-        <p class="muted">Choosing a registered External Party resolves this Evidence wording for this statement. It does not register a name for future Documents.</p>
-        <label for="event-date">Statement date, if the Evidence says one</label>
-        <input id="event-date" name="event_date" type="date" value="{{ candidate_fields.get('event_date', '') }}">
-        <label for="description">What the External Party said</label>
-        <textarea id="description" name="description" required>{{ candidate_fields.get('description', '') }}</textarea>
+        <input type="hidden" name="stated_party" value="">
+        <p class="muted">The selected registered External Party supplies the stored party wording. No name transcription is required, and this decision does not register a name for future Documents.</p>
+        <input type="hidden" name="event_date" value="{{ candidate_event_date }}">
+        <p><b>Statement date:</b> {{ candidate_event_date or 'not stated in the Candidate' }}</p>
+        <input type="hidden" name="description" value="{{ candidate_description }}">
+        <p><b>Extracted statement:</b> {{ candidate_description or 'No supported statement description is available.' }}</p>
       </fieldset>
 
       <fieldset>
         <legend>Timing Evidence</legend>
         <p class="muted">Corridor derives Commitment versus Committed Date Change and never asks you to choose the type.</p>
-        <div class="grid">
-          <div><label for="new-timing-text">New timing, exactly as stated</label><input id="new-timing-text" name="new_timing_text" required></div>
-          <div><label for="new-timing-precision">Precision</label><select id="new-timing-precision" name="new_timing_precision" required><option value="day">exact day</option><option value="month">month</option><option value="approximate">approximate</option></select></div>
-          <div><label for="new-timing-start">New timing start</label><input id="new-timing-start" name="new_timing_start_date" type="date"></div>
-          <div><label for="new-timing-end">New timing end</label><input id="new-timing-end" name="new_timing_end_date" type="date"></div>
-          <div><label for="previous-timing-text">Earlier timing, if this changed</label><input id="previous-timing-text" name="previous_timing_text"></div>
-          <div><label for="previous-timing-precision">Earlier timing precision</label><select id="previous-timing-precision" name="previous_timing_precision"><option value="">No earlier timing</option><option value="day">exact day</option><option value="month">month</option><option value="approximate">approximate</option></select></div>
-          <div><label for="previous-timing-start">Earlier timing start</label><input id="previous-timing-start" name="previous_timing_start_date" type="date"></div>
-          <div><label for="previous-timing-end">Earlier timing end</label><input id="previous-timing-end" name="previous_timing_end_date" type="date"></div>
-        </div>
-        <label>Another verified quote, when it supplies missing party or timing context</label>
-        <p class="muted">Choose one of the registered source pages shown above. You never need to enter a document or page identifier.</p>
+        {% if candidate_timing.available %}
+          <input type="hidden" name="new_timing_text" value="{{ candidate_timing.text }}">
+          <p><b>Evidence wording:</b> <span class="quote">{{ candidate_timing.text }}</span></p>
+          <div class="grid">
+            <div><label for="new-timing-precision">What precision does the Evidence support?</label><select id="new-timing-precision" name="new_timing_precision" required><option value="">Choose precision</option><option value="day">exact day</option><option value="month">month</option><option value="approximate">approximate</option></select></div>
+            <div><label for="new-timing-start">Extracted timing start</label><input id="new-timing-start" name="new_timing_start_date" type="date" value="{{ candidate_timing.start_date }}" readonly></div>
+            <div><label for="new-timing-end">Extracted timing end</label><input id="new-timing-end" name="new_timing_end_date" type="date" value="{{ candidate_timing.end_date }}" readonly></div>
+          </div>
+        {% else %}
+          <p class="error">No structured timing is available. The Candidate stays pending until extraction or Evidence supplies one.</p>
+          <input type="hidden" name="new_timing_text" value="">
+          <input type="hidden" name="new_timing_precision" value="">
+          <input type="hidden" name="new_timing_start_date" value="">
+          <input type="hidden" name="new_timing_end_date" value="">
+        {% endif %}
+        <input type="hidden" name="previous_timing_text" value="">
+        <input type="hidden" name="previous_timing_precision" value="">
+        <input type="hidden" name="previous_timing_start_date" value="">
+        <input type="hidden" name="previous_timing_end_date" value="">
+        <label>Additional supporting Evidence, only when the Candidate excerpt is incomplete</label>
         {% for evidence in candidate_evidence %}
-          <label class="check"><input type="radio" name="supporting_page_index" value="{{ loop.index0 }}" {% if not evidence.supporting_quote_available %}disabled{% endif %}> Use {{ evidence.filename }}, registered page {{ evidence.page_no }}</label>
+          <label class="check"><input type="radio" name="supporting_page_index" value="{{ loop.index0 }}" data-supporting-quote="{{ evidence.page_text or '' }}" {% if not evidence.supporting_quote_available %}disabled{% endif %}> Use complete registered context from {{ evidence.filename }}, page {{ evidence.page_no }}</label>
         {% endfor %}
-        <label for="support-quote">Exact verified quote</label><textarea id="support-quote" name="supporting_quote"></textarea>
+        <input type="hidden" name="supporting_quote" value="">
       </fieldset>
 
       <fieldset>
@@ -161,15 +168,15 @@
 
       <fieldset>
         <legend>Coordination Plan</legend>
-        <label for="owner-search">Search the project roster</label><input id="owner-search" type="search" placeholder="Start typing a name">
         <label for="owner">Internal Owner</label>
         <select id="owner" name="internal_owner_roster_entry_id" required><option value="">Choose a project-team member</option>{% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}</select>
-        <label for="next-action">Next Action</label><textarea id="next-action" name="next_action" required></textarea>
+        <label for="next-action">Next Action</label><select id="next-action" name="next_action" required><option value="">Choose the project response</option>{% for choice in next_action_choices %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}</select>
         <div class="grid"><div><label for="action-due">Action Due Date</label><input id="action-due" name="action_due_date" type="date"></div><div><label for="unknown-date-reason">If no date, why?</label><select id="unknown-date-reason" name="action_due_date_unknown_reason"><option value="">Choose only when no date is known</option><option value="awaiting_external_information">awaiting external information</option><option value="awaiting_schedule_information">awaiting schedule information</option><option value="date_not_yet_known">date not yet known</option></select></div></div>
         <label for="milestone-impact">Milestone Impact (required only for a date change)</label><select id="milestone-impact" name="milestone_impact"><option value="">Not a date change</option><option value="affects">affects</option><option value="does_not_affect">does not affect</option><option value="not_yet_known">not yet known</option></select>
         {% for milestone in milestones %}<label class="check"><input type="checkbox" name="milestone_id" value="{{ milestone.id }}"> {{ milestone.code }} — {{ milestone.name }}</label>{% endfor %}
       </fieldset>
-      <button type="submit"{% if not candidate_evidence_available %} disabled{% endif %}>Save statement and Coordination Plan</button>
+      {% if not roster %}<p class="error">No project roster member is available for Internal Owner. The Candidate stays pending.</p>{% endif %}
+      <button type="submit"{% if not guided_save_available or not roster %} disabled{% endif %}>Save statement and Coordination Plan</button>
     </form>
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant">
       <fieldset>
@@ -207,6 +214,8 @@
     for (const option of owner.options) option.hidden = Boolean(option.value) && !option.text.toLocaleLowerCase().includes(phrase);
   });
   const affectedParty = document.querySelector('#affected-party');
+  const statedParty = document.querySelector('#stated-party');
+  const statedPartyWords = document.querySelector('input[name="stated_party"]');
   const scopeEntries = document.querySelectorAll('[data-dependency-party]');
   function syncScopeChoices() {
     const selectedParty = affectedParty.value;
@@ -219,4 +228,33 @@
     }
   }
   if (affectedParty) { affectedParty.addEventListener('change', syncScopeChoices); syncScopeChoices(); }
+  function syncStatedPartyWords() {
+    if (!statedParty || !statedPartyWords) return;
+    const option = statedParty.options[statedParty.selectedIndex];
+    statedPartyWords.value = statedParty.value ? option.text : '';
+  }
+  if (statedParty) { statedParty.addEventListener('change', syncStatedPartyWords); syncStatedPartyWords(); }
+  const supportingQuote = document.querySelector('input[name="supporting_quote"]');
+  const supportingPages = document.querySelectorAll('input[name="supporting_page_index"]');
+  for (const page of supportingPages) page.addEventListener('change', () => {
+    if (supportingQuote && page.checked) supportingQuote.value = page.dataset.supportingQuote;
+  });
+  const timingPrecision = document.querySelector('#new-timing-precision');
+  const timingStart = document.querySelector('#new-timing-start');
+  const timingEnd = document.querySelector('#new-timing-end');
+  function syncTimingBounds() {
+    if (!timingPrecision || !timingStart || !timingEnd) return;
+    if (timingPrecision.value === 'approximate') {
+      timingStart.value = '';
+      timingEnd.value = '';
+    } else if (timingPrecision.value === 'month' && timingStart.value) {
+      const [year, month] = timingStart.value.split('-').map(Number);
+      timingStart.value = `${year}-${String(month).padStart(2, '0')}-01`;
+      const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      timingEnd.value = `${year}-${String(month).padStart(2, '0')}-${lastDay}`;
+    } else if (timingPrecision.value === 'day' && timingStart.value) {
+      timingEnd.value = timingStart.value;
+    }
+  }
+  if (timingPrecision) timingPrecision.addEventListener('change', syncTimingBounds);
 </script>
