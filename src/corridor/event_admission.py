@@ -1063,12 +1063,12 @@ def _normal_policy_version(session: Session, project_id: int) -> str:
 
 
 def _canonical_policy(project: Project, policy_version: str) -> dict:
-    """What the approval is approving — the rules, exactly.
+    """The exact rules a real-state acceptance receipt proves.
 
-    Three things move this digest, and each must pause the policy until
-    a principal authorizes the replacement: the stated configuration,
-    the project's project-side parties (they decide which events may
-    carry a commitment), and the deployed bytes of the deciding code.
+    Three things move this digest, and each suspends the extension until a new
+    passing receipt and append-only activation exist: the stated configuration,
+    the project's project-side parties (they decide which events may carry a
+    Commitment), and the deployed bytes of the deciding code.
     """
     unknown_scope = policy_version == UNKNOWN_SCOPE_POLICY_VERSION
     if not unknown_scope and policy_version != EVENT_ADMISSION_POLICY_VERSION:
