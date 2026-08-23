@@ -31,6 +31,7 @@ from corridor.event_admission import (
     EVENT_ADMISSION_POLICY_VERSION,
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
+    _acceptance_receipt_is_current,
     _canonical_policy,
     run_event_admission,
 )
@@ -300,6 +301,10 @@ def activate_passing_acceptance(
     )
     if receipt.policy_sha256 != current_sha256:
         raise ValueError("proved Event Admission rules no longer match deployed rules")
+    if not _acceptance_receipt_is_current(session, receipt):
+        raise ValueError(
+            "proved Event Admission source revision or migration head is stale"
+        )
     latest = session.scalar(
         select(EventAdmissionActivation)
         .where(EventAdmissionActivation.project_id == receipt.project_id)
@@ -424,6 +429,15 @@ def _run_policy_clone(
                     else None
                 ),
                 "metrics": metrics,
+                "admissions": [
+                    {
+                        "candidate_id": outcome.candidate_id,
+                        "commitment_lineage_id": outcome.commitment_lineage_id,
+                        "statement_event_id": outcome.dependency_event_id,
+                    }
+                    for outcome in outcomes
+                    if outcome.outcome == "admitted"
+                ],
                 "work_items": _admitted_work_items(session, project.id, outcomes),
             }
     finally:
@@ -695,6 +709,7 @@ def _admitted_work_items(
             "commitment_lineage_id": item.commitment_lineage_id,
             "statement_event_id": item.statement_event_id,
             "source_candidate_id": item.source_candidate_id,
+            "dependency_id": item.dependency_id,
             "attention_reasons": list(item.attention_reason_codes),
         }
         for item in (*work.immediate, *work.backlog)
@@ -737,9 +752,59 @@ def _acceptance_receipt_json(
 
 def _promotion_gates(opt_in: dict[str, Any]) -> dict[str, bool]:
     metrics = opt_in.get("metrics")
+    admissions = opt_in.get("admissions")
     work_items = opt_in.get("work_items")
-    if not isinstance(metrics, dict) or not isinstance(work_items, list):
-        raise ValueError("opt-in acceptance result is missing metrics or Work Items")
+    if (
+        not isinstance(metrics, dict)
+        or not isinstance(admissions, list)
+        or not isinstance(work_items, list)
+    ):
+        raise ValueError(
+            "opt-in acceptance result is missing metrics, admissions, or Work Items"
+        )
+    expected_work = {
+        (
+            admission.get("candidate_id"),
+            admission.get("commitment_lineage_id"),
+            admission.get("statement_event_id"),
+        )
+        for admission in admissions
+        if isinstance(admission, dict)
+    }
+    observed_work = {
+        (
+            item.get("source_candidate_id"),
+            item.get("commitment_lineage_id"),
+            item.get("statement_event_id"),
+        )
+        for item in work_items
+        if isinstance(item, dict)
+    }
+    allowed_reasons = {
+        "past_due",
+        "unknown_scope",
+        "missing_internal_owner",
+        "missing_next_action",
+    }
+    required_reasons = {
+        "unknown_scope",
+        "missing_internal_owner",
+        "missing_next_action",
+    }
+    residual_work_is_exact = (
+        len(admissions) == metrics["admission_count"]
+        and len(work_items) == metrics["admission_count"]
+        and len(expected_work) == metrics["admission_count"]
+        and observed_work == expected_work
+        and all(
+            isinstance(item, dict)
+            and item.get("dependency_id") is None
+            and isinstance(item.get("attention_reasons"), list)
+            and required_reasons.issubset(item["attention_reasons"])
+            and set(item["attention_reasons"]).issubset(allowed_reasons)
+            for item in work_items
+        )
+    )
     gates = {
         "eligible_case_observed": metrics["admission_count"] > 0,
         "zero_false_party_attribution": metrics["false_party_attribution"] == 0,
@@ -753,8 +818,7 @@ def _promotion_gates(opt_in: dict[str, Any]) -> dict[str, bool]:
             and metrics["protected_report_delta"] == 0
         ),
         "all_evidence_and_receipts_valid": metrics["invalid_evidence_or_receipts"] == 0,
-        "all_admissions_enter_residual_work": len(work_items)
-        == metrics["admission_count"],
+        "all_admissions_enter_residual_work": residual_work_is_exact,
     }
     return gates
 

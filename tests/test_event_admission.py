@@ -33,10 +33,13 @@ from corridor.event_admission import (
     EventAdmissionAbstention,
     run_event_admission,
     _canonical_policy,
+    _current_migration_head,
+    _current_source_revision,
 )
 from corridor.event_admission_acceptance import (
     RECEIPT_VERSION,
     SELECTION_RULE,
+    _promotion_gates,
     _receipt_promotion_gates,
     activate_passing_acceptance,
     record_acceptance_receipt,
@@ -473,8 +476,9 @@ def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
 
 
 def _activation_receipt(
-    project, *, gates, source_revision="a" * 40, migration_head="d257f2b9c537"
+    project, *, gates, source_revision=None, migration_head="d257f2b9c537"
 ):
+    source_revision = source_revision or _current_source_revision()
     policy_sha256 = policy.canonical_sha256(
         _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     )
@@ -492,7 +496,28 @@ def _activation_receipt(
             "protected_report_delta": 0,
             "invalid_evidence_or_receipts": 0,
         },
-        "work_items": [{} for _ in range(admission_count)],
+        "admissions": [
+            {
+                "candidate_id": index + 1,
+                "commitment_lineage_id": index + 1,
+                "statement_event_id": index + 1,
+            }
+            for index in range(admission_count)
+        ],
+        "work_items": [
+            {
+                "commitment_lineage_id": index + 1,
+                "statement_event_id": index + 1,
+                "source_candidate_id": index + 1,
+                "dependency_id": None,
+                "attention_reasons": [
+                    "unknown_scope",
+                    "missing_internal_owner",
+                    "missing_next_action",
+                ],
+            }
+            for index in range(admission_count)
+        ],
     }
     receipt = {
         "schema_version": RECEIPT_VERSION,
@@ -525,7 +550,7 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
     failed = record_acceptance_receipt(
         session,
         project_id=project.id,
-        source_revision="a" * 40,
+        source_revision=_current_source_revision(),
         migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project,
@@ -553,7 +578,7 @@ def test_database_rejects_activation_for_a_failed_receipt(session, project):
     failed = record_acceptance_receipt(
         session,
         project_id=project.id,
-        source_revision="a" * 40,
+        source_revision=_current_source_revision(),
         migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project,
@@ -581,7 +606,7 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
     passed = record_acceptance_receipt(
         session,
         project_id=project.id,
-        source_revision="a" * 40,
+        source_revision=_current_source_revision(),
         migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project,
@@ -627,7 +652,7 @@ def test_activated_extension_preserves_predecessor_selected_scope_behavior(
     passed = record_acceptance_receipt(
         session,
         project_id=project.id,
-        source_revision="a" * 40,
+        source_revision=_current_source_revision(),
         migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project,
@@ -649,7 +674,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
     passed = record_acceptance_receipt(
         session,
         project_id=project.id,
-        source_revision="a" * 40,
+        source_revision=_current_source_revision(),
         migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
@@ -689,7 +714,7 @@ def test_deployed_rule_digest_drift_suspends_activation(
     passed = record_acceptance_receipt(
         session,
         project_id=project.id,
-        source_revision="a" * 40,
+        source_revision=_current_source_revision(),
         migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
@@ -710,6 +735,102 @@ def test_deployed_rule_digest_drift_suspends_activation(
     assert result.admitted_count == 0
     assert result.abstentions[0].reason == "no_conflict_reference"
     assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def test_source_revision_drift_suspends_activation(
+    session, project, monkeypatch
+):
+    from corridor import event_admission as module
+
+    receipt_json = _activation_receipt(
+        project, gates={"eligible_case_observed": True}
+    )
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=receipt_json["source_revision"],
+        migration_head=receipt_json["migration_head"],
+        receipt_json=receipt_json,
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    monkeypatch.setattr(module, "_current_source_revision", lambda: "b" * 40)
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(session, project, [_event(ref=None)])
+
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    assert result.abstentions[0].reason == "no_conflict_reference"
+    assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def test_migration_head_drift_suspends_activation(
+    session, project, monkeypatch
+):
+    from corridor import event_admission as module
+
+    receipt_json = _activation_receipt(
+        project, gates={"eligible_case_observed": True}
+    )
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=receipt_json["source_revision"],
+        migration_head=receipt_json["migration_head"],
+        receipt_json=receipt_json,
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    monkeypatch.setattr(module, "_current_migration_head", lambda _session: "new-head")
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(session, project, [_event(ref=None)])
+
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    assert result.abstentions[0].reason == "no_conflict_reference"
+    assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def test_promotion_gate_rejects_non_residual_work_item_reason():
+    opt_in = {
+        "metrics": {
+            "admission_count": 1,
+            "false_party_attribution": 0,
+            "false_dependency_scope": 0,
+            "project_side_masquerade": 0,
+            "cross_project_references": 0,
+            "unauthorized_work_decisions": 0,
+            "duplicates": 0,
+            "protected_dependency_delta": 0,
+            "protected_report_delta": 0,
+            "invalid_evidence_or_receipts": 0,
+        },
+        "admissions": [
+            {
+                "candidate_id": 1,
+                "commitment_lineage_id": 1,
+                "statement_event_id": 1,
+            }
+        ],
+        "work_items": [
+            {
+                "commitment_lineage_id": 1,
+                "statement_event_id": 1,
+                "source_candidate_id": 1,
+                "dependency_id": None,
+                "attention_reasons": [
+                    "unknown_scope",
+                    "missing_internal_owner",
+                    "missing_next_action",
+                    "committed_date_change",
+                ],
+            }
+        ],
+    }
+
+    assert _promotion_gates(opt_in)["all_admissions_enter_residual_work"] is False
 
 
 def test_refused_mechanical_admission_leaves_no_receipt_event_or_audit(

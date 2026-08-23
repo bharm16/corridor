@@ -20,8 +20,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from pathlib import Path
+import subprocess
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -988,6 +990,39 @@ def _rules_digest() -> str:
     return policy.digest_of_sources(_rule_source_bytes)
 
 
+def _current_source_revision() -> str | None:
+    """Return the deployed checkout revision, or no identity on uncertainty."""
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    revision = completed.stdout.strip()
+    if completed.returncode != 0 or len(revision) != 40:
+        return None
+    return revision
+
+
+def _current_migration_head(session: Session) -> str | None:
+    """Return one exact database revision; ambiguity suspends the extension."""
+    revisions = tuple(
+        session.scalars(text("select version_num from alembic_version")).all()
+    )
+    return str(revisions[0]) if len(revisions) == 1 else None
+
+
+def _acceptance_receipt_is_current(
+    session: Session, receipt: EventAdmissionAcceptanceReceipt
+) -> bool:
+    """Require the runtime source and schema identities proved by the receipt."""
+    return (
+        receipt.source_revision == _current_source_revision()
+        and receipt.migration_head == _current_migration_head(session)
+    )
+
+
 def _normal_policy_version(session: Session, project_id: int) -> str:
     """Read the latest append-only activation act; suspension restores v2."""
     row = session.execute(
@@ -1017,6 +1052,7 @@ def _normal_policy_version(session: Session, project_id: int) -> str:
         and latest.policy_version == UNKNOWN_SCOPE_POLICY_VERSION
         and receipt.id == newest_receipt_id
         and receipt.status == "passed"
+        and _acceptance_receipt_is_current(session, receipt)
         and receipt.policy_sha256
         == policy.canonical_sha256(
             _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
