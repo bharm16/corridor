@@ -44,6 +44,7 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventScopeDecision,
     Document,
+    EventAdmissionAcceptanceReceipt,
     EventAdmissionActivation,
     EventAdmissionOutcome,
     ExternalOrg,
@@ -52,6 +53,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.verify import normalize
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v2"
 UNKNOWN_SCOPE_POLICY_VERSION = "event-admission-v3-unknown-scope"
@@ -90,13 +92,16 @@ UNKNOWN_SCOPE_ABSTENTION_REASONS = frozenset(
         "citations_unverified",
         "event_type_outside_policy",
         "description_missing",
+        "description_not_in_evidence",
         "timing_missing",
         "timing_invalid",
+        "timing_not_in_evidence",
         "previous_timing_present",
         "conflict_reference_present",
         "party_unstated",
         "stated_party_unresolved",
         "stated_party_ambiguous",
+        "stated_party_not_in_evidence",
         "affected_party_unresolved",
         "affected_party_ambiguous",
         "affected_party_disagreement",
@@ -148,6 +153,7 @@ class UnknownScopeAdmission:
     stated_party: str
     stated_external_org_id: int
     evidence: CitedStatementEvidence
+    input_receipt: dict
 
 
 class UnknownScopeWriteIntegrity(RuntimeError):
@@ -360,31 +366,51 @@ def _run_unknown_scope_admission(
 
     from corridor.supersession import actionable_candidate_query
 
-    actionable_ids = frozenset(
-        session.scalars(
-            actionable_candidate_query(project.id)
-            .where(Candidate.kind == "event", Candidate.state == "pending")
-            .with_only_columns(Candidate.id)
-        ).all()
-    )
     candidates = session.scalars(
-        select(Candidate)
-        .where(
-            Candidate.project_id == project.id,
-            Candidate.kind == "event",
-            Candidate.state == "pending",
-        )
+        actionable_candidate_query(project.id)
+        .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    prior_abstentions: dict[int, EventAdmissionOutcome] = {}
+    for outcome in session.scalars(
+        select(EventAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.policy_version == UNKNOWN_SCOPE_POLICY_VERSION,
+            EventAdmissionOutcome.outcome == OUTCOME_ABSTAINED,
+        )
+        .order_by(EventAdmissionOutcome.id)
+    ):
+        prior_abstentions[outcome.candidate_id] = outcome
+    registry_sha256 = policy.canonical_sha256(
+        [
+            {"id": org.id, "name": org.name, "aliases": sorted(org.aliases or [])}
+            for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id))
+        ]
+    )
 
     prepared: list[UnknownScopeAdmission] = []
     abstentions: list[EventAdmissionAbstention] = []
+    abstention_inputs: dict[int, dict] = {}
     for candidate in candidates:
-        if candidate.id not in actionable_ids:
-            verdict: str | UnknownScopeAdmission = "stale_active_run_or_candidate"
-        else:
-            verdict = _evaluate_unknown_scope(session, project, candidate)
+        input_receipt = _unknown_scope_input_receipt(
+            candidate,
+            policy_sha256=policy_sha256,
+            external_org_registry_sha256=registry_sha256,
+        )
+        prior = prior_abstentions.get(candidate.id)
+        if (
+            prior is not None
+            and isinstance(prior.eligibility_json, dict)
+            and prior.eligibility_json.get("input") == input_receipt
+        ):
+            continue
+        verdict = _evaluate_unknown_scope(
+            session, project, candidate, input_receipt=input_receipt
+        )
         if isinstance(verdict, str):
+            abstention_inputs[candidate.id] = input_receipt
             abstentions.append(
                 EventAdmissionAbstention(
                     candidate_id=candidate.id,
@@ -443,6 +469,7 @@ def _run_unknown_scope_admission(
                     session.flush([disposition, placement.candidate])
                 admitted.append((placement, event, scope_decision, disposition))
             except (StatementRefusal, IntegrityError, UnknownScopeWriteIntegrity):
+                abstention_inputs[placement.candidate.id] = placement.input_receipt
                 abstentions.append(
                     EventAdmissionAbstention(
                         candidate_id=placement.candidate.id,
@@ -465,12 +492,19 @@ def _run_unknown_scope_admission(
         session.flush([run])
 
         for abstention in abstentions:
+            eligibility = {
+                "input": abstention_inputs[abstention.candidate_id],
+                "verdict": abstention.reason,
+                "reason_version": UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+            }
             session.add(
                 EventAdmissionOutcome(
                     policy_run_id=run.id,
                     candidate_id=abstention.candidate_id,
                     outcome=OUTCOME_ABSTAINED,
                     reason=abstention.reason,
+                    eligibility_json=eligibility,
+                    eligibility_sha256=policy.canonical_sha256(eligibility),
                 )
             )
 
@@ -648,7 +682,11 @@ def _evaluate(
 
 
 def _evaluate_unknown_scope(
-    session: Session, project: Project, candidate: Candidate
+    session: Session,
+    project: Project,
+    candidate: Candidate,
+    *,
+    input_receipt: dict,
 ) -> str | UnknownScopeAdmission:
     """Prove ADR-0042's class without consulting model-derived confidence."""
     document = session.get(Document, candidate.source_document_id)
@@ -706,6 +744,13 @@ def _evaluate_unknown_scope(
     evidence = _candidate_evidence(candidate)
     if evidence is None:
         return "citations_unverified"
+    evidence_text = normalize(evidence.quote)
+    if normalize(str(fields.get("description") or "")) not in evidence_text:
+        return "description_not_in_evidence"
+    if normalize(new_timing.text) not in evidence_text:
+        return "timing_not_in_evidence"
+    if normalize(stated_party) not in evidence_text:
+        return "stated_party_not_in_evidence"
     try:
         validate_external_party_statement_draft(
             session,
@@ -734,7 +779,29 @@ def _evaluate_unknown_scope(
         stated_party=stated_party,
         stated_external_org_id=stated_external_org.id,
         evidence=evidence,
+        input_receipt=input_receipt,
     )
+
+
+def _unknown_scope_input_receipt(
+    candidate: Candidate,
+    *,
+    policy_sha256: str,
+    external_org_registry_sha256: str,
+) -> dict:
+    """Exact deterministic inputs that make an unchanged Abstention idempotent."""
+    return {
+        "receipt_version": "event-admission-unknown-scope-input-v1",
+        "project_id": candidate.project_id,
+        "candidate_id": candidate.id,
+        "source_document_id": candidate.source_document_id,
+        "active_extraction_run_id": candidate.extraction_run_id,
+        "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
+        "citations_verified": candidate.citations_verified,
+        "candidate_state": candidate.state,
+        "policy_sha256": policy_sha256,
+        "external_org_registry_sha256": external_org_registry_sha256,
+    }
 
 
 def _unknown_scope_eligibility_receipt(
@@ -756,6 +823,7 @@ def _unknown_scope_eligibility_receipt(
         "source_document_id": candidate.source_document_id,
         "active_extraction_run_id": candidate.extraction_run_id,
         "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
+        "input": placement.input_receipt,
         "evidence": {
             "document_id": placement.evidence.document_id,
             "page": placement.evidence.page_no,
@@ -895,6 +963,21 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
             Path(__file__).parent
             / "migrations/versions/a217e4f3a2b1_external_party_statement_shape.py",
         ),
+        (
+            "corridor.migrations.b257d0f7a315",
+            Path(__file__).parent
+            / "migrations/versions/b257d0f7a315_unknown_scope_event_admission.py",
+        ),
+        (
+            "corridor.migrations.c257e1a8b426",
+            Path(__file__).parent
+            / "migrations/versions/c257e1a8b426_seal_event_admission_acceptance.py",
+        ),
+        (
+            "corridor.migrations.d257f2b9c537",
+            Path(__file__).parent
+            / "migrations/versions/d257f2b9c537_guard_event_admission_activation.py",
+        ),
     )
     return tuple((name, path.read_bytes()) for name, path in paths)
 
@@ -907,16 +990,37 @@ def _rules_digest() -> str:
 
 def _normal_policy_version(session: Session, project_id: int) -> str:
     """Read the latest append-only activation act; suspension restores v2."""
-    latest = session.scalar(
-        select(EventAdmissionActivation)
+    row = session.execute(
+        select(EventAdmissionActivation, EventAdmissionAcceptanceReceipt)
+        .join(
+            EventAdmissionAcceptanceReceipt,
+            EventAdmissionAcceptanceReceipt.id
+            == EventAdmissionActivation.acceptance_receipt_id,
+        )
         .where(EventAdmissionActivation.project_id == project_id)
         .order_by(EventAdmissionActivation.id.desc())
         .limit(1)
+    ).first()
+    if row is None:
+        return EVENT_ADMISSION_POLICY_VERSION
+    latest, receipt = row
+    newest_receipt_id = session.scalar(
+        select(EventAdmissionAcceptanceReceipt.id)
+        .where(EventAdmissionAcceptanceReceipt.project_id == project_id)
+        .order_by(EventAdmissionAcceptanceReceipt.id.desc())
+        .limit(1)
     )
+    project = session.get(Project, project_id)
     if (
-        latest is not None
+        project is not None
         and latest.action == "activate"
         and latest.policy_version == UNKNOWN_SCOPE_POLICY_VERSION
+        and receipt.id == newest_receipt_id
+        and receipt.status == "passed"
+        and receipt.policy_sha256
+        == policy.canonical_sha256(
+            _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+        )
     ):
         return UNKNOWN_SCOPE_POLICY_VERSION
     return EVENT_ADMISSION_POLICY_VERSION

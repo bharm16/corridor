@@ -1235,7 +1235,18 @@ def test_mechanical_commitment_screen_renders_facts_read_only_and_only_scope_fir
     client, session, project, party
 ):
     candidate = _mechanically_admit_unknown_scope(session, project, party)
-
+    session.add(
+        Dependency(
+            project_id=project.id,
+            ref_code="EQ-READ-ONLY",
+            source_ref="EQ-READ-ONLY",
+            dep_type="utility_relocation",
+            title="Equistar read-only screen choice",
+            status="identified",
+            external_org_id=party.id,
+        )
+    )
+    session.flush()
     response = client.get(
         f"/statements/{project.slug}/{candidate.id}/coordinate"
     )
@@ -1264,6 +1275,28 @@ def test_mechanical_commitment_screen_renders_facts_read_only_and_only_scope_fir
     assert "Evidence Investigator" not in body
     assert "confidence" not in body.lower()
     assert 'name="scope_mode" value="unknown" checked' not in body
+
+
+def test_mechanical_commitment_with_no_dependency_choices_stays_pending_with_gap(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+
+    response = client.get(f"/statements/{project.slug}/{candidate.id}/coordinate")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "No active Dependency choices are registered for this External Party" in body
+    assert 'name="scope_mode"' not in body
+    assert "Save Commitment Scope" not in body
+    assert "No initial Commitment decision remains unresolved." not in body
+
+    refused = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
+        data={"scope_mode": "all_active"},
+    )
+    assert refused.status_code == 400
+    assert "Commitment Scope remains not yet known" in refused.text
 
 
 def test_mechanical_commitment_asks_owner_then_structured_next_action(
@@ -1312,3 +1345,37 @@ def test_mechanical_commitment_asks_owner_then_structured_next_action(
     assert 'name="action_due_date_unknown_reason"' in action_page
     assert 'name="internal_owner_roster_entry_id"' not in action_page
     assert 'name="scope_mode"' not in action_page
+
+
+def test_human_can_confirm_scope_is_still_unknown_then_assign_owner(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="EQ-UNKNOWN",
+        source_ref="EQ-UNKNOWN",
+        dep_type="utility_relocation",
+        title="Available choice deliberately not selected",
+        status="identified",
+        external_org_id=party.id,
+    )
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:unknown-scope-owner",
+        display_name="Unknown Scope Owner",
+    )
+    session.add_all((dependency, owner))
+    session.flush()
+
+    response = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
+        data={"scope_mode": "unknown"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    page = client.get(response.headers["location"]).text
+    assert "Commitment Scope not yet known" in page
+    assert "Choose the Internal Owner" in page
+    assert 'name="scope_mode"' not in page

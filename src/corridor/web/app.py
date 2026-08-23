@@ -113,6 +113,7 @@ from corridor.disputes import (
     settle_dispute,
 )
 from corridor.event_admission import (
+    MACHINE_ACTOR,
     StatementUnplaceable,
     UNKNOWN_SCOPE_POLICY_VERSION,
     attach_statement,
@@ -797,16 +798,19 @@ async def save_admitted_statement_scope(
             raise StatementCoordinationRefusal(
                 "Commitment Scope is no longer the next unresolved decision"
             )
-        if mode == "unknown":
-            return RedirectResponse(
-                f"/statements/{project.slug}/{candidate.id}/coordinate",
-                status_code=303,
-            )
+        if context["authority_gap"] is not None:
+            raise StatementCoordinationRefusal(context["authority_gap"])
         dependency_ids = tuple(
             _positive_form_id(value, "dependency_id")
             for value in form.getlist("dependency_id")
         )
-        if mode == "one":
+        if mode == "unknown":
+            if dependency_ids:
+                raise StatementCoordinationRefusal(
+                    "not-yet-known scope cannot name Dependencies"
+                )
+            scope = StatementScope.unknown()
+        elif mode == "one":
             if len(dependency_ids) != 1:
                 raise StatementCoordinationRefusal(
                     "one-Dependency scope must choose exactly one Dependency"
@@ -1257,7 +1261,7 @@ def _mechanically_admitted_statement_context(
     )
     decision = (
         "scope"
-        if scope.scope_mode == "unknown"
+        if scope.scope_mode == "unknown" and scope.decided_by == MACHINE_ACTOR
         else "owner"
         if not lineage.internal_owner
         else "next_action"
@@ -1265,7 +1269,12 @@ def _mechanically_admitted_statement_context(
         else None
     )
     authority_gap = None
-    if decision == "scope" and not dependencies:
+    if not evidence:
+        decision = "blocked"
+        authority_gap = (
+            "Verified statement Evidence is unavailable; residual decisions remain pending."
+        )
+    elif decision == "scope" and not dependencies:
         authority_gap = (
             "No active Dependency choices are registered for this External Party; "
             "Commitment Scope remains not yet known."

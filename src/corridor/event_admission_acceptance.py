@@ -13,7 +13,9 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 from typing import Any
 
@@ -21,7 +23,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
-from corridor import identity, policy
+from corridor import audit, identity, policy
 from corridor.event_admission import (
     EVENT_ADMISSION_POLICY_VERSION,
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
@@ -39,6 +41,7 @@ from corridor.models import (
     AuditLog,
     Candidate,
     CandidateDisposition,
+    CommitmentLineage,
     Dependency,
     DependencyEvent,
     DependencyEventEvidence,
@@ -54,8 +57,13 @@ from corridor.models import (
     ReportRun,
     WorkDecision,
 )
-from corridor.m8_acceptance_database import DatabaseProvisioner
+from corridor.m8_acceptance_database import (
+    DatabaseProvisioner,
+    provision_disposable_postgres,
+    read_migration_head,
+)
 from corridor.sh99_admission_acceptance import (
+    REPO_ROOT,
     _database_url,
     _dump_source_database,
     _provision_database,
@@ -83,6 +91,7 @@ PROMOTION_GATE_NAMES = frozenset(
         "zero_protected_state_changes",
         "all_evidence_and_receipts_valid",
         "all_admissions_enter_residual_work",
+        "fresh_and_predecessor_migrations_passed",
     }
 )
 
@@ -115,6 +124,16 @@ def run_event_admission_acceptance(
     provision = provision_database or _provision_database
     source = _require_clean_source(config.expected_clean_git_revision)
     migration_head = _source_migration_head()
+    shared_head = read_migration_head(
+        config.source_database_url,
+        repo_root=REPO_ROOT,
+        error_cls=ValueError,
+    )
+    if shared_head != migration_head:
+        raise ValueError("source database migration head does not match checked-out source")
+    migration_rehearsal = _rehearse_predecessor_upgrade(
+        config.postgres_admin_url, expected_head=migration_head
+    )
     source_database = _source_database(config.source_database_url)
 
     with tempfile.TemporaryDirectory(prefix="corridor-event-admission-acceptance-") as parent:
@@ -148,6 +167,11 @@ def run_event_admission_acceptance(
                 UNKNOWN_SCOPE_POLICY_VERSION,
                 repeat=True,
             )
+    migration_rehearsal = {
+        **migration_rehearsal,
+        "fresh_head": migration_head,
+        "fresh_status": "passed",
+    }
 
     if predecessor["population"] != opt_in["population"]:
         raise ValueError("predecessor and opt-in policies did not read one population")
@@ -157,6 +181,7 @@ def run_event_admission_acceptance(
         source_dump_sha256=source_dump_sha256,
         predecessor=predecessor,
         opt_in=opt_in,
+        migration_rehearsal=migration_rehearsal,
     )
     engine = create_engine(config.source_database_url, poolclass=NullPool, future=True)
     try:
@@ -206,7 +231,7 @@ def record_acceptance_receipt(
     if any(not isinstance(value, bool) for value in gates.values()):
         raise ValueError("acceptance promotion gates must be boolean")
     opt_in = receipt_json.get("opt_in")
-    if not isinstance(opt_in, dict) or gates != _promotion_gates(opt_in):
+    if not isinstance(opt_in, dict) or gates != _receipt_promotion_gates(receipt_json):
         raise ValueError("acceptance promotion gates do not match recorded metrics")
     if (
         receipt_json.get("schema_version") != RECEIPT_VERSION
@@ -216,6 +241,13 @@ def record_acceptance_receipt(
         != UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION
     ):
         raise ValueError("acceptance receipt identity does not match this gate")
+    if (
+        receipt_json.get("source_revision") != source_revision
+        or receipt_json.get("migration_head") != migration_head
+        or (receipt_json.get("migration_rehearsal") or {}).get("head")
+        != migration_head
+    ):
+        raise ValueError("acceptance receipt source or migration pin does not match")
     status = "passed" if all(value is True for value in gates.values()) else "failed"
     policy_json = _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     policy_sha256 = policy.canonical_sha256(policy_json)
@@ -249,6 +281,14 @@ def activate_passing_acceptance(
         raise ValueError("Event Admission acceptance receipt does not exist")
     if receipt.status != "passed":
         return None
+    newest_receipt_id = session.scalar(
+        select(EventAdmissionAcceptanceReceipt.id)
+        .where(EventAdmissionAcceptanceReceipt.project_id == receipt.project_id)
+        .order_by(EventAdmissionAcceptanceReceipt.id.desc())
+        .limit(1)
+    )
+    if newest_receipt_id != receipt.id:
+        raise ValueError("only the latest Event Admission acceptance may activate")
     project = session.get(Project, receipt.project_id)
     if project is None:
         raise ValueError("acceptance receipt project no longer exists")
@@ -432,6 +472,25 @@ def _protected_state(session: Session, project_id: int) -> dict[str, int]:
         DependencyEvent.commitment_lineage_id.is_not(None),
     )
     return {
+        "commitment_lineages": session.scalar(
+            select(func.count()).select_from(CommitmentLineage).where(
+                CommitmentLineage.project_id == project_id
+            )
+        ) or 0,
+        "statement_events": session.scalar(
+            select(func.count()).select_from(DependencyEvent).where(
+                DependencyEvent.project_id == project_id
+            )
+        ) or 0,
+        "scope_decisions": session.scalar(
+            select(func.count())
+            .select_from(DependencyEventScopeDecision)
+            .join(
+                DependencyEvent,
+                DependencyEvent.id == DependencyEventScopeDecision.event_id,
+            )
+            .where(DependencyEvent.project_id == project_id)
+        ) or 0,
         "dependencies": session.scalar(
             select(func.count()).select_from(Dependency).where(
                 Dependency.project_id == project_id
@@ -458,6 +517,12 @@ def _protected_state(session: Session, project_id: int) -> dict[str, int]:
             .select_from(CandidateDisposition)
             .join(Candidate, Candidate.id == CandidateDisposition.candidate_id)
             .where(Candidate.project_id == project_id)
+        ) or 0,
+        "policy_outcomes": session.scalar(
+            select(func.count())
+            .select_from(EventAdmissionOutcome)
+            .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+            .where(PolicyRun.project_id == project_id)
         ) or 0,
         "audits": session.scalar(
             select(func.count()).select_from(AuditLog).where(
@@ -549,8 +614,49 @@ def _guardrail_metrics(
             invalid_evidence += 1
     duplicates = sum(
         after_second[key] != after_first[key]
-        for key in ("scope_links", "work_decisions", "candidate_dispositions", "audits")
+        for key in (
+            "commitment_lineages",
+            "statement_events",
+            "scope_decisions",
+            "scope_links",
+            "work_decisions",
+            "candidate_dispositions",
+            "policy_outcomes",
+            "audits",
+        )
     ) + (second_applied_count or 0)
+    admitted_lineage_ids = tuple(
+        outcome.commitment_lineage_id
+        for outcome in admitted
+        if outcome.commitment_lineage_id is not None
+    )
+    admitted_candidate_ids = tuple(outcome.candidate_id for outcome in admitted)
+    corrections = (
+        session.scalar(
+            select(func.count()).select_from(AuditLog).where(
+                AuditLog.entity_type == audit.COMMITMENT_LINEAGE,
+                AuditLog.entity_id.in_(admitted_lineage_ids),
+                AuditLog.action.in_(
+                    (audit.CORRECT_STATEMENT_SCOPE, audit.CORRECT_STATEMENT_FACTS)
+                ),
+            )
+        )
+        or 0
+        if admitted_lineage_ids
+        else 0
+    )
+    reversals = (
+        session.scalar(
+            select(func.count()).select_from(AuditLog).where(
+                AuditLog.entity_type == audit.CANDIDATE,
+                AuditLog.entity_id.in_(admitted_candidate_ids),
+                AuditLog.action == audit.UNDO_COORDINATED_STATEMENT,
+            )
+        )
+        or 0
+        if admitted_candidate_ids
+        else 0
+    )
     return {
         "admission_count": len(admitted),
         "abstention_reasons": dict(
@@ -563,8 +669,8 @@ def _guardrail_metrics(
         "unauthorized_work_decisions": unauthorized_decisions,
         "invalid_evidence_or_receipts": invalid_evidence,
         "duplicates": duplicates,
-        "corrections": 0,
-        "reversals": 0,
+        "corrections": corrections,
+        "reversals": reversals,
         "protected_dependency_delta": after_first["dependencies"] - before["dependencies"],
         "protected_report_delta": after_first["reports"] - before["reports"],
     }
@@ -600,9 +706,9 @@ def _acceptance_receipt_json(
     source_dump_sha256: str,
     predecessor: dict[str, Any],
     opt_in: dict[str, Any],
+    migration_rehearsal: dict[str, str],
 ) -> dict[str, Any]:
-    gates = _promotion_gates(opt_in)
-    return {
+    receipt = {
         "schema_version": RECEIPT_VERSION,
         "source_revision": source_revision,
         "migration_head": migration_head,
@@ -614,7 +720,7 @@ def _acceptance_receipt_json(
         "population": opt_in["population"],
         "predecessor": predecessor,
         "opt_in": opt_in,
-        "gates": gates,
+        "migration_rehearsal": migration_rehearsal,
         "authority_statement": (
             "Activation authorizes only the enumerated deterministic party-level "
             "Commitment class at Commitment Scope not yet known; it grants no model "
@@ -622,6 +728,8 @@ def _acceptance_receipt_json(
         ),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
+    receipt["gates"] = _receipt_promotion_gates(receipt)
+    return receipt
 
 
 def _promotion_gates(opt_in: dict[str, Any]) -> dict[str, bool]:
@@ -645,5 +753,72 @@ def _promotion_gates(opt_in: dict[str, Any]) -> dict[str, bool]:
         "all_admissions_enter_residual_work": len(work_items)
         == metrics["admission_count"],
     }
+    return gates
+
+
+def _receipt_promotion_gates(receipt: dict[str, Any]) -> dict[str, bool]:
+    opt_in = receipt.get("opt_in")
+    migration = receipt.get("migration_rehearsal")
+    if not isinstance(opt_in, dict):
+        raise ValueError("acceptance receipt is missing the opt-in result")
+    gates = {
+        **_promotion_gates(opt_in),
+        "fresh_and_predecessor_migrations_passed": (
+            isinstance(migration, dict)
+            and migration.get("status") == "passed"
+            and migration.get("predecessor") == "a257c9e6f204"
+            and isinstance(migration.get("head"), str)
+            and migration.get("fresh_status") == "passed"
+            and migration.get("fresh_head") == migration.get("head")
+        ),
+    }
     assert set(gates) == PROMOTION_GATE_NAMES
     return gates
+
+
+def _rehearse_predecessor_upgrade(
+    postgres_admin_url: str, *, expected_head: str
+) -> dict[str, str]:
+    predecessor = "a257c9e6f204"
+    with provision_disposable_postgres(
+        postgres_admin_url,
+        repo_root=REPO_ROOT,
+        error_cls=ValueError,
+        database_prefix="corridor_unknown_scope_upgrade_",
+        migration_revision=predecessor,
+    ) as database:
+        database_url = _database_url(postgres_admin_url, database.name)
+        completed = subprocess.run(
+            ["uv", "run", "alembic", "upgrade", "head"],
+            cwd=REPO_ROOT,
+            env={**os.environ, "DATABASE_URL": database_url},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout).strip().splitlines()
+            raise ValueError(
+                "Event Admission predecessor migration rehearsal failed"
+                + (f": {detail[-1]}" if detail else "")
+            )
+        actual_head = read_migration_head(
+            database_url, repo_root=REPO_ROOT, error_cls=ValueError
+        )
+        if actual_head != expected_head:
+            raise ValueError("Event Admission predecessor rehearsal reached the wrong head")
+        engine = create_engine(database_url, poolclass=NullPool, future=True)
+        try:
+            with engine.connect() as connection:
+                receipt_count = connection.scalar(
+                    select(func.count()).select_from(
+                        EventAdmissionAcceptanceReceipt
+                    )
+                )
+                if receipt_count != 0:
+                    raise ValueError(
+                        "fresh Event Admission acceptance tables were not empty"
+                    )
+        finally:
+            engine.dispose()
+    return {"predecessor": predecessor, "head": expected_head, "status": "passed"}

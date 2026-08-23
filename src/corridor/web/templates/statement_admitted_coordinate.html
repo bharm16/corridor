@@ -66,31 +66,35 @@
   {% if authority_gap %}<p class="gap">{{ authority_gap }}</p>{% endif %}
 
   {% if decision == "scope" %}
-    <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/scope">
-      <fieldset>
-        <legend>Choose the Commitment Scope</legend>
-        <p class="muted">Choose only what the Evidence and project record support. Nothing is preselected.</p>
-        <label><input type="radio" name="scope_mode" value="one" required> One Dependency</label>
-        <label><input type="radio" name="scope_mode" value="selected"> Selected Dependencies</label>
-        <label><input type="radio" name="scope_mode" value="all_active"> All active Dependencies for this External Party</label>
-        <label><input type="radio" name="scope_mode" value="unknown"> Keep Commitment Scope not yet known</label>
-        {% for dependency in dependencies %}
-          <label class="dependency"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.ref_code }} — {{ dependency.title }}</label>
-        {% endfor %}
-        <button type="submit">Save Commitment Scope</button>
-      </fieldset>
-    </form>
+    {% if not authority_gap %}
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/scope">
+        <fieldset>
+          <legend>Choose the Commitment Scope</legend>
+          <p class="muted">Choose only what the Evidence and project record support. Nothing is preselected.</p>
+          <label><input type="radio" name="scope_mode" value="one" required> One Dependency</label>
+          <label><input type="radio" name="scope_mode" value="selected"> Selected Dependencies</label>
+          <label><input type="radio" name="scope_mode" value="all_active"> All active Dependencies for this External Party</label>
+          <label><input type="radio" name="scope_mode" value="unknown"> Keep Commitment Scope not yet known</label>
+          {% for dependency in dependencies %}
+            <label class="dependency"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.ref_code }} — {{ dependency.title }}</label>
+          {% endfor %}
+          <button type="submit">Save Commitment Scope</button>
+        </fieldset>
+      </form>
+    {% endif %}
   {% elif decision == "owner" %}
-    <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/owner">
-      <fieldset>
-        <legend>Choose the Internal Owner</legend>
-        <select name="internal_owner_roster_entry_id" required>
-          <option value="">Choose a project-team member</option>
-          {% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}
-        </select>
-        <button type="submit"{% if not roster %} disabled{% endif %}>Save Internal Owner</button>
-      </fieldset>
-    </form>
+    {% if not authority_gap %}
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/owner">
+        <fieldset>
+          <legend>Choose the Internal Owner</legend>
+          <select name="internal_owner_roster_entry_id" required>
+            <option value="">Choose a project-team member</option>
+            {% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}
+          </select>
+          <button type="submit"{% if not roster %} disabled{% endif %}>Save Internal Owner</button>
+        </fieldset>
+      </form>
+    {% endif %}
   {% elif decision == "next_action" %}
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/next-action">
       <fieldset>
@@ -111,6 +115,8 @@
         <button type="submit">Save Next Action</button>
       </fieldset>
     </form>
+  {% elif decision == "blocked" %}
+    <p class="gap">No residual decision can be recorded until the stated authority gap is repaired.</p>
   {% else %}
     <p class="accepted">No initial Commitment decision remains unresolved.</p>
     <dl>

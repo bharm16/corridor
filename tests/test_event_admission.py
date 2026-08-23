@@ -37,7 +37,7 @@ from corridor.event_admission import (
 from corridor.event_admission_acceptance import (
     RECEIPT_VERSION,
     SELECTION_RULE,
-    _promotion_gates,
+    _receipt_promotion_gates,
     activate_passing_acceptance,
     record_acceptance_receipt,
     suspend_unknown_scope_admission,
@@ -361,6 +361,32 @@ def test_unknown_scope_policy_is_opt_in_and_idempotent(session, project):
     ) == 1
 
 
+def test_identical_unknown_scope_abstention_does_not_duplicate_policy_outcome(
+    session, project
+):
+    [candidate] = _minutes_with(
+        session,
+        project,
+        [_event(ref=None, event_type="response")],
+    )
+
+    first = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    second = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert first.abstained_count == 1
+    assert second.admitted_count == 0
+    assert second.abstained_count == 0
+    assert session.scalar(
+        select(func.count()).select_from(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id
+        )
+    ) == 1
+
+
 @pytest.mark.parametrize(
     ("fields", "reason"),
     [
@@ -399,7 +425,56 @@ def test_unknown_scope_policy_names_each_failed_predicate(
     assert session.get(Candidate, candidate.id).state == "pending"
 
 
-def _activation_receipt(project, *, gates):
+def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    minutes = _document(
+        session, project, filename="confidence-is-not-proof.pdf", doc_type="minutes"
+    )
+    candidate = _candidate(
+        minutes,
+        kind="event",
+        fields=_event(
+            ref=None,
+            description="The package is due.",
+            committed_date="2025-06-01",
+        ),
+    )
+    candidate.confidence = 1.0
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "model_agreement": True,
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "quote": "The package is due. 2025-06-01",
+            }
+        ],
+    }
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == candidate.source_document_id,
+            DocPage.page_no == 1,
+        )
+    )
+    assert page is not None
+    page.text = "The package is due. 2025-06-01"
+    _run(session, minutes, [candidate])
+    declare_single_run_documents(session, project.id, principal=OPERATOR)
+    session.flush()
+
+    result = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert result.admitted_count == 0
+    assert result.abstentions[0].reason == "stated_party_not_in_evidence"
+    assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def _activation_receipt(
+    project, *, gates, source_revision="a" * 40, migration_head="d257f2b9c537"
+):
     policy_sha256 = policy.canonical_sha256(
         _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     )
@@ -419,19 +494,29 @@ def _activation_receipt(project, *, gates):
         },
         "work_items": [{} for _ in range(admission_count)],
     }
-    return {
+    receipt = {
         "schema_version": RECEIPT_VERSION,
+        "source_revision": source_revision,
+        "migration_head": migration_head,
         "selection_rule": SELECTION_RULE,
         "policy_version": UNKNOWN_SCOPE_POLICY_VERSION,
         "policy_sha256": policy_sha256,
         "reason_version": UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
         "opt_in": opt_in,
-        "gates": _promotion_gates(opt_in),
+        "migration_rehearsal": {
+            "predecessor": "a257c9e6f204",
+            "head": migration_head,
+            "status": "passed",
+            "fresh_head": migration_head,
+            "fresh_status": "passed",
+        },
         "authority_statement": (
             "Only the deterministic unknown-scope Commitment class is authorized; "
             "models receive no write authority."
         ),
     }
+    receipt["gates"] = _receipt_promotion_gates(receipt)
+    return receipt
 
 
 def test_failed_acceptance_receipt_cannot_activate_normal_processing(
@@ -441,7 +526,7 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
         session,
         project_id=project.id,
         source_revision="a" * 40,
-        migration_head="b257d0f7a315",
+        migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -497,7 +582,7 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
         session,
         project_id=project.id,
         source_revision="a" * 40,
-        migration_head="b257d0f7a315",
+        migration_head="d257f2b9c537",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -558,6 +643,73 @@ def test_activated_extension_preserves_predecessor_selected_scope_behavior(
     assert session.get(Candidate, candidate.id).state == "accepted"
     [event] = _events_on(session, admitted.id)
     assert event.scope_mode == "selected"
+
+
+def test_newer_failed_replay_suspends_older_activation(session, project):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="a" * 40,
+        migration_head="d257f2b9c537",
+        receipt_json=_activation_receipt(
+            project, gates={"eligible_case_observed": True}
+        ),
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    failed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="b" * 40,
+        migration_head="d257f2b9c537",
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": False},
+            source_revision="b" * 40,
+        ),
+    )
+    assert failed.status == "failed"
+    with pytest.raises(ValueError, match="latest"):
+        activate_passing_acceptance(session, passed.id)
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(session, project, [_event(ref=None)])
+
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    assert result.abstentions[0].reason == "no_conflict_reference"
+    assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def test_deployed_rule_digest_drift_suspends_activation(
+    session, project, monkeypatch
+):
+    from corridor import event_admission as module
+
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="a" * 40,
+        migration_head="d257f2b9c537",
+        receipt_json=_activation_receipt(
+            project, gates={"eligible_case_observed": True}
+        ),
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    monkeypatch.setattr(
+        module,
+        "_rule_source_bytes",
+        lambda: (("corridor.event_admission.changed", b"changed rules"),),
+    )
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(session, project, [_event(ref=None)])
+
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    assert result.abstentions[0].reason == "no_conflict_reference"
+    assert session.get(Candidate, candidate.id).state == "pending"
 
 
 def test_refused_mechanical_admission_leaves_no_receipt_event_or_audit(
