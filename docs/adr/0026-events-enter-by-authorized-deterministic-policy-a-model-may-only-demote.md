@@ -8,6 +8,10 @@
 > a later attributable timing is a Committed Date Change. Deterministic replayable
 > checks, receipts, the actor-masquerade boundary, and demote-only model participation
 > remain in force.
+>
+> **Amended by ADR-0042.** Event Admission may record an exact attributable
+> Commitment at `Commitment Scope not yet known` when the absence of a conflict
+> reference is the only scope gap. Model assistance remains demote-only.
 
 The date half of the product needs External Party statements on the Ledger —
 Commitments, Committed Date Changes, and closure statements extracted from meeting
