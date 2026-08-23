@@ -1,4 +1,10 @@
-"""CLI for real-state unknown-scope Event Admission activation and suspension."""
+"""Operate real-state unknown-scope Event Admission activation and suspension.
+
+These safety-critical writes live behind one explicit operator command so the
+ordinary Admission entry point cannot acquire activation authority by accident.
+Folding replay and suspension into normal processing was rejected because it
+would blur proof generation, policy selection, and rollback into one command.
+"""
 
 from __future__ import annotations
 

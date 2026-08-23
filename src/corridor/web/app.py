@@ -1,8 +1,12 @@
-"""The adjudication queue.
+"""The adjudication queue and residual coordination work.
 
-The only path from a Candidate into the Ledger is a human keystroke, and
-this is that keystroke. Everything here is shaped by throughput: one
-candidate at a time, hands on the keyboard, evidence beside the claim.
+Ambiguous Candidates enter the Ledger only through a human keystroke here.
+An exact mechanically admitted statement instead arrives as a read-only fact
+whose remaining scope, owner, and Next Action decisions are made through the
+same work surface. Splitting those residual decisions into a second app was
+rejected because it would duplicate the Work List's one-current-question seam.
+Everything here is shaped by throughput: one question at a time, hands on the
+keyboard, evidence beside the claim.
 
 `m` (merge) is deliberately absent. Merge ranking is M3, and accepting a
 duplicate instead of merging corrupts the ledger — so the action is shown

@@ -5,6 +5,9 @@ predecessor and opt-in policies therefore read the same declared population,
 while the shared source database receives only the immutable acceptance receipt
 and, when every gate passes, one append-only activation act.  A failed gate is
 durable evidence and never changes normal processing.
+
+A reduced synthetic fixture was rejected because it could not prove the real
+Active Run population, cross-project guards, or exact shared-operation path.
 """
 
 from __future__ import annotations
