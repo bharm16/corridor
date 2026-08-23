@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import date
 
 import pytest
@@ -388,6 +389,32 @@ def test_identical_unknown_scope_abstention_does_not_duplicate_policy_outcome(
             EventAdmissionOutcome.candidate_id == candidate.id
         )
     ) == 1
+
+    original_payload = deepcopy(candidate.payload_json)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "fields": {
+            **candidate.payload_json["fields"],
+            "description": "Changed response wording",
+        },
+    }
+    session.flush()
+    changed = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    candidate.payload_json = original_payload
+    session.flush()
+    reverted = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert changed.abstained_count == 1
+    assert reverted.abstained_count == 0
+    assert session.scalar(
+        select(func.count()).select_from(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id
+        )
+    ) == 2
 
 
 @pytest.mark.parametrize(

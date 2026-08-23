@@ -164,8 +164,7 @@ def run_dependency_admission(
     policy_sha256 = policy.canonical_sha256(policy_json)
     schemes = identity.document_numbering_schemes(session, project_id)
     aliases = identity.party_canonical_names(session)
-    aliases_sha256 = policy.canonical_sha256(aliases)
-    prior_abstentions: dict[int, DependencyAdmissionOutcome] = {}
+    prior_abstentions: dict[int, list[DependencyAdmissionOutcome]] = {}
     for outcome in session.scalars(
         select(DependencyAdmissionOutcome)
         .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
@@ -176,7 +175,7 @@ def run_dependency_admission(
         )
         .order_by(DependencyAdmissionOutcome.id)
     ):
-        prior_abstentions[outcome.candidate_id] = outcome
+        prior_abstentions.setdefault(outcome.candidate_id, []).append(outcome)
 
     # Pending dependency candidates from each agreement document's
     # declared Active Run, grouped by document then by row identity under
@@ -225,23 +224,28 @@ def run_dependency_admission(
         *,
         carriers: list[Dependency] | None = None,
     ) -> None:
-        group_sha256 = _abstention_group_sha256(
+        group_input = _abstention_group_input(
             candidates,
             carriers=carriers or [],
-            aliases_sha256=aliases_sha256,
+            aliases=aliases,
         )
+        group_sha256 = policy.canonical_sha256(group_input)
         for candidate in candidates:
             input_receipt = _abstention_input_receipt(
                 candidate,
+                policy_json=policy_json,
                 policy_sha256=policy_sha256,
+                group_input=group_input,
                 group_sha256=group_sha256,
             )
-            prior = prior_abstentions.get(candidate.id)
             if (
-                prior is not None
-                and isinstance(prior.eligibility_json, dict)
-                and prior.eligibility_json.get("input") == input_receipt
-                and prior.eligibility_json.get("verdict") == reason
+                reason != "write_refused"
+                and policy.has_matching_abstention(
+                    prior_abstentions.get(candidate.id, []),
+                    input_receipt=input_receipt,
+                    verdict=reason,
+                    reason_version=ABSTENTION_REASON_VERSION,
+                )
             ):
                 continue
             abstention_inputs[candidate.id] = input_receipt
@@ -409,46 +413,44 @@ def run_dependency_admission(
     )
 
 
-def _abstention_group_sha256(
+def _abstention_group_input(
     candidates: list[Candidate],
     *,
     carriers: list[Dependency],
-    aliases_sha256: str,
-) -> str:
-    """Fingerprint the exact rows that made one grouped verdict true."""
-    return policy.canonical_sha256(
-        {
-            "candidates": [
-                {
-                    "id": candidate.id,
-                    "source_document_id": candidate.source_document_id,
-                    "active_extraction_run_id": candidate.extraction_run_id,
-                    "payload_sha256": policy.canonical_sha256(
-                        candidate.payload_json
-                    ),
-                    "citations_verified": candidate.citations_verified,
-                    "state": candidate.state,
-                }
-                for candidate in sorted(candidates, key=lambda item: item.id)
-            ],
-            "carriers": [
-                {
-                    "id": dependency.id,
-                    "source_ref": dependency.source_ref,
-                    "external_org_id": dependency.external_org_id,
-                    "status": dependency.status,
-                }
-                for dependency in sorted(carriers, key=lambda item: item.id)
-            ],
-            "aliases_sha256": aliases_sha256,
-        }
-    )
+    aliases: dict,
+) -> dict:
+    """The inspectable rows that made one grouped verdict true."""
+    return {
+        "candidates": [
+            {
+                "id": candidate.id,
+                "source_document_id": candidate.source_document_id,
+                "active_extraction_run_id": candidate.extraction_run_id,
+                "payload_json": candidate.payload_json,
+                "citations_verified": candidate.citations_verified,
+                "state": candidate.state,
+            }
+            for candidate in sorted(candidates, key=lambda item: item.id)
+        ],
+        "carriers": [
+            {
+                "id": dependency.id,
+                "source_ref": dependency.source_ref,
+                "external_org_id": dependency.external_org_id,
+                "status": dependency.status,
+            }
+            for dependency in sorted(carriers, key=lambda item: item.id)
+        ],
+        "aliases": aliases,
+    }
 
 
 def _abstention_input_receipt(
     candidate: Candidate,
     *,
+    policy_json: dict,
     policy_sha256: str,
+    group_input: dict,
     group_sha256: str,
 ) -> dict:
     return {
@@ -460,7 +462,9 @@ def _abstention_input_receipt(
         "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
         "citations_verified": candidate.citations_verified,
         "candidate_state": candidate.state,
+        "policy": policy_json,
         "policy_sha256": policy_sha256,
+        "group": group_input,
         "group_sha256": group_sha256,
     }
 

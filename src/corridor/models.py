@@ -915,6 +915,19 @@ class DependencyAdmissionOutcome(Base):
             "family = 'dependency-admission'",
             name="ck_dependency_admission_outcome_family",
         ),
+        CheckConstraint(
+            "eligibility_sha256 is null or "
+            "eligibility_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_dependency_admission_outcome_eligibility_sha256",
+        ),
+        CheckConstraint(
+            "(outcome = 'abstained' and "
+            "((eligibility_json is null and eligibility_sha256 is null) or "
+            "(eligibility_json is not null and eligibility_sha256 is not null))) "
+            "or (outcome in ('admitted', 'merged') and "
+            "eligibility_json is null and eligibility_sha256 is null)",
+            name="ck_dependency_admission_outcome_eligibility_shape",
+        ),
         ForeignKeyConstraint(
             ["family", "policy_run_id"],
             ["policy_runs.family", "policy_runs.id"],

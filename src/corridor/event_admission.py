@@ -218,7 +218,7 @@ def run_event_admission(
     ).all()
     policy_sha256 = policy.canonical_sha256(policy_json)
     registry_sha256 = _predecessor_registry_sha256(session, project.id)
-    prior_abstentions: dict[int, EventAdmissionOutcome] = {}
+    prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
     for outcome in session.scalars(
         select(EventAdmissionOutcome)
         .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
@@ -229,7 +229,7 @@ def run_event_admission(
         )
         .order_by(EventAdmissionOutcome.id)
     ):
-        prior_abstentions[outcome.candidate_id] = outcome
+        prior_abstentions.setdefault(outcome.candidate_id, []).append(outcome)
 
     # Every verdict first, then one receipt written with its final counts:
     # the receipt table is immutable, so a run row is never updated after
@@ -255,15 +255,15 @@ def run_event_admission(
             policy_sha256=policy_sha256,
             registry_sha256=registry_sha256,
         )
-        prior = prior_abstentions.get(candidate.id)
-        if (
-            prior is not None
-            and isinstance(prior.eligibility_json, dict)
-            and prior.eligibility_json.get("input") == input_receipt
-        ):
-            continue
         verdict = _evaluate(session, project, candidate)
         if isinstance(verdict, str):
+            if policy.has_matching_abstention(
+                prior_abstentions.get(candidate.id, []),
+                input_receipt=input_receipt,
+                verdict=verdict,
+                reason_version=ABSTENTION_REASON_VERSION,
+            ):
+                continue
             abstention_inputs[candidate.id] = input_receipt
             abstentions.append(
                 EventAdmissionAbstention(
@@ -461,7 +461,7 @@ def _run_unknown_scope_admission(
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
-    prior_abstentions: dict[int, EventAdmissionOutcome] = {}
+    prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
     for outcome in session.scalars(
         select(EventAdmissionOutcome)
         .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
@@ -472,7 +472,7 @@ def _run_unknown_scope_admission(
         )
         .order_by(EventAdmissionOutcome.id)
     ):
-        prior_abstentions[outcome.candidate_id] = outcome
+        prior_abstentions.setdefault(outcome.candidate_id, []).append(outcome)
     registry_sha256 = policy.canonical_sha256(
         [
             {"id": org.id, "name": org.name, "aliases": sorted(org.aliases or [])}
@@ -489,17 +489,17 @@ def _run_unknown_scope_admission(
             policy_sha256=policy_sha256,
             external_org_registry_sha256=registry_sha256,
         )
-        prior = prior_abstentions.get(candidate.id)
-        if (
-            prior is not None
-            and isinstance(prior.eligibility_json, dict)
-            and prior.eligibility_json.get("input") == input_receipt
-        ):
-            continue
         verdict = _evaluate_unknown_scope(
             session, project, candidate, input_receipt=input_receipt
         )
         if isinstance(verdict, str):
+            if policy.has_matching_abstention(
+                prior_abstentions.get(candidate.id, []),
+                input_receipt=input_receipt,
+                verdict=verdict,
+                reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+            ):
+                continue
             abstention_inputs[candidate.id] = input_receipt
             abstentions.append(
                 EventAdmissionAbstention(

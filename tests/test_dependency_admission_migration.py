@@ -47,6 +47,17 @@ def _columns(connection) -> list[str]:
     ).scalars().all()
 
 
+def _constraints(connection) -> set[str]:
+    return set(
+        connection.execute(
+            text(
+                "select conname from pg_constraint "
+                "where conrelid = 'dependency_admission_outcomes'::regclass"
+            )
+        ).scalars()
+    )
+
+
 def test_dependency_abstention_inputs_are_on_one_fresh_linear_head():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     assert scripts.get_heads() == [HEAD]
@@ -63,6 +74,10 @@ def test_dependency_abstention_inputs_are_on_one_fresh_linear_head():
                 "eligibility_json",
                 "eligibility_sha256",
             ]
+            assert {
+                "ck_dependency_admission_outcome_eligibility_sha256",
+                "ck_dependency_admission_outcome_eligibility_shape",
+            }.issubset(_constraints(connection))
 
 
 def test_predecessor_upgrade_preserves_historical_dependency_abstention():
@@ -135,6 +150,10 @@ def test_predecessor_upgrade_preserves_historical_dependency_abstention():
                     "eligibility_json",
                     "eligibility_sha256",
                 ]
+                assert {
+                    "ck_dependency_admission_outcome_eligibility_sha256",
+                    "ck_dependency_admission_outcome_eligibility_shape",
+                }.issubset(_constraints(connection))
                 row = connection.execute(
                     text(
                         "select id, outcome, reason, eligibility_json, "
