@@ -17,7 +17,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "d256f1a8b4c7"
-HEAD = "f256b8d5e1f3"
+HEAD = "a257c9e6f204"
 
 
 def _upgrade(database_url: str, target: str) -> None:
@@ -123,6 +123,7 @@ def test_evidence_investigator_schema_is_one_linear_head_on_a_fresh_database():
                     "adapter_contract_version",
                     "transport_gate_sha256",
                     "budget_json",
+                    "tool_contract_version",
                 ]
                 assert _columns(connection, "evidence_investigation_shadow_outcomes") == [
                     "id",
@@ -176,6 +177,7 @@ def test_evidence_investigator_schema_is_one_linear_head_on_a_fresh_database():
                     "prompt_version",
                     "prompt_sha256",
                     "adapter_contract_version",
+                    "tool_contract_version",
                 ]
                 for trigger_name in (
                     "evidence_investigation_runs_append_only",
@@ -298,7 +300,7 @@ def test_evidence_investigator_v2_seal_preserves_legacy_receipt_rows():
                 legacy_shadow = connection.execute(
                     text(
                         "select prompt_sha256, adapter_contract_version, "
-                        "transport_gate_sha256, budget_json "
+                        "transport_gate_sha256, budget_json, tool_contract_version "
                         "from evidence_investigation_shadow_cases where id = 295020"
                     )
                 ).mappings().one()
@@ -306,6 +308,7 @@ def test_evidence_investigator_v2_seal_preserves_legacy_receipt_rows():
                 assert legacy_shadow["adapter_contract_version"] is None
                 assert legacy_shadow["transport_gate_sha256"] is None
                 assert legacy_shadow["budget_json"] is None
+                assert legacy_shadow["tool_contract_version"] is None
                 assert _constraint_columns(
                     connection, "uq_evidence_investigation_shadow_case_identity"
                 ) == [
@@ -315,6 +318,7 @@ def test_evidence_investigator_v2_seal_preserves_legacy_receipt_rows():
                     "prompt_version",
                     "prompt_sha256",
                     "adapter_contract_version",
+                    "tool_contract_version",
                 ]
         finally:
             engine.dispose()
