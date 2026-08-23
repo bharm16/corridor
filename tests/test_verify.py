@@ -6,6 +6,7 @@ import pytest
 from corridor.verify import (
     MIN_TOKEN_CHARS,
     THRESHOLD,
+    literal_quote_on_page,
     match_ratio,
     quote_appears_on,
     tokens,
@@ -49,6 +50,22 @@ def test_hyphenation_across_a_line_break_is_repaired():
     """A quote spanning a hyphenated line break is still the same words."""
     page = "the utility must complete reloca-\ntion before construction"
     assert quote_appears_on("complete relocation before construction", page)
+
+
+def test_literal_quote_on_page_recovers_the_exact_page_substring():
+    page = "the Utility shall complete reloca-\ntion — see “Exhibit D”"
+
+    assert literal_quote_on_page(
+        'complete relocation - see "Exhibit D"', page
+    ) == 'complete reloca-\ntion — see “Exhibit D”'
+
+
+def test_literal_quote_on_page_rejects_a_normalized_near_miss():
+    page = "Kinder Morgan will finish in July 2026."
+
+    assert literal_quote_on_page(
+        "Kinder Morgan will finish in June 2026.", page
+    ) is None
 
 
 def test_a_quote_from_a_different_page_does_not_verify():

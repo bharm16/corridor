@@ -48,6 +48,7 @@ from corridor.models import (
     ExternalOrg,
 )
 from corridor.statement_lifecycle import current_statement_event_filter
+from corridor.verify import literal_quote_on_page
 
 TOOL_CONTRACT_VERSION = "evidence-investigator-tools-v1"
 VALIDATOR_VERSION = "evidence-investigator-validator-v1"
@@ -122,7 +123,7 @@ class CandidateEvidencePage:
     evidence_ref: str
     document_name: str
     page_no: int
-    candidate_quote: str
+    candidate_quote: str | None
     page_context: str
     text_source: str
     supporting_evidence_eligible: bool
@@ -469,15 +470,19 @@ class InvestigationTools:
         binding = self.__bound.evidence_by_ref[evidence_ref]
         document, page = self._bound_page(binding)
         context = page.text[:max_chars]
+        candidate_quote = literal_quote_on_page(binding.candidate_quote, page.text)
         self.__issued_evidence_refs.add(evidence_ref)
-        self.__issued_text_by_evidence_ref.setdefault(evidence_ref, set()).update(
-            (binding.candidate_quote, context)
+        issued_text = self.__issued_text_by_evidence_ref.setdefault(
+            evidence_ref, set()
         )
+        issued_text.add(context)
+        if candidate_quote is not None:
+            issued_text.add(candidate_quote)
         return CandidateEvidencePage(
             evidence_ref=evidence_ref,
             document_name=document.filename,
             page_no=page.page_no,
-            candidate_quote=binding.candidate_quote,
+            candidate_quote=candidate_quote,
             page_context=context,
             text_source=page.text_source,
             supporting_evidence_eligible=_supporting_evidence_eligible(page),
@@ -646,7 +651,9 @@ class InvestigationTools:
         for event, link, document in rows:
             if event.description not in descriptions:
                 descriptions.append(event.description)
-            evidence.append(self._context_evidence(link, document))
+            context_evidence = self._context_evidence(link, document)
+            if context_evidence is not None:
+                evidence.append(context_evidence)
         return DependencyContext(
             dependency_ref=dependency_ref,
             headline=dependency.title,
@@ -702,8 +709,10 @@ class InvestigationTools:
                     exact_wording=event.description,
                     timing_wording=tuple(timing.text for timing in event.timings),
                     evidence=tuple(
-                        self._context_evidence(link, document)
+                        context
                         for link, document in evidence_rows
+                        if (context := self._context_evidence(link, document))
+                        is not None
                     ),
                 )
             )
@@ -711,7 +720,7 @@ class InvestigationTools:
 
     def _context_evidence(
         self, link: EvidenceLink, document: Document
-    ) -> ContextEvidence:
+    ) -> ContextEvidence | None:
         evidence_ref = next(
             (
                 ref
@@ -730,15 +739,20 @@ class InvestigationTools:
             self.__bound.evidence_by_ref[evidence_ref] = _EvidenceBinding(
                 link.document_id, link.page_no, link.quote
             )
+        binding = self.__bound.evidence_by_ref[evidence_ref]
+        _, page = self._bound_page(binding)
+        exact_quote = literal_quote_on_page(link.quote, page.text)
+        if exact_quote is None:
+            return None
         self.__issued_evidence_refs.add(evidence_ref)
         self.__issued_text_by_evidence_ref.setdefault(evidence_ref, set()).add(
-            link.quote
+            exact_quote
         )
         return ContextEvidence(
             evidence_ref=evidence_ref,
             document_name=document.filename,
             page_no=link.page_no,
-            exact_quote=link.quote,
+            exact_quote=exact_quote,
         )
 
     def _bound_page(self, binding: _EvidenceBinding) -> tuple[Document, DocPage]:

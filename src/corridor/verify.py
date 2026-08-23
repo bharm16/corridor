@@ -25,6 +25,7 @@ THRESHOLD = 0.9
 # where the typesetter wrapped a line.
 _LINE_BREAK_HYPHEN = re.compile(r"-\s*\n\s*")
 _WHITESPACE = re.compile(r"\s+")
+_REMOVED_PRINT_BREAK = r"(?:\u00ad|-\s*\n\s*)*"
 
 _PUNCTUATION = str.maketrans(
     {
@@ -73,6 +74,41 @@ def match_ratio(quote: str, page_text: str) -> float:
 
 def quote_appears_on(quote: str, page_text: str, threshold: float = THRESHOLD) -> bool:
     return match_ratio(quote, page_text) >= threshold
+
+
+def literal_quote_on_page(quote: str, page_text: str) -> str | None:
+    """Return the page's exact characters for a normalization-only match.
+
+    Fuzzy citation verification can establish that a damaged print extraction
+    refers to a page without making the stored transcription an exact quote.
+    Model-visible Evidence needs the stricter property: the returned value must
+    be a literal substring of the registered page.
+    """
+    if not quote or not page_text:
+        return None
+    if quote in page_text:
+        return quote
+    target = normalize(quote)
+    if not target or target not in normalize(page_text):
+        return None
+    equivalents = {
+        "'": "['‘’]",
+        '"': '["“”]',
+        "-": "[-–—−]",
+    }
+    pieces: list[str] = []
+    for character in target:
+        if character == " ":
+            pieces.append(r"\s+")
+        else:
+            pieces.append(equivalents.get(character, re.escape(character)))
+        pieces.append(_REMOVED_PRINT_BREAK)
+    pattern = re.compile("".join(pieces), re.IGNORECASE)
+    for match in pattern.finditer(page_text):
+        literal = match.group()
+        if normalize(literal) == target:
+            return literal
+    return None
 
 
 def threshold_for(text_source: str | None) -> float:
