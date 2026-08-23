@@ -20,16 +20,29 @@ import json
 from datetime import date
 
 import pytest
-from sqlalchemy import select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
 from corridor.event_admission import (
     ABSTENTION_REASON_VERSION,
     EVENT_ADMISSION_POLICY_VERSION,
+    UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+    UNKNOWN_SCOPE_POLICY_VERSION,
+    EventAdmissionAbstention,
     run_event_admission,
+    _canonical_policy,
 )
+from corridor.event_admission_acceptance import (
+    RECEIPT_VERSION,
+    SELECTION_RULE,
+    _promotion_gates,
+    activate_passing_acceptance,
+    record_acceptance_receipt,
+    suspend_unknown_scope_admission,
+)
+from corridor import policy
 from corridor.extraction_runs import (
     declare_single_run_documents,
     record_extraction_run,
@@ -44,7 +57,10 @@ from corridor.models import (
     Document,
     EvidenceLink,
     EventAdmissionOutcome,
+    EventAdmissionActivation,
     ExternalOrg,
+    CandidateDisposition,
+    DependencyEventScopeDecision,
     PolicyRun,
     Project,
 )
@@ -185,9 +201,11 @@ def admitted(session, project):
     return dependency
 
 
-def _minutes_with(session, project, event_fields_list, *, verified=True):
+def _minutes_with(
+    session, project, event_fields_list, *, verified=True, filename="minutes.pdf"
+):
     minutes = _document(
-        session, project, filename="minutes.pdf", doc_type="minutes"
+        session, project, filename=filename, doc_type="minutes"
     )
     candidates = [
         _candidate(minutes, kind="event", fields=f, verified=verified)
@@ -234,6 +252,312 @@ def test_a_clean_event_is_admitted_onto_its_dependency(
     assert event.event_date == date(2025, 1, 16)
     session.refresh(candidate)
     assert candidate.state == "accepted"
+
+
+def test_unknown_scope_policy_admits_one_exact_party_level_commitment(
+    session, project
+):
+    session.add(ExternalOrg(name=PIPELINE, aliases=["Tejas Pipeline"]))
+    session.flush()
+    fields = _event(
+        ref=None,
+        committed_date={
+            "text": "June 2025",
+            "precision": "month",
+            "start_date": "2025-06-01",
+            "end_date": "2025-06-30",
+        },
+        description="Tejas Pipeline will deliver the Barlow calculation in June 2025.",
+        stated_party="Tejas Pipeline",
+    )
+    [candidate] = _minutes_with(session, project, [fields])
+
+    predecessor = run_event_admission(session, project.id)
+    assert predecessor.admitted_count == 0
+    assert predecessor.abstentions[0].reason == "no_conflict_reference"
+
+    result = run_event_admission(
+        session,
+        project.id,
+        policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+    )
+
+    assert result.admitted_count == 1
+    event = session.scalar(
+        select(DependencyEvent).where(DependencyEvent.created_by == "corridor:event-admission")
+    )
+    assert event is not None
+    assert event.event_type == "commitment"
+    assert event.scope_mode == "unknown"
+    assert event.affected_external_org_id == event.stated_external_org_id
+    assert session.scalars(
+        select(DependencyEventScope).where(DependencyEventScope.event_id == event.id)
+    ).all() == []
+    scope = session.scalar(
+        select(DependencyEventScopeDecision).where(
+            DependencyEventScopeDecision.event_id == event.id
+        )
+    )
+    assert scope is not None
+    assert scope.scope_mode == "unknown"
+    disposition = session.scalar(
+        select(CandidateDisposition).where(
+            CandidateDisposition.candidate_id == candidate.id
+        )
+    )
+    assert disposition is not None
+    assert disposition.disposition == "accepted"
+    assert disposition.recorded_by == "corridor:event-admission"
+    outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == result.run_id,
+            EventAdmissionOutcome.candidate_id == candidate.id,
+        )
+    )
+    assert outcome is not None
+    assert outcome.commitment_lineage_id == event.commitment_lineage_id
+    assert outcome.scope_decision_id == scope.id
+    assert outcome.candidate_disposition_id == disposition.id
+    assert outcome.audit_log_id is not None
+    assert outcome.eligibility_sha256 is not None
+    assert outcome.eligibility_json["candidate_id"] == candidate.id
+    assert fields["description"] in outcome.eligibility_json["evidence"]["quote"]
+
+
+def test_unknown_scope_policy_is_opt_in_and_idempotent(session, project):
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(
+        session,
+        project,
+        [
+            _event(
+                ref=None,
+                committed_date="2025-06-01",
+                description="Tejas Pipeline will deliver by 2025-06-01.",
+            )
+        ],
+    )
+
+    default = run_event_admission(session, project.id)
+    assert default.admitted_count == 0
+    assert session.get(Candidate, candidate.id).state == "pending"
+
+    first = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    second = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert first.admitted_count == 1
+    assert second.admitted_count == 0
+    assert session.scalar(select(func.count()).select_from(DependencyEvent)) == 1
+    assert session.scalar(select(func.count()).select_from(CandidateDisposition)) == 1
+    assert session.scalar(
+        select(func.count()).select_from(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.outcome == "admitted"
+        )
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        (_event(ref="PL1"), "conflict_reference_present"),
+        (
+            {**_event(ref=None), "previous_timing": {"text": "May", "precision": "approximate"}},
+            "previous_timing_present",
+        ),
+        (_event(ref=None, event_type="committed_date_change"), "event_type_outside_policy"),
+        (
+            _event(ref=None, org="Other Party", stated_party=PIPELINE),
+            "affected_party_disagreement",
+        ),
+    ],
+)
+def test_unknown_scope_policy_names_each_failed_predicate(
+    session, project, fields, reason
+):
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.add(ExternalOrg(name="Other Party", aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(session, project, [fields])
+
+    result = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert result.admitted_count == 0
+    assert result.abstentions == [
+        EventAdmissionAbstention(
+            candidate_id=candidate.id,
+            reason=reason,
+            reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        )
+    ]
+    assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def _activation_receipt(project, *, gates):
+    policy_sha256 = policy.canonical_sha256(
+        _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+    )
+    admission_count = 1 if gates.get("eligible_case_observed", True) else 0
+    opt_in = {
+        "metrics": {
+            "admission_count": admission_count,
+            "false_party_attribution": 0,
+            "false_dependency_scope": 0,
+            "project_side_masquerade": 0,
+            "cross_project_references": 0,
+            "unauthorized_work_decisions": 0,
+            "duplicates": 0,
+            "protected_dependency_delta": 0,
+            "protected_report_delta": 0,
+            "invalid_evidence_or_receipts": 0,
+        },
+        "work_items": [{} for _ in range(admission_count)],
+    }
+    return {
+        "schema_version": RECEIPT_VERSION,
+        "selection_rule": SELECTION_RULE,
+        "policy_version": UNKNOWN_SCOPE_POLICY_VERSION,
+        "policy_sha256": policy_sha256,
+        "reason_version": UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        "opt_in": opt_in,
+        "gates": _promotion_gates(opt_in),
+        "authority_statement": (
+            "Only the deterministic unknown-scope Commitment class is authorized; "
+            "models receive no write authority."
+        ),
+    }
+
+
+def test_failed_acceptance_receipt_cannot_activate_normal_processing(
+    session, project
+):
+    failed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="a" * 40,
+        migration_head="b257d0f7a315",
+        receipt_json=_activation_receipt(
+            project,
+            gates={
+                "eligible_case_observed": False,
+                "zero_false_party_attribution": True,
+            },
+        ),
+    )
+
+    assert failed.status == "failed"
+    assert activate_passing_acceptance(session, failed.id) is None
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [candidate] = _minutes_with(session, project, [_event(ref=None)])
+
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 0
+    assert result.abstentions[0].reason == "no_conflict_reference"
+    assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def test_database_rejects_activation_for_a_failed_receipt(session, project):
+    failed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="a" * 40,
+        migration_head="d257f2b9c537",
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": False},
+        ),
+    )
+
+    with pytest.raises(ProgrammingError), session.begin_nested():
+        session.add(
+            EventAdmissionActivation(
+                project_id=project.id,
+                acceptance_receipt_id=failed.id,
+                action="activate",
+                policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+                reason="forged pass",
+                recorded_by="corridor:event-admission-activation",
+            )
+        )
+        session.flush()
+
+
+def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
+    session, project
+):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="a" * 40,
+        migration_head="b257d0f7a315",
+        receipt_json=_activation_receipt(
+            project,
+            gates={
+                "eligible_case_observed": True,
+                "zero_false_party_attribution": True,
+            },
+        ),
+    )
+    activation = activate_passing_acceptance(session, passed.id)
+    assert activation is not None
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [admitted_candidate] = _minutes_with(session, project, [_event(ref=None)])
+
+    admitted = run_event_admission(session, project.id)
+
+    assert admitted.admitted_count == 1
+    assert session.get(Candidate, admitted_candidate.id).state == "accepted"
+    suspension = suspend_unknown_scope_admission(
+        session,
+        project_id=project.id,
+        reason="receipt reproduction paused",
+        recorded_by="local:operations",
+    )
+    assert suspension.action == "suspend"
+    [pending_candidate] = _minutes_with(
+        session,
+        project,
+        [_event(ref=None, description="Tejas Pipeline will provide another package.")],
+        filename="minutes-after-suspension.pdf",
+    )
+
+    predecessor = run_event_admission(session, project.id)
+
+    assert predecessor.admitted_count == 0
+    assert session.get(Candidate, pending_candidate.id).state == "pending"
+
+
+def test_activated_extension_preserves_predecessor_selected_scope_behavior(
+    session, project, admitted
+):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="a" * 40,
+        migration_head="d257f2b9c537",
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    [candidate] = _minutes_with(session, project, [_event(ref="PL1")])
+
+    result = run_event_admission(session, project.id)
+
+    assert result.admitted_count == 1
+    assert session.get(Candidate, candidate.id).state == "accepted"
+    [event] = _events_on(session, admitted.id)
+    assert event.scope_mode == "selected"
 
 
 def test_refused_mechanical_admission_leaves_no_receipt_event_or_audit(

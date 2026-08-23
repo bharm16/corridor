@@ -37,7 +37,9 @@ from corridor.models import (
     DependencyEventTiming,
     Document,
     EvidenceLink,
+    EventAdmissionOutcome,
     ExternalOrg,
+    PolicyRun,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
     WorkDecision,
@@ -523,6 +525,19 @@ def _closed_commitment_lineages(session: Session, project_id: int) -> frozenset[
 
 def _source_candidate_ids(session: Session, project_id: int) -> dict[int, int]:
     """Link accepted cards back to their existing guided statement screen."""
+    admitted_rows = session.execute(
+        select(
+            EventAdmissionOutcome.commitment_lineage_id,
+            EventAdmissionOutcome.candidate_id,
+        )
+        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project_id,
+            EventAdmissionOutcome.outcome == "admitted",
+            EventAdmissionOutcome.commitment_lineage_id.is_not(None),
+        )
+        .order_by(EventAdmissionOutcome.id.desc())
+    ).all()
     rows = session.execute(
         select(
             StatementCoordinationReceipt.commitment_lineage_id,
@@ -545,7 +560,11 @@ def _source_candidate_ids(session: Session, project_id: int) -> dict[int, int]:
             StatementCoordinationReceipt.id.desc(),
         )
     ).all()
-    candidate_ids: dict[int, int] = {}
+    candidate_ids: dict[int, int] = {
+        lineage_id: candidate_id
+        for lineage_id, candidate_id in admitted_rows
+        if lineage_id is not None
+    }
     for lineage_id, candidate_id in rows:
         candidate_ids.setdefault(lineage_id, candidate_id)
     return candidate_ids

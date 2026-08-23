@@ -799,6 +799,87 @@ class EventAdmissionOutcome(Base):
     dependency_event_id: Mapped[int | None] = mapped_column(
         ForeignKey("dependency_events.id")
     )
+    commitment_lineage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("commitment_lineages.id")
+    )
+    scope_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_event_scope_decisions.id")
+    )
+    candidate_disposition_id: Mapped[int | None] = mapped_column(
+        ForeignKey("candidate_dispositions.id")
+    )
+    audit_log_id: Mapped[int | None] = mapped_column(ForeignKey("audit_log.id"))
+    eligibility_json: Mapped[dict | None] = mapped_column(JSONB)
+    eligibility_sha256: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EventAdmissionAcceptanceReceipt(Base):
+    """Immutable real-state proof for one Event Admission activation attempt."""
+
+    __tablename__ = "event_admission_acceptance_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('passed', 'failed')",
+            name="ck_event_admission_acceptance_status",
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_event_admission_acceptance_policy_sha256",
+        ),
+        CheckConstraint(
+            "receipt_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_event_admission_acceptance_receipt_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16))
+    source_revision: Mapped[str] = mapped_column(String(64))
+    migration_head: Mapped[str] = mapped_column(String(64))
+    predecessor_policy_version: Mapped[str] = mapped_column(String(64))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    reason_version: Mapped[str] = mapped_column(String(64))
+    selection_rule: Mapped[str] = mapped_column(String(128))
+    receipt_json: Mapped[dict] = mapped_column(JSONB)
+    receipt_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EventAdmissionActivation(Base):
+    """Append-only activation or suspension of one proved policy version."""
+
+    __tablename__ = "event_admission_activations"
+    __table_args__ = (
+        CheckConstraint(
+            "action in ('activate', 'suspend')",
+            name="ck_event_admission_activation_action",
+        ),
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_event_admission_activation_reason",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_event_admission_activation_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    acceptance_receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("event_admission_acceptance_receipts.id")
+    )
+    action: Mapped[str] = mapped_column(String(16))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(String(128))
+    recorded_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

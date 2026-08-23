@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 # One command from a clean clone.
 boot:
@@ -126,6 +126,14 @@ m8-acceptance:
 #   make sh99-admission-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
 sh99-admission-acceptance:
 	uv run python -m corridor.sh99_admission_acceptance_cli $(ARGS)
+
+# Compare predecessor and unknown-scope Event Admission on two disposable clones.
+# A failed receipt never activates; a passing receipt activates normal processing.
+#   make event-admission-acceptance ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha>"
+# Suspension is append-only and restores the predecessor policy:
+#   make event-admission-acceptance ARGS="suspend --project-slug=sh99-grand-parkway --database-url=<url> --reason=<reason> --recorded-by=local:<subject>"
+event-admission-acceptance:
+	uv run python -m corridor.event_admission_acceptance_cli $(ARGS)
 
 # Run the bounded coordinator exercise only on a disposable clone. It verifies the
 # prior Admission bundle first, separates shared operations/backfill time from the
