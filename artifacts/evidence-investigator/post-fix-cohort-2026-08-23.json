@@ -1,0 +1,79 @@
+{
+  "active_run_ids": [
+    116,
+    151,
+    30
+  ],
+  "adapter_contract_version": "direct-responses-contract-v2",
+  "budget": {
+    "max_dependency_detail_reads": 5,
+    "max_input_tokens": 22000,
+    "max_output_tokens": 4000,
+    "max_repairs": 1,
+    "max_retries": 0,
+    "max_shortlisted_dependencies": 5,
+    "max_tool_calls": 6,
+    "max_turns": 8,
+    "timeout_seconds": 30.0
+  },
+  "candidate_ids": [
+    7129,
+    7098,
+    7049
+  ],
+  "cohort_id": "01683167-b62d-4a1c-a2e5-ab083069be7a",
+  "dataset_membership": [
+    {
+      "candidate_id": 7129,
+      "category": "harness_failure",
+      "hidden": true,
+      "non_authoritative": true,
+      "reason": "budget_exhaustion",
+      "run_id": "b59092ab-9da1-4a45-99be-7c998c04dd08",
+      "shadow_case_id": "38331082-742d-46a9-bbe2-335b05feee3b",
+      "terminal_status": "abstained"
+    },
+    {
+      "candidate_id": 7098,
+      "category": "validated_packet",
+      "hidden": true,
+      "non_authoritative": true,
+      "reason": null,
+      "run_id": "b8183710-6157-4be8-bd1d-99afa54cfb7a",
+      "shadow_case_id": "72e78885-391f-414f-8d09-b390374cbd2a",
+      "terminal_status": "options_available"
+    },
+    {
+      "candidate_id": 7049,
+      "category": "validated_packet",
+      "hidden": true,
+      "non_authoritative": true,
+      "reason": null,
+      "run_id": "731c79f0-7fd4-47f8-b837-c5a462d36d87",
+      "shadow_case_id": "1dd23c6e-ccab-49cc-981f-dfc216dd900d",
+      "terminal_status": "options_available"
+    }
+  ],
+  "execution_summary": {
+    "harness_failure": 1,
+    "validated_packet": 2
+  },
+  "manifest_sha256": "5646fe2b6b7207d675fad493ba9f40dac648054e2fe579d708243356ffdd69be",
+  "model": "gpt-5.6-luna",
+  "project": {
+    "id": 1266,
+    "slug": "sh99-grand-parkway"
+  },
+  "prompt_sha256": "b5c57c83708d6305db4b614080922ab2b9733f6e275a2d04214e3ccdf3c14906",
+  "prompt_version": "evidence-investigator-v2",
+  "read_fingerprints": [
+    "ed8e6975e436b59376bc9f936916cc8dff1d954eb32894a59e02490f6e87e84e",
+    "a6e40d242d5c00892f28e3ee429b06f9fd89b9f6571b23ee7381c841ee0cb182",
+    "2081b31d8a363b815b6d44c5206da74705086109ccf6a56f4dce262eb2bc2aa5"
+  ],
+  "schema_version": "evidence-investigator-v2-shadow-cohort-v2",
+  "selected_at": "2026-08-23T00:45:02.495443+00:00",
+  "selection_rule": "operator-declared:first-three-untouched-current-unplaced-work-items-under-tools-v2-2026-08-23",
+  "tool_contract_version": "evidence-investigator-tools-v2",
+  "transport_gate_sha256": "ffcadde152d32f63f2bfdb9395efccb330c95972c6d321a101faee9462964bc8"
+}

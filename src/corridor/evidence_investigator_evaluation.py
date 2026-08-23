@@ -122,6 +122,8 @@ def evaluate_shadow_runs(
             run.prompt_sha256,
             run.adapter_contract_version,
             run.transport_gate_sha256,
+            run.tool_contract_version,
+            run.validator_version,
             sha256_json(run.budget_json),
         )
         for run in runs

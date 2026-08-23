@@ -1209,6 +1209,52 @@ def test_evaluator_refuses_mixed_or_unverifiable_configuration(
         )
 
 
+def test_evaluator_refuses_mixed_tool_contract_versions(
+    session, project, tmp_path
+):
+    first, _quote = _unplaced_statement(session, project)
+    second, _quote = _unplaced_statement(
+        session, project, quote="CenterPoint will finish in August 2027."
+    )
+
+    class StubRuntime:
+        async def run(self, case, tools, budget):
+            return InvestigationRunOutput(
+                packet=InvestigationPacket((), (), (), ("What is supported?",)),
+                turns=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+
+    results = asyncio.run(
+        run_shadow_batch(
+            session,
+            project.id,
+            candidate_ids=(first.id, second.id),
+            runtime_factory=StubRuntime,
+            identity=_identity(model="mixed-tool-contract-test"),
+            budget=InvestigationBudget(),
+        )
+    )
+    changed_run = results[1].investigation.run
+    original_version = changed_run.tool_contract_version
+    changed_run.tool_contract_version = "evidence-investigator-tools-v1"
+
+    with session.no_autoflush, pytest.raises(
+        EvaluationRefusal, match="one exact configuration"
+    ):
+        evaluate_shadow_runs(
+            session,
+            [item.investigation.run.public_id for item in results],
+            rules=EvaluationRules(min_cases=1, required_strata=()),
+            human_scores={},
+            output_dir=tmp_path,
+        )
+    attributes.set_committed_value(
+        changed_run, "tool_contract_version", original_version
+    )
+
+
 def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
     session, project
 ):
@@ -1673,6 +1719,7 @@ def test_v2_cohort_freezes_an_explicit_hidden_reproducible_manifest(
     assert manifest["selection_rule"].startswith("operator-declared:")
     assert manifest["prompt_version"] == "evidence-investigator-v2"
     assert manifest["prompt_sha256"] == PROMPT_SHA256
+    assert manifest["tool_contract_version"] == "evidence-investigator-tools-v2"
     assert manifest["adapter_contract_version"] == ADAPTER_CONTRACT_VERSION
     assert len(manifest["read_fingerprints"]) == 2
     assert len(manifest["dataset_membership"]) == 2

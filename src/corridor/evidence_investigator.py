@@ -50,7 +50,7 @@ from corridor.models import (
 from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.verify import literal_quote_on_page
 
-TOOL_CONTRACT_VERSION = "evidence-investigator-tools-v1"
+TOOL_CONTRACT_VERSION = "evidence-investigator-tools-v2"
 VALIDATOR_VERSION = "evidence-investigator-validator-v1"
 CASE_CONTRACT_VERSION = "evidence-investigator-case-v1"
 

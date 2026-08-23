@@ -2036,6 +2036,7 @@ class EvidenceInvestigationShadowCase(Base):
             "prompt_version",
             "prompt_sha256",
             "adapter_contract_version",
+            "tool_contract_version",
             name="uq_evidence_investigation_shadow_case_identity",
         ),
     )
@@ -2053,6 +2054,7 @@ class EvidenceInvestigationShadowCase(Base):
     prompt_version: Mapped[str] = mapped_column(String(128))
     prompt_sha256: Mapped[str | None] = mapped_column(String(64))
     adapter_contract_version: Mapped[str | None] = mapped_column(String(128))
+    tool_contract_version: Mapped[str | None] = mapped_column(String(128))
     transport_gate_sha256: Mapped[str | None] = mapped_column(String(64))
     budget_json: Mapped[dict | None] = mapped_column(JSONB)
     case_json: Mapped[dict] = mapped_column(JSONB)

@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.evidence_investigator import (
+    TOOL_CONTRACT_VERSION,
     InvestigationAbstention,
     InvestigationBudget,
     InvestigationRuntime,
@@ -80,6 +81,7 @@ class V2ShadowCohortManifest:
     prompt_version: str
     prompt_sha256: str
     adapter_contract_version: str
+    tool_contract_version: str
     transport_gate_sha256: str
     budget: dict
     active_run_ids: tuple[int, ...]
@@ -90,7 +92,7 @@ class V2ShadowCohortManifest:
 
     def __post_init__(self) -> None:
         size = len(self.candidate_ids)
-        if self.schema_version != "evidence-investigator-v2-shadow-cohort-v1":
+        if self.schema_version != "evidence-investigator-v2-shadow-cohort-v2":
             raise ValueError("unknown v2 shadow cohort manifest schema")
         if not size or len(set(self.candidate_ids)) != size:
             raise ValueError("cohort Candidate identities must be non-empty and unique")
@@ -175,6 +177,8 @@ async def run_shadow_batch(
                 == identity.prompt_sha256,
                 EvidenceInvestigationShadowCase.adapter_contract_version
                 == identity.adapter_contract_version,
+                EvidenceInvestigationShadowCase.tool_contract_version
+                == TOOL_CONTRACT_VERSION,
             )
         )
         if existing is not None:
@@ -216,6 +220,7 @@ async def run_shadow_batch(
             prompt_version=identity.prompt_version,
             prompt_sha256=identity.prompt_sha256,
             adapter_contract_version=identity.adapter_contract_version,
+            tool_contract_version=TOOL_CONTRACT_VERSION,
             transport_gate_sha256=identity.transport_gate_sha256,
             budget_json=asdict(budget),
             case_json=asdict(prepared.case),
@@ -341,7 +346,7 @@ async def run_v2_shadow_cohort(
             }
         )
     content = {
-        "schema_version": "evidence-investigator-v2-shadow-cohort-v1",
+        "schema_version": "evidence-investigator-v2-shadow-cohort-v2",
         "cohort_id": str(uuid.uuid4()),
         "project": {"id": project.id, "slug": project.slug},
         "selected_at": selected_at.isoformat(),
@@ -351,6 +356,7 @@ async def run_v2_shadow_cohort(
         "prompt_version": identity.prompt_version,
         "prompt_sha256": identity.prompt_sha256,
         "adapter_contract_version": identity.adapter_contract_version,
+        "tool_contract_version": TOOL_CONTRACT_VERSION,
         "transport_gate_sha256": identity.transport_gate_sha256,
         "budget": asdict(budget),
         "active_run_ids": tuple(item.case.extraction_run_id for item in results),
