@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import date
 
 import pytest
@@ -389,6 +390,32 @@ def test_identical_unknown_scope_abstention_does_not_duplicate_policy_outcome(
         )
     ) == 1
 
+    original_payload = deepcopy(candidate.payload_json)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "fields": {
+            **candidate.payload_json["fields"],
+            "description": "Changed response wording",
+        },
+    }
+    session.flush()
+    changed = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    candidate.payload_json = original_payload
+    session.flush()
+    reverted = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert changed.abstained_count == 1
+    assert reverted.abstained_count == 0
+    assert session.scalar(
+        select(func.count()).select_from(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id
+        )
+    ) == 2
+
 
 @pytest.mark.parametrize(
     ("fields", "reason"),
@@ -521,7 +548,7 @@ def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
 
 
 def _activation_receipt(
-    project, *, gates, source_revision=None, migration_head="d257f2b9c537"
+    project, *, gates, source_revision=None, migration_head="e314a3d8c6f2"
 ):
     source_revision = source_revision or _current_source_revision()
     policy_sha256 = policy.canonical_sha256(
@@ -596,7 +623,7 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -624,7 +651,7 @@ def test_database_rejects_activation_for_a_failed_receipt(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -652,7 +679,7 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -739,7 +766,7 @@ def test_activated_extension_preserves_predecessor_selected_scope_behavior(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": True},
@@ -761,7 +788,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
@@ -771,7 +798,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision="b" * 40,
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -801,7 +828,7 @@ def test_deployed_rule_digest_drift_suspends_activation(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="d257f2b9c537",
+        migration_head="e314a3d8c6f2",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),

@@ -57,7 +57,7 @@ from corridor.project_lock import lock_project
 
 DEPENDENCY_ADMISSION_POLICY_VERSION = "dependency-admission-v1"
 FAMILY = "dependency-admission"
-ABSTENTION_REASON_VERSION = "dependency-admission-abstentions-v3"
+ABSTENTION_REASON_VERSION = "dependency-admission-abstentions-v4"
 MACHINE_ACTOR = audit.DEPENDENCY_ADMISSION_ACTOR
 
 OUTCOME_ADMITTED = "admitted"
@@ -161,8 +161,21 @@ def run_dependency_admission(
 
     document_ids = declared_matrix_document_ids(session, project_id)
     policy_json = _canonical_policy(session, project, document_ids)
+    policy_sha256 = policy.canonical_sha256(policy_json)
     schemes = identity.document_numbering_schemes(session, project_id)
     aliases = identity.party_canonical_names(session)
+    prior_abstentions: dict[int, list[DependencyAdmissionOutcome]] = {}
+    for outcome in session.scalars(
+        select(DependencyAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project_id,
+            PolicyRun.policy_version == DEPENDENCY_ADMISSION_POLICY_VERSION,
+            DependencyAdmissionOutcome.outcome == OUTCOME_ABSTAINED,
+        )
+        .order_by(DependencyAdmissionOutcome.id)
+    ):
+        prior_abstentions.setdefault(outcome.candidate_id, []).append(outcome)
 
     # Pending dependency candidates from each agreement document's
     # declared Active Run, grouped by document then by row identity under
@@ -203,9 +216,39 @@ def run_dependency_admission(
 
     admissible: list[tuple[Candidate, list[Candidate]]] = []
     abstentions: list[DependencyAdmissionAbstention] = []
+    abstention_inputs: dict[int, dict] = {}
 
-    def abstain(candidates: list[Candidate], reason: str) -> None:
+    def abstain(
+        candidates: list[Candidate],
+        reason: str,
+        *,
+        carriers: list[Dependency] | None = None,
+    ) -> None:
+        group_input = _abstention_group_input(
+            candidates,
+            carriers=carriers or [],
+            aliases=aliases,
+        )
+        group_sha256 = policy.canonical_sha256(group_input)
         for candidate in candidates:
+            input_receipt = _abstention_input_receipt(
+                candidate,
+                policy_json=policy_json,
+                policy_sha256=policy_sha256,
+                group_input=group_input,
+                group_sha256=group_sha256,
+            )
+            if (
+                reason != "write_refused"
+                and policy.has_matching_abstention(
+                    prior_abstentions.get(candidate.id, []),
+                    input_receipt=input_receipt,
+                    verdict=reason,
+                    reason_version=ABSTENTION_REASON_VERSION,
+                )
+            ):
+                continue
+            abstention_inputs[candidate.id] = input_receipt
             abstentions.append(
                 DependencyAdmissionAbstention(
                     candidate_id=candidate.id, reason=reason
@@ -213,8 +256,8 @@ def run_dependency_admission(
             )
 
     for reason, candidates in unnameable.items():
-        if candidates:
-            abstain(candidates, reason)
+        for candidate in candidates:
+            abstain([candidate], reason)
 
     for key in identities:
         # Only the revisions that state this conflict have anything to say
@@ -280,7 +323,7 @@ def run_dependency_admission(
                 if identity.party_matches(session, d, party)
             ]
         if carriers:
-            abstain(candidates, "already_admitted")
+            abstain(candidates, "already_admitted", carriers=carriers)
             continue
 
         # The newest revision is the primary; the rest merge. Where they
@@ -318,7 +361,7 @@ def run_dependency_admission(
         family=FAMILY,
         policy_approval_id=None,
         policy_version=DEPENDENCY_ADMISSION_POLICY_VERSION,
-        policy_sha256=policy.canonical_sha256(policy_json),
+        policy_sha256=policy_sha256,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
         applied_count=len(admitted),
         abstained_count=len(abstentions),
@@ -327,12 +370,19 @@ def run_dependency_admission(
     session.flush([run])
 
     for abstention in abstentions:
+        eligibility = {
+            "input": abstention_inputs[abstention.candidate_id],
+            "verdict": abstention.reason,
+            "reason_version": ABSTENTION_REASON_VERSION,
+        }
         session.add(
             DependencyAdmissionOutcome(
                 policy_run_id=run.id,
                 candidate_id=abstention.candidate_id,
                 outcome=OUTCOME_ABSTAINED,
                 reason=abstention.reason,
+                eligibility_json=eligibility,
+                eligibility_sha256=policy.canonical_sha256(eligibility),
             )
         )
     for primary, siblings, dependency in admitted:
@@ -363,6 +413,62 @@ def run_dependency_admission(
     )
 
 
+def _abstention_group_input(
+    candidates: list[Candidate],
+    *,
+    carriers: list[Dependency],
+    aliases: dict,
+) -> dict:
+    """The inspectable rows that made one grouped verdict true."""
+    return {
+        "candidates": [
+            {
+                "id": candidate.id,
+                "source_document_id": candidate.source_document_id,
+                "active_extraction_run_id": candidate.extraction_run_id,
+                "payload_json": candidate.payload_json,
+                "citations_verified": candidate.citations_verified,
+                "state": candidate.state,
+            }
+            for candidate in sorted(candidates, key=lambda item: item.id)
+        ],
+        "carriers": [
+            {
+                "id": dependency.id,
+                "source_ref": dependency.source_ref,
+                "external_org_id": dependency.external_org_id,
+                "status": dependency.status,
+            }
+            for dependency in sorted(carriers, key=lambda item: item.id)
+        ],
+        "aliases": aliases,
+    }
+
+
+def _abstention_input_receipt(
+    candidate: Candidate,
+    *,
+    policy_json: dict,
+    policy_sha256: str,
+    group_input: dict,
+    group_sha256: str,
+) -> dict:
+    return {
+        "receipt_version": "dependency-admission-abstention-input-v1",
+        "project_id": candidate.project_id,
+        "candidate_id": candidate.id,
+        "source_document_id": candidate.source_document_id,
+        "active_extraction_run_id": candidate.extraction_run_id,
+        "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
+        "citations_verified": candidate.citations_verified,
+        "candidate_state": candidate.state,
+        "policy": policy_json,
+        "policy_sha256": policy_sha256,
+        "group": group_input,
+        "group_sha256": group_sha256,
+    }
+
+
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     """The deployed bytes of the code that decides admission (ADR-0022)."""
     from pathlib import Path
@@ -383,6 +489,11 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
             "corridor.migrations.e9a4b7c2d158",
             Path(__file__).parent
             / "migrations/versions/e9a4b7c2d158_add_dependency_admission.py",
+        ),
+        (
+            "corridor.migrations.e314a3d8c6f2",
+            Path(__file__).parent
+            / "migrations/versions/e314a3d8c6f2_dependency_abstention_inputs.py",
         ),
     )
     return tuple((name, path.read_bytes()) for name, path in paths)
@@ -445,5 +556,3 @@ def _canonical_policy(
         "rules_digest_method": "sha256-rule-source-files-v1",
         "rules_digest": _rules_digest(),
     }
-
-

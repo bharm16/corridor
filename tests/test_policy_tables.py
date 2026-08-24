@@ -15,6 +15,7 @@ from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
+from corridor import policy
 from corridor.models import (
     DependencyAdmissionOutcome,
     EventAdmissionOutcome,
@@ -169,12 +170,19 @@ def test_a_reconciled_admission_run_passes_the_deferred_check(
 
     approval = _approval(session, project, "dependency-admission")
     run = _run(session, project, approval, abstained=1)
+    eligibility = {
+        "input": {"candidate_id": candidate.id, "test": "reconciled run"},
+        "verdict": "citations_unverified",
+        "reason_version": run.abstention_reason_version,
+    }
     session.add(
         DependencyAdmissionOutcome(
             policy_run_id=run.id,
             candidate_id=candidate.id,
             outcome="abstained",
             reason="citations_unverified",
+            eligibility_json=eligibility,
+            eligibility_sha256=policy.canonical_sha256(eligibility),
         )
     )
     session.flush()

@@ -39,6 +39,7 @@ __all__ = [
     "canonical_sha256",
     "current_approval",
     "digest_of_sources",
+    "has_matching_abstention",
     "record_approval",
     "source_digest",
 ]
@@ -66,6 +67,23 @@ def canonical_json(value: object) -> str:
 def canonical_sha256(value: object) -> str:
     """The digest of a policy, a configuration, or a set of fields."""
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
+
+
+def has_matching_abstention(
+    outcomes: Iterable[object],
+    *,
+    input_receipt: dict,
+    verdict: str,
+    reason_version: str,
+) -> bool:
+    """Whether immutable history already carries this exact versioned verdict."""
+    return any(
+        isinstance(getattr(outcome, "eligibility_json", None), dict)
+        and outcome.eligibility_json.get("input") == input_receipt
+        and outcome.eligibility_json.get("verdict") == verdict
+        and outcome.eligibility_json.get("reason_version") == reason_version
+        for outcome in outcomes
+    )
 
 
 def source_digest(sources: Iterable[tuple[str, bytes]]) -> str:

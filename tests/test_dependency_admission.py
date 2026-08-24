@@ -11,6 +11,7 @@ do here.
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 
 import pytest
 from sqlalchemy import select, update
@@ -525,6 +526,24 @@ def test_a_write_refusal_abstains_without_sinking_the_batch(
     assert run.applied_count == 1
     assert run.abstained_count == len(result.abstentions)
 
+    repeated = run_dependency_admission(session, project.id)
+    repeated_refusals = [
+        item for item in repeated.abstentions if item.reason == "write_refused"
+    ]
+    refusal_outcomes = session.scalars(
+        select(DependencyAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            DependencyAdmissionOutcome.reason == "write_refused",
+        )
+    ).all()
+    assert {item.candidate_id for item in repeated_refusals} == {
+        feb_c[0].id,
+        may_c[0].id,
+    }
+    assert len(refusal_outcomes) == 4
+
 
 # ── Row identity under a declared numbering scheme (ADR-0030) ────────────
 
@@ -777,6 +796,80 @@ def test_one_party_under_two_registered_names_is_one_conflict(
     assert "station_from" in [
         d.field_name for d in disputes_for(session, dependency.id)
     ]
+
+
+def test_identical_party_disagreement_abstention_does_not_duplicate_outcomes(
+    session, project
+):
+    first_document = _document(session, project, filename="party-a.pdf")
+    second_document = _document(session, project, filename="party-b.pdf")
+    first_candidate = _candidate(
+        first_document, _fields("SHARED", org="Party A")
+    )
+    second_candidate = _candidate(
+        second_document, _fields("SHARED", org="Party B")
+    )
+    _run(
+        session,
+        first_document,
+        [first_candidate],
+    )
+    _run(
+        session,
+        second_document,
+        [second_candidate],
+    )
+    declare_single_run_documents_by_policy(session, project.id)
+
+    first = run_dependency_admission(session, project.id)
+    after_first = session.scalars(
+        select(DependencyAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            DependencyAdmissionOutcome.reason == "revisions_disagree_on_party",
+        )
+    ).all()
+    second = run_dependency_admission(session, project.id)
+    after_second = session.scalars(
+        select(DependencyAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            DependencyAdmissionOutcome.reason == "revisions_disagree_on_party",
+        )
+    ).all()
+
+    assert first.abstained_count == 2
+    assert second.abstained_count == 0
+    assert len(after_first) == 2
+    assert len(after_second) == 2
+
+    original_payload = deepcopy(first_candidate.payload_json)
+    first_candidate.payload_json = {
+        **first_candidate.payload_json,
+        "fields": {
+            **first_candidate.payload_json["fields"],
+            "external_org": "Party C",
+        },
+    }
+    session.flush()
+    changed = run_dependency_admission(session, project.id)
+    first_candidate.payload_json = original_payload
+    session.flush()
+    reverted = run_dependency_admission(session, project.id)
+    final_outcomes = session.scalars(
+        select(DependencyAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            DependencyAdmissionOutcome.reason == "revisions_disagree_on_party",
+        )
+    ).all()
+
+    assert changed.abstained_count == 2
+    assert reverted.abstained_count == 0
+    assert len(final_outcomes) == 4
 
 
 def test_an_unregistered_spelling_stays_its_own_party(session, project):
