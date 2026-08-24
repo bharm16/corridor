@@ -28,6 +28,7 @@ from typing import ClassVar, Protocol
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.dependency_events import current_scope_decision_filter
 from corridor.event_admission import waiting_statements
 from corridor.extraction_runs import (
@@ -1112,37 +1113,17 @@ def _prepare_case(
             "candidate_not_in_work_list",
             "Candidate is not a current Unplaced Statement Work Item",
         )
+    facts = prepare_candidate_statement_facts(session, candidate)
+    if not facts.evidence_is_complete:
+        return _preflight_abstention(
+            "evidence_unavailable",
+            "Candidate Evidence is not registered in the bound project",
+        )
     nonce = secrets.token_hex(8)
     evidence_by_ref: dict[str, _EvidenceBinding] = {}
-    for index, citation in enumerate(
-        (candidate.payload_json or {}).get("citations") or (), start=1
-    ):
-        try:
-            document_id = int(citation["document_id"])
-            page_no = int(citation["page"])
-            quote = str(citation["quote"])
-        except (KeyError, TypeError, ValueError):
-            return _preflight_abstention(
-                "evidence_unavailable", "Candidate citation is not structurally valid"
-            )
-        cited_document = session.scalar(
-            select(Document).where(
-                Document.id == document_id,
-                Document.project_id == candidate.project_id,
-            )
-        )
-        page = session.scalar(
-            select(DocPage).where(
-                DocPage.document_id == document_id, DocPage.page_no == page_no
-            )
-        )
-        if cited_document is None or page is None or not quote.strip():
-            return _preflight_abstention(
-                "evidence_unavailable",
-                "Candidate Evidence is not registered in the bound project",
-            )
+    for index, evidence in enumerate(facts.evidence, start=1):
         evidence_by_ref[_opaque("E", nonce, index)] = _EvidenceBinding(
-            document_id, page_no, quote
+            evidence.document_id, evidence.page_no, evidence.quote
         )
     if not evidence_by_ref:
         return _preflight_abstention(
@@ -1180,7 +1161,8 @@ def _prepare_case(
         statement_ref_by_id={},
         run_nonce=nonce,
     )
-    fields = (candidate.payload_json or {}).get("fields") or {}
+    fields = facts.fields
+    timing = facts.new_timing.timing
     case = InvestigationCase(
         schema_version=CASE_CONTRACT_VERSION,
         case_ref=_opaque("C", nonce, candidate.id),
@@ -1189,7 +1171,7 @@ def _prepare_case(
             kind="extracted_proposal_context",
             source_description=_optional_text(fields.get("description")),
             context_external_party=_optional_text(fields.get("external_org")),
-            exact_timing_wording=_candidate_timing_wording(fields),
+            exact_timing_wording=timing.text if timing is not None else None,
             event_type=_optional_text(fields.get("event_type")),
         ),
         evidence_refs=tuple(evidence_by_ref),
@@ -1464,14 +1446,6 @@ def _normalize(value: object) -> str:
 def _optional_text(value: object) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None
-
-
-def _candidate_timing_wording(fields: dict) -> str | None:
-    for name in ("committed_date_text", "committed_date", "timing", "date_text"):
-        value = _optional_text(fields.get(name))
-        if value:
-            return value
-    return None
 
 
 def _supporting_evidence_eligible(page: DocPage) -> bool:

@@ -45,10 +45,13 @@ from corridor.models import (
     WorkDecision,
     is_critical,
 )
-from corridor.statement_lifecycle import current_statement_event_filter
+from corridor.statement_lifecycle import (
+    CurrentStatementObservation,
+    current_statement_event_filter,
+    observe_current_statements,
+)
 from corridor.work_decisions import (
     DEFERRAL,
-    MILESTONE_IMPACT,
     NEXT_ACTION,
     current_statement_decision_tails,
 )
@@ -150,6 +153,7 @@ class _StatementWorkState:
     evidence_ids_by_event: dict[int, tuple[int, ...]]
     decision_tails: dict[tuple[int, str], WorkDecision]
     receipts_by_decision: dict[int, StatementCoordinationReceipt]
+    observations_by_lineage: dict[int, CurrentStatementObservation]
 
 
 def build_work_list(
@@ -256,7 +260,7 @@ def build_work_list(
             description=event.description,
         )
         is_immediate = _is_immediate(lineage, evaluated_on) or _statement_changed(
-            event, scope, lineage, statement_state
+            lineage, statement_state
         )
         (immediate if is_immediate else backlog).append(item)
 
@@ -392,12 +396,13 @@ def _is_immediate(
 
 
 def _statement_changed(
-    event: DependencyEvent,
-    scope: DependencyEventScopeDecision,
     lineage: CommitmentLineage,
     state: _StatementWorkState,
 ) -> bool:
     """Return delayed work when the External Party fact it answered changes."""
+    observation = state.observations_by_lineage.get(lineage.id)
+    if observation is None:
+        return True
     deferral = state.decision_tails.get((lineage.id, DEFERRAL))
     action = state.decision_tails.get((lineage.id, NEXT_ACTION))
     decision = (
@@ -409,32 +414,29 @@ def _statement_changed(
         return False
 
     receipt = state.receipts_by_decision.get(decision.id)
-    impact = (
-        state.decision_tails.get((lineage.id, MILESTONE_IMPACT))
-        if event.event_type == "committed_date_change"
-        else None
-    )
     if receipt is not None:
         return (
-            receipt.dependency_event_id != event.id
-            or receipt.scope_decision_id != scope.id
+            receipt.dependency_event_id != observation.statement_event_id
+            or receipt.scope_decision_id != observation.scope_decision_id
             or receipt.milestone_impact_decision_id
-            != (impact.id if impact is not None else None)
+            != observation.milestone_impact_decision_id
         )
 
     return (
         (
             decision.observed_statement_event_id is not None
-            and decision.observed_statement_event_id != event.id
+            and decision.observed_statement_event_id
+            != observation.statement_event_id
         )
         or (
             decision.observed_scope_decision_id is not None
-            and decision.observed_scope_decision_id != scope.id
+            and decision.observed_scope_decision_id
+            != observation.scope_decision_id
         )
         or (
             decision.observed_milestone_impact_decision_id is not None
             and decision.observed_milestone_impact_decision_id
-            != (impact.id if impact is not None else None)
+            != observation.milestone_impact_decision_id
         )
     )
 
@@ -601,7 +603,7 @@ def _statement_work_state(session: Session, rows) -> _StatementWorkState:
     decision_tails = current_statement_decision_tails(
         session,
         lineage_ids,
-        fields=(DEFERRAL, NEXT_ACTION, MILESTONE_IMPACT),
+        fields=(DEFERRAL, NEXT_ACTION),
     )
     decision_ids = tuple(decision.id for decision in decision_tails.values())
     receipts_by_decision = (
@@ -623,6 +625,7 @@ def _statement_work_state(session: Session, rows) -> _StatementWorkState:
         },
         decision_tails=decision_tails,
         receipts_by_decision=receipts_by_decision,
+        observations_by_lineage=observe_current_statements(session, lineage_ids),
     )
 
 

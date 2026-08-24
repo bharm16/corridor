@@ -16,8 +16,6 @@ as unavailable rather than faked.
 from __future__ import annotations
 
 import json
-import re
-from calendar import monthrange
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -53,6 +51,10 @@ from corridor.adjudicate import (
     merge_candidate,
     reject_candidate,
 )
+from corridor.candidate_statement_facts import (
+    CandidateStatementFacts,
+    prepare_candidate_statement_facts,
+)
 from corridor.automatic_carry_forward import automatic_carry_forward_status
 from corridor.db import Session as SessionFactory
 from corridor.config import settings
@@ -86,7 +88,6 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
-    EventAdmissionOutcome,
     ExternalOrg,
     Milestone,
     Project,
@@ -119,7 +120,6 @@ from corridor.disputes import (
 )
 from corridor.event_admission import (
     StatementUnplaceable,
-    UNKNOWN_SCOPE_POLICY_VERSION,
     attach_statement,
     waiting_statements,
 )
@@ -169,17 +169,22 @@ from corridor.models import (
 )
 from corridor.external_statements import CitedStatementEvidence, StatementScope, StatementTiming
 from corridor.statement_coordination import (
+    AdmittedStatementCoordination,
+    STATEMENT_NEXT_ACTION_CHOICES,
     StaleStatementCoordination,
     StatementCoordinationDraft,
     StatementCoordinationPredecessors,
     StatementCoordinationRefusal,
     StatementFactCorrectionDraft,
     StatementScopeCorrection,
+    assign_admitted_statement_owner,
     coordinate_statement,
     correct_statement_facts,
     correct_statement_scope,
     mark_statement_not_relevant,
+    read_admitted_statement_coordination,
     restore_statement_not_relevant,
+    set_admitted_statement_next_action,
     undo_statement_coordination,
 )
 from corridor.statement_lifecycle import (
@@ -187,7 +192,6 @@ from corridor.statement_lifecycle import (
     current_lineage_statement,
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
-from corridor.verify import normalize
 from corridor.work_list import build_work_list
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -214,14 +218,6 @@ _CANDIDATE_EVIDENCE_UNAVAILABLE = (
     "context: a rendered image for PDF or OCR pages, or registered cell text "
     "for a worksheet."
 )
-
-_STATEMENT_NEXT_ACTION_CHOICES = (
-    "Confirm the External Party and Commitment Scope",
-    "Confirm the stated timing with the External Party",
-    "Coordinate the selected Dependencies",
-    "Obtain additional Evidence for this statement",
-)
-
 
 def get_session():
     with SessionFactory() as session:
@@ -792,8 +788,10 @@ async def save_admitted_statement_scope(
     """Scope correction belongs only to the explicit Correct flow."""
     project = _project(session, slug)
     candidate = _project_statement_candidate(session, project, candidate_id)
-    context = _mechanically_admitted_statement_context(session, project, candidate)
-    if context is None:
+    coordination = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+    if coordination is None:
         raise HTTPException(404, "no mechanically admitted statement in this project")
     return _statement_coordination_screen(
         request,
@@ -816,29 +814,19 @@ async def save_admitted_statement_owner(
     """Assign an Internal Owner from the registered project roster."""
     project = _project(session, slug)
     candidate = _project_statement_candidate(session, project, candidate_id)
-    context = _mechanically_admitted_statement_context(session, project, candidate)
-    if context is None:
+    coordination = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+    if coordination is None:
         raise HTTPException(404, "no mechanically admitted statement in this project")
     form = await request.form()
     try:
-        if context["decision"] != "owner":
-            raise StatementCoordinationRefusal(
-                "Internal Owner is no longer the next unresolved decision"
-            )
         roster_id = _required_positive_form_id(form, "internal_owner_roster_entry_id")
-        roster_entry = session.get(ProjectRosterEntry, roster_id)
-        if (
-            roster_entry is None
-            or roster_entry.project_id != project.id
-            or not roster_entry.active
-        ):
-            raise StatementCoordinationRefusal(
-                "Internal Owner must come from the active project roster"
-            )
-        assign_internal_owner(
+        assign_admitted_statement_owner(
             session,
-            CoordinationSubject.statement(context["lineage"].id),
-            roster_entry.display_name,
+            project.id,
+            candidate.id,
+            roster_id,
             principal=principal,
         )
     except (StatementCoordinationRefusal, ValueError) as exc:
@@ -862,23 +850,18 @@ async def save_admitted_statement_next_action(
     """Append the structured project-language Next Action and return timing."""
     project = _project(session, slug)
     candidate = _project_statement_candidate(session, project, candidate_id)
-    context = _mechanically_admitted_statement_context(session, project, candidate)
-    if context is None:
+    coordination = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+    if coordination is None:
         raise HTTPException(404, "no mechanically admitted statement in this project")
     form = await request.form()
     try:
-        if context["decision"] != "next_action":
-            raise StatementCoordinationRefusal(
-                "Next Action is no longer the next unresolved decision"
-            )
         action = str(form.get("next_action") or "").strip()
-        if action not in _STATEMENT_NEXT_ACTION_CHOICES:
-            raise StatementCoordinationRefusal(
-                "Next Action must be one structured project-language choice"
-            )
-        set_next_action(
+        set_admitted_statement_next_action(
             session,
-            CoordinationSubject.statement(context["lineage"].id),
+            project.id,
+            candidate.id,
             action,
             due_date=_optional_form_date(form, "action_due_date"),
             due_date_unknown_reason=(
@@ -1008,13 +991,15 @@ def correct_statement_screen(
             .order_by(DependencyEventScopeDecision.id)
         )
     else:
-        admitted = _mechanically_admitted_statement_context(session, project, candidate)
+        admitted = read_admitted_statement_coordination(
+            session, project.id, candidate.id
+        )
         if admitted is None:
             raise HTTPException(
                 409, "this statement has no current accepted statement to correct"
             )
-        event = admitted["event"]
-        scope_decision = admitted["scope"]
+        event = admitted.event
+        scope_decision = admitted.scope
     if scope_decision is None:
         raise HTTPException(409, "this statement has no current Commitment Scope")
     affected_party = session.get(ExternalOrg, event.affected_external_org_id)
@@ -1166,147 +1151,23 @@ def _active_statement_coordination_receipt(
     )
 
 
-def _mechanically_admitted_statement_context(
-    session: Session, project: Project, candidate: Candidate
-) -> dict | None:
-    """Read the accepted facts and exactly one remaining human decision."""
-    row = session.execute(
-        select(EventAdmissionOutcome, PolicyRun)
-        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
-        .where(
-            PolicyRun.project_id == project.id,
-            PolicyRun.policy_version == UNKNOWN_SCOPE_POLICY_VERSION,
-            EventAdmissionOutcome.candidate_id == candidate.id,
-            EventAdmissionOutcome.outcome == "admitted",
-            EventAdmissionOutcome.dependency_event_id.is_not(None),
-        )
-        .order_by(EventAdmissionOutcome.id.desc())
-        .limit(1)
-    ).first()
-    if row is None:
-        return None
-    outcome, policy_run = row
-    admitted_event = session.get(DependencyEvent, outcome.dependency_event_id)
-    if (
-        candidate.state != "accepted"
-        or admitted_event is None
-        or admitted_event.project_id != project.id
-        or admitted_event.commitment_lineage_id != outcome.commitment_lineage_id
-    ):
-        return None
-    event = current_lineage_statement(session, admitted_event.commitment_lineage_id)
-    if event is None or event.project_id != project.id:
-        return None
-    scope = session.scalar(
-        select(DependencyEventScopeDecision)
-        .where(
-            DependencyEventScopeDecision.event_id == event.id,
-            current_scope_decision_filter(),
-        )
-        .order_by(DependencyEventScopeDecision.id.desc())
-        .limit(1)
-    )
-    lineage = session.get(CommitmentLineage, event.commitment_lineage_id)
-    if scope is None or lineage is None:
-        return None
-    affected_party = session.get(ExternalOrg, event.affected_external_org_id)
-    scope_dependency_ids = tuple(
-        session.scalars(
-            select(DependencyEventScope.dependency_id)
-            .where(DependencyEventScope.scope_decision_id == scope.id)
-            .order_by(DependencyEventScope.dependency_id)
-        ).all()
-    )
-    scope_dependencies = tuple(
-        session.scalars(
-            select(Dependency)
-            .where(
-                Dependency.project_id == project.id,
-                Dependency.id.in_(scope_dependency_ids),
-            )
-            .order_by(Dependency.ref_code)
-        ).all()
-    )
-
-    evidence = tuple(
-        {
-            "filename": document.filename,
-            "page_no": link.page_no,
-            "quote": link.quote,
-        }
-        for _membership, link, document in session.execute(
-            select(DependencyEventEvidence, EvidenceLink, Document)
-            .join(
-                EvidenceLink,
-                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
-            )
-            .join(Document, Document.id == EvidenceLink.document_id)
-            .where(
-                DependencyEventEvidence.event_id == event.id,
-                EvidenceLink.verified.is_(True),
-                Document.project_id == project.id,
-            )
-            .order_by(DependencyEventEvidence.evidence_link_id)
-        ).all()
-    )
-    dependencies = tuple(
-        session.scalars(
-            select(Dependency)
-            .where(
-                Dependency.project_id == project.id,
-                Dependency.external_org_id == event.affected_external_org_id,
-                Dependency.dismissed_at.is_(None),
-                Dependency.status != "closed",
-            )
-            .order_by(Dependency.ref_code)
-        ).all()
-    )
-    roster = tuple(
-        session.scalars(
-            select(ProjectRosterEntry)
-            .where(
-                ProjectRosterEntry.project_id == project.id,
-                ProjectRosterEntry.active.is_(True),
-            )
-            .order_by(ProjectRosterEntry.display_name)
-        ).all()
-    )
-    decision = (
-        "owner"
-        if not lineage.internal_owner
-        else "next_action"
-        if not lineage.next_action
-        else None
-    )
-    authority_gap = None
-    if not evidence:
-        decision = "blocked"
-        authority_gap = (
-            "Verified statement Evidence is unavailable; residual decisions remain pending."
-        )
-    elif decision == "owner" and not roster:
-        authority_gap = (
-            "No active project roster choices are available; Internal Owner remains pending."
-        )
+def _admitted_statement_template_context(
+    coordination: AdmittedStatementCoordination,
+) -> dict:
+    """Adapt residual statement coordination to the existing template names."""
     return {
-        "event": event,
-        "affected_party_name": (
-            affected_party.name
-            if affected_party is not None
-            else "External Party not resolved"
-        ),
-        "lineage": lineage,
-        "scope": scope,
-        "outcome": outcome,
-        "policy_run": policy_run,
-        "evidence": evidence,
-        "dependencies": dependencies,
-        "scope_dependency_ids": scope_dependency_ids,
-        "scope_dependencies": scope_dependencies,
-        "roster": roster,
-        "decision": decision,
-        "authority_gap": authority_gap,
-        "next_action_choices": _STATEMENT_NEXT_ACTION_CHOICES,
+        "event": coordination.event,
+        "affected_party_name": coordination.affected_party_name,
+        "lineage": coordination.lineage,
+        "scope": coordination.scope,
+        "outcome": coordination.outcome,
+        "policy_run": coordination.policy_run,
+        "evidence": coordination.evidence,
+        "scope_dependencies": coordination.scope_dependencies,
+        "roster": coordination.roster,
+        "decision": coordination.next_decision,
+        "authority_gap": coordination.authority_gap,
+        "next_action_choices": coordination.next_action_choices,
     }
 
 
@@ -1320,12 +1181,19 @@ def _statement_coordination_screen(
     status_code: int = 200,
 ):
     """The browser reads facts; the command remains the one mutation seam."""
-    admitted = _mechanically_admitted_statement_context(session, project, candidate)
+    admitted = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
     if admitted is not None:
         return TEMPLATES.TemplateResponse(
             request,
             "statement_admitted_coordinate.html",
-            {**admitted, "project": project, "candidate": candidate, "error": error},
+            {
+                **_admitted_statement_template_context(admitted),
+                "project": project,
+                "candidate": candidate,
+                "error": error,
+            },
             status_code=status_code,
         )
     receipt = (
@@ -1343,10 +1211,9 @@ def _statement_coordination_screen(
         if receipt
         else None
     )
-    candidate_evidence = _candidate_statement_evidence(session, candidate)
-    candidate_evidence_available = _candidate_statement_evidence_available(
-        candidate, candidate_evidence
-    )
+    candidate_facts = prepare_candidate_statement_facts(session, candidate)
+    candidate_evidence = _candidate_statement_evidence_view(candidate_facts)
+    candidate_evidence_available = candidate_facts.evidence_is_reviewable
     dependencies = session.execute(
         select(Dependency, ExternalOrg.name)
         .outerjoin(ExternalOrg, ExternalOrg.id == Dependency.external_org_id)
@@ -1373,18 +1240,14 @@ def _statement_coordination_screen(
         .where(Milestone.project_id == project.id)
         .order_by(Milestone.code)
     ).all()
-    fields = (candidate.payload_json or {}).get("fields") or {}
-    candidate_party = str(fields.get("external_org") or "")
-    candidate_stated_party = str(fields.get("stated_party") or "")
-    candidate_affected_party_id = _evidence_backed_party_id(
-        parties, candidate_party, candidate_evidence
+    fields = candidate_facts.fields
+    candidate_party = candidate_facts.affected_party.wording
+    candidate_stated_party = candidate_facts.stated_party.wording
+    candidate_affected_party_id = (
+        candidate_facts.affected_party.visible_external_org_id
     )
-    candidate_stated_party_id = _evidence_backed_party_id(
-        parties, candidate_stated_party, candidate_evidence
-    )
-    candidate_timing = _candidate_statement_timing_defaults(
-        fields, candidate_evidence
-    )
+    candidate_stated_party_id = candidate_facts.stated_party.visible_external_org_id
+    candidate_timing = _candidate_statement_timing_view(candidate_facts)
     disposition = current_candidate_disposition(session, candidate.id)
     not_relevant = (
         disposition
@@ -1411,7 +1274,7 @@ def _statement_coordination_screen(
             "guided_save_available": (
                 candidate_evidence_available and candidate_timing["available"]
             ),
-            "next_action_choices": _STATEMENT_NEXT_ACTION_CHOICES,
+            "next_action_choices": STATEMENT_NEXT_ACTION_CHOICES,
             "candidate_evidence": candidate_evidence,
             "candidate_evidence_available": candidate_evidence_available,
             "candidate_evidence_unavailable_message": (
@@ -1445,170 +1308,26 @@ def _statement_coordination_screen(
     )
 
 
-def _evidence_backed_party_id(
-    parties: list[ExternalOrg], candidate_party: str, evidence: tuple[dict, ...]
-) -> int | None:
-    """Resolve one exact registered party only when its name is on the Evidence."""
-    key = normalize(candidate_party)
-    if not key:
-        return None
-    matches = [
-        party
-        for party in parties
-        if key
-        in {
-            normalize(value)
-            for value in (party.name, *(party.aliases or ()))
-            if value
-        }
-    ]
-    visible_text = normalize(
-        " ".join(
-            str(value or "")
-            for item in evidence
-            for value in (item.get("quote"), item.get("page_text"))
-        )
-    )
-    if len(matches) != 1 or key not in visible_text:
-        return None
-    return matches[0].id
-
-
-def _candidate_statement_timing_defaults(
-    fields: dict, evidence: tuple[dict, ...]
+def _candidate_statement_timing_view(
+    facts: CandidateStatementFacts,
 ) -> dict[str, str | bool]:
     """Expose supported Candidate timing read-only; never ask for transcription."""
-    raw = fields.get("committed_date")
-    if isinstance(raw, dict):
-        text_value = str(raw.get("text") or "").strip()
-        precision = str(raw.get("precision") or "").strip()
-        start_value = str(raw.get("start_date") or "").strip()
-        end_value = str(raw.get("end_date") or "").strip()
-        try:
-            start_date = date.fromisoformat(start_value) if start_value else None
-            end_date = date.fromisoformat(end_value) if end_value else None
-        except ValueError:
-            start_date = end_date = None
-        valid_shape = (
-            (
-                precision == "day"
-                and start_date is not None
-                and end_date == start_date
-            )
-            or (
-                precision == "month"
-                and start_date is not None
-                and start_date.day == 1
-                and end_date
-                == date(
-                    start_date.year,
-                    start_date.month,
-                    monthrange(start_date.year, start_date.month)[1],
-                )
-            )
-            or (
-                precision == "approximate"
-                and start_date is None
-                and end_date is None
-            )
-        )
-        visible_text = normalize(
-            " ".join(
-                str(value or "")
-                for item in evidence
-                for value in (item.get("quote"), item.get("page_text"))
-            )
-        )
-        return {
-            "available": bool(
-                text_value and valid_shape and normalize(text_value) in visible_text
-            ),
-            "text": text_value,
-            "precision": precision,
-            "start_date": start_value,
-            "end_date": end_value,
-        }
-    try:
-        parsed = date.fromisoformat(str(raw)) if raw else None
-    except ValueError:
-        parsed = None
-    exact_wording = str(evidence[0].get("quote") or "") if evidence else ""
-    if parsed is None:
-        parsed = _exact_date_from_evidence(
-            " ".join(
-                str(value or "")
-                for item in evidence
-                for value in (item.get("quote"), item.get("page_text"))
-            ),
-            str(fields.get("event_date") or ""),
-        )
+    timing = facts.new_timing.visible_timing
     return {
-        "available": bool(parsed and exact_wording),
-        "text": exact_wording,
-        "precision": "day" if parsed else "",
-        "start_date": parsed.isoformat() if parsed else "",
-        "end_date": parsed.isoformat() if parsed else "",
+        "available": facts.new_timing.is_visible,
+        "text": timing.text if timing is not None else "",
+        "precision": timing.precision if timing is not None else "",
+        "start_date": (
+            timing.start_date.isoformat()
+            if timing is not None and timing.start_date is not None
+            else ""
+        ),
+        "end_date": (
+            timing.end_date.isoformat()
+            if timing is not None and timing.end_date is not None
+            else ""
+        ),
     }
-
-
-_MONTH_NUMBER = {
-    name.casefold(): number
-    for number, name in enumerate(
-        (
-            "",
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        )
-    )
-    if name
-}
-_NAMED_DAY = re.compile(
-    r"\b(" + "|".join(_MONTH_NUMBER) + r")\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)(\d{4})\b",
-    re.IGNORECASE,
-)
-_NUMERIC_DAY = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b")
-
-
-def _exact_date_from_evidence(text: str, event_date: str) -> date | None:
-    """Return one explicit day already written in Evidence, without guessing."""
-    named = _NAMED_DAY.search(text)
-    if named:
-        try:
-            return date(
-                int(named.group(3)),
-                _MONTH_NUMBER[named.group(1).casefold()],
-                int(named.group(2)),
-            )
-        except ValueError:
-            return None
-    year = None
-    try:
-        year = date.fromisoformat(event_date).year if event_date else None
-    except ValueError:
-        pass
-    for numeric in _NUMERIC_DAY.finditer(text):
-        month, day = int(numeric.group(1)), int(numeric.group(2))
-        raw_year = numeric.group(3)
-        if raw_year is None and year is None:
-            continue
-        resolved_year = int(raw_year) if raw_year else year
-        if resolved_year is not None and resolved_year < 100:
-            resolved_year += 2000
-        try:
-            return date(resolved_year, month, day)
-        except (TypeError, ValueError):
-            continue
-    return None
 
 
 def _statement_coordination_history(session: Session, candidate_id: int) -> tuple[dict, ...]:
@@ -1750,67 +1469,32 @@ def _statement_fact_correction_draft(
     )
 
 
-def _candidate_statement_evidence(
-    session: Session, candidate: Candidate
+def _candidate_statement_evidence_view(
+    facts: CandidateStatementFacts,
 ) -> tuple[dict, ...]:
     """Render the extractor's immutable citation and its registered page."""
-    evidence = []
-    for citation in (candidate.payload_json or {}).get("citations") or ():
-        try:
-            document_id = int(citation["document_id"])
-            page_no = int(citation["page"])
-            document = session.get(Document, document_id)
-            page = (
-                session.scalar(
-                    select(DocPage).where(
-                        DocPage.document_id == document_id,
-                        DocPage.page_no == page_no,
-                    )
-                )
-                if document is not None and document.project_id == candidate.project_id
-                else None
-            )
-            has_page_image = bool(
-                page is not None
-                and page.image_path
-                and Path(page.image_path).is_file()
-            )
-            evidence.append(
-                {
-                    "document_id": document_id,
-                    "page_no": page_no,
-                    "quote": str(citation["quote"]),
-                    "filename": (
-                        document.filename
-                        if document is not None
-                        and document.project_id == candidate.project_id
-                        else "registered document"
-                    ),
-                    "page_text": page.text if page is not None else None,
-                    "page_text_source": (
-                        page.text_source if page is not None else None
-                    ),
-                    "has_page_image": has_page_image,
-                    "supporting_quote_available": bool(
-                        page is not None
-                        and (
-                            page.text_source == "cells"
-                            or has_page_image
-                        )
-                    ),
-                }
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-    return tuple(evidence)
+    return tuple(
+        {
+            "document_id": item.document_id,
+            "page_no": item.page_no,
+            "quote": item.quote,
+            "filename": item.filename,
+            "page_text": item.page_text,
+            "page_text_source": item.page_text_source,
+            "has_page_image": item.has_page_image,
+            "supporting_quote_available": item.is_reviewable,
+        }
+        for item in facts.evidence
+    )
 
 
 def _supporting_statement_evidence(
     session: Session, candidate: Candidate, form
 ) -> tuple[CitedStatementEvidence, ...]:
     """Bind optional supporting wording to a source page already on screen."""
-    visible_evidence = _candidate_statement_evidence(session, candidate)
-    if not _candidate_statement_evidence_available(candidate, visible_evidence):
+    facts = prepare_candidate_statement_facts(session, candidate)
+    visible_evidence = _candidate_statement_evidence_view(facts)
+    if not facts.evidence_is_reviewable:
         raise StatementCoordinationRefusal(_CANDIDATE_EVIDENCE_UNAVAILABLE)
     page_index_value = str(form.get("supporting_page_index") or "").strip()
     quote = str(form.get("supporting_quote") or "").strip()
@@ -1838,16 +1522,6 @@ def _supporting_statement_evidence(
             "choose a visible registered source page for supporting Evidence"
         ) from exc
     return (CitedStatementEvidence(document_id, page_no, quote),)
-
-
-def _candidate_statement_evidence_available(
-    candidate: Candidate, evidence: tuple[dict, ...]
-) -> bool:
-    """Whether every immutable Candidate citation has reviewable page context."""
-    citations = (candidate.payload_json or {}).get("citations") or ()
-    return bool(citations) and len(evidence) == len(citations) and all(
-        item["supporting_quote_available"] for item in evidence
-    )
 
 
 def _form_statement_scope(form) -> StatementScope:

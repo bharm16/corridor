@@ -10,6 +10,10 @@ known Dependency scope and could not collect a second verified quote for
 attribution context.  Reusing it here would invent scope for the SH 99 cases,
 so this module owns the grouped command while preserving the shared statement
 and Work Decision writers beneath it.
+
+A mechanically admitted Commitment enters with its accepted facts already
+fixed. This module also owns the smaller human residue on that path: reading
+the current fact, then recording only its Internal Owner and Next Action.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.external_statements import (
     CitedStatementEvidence,
     EvidenceBoundPartyResolution,
@@ -41,10 +46,14 @@ from corridor.models import (
     AuditLog,
     Dependency,
     DependencyEvent,
+    DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
+    Document,
+    EvidenceLink,
     ExternalOrg,
     EventAdmissionOutcome,
+    PolicyRun,
     ProjectRosterEntry,
     ReportRun,
     StatementCoordinationReceipt,
@@ -59,6 +68,7 @@ from corridor.statement_lifecycle import (
     current_candidate_disposition,
     current_lineage_statement,
     current_scope_decision_filter,
+    observe_current_statement,
 )
 from corridor.verify import normalize
 from corridor.work_decisions import (
@@ -66,7 +76,6 @@ from corridor.work_decisions import (
     WorkDecision,
     assign_internal_owner,
     current_internal_owner_decision,
-    current_milestone_impact_decision,
     current_next_action_decision,
     set_milestone_impact,
     set_next_action,
@@ -93,6 +102,43 @@ NOT_RELEVANT_REASONS = frozenset(
         "insufficient_source_context",
     }
 )
+
+STATEMENT_NEXT_ACTION_CHOICES = (
+    "Confirm the External Party and Commitment Scope",
+    "Confirm the stated timing with the External Party",
+    "Coordinate the selected Dependencies",
+    "Obtain additional Evidence for this statement",
+)
+
+
+@dataclass(frozen=True)
+class AdmittedStatementEvidence:
+    """One verified Evidence quote supporting an admitted statement."""
+
+    filename: str
+    page_no: int
+    quote: str
+
+
+@dataclass(frozen=True)
+class AdmittedStatementCoordination:
+    """Accepted statement facts plus exactly one residual human decision."""
+
+    event: DependencyEvent
+    affected_party_name: str
+    lineage: CommitmentLineage
+    scope: DependencyEventScopeDecision
+    outcome: EventAdmissionOutcome
+    policy_run: PolicyRun
+    evidence: tuple[AdmittedStatementEvidence, ...]
+    scope_dependencies: tuple[Dependency, ...]
+    roster: tuple[ProjectRosterEntry, ...]
+    next_decision: str | None
+    authority_gap: str | None
+
+    @property
+    def next_action_choices(self) -> tuple[str, ...]:
+        return STATEMENT_NEXT_ACTION_CHOICES
 
 
 @dataclass(frozen=True)
@@ -184,6 +230,220 @@ class StatementFactCorrectionDraft:
     evidence: tuple[CitedStatementEvidence, ...]
 
 
+def read_admitted_statement_coordination(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+) -> AdmittedStatementCoordination | None:
+    """Read accepted facts and the one remaining human statement decision."""
+    from corridor.event_admission import UNKNOWN_SCOPE_POLICY_VERSION
+
+    candidate = session.get(Candidate, candidate_id, populate_existing=True)
+    if (
+        candidate is None
+        or candidate.project_id != project_id
+        or candidate.kind != "event"
+        or candidate.state != "accepted"
+    ):
+        return None
+    row = session.execute(
+        select(EventAdmissionOutcome, PolicyRun)
+        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project_id,
+            PolicyRun.policy_version == UNKNOWN_SCOPE_POLICY_VERSION,
+            EventAdmissionOutcome.candidate_id == candidate.id,
+            EventAdmissionOutcome.outcome == "admitted",
+            EventAdmissionOutcome.dependency_event_id.is_not(None),
+        )
+        .order_by(EventAdmissionOutcome.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    outcome, policy_run = row
+    if outcome.commitment_lineage_id is None:
+        return None
+    observation = observe_current_statement(session, outcome.commitment_lineage_id)
+    if (
+        observation is None
+        or observation.event.project_id != project_id
+        or observation.scope_decision is None
+    ):
+        return None
+    event = observation.event
+    admitted_event = session.get(DependencyEvent, outcome.dependency_event_id)
+    if (
+        admitted_event is None
+        or admitted_event.project_id != project_id
+        or admitted_event.commitment_lineage_id != event.commitment_lineage_id
+    ):
+        return None
+    lineage = session.get(
+        CommitmentLineage,
+        event.commitment_lineage_id,
+        populate_existing=True,
+    )
+    if lineage is None or lineage.project_id != project_id:
+        return None
+    scope = observation.scope_decision
+    affected_party = session.get(ExternalOrg, event.affected_external_org_id)
+    scope_dependency_ids = tuple(
+        session.scalars(
+            select(DependencyEventScope.dependency_id)
+            .where(DependencyEventScope.scope_decision_id == scope.id)
+            .order_by(DependencyEventScope.dependency_id)
+        ).all()
+    )
+    scope_dependencies = tuple(
+        session.scalars(
+            select(Dependency)
+            .where(
+                Dependency.project_id == project_id,
+                Dependency.id.in_(scope_dependency_ids),
+            )
+            .order_by(Dependency.ref_code)
+        ).all()
+    )
+    evidence = tuple(
+        AdmittedStatementEvidence(document.filename, link.page_no, link.quote)
+        for _membership, link, document in session.execute(
+            select(DependencyEventEvidence, EvidenceLink, Document)
+            .join(
+                EvidenceLink,
+                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            )
+            .join(Document, Document.id == EvidenceLink.document_id)
+            .where(
+                DependencyEventEvidence.event_id == event.id,
+                EvidenceLink.verified.is_(True),
+                Document.project_id == project_id,
+            )
+            .order_by(DependencyEventEvidence.evidence_link_id)
+        ).all()
+    )
+    roster = tuple(
+        session.scalars(
+            select(ProjectRosterEntry)
+            .where(
+                ProjectRosterEntry.project_id == project_id,
+                ProjectRosterEntry.active.is_(True),
+            )
+            .order_by(ProjectRosterEntry.display_name)
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    next_decision = (
+        "owner"
+        if not lineage.internal_owner
+        else "next_action"
+        if not lineage.next_action
+        else None
+    )
+    authority_gap = None
+    if not evidence:
+        next_decision = "blocked"
+        authority_gap = (
+            "Verified statement Evidence is unavailable; residual decisions remain pending."
+        )
+    elif next_decision == "owner" and not roster:
+        authority_gap = (
+            "No active project roster choices are available; Internal Owner remains pending."
+        )
+    return AdmittedStatementCoordination(
+        event=event,
+        affected_party_name=(
+            affected_party.name
+            if affected_party is not None
+            else "External Party not resolved"
+        ),
+        lineage=lineage,
+        scope=scope,
+        outcome=outcome,
+        policy_run=policy_run,
+        evidence=evidence,
+        scope_dependencies=scope_dependencies,
+        roster=roster,
+        next_decision=next_decision,
+        authority_gap=authority_gap,
+    )
+
+
+def assign_admitted_statement_owner(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    roster_entry_id: int,
+    *,
+    principal: HumanPrincipal,
+) -> WorkDecision:
+    """Record the Internal Owner only when it is the current residual decision."""
+    lock_project(session, project_id)
+    coordination = read_admitted_statement_coordination(
+        session, project_id, candidate_id
+    )
+    if coordination is None:
+        raise StatementCoordinationRefusal(
+            "no mechanically admitted statement exists in this project"
+        )
+    if coordination.next_decision != "owner":
+        raise StatementCoordinationRefusal(
+            "Internal Owner is no longer the next unresolved decision"
+        )
+    roster_entry = next(
+        (entry for entry in coordination.roster if entry.id == roster_entry_id),
+        None,
+    )
+    if roster_entry is None:
+        raise StatementCoordinationRefusal(
+            "Internal Owner must come from the active project roster"
+        )
+    return assign_internal_owner(
+        session,
+        CoordinationSubject.statement(coordination.lineage.id),
+        roster_entry.display_name,
+        principal=principal,
+    )
+
+
+def set_admitted_statement_next_action(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    action: str,
+    *,
+    due_date: date | None,
+    due_date_unknown_reason: str | None,
+    principal: HumanPrincipal,
+) -> WorkDecision:
+    """Record the Next Action only when it is the current residual decision."""
+    lock_project(session, project_id)
+    coordination = read_admitted_statement_coordination(
+        session, project_id, candidate_id
+    )
+    if coordination is None:
+        raise StatementCoordinationRefusal(
+            "no mechanically admitted statement exists in this project"
+        )
+    if coordination.next_decision != "next_action":
+        raise StatementCoordinationRefusal(
+            "Next Action is no longer the next unresolved decision"
+        )
+    normalized_action = str(action or "").strip()
+    if normalized_action not in STATEMENT_NEXT_ACTION_CHOICES:
+        raise StatementCoordinationRefusal(
+            "Next Action must be one structured project-language choice"
+        )
+    return set_next_action(
+        session,
+        CoordinationSubject.statement(coordination.lineage.id),
+        normalized_action,
+        due_date=due_date,
+        due_date_unknown_reason=due_date_unknown_reason,
+        principal=principal,
+    )
+
+
 def coordinate_statement(
     session: Session,
     draft: StatementCoordinationDraft,
@@ -206,7 +466,7 @@ def coordinate_statement(
             )
             _check_expected_predecessors(session, candidate.project_id, draft.expected)
 
-            candidate_evidence = _candidate_evidence(candidate)
+            candidate_evidence = _candidate_evidence(session, candidate)
             all_evidence = _deduplicate_evidence(
                 (*candidate_evidence, *draft.evidence)
             )
@@ -433,17 +693,16 @@ def _require_undoable_save(
         raise StatementCoordinationUndoRefusal(
             "the Candidate changed after this Save; use Correct instead"
         )
-    current_event = current_lineage_statement(session, receipt.commitment_lineage_id)
-    if current_event is None:
+    observation = observe_current_statement(session, receipt.commitment_lineage_id)
+    if observation is None:
         raise StatementCoordinationUndoRefusal(
             "the statement changed after this Save; use Correct instead"
         )
-    if current_event.id != receipt.dependency_event_id:
+    if observation.statement_event_id != receipt.dependency_event_id:
         raise StatementCoordinationUndoRefusal(
             "the statement changed after this Save; use Correct instead"
         )
-    scope = _current_scope_decision(session, receipt.dependency_event_id)
-    if scope is None or scope.id != receipt.scope_decision_id:
+    if observation.scope_decision_id != receipt.scope_decision_id:
         raise StatementCoordinationUndoRefusal(
             "the statement scope changed after this Save; use Correct instead"
         )
@@ -451,7 +710,7 @@ def _require_undoable_save(
     current_decisions = (
         _decision_id(current_internal_owner_decision(session, subject)),
         _decision_id(current_next_action_decision(session, subject)),
-        _decision_id(current_milestone_impact_decision(session, subject)),
+        observation.milestone_impact_decision_id,
     )
     receipt_decisions = (
         receipt.internal_owner_decision_id,
@@ -1008,20 +1267,16 @@ def _check_expected_predecessors(
     lineage = session.get(CommitmentLineage, expected.commitment_lineage_id)
     if lineage is None or lineage.project_id != project_id:
         raise StaleStatementCoordination("the expected Commitment Lineage is no longer current")
-    event = current_lineage_statement(session, lineage.id)
-    if event is None or event.id != expected.statement_event_id:
+    observation = observe_current_statement(session, lineage.id)
+    if observation is None or observation.statement_event_id != expected.statement_event_id:
         raise StaleStatementCoordination("the statement changed; reload the newer state")
-    scope_decision = _current_scope_decision(session, event.id)
-    if (
-        scope_decision is None
-        or scope_decision.id != expected.scope_decision_id
-    ):
+    if observation.scope_decision_id != expected.scope_decision_id:
         raise StaleStatementCoordination("the statement scope changed; reload the newer state")
     subject = CoordinationSubject.statement(lineage.id)
     actual = (
         _decision_id(current_internal_owner_decision(session, subject)),
         _decision_id(current_next_action_decision(session, subject)),
-        _decision_id(current_milestone_impact_decision(session, subject)),
+        observation.milestone_impact_decision_id,
     )
     expected_ids = (
         expected.internal_owner_decision_id,
@@ -1094,24 +1349,13 @@ def _current_scope_decision(
     )
 
 
-def _candidate_evidence(candidate: Candidate) -> tuple[CitedStatementEvidence, ...]:
-    citations = (candidate.payload_json or {}).get("citations") or ()
-    evidence: list[CitedStatementEvidence] = []
-    for citation in citations:
-        try:
-            item = CitedStatementEvidence(
-                document_id=int(citation["document_id"]),
-                page_no=int(citation["page"]),
-                quote=str(citation["quote"]),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise StatementCoordinationRefusal(
-                "the Candidate has no complete verified Evidence identity"
-            ) from exc
-        evidence.append(item)
-    if not evidence:
+def _candidate_evidence(
+    session: Session, candidate: Candidate
+) -> tuple[CitedStatementEvidence, ...]:
+    facts = prepare_candidate_statement_facts(session, candidate)
+    if not facts.evidence_is_complete:
         raise StatementCoordinationRefusal("the Candidate has no verified Evidence")
-    return tuple(evidence)
+    return facts.cited_evidence
 
 
 def _deduplicate_evidence(

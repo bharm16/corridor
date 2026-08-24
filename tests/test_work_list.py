@@ -39,6 +39,11 @@ from corridor.models import (
     StatementCoordinationReceipt,
 )
 from corridor.principals import HumanPrincipal
+from corridor.statement_coordination import (
+    assign_admitted_statement_owner,
+    read_admitted_statement_coordination,
+    set_admitted_statement_next_action,
+)
 from corridor.work_list import build_work_list
 from corridor.work_decisions import (
     CoordinationSubject,
@@ -245,6 +250,77 @@ def _mechanically_admit_unknown_scope(session, project, party):
     )
     assert result.admitted_count == 1
     return candidate
+
+
+def test_admitted_statement_coordination_returns_one_residual_decision(
+    session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:residual-owner",
+        display_name="Residual Owner",
+    )
+    session.add(owner)
+    session.flush()
+
+    coordination = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+
+    assert coordination is not None
+    assert coordination.event.commitment_lineage_id == coordination.lineage.id
+    assert coordination.scope.scope_mode == "unknown"
+    assert coordination.next_decision == "owner"
+    assert coordination.authority_gap is None
+    assert coordination.roster == (owner,)
+    assert coordination.evidence[0].quote == (
+        f"{party.name} will provide the chain of title in June 2025."
+    )
+
+
+def test_admitted_statement_coordination_records_only_the_current_residue(
+    session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:residual-plan-owner",
+        display_name="Residual Plan Owner",
+    )
+    session.add(owner)
+    session.flush()
+
+    assign_admitted_statement_owner(
+        session,
+        project.id,
+        candidate.id,
+        owner.id,
+        principal=RECORDER,
+    )
+    after_owner = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+    assert after_owner.next_decision == "next_action"
+
+    set_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        "Confirm the External Party and Commitment Scope",
+        due_date=None,
+        due_date_unknown_reason="date_not_yet_known",
+        principal=RECORDER,
+    )
+    completed = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+
+    assert completed.next_decision is None
+    assert completed.lineage.internal_owner == "Residual Plan Owner"
+    assert completed.lineage.next_action == (
+        "Confirm the External Party and Commitment Scope"
+    )
 
 
 def _complete_mechanical_commitment_plan(client, project, candidate, owner):

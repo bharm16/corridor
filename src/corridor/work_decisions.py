@@ -25,8 +25,6 @@ from corridor import audit
 from corridor.models import (
     CommitmentLineage,
     Dependency,
-    DependencyEvent,
-    DependencyEventScopeDecision,
     Milestone,
     WorkDecision,
     WorkDecisionMilestoneImpact,
@@ -34,10 +32,10 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 from corridor.statement_lifecycle import (
-    current_statement_event_filter,
+    CurrentStatementObservation,
     current_work_decision_filter,
+    observe_current_statement,
 )
-from corridor.dependency_events import current_scope_decision_filter
 
 ASSIGN_INTERNAL_OWNER = "assign_internal_owner"
 SET_NEXT_ACTION = "set_next_action"
@@ -117,15 +115,6 @@ class CoordinationSubject:
 
 SubjectInput = CoordinationSubject | int
 SubjectProjection = Dependency | CommitmentLineage
-
-
-@dataclass(frozen=True)
-class ReturnObservation:
-    """The current External Party state a delayed Work Item has answered."""
-
-    statement_event_id: int | None
-    scope_decision_id: int | None
-    milestone_impact_decision_id: int | None
 
 
 def assign_internal_owner(
@@ -347,8 +336,8 @@ def set_milestone_impact(
 
     _, projection = _locked_subject(session, coordination_subject)
     assert isinstance(projection, CommitmentLineage)
-    current_statement = _current_statement(session, projection.id)
-    if current_statement is None or current_statement.event_type != "committed_date_change":
+    observation = observe_current_statement(session, projection.id)
+    if observation is None or observation.event.event_type != "committed_date_change":
         raise ValueError("Milestone Impact belongs only to a Committed Date Change")
     milestones = session.scalars(
         select(Milestone).where(Milestone.id.in_(ids))
@@ -431,12 +420,12 @@ def current_milestone_impact_decision(
     coordination_subject = _coerce_subject(subject)
     if coordination_subject.commitment_lineage_id is None:
         return None
-    current_statement = _current_statement(
+    observation = observe_current_statement(
         session, coordination_subject.commitment_lineage_id
     )
-    if current_statement is None or current_statement.event_type != "committed_date_change":
+    if observation is None or observation.event.event_type != "committed_date_change":
         return None
-    return _tail(session, coordination_subject, MILESTONE_IMPACT)
+    return observation.milestone_impact_decision
 
 
 def current_deferral_decision(
@@ -587,29 +576,9 @@ def _locked_subject(
         )
     lock_project(session, lineage.project_id)
     session.refresh(lineage)
-    if _current_statement(session, lineage.id) is None:
+    if observe_current_statement(session, lineage.id) is None:
         raise ValueError("only an accepted Commitment or Committed Date Change may coordinate")
     return coordination_subject, lineage
-
-
-def _current_statement(
-    session: Session, commitment_lineage_id: int
-) -> DependencyEvent | None:
-    superseding = DependencyEvent.__table__.alias("superseding")
-    return session.scalar(
-        select(DependencyEvent)
-        .where(
-            DependencyEvent.commitment_lineage_id == commitment_lineage_id,
-            DependencyEvent.event_type.in_(("commitment", "committed_date_change")),
-            DependencyEvent.attribution_state == "resolved",
-            DependencyEvent.stated_external_org_id.is_not(None),
-            current_statement_event_filter(DependencyEvent.id),
-            ~select(superseding.c.id)
-            .where(superseding.c.supersedes_event_id == DependencyEvent.id)
-            .exists(),
-        )
-        .order_by(DependencyEvent.id)
-    )
 
 
 def _coerce_subject(subject: SubjectInput) -> CoordinationSubject:
@@ -673,7 +642,7 @@ def _append(
     note: str | None = None,
     deferral_reason: str | None = None,
     deferral_return_date: date | None = None,
-    return_observation: ReturnObservation | None = None,
+    return_observation: CurrentStatementObservation | None = None,
 ) -> WorkDecision:
     decision = WorkDecision(
         dependency_id=subject.dependency_id,
@@ -825,27 +794,11 @@ def _projected_deferral(projection: SubjectProjection) -> str | None:
 
 def _return_observation(
     session: Session, subject: CoordinationSubject
-) -> ReturnObservation:
+) -> CurrentStatementObservation | None:
     """The current statement state a future return condition must watch."""
     if subject.commitment_lineage_id is None:
-        return ReturnObservation(None, None, None)
-    event = _current_statement(session, subject.commitment_lineage_id)
-    if event is None:
-        return ReturnObservation(None, None, None)
-    scope = session.scalar(
-        select(DependencyEventScopeDecision)
-        .where(
-            DependencyEventScopeDecision.event_id == event.id,
-            current_scope_decision_filter(),
-        )
-        .order_by(DependencyEventScopeDecision.id)
-    )
-    impact = current_milestone_impact_decision(session, subject)
-    return ReturnObservation(
-        event.id,
-        scope.id if scope is not None else None,
-        impact.id if impact else None,
-    )
+        return None
+    return observe_current_statement(session, subject.commitment_lineage_id)
 
 
 def _milestone_impact_value(impact: str, milestone_ids: tuple[int, ...]) -> str:

@@ -29,6 +29,7 @@ from corridor.models import (
     WorkDecisionMilestoneImpact,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.statement_lifecycle import observe_current_statement
 from corridor.work_decisions import (
     CoordinationSubject,
     assign_internal_owner,
@@ -194,6 +195,72 @@ def test_a_commitment_lineage_can_own_an_independent_internal_owner_chain(
     assert decision.dependency_id is None
     assert decision.commitment_lineage_id == lineage.id
     assert lineage.internal_owner == "Dana Fields"
+
+
+def test_current_statement_observation_returns_the_fact_a_plan_answers(
+    session, accepted_date_change
+):
+    subject = CoordinationSubject.statement(
+        accepted_date_change.commitment_lineage_id
+    )
+    impact = set_milestone_impact(
+        session,
+        subject,
+        "does_not_affect",
+        principal=RECORDER,
+    )
+
+    observation = observe_current_statement(
+        session, accepted_date_change.commitment_lineage_id
+    )
+
+    assert observation is not None
+    assert observation.event.id == accepted_date_change.id
+    assert observation.scope_decision.scope_mode == "selected"
+    assert observation.milestone_impact_decision.id == impact.id
+
+
+def test_current_statement_observation_moves_forward_with_the_fact(
+    session, accepted_date_change, dependency
+):
+    from corridor.external_statements import (
+        StatementScope,
+        StatementTiming,
+        record_external_party_statement,
+    )
+
+    subject = CoordinationSubject.statement(
+        accepted_date_change.commitment_lineage_id
+    )
+    set_milestone_impact(
+        session,
+        subject,
+        "does_not_affect",
+        principal=RECORDER,
+    )
+    successor = record_external_party_statement(
+        session,
+        project_id=accepted_date_change.project_id,
+        affected_external_org_id=accepted_date_change.affected_external_org_id,
+        stated_party=accepted_date_change.stated_party,
+        stated_external_org_id=accepted_date_change.stated_external_org_id,
+        source_kind="verbal",
+        event_date=date(2026, 8, 13),
+        description="Date Change Party confirms one current completion date.",
+        new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+        scope=StatementScope.selected((dependency.id,)),
+        created_by="local:statement-coordinator",
+        commitment_lineage_id=accepted_date_change.commitment_lineage_id,
+    )
+
+    observation = observe_current_statement(
+        session, accepted_date_change.commitment_lineage_id
+    )
+
+    assert observation is not None
+    assert observation.event.id == successor.id
+    assert observation.scope_decision.event_id == successor.id
+    assert observation.milestone_impact_decision is None
 
 
 def test_the_database_refuses_neither_or_both_coordination_subjects(
