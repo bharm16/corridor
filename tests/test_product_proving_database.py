@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -18,14 +18,18 @@ from corridor.product_proving_database import (
     DISPOSABLE_DATABASE_PREFIX,
     DatabaseFingerprint,
     DatabaseReplacementReceipt,
+    DatabaseReplacementRequest,
     ProductProvingDatabaseBaselineConfig,
     ProductProvingDatabaseError,
     SequenceFingerprint,
     SharedDevelopmentRestoreConfig,
+    StagedDatabaseReplacement,
+    StagedDatabaseValidation,
     TableFingerprint,
     capture_product_proving_database_baseline,
     fingerprint_public_database,
     restore_shared_development_database,
+    stage_local_database_replacement,
     verify_product_proving_database_baseline,
 )
 
@@ -224,6 +228,26 @@ def test_capture_refuses_a_dump_that_does_not_restore_to_the_exact_source(tmp_pa
     assert not (tmp_path / "baseline").exists()
 
 
+@pytest.mark.parametrize(
+    "url_field",
+    ["source_database_url", "postgres_admin_url"],
+)
+def test_capture_refuses_query_based_connection_routing(tmp_path, url_field):
+    config = _capture_config(tmp_path)
+    routed = f"{SOURCE_URL}?host=/var/run/postgresql"
+
+    with pytest.raises(
+        ProductProvingDatabaseError,
+        match="query-based PostgreSQL connection routing",
+    ):
+        capture_product_proving_database_baseline(
+            replace(config, **{url_field: routed}),
+            open_environment=lambda **_kwargs: pytest.fail(
+                "unsafe routed URL reached environment open"
+            ),
+        )
+
+
 def test_verifier_refuses_tampered_dump_and_wrong_caller_pin(tmp_path):
     summary, _expected, _environment = _capture_fake_baseline(tmp_path)
 
@@ -274,12 +298,27 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
     }
     replacement_requests = []
 
-    def replace(request):
+    def stage(request):
         replacement_requests.append(request)
         states[SOURCE_URL] = baseline
+        return StagedDatabaseReplacement(
+            request=request,
+            backup_database_name="corridor_pre_proving_backup",
+            source_database_oid=101,
+            replacement_database_oid=202,
+        )
+
+    def validate(_staged):
+        return StagedDatabaseValidation(
+            fingerprint=baseline,
+            migration_head=MIGRATION_HEAD,
+            postgres_version="16.10",
+        )
+
+    def finalize(request):
         return DatabaseReplacementReceipt(
-            source_database_name=request.source_database_name,
-            replacement_database_name=request.replacement_database_name,
+            source_database_name=request.request.source_database_name,
+            replacement_database_name=request.request.replacement_database_name,
             backup_database_name="corridor_pre_proving_backup",
             restored_fingerprint=baseline,
         )
@@ -300,8 +339,10 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
         provision_database=_provisioner(),
         open_environment=_opener(restore_environment),
         fingerprint_database=states.__getitem__,
-        replace_database=replace,
-        read_database_head=lambda _url, _root: MIGRATION_HEAD,
+        stage_database=stage,
+        validate_staged_database=validate,
+        finalize_database=finalize,
+        rollback_database=lambda _staged: pytest.fail("unexpected rollback"),
     )
 
     assert restore_environment.restore_targets == [f"{DISPOSABLE_DATABASE_PREFIX}test"]
@@ -313,6 +354,126 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
     assert request.expected_replacement_fingerprint == baseline
     assert summary.previous_state_sha256 == current.state_sha256
     assert summary.restored_state_sha256 == baseline.state_sha256
+
+
+@pytest.mark.parametrize(
+    ("failing_rename", "fail_after_mutation"),
+    [(1, True), (2, True)],
+)
+def test_staging_recovers_the_exact_source_from_each_ambiguous_rename_failure(
+    failing_rename,
+    fail_after_mutation,
+):
+    current = _fingerprint("1")
+    replacement = _fingerprint("2")
+    replacement_name = f"{DISPOSABLE_DATABASE_PREFIX}rename_failure"
+    catalog = {"corridor": 101, replacement_name: 202}
+    connections = {"corridor": True, replacement_name: True}
+    rename_calls = 0
+
+    def read_catalog(_admin_url, guarded):
+        return {name: oid for name, oid in catalog.items() if name in guarded}
+
+    def quiesce(_database_url, _admin_url, database_name):
+        connections[database_name] = False
+        return StagedDatabaseValidation(
+            fingerprint=(current if database_name == "corridor" else replacement),
+            migration_head=MIGRATION_HEAD,
+            postgres_version="16.10",
+        )
+
+    def rename(_admin_url, old_name, new_name):
+        nonlocal rename_calls
+        rename_calls += 1
+        should_fail = rename_calls == failing_rename
+        if should_fail and not fail_after_mutation:
+            raise RuntimeError("injected rename failure")
+        catalog[new_name] = catalog.pop(old_name)
+        connections[new_name] = connections.pop(old_name)
+        if should_fail:
+            raise RuntimeError("injected rename failure")
+
+    def set_connections(_admin_url, database_name, allowed):
+        connections[database_name] = allowed
+
+    request = DatabaseReplacementRequest(
+        source_database_url=SOURCE_URL,
+        postgres_admin_url=ADMIN_URL,
+        source_database_name="corridor",
+        replacement_database_name=replacement_name,
+        expected_current_fingerprint=current,
+        expected_replacement_fingerprint=replacement,
+        expected_migration_head=MIGRATION_HEAD,
+    )
+
+    with pytest.raises(RuntimeError, match="injected rename failure"):
+        stage_local_database_replacement(
+            request,
+            read_catalog=read_catalog,
+            quiesce_database=quiesce,
+            rename_database=rename,
+            set_connections=set_connections,
+        )
+
+    assert catalog == {"corridor": 101, replacement_name: 202}
+    assert connections["corridor"] is True
+    assert connections[replacement_name] is True
+
+
+def test_shared_restore_rolls_back_before_finalization_on_post_swap_validation_failure(
+    tmp_path,
+):
+    captured, baseline, _capture_environment = _capture_fake_baseline(tmp_path)
+    current = _fingerprint("2")
+    restore_environment = _FakeEnvironment(MIGRATION_HEAD, [])
+    clone_url = (
+        "postgresql+psycopg://corridor:corridor@localhost:5433/"
+        f"{DISPOSABLE_DATABASE_PREFIX}test"
+    )
+    staged_items = []
+    rollbacks = []
+
+    def stage(request):
+        staged = StagedDatabaseReplacement(
+            request=request,
+            backup_database_name="corridor_pre_proving_backup",
+            source_database_oid=101,
+            replacement_database_oid=202,
+        )
+        staged_items.append(staged)
+        return staged
+
+    config = SharedDevelopmentRestoreConfig(
+        source_database_url=SOURCE_URL,
+        postgres_admin_url=ADMIN_URL,
+        expected_source_database_name="corridor",
+        expected_checkout_revision=REVISION,
+        expected_migration_head=MIGRATION_HEAD,
+        bundle_dir=captured.bundle_dir,
+        expected_manifest_sha256=captured.manifest_sha256,
+        repo_root=tmp_path,
+        allow_shared_development_restore=True,
+    )
+
+    with pytest.raises(ProductProvingDatabaseError, match="final fingerprint"):
+        restore_shared_development_database(
+            config,
+            provision_database=_provisioner(),
+            open_environment=_opener(restore_environment),
+            fingerprint_database={SOURCE_URL: current, clone_url: baseline}.__getitem__,
+            stage_database=stage,
+            validate_staged_database=lambda _staged: StagedDatabaseValidation(
+                fingerprint=_fingerprint("3"),
+                migration_head=MIGRATION_HEAD,
+                postgres_version="16.10",
+            ),
+            finalize_database=lambda _staged: pytest.fail(
+                "finalization must follow validation"
+            ),
+            rollback_database=rollbacks.append,
+        )
+
+    assert rollbacks == staged_items
 
 
 @pytest.mark.parametrize(
@@ -333,6 +494,14 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
             "postgresql+psycopg://corridor:corridor@localhost:5433/$DATABASE",
             "$DATABASE",
             "not an allowed exact target",
+        ),
+        (
+            (
+                "postgresql+psycopg://corridor:corridor@localhost:5433/"
+                "corridor?host=/var/run/postgresql"
+            ),
+            "corridor",
+            "query-based PostgreSQL connection routing",
         ),
     ],
 )

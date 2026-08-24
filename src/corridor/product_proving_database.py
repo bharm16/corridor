@@ -36,7 +36,6 @@ from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     ProvisionedDatabase,
     provision_disposable_postgres,
-    read_migration_head,
     require_local_postgres_host,
     require_postgres_16,
 )
@@ -203,6 +202,8 @@ class StagedDatabaseReplacement:
 
     request: DatabaseReplacementRequest
     backup_database_name: str
+    source_database_oid: int
+    replacement_database_oid: int
 
 
 @dataclass(frozen=True)
@@ -246,10 +247,6 @@ class _EnvironmentOpener(Protocol):
 
 
 FingerprintReader = Callable[[str], DatabaseFingerprint]
-DatabaseReplacer = Callable[
-    [DatabaseReplacementRequest], DatabaseReplacementReceipt
-]
-MigrationHeadReader = Callable[[str, Path], str]
 DatabaseReplacementStager = Callable[
     [DatabaseReplacementRequest], StagedDatabaseReplacement
 ]
@@ -260,7 +257,7 @@ DatabaseReplacementFinalizer = Callable[
     [StagedDatabaseReplacement], DatabaseReplacementReceipt
 ]
 DatabaseReplacementRollback = Callable[[StagedDatabaseReplacement], None]
-DatabaseCatalogReader = Callable[[str, set[str]], set[str]]
+DatabaseCatalogReader = Callable[[str, set[str]], dict[str, int]]
 DatabaseQuiescer = Callable[[str, str, str], StagedDatabaseValidation]
 DatabaseRenamer = Callable[[str, str, str], None]
 DatabaseConnectionSetter = Callable[[str, str, bool], None]
@@ -381,6 +378,17 @@ def capture_product_proving_database_baseline(
 ) -> ProductProvingDatabaseBaselineSummary:
     """Capture, independently restore-verify, and publish one immutable baseline."""
 
+    source_identity = _database_identity(config.source_database_url)
+    admin_identity = _database_identity(config.postgres_admin_url)
+    _require_local_identity(source_identity)
+    _require_local_identity(admin_identity)
+    if any(
+        source_identity[key] != admin_identity[key]
+        for key in ("host", "port", "username")
+    ):
+        raise ProductProvingDatabaseError(
+            "PostgreSQL admin URL does not identify the exact baseline source server"
+        )
     repo_root = Path(config.repo_root).resolve()
     compose_root = (
         Path(config.compose_root).resolve()
@@ -434,7 +442,7 @@ def capture_product_proving_database_baseline(
                 "revision": config.expected_checkout_revision,
                 "migration_head": config.expected_migration_head,
             },
-            "source_database": _database_identity(config.source_database_url),
+            "source_database": source_identity,
             "dump": {
                 "filename": DUMP_FILENAME,
                 "format": "postgresql-custom-data-only",
@@ -573,8 +581,10 @@ def restore_shared_development_database(
     provision_database: DatabaseProvisioner | None = None,
     open_environment: _EnvironmentOpener = SealedRehearsalEnvironment.open,
     fingerprint_database: FingerprintReader = fingerprint_database_url,
-    replace_database: DatabaseReplacer | None = None,
-    read_database_head: MigrationHeadReader | None = None,
+    stage_database: DatabaseReplacementStager | None = None,
+    validate_staged_database: StagedDatabaseValidator | None = None,
+    finalize_database: DatabaseReplacementFinalizer | None = None,
+    rollback_database: DatabaseReplacementRollback | None = None,
 ) -> SharedDevelopmentRestoreSummary:
     """Replace exactly one opted-in local development database with a proved clone."""
 
@@ -642,10 +652,14 @@ def restore_shared_development_database(
             repo_root,
             migration_head=config.expected_migration_head,
         )
-    if replace_database is None:
-        replace_database = replace_local_database_with_verified_clone
-    if read_database_head is None:
-        read_database_head = _read_database_head
+    if stage_database is None:
+        stage_database = stage_local_database_replacement
+    if validate_staged_database is None:
+        validate_staged_database = validate_staged_local_database_replacement
+    if finalize_database is None:
+        finalize_database = finalize_staged_local_database_replacement
+    if rollback_database is None:
+        rollback_database = rollback_staged_local_database_replacement
 
     source_before = fingerprint_database(config.source_database_url)
     with provision_database(config.postgres_admin_url) as database:
@@ -671,18 +685,36 @@ def restore_shared_development_database(
             expected_replacement_fingerprint=verified.fingerprint,
             expected_migration_head=config.expected_migration_head,
         )
-        replacement = replace_database(request)
+        staged = stage_database(request)
+        try:
+            staged_validation = validate_staged_database(staged)
+            if staged_validation.fingerprint != verified.fingerprint:
+                raise ProductProvingDatabaseError(
+                    "staged shared development database failed its final fingerprint"
+                )
+            if staged_validation.migration_head != config.expected_migration_head:
+                raise ProductProvingDatabaseError(
+                    "staged shared development database has the wrong migration head"
+                )
+            require_postgres_16(
+                staged_validation.postgres_version,
+                error_cls=ProductProvingDatabaseError,
+            )
+            replacement = finalize_database(staged)
+        except BaseException as primary_error:
+            try:
+                rollback_database(staged)
+            except Exception as rollback_error:
+                primary_error.add_note(
+                    f"staged database rollback also failed: {rollback_error}"
+                )
+            raise
         verification_database_name = database.name
 
-    restored = fingerprint_database(config.source_database_url)
-    if restored != verified.fingerprint or replacement.restored_fingerprint != restored:
+    restored = replacement.restored_fingerprint
+    if restored != verified.fingerprint:
         raise ProductProvingDatabaseError(
             "shared development database failed its final baseline fingerprint"
-        )
-    observed_head = read_database_head(config.source_database_url, repo_root)
-    if observed_head != config.expected_migration_head:
-        raise ProductProvingDatabaseError(
-            "restored shared development database has the wrong migration head"
         )
     return SharedDevelopmentRestoreSummary(
         source_database_name=config.expected_source_database_name,
@@ -714,12 +746,19 @@ def stage_local_database_replacement(
     replacement_name = request.replacement_database_name
     backup_name = _bounded_database_name(f"corridor_pre_proving_{uuid4().hex}")
     guarded_names = {source_name, replacement_name, backup_name}
-    if read_catalog(request.postgres_admin_url, guarded_names) != {
+    initial_catalog = read_catalog(request.postgres_admin_url, guarded_names)
+    if set(initial_catalog) != {
         source_name,
         replacement_name,
     }:
         raise ProductProvingDatabaseError(
             "source or verified replacement database identity changed before swap"
+        )
+    source_oid = initial_catalog[source_name]
+    replacement_oid = initial_catalog[replacement_name]
+    if source_oid == replacement_oid:
+        raise ProductProvingDatabaseError(
+            "source and replacement database OIDs must be distinct"
         )
 
     try:
@@ -755,9 +794,10 @@ def stage_local_database_replacement(
 
         rename_database(request.postgres_admin_url, source_name, backup_name)
         rename_database(request.postgres_admin_url, replacement_name, source_name)
-        if read_catalog(request.postgres_admin_url, guarded_names) != {
-            source_name,
-            backup_name,
+        staged_catalog = read_catalog(request.postgres_admin_url, guarded_names)
+        if staged_catalog != {
+            source_name: replacement_oid,
+            backup_name: source_oid,
         }:
             raise ProductProvingDatabaseError(
                 "database catalog does not show the exact staged replacement"
@@ -767,19 +807,22 @@ def stage_local_database_replacement(
             _recover_database_replacement(
                 request,
                 backup_name=backup_name,
+                source_oid=source_oid,
+                replacement_oid=replacement_oid,
                 read_catalog=read_catalog,
                 rename_database=rename_database,
                 set_connections=set_connections,
             )
         except Exception as rollback_error:
             primary_error.add_note(
-                "database replacement staging rollback also failed: "
-                f"{rollback_error}"
+                f"database replacement staging rollback also failed: {rollback_error}"
             )
         raise
     return StagedDatabaseReplacement(
         request=request,
         backup_database_name=backup_name,
+        source_database_oid=source_oid,
+        replacement_database_oid=replacement_oid,
     )
 
 
@@ -794,11 +837,14 @@ def validate_staged_local_database_replacement(
     read_catalog = read_catalog or _read_database_catalog
     quiesce_database = quiesce_database or _quiesce_and_read_database
     request = staged.request
-    expected_names = {
-        request.source_database_name,
-        staged.backup_database_name,
+    expected_catalog = {
+        request.source_database_name: staged.replacement_database_oid,
+        staged.backup_database_name: staged.source_database_oid,
     }
-    if read_catalog(request.postgres_admin_url, expected_names) != expected_names:
+    if (
+        read_catalog(request.postgres_admin_url, set(expected_catalog))
+        != expected_catalog
+    ):
         raise ProductProvingDatabaseError(
             "staged replacement or retained backup database is absent"
         )
@@ -822,19 +868,22 @@ def finalize_staged_local_database_replacement(
     drop_database = drop_database or _drop_database
     set_connections = set_connections or _set_database_connections
     request = staged.request
-    expected_names = {
-        request.source_database_name,
-        staged.backup_database_name,
+    expected_catalog = {
+        request.source_database_name: staged.replacement_database_oid,
+        staged.backup_database_name: staged.source_database_oid,
     }
-    if read_catalog(request.postgres_admin_url, expected_names) != expected_names:
+    if (
+        read_catalog(request.postgres_admin_url, set(expected_catalog))
+        != expected_catalog
+    ):
         raise ProductProvingDatabaseError(
             "cannot finalize an incomplete staged database replacement"
         )
     try:
         drop_database(request.postgres_admin_url, staged.backup_database_name)
     except Exception:
-        remaining = read_catalog(request.postgres_admin_url, expected_names)
-        if remaining != {request.source_database_name}:
+        remaining = read_catalog(request.postgres_admin_url, set(expected_catalog))
+        if remaining != {request.source_database_name: staged.replacement_database_oid}:
             raise
     set_connections(
         request.postgres_admin_url,
@@ -862,6 +911,8 @@ def rollback_staged_local_database_replacement(
     _recover_database_replacement(
         request,
         backup_name=staged.backup_database_name,
+        source_oid=staged.source_database_oid,
+        replacement_oid=staged.replacement_database_oid,
         read_catalog=read_catalog or _read_database_catalog,
         rename_database=rename_database or _rename_database,
         set_connections=set_connections or _set_database_connections,
@@ -903,6 +954,8 @@ def _recover_database_replacement(
     request: DatabaseReplacementRequest,
     *,
     backup_name: str,
+    source_oid: int,
+    replacement_oid: int,
     read_catalog: DatabaseCatalogReader,
     rename_database: DatabaseRenamer,
     set_connections: DatabaseConnectionSetter,
@@ -912,25 +965,37 @@ def _recover_database_replacement(
     source_name = request.source_database_name
     replacement_name = request.replacement_database_name
     guarded = {source_name, replacement_name, backup_name}
-    names = read_catalog(request.postgres_admin_url, guarded)
-    if names == {source_name, replacement_name}:
+    catalog = read_catalog(request.postgres_admin_url, guarded)
+    original_catalog = {
+        source_name: source_oid,
+        replacement_name: replacement_oid,
+    }
+    after_first_rename = {
+        backup_name: source_oid,
+        replacement_name: replacement_oid,
+    }
+    after_both_renames = {
+        source_name: replacement_oid,
+        backup_name: source_oid,
+    }
+    if catalog == original_catalog:
         pass
-    elif names == {backup_name, replacement_name}:
+    elif catalog == after_first_rename:
         rename_database(request.postgres_admin_url, backup_name, source_name)
-    elif names == {source_name, backup_name}:
+    elif catalog == after_both_renames:
         rename_database(request.postgres_admin_url, source_name, replacement_name)
         rename_database(request.postgres_admin_url, backup_name, source_name)
-    elif names == {source_name}:
+    elif catalog == {source_name: replacement_oid}:
         set_connections(request.postgres_admin_url, source_name, True)
         return
     else:
         raise ProductProvingDatabaseError(
             "database rename phase is ambiguous; automatic rollback refused"
         )
-    final_names = read_catalog(request.postgres_admin_url, guarded)
-    if final_names != {source_name, replacement_name}:
+    final_catalog = read_catalog(request.postgres_admin_url, guarded)
+    if final_catalog != original_catalog:
         raise ProductProvingDatabaseError(
-            "database replacement rollback did not restore both exact names"
+            "database replacement rollback did not restore both exact OIDs"
         )
     set_connections(request.postgres_admin_url, source_name, True)
     set_connections(request.postgres_admin_url, replacement_name, True)
@@ -979,9 +1044,9 @@ def _quiesce_and_read_database(
         engine.dispose()
 
 
-def _read_database_catalog(admin_url: str, names: set[str]) -> set[str]:
+def _read_database_catalog(admin_url: str, names: set[str]) -> dict[str, int]:
     if not names:
-        return set()
+        return {}
     for name in names:
         _require_database_name(name, "database")
     engine = _maintenance_engine(admin_url)
@@ -989,12 +1054,16 @@ def _read_database_catalog(admin_url: str, names: set[str]) -> set[str]:
         with engine.connect() as connection:
             version = str(connection.scalar(text("show server_version")))
             require_postgres_16(version, error_cls=ProductProvingDatabaseError)
-            return set(
-                connection.scalars(
-                    text("select datname from pg_database where datname = any(:names)"),
+            return {
+                str(name): int(oid)
+                for name, oid in connection.execute(
+                    text(
+                        "select datname, oid::bigint from pg_database "
+                        "where datname = any(:names)"
+                    ),
                     {"names": list(names)},
                 ).all()
-            )
+            }
     finally:
         engine.dispose()
 
@@ -1033,10 +1102,7 @@ def _set_database_connections(
     try:
         with engine.connect() as connection:
             connection.execute(
-                text(
-                    f'alter database "{database_name}" '
-                    f"with allow_connections {flag}"
-                )
+                text(f'alter database "{database_name}" with allow_connections {flag}')
             )
     finally:
         engine.dispose()
@@ -1078,8 +1144,10 @@ def _maintenance_engine(admin_url: str):
 
 def _database_url_for_name(admin_url: str, database_name: str) -> str:
     _require_database_name(database_name, "database")
-    return make_url(admin_url).set(database=database_name).render_as_string(
-        hide_password=False
+    return (
+        make_url(admin_url)
+        .set(database=database_name)
+        .render_as_string(hide_password=False)
     )
 
 
@@ -1219,14 +1287,6 @@ def _database_provisioner(
     return provision
 
 
-def _read_database_head(database_url: str, repo_root: Path) -> str:
-    return read_migration_head(
-        database_url,
-        repo_root=repo_root,
-        error_cls=ProductProvingDatabaseError,
-    )
-
-
 def _require_environment_pins(
     environment: SealedRehearsalEnvironment,
     expected_migration_head: str,
@@ -1263,6 +1323,10 @@ def _database_identity(database_url: str) -> dict[str, Any]:
     parsed = make_url(database_url)
     if parsed.get_backend_name() != "postgresql":
         raise ProductProvingDatabaseError("Product Proving database must be PostgreSQL")
+    if parsed.query:
+        raise ProductProvingDatabaseError(
+            "query-based PostgreSQL connection routing is not allowed"
+        )
     if not parsed.database or not parsed.username:
         raise ProductProvingDatabaseError(
             "Product Proving database identity is incomplete"
@@ -1282,6 +1346,38 @@ def _require_local_identity(identity: Mapping[str, Any]) -> None:
         identity.get("host"),
         error_cls=ProductProvingDatabaseError,
     )
+
+
+def _require_replacement_request(request: DatabaseReplacementRequest) -> None:
+    source_name = request.source_database_name
+    replacement_name = request.replacement_database_name
+    _require_shared_development_source_name(source_name)
+    _require_database_name(replacement_name, "replacement database")
+    if not replacement_name.startswith(DISPOSABLE_DATABASE_PREFIX):
+        raise ProductProvingDatabaseError(
+            "replacement database is outside the guarded disposable namespace"
+        )
+    if source_name == replacement_name:
+        raise ProductProvingDatabaseError(
+            "source and replacement database names must be different"
+        )
+    if not re.fullmatch(r"[0-9a-f]+", request.expected_migration_head):
+        raise ProductProvingDatabaseError("replacement migration head pin is invalid")
+    source_identity = _database_identity(request.source_database_url)
+    admin_identity = _database_identity(request.postgres_admin_url)
+    _require_local_identity(source_identity)
+    _require_local_identity(admin_identity)
+    if source_identity["database"] != source_name:
+        raise ProductProvingDatabaseError(
+            "replacement request names the wrong source database"
+        )
+    if any(
+        source_identity[key] != admin_identity[key]
+        for key in ("host", "port", "username")
+    ):
+        raise ProductProvingDatabaseError(
+            "replacement request crosses PostgreSQL server identities"
+        )
 
 
 def _require_database_name(value: str, label: str) -> None:
