@@ -13,8 +13,8 @@ SOURCE_ROOT = Path(__file__).parents[1] / "src" / "corridor"
 def _module_paths() -> tuple[Path, ...]:
     return tuple(
         path
-        for path in sorted(SOURCE_ROOT.glob("*.py"))
-        if path.name != "__init__.py"
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if path.name != "__init__.py" and "migrations" not in path.parts
     )
 
 
