@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+from calendar import monthrange
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -117,7 +118,6 @@ from corridor.disputes import (
     settle_dispute,
 )
 from corridor.event_admission import (
-    MACHINE_ACTOR,
     StatementUnplaceable,
     UNKNOWN_SCOPE_POLICY_VERSION,
     attach_statement,
@@ -200,7 +200,7 @@ _WORK_REASON_COPY = {
     "committed_date_change": "The External Party changed its Committed Date.",
     "milestone_impact_unknown": "Its Milestone Impact is not yet known.",
     "disputed_date": "Sources disagree about a current date.",
-    "unknown_scope": "Choose which Dependency the Commitment applies to.",
+    "unknown_scope": "Commitment Scope is not yet known.",
     "unplaced_statement": "Place this External Party statement with the right Dependency.",
     "missing_internal_owner": "Assign the Internal Owner for this Commitment.",
     "missing_next_action": "Set the Next Action for this Commitment.",
@@ -789,64 +789,19 @@ async def save_admitted_statement_scope(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Append only the residual Commitment Scope decision."""
+    """Scope correction belongs only to the explicit Correct flow."""
     project = _project(session, slug)
     candidate = _project_statement_candidate(session, project, candidate_id)
     context = _mechanically_admitted_statement_context(session, project, candidate)
     if context is None:
         raise HTTPException(404, "no mechanically admitted statement in this project")
-    form = await request.form()
-    mode = str(form.get("scope_mode") or "").strip()
-    try:
-        if context["decision"] != "scope":
-            raise StatementCoordinationRefusal(
-                "Commitment Scope is no longer the next unresolved decision"
-            )
-        if context["authority_gap"] is not None:
-            raise StatementCoordinationRefusal(context["authority_gap"])
-        dependency_ids = tuple(
-            _positive_form_id(value, "dependency_id")
-            for value in form.getlist("dependency_id")
-        )
-        if mode == "unknown":
-            if dependency_ids:
-                raise StatementCoordinationRefusal(
-                    "not-yet-known scope cannot name Dependencies"
-                )
-            scope = StatementScope.unknown()
-        elif mode == "one":
-            if len(dependency_ids) != 1:
-                raise StatementCoordinationRefusal(
-                    "one-Dependency scope must choose exactly one Dependency"
-                )
-            scope = StatementScope.selected(dependency_ids)
-        elif mode == "selected":
-            scope = StatementScope.selected(dependency_ids)
-        elif mode == "all_active":
-            if dependency_ids:
-                raise StatementCoordinationRefusal(
-                    "all-active scope derives its registered snapshot"
-                )
-            scope = StatementScope.all_active()
-        else:
-            raise StatementCoordinationRefusal("choose an explicit Commitment Scope")
-        correct_statement_scope(
-            session,
-            StatementScopeCorrection(
-                candidate_id=candidate.id,
-                event_id=context["event"].id,
-                expected_scope_decision_id=context["scope"].id,
-                scope=scope,
-            ),
-            principal=principal,
-        )
-    except (StatementCoordinationRefusal, ValueError) as exc:
-        return _statement_coordination_screen(
-            request, session, project, candidate, error=str(exc), status_code=400
-        )
-    session.commit()
-    return RedirectResponse(
-        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    return _statement_coordination_screen(
+        request,
+        session,
+        project,
+        candidate,
+        error="Use Correct to change Commitment Scope after admission.",
+        status_code=400,
     )
 
 
@@ -1038,21 +993,31 @@ def correct_statement_screen(
     project = _project(session, slug)
     candidate = _project_statement_candidate(session, project, candidate_id)
     receipt = _active_statement_coordination_receipt(session, candidate.id)
-    if receipt is None:
-        raise HTTPException(409, "this statement has no current guided Save to correct")
-    event = current_lineage_statement(session, receipt.commitment_lineage_id)
-    if event is None:
-        raise HTTPException(409, "this statement is no longer current")
-    scope_decision = session.scalar(
-        select(DependencyEventScopeDecision)
-        .where(
-            DependencyEventScopeDecision.event_id == event.id,
-            current_scope_decision_filter(),
+    event: DependencyEvent | None
+    scope_decision: DependencyEventScopeDecision | None
+    if receipt is not None:
+        event = current_lineage_statement(session, receipt.commitment_lineage_id)
+        if event is None:
+            raise HTTPException(409, "this statement is no longer current")
+        scope_decision = session.scalar(
+            select(DependencyEventScopeDecision)
+            .where(
+                DependencyEventScopeDecision.event_id == event.id,
+                current_scope_decision_filter(),
+            )
+            .order_by(DependencyEventScopeDecision.id)
         )
-        .order_by(DependencyEventScopeDecision.id)
-    )
+    else:
+        admitted = _mechanically_admitted_statement_context(session, project, candidate)
+        if admitted is None:
+            raise HTTPException(
+                409, "this statement has no current accepted statement to correct"
+            )
+        event = admitted["event"]
+        scope_decision = admitted["scope"]
     if scope_decision is None:
         raise HTTPException(409, "this statement has no current Commitment Scope")
+    affected_party = session.get(ExternalOrg, event.affected_external_org_id)
     return TEMPLATES.TemplateResponse(
         request,
         "statement_correct.html",
@@ -1060,12 +1025,33 @@ def correct_statement_screen(
             "project": project,
             "candidate": candidate,
             "event": event,
+            "affected_party_name": (
+                affected_party.name
+                if affected_party is not None
+                else "External Party not resolved"
+            ),
             "scope_decision": scope_decision,
             "scope_dependency_ids": tuple(
                 session.scalars(
                     select(DependencyEventScope.dependency_id).where(
                         DependencyEventScope.scope_decision_id == scope_decision.id
                     )
+                ).all()
+            ),
+            "current_evidence": tuple(
+                session.execute(
+                    select(EvidenceLink, Document)
+                    .join(Document, Document.id == EvidenceLink.document_id)
+                    .join(
+                        DependencyEventEvidence,
+                        DependencyEventEvidence.evidence_link_id
+                        == EvidenceLink.id,
+                    )
+                    .where(
+                        DependencyEventEvidence.event_id == event.id,
+                        Document.project_id == project.id,
+                    )
+                    .order_by(EvidenceLink.id)
                 ).all()
             ),
             "parties": session.scalars(select(ExternalOrg).order_by(ExternalOrg.name)).all(),
@@ -1079,6 +1065,7 @@ def correct_statement_screen(
                 .outerjoin(ExternalOrg, ExternalOrg.id == Dependency.external_org_id)
                 .where(
                     Dependency.project_id == project.id,
+                    Dependency.external_org_id == event.affected_external_org_id,
                     Dependency.dismissed_at.is_(None),
                     Dependency.status != "closed",
                 )
@@ -1199,13 +1186,16 @@ def _mechanically_admitted_statement_context(
     if row is None:
         return None
     outcome, policy_run = row
-    event = session.get(DependencyEvent, outcome.dependency_event_id)
+    admitted_event = session.get(DependencyEvent, outcome.dependency_event_id)
     if (
         candidate.state != "accepted"
-        or event is None
-        or event.project_id != project.id
-        or event.commitment_lineage_id != outcome.commitment_lineage_id
+        or admitted_event is None
+        or admitted_event.project_id != project.id
+        or admitted_event.commitment_lineage_id != outcome.commitment_lineage_id
     ):
+        return None
+    event = current_lineage_statement(session, admitted_event.commitment_lineage_id)
+    if event is None or event.project_id != project.id:
         return None
     scope = session.scalar(
         select(DependencyEventScopeDecision)
@@ -1219,6 +1209,24 @@ def _mechanically_admitted_statement_context(
     lineage = session.get(CommitmentLineage, event.commitment_lineage_id)
     if scope is None or lineage is None:
         return None
+    affected_party = session.get(ExternalOrg, event.affected_external_org_id)
+    scope_dependency_ids = tuple(
+        session.scalars(
+            select(DependencyEventScope.dependency_id)
+            .where(DependencyEventScope.scope_decision_id == scope.id)
+            .order_by(DependencyEventScope.dependency_id)
+        ).all()
+    )
+    scope_dependencies = tuple(
+        session.scalars(
+            select(Dependency)
+            .where(
+                Dependency.project_id == project.id,
+                Dependency.id.in_(scope_dependency_ids),
+            )
+            .order_by(Dependency.ref_code)
+        ).all()
+    )
 
     evidence = tuple(
         {
@@ -1264,9 +1272,7 @@ def _mechanically_admitted_statement_context(
         ).all()
     )
     decision = (
-        "scope"
-        if scope.scope_mode == "unknown" and scope.decided_by == MACHINE_ACTOR
-        else "owner"
+        "owner"
         if not lineage.internal_owner
         else "next_action"
         if not lineage.next_action
@@ -1278,23 +1284,25 @@ def _mechanically_admitted_statement_context(
         authority_gap = (
             "Verified statement Evidence is unavailable; residual decisions remain pending."
         )
-    elif decision == "scope" and not dependencies:
-        authority_gap = (
-            "No active Dependency choices are registered for this External Party; "
-            "Commitment Scope remains not yet known."
-        )
     elif decision == "owner" and not roster:
         authority_gap = (
             "No active project roster choices are available; Internal Owner remains pending."
         )
     return {
         "event": event,
+        "affected_party_name": (
+            affected_party.name
+            if affected_party is not None
+            else "External Party not resolved"
+        ),
         "lineage": lineage,
         "scope": scope,
         "outcome": outcome,
         "policy_run": policy_run,
         "evidence": evidence,
         "dependencies": dependencies,
+        "scope_dependency_ids": scope_dependency_ids,
+        "scope_dependencies": scope_dependencies,
         "roster": roster,
         "decision": decision,
         "authority_gap": authority_gap,
@@ -1367,6 +1375,13 @@ def _statement_coordination_screen(
     ).all()
     fields = (candidate.payload_json or {}).get("fields") or {}
     candidate_party = str(fields.get("external_org") or "")
+    candidate_stated_party = str(fields.get("stated_party") or "")
+    candidate_affected_party_id = _evidence_backed_party_id(
+        parties, candidate_party, candidate_evidence
+    )
+    candidate_stated_party_id = _evidence_backed_party_id(
+        parties, candidate_stated_party, candidate_evidence
+    )
     candidate_timing = _candidate_statement_timing_defaults(
         fields, candidate_evidence
     )
@@ -1387,9 +1402,9 @@ def _statement_coordination_screen(
             "candidate": candidate,
             "candidate_fields": fields,
             "candidate_party": candidate_party,
-            "candidate_affected_party_id": _evidence_backed_party_id(
-                parties, candidate_party, candidate_evidence
-            ),
+            "candidate_affected_party_id": candidate_affected_party_id,
+            "candidate_stated_party": candidate_stated_party,
+            "candidate_stated_party_id": candidate_stated_party_id,
             "candidate_description": str(fields.get("description") or ""),
             "candidate_event_date": str(fields.get("event_date") or ""),
             "candidate_timing": candidate_timing,
@@ -1406,7 +1421,9 @@ def _statement_coordination_screen(
                 {
                     "id": dependency.id,
                     "ref_code": dependency.ref_code,
+                    "source_ref": dependency.source_ref,
                     "title": dependency.title,
+                    "location_desc": dependency.location_desc,
                     "station_from": dependency.station_from,
                     "station_to": dependency.station_to,
                     "external_org_id": dependency.external_org_id,
@@ -1460,8 +1477,57 @@ def _evidence_backed_party_id(
 def _candidate_statement_timing_defaults(
     fields: dict, evidence: tuple[dict, ...]
 ) -> dict[str, str | bool]:
-    """Expose existing timing as a choice; never ask for a new transcription."""
+    """Expose supported Candidate timing read-only; never ask for transcription."""
     raw = fields.get("committed_date")
+    if isinstance(raw, dict):
+        text_value = str(raw.get("text") or "").strip()
+        precision = str(raw.get("precision") or "").strip()
+        start_value = str(raw.get("start_date") or "").strip()
+        end_value = str(raw.get("end_date") or "").strip()
+        try:
+            start_date = date.fromisoformat(start_value) if start_value else None
+            end_date = date.fromisoformat(end_value) if end_value else None
+        except ValueError:
+            start_date = end_date = None
+        valid_shape = (
+            (
+                precision == "day"
+                and start_date is not None
+                and end_date == start_date
+            )
+            or (
+                precision == "month"
+                and start_date is not None
+                and start_date.day == 1
+                and end_date
+                == date(
+                    start_date.year,
+                    start_date.month,
+                    monthrange(start_date.year, start_date.month)[1],
+                )
+            )
+            or (
+                precision == "approximate"
+                and start_date is None
+                and end_date is None
+            )
+        )
+        visible_text = normalize(
+            " ".join(
+                str(value or "")
+                for item in evidence
+                for value in (item.get("quote"), item.get("page_text"))
+            )
+        )
+        return {
+            "available": bool(
+                text_value and valid_shape and normalize(text_value) in visible_text
+            ),
+            "text": text_value,
+            "precision": precision,
+            "start_date": start_value,
+            "end_date": end_value,
+        }
     try:
         parsed = date.fromisoformat(str(raw)) if raw else None
     except ValueError:
@@ -1479,6 +1545,7 @@ def _candidate_statement_timing_defaults(
     return {
         "available": bool(parsed and exact_wording),
         "text": exact_wording,
+        "precision": "day" if parsed else "",
         "start_date": parsed.isoformat() if parsed else "",
         "end_date": parsed.isoformat() if parsed else "",
     }
@@ -1848,16 +1915,6 @@ def _optional_positive_form_id(form, name: str) -> int | None:
 
 
 def _required_positive_value(value, name: str) -> int:
-    try:
-        identity = int(str(value).strip())
-    except (TypeError, ValueError) as exc:
-        raise StatementCoordinationRefusal(f"{name} must be a positive identity") from exc
-    if identity <= 0:
-        raise StatementCoordinationRefusal(f"{name} must be a positive identity")
-    return identity
-
-
-def _positive_form_id(value: object, name: str) -> int:
     try:
         identity = int(str(value).strip())
     except (TypeError, ValueError) as exc:

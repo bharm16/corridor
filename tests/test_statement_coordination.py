@@ -808,6 +808,56 @@ def test_correct_scope_appends_one_scope_decision_without_rewriting_the_statemen
     ) == dependency.id
 
 
+def test_scope_correction_refuses_an_attributable_noop(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(session, project, "noop-statement-scope.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+        ),
+        principal=RECORDER,
+    )
+
+    with pytest.raises(
+        StatementCoordinationRefusal,
+        match="already has this exact value",
+    ):
+        correct_statement_scope(
+            session,
+            StatementScopeCorrection(
+                candidate_id=candidate.id,
+                event_id=result.event.id,
+                expected_scope_decision_id=result.receipt.scope_decision_id,
+                scope=StatementScope.unknown(),
+            ),
+            principal=RECORDER,
+        )
+
+    decisions = tuple(
+        session.scalars(
+            select(DependencyEventScopeDecision).where(
+                DependencyEventScopeDecision.event_id == result.event.id
+            )
+        ).all()
+    )
+    assert [decision.id for decision in decisions] == [result.receipt.scope_decision_id]
+
+
 def test_correcting_statement_facts_appends_a_successor_and_marks_its_plan_for_review(
     session, project, party, roster_entry
 ):
@@ -1218,6 +1268,7 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
         fields={"event_type": "commitment", "description": wrong_target_quote},
     )
     dependency = _dependency(session, project, party, "HTTP-CORRECT", "KM crossing")
+    dependency.source_ref = "PL19"
     irrelevant_quote = "Kinder Morgan discussed traffic control in the project meeting."
     irrelevant_document = _document(session, project, "http-not-relevant.pdf", irrelevant_quote)
     irrelevant_candidate = _candidate(
@@ -1278,6 +1329,21 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
                     StatementCoordinationReceipt.candidate_id == correct_candidate.id
                 )
             )
+            correct_screen = client.get(
+                f"/statements/{project.slug}/{correct_candidate.id}/correct"
+            )
+            assert correct_screen.status_code == 200
+            assert "Current accepted statement — read only" in correct_screen.text
+            assert correct_quote in correct_screen.text
+            assert "Current verified Evidence" in correct_screen.text
+            assert "http-correct.pdf" in correct_screen.text
+            assert 'name="scope_mode" value="selected"' in correct_screen.text
+            assert 'name="scope_mode" value="all_active"' in correct_screen.text
+            assert 'name="scope_mode" value="unknown"' not in correct_screen.text
+            assert 'type="radio" name="scope_mode"' not in correct_screen.text
+            assert "PL19 — KM crossing" in correct_screen.text
+            assert "6608+70" in correct_screen.text
+            assert "6616+50" in correct_screen.text
             corrected = client.post(
                 f"/statements/{project.slug}/{correct_candidate.id}/correct/scope",
                 data={
@@ -1351,7 +1417,7 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
         app.dependency_overrides.clear()
 
 
-def test_http_screen_shows_the_registered_source_page_without_accepting_party_suggestions(
+def test_http_screen_uses_supported_affected_party_without_inventing_the_speaker(
     session, project, party, roster_entry, tmp_path
 ):
     quote = "The March 2026 completion timeline seems unattainable."
@@ -1394,14 +1460,15 @@ def test_http_screen_shows_the_registered_source_page_without_accepting_party_su
         assert "Kinder Morgan Management Meeting Highlights" in screen.text
         assert "Relocation schedule discussion" in screen.text
         assert "Propose extending completion to May 16th." in screen.text
-        assert "Extracted context suggestion — not yet accepted" in screen.text
-        affected_options = screen.text.split('id="affected-party"', 1)[1].split(
-            "</select>", 1
-        )[0]
+        assert "supported by the visible Evidence" in screen.text
+        assert 'id="affected-party"' not in screen.text
+        assert (
+            f'name="affected_external_org_id" value="{party.id}"'
+            in screen.text
+        )
         stated_options = screen.text.split('id="stated-party"', 1)[1].split(
             "</select>", 1
         )[0]
-        assert f'<option value="{party.id}" selected>{party.name}</option>' in affected_options
         assert f'<option value="{party.id}" selected>' not in stated_options
         assert 'id="stated-party-words"' not in screen.text
         assert 'type="hidden" name="stated_party"' in screen.text
@@ -1995,7 +2062,18 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
         project,
         document,
         quote=quote,
-        fields={"event_type": "commitment", "description": quote},
+        fields={
+            "event_type": "commitment",
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+            "committed_date": {
+                "text": "June 1, 2026",
+                "precision": "day",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-01",
+            },
+        },
     )
     _dependency(session, project, party, "HTTP-1", "Kinder Morgan crossing")
     app.dependency_overrides[get_session] = lambda: session
@@ -2017,6 +2095,19 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
             assert 'name="scope_mode" value="unknown" required' in screen.text
             assert 'data-dependency-party="' in screen.text
             assert "Kinder Morgan crossing · Kinder Morgan" in screen.text
+            assert (
+                f'name="affected_external_org_id" value="{party.id}"'
+                in screen.text
+            )
+            assert (
+                f'name="stated_external_org_id" value="{party.id}"'
+                in screen.text
+            )
+            assert 'id="affected-party"' not in screen.text
+            assert 'id="stated-party"' not in screen.text
+            assert 'name="new_timing_precision" value="day"' in screen.text
+            assert "What precision does the Evidence support?" not in screen.text
+            assert "June 1, 2026" in screen.text
 
             response = client.post(
                 f"/statements/{project.slug}/{candidate.id}/coordinate",

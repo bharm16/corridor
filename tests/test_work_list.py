@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 
 from corridor.db import Session, engine
+from corridor.dependency_events import current_scope_decision_filter
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.event_admission import UNKNOWN_SCOPE_POLICY_VERSION, run_event_admission
 from corridor.external_statements import (
@@ -25,6 +26,7 @@ from corridor.models import (
     Dependency,
     DependencyEvent,
     DependencyEventEvidence,
+    DependencyEventScope,
     DependencyEventScopeDecision,
     DocPage,
     Document,
@@ -243,6 +245,25 @@ def _mechanically_admit_unknown_scope(session, project, party):
     )
     assert result.admitted_count == 1
     return candidate
+
+
+def _complete_mechanical_commitment_plan(client, project, candidate, owner):
+    owned = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/owner",
+        data={"internal_owner_roster_entry_id": str(owner.id)},
+        follow_redirects=False,
+    )
+    assert owned.status_code == 303
+    planned = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/next-action",
+        data={
+            "next_action": "Confirm the External Party and Commitment Scope",
+            "action_due_date_unknown_reason": "date_not_yet_known",
+        },
+        follow_redirects=False,
+    )
+    assert planned.status_code == 303
+    return planned.headers["location"]
 
 
 def _record_deferred_month_commitments(session, project, party, count):
@@ -1231,10 +1252,17 @@ def test_mechanically_admitted_commitment_links_to_its_residual_work(
     assert "Open statement plan" in page.text
 
 
-def test_mechanical_commitment_screen_renders_facts_read_only_and_only_scope_first(
+def test_mechanical_commitment_shows_known_unknown_scope_and_owner_first(
     client, session, project, party
 ):
     candidate = _mechanically_admit_unknown_scope(session, project, party)
+    session.add(
+        ProjectRosterEntry(
+            project_id=project.id,
+            principal_subject="local:read-only-owner",
+            display_name="Read Only Owner",
+        )
+    )
     session.add(
         Dependency(
             project_id=project.id,
@@ -1242,6 +1270,8 @@ def test_mechanical_commitment_screen_renders_facts_read_only_and_only_scope_fir
             source_ref="EQ-READ-ONLY",
             dep_type="utility_relocation",
             title="Equistar read-only screen choice",
+            station_from="245+00",
+            station_to="445+00",
             status="identified",
             external_org_id=party.id,
         )
@@ -1261,42 +1291,68 @@ def test_mechanical_commitment_screen_renders_facts_read_only_and_only_scope_fir
     assert UNKNOWN_SCOPE_POLICY_VERSION in body
     assert "Verified Evidence" in body
     assert f"{party.name} will provide the chain of title in June 2025." in body
-    assert 'name="scope_mode"' in body
-    assert 'value="one"' in body
-    assert 'value="selected"' in body
-    assert 'value="all_active"' in body
-    assert 'value="unknown"' in body
+    assert "The accepted Evidence does not identify an affected Dependency." in body
+    assert "Corridor keeps this Commitment at party level." in body
+    assert "Choose the Commitment Scope" not in body
+    assert "Keep Commitment Scope not yet known" not in body
+    assert 'name="scope_mode"' not in body
+    assert 'name="dependency_id"' not in body
     assert 'name="affected_external_org_id"' not in body
     assert 'name="stated_external_org_id"' not in body
     assert 'name="description"' not in body
     assert 'name="new_timing_precision"' not in body
-    assert 'name="internal_owner_roster_entry_id"' not in body
+    assert 'name="internal_owner_roster_entry_id"' in body
     assert 'name="next_action"' not in body
     assert "Evidence Investigator" not in body
     assert "confidence" not in body.lower()
-    assert 'name="scope_mode" value="unknown" checked' not in body
+    assert "Change Commitment Scope" not in body
 
 
-def test_mechanical_commitment_with_no_dependency_choices_stays_pending_with_gap(
+def test_unknown_scope_with_no_dependency_choices_does_not_block_the_plan(
     client, session, project, party
 ):
     candidate = _mechanically_admit_unknown_scope(session, project, party)
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:gap-owner",
+        display_name="Gap Owner",
+    )
+    session.add(owner)
+    session.flush()
 
     response = client.get(f"/statements/{project.slug}/{candidate.id}/coordinate")
 
     assert response.status_code == 200
     body = response.text
-    assert "No active Dependency choices are registered for this External Party" in body
+    assert "No active Dependency choices are registered" not in body
     assert 'name="scope_mode"' not in body
-    assert "Save Commitment Scope" not in body
-    assert "No initial Commitment decision remains unresolved." not in body
+    assert 'name="internal_owner_roster_entry_id"' in body
 
-    refused = client.post(
-        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
-        data={"scope_mode": "all_active"},
+    owned = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/owner",
+        data={"internal_owner_roster_entry_id": str(owner.id)},
+        follow_redirects=False,
     )
-    assert refused.status_code == 400
-    assert "Commitment Scope remains not yet known" in refused.text
+    assert owned.status_code == 303
+    action_page = client.get(owned.headers["location"]).text
+    assert "Choose the Next Action" in action_page
+    assert 'name="next_action"' in action_page
+    assert 'name="scope_mode"' not in action_page
+
+    planned = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/next-action",
+        data={
+            "next_action": "Confirm the External Party and Commitment Scope",
+            "action_due_date_unknown_reason": "date_not_yet_known",
+        },
+        follow_redirects=False,
+    )
+    assert planned.status_code == 303
+    final_page = client.get(planned.headers["location"]).text
+    assert "The Coordination Plan is recorded." in final_page
+    assert "Corridor keeps this Commitment at party level." in final_page
+    assert "Change Commitment Scope" not in final_page
+    assert 'name="scope_mode"' not in final_page
 
 
 def test_mechanical_commitment_asks_owner_then_structured_next_action(
@@ -1309,6 +1365,8 @@ def test_mechanical_commitment_asks_owner_then_structured_next_action(
         source_ref="EQ-1",
         dep_type="utility_relocation",
         title="Equistar line",
+        station_from="245+00",
+        station_to="445+00",
         status="identified",
         external_org_id=party.id,
     )
@@ -1320,13 +1378,9 @@ def test_mechanical_commitment_asks_owner_then_structured_next_action(
     session.add_all((dependency, owner))
     session.flush()
 
-    scoped = client.post(
-        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
-        data={"scope_mode": "one", "dependency_id": str(dependency.id)},
-        follow_redirects=False,
-    )
-    assert scoped.status_code == 303
-    owner_page = client.get(scoped.headers["location"]).text
+    owner_page = client.get(
+        f"/statements/{project.slug}/{candidate.id}/coordinate"
+    ).text
     assert "Choose the Internal Owner" in owner_page
     assert 'name="internal_owner_roster_entry_id"' in owner_page
     assert 'name="scope_mode"' not in owner_page
@@ -1346,27 +1400,56 @@ def test_mechanical_commitment_asks_owner_then_structured_next_action(
     assert 'name="internal_owner_roster_entry_id"' not in action_page
     assert 'name="scope_mode"' not in action_page
 
+    planned = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/next-action",
+        data={
+            "next_action": "Confirm the External Party and Commitment Scope",
+            "action_due_date_unknown_reason": "date_not_yet_known",
+        },
+        follow_redirects=False,
+    )
+    assert planned.status_code == 303
+    final_page = client.get(planned.headers["location"]).text
+    assert "The Coordination Plan is recorded." in final_page
+    assert "Current Commitment Scope" in final_page
+    assert "Not yet known." in final_page
+    assert "Corridor keeps this Commitment at party level." in final_page
+    assert "Change Commitment Scope" not in final_page
+    assert 'name="scope_mode"' not in final_page
+    assert 'name="dependency_id"' not in final_page
 
-def test_human_can_confirm_scope_is_still_unknown_then_assign_owner(
+    outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id,
+            EventAdmissionOutcome.outcome == "admitted",
+        )
+    )
+    decisions = tuple(
+        session.scalars(
+            select(DependencyEventScopeDecision)
+            .where(
+                DependencyEventScopeDecision.event_id
+                == outcome.dependency_event_id
+            )
+            .order_by(DependencyEventScopeDecision.id)
+        ).all()
+    )
+    assert len(decisions) == 1
+    assert decisions[0].decided_by == "corridor:event-admission"
+
+
+def test_machine_unknown_scope_is_not_saved_again_as_a_human_decision(
     client, session, project, party
 ):
     candidate = _mechanically_admit_unknown_scope(session, project, party)
-    dependency = Dependency(
-        project_id=project.id,
-        ref_code="EQ-UNKNOWN",
-        source_ref="EQ-UNKNOWN",
-        dep_type="utility_relocation",
-        title="Available choice deliberately not selected",
-        status="identified",
-        external_org_id=party.id,
-    )
     owner = ProjectRosterEntry(
         project_id=project.id,
         principal_subject="local:unknown-scope-owner",
         display_name="Unknown Scope Owner",
     )
-    session.add_all((dependency, owner))
+    session.add(owner)
     session.flush()
+    _complete_mechanical_commitment_plan(client, project, candidate, owner)
 
     response = client.post(
         f"/statements/{project.slug}/{candidate.id}/admitted/scope",
@@ -1374,8 +1457,136 @@ def test_human_can_confirm_scope_is_still_unknown_then_assign_owner(
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
-    page = client.get(response.headers["location"]).text
+    assert response.status_code == 400
+    page = response.text
+    assert "Use Correct to change Commitment Scope after admission." in page
     assert "Commitment Scope not yet known" in page
-    assert "Choose the Internal Owner" in page
+    outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id,
+            EventAdmissionOutcome.outcome == "admitted",
+        )
+    )
+    decisions = tuple(
+        session.scalars(
+            select(DependencyEventScopeDecision)
+            .where(
+                DependencyEventScopeDecision.event_id
+                == outcome.dependency_event_id
+            )
+            .order_by(DependencyEventScopeDecision.id)
+        ).all()
+    )
+    assert len(decisions) == 1
+    assert decisions[0].decided_by == "corridor:event-admission"
+
+
+def test_scope_can_be_identified_after_the_coordination_plan(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="EQ-SCOPED",
+        source_ref="PL19",
+        dep_type="utility_relocation",
+        title="Equistar pipeline",
+        station_from="6350+04",
+        station_to="6354+23",
+        status="identified",
+        external_org_id=party.id,
+    )
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:scoped-owner",
+        display_name="Scoped Owner",
+    )
+    session.add_all((dependency, owner))
+    session.flush()
+    _complete_mechanical_commitment_plan(client, project, candidate, owner)
+
+    outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == candidate.id,
+            EventAdmissionOutcome.outcome == "admitted",
+        )
+    )
+    admitted_page = client.get(f"/statements/{project.slug}/{candidate.id}/coordinate")
+    assert admitted_page.status_code == 200
+    assert "Correct accepted facts or Commitment Scope" not in admitted_page.text
+    refused = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
+        data={"scope_mode": "selected", "dependency_id": str(dependency.id)},
+        follow_redirects=False,
+    )
+    assert refused.status_code == 400
+    assert "Use Correct to change Commitment Scope after admission." in refused.text
+    current_scope = session.scalar(
+        select(DependencyEventScopeDecision)
+        .where(
+            DependencyEventScopeDecision.event_id == outcome.dependency_event_id,
+            current_scope_decision_filter(),
+        )
+        .order_by(DependencyEventScopeDecision.id.desc())
+        .limit(1)
+    )
+    correct_page = client.get(f"/statements/{project.slug}/{candidate.id}/correct")
+    assert correct_page.status_code == 200
+    scoped = client.post(
+        f"/statements/{project.slug}/{candidate.id}/correct/scope",
+        data={
+            "expected_statement_event_id": str(outcome.dependency_event_id),
+            "expected_scope_decision_id": str(current_scope.id),
+            "scope_mode": "selected",
+            "dependency_id": str(dependency.id),
+        },
+        follow_redirects=False,
+    )
+
+    assert scoped.status_code == 303
+    decisions = tuple(
+        session.scalars(
+            select(DependencyEventScopeDecision)
+            .where(
+                DependencyEventScopeDecision.event_id
+                == outcome.dependency_event_id
+            )
+            .order_by(DependencyEventScopeDecision.id)
+        ).all()
+    )
+    assert [decision.scope_mode for decision in decisions] == [
+        "unknown",
+        "selected",
+    ]
+    [link] = session.scalars(
+        select(DependencyEventScope).where(
+            DependencyEventScope.scope_decision_id == decisions[-1].id
+        )
+    ).all()
+    assert link.dependency_id == dependency.id
+    page = client.get(scoped.headers["location"]).text
+    assert "PL19 — Equistar pipeline" in page
+    assert "Change Commitment Scope" not in page
     assert 'name="scope_mode"' not in page
+
+
+def test_admitted_scope_route_refuses_even_when_selected_dependencies_are_missing(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:empty-scope-owner",
+        display_name="Empty Scope Owner",
+    )
+    session.add(owner)
+    session.flush()
+    _complete_mechanical_commitment_plan(client, project, candidate, owner)
+    response = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/scope",
+        data={"scope_mode": "selected"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    body = response.text
+    assert "Use Correct to change Commitment Scope after admission." in body

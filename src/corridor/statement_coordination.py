@@ -39,6 +39,7 @@ from corridor.models import (
     CandidateDisposition,
     CommitmentLineage,
     AuditLog,
+    Dependency,
     DependencyEvent,
     DependencyEventScope,
     DependencyEventScopeDecision,
@@ -654,6 +655,13 @@ def correct_statement_scope(
                 raise StaleStatementCoordination(
                     "the statement scope changed; reload the newer state"
                 )
+            if _scope_correction_is_noop(
+                session, event, predecessor, correction.scope
+            ):
+                raise StatementCoordinationRefusal(
+                    "Commitment Scope already has this exact value; "
+                    "no correction was recorded"
+                )
             decision = record_statement_scope_decision(
                 session,
                 event_id=event.id,
@@ -677,6 +685,44 @@ def correct_statement_scope(
     except (StatementRefusal, ValueError, IntegrityError) as exc:
         raise StatementCoordinationRefusal(str(exc)) from exc
     return decision
+
+
+def _scope_correction_is_noop(
+    session: Session,
+    event: DependencyEvent,
+    predecessor: DependencyEventScopeDecision,
+    requested: StatementScope,
+) -> bool:
+    """Refuse an attributable scope receipt that changes no scope state."""
+    if predecessor.scope_mode != requested.mode:
+        return False
+    current_ids = tuple(
+        session.scalars(
+            select(DependencyEventScope.dependency_id)
+            .where(DependencyEventScope.scope_decision_id == predecessor.id)
+            .order_by(DependencyEventScope.dependency_id)
+        ).all()
+    )
+    if requested.mode == "unknown":
+        requested_ids: tuple[int, ...] = ()
+    elif requested.mode == "selected":
+        requested_ids = tuple(sorted(requested.dependency_ids))
+    elif requested.mode == "all_active":
+        requested_ids = tuple(
+            session.scalars(
+                select(Dependency.id)
+                .where(
+                    Dependency.project_id == event.project_id,
+                    Dependency.external_org_id == event.affected_external_org_id,
+                    Dependency.dismissed_at.is_(None),
+                    Dependency.status != "closed",
+                )
+                .order_by(Dependency.id)
+            ).all()
+        )
+    else:
+        return False
+    return current_ids == requested_ids
 
 
 def correct_statement_facts(
