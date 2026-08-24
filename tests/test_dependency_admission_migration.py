@@ -11,10 +11,12 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
@@ -70,9 +72,10 @@ def test_dependency_abstention_inputs_are_on_one_fresh_linear_head():
     ) as database:
         with database.session_factory().connection() as connection:
             assert connection.scalar(text("select version_num from alembic_version")) == HEAD
-            assert _columns(connection)[-2:] == [
+            assert _columns(connection)[-3:] == [
                 "eligibility_json",
                 "eligibility_sha256",
+                "eligibility_receipt_required",
             ]
             assert {
                 "ck_dependency_admission_outcome_eligibility_sha256",
@@ -146,9 +149,10 @@ def test_predecessor_upgrade_preserves_historical_dependency_abstention():
             engine = create_engine(database_url)
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == HEAD
-                assert _columns(connection)[-2:] == [
+                assert _columns(connection)[-3:] == [
                     "eligibility_json",
                     "eligibility_sha256",
+                    "eligibility_receipt_required",
                 ]
                 assert {
                     "ck_dependency_admission_outcome_eligibility_sha256",
@@ -157,7 +161,8 @@ def test_predecessor_upgrade_preserves_historical_dependency_abstention():
                 row = connection.execute(
                     text(
                         "select id, outcome, reason, eligibility_json, "
-                        "eligibility_sha256 from dependency_admission_outcomes "
+                        "eligibility_sha256, eligibility_receipt_required "
+                        "from dependency_admission_outcomes "
                         "where id = 314005"
                     )
                 ).mappings().one()
@@ -167,6 +172,17 @@ def test_predecessor_upgrade_preserves_historical_dependency_abstention():
                     "reason": "revisions_disagree_on_party",
                     "eligibility_json": None,
                     "eligibility_sha256": None,
+                    "eligibility_receipt_required": False,
                 }
+            with engine.begin() as connection:
+                with pytest.raises(IntegrityError), connection.begin_nested():
+                    connection.execute(
+                        text(
+                            "insert into dependency_admission_outcomes "
+                            "(id, policy_run_id, family, candidate_id, outcome, reason) "
+                            "values (314006, 314004, 'dependency-admission', "
+                            "314003, 'abstained', 'revisions_disagree_on_party')"
+                        )
+                    )
         finally:
             engine.dispose()
