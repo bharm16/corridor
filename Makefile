@@ -173,6 +173,8 @@ sh99-coordinator-rehearsal:
 # Publish or independently verify the external two-pass ADR-0046 receipt:
 #   make product-proving ARGS="publish --capture-json=<json> --pass-1-approved-export=<pdf> --pass-2-approved-export=<pdf> --output-dir=<new-dir>"
 #   make product-proving ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+# A terminal failure uses `publish-failure` and `verify-failure`; it can never
+# be read through the successful two-pass verifier.
 product-proving:
 	uv run python -m corridor.product_proving_run_cli $(ARGS)
 

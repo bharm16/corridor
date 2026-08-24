@@ -14,11 +14,14 @@ from corridor.product_proving_run import (
     ExpectedPreflight,
     ObservedPreflight,
     ProductProvingCapture,
+    ProductProvingFailureCapture,
     ProductProvingPass,
     compare_candidate_sets,
     publish_product_proving_bundle,
+    publish_product_proving_failure_bundle,
     verify_preflight,
     verify_product_proving_bundle,
+    verify_product_proving_failure_bundle,
     verify_two_pass_capture,
 )
 
@@ -252,3 +255,43 @@ def test_receipt_survives_database_restoration_and_detects_tampering(tmp_path):
             bundle.bundle_dir,
             expected_integrity_manifest_sha256=bundle.integrity_manifest_sha256,
         )
+
+
+def test_failed_repeatability_receipt_is_publishable_but_can_never_claim_pass(tmp_path):
+    comparison = compare_candidate_sets(
+        document_id=1438,
+        baseline_run_id=193812,
+        fresh_run_id=206508,
+        baseline=[_candidate(1)],
+        fresh=[_candidate(2, event_type="response")],
+    )
+    failure = ProductProvingFailureCapture(
+        expected=_expected_preflight(),
+        observed=_observed_preflight(),
+        pass_number=1,
+        phase="extraction_repeatability",
+        errors=("Document 1438 changed Candidate meaning",),
+        extraction_comparisons=(comparison,),
+        extraction_run_receipts=(
+            {
+                "run_id": 206508,
+                "document_id": 1438,
+                "outcome": "completed",
+                "candidate_count": 8,
+            },
+        ),
+        admission_started=False,
+        source_database_mutated=False,
+        operations_elapsed_seconds=19.0,
+    )
+
+    bundle = publish_product_proving_failure_bundle(tmp_path / "failed", failure)
+    verified = verify_product_proving_failure_bundle(
+        bundle.bundle_dir,
+        expected_integrity_manifest_sha256=bundle.integrity_manifest_sha256,
+    )
+    assert verified.valid
+    receipt = json.loads((bundle.bundle_dir / "receipt.json").read_bytes())
+    assert receipt["status"] == "failed"
+    assert receipt["admission_started"] is False
+    assert "passed" not in (bundle.bundle_dir / "receipt.md").read_text().lower()

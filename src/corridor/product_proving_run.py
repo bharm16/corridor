@@ -27,6 +27,7 @@ from corridor.m8_acceptance_bundle import (
 
 
 BUNDLE_SCHEMA_VERSION = "corridor.product-proving-run-bundle.v1"
+BUNDLE_FAILURE_SCHEMA_VERSION = "corridor.product-proving-run-failure-bundle.v1"
 BUNDLE_FILES = (
     "canonical-content.json",
     "environment.json",
@@ -34,6 +35,12 @@ BUNDLE_FILES = (
     "receipt.md",
     "pass-1-approved-export.pdf",
     "pass-2-approved-export.pdf",
+)
+FAILURE_BUNDLE_FILES = (
+    "canonical-content.json",
+    "environment.json",
+    "receipt.json",
+    "receipt.md",
 )
 _OUTCOMES = frozenset({"supported", "not_relevant", "unresolved"})
 _PROVENANCE_CLASSES = frozenset(
@@ -130,6 +137,22 @@ class ProductProvingCapture:
     simulated_practitioner: bool
     same_project_manual_report_compared: bool
     revision_processing_included: bool
+
+
+@dataclass(frozen=True)
+class ProductProvingFailureCapture:
+    """One terminal failure that must remain distinguishable from success."""
+
+    expected: ExpectedPreflight
+    observed: ObservedPreflight
+    pass_number: int
+    phase: str
+    errors: tuple[str, ...]
+    extraction_comparisons: tuple[CandidateSetComparison, ...]
+    extraction_run_receipts: tuple[Mapping[str, Any], ...]
+    admission_started: bool
+    source_database_mutated: bool
+    operations_elapsed_seconds: float
 
 
 @dataclass(frozen=True)
@@ -282,6 +305,62 @@ def publish_product_proving_bundle(
     )
 
 
+def publish_product_proving_failure_bundle(
+    output_dir: Path, capture: ProductProvingFailureCapture
+) -> ProductProvingBundleSummary:
+    """Seal a terminal failure without allowing success semantics."""
+
+    verify_preflight(capture.expected, capture.observed)
+    if capture.pass_number < 1:
+        raise ValueError("failed Product Proving pass number must be positive")
+    if not capture.phase or not capture.errors:
+        raise ValueError("failed Product Proving receipt needs a phase and error")
+    if capture.operations_elapsed_seconds < 0:
+        raise ValueError("failed Product Proving timing must be non-negative")
+    if capture.phase == "extraction_repeatability" and capture.admission_started:
+        raise ValueError("repeatability failure must stop before Admission")
+    canonical = asdict(capture)
+    receipt = {
+        "schema_version": BUNDLE_FAILURE_SCHEMA_VERSION,
+        "status": "failed",
+        **canonical,
+    }
+    manifest_path, manifest_sha256, canonical_sha256 = publish_verified_bundle(
+        Path(output_dir),
+        exports={
+            "canonical-content.json": canonical,
+            "environment.json": {
+                "schema_version": BUNDLE_FAILURE_SCHEMA_VERSION,
+                "source_revision": capture.observed.source_revision,
+                "origin_main_revision": capture.observed.origin_main_revision,
+                "migration_head": capture.observed.migration_head,
+            },
+            "receipt.json": receipt,
+            "receipt.md": _failure_markdown(canonical).encode(),
+        },
+        canonical_content=canonical,
+        bundle_schema_version=BUNDLE_FAILURE_SCHEMA_VERSION,
+        bundle_files=FAILURE_BUNDLE_FILES,
+        error_cls=ValueError,
+        corrupt_bundle_error_cls=CorruptProductProvingBundle,
+        canonical_json=_canonical_json,
+        sha256=_sha256,
+        json_sha256=_json_sha256,
+        temp_prefix="corridor-product-proving-failure",
+        self_verification_failure="new Product Proving failure bundle is invalid",
+    )
+    verify_product_proving_failure_bundle(
+        Path(output_dir),
+        expected_integrity_manifest_sha256=manifest_sha256,
+    )
+    return ProductProvingBundleSummary(
+        bundle_dir=Path(output_dir),
+        manifest_path=manifest_path,
+        integrity_manifest_sha256=manifest_sha256,
+        canonical_content_sha256=canonical_sha256,
+    )
+
+
 def verify_product_proving_bundle(
     bundle_dir: Path, *, expected_integrity_manifest_sha256: str
 ) -> VerificationResult:
@@ -312,6 +391,46 @@ def verify_product_proving_bundle(
             raise CorruptProductProvingBundle(
                 f"pass {number} Approved Export does not match its digest"
             )
+    return verified
+
+
+def verify_product_proving_failure_bundle(
+    bundle_dir: Path, *, expected_integrity_manifest_sha256: str
+) -> VerificationResult:
+    """Verify a terminal failure and refuse any success-shaped receipt."""
+
+    verified = verify_bundle(
+        Path(bundle_dir),
+        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+        bundle_schema_version=BUNDLE_FAILURE_SCHEMA_VERSION,
+        bundle_files=FAILURE_BUNDLE_FILES,
+        corrupt_bundle_error_cls=CorruptProductProvingBundle,
+        sha256=_sha256,
+        json_sha256=_json_sha256,
+    )
+    try:
+        canonical = json.loads((Path(bundle_dir) / "canonical-content.json").read_bytes())
+        receipt = json.loads((Path(bundle_dir) / "receipt.json").read_bytes())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CorruptProductProvingBundle("failure receipt is invalid") from exc
+    expected = {
+        "schema_version": BUNDLE_FAILURE_SCHEMA_VERSION,
+        "status": "failed",
+        **canonical,
+    }
+    if receipt != expected:
+        raise CorruptProductProvingBundle(
+            "failure receipt does not match canonical content"
+        )
+    if not canonical.get("errors") or not canonical.get("phase"):
+        raise CorruptProductProvingBundle("failure evidence is incomplete")
+    if (
+        canonical.get("phase") == "extraction_repeatability"
+        and canonical.get("admission_started") is not False
+    ):
+        raise CorruptProductProvingBundle(
+            "repeatability failure incorrectly claims Admission started"
+        )
     return verified
 
 
@@ -462,6 +581,31 @@ def _receipt_markdown(canonical: Mapping[str, Any]) -> str:
             f"- Pass 2 Approved Export: `{second['approved_export_sha256']}`",
             f"- Restored baseline: `{canonical['final_baseline_fingerprint']}`",
             "- Document revision processing: excluded",
+            "",
+        )
+    )
+
+
+def _failure_markdown(canonical: Mapping[str, Any]) -> str:
+    comparisons = canonical.get("extraction_comparisons") or []
+    return "\n".join(
+        (
+            "# SH99 bounded Product Proving Run failure",
+            "",
+            "Status: **failed**",
+            "",
+            f"- Attempted pass: `{canonical['pass_number']}`",
+            f"- Terminal phase: `{canonical['phase']}`",
+            f"- Admission started: `{str(canonical['admission_started']).lower()}`",
+            f"- Fresh Extraction Runs retained: `{len(canonical['extraction_run_receipts'])}`",
+            f"- Candidate comparisons retained: `{len(comparisons)}`",
+            "",
+            "Errors:",
+            *[f"- {error}" for error in canonical["errors"]],
+            "",
+            "This receipt is immutable failure evidence under a simulated practitioner ",
+            "claim boundary. It grants no operational authority and supports no workflow ",
+            "completeness or manual Report replacement claim.",
             "",
         )
     )

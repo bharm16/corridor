@@ -13,9 +13,12 @@ from corridor.product_proving_run import (
     ExpectedPreflight,
     ObservedPreflight,
     ProductProvingCapture,
+    ProductProvingFailureCapture,
     ProductProvingPass,
     publish_product_proving_bundle,
+    publish_product_proving_failure_bundle,
     verify_product_proving_bundle,
+    verify_product_proving_failure_bundle,
 )
 
 
@@ -38,9 +41,17 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--pass-1-approved-export", type=Path, required=True)
     publish.add_argument("--pass-2-approved-export", type=Path, required=True)
     publish.add_argument("--output-dir", type=Path, required=True)
+    publish_failure = commands.add_parser("publish-failure")
+    publish_failure.add_argument("--capture-json", type=Path, required=True)
+    publish_failure.add_argument("--output-dir", type=Path, required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("bundle_dir", type=Path)
     verify.add_argument("--expected-manifest-sha256", type=_sha256, required=True)
+    verify_failure = commands.add_parser("verify-failure")
+    verify_failure.add_argument("bundle_dir", type=Path)
+    verify_failure.add_argument(
+        "--expected-manifest-sha256", type=_sha256, required=True
+    )
     return parser
 
 
@@ -62,7 +73,19 @@ def main(argv: list[str] | None = None) -> int:
                 "canonical_content_sha256": bundle.canonical_content_sha256,
                 "status": "passed",
             }
-        else:
+        elif args.command == "publish-failure":
+            raw = json.loads(args.capture_json.read_bytes())
+            bundle = publish_product_proving_failure_bundle(
+                args.output_dir, _failure_capture(raw)
+            )
+            payload = {
+                "command": "publish-failure",
+                "bundle_dir": str(bundle.bundle_dir),
+                "integrity_manifest_sha256": bundle.integrity_manifest_sha256,
+                "canonical_content_sha256": bundle.canonical_content_sha256,
+                "status": "failed",
+            }
+        elif args.command == "verify":
             verified = verify_product_proving_bundle(
                 args.bundle_dir,
                 expected_integrity_manifest_sha256=args.expected_manifest_sha256,
@@ -73,6 +96,19 @@ def main(argv: list[str] | None = None) -> int:
                 "valid": verified.valid,
                 "integrity_manifest_sha256": verified.integrity_manifest_sha256,
                 "canonical_content_sha256": verified.canonical_content_sha256,
+            }
+        else:
+            verified = verify_product_proving_failure_bundle(
+                args.bundle_dir,
+                expected_integrity_manifest_sha256=args.expected_manifest_sha256,
+            )
+            payload = {
+                "command": "verify-failure",
+                "bundle_dir": str(args.bundle_dir),
+                "valid": verified.valid,
+                "integrity_manifest_sha256": verified.integrity_manifest_sha256,
+                "canonical_content_sha256": verified.canonical_content_sha256,
+                "status": "failed",
             }
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
@@ -98,6 +134,24 @@ def _capture(
             "same_project_manual_report_compared"
         ],
         revision_processing_included=raw["revision_processing_included"],
+    )
+
+
+def _failure_capture(raw: dict) -> ProductProvingFailureCapture:
+    return ProductProvingFailureCapture(
+        expected=_expected(raw["expected"]),
+        observed=_observed(raw["observed"]),
+        pass_number=raw["pass_number"],
+        phase=raw["phase"],
+        errors=tuple(raw["errors"]),
+        extraction_comparisons=tuple(
+            CandidateSetComparison(**comparison)
+            for comparison in raw["extraction_comparisons"]
+        ),
+        extraction_run_receipts=tuple(raw["extraction_run_receipts"]),
+        admission_started=raw["admission_started"],
+        source_database_mutated=raw["source_database_mutated"],
+        operations_elapsed_seconds=raw["operations_elapsed_seconds"],
     )
 
 
