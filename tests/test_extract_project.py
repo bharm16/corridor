@@ -938,7 +938,7 @@ def test_a_named_document_extracts_alone(session, project):
     assert [run.document_id for run in runs] == [first.id]
 
 
-def test_an_exact_database_document_id_extracts_alone(session, project):
+def test_an_exact_document_content_identity_extracts_alone(session, project):
     first = add_matrix(session, project, "legacy-without-registry-id.pdf", "a" * 64)
     second = add_matrix(session, project, "other.pdf", "b" * 64)
 
@@ -948,7 +948,7 @@ def test_an_exact_database_document_id_extracts_alone(session, project):
         extract=extractor(**{"legacy-without-registry-id.pdf": [True]}),
         prompt_version=PROMPT_VERSION,
         commit=False,
-        document_id=first.id,
+        document_sha256=first.sha256,
     )
 
     assert [outcome.document_id for outcome in outcomes] == [first.id]
@@ -971,7 +971,7 @@ def test_document_selection_refuses_two_competing_identities(session, project):
             extract=extractor(),
             commit=False,
             document_registry_id=document.registry_id,
-            document_id=document.id,
+            document_sha256=document.sha256,
         )
 
 

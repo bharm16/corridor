@@ -72,7 +72,7 @@ agreements:
 # needs OPENAI_API_KEY:
 #   make extract ARGS="nhhip-3c2"
 #   make extract ARGS="nhhip-3c2 --redo"
-#   make extract ARGS="sh99-grand-parkway --document-id=1311 --redo"
+#   make extract ARGS="sh99-grand-parkway --document-sha256=8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30 --redo"
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
 
