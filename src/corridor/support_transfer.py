@@ -38,6 +38,8 @@ from corridor.revision_comparison import (
     read_revision_comparison,
 )
 from corridor.support_transfer_lineage import (
+    CandidateInput,
+    VerifiedCitation,
     admission_for_scope,
     finding_by_id,
     input_by_candidate_id,
@@ -94,9 +96,9 @@ class SupportTransferProof:
     finding: RevisionComparisonFinding
     admission: ProvenAdmission
     successor_candidate: Candidate
-    predecessor_input: dict
-    successor_input: dict
-    citation: dict
+    predecessor_input: CandidateInput
+    successor_input: CandidateInput
+    citation: VerifiedCitation
     successor_document_id: int
     scopes: tuple[SupersededOperativeScope, ...]
     scope_fingerprint: ScopeFingerprint

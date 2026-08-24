@@ -6,6 +6,7 @@ statement route reports malformed input through one refusal vocabulary and no
 generic queue parser can silently replace statement behavior.
 """
 
+from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy.orm import Session
@@ -33,6 +34,20 @@ CANDIDATE_EVIDENCE_UNAVAILABLE = (
     "context: a rendered image for PDF or OCR pages, or registered cell text "
     "for a worksheet."
 )
+
+
+@dataclass(frozen=True)
+class CandidateStatementEvidenceView:
+    """Registered page context rendered and selected by the statement form."""
+
+    document_id: int
+    page_no: int
+    quote: str
+    filename: str
+    page_text: str | None
+    page_text_source: str | None
+    has_page_image: bool
+    supporting_quote_available: bool
 
 
 def statement_coordination_draft(
@@ -126,19 +141,19 @@ def statement_fact_correction_draft(
 
 def candidate_statement_evidence_view(
     facts: CandidateStatementFacts,
-) -> tuple[dict, ...]:
+) -> tuple[CandidateStatementEvidenceView, ...]:
     """Render the extractor's immutable citations and registered page context."""
     return tuple(
-        {
-            "document_id": item.document_id,
-            "page_no": item.page_no,
-            "quote": item.quote,
-            "filename": item.filename,
-            "page_text": item.page_text,
-            "page_text_source": item.page_text_source,
-            "has_page_image": item.has_page_image,
-            "supporting_quote_available": item.is_reviewable,
-        }
+        CandidateStatementEvidenceView(
+            document_id=item.document_id,
+            page_no=item.page_no,
+            quote=item.quote,
+            filename=item.filename,
+            page_text=item.page_text,
+            page_text_source=item.page_text_source,
+            has_page_image=item.has_page_image,
+            supporting_quote_available=item.is_reviewable,
+        )
         for item in facts.evidence
     )
 
@@ -164,15 +179,15 @@ def supporting_statement_evidence(
         if page_index < 0:
             raise IndexError
         selected = visible_evidence[page_index]
-        if not selected["supporting_quote_available"]:
+        if not selected.supporting_quote_available:
             raise StatementCoordinationRefusal(
                 "the rendered source page is unavailable for supporting Evidence"
             )
-        document_id = int(selected["document_id"])
-        page_no = int(selected["page_no"])
+        document_id = selected.document_id
+        page_no = selected.page_no
     except StatementCoordinationRefusal:
         raise
-    except (IndexError, KeyError, TypeError, ValueError) as exc:
+    except (IndexError, TypeError, ValueError) as exc:
         raise StatementCoordinationRefusal(
             "choose a visible registered source page for supporting Evidence"
         ) from exc

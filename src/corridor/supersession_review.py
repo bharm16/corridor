@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor import support_transfer_lineage as transfer_lineage
 from corridor.extraction_runs import candidate_input_snapshot, is_completed_run
 from corridor.models import (
     ActiveExtractionRun,
@@ -49,16 +50,6 @@ from corridor.revision_comparison import (
     read_revision_comparison,
 )
 from corridor.supersession import actionable_candidate, actionable_candidate_query
-from corridor.support_transfer_lineage import (
-    AdmissionLineage as _Admission,
-    UnsafeSuccessorCitation,
-    admission_for_scope as _admission_for_scope,
-    finding_by_id as _finding_by_id,
-    has_one_verified_input_citation as _has_one_verified_input_citation,
-    input_by_candidate_id as _input_by_candidate_id,
-    scope_has_one_verified_input_citation as _scope_has_one_verified_input_citation,
-    verified_successor_citation as _verified_successor_citation,
-)
 
 
 ReviewRoute = Literal["ordinary", "reconfirmation"]
@@ -524,7 +515,7 @@ def _candidate_ids_for_reconfirmation_evidence(
             candidate_id = _unchanged_successor_candidate_id(finding)
             if candidate_id is None:
                 continue
-            candidate_input = _input_by_candidate_id(
+            candidate_input = transfer_lineage.input_by_candidate_id(
                 readback.successor_inputs, candidate_id
             )
             if candidate_input is not None and _input_matches_evidence(
@@ -580,7 +571,7 @@ def _input_matches_evidence(
 ) -> bool:
     return (
         candidate_input.get("source_document_id") == evidence.document_id
-        and _has_one_verified_input_citation(
+        and transfer_lineage.has_one_verified_input_citation(
             candidate_input,
             document_id=evidence.document_id,
             page_no=evidence.page_no,
@@ -761,12 +752,14 @@ def _support_review(
     support_transfer_records: tuple[audit.SupportTransferRecord, ...],
 ) -> SupersessionReview:
     predecessor = session.get(Document, predecessor_document_id)
-    admission, predecessor_candidate_ids, admission_reason = _admission_for_scope(
-        session,
-        dependency,
-        predecessor_document_id,
-        admission_records,
-        support_transfer_records,
+    admission, predecessor_candidate_ids, admission_reason = (
+        transfer_lineage.admission_for_scope(
+            session,
+            dependency,
+            predecessor_document_id,
+            admission_records,
+            support_transfer_records,
+        )
     )
     base = dict(
         dependency_id=dependency.id,
@@ -983,7 +976,7 @@ def _reconfirmation_refusal(
     *,
     predecessor: Document,
     successor: Document,
-    admission: _Admission,
+    admission: transfer_lineage.AdmissionLineage,
     scopes: tuple[SupersededOperativeScope, ...],
     all_scopes: tuple[SupersededOperativeScope, ...],
     readiness_history_trusted: bool,
@@ -1012,17 +1005,19 @@ def _reconfirmation_refusal(
     ):
         return "partial_scope_transfer"
 
-    predecessor_input = _input_by_candidate_id(
+    predecessor_input = transfer_lineage.input_by_candidate_id(
         readback.predecessor_inputs, admission.candidate.id
     )
     successor_candidate_id = finding.successor_candidate_ids[0]
-    successor_input = _input_by_candidate_id(
+    successor_input = transfer_lineage.input_by_candidate_id(
         readback.successor_inputs, successor_candidate_id
     )
     if predecessor_input is None or successor_input is None:
         return "comparison_input_unavailable"
     if any(
-        not _scope_has_one_verified_input_citation(scope, predecessor_input)
+        not transfer_lineage.scope_has_one_verified_input_citation(
+            scope, predecessor_input
+        )
         for scope in all_scopes
     ):
         return "predecessor_support_provenance_unsafe"
@@ -1047,8 +1042,8 @@ def _reconfirmation_refusal(
     if live_input != successor_input:
         return "successor_candidate_changed"
     try:
-        _verified_successor_citation(successor_input, successor.id)
-    except UnsafeSuccessorCitation:
+        transfer_lineage.verified_successor_citation(successor_input, successor.id)
+    except transfer_lineage.UnsafeSuccessorCitation:
         return "successor_provenance_unsafe"
     return None
 
@@ -1069,7 +1064,9 @@ def _predecessor_ids_matching_scopes(
         ):
             continue
         if scopes and all(
-            _scope_has_one_verified_input_citation(scope, candidate_input)
+            transfer_lineage.scope_has_one_verified_input_citation(
+                scope, candidate_input
+            )
             for scope in scopes
         ):
             matches.add(candidate_id)

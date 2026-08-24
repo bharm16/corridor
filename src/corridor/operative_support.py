@@ -279,9 +279,10 @@ def transfer_operative_scopes_under_lock(
 ) -> SupportTransferMutation:
     """Move one complete support set after the caller locks and re-derives it.
 
-    This stays private because an actor string is not authority. The only
-    callers are the human Reconfirmation boundary and the policy/receipt-bound
-    Automatic Carry-Forward boundary.
+    This internal interface does not grant authority: an actor string alone is
+    insufficient. The support-transfer proof module is the only caller, after
+    either human Reconfirmation or policy/receipt-bound Carry-Forward has
+    established the authority for the mutation.
     """
 
     ordered = tuple(

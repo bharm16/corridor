@@ -10,6 +10,7 @@ lineage or a stable refusal reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypedDict, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +40,25 @@ class UnsafeSuccessorCitation(ValueError):
     """An immutable Candidate input does not prove one exact citation."""
 
 
+class CandidateInput(TypedDict, total=False):
+    """Immutable extraction input persisted on a Revision Comparison receipt."""
+
+    candidate_id: int
+    source_document_id: int
+    extraction_run_id: int
+    citations_verified: bool
+    payload_json: dict
+
+
+class VerifiedCitation(TypedDict):
+    """The exact citation a support transfer may materialize as Evidence."""
+
+    document_id: int
+    page: int
+    quote: str
+    verified: bool
+
+
 @dataclass(frozen=True)
 class AdmissionLineage:
     """One current Candidate traced to its original attributable Admission."""
@@ -51,12 +71,12 @@ class AdmissionLineage:
 
 def input_by_candidate_id(
     inputs: tuple[dict, ...], candidate_id: int
-) -> dict | None:
+) -> CandidateInput | None:
     """Return one exact immutable input, refusing missing or duplicate identity."""
     matches = tuple(
         item for item in inputs if item.get("candidate_id") == candidate_id
     )
-    return matches[0] if len(matches) == 1 else None
+    return cast(CandidateInput, matches[0]) if len(matches) == 1 else None
 
 
 def finding_by_id(
@@ -70,8 +90,8 @@ def finding_by_id(
 
 
 def verified_successor_citation(
-    candidate_input: dict, successor_document_id: int | None
-) -> dict:
+    candidate_input: CandidateInput, successor_document_id: int | None
+) -> VerifiedCitation:
     """Return the one immutable, exact, verified successor citation."""
     payload = candidate_input.get("payload_json")
     citations = (
@@ -97,11 +117,11 @@ def verified_successor_citation(
         raise UnsafeSuccessorCitation(
             "the immutable successor citation is not exact and verified"
         )
-    return citation
+    return cast(VerifiedCitation, citation)
 
 
 def has_one_verified_input_citation(
-    candidate_input: dict,
+    candidate_input: CandidateInput,
     *,
     document_id: int,
     page_no: int,
@@ -128,7 +148,7 @@ def has_one_verified_input_citation(
 
 
 def scope_has_one_verified_input_citation(
-    scope: SupersededOperativeScope, candidate_input: dict
+    scope: SupersededOperativeScope, candidate_input: CandidateInput
 ) -> bool:
     """Bind one moved support scope to one immutable Candidate citation."""
     if scope.evidence.verified is not True:
@@ -379,7 +399,7 @@ def _sources_match_receipt(
     dependency_id: int,
     predecessor_document_id: int,
     successor_document_id: int,
-    predecessor_input: dict,
+    predecessor_input: CandidateInput,
     record: audit.SupportTransferRecord,
 ) -> bool:
     current_readiness_ids = audit.current_readiness_evidence_ids_from_audit(

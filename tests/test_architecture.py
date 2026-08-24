@@ -22,6 +22,10 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
+def _module_name(path: Path) -> str:
+    return ".".join(path.relative_to(SOURCE_ROOT).with_suffix("").parts)
+
+
 def test_every_source_module_opens_with_its_reason_for_existing():
     missing = [path.name for path in _module_paths() if ast.get_docstring(_tree(path)) is None]
 
@@ -66,7 +70,7 @@ def test_source_modules_do_not_import_another_module_private_implementation():
 
 
 def test_source_module_dependencies_are_acyclic():
-    paths = {path.stem: path for path in _module_paths()}
+    paths = {_module_name(path): path for path in _module_paths()}
     dependencies: dict[str, set[str]] = {name: set() for name in paths}
     for name, path in paths.items():
         for node in ast.walk(_tree(path)):
@@ -74,7 +78,7 @@ def test_source_module_dependencies_are_acyclic():
                 continue
             if not node.module or not node.module.startswith("corridor."):
                 continue
-            dependency = node.module.split(".", 1)[1].split(".", 1)[0]
+            dependency = node.module.removeprefix("corridor.")
             if dependency in paths:
                 dependencies[name].add(dependency)
 
