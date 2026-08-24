@@ -229,6 +229,31 @@ def test_a_resumed_run_skips_documents_already_extracted(
     assert "nothing to do: all 2 already extracted" in capsys.readouterr().out
 
 
+def test_redo_appends_a_fresh_exact_document_run_without_retargeting_active(
+    session, project
+):
+    document = add_note(session, project, "notes-a.pdf", "a" * 64)
+    _run(
+        session,
+        project,
+        StubClient(),
+        argv=[project.slug, "--document-id", str(document.id)],
+    )
+    [baseline] = _runs(session, project)
+
+    _run(
+        session,
+        project,
+        StubClient(),
+        argv=[project.slug, "--document-id", str(document.id), "--redo"],
+    )
+
+    runs = _runs(session, project)
+    assert len(runs) == 2
+    assert len(_candidates(session, project)) == 2
+    assert active_run_for_document(session, document.id).id == baseline.id
+
+
 def test_a_zero_row_document_is_still_marked_done_for_resume(
     session, project, capsys
 ):

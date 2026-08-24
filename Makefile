@@ -195,8 +195,9 @@ evidence-shadow-eval:
 	uv run python -m corridor.evidence_investigator_evaluation_cli $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
-# Bound a run to exact registered notes by repeating --document-id:
-#   make minutes ARGS="sh99-grand-parkway --document-id 123 --document-id 456"
+# Bound a run to exact registered notes by repeating --document-id; --redo
+# appends a fresh attempt without changing the declared Active Run:
+#   make minutes ARGS="sh99-grand-parkway --document-id 1435 --document-id 1438 --redo"
 minutes:
 	uv run python -m corridor.extract_minutes $(ARGS)
 

@@ -218,7 +218,9 @@ def run_extraction(
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 
-    slug, limit, document_ids = _parse_runner_args(argv, default_slug=default_slug)
+    slug, limit, document_ids, redo = _parse_runner_args(
+        argv, default_slug=default_slug
+    )
     if slug is None:
         return 1
 
@@ -248,8 +250,9 @@ def run_extraction(
         # Resume: a killed run leaves whole documents done, so skip those and
         # pick up where it stopped instead of duplicating their candidates.
         done = already_extracted(session, project.id, prompt_version)
-        skipped = [d for d in documents if d.id in done]
-        documents = [d for d in documents if d.id not in done]
+        skipped = [] if redo else [d for d in documents if d.id in done]
+        if not redo:
+            documents = [d for d in documents if d.id not in done]
         if limit:
             documents = documents[:limit]
 
@@ -318,23 +321,28 @@ def run_extraction(
 
 def _parse_runner_args(
     argv: list[str], *, default_slug: str
-) -> tuple[str | None, int | None, list[int]]:
+) -> tuple[str | None, int | None, list[int], bool]:
     import sys
 
     positional: list[str] = []
     document_ids: list[int] = []
+    redo = False
     index = 0
     while index < len(argv):
         token = argv[index]
+        if token == "--redo":
+            redo = True
+            index += 1
+            continue
         if token == "--document-id":
             if index + 1 >= len(argv):
                 print("--document-id requires an integer value", file=sys.stderr)
-                return None, None, []
+                return None, None, [], False
             try:
                 document_ids.append(int(argv[index + 1]))
             except ValueError:
                 print("--document-id must be an integer", file=sys.stderr)
-                return None, None, []
+                return None, None, [], False
             index += 2
             continue
         positional.append(token)
@@ -342,21 +350,21 @@ def _parse_runner_args(
 
     if len(positional) > 2:
         print("usage: <slug> [limit] [--document-id <id> ...]", file=sys.stderr)
-        return None, None, []
+        return None, None, [], False
 
     slug = positional[0] if positional else default_slug
     if document_ids and len(positional) == 2:
         print("limit cannot be combined with explicit document selection", file=sys.stderr)
-        return None, None, []
+        return None, None, [], False
     if len(positional) == 2:
         try:
             limit = int(positional[1])
         except ValueError:
             print("limit must be an integer", file=sys.stderr)
-            return None, None, []
+            return None, None, [], False
     else:
         limit = None
-    return slug, limit, document_ids
+    return slug, limit, document_ids, redo
 
 
 def _selected_documents(
