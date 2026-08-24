@@ -1005,25 +1005,35 @@ def _quiesce_and_read_database(
     database_url: str,
     admin_url: str,
     database_name: str,
+    *,
+    after_verifier_pid: Callable[[int], None] | None = None,
 ) -> StagedDatabaseValidation:
-    """Admit one verifier, exclude all others, and leave the database sealed."""
+    """Seal all writers before starting the verifier's canonical snapshot."""
 
     _require_database_name(database_name, "database")
     _set_database_connections(admin_url, database_name, True)
-    engine = create_engine(database_url, poolclass=NullPool, future=True)
+    engine = create_engine(
+        database_url,
+        isolation_level="AUTOCOMMIT",
+        poolclass=NullPool,
+        future=True,
+    )
     connection = None
+    snapshot_started = False
     try:
         connection = engine.connect()
-        connection.exec_driver_sql(
-            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
-        )
         verifier_pid = int(connection.scalar(text("select pg_backend_pid()")))
+        connection.commit()
+        if after_verifier_pid is not None:
+            after_verifier_pid(verifier_pid)
         _set_database_connections(admin_url, database_name, False)
         _terminate_database_connections(
             admin_url,
             database_name,
             except_pid=verifier_pid,
         )
+        connection.exec_driver_sql("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        snapshot_started = True
         fingerprint = _fingerprint_public_database_snapshot(connection)
         migration_heads = tuple(
             connection.scalars(text("select version_num from alembic_version")).all()
@@ -1040,6 +1050,8 @@ def _quiesce_and_read_database(
         )
     finally:
         if connection is not None:
+            if snapshot_started:
+                connection.exec_driver_sql("ROLLBACK")
             connection.close()
         engine.dispose()
 
@@ -1117,13 +1129,35 @@ def _terminate_database_connections(
     engine = _maintenance_engine(admin_url)
     try:
         with engine.connect() as connection:
-            connection.execute(
+            connection.scalars(
                 text(
-                    "select pg_terminate_backend(pid) from pg_stat_activity "
+                    "select pg_terminate_backend(pid, 5000) from pg_stat_activity "
                     "where datname = :name and pid <> :except_pid"
                 ),
                 {"name": database_name, "except_pid": except_pid},
+            ).all()
+            remaining = int(
+                connection.scalar(
+                    text(
+                        "select count(*) from pg_stat_activity "
+                        "where datname = :name and pid <> :except_pid"
+                    ),
+                    {"name": database_name, "except_pid": except_pid},
+                )
             )
+            verifier_present = int(
+                connection.scalar(
+                    text(
+                        "select count(*) from pg_stat_activity "
+                        "where datname = :name and pid = :except_pid"
+                    ),
+                    {"name": database_name, "except_pid": except_pid},
+                )
+            )
+            if remaining or verifier_present != 1:
+                raise ProductProvingDatabaseError(
+                    "database quiescence did not leave exactly one verifier backend"
+                )
     finally:
         engine.dispose()
 

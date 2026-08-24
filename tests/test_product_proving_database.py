@@ -11,9 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 from corridor.config import settings
+from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.product_proving_database import (
     DISPOSABLE_DATABASE_PREFIX,
     DatabaseFingerprint,
@@ -27,17 +29,20 @@ from corridor.product_proving_database import (
     StagedDatabaseValidation,
     TableFingerprint,
     capture_product_proving_database_baseline,
+    fingerprint_database_url,
     fingerprint_public_database,
     restore_shared_development_database,
     stage_local_database_replacement,
     verify_product_proving_database_baseline,
+    _quiesce_and_read_database,
 )
 
 
 REVISION = "a" * 40
-MIGRATION_HEAD = "a316c5d7e9f1"
+MIGRATION_HEAD = "b317c5d7e9f2"
 SOURCE_URL = "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
 ADMIN_URL = SOURCE_URL
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _fingerprint(seed: str) -> DatabaseFingerprint:
@@ -178,6 +183,60 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "statement_coordination_receipts",
     }
     assert len(fingerprint.state_sha256) == 64
+
+
+@pytest.mark.slow
+def test_quiescence_starts_its_snapshot_after_a_writer_commits_in_the_pid_window():
+    configured = make_url(settings.database_url)
+    admin_url = configured.set(database="postgres").render_as_string(
+        hide_password=False
+    )
+    with provision_disposable_postgres(
+        admin_url,
+        repo_root=REPO_ROOT,
+        error_cls=ProductProvingDatabaseError,
+        database_prefix=DISPOSABLE_DATABASE_PREFIX,
+        migration_revision=MIGRATION_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name).render_as_string(
+            hide_password=False
+        )
+        before = fingerprint_database_url(database_url)
+        writer_engine = create_engine(database_url, poolclass=NullPool)
+        writer = writer_engine.connect()
+        transaction = writer.begin()
+        writer.execute(
+            text(
+                "insert into projects (slug, name) "
+                "values ('pid-window-project', 'PID Window Project')"
+            )
+        )
+        callback_pids = []
+
+        def commit_after_pid(verifier_pid):
+            callback_pids.append(verifier_pid)
+            transaction.commit()
+
+        try:
+            validation = _quiesce_and_read_database(
+                database_url,
+                admin_url,
+                database.name,
+                after_verifier_pid=commit_after_pid,
+            )
+        finally:
+            writer.close()
+            writer_engine.dispose()
+
+        before_projects = next(
+            item for item in before.tables if item.name == "projects"
+        )
+        after_projects = next(
+            item for item in validation.fingerprint.tables if item.name == "projects"
+        )
+        assert callback_pids
+        assert after_projects.row_count == before_projects.row_count + 1
+        assert validation.fingerprint != before
 
 
 def test_capture_restores_only_a_fresh_database_and_publishes_immutable_bundle(
