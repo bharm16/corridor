@@ -13,16 +13,13 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import Candidate, DocPage, Document, ExternalOrg
+from corridor.statement_values import CitedStatementEvidence, StatementTiming
 from corridor.verify import normalize
-
-if TYPE_CHECKING:
-    from corridor.external_statements import CitedStatementEvidence, StatementTiming
 
 
 @dataclass(frozen=True)
@@ -43,8 +40,6 @@ class CandidateEvidence:
 
     @property
     def cited(self) -> CitedStatementEvidence:
-        from corridor.external_statements import CitedStatementEvidence
-
         return CitedStatementEvidence(self.document_id, self.page_no, self.quote)
 
 
@@ -287,8 +282,6 @@ def _candidate_timing_fact(
 
 
 def _parse_candidate_timing(value: object) -> StatementTiming | None:
-    from corridor.external_statements import StatementTiming
-
     if isinstance(value, dict):
         text = str(value.get("text") or "").strip()
         precision = str(value.get("precision") or "").strip()
@@ -329,8 +322,6 @@ def _visible_day_timing(
     evidence: tuple[CandidateEvidence, ...],
 ) -> StatementTiming | None:
     """Preserve the exact visible day wording instead of substituting its quote."""
-    from corridor.external_statements import StatementTiming
-
     value = timing.start_date
     if value is None:
         return None

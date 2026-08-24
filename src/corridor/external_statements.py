@@ -29,8 +29,6 @@ from corridor.models import (
     DependencyEventScope,
     DependencyEventScopeDecision,
     DependencyEventTiming,
-    Document,
-    DocPage,
     EvidenceLink,
     ExternalOrg,
     Project,
@@ -41,72 +39,19 @@ from corridor.statement_lifecycle import (
     current_scope_decision_filter as current_lifecycle_scope_decision_filter,
     current_statement_event_filter,
 )
-from corridor.verify import normalize, quote_appears_on, threshold_for
-
-
-class StatementRefusal(ValueError):
-    """The proposed statement would manufacture a fact the record lacks."""
+from corridor.statement_evidence import validate_cited_statement_evidence
+from corridor.statement_values import (
+    CitedStatementEvidence,
+    StatementRefusal,
+    StatementScope,
+    StatementTiming,
+)
+from corridor.verify import normalize
 
 
 _STATEMENT_SCOPE_POLICY_ACTORS = frozenset(
     {"corridor:event-admission", "corridor:statement-migration-v1"}
 )
-
-
-@dataclass(frozen=True)
-class StatementTiming:
-    """One timing exactly as the External Party stated it."""
-
-    text: str
-    precision: str
-    start_date: date | None
-    end_date: date | None
-
-    @classmethod
-    def day(cls, text: str, value: date) -> "StatementTiming":
-        return cls(text=text, precision="day", start_date=value, end_date=value)
-
-    @classmethod
-    def month(cls, text: str, year: int, month: int) -> "StatementTiming":
-        return cls(
-            text=text,
-            precision="month",
-            start_date=date(year, month, 1),
-            end_date=date(year, month, monthrange(year, month)[1]),
-        )
-
-    @classmethod
-    def approximate(cls, text: str) -> "StatementTiming":
-        return cls(text=text, precision="approximate", start_date=None, end_date=None)
-
-
-@dataclass(frozen=True)
-class StatementScope:
-    """The attributable scope decision, never inferred from party context."""
-
-    mode: str
-    dependency_ids: tuple[int, ...] = ()
-
-    @classmethod
-    def unknown(cls) -> "StatementScope":
-        return cls("unknown")
-
-    @classmethod
-    def selected(cls, dependency_ids: tuple[int, ...] | list[int]) -> "StatementScope":
-        return cls("selected", tuple(dependency_ids))
-
-    @classmethod
-    def all_active(cls) -> "StatementScope":
-        return cls("all_active")
-
-
-@dataclass(frozen=True)
-class CitedStatementEvidence:
-    """The one page citation owned by a cited event rather than a Dependency."""
-
-    document_id: int
-    page_no: int
-    quote: str
 
 
 @dataclass(frozen=True)
@@ -815,26 +760,3 @@ def _current_scope_decision(
         )
         .order_by(DependencyEventScopeDecision.id)
     )
-
-
-def validate_cited_statement_evidence(
-    session: Session, evidence: CitedStatementEvidence, project_id: int
-) -> None:
-    """Refuse a citation that cannot be verified inside the stated project."""
-    if evidence.page_no < 1 or not evidence.quote.strip():
-        raise StatementRefusal("cited Evidence needs a page and quote")
-    document = session.get(Document, evidence.document_id)
-    if document is None or document.project_id != project_id:
-        raise StatementRefusal("cited Evidence belongs to another project")
-    page = session.scalar(
-        select(DocPage).where(
-            DocPage.document_id == document.id,
-            DocPage.page_no == evidence.page_no,
-        )
-    )
-    if page is None:
-        raise StatementRefusal("cited Evidence page is not registered")
-    if not quote_appears_on(
-        evidence.quote, page.text, threshold_for(page.text_source)
-    ):
-        raise StatementRefusal("cited Evidence quote was not found on its registered page")

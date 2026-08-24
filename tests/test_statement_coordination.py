@@ -62,12 +62,8 @@ from corridor.work_decisions import (
     current_next_action_decision,
     set_next_action,
 )
-from corridor.web.app import (
-    _supporting_statement_evidence,
-    app,
-    get_human_principal,
-    get_session,
-)
+from corridor.web.app import app, get_human_principal, get_session
+from corridor.web.statement_forms import supporting_statement_evidence
 
 
 RECORDER = HumanPrincipal("local:statement-coordinator")
@@ -1534,7 +1530,7 @@ def test_non_cell_page_without_an_available_image_is_disabled_and_refused(
             StatementCoordinationRefusal,
             match="Save unavailable until every Candidate Evidence page",
         ):
-            _supporting_statement_evidence(
+            supporting_statement_evidence(
                 session,
                 candidate,
                 {
@@ -1980,7 +1976,7 @@ def test_form_adapter_refuses_when_any_original_candidate_evidence_is_filtered(
         StatementCoordinationRefusal,
         match="Save unavailable until every Candidate Evidence page",
     ):
-        _supporting_statement_evidence(
+        supporting_statement_evidence(
             session,
             candidate,
             {

@@ -423,30 +423,6 @@ def list_revision_comparisons(
     )
 
 
-def comparison_derivation(
-    session: Session,
-    comparison_id: int,
-    *,
-    ruleset_version: str,
-):
-    """Provenance for a published statement computed from this receipt.
-
-    Comparison findings are document-row observations, not Ledger records, so
-    ADR-0013's named ``scope`` is the honest Derivation path: it identifies the
-    exact immutable comparison rather than inventing Dependency ids.
-    """
-
-    if not isinstance(ruleset_version, str) or not ruleset_version.strip():
-        raise RevisionComparisonError("ruleset_version must be a non-empty string")
-    readback = read_revision_comparison(session, comparison_id)
-    from corridor.report import Derivation
-
-    return Derivation(
-        ruleset_version.strip(),
-        scope=f"Revision Comparison {readback.comparison.id}",
-    )
-
-
 def _run(session: Session, run_id: int) -> ExtractionRun:
     run = session.get(ExtractionRun, run_id)
     if run is None:

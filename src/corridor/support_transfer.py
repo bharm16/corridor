@@ -13,29 +13,59 @@ Carry-Forward Policy remain distinct authorities and retain their own records.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from sqlalchemy.orm import Session
 
 from corridor import audit, policy
 from corridor.extraction_runs import candidate_input_snapshot
-from corridor.models import Candidate, Dependency, EvidenceLink, RevisionComparisonFinding
+from corridor.models import (
+    Candidate,
+    Dependency,
+    EvidenceLink,
+    RevisionComparisonFinding,
+    RevisionComparisonRun,
+)
 from corridor.operative_support import (
     SupportTransferMutation,
     SupersededOperativeScope,
-    _transfer_operative_scopes_under_lock,
     evidence_is_scoped_to_dependency,
+    transfer_operative_scopes_under_lock,
 )
 from corridor.revision_comparison import (
     RevisionComparisonError,
     RevisionComparisonReadback,
     read_revision_comparison,
 )
+from corridor.support_transfer_lineage import (
+    admission_for_scope,
+    finding_by_id,
+    input_by_candidate_id,
+    verified_successor_citation,
+)
 
-if TYPE_CHECKING:
-    from corridor.audit import AdmissionRecord
-    from corridor.models import RevisionComparisonRun
-    from corridor.supersession_review import ScopeFingerprint, SupersessionReview
+
+ScopeFingerprint = tuple[tuple[str, str | None, int], ...]
+
+
+class SupportTransferReview(Protocol):
+    """The immutable worklist facts needed to prove one support transfer."""
+
+    dependency_id: int | None
+    predecessor_document_id: int | None
+    successor_document_id: int | None
+    comparison_id: int | None
+    finding_id: int | None
+    superseded_scopes: tuple[SupersededOperativeScope, ...]
+
+    @property
+    def predecessor_candidate_id(self) -> int | None: ...
+
+    @property
+    def successor_candidate_id(self) -> int | None: ...
+
+    @property
+    def scope_fingerprint(self) -> ScopeFingerprint: ...
 
 
 class SupportTransferProofRefusal(ValueError):
@@ -50,7 +80,7 @@ class SupportTransferProofRefusal(ValueError):
 class ProvenAdmission:
     """The original attributable Admission carried through support history."""
 
-    origin: AdmissionRecord
+    origin: audit.AdmissionRecord
     admitted_fields: dict | None
     latest_support_transfer_audit_id: int | None
 
@@ -76,7 +106,7 @@ def prove_support_transfer(
     session: Session,
     *,
     project_id: int,
-    review: SupersessionReview,
+    review: SupportTransferReview,
     expected_matcher_version: str | None = None,
     expected_matcher_config_sha256: str | None = None,
     require_exact_admitted_fields: bool = False,
@@ -87,13 +117,6 @@ def prove_support_transfer(
     matcher and field checks are policy predicates used by Automatic
     Carry-Forward; human Reconfirmation consumes the already-routed review.
     """
-    from corridor.supersession_review import (
-        _admission_for_scope,
-        _finding_by_id,
-        _input_by_candidate_id,
-        _verified_successor_citation,
-    )
-
     dependency = session.get(Dependency, review.dependency_id)
     if dependency is None or dependency.project_id != project_id:
         raise SupportTransferProofRefusal("dependency_unavailable")
@@ -126,7 +149,7 @@ def prove_support_transfer(
     ):
         raise SupportTransferProofRefusal("comparison_policy_unapproved")
 
-    finding = _finding_by_id(readback, review.finding_id)
+    finding = finding_by_id(readback, review.finding_id)
     if finding is None:
         raise SupportTransferProofRefusal("predecessor_finding_unavailable")
     if finding.state != "unchanged":
@@ -138,7 +161,7 @@ def prove_support_transfer(
     support_transfers = audit.support_transfer_records_for_dependencies(
         session, (dependency.id,)
     ).get(dependency.id, ())
-    admission, _, admission_reason = _admission_for_scope(
+    admission, _, admission_reason = admission_for_scope(
         session,
         dependency,
         review.predecessor_document_id,
@@ -150,10 +173,10 @@ def prove_support_transfer(
             admission_reason or "admission_link_unavailable"
         )
 
-    predecessor_input = _input_by_candidate_id(
+    predecessor_input = input_by_candidate_id(
         readback.predecessor_inputs, review.predecessor_candidate_id
     )
-    successor_input = _input_by_candidate_id(
+    successor_input = input_by_candidate_id(
         readback.successor_inputs, review.successor_candidate_id
     )
     if predecessor_input is None or successor_input is None:
@@ -176,7 +199,7 @@ def prove_support_transfer(
     if live_input != successor_input:
         raise SupportTransferProofRefusal("successor_candidate_changed")
     try:
-        citation = _verified_successor_citation(
+        citation = verified_successor_citation(
             successor_input, review.successor_document_id
         )
     except ValueError as exc:
@@ -228,7 +251,7 @@ def apply_proven_support_transfer(
     designated_by: str,
 ) -> SupportTransferMutation:
     """Move only the scopes frozen by one proof under the caller's authority."""
-    return _transfer_operative_scopes_under_lock(
+    return transfer_operative_scopes_under_lock(
         session,
         dependency_id=proof.dependency.id,
         successor_document_id=proof.successor_document_id,

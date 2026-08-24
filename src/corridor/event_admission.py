@@ -179,7 +179,9 @@ def run_event_admission(
     project = session.get(Project, project_id)
     if project is None:
         raise ValueError(f"project {project_id} does not exist")
-    selected_version = policy_version or _normal_policy_version(session, project_id)
+    selected_version = policy_version or normal_event_admission_policy_version(
+        session, project_id
+    )
     if policy_version is None and selected_version == UNKNOWN_SCOPE_POLICY_VERSION:
         predecessor = run_event_admission(
             session,
@@ -202,7 +204,9 @@ def run_event_admission(
     if selected_version != EVENT_ADMISSION_POLICY_VERSION:
         raise ValueError(f"unsupported Event Admission policy {selected_version!r}")
     lock_project(session, project_id)
-    policy_json = _canonical_policy(project, EVENT_ADMISSION_POLICY_VERSION)
+    policy_json = canonical_event_admission_policy(
+        project, EVENT_ADMISSION_POLICY_VERSION
+    )
 
     # Only candidates from declared Active Runs of current documents —
     # the same scope the dependency policy, the pile, and the human
@@ -452,7 +456,9 @@ def _run_unknown_scope_admission(
 ) -> EventAdmissionResult:
     """Apply only ADR-0042's exact party-level Commitment class."""
     lock_project(session, project.id)
-    policy_json = _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+    policy_json = canonical_event_admission_policy(
+        project, UNKNOWN_SCOPE_POLICY_VERSION
+    )
     policy_sha256 = policy.canonical_sha256(policy_json)
 
     from corridor.supersession import actionable_candidate_query
@@ -1058,7 +1064,7 @@ def _current_migration_head(session: Session) -> str | None:
     return str(revisions[0]) if len(revisions) == 1 else None
 
 
-def _acceptance_receipt_is_current(
+def acceptance_receipt_is_current(
     session: Session, receipt: EventAdmissionAcceptanceReceipt
 ) -> bool:
     """Require the runtime source and schema identities proved by the receipt."""
@@ -1068,7 +1074,9 @@ def _acceptance_receipt_is_current(
     )
 
 
-def _normal_policy_version(session: Session, project_id: int) -> str:
+def normal_event_admission_policy_version(
+    session: Session, project_id: int
+) -> str:
     """Read the latest append-only activation act; suspension restores v2."""
     row = session.execute(
         select(EventAdmissionActivation, EventAdmissionAcceptanceReceipt)
@@ -1097,17 +1105,21 @@ def _normal_policy_version(session: Session, project_id: int) -> str:
         and latest.policy_version == UNKNOWN_SCOPE_POLICY_VERSION
         and receipt.id == newest_receipt_id
         and receipt.status == "passed"
-        and _acceptance_receipt_is_current(session, receipt)
+        and acceptance_receipt_is_current(session, receipt)
         and receipt.policy_sha256
         == policy.canonical_sha256(
-            _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+            canonical_event_admission_policy(
+                project, UNKNOWN_SCOPE_POLICY_VERSION
+            )
         )
     ):
         return UNKNOWN_SCOPE_POLICY_VERSION
     return EVENT_ADMISSION_POLICY_VERSION
 
 
-def _canonical_policy(project: Project, policy_version: str) -> dict:
+def canonical_event_admission_policy(
+    project: Project, policy_version: str
+) -> dict:
     """The exact rules a real-state acceptance receipt proves.
 
     Three things move this digest, and each suspends the extension until a new
@@ -1366,10 +1378,10 @@ def attach_statement(
     # The Candidate is mutable reviewer work until this act. Its state,
     # payload, and action scope must all be re-read after the project lock;
     # preparing first could write a stale pre-lock edit.
-    from corridor.adjudicate import _require_candidate_action_scope
+    from corridor.adjudicate import require_candidate_action_scope
 
     try:
-        _require_candidate_action_scope(
+        require_candidate_action_scope(
             session, candidate, historical_document_id=None
         )
     except Exception as exc:

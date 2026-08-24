@@ -521,7 +521,7 @@ class _ControlledCase:
     review_before_policy: Any = None
 
 
-def _run_controlled_lane(
+def run_controlled_lane(
     session: Session,
     *,
     seed: dict[str, Any],
@@ -2151,7 +2151,7 @@ def _acceptance_carry_runtime():
     return automatic_carry_forward_module.AutomaticCarryForwardRuntime.deployed()
 
 
-def _skipped_controlled_lane(*, reason: str) -> dict[str, Any]:
+def skipped_controlled_lane(*, reason: str) -> dict[str, Any]:
     return {
         "claim_boundary": CLAIM_BOUNDARY,
         "status": "not_run",

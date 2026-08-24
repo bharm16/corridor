@@ -1,3 +1,9 @@
+"""Deployment-resolved configuration shared by command and HTTP adapters.
+
+Defaults make a local clone bootable while identity and model settings remain
+explicit inputs whose values are recorded at the write seams that use them.
+"""
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.8.0",
+    "ruff>=0.13",
 ]
 
 [build-system]
@@ -39,3 +40,8 @@ testpaths = ["tests"]
 markers = [
     "slow: exhaustive acceptance, migration, or real-corpus rehearsal",
 ]
+
+[tool.ruff.lint]
+# Start with correctness checks that are clean across the existing source.
+# Architecture-specific interface rules live in tests/test_architecture.py.
+select = ["E9", "F63", "F7", "F811", "F821"]

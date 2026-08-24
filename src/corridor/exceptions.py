@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date
 from types import MappingProxyType
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_events import (
@@ -28,10 +28,9 @@ from corridor.dependency_events import (
     current_dependency_statements,
     published_dependency_statements,
 )
+from corridor.disputes import contradicted_fields
 from corridor.models import (
-    Assertion,
     Dependency,
-    EvidenceLink,
     is_critical,
 )
 from corridor.operative_support import (
@@ -502,93 +501,6 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
         )
     view.sort(key=lambda f: (-f.count, f.rule))
     return view
-
-
-# Exactly the characters Python's str.strip() removes. Postgres's
-# [[:space:]] is narrower — it misses the non-breaking space and its
-# Unicode relatives — so a value of a lone NBSP counted as a claim in SQL
-# and not in Python, re-opening the one-predicate rule from the side
-# nobody had checked. Spelled out rather than referenced, because the
-# whole defect was two systems each defining "whitespace" their own way.
-_PY_WHITESPACE = (
-    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
-    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008"
-    "\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
-)
-
-
-def claim_predicates():
-    """The SQL half of "does this assertion say anything".
-
-    Postgres `trim` strips spaces only; `is_claim` — the Python half of
-    this one rule — strips every kind of whitespace, so a value of a
-    single tab counted as a competing claim in the engine and did not on
-    the detail page, and the two readers disagreed about one record.
-    `[:space:]` is the class Python strips. Returned as predicates rather
-    than written twice, because every reader asking this question has to
-    ask it the same way — that is the whole reason this rule lives in one
-    function.
-    """
-    return (
-        Assertion.asserted_value.is_not(None),
-        func.regexp_replace(
-            Assertion.asserted_value,
-            f"^[{_PY_WHITESPACE}]+|[{_PY_WHITESPACE}]+$",
-            "",
-            "g",
-        )
-        != "",
-    )
-
-
-def contradicted_fields(
-    session: Session, dependency_ids: list[int]
-) -> dict[int, list[str]]:
-    """Fields with two or more distinct verified values, per Dependency.
-
-    The one definition of "sources disagree". It had three: this query,
-    an identical copy in `ledger._contradicted_ids` feeding the list
-    page's pill, and a Python version on `FieldView` feeding the detail
-    page — and the Python one did not agree. It filtered on the value
-    being truthy where the SQL filtered on it being non-null, so a blank
-    asserted value competing with a real one contradicted on the list
-    page and in the engine, and did not on the detail page.
-
-    `is_claim` settles it in the stricter direction, which is the one the
-    query's own comment already argued for: an absent value is not a
-    source disagreeing, and a blank cell is an absent value.
-
-    Lives beside the engine because the ledger depends on the engine and
-    not the other way round.
-    """
-    if not dependency_ids:
-        return {}
-
-    # A settled field is not a source disagreeing: the sources still say
-    # what they said, and a reviewer has said what the record concludes
-    # (ADR-0031). Imported here because disputes reads this function.
-    from corridor.disputes import settled_field_names
-
-    settled = settled_field_names(session, dependency_ids)
-
-    found: dict[int, list[str]] = {}
-    for dependency_id, name in session.execute(
-        select(Assertion.dependency_id, Assertion.field_name)
-        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
-        .where(
-            Assertion.dependency_id.in_(dependency_ids),
-            EvidenceLink.verified.is_(True),
-            # A null is an absent column, not a competing value — the
-            # matrix revisions add and drop columns between editions.
-            *claim_predicates(),
-        )
-        .group_by(Assertion.dependency_id, Assertion.field_name)
-        .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
-    ).all():
-        if name in settled.get(dependency_id, ()):
-            continue
-        found.setdefault(dependency_id, []).append(name)
-    return found
 
 
 def _gather(

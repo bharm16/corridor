@@ -33,7 +33,7 @@ from corridor.event_admission import (
     UNKNOWN_SCOPE_POLICY_VERSION,
     EventAdmissionAbstention,
     run_event_admission,
-    _canonical_policy,
+    canonical_event_admission_policy,
     _current_migration_head,
     _current_source_revision,
 )
@@ -552,7 +552,7 @@ def _activation_receipt(
 ):
     source_revision = source_revision or _current_source_revision()
     policy_sha256 = policy.canonical_sha256(
-        _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+        canonical_event_admission_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     )
     admission_count = 1 if gates.get("eligible_case_observed", True) else 0
     opt_in = {

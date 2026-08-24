@@ -26,7 +26,6 @@ from corridor.dependency_events import (
 )
 from corridor.exceptions import (
     Evaluation,
-    contradicted_fields,
     evaluate_dependency,
 )
 from corridor.models import (
@@ -45,7 +44,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
 )
-from corridor.disputes import settled_field_names
+from corridor.disputes import contradicted_fields, settled_field_names
 from corridor.operative_support import resolve_operative_support
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project

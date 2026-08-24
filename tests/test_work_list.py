@@ -1431,6 +1431,31 @@ def test_unknown_scope_with_no_dependency_choices_does_not_block_the_plan(
     assert 'name="scope_mode"' not in final_page
 
 
+def test_mechanical_commitment_keeps_malformed_owner_identity_on_the_guided_screen(
+    client, session, project, party
+):
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    session.add(
+        ProjectRosterEntry(
+            project_id=project.id,
+            principal_subject="local:malformed-owner-choice",
+            display_name="Malformed Owner Choice",
+        )
+    )
+    session.flush()
+
+    response = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/owner",
+        data={"internal_owner_roster_entry_id": "not-an-identity"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Choose the Internal Owner" in response.text
+    assert "internal_owner_roster_entry_id must be a positive identity" in response.text
+
+
 def test_mechanical_commitment_asks_owner_then_structured_next_action(
     client, session, project, party
 ):

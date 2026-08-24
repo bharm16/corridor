@@ -31,8 +31,8 @@ from corridor.event_admission import (
     EVENT_ADMISSION_POLICY_VERSION,
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
-    _acceptance_receipt_is_current,
-    _canonical_policy,
+    acceptance_receipt_is_current,
+    canonical_event_admission_policy,
     run_event_admission,
 )
 from corridor.external_statements import (
@@ -69,7 +69,7 @@ from corridor.m8_acceptance_database import (
 from corridor.rehearsal_environment import SealedRehearsalEnvironment
 from corridor.sh99_admission_acceptance import (
     REPO_ROOT,
-    _provision_database,
+    provision_acceptance_database,
 )
 from corridor.supersession import actionable_candidate_query
 from corridor.work_list import build_work_list
@@ -120,7 +120,7 @@ def run_event_admission_acceptance(
     provision_database: DatabaseProvisioner | None = None,
 ) -> EventAdmissionAcceptanceResult:
     """Replay both policy versions and append only the resulting gate receipt."""
-    provision = provision_database or _provision_database
+    provision = provision_database or provision_acceptance_database
     rehearsal = SealedRehearsalEnvironment.open(
         source_database_url=config.source_database_url,
         expected_checkout_revision=config.expected_clean_git_revision,
@@ -246,7 +246,9 @@ def record_acceptance_receipt(
     ):
         raise ValueError("acceptance receipt source or migration pin does not match")
     status = "passed" if all(value is True for value in gates.values()) else "failed"
-    policy_json = _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+    policy_json = canonical_event_admission_policy(
+        project, UNKNOWN_SCOPE_POLICY_VERSION
+    )
     policy_sha256 = policy.canonical_sha256(policy_json)
     if receipt_json.get("policy_sha256") != policy_sha256:
         raise ValueError("acceptance receipt policy digest does not match deployed rules")
@@ -290,11 +292,11 @@ def activate_passing_acceptance(
     if project is None:
         raise ValueError("acceptance receipt project no longer exists")
     current_sha256 = policy.canonical_sha256(
-        _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+        canonical_event_admission_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     )
     if receipt.policy_sha256 != current_sha256:
         raise ValueError("proved Event Admission rules no longer match deployed rules")
-    if not _acceptance_receipt_is_current(session, receipt):
+    if not acceptance_receipt_is_current(session, receipt):
         raise ValueError(
             "proved Event Admission source revision or migration head is stale"
         )

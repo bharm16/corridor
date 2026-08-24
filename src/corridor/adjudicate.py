@@ -244,7 +244,7 @@ class MalformedCandidateShape(Exception):
     """
 
 
-def _require_candidate_action_scope(
+def require_candidate_action_scope(
     session: Session,
     candidate: Candidate,
     *,
@@ -299,7 +299,7 @@ def accept_candidate(
     historical_document_id: int | None = None,
 ) -> Dependency:
     principal = require_human_principal(principal)
-    _require_candidate_action_scope(
+    require_candidate_action_scope(
         session,
         candidate,
         historical_document_id=historical_document_id,
@@ -425,7 +425,7 @@ def admit_dependency_by_policy(
     """
     dependency: Dependency | None = None
     for candidate in (primary, *siblings):
-        _require_candidate_action_scope(
+        require_candidate_action_scope(
             session, candidate, historical_document_id=None
         )
         payload, fields, citations = _validate_candidate_provenance(
@@ -502,7 +502,7 @@ def edit_candidate(
     historical_document_id: int | None = None,
 ) -> Candidate:
     principal = require_human_principal(principal)
-    _require_candidate_action_scope(
+    require_candidate_action_scope(
         session,
         candidate,
         historical_document_id=historical_document_id,
@@ -540,7 +540,7 @@ def reject_candidate(
         raise InvalidRejectReason(
             f"{reason!r} is not a reject reason; expected one of {REJECT_REASONS}"
         )
-    _require_candidate_action_scope(
+    require_candidate_action_scope(
         session,
         candidate,
         historical_document_id=historical_document_id,
@@ -827,7 +827,7 @@ def merge_candidate(
             f"{dependency.ref_code} was dismissed — a claim cannot merge "
             "into a record nobody is working"
         )
-    _require_candidate_action_scope(
+    require_candidate_action_scope(
         session,
         candidate,
         historical_document_id=historical_document_id,

@@ -287,7 +287,7 @@ def run_sh99_admission_acceptance(
     """Pin and replay the shared SH 99 operation without mutating its database."""
 
     if provision_database is None:
-        provision_database = _provision_database
+        provision_database = provision_acceptance_database
     rehearsal = SealedRehearsalEnvironment.open(
         source_database_url=config.source_database_url,
         expected_checkout_revision=config.expected_clean_git_revision,
@@ -425,7 +425,7 @@ def verify_sh99_shared_admission_seal_bundle(
     )
 
 
-def _provision_database(admin_url: str):
+def provision_acceptance_database(admin_url: str):
     return provision_disposable_postgres(
         admin_url,
         repo_root=REPO_ROOT,
@@ -540,7 +540,7 @@ def _shared_seal_state(
     *,
     evaluated_on: date | None = None,
 ) -> dict[str, Any]:
-    from corridor.event_admission import _normal_policy_version
+    from corridor.event_admission import normal_event_admission_policy_version
     from corridor.supersession import actionable_candidate_query
     from corridor.work_list import build_work_list
 
@@ -645,7 +645,7 @@ def _shared_seal_state(
     ]
     return {
         "postgres_version": str(session.scalar(text("show server_version"))),
-        "current_event_admission_policy": _normal_policy_version(
+        "current_event_admission_policy": normal_event_admission_policy_version(
             session, project_id
         ),
         "actionable_pending_event_candidate_ids": (

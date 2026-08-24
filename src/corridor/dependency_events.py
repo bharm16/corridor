@@ -33,6 +33,8 @@ from corridor.statement_lifecycle import (
     current_scope_decision_filter as current_lifecycle_scope_decision_filter,
     current_statement_event_filter,
 )
+from corridor.statement_evidence import validate_cited_statement_evidence
+from corridor.statement_values import CitedStatementEvidence, StatementRefusal
 
 
 COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change")
@@ -671,12 +673,6 @@ def _verified_party_statement_provenance(
     # The writer validates cited Evidence, but publication has to fail closed
     # when a later raw mutation or bad migration makes that exact page/quote
     # unsupported.  Do not publish an older statement in its place.
-    from corridor.external_statements import (
-        CitedStatementEvidence,
-        StatementRefusal,
-        validate_cited_statement_evidence,
-    )
-
     provenance: dict[int, CitedStatementProvenance] = {}
     rows = session.execute(
         select(DependencyEventEvidence.event_id, EvidenceLink, Document)

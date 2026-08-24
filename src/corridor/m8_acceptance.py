@@ -57,8 +57,8 @@ from corridor.m8_acceptance_contract import (
     ControlledContradiction,
 )
 from corridor.m8_acceptance_controlled import (
-    _run_controlled_lane,
-    _skipped_controlled_lane,
+    run_controlled_lane,
+    skipped_controlled_lane,
 )
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
@@ -1120,7 +1120,7 @@ def run_m8_acceptance(
                         fixture_content=fixture_content,
                         images_dir=Path(image_root) / "real",
                     )
-                    controlled_raw, controlled_canonical = _run_controlled_lane(
+                    controlled_raw, controlled_canonical = run_controlled_lane(
                         session,
                         seed=fixture_content["selected_seed"],
                         transformations=transformations,
@@ -1132,7 +1132,7 @@ def run_m8_acceptance(
                 except ReplayContradiction as exc:
                     real_raw = exc.real_raw
                     real_canonical = exc.real_canonical
-                    controlled_raw = _skipped_controlled_lane(
+                    controlled_raw = skipped_controlled_lane(
                         reason="real_chain_replay_failed"
                     )
                     controlled_canonical = deepcopy(controlled_raw)

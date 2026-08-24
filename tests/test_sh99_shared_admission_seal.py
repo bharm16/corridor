@@ -22,7 +22,7 @@ from corridor.event_admission import (
     EVENT_ADMISSION_POLICY_VERSION,
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
-    _canonical_policy,
+    canonical_event_admission_policy,
     _current_migration_head,
     _current_source_revision,
 )
@@ -174,7 +174,7 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
     assert run.id == candidate.extraction_run_id
 
     policy_sha256 = policy.canonical_sha256(
-        _canonical_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+        canonical_event_admission_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     )
     receipt = EventAdmissionAcceptanceReceipt(
         project_id=project.id,

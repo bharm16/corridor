@@ -26,7 +26,7 @@ from corridor.external_statements import (
     StatementRefusal,
     validate_cited_statement_evidence,
 )
-from corridor.exceptions import contradicted_fields
+from corridor.disputes import contradicted_fields
 from corridor.models import (
     Candidate,
     CommitmentLineage,

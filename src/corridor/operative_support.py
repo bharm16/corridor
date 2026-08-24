@@ -268,7 +268,7 @@ def _designate_publication_support_under_lock(
     return designation
 
 
-def _transfer_operative_scopes_under_lock(
+def transfer_operative_scopes_under_lock(
     session: Session,
     *,
     dependency_id: int,

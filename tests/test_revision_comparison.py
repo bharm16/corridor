@@ -35,12 +35,10 @@ from corridor.revision_comparison import (
     _assignment_regret_pairs,
     _bounded_ambiguities,
     _global_matching,
-    comparison_derivation,
     create_revision_comparison,
     list_revision_comparisons,
     read_revision_comparison,
 )
-from corridor.report import Derivation
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 
@@ -2014,52 +2012,6 @@ def test_new_matcher_version_or_configuration_appends_without_rewriting(
             session, predecessor_run.id, successor_run.id
         )
     ] == [original.id, rerun.id]
-
-
-def test_published_comparison_statement_derives_from_the_exact_comparison_run(
-    session, consecutive_nhhip_documents
-):
-    _, predecessor, successor = consecutive_nhhip_documents
-    predecessor_run, _ = _run(
-        session,
-        predecessor,
-        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
-        prompt_version="matrix_tiered_v2",
-        model="gpt-test",
-        schema_version="matrix-schema-v2",
-    )
-    successor_run, _ = _run(
-        session,
-        successor,
-        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
-        prompt_version="matrix_tiered_v3",
-        model="gpt-test",
-        schema_version="matrix-schema-v3",
-    )
-    comparison = create_revision_comparison(
-        session, predecessor_run.id, successor_run.id
-    )
-
-    provenance = comparison_derivation(
-        session,
-        comparison.id,
-        ruleset_version="comparison-summary-v1",
-    )
-
-    assert isinstance(provenance, Derivation)
-    assert provenance.record_ids == ()
-    assert provenance.scope == f"Revision Comparison {comparison.id}"
-    assert provenance.resolves
-    assert provenance.marker == (
-        f"[comparison-summary-v1 · Revision Comparison {comparison.id}]"
-    )
-
-    with pytest.raises(RevisionComparisonError, match="does not exist"):
-        comparison_derivation(
-            session,
-            987_654_321,
-            ruleset_version="comparison-summary-v1",
-        )
 
 
 def test_readback_uses_input_snapshots_after_candidate_state_or_payload_changes(

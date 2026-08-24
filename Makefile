@@ -1,4 +1,4 @@
-.PHONY: boot up down psql test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -16,6 +16,12 @@ down:
 
 psql:
 	docker compose exec postgres psql -U corridor -d corridor
+
+# Fast source and architecture checks with no model or external service calls.
+check:
+	uv run ruff check src/corridor
+	uv run python -m compileall -q src/corridor
+	uv run pytest tests/test_architecture.py -q
 
 # Fast PostgreSQL-backed developer loop. Exhaustive rehearsals stay in test-full.
 test:

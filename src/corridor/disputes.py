@@ -23,7 +23,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.exceptions import claim_predicates
 from corridor.models import (
     Assertion,
     Dependency,
@@ -42,6 +41,30 @@ class NoSuchDispute(ValueError):
 class DisputeMovedOn(ValueError):
     """A claim arrived after the page was read; the judgment would cover
     evidence the reviewer never saw."""
+
+
+# Exactly the characters Python's str.strip() removes. PostgreSQL's trim and
+# [[:space:]] definitions are narrower, so the SQL predicate spells out the
+# same whitespace vocabulary used by the Python claim reader.
+_PY_WHITESPACE = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008"
+    "\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def claim_predicates():
+    """The SQL half of whether an Assertion says anything disputable."""
+    return (
+        Assertion.asserted_value.is_not(None),
+        func.regexp_replace(
+            Assertion.asserted_value,
+            f"^[{_PY_WHITESPACE}]+|[{_PY_WHITESPACE}]+$",
+            "",
+            "g",
+        )
+        != "",
+    )
 
 
 @dataclass(frozen=True)
@@ -144,6 +167,32 @@ def settled_field_names(
     return settled
 
 
+def contradicted_fields(
+    session: Session, dependency_ids: list[int]
+) -> dict[int, list[str]]:
+    """Standing Disputes by Dependency after current Settlements are applied."""
+    if not dependency_ids:
+        return {}
+
+    settled = settled_field_names(session, dependency_ids)
+    found: dict[int, list[str]] = {}
+    for dependency_id, name in session.execute(
+        select(Assertion.dependency_id, Assertion.field_name)
+        .join(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
+            Assertion.dependency_id.in_(dependency_ids),
+            EvidenceLink.verified.is_(True),
+            *claim_predicates(),
+        )
+        .group_by(Assertion.dependency_id, Assertion.field_name)
+        .having(func.count(func.distinct(Assertion.asserted_value)) > 1)
+    ).all():
+        if name in settled.get(dependency_id, ()):
+            continue
+        found.setdefault(dependency_id, []).append(name)
+    return found
+
+
 def _disagreeing_field_names(session: Session, dependency_id: int) -> list[str]:
     """Fields with two or more distinct verified claims, settled or not."""
     return list(
@@ -174,8 +223,6 @@ def disputes_for(
     if include_settled:
         names = _disagreeing_field_names(session, dependency_id)
     else:
-        from corridor.exceptions import contradicted_fields
-
         names = contradicted_fields(session, [dependency_id]).get(
             dependency_id, []
         )
