@@ -922,10 +922,8 @@ class DependencyAdmissionOutcome(Base):
         ),
         CheckConstraint(
             "(outcome = 'abstained' and "
-            "((eligibility_receipt_required = false and "
-            "eligibility_json is null and eligibility_sha256 is null) or "
-            "(eligibility_receipt_required = true and "
-            "eligibility_json is not null and eligibility_sha256 is not null))) "
+            "((eligibility_json is null and eligibility_sha256 is null) or "
+            "(eligibility_json is not null and eligibility_sha256 is not null))) "
             "or (outcome in ('admitted', 'merged') and "
             "eligibility_json is null and eligibility_sha256 is null)",
             name="ck_dependency_admission_outcome_eligibility_shape",
@@ -950,9 +948,6 @@ class DependencyAdmissionOutcome(Base):
     )
     eligibility_json: Mapped[dict | None] = mapped_column(JSONB)
     eligibility_sha256: Mapped[str | None] = mapped_column(String(64))
-    eligibility_receipt_required: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default=true()
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

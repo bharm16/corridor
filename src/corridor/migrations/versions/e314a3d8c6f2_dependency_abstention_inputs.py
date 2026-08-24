@@ -32,20 +32,6 @@ def upgrade() -> None:
         "dependency_admission_outcomes",
         sa.Column("eligibility_sha256", sa.String(length=64)),
     )
-    op.add_column(
-        "dependency_admission_outcomes",
-        sa.Column(
-            "eligibility_receipt_required",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.false(),
-        ),
-    )
-    op.alter_column(
-        "dependency_admission_outcomes",
-        "eligibility_receipt_required",
-        server_default=sa.true(),
-    )
     op.create_check_constraint(
         "ck_dependency_admission_outcome_eligibility_sha256",
         "dependency_admission_outcomes",
@@ -56,12 +42,28 @@ def upgrade() -> None:
         "ck_dependency_admission_outcome_eligibility_shape",
         "dependency_admission_outcomes",
         "(outcome = 'abstained' and "
-        "((eligibility_receipt_required = false and "
-        "eligibility_json is null and eligibility_sha256 is null) or "
-        "(eligibility_receipt_required = true and "
-        "eligibility_json is not null and eligibility_sha256 is not null))) "
+        "((eligibility_json is null and eligibility_sha256 is null) or "
+        "(eligibility_json is not null and eligibility_sha256 is not null))) "
         "or (outcome in ('admitted', 'merged') and "
         "eligibility_json is null and eligibility_sha256 is null)",
+    )
+    op.execute(
+        """
+        create function require_dependency_admission_abstention_eligibility()
+        returns trigger language plpgsql as $$
+        begin
+            if new.outcome = 'abstained' and
+               (new.eligibility_json is null or new.eligibility_sha256 is null) then
+                raise exception 'new Dependency Admission Abstention requires exact eligibility';
+            end if;
+            return new;
+        end
+        $$;
+
+        create trigger dependency_admission_abstentions_require_eligibility
+        before insert on dependency_admission_outcomes
+        for each row execute function require_dependency_admission_abstention_eligibility();
+        """
     )
 
 

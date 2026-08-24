@@ -16,7 +16,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import ProgrammingError
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
@@ -60,6 +60,18 @@ def _constraints(connection) -> set[str]:
     )
 
 
+def _triggers(connection) -> set[str]:
+    return set(
+        connection.execute(
+            text(
+                "select tgname from pg_trigger "
+                "where tgrelid = 'dependency_admission_outcomes'::regclass "
+                "and not tgisinternal"
+            )
+        ).scalars()
+    )
+
+
 def test_dependency_abstention_inputs_are_on_one_fresh_linear_head():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     assert scripts.get_heads() == [HEAD]
@@ -72,15 +84,18 @@ def test_dependency_abstention_inputs_are_on_one_fresh_linear_head():
     ) as database:
         with database.session_factory().connection() as connection:
             assert connection.scalar(text("select version_num from alembic_version")) == HEAD
-            assert _columns(connection)[-3:] == [
+            assert _columns(connection)[-2:] == [
                 "eligibility_json",
                 "eligibility_sha256",
-                "eligibility_receipt_required",
             ]
             assert {
                 "ck_dependency_admission_outcome_eligibility_sha256",
                 "ck_dependency_admission_outcome_eligibility_shape",
             }.issubset(_constraints(connection))
+            assert (
+                "dependency_admission_abstentions_require_eligibility"
+                in _triggers(connection)
+            )
 
 
 def test_predecessor_upgrade_preserves_historical_dependency_abstention():
@@ -149,20 +164,22 @@ def test_predecessor_upgrade_preserves_historical_dependency_abstention():
             engine = create_engine(database_url)
             with engine.connect() as connection:
                 assert connection.scalar(text("select version_num from alembic_version")) == HEAD
-                assert _columns(connection)[-3:] == [
+                assert _columns(connection)[-2:] == [
                     "eligibility_json",
                     "eligibility_sha256",
-                    "eligibility_receipt_required",
                 ]
                 assert {
                     "ck_dependency_admission_outcome_eligibility_sha256",
                     "ck_dependency_admission_outcome_eligibility_shape",
                 }.issubset(_constraints(connection))
+                assert (
+                    "dependency_admission_abstentions_require_eligibility"
+                    in _triggers(connection)
+                )
                 row = connection.execute(
                     text(
                         "select id, outcome, reason, eligibility_json, "
-                        "eligibility_sha256, eligibility_receipt_required "
-                        "from dependency_admission_outcomes "
+                        "eligibility_sha256 from dependency_admission_outcomes "
                         "where id = 314005"
                     )
                 ).mappings().one()
@@ -172,10 +189,9 @@ def test_predecessor_upgrade_preserves_historical_dependency_abstention():
                     "reason": "revisions_disagree_on_party",
                     "eligibility_json": None,
                     "eligibility_sha256": None,
-                    "eligibility_receipt_required": False,
                 }
             with engine.begin() as connection:
-                with pytest.raises(IntegrityError), connection.begin_nested():
+                with pytest.raises(ProgrammingError), connection.begin_nested():
                     connection.execute(
                         text(
                             "insert into dependency_admission_outcomes "
