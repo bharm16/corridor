@@ -535,6 +535,22 @@ def test_candidate_excluded_by_the_work_list_reader_refuses_before_runtime(
     assert runtime.calls == 0
 
 
+def test_investigator_refuses_malformed_candidate_evidence_before_runtime(
+    session, project
+):
+    candidate, _document = _unplaced_statement(session, project)
+    candidate.payload_json["citations"][0]["document_id"] = True
+    runtime = _EmptyRuntime()
+
+    result = _investigate(session, candidate.id, runtime)
+
+    assert (result.status, result.reason) == (
+        "abstained",
+        "evidence_unavailable",
+    )
+    assert runtime.calls == 0
+
+
 def test_candidate_evidence_retains_diagnostic_only_distinction(session, project):
     candidate, _ = _unplaced_statement(session, project)
     page = (

@@ -18,6 +18,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.identity import is_project_side_party, normalize_party
 from corridor.models import (
     Candidate,
@@ -45,23 +46,6 @@ from corridor.verify import normalize, quote_appears_on, threshold_for
 
 class StatementRefusal(ValueError):
     """The proposed statement would manufacture a fact the record lacks."""
-
-
-def candidate_stated_party_wording(
-    candidate: Candidate | None, project_id: int
-) -> str | None:
-    """Read speaker wording without collapsing it into affected-party context.
-
-    minutes_v2 names the speaker explicitly. Historical Candidates used
-    ``external_org`` for both roles, so that field remains a read-only fallback.
-    """
-    if candidate is None or candidate.project_id != project_id:
-        return None
-    fields = (candidate.payload_json or {}).get("fields") or {}
-    if not isinstance(fields, dict):
-        return None
-    value = fields.get("stated_party") or fields.get("external_org")
-    return value if isinstance(value, str) else None
 
 
 _STATEMENT_SCOPE_POLICY_ACTORS = frozenset(
@@ -575,7 +559,12 @@ def _require_evidence_bound_party_resolution(
             "the stated-party wording does not resolve to the stated External Party"
         )
     candidate = session.get(Candidate, resolution.candidate_id)
-    source_party = candidate_stated_party_wording(candidate, project_id)
+    prepared = (
+        prepare_candidate_statement_facts(session, candidate)
+        if candidate is not None and candidate.project_id == project_id
+        else None
+    )
+    source_party = prepared.source_stated_party_wording if prepared is not None else None
     expected = (
         source_kind == "cited"
         and resolution.mode == "guided_evidence_bound"
@@ -584,6 +573,8 @@ def _require_evidence_bound_party_resolution(
         and resolution.stated_external_org_id == stated_external_org_id
         and resolution.principal == str(resolution_principal or "").strip()
         and resolution.evidence == evidence
+        and prepared is not None
+        and prepared.evidence_is_complete
         and isinstance(source_party, str)
         and source_party.strip() == stated_party.strip()
     )

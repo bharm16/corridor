@@ -143,3 +143,48 @@ def test_preparation_distinguishes_visible_context_from_cited_support(session):
     assert facts.stated_party.visible_external_org_id is not None
     assert facts.new_timing.is_supported is False
     assert facts.new_timing.is_visible is True
+
+
+def test_preparation_refuses_boolean_citation_identities(session):
+    quote = "Kinder Morgan will complete the relocation in June 2026."
+    _party, _document, candidate = _candidate_with_page(
+        session,
+        quote=quote,
+        page_text=quote,
+        fields={
+            "event_type": "commitment",
+            "description": quote,
+            "external_org": "Kinder Morgan",
+            "stated_party": "Kinder Morgan",
+        },
+    )
+    candidate.payload_json["citations"][0]["document_id"] = True
+
+    facts = prepare_candidate_statement_facts(session, candidate)
+
+    assert facts.evidence_is_complete is False
+    assert facts.evidence == ()
+
+
+def test_preparation_keeps_legacy_party_fallback_separate_from_visible_day_words(
+    session,
+):
+    quote = "Kinder Morgan will complete the relocation by June 1, 2026."
+    _party, _document, candidate = _candidate_with_page(
+        session,
+        quote=quote,
+        page_text=quote,
+        fields={
+            "event_type": "commitment",
+            "description": quote,
+            "external_org": "Kinder Morgan",
+            "committed_date": "2026-06-01",
+        },
+    )
+
+    facts = prepare_candidate_statement_facts(session, candidate)
+
+    assert facts.stated_party.wording == ""
+    assert facts.source_stated_party_wording == "Kinder Morgan"
+    assert facts.new_timing.timing.text == "2026-06-01"
+    assert facts.new_timing.visible_timing.text == "June 1, 2026"

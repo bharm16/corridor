@@ -35,7 +35,6 @@ from corridor.external_statements import (
     StatementRefusal,
     StatementScope,
     StatementTiming,
-    candidate_stated_party_wording,
     record_external_party_statement,
     record_statement_scope_decision,
 )
@@ -1481,7 +1480,12 @@ def _guided_party_resolution(
         return None
 
     candidate = session.get(Candidate, draft.candidate_id)
-    source_party = candidate_stated_party_wording(candidate, project_id)
+    prepared = (
+        prepare_candidate_statement_facts(session, candidate)
+        if candidate is not None and candidate.project_id == project_id
+        else None
+    )
+    source_party = prepared.source_stated_party_wording if prepared is not None else None
     if not isinstance(source_party, str) or source_party.strip() != stated_party:
         raise StatementCoordinationRefusal(
             "guided resolution requires the Candidate's exact source party wording"

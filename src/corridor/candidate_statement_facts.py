@@ -12,13 +12,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+import re
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.external_statements import CitedStatementEvidence, StatementTiming
 from corridor.models import Candidate, DocPage, Document, ExternalOrg
 from corridor.verify import normalize
+
+if TYPE_CHECKING:
+    from corridor.external_statements import CitedStatementEvidence, StatementTiming
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,8 @@ class CandidateEvidence:
 
     @property
     def cited(self) -> CitedStatementEvidence:
+        from corridor.external_statements import CitedStatementEvidence
+
         return CitedStatementEvidence(self.document_id, self.page_no, self.quote)
 
 
@@ -85,6 +91,7 @@ class CandidateStatementFacts:
     evidence_is_complete: bool
     affected_party: CandidatePartyFact
     stated_party: CandidatePartyFact
+    source_stated_party_wording: str
     description: str
     description_is_supported: bool
     event_date: date | None
@@ -125,6 +132,7 @@ def prepare_candidate_statement_facts(
 
     affected_wording = str(fields.get("external_org") or "").strip()
     stated_wording = str(fields.get("stated_party") or "").strip()
+    source_stated_party_wording = stated_wording or affected_wording
     description = str(fields.get("description") or "").strip()
     raw_event_date = fields.get("event_date")
     event_date = _parse_date(raw_event_date)
@@ -145,6 +153,7 @@ def prepare_candidate_statement_facts(
         stated_party=_party_fact(
             organizations, stated_wording, cited_text, visible_text
         ),
+        source_stated_party_wording=source_stated_party_wording,
         description=description,
         description_is_supported=(
             bool(description) and normalize(description) in cited_text
@@ -166,13 +175,23 @@ def _candidate_evidence(
         if not isinstance(citation, dict) or citation.get("verified") is not True:
             continue
         try:
-            document_id = int(citation["document_id"])
-            page_no = int(citation["page"])
-            quote = str(citation["quote"]).strip()
-        except (KeyError, TypeError, ValueError):
+            document_id = citation["document_id"]
+            page_no = citation["page"]
+            quote = citation["quote"]
+        except KeyError:
             continue
-        if document_id <= 0 or page_no <= 0 or not quote:
+        if (
+            isinstance(document_id, bool)
+            or not isinstance(document_id, int)
+            or document_id <= 0
+            or isinstance(page_no, bool)
+            or not isinstance(page_no, int)
+            or page_no <= 0
+            or not isinstance(quote, str)
+            or not quote.strip()
+        ):
             continue
+        quote = quote.strip()
         document = session.scalar(
             select(Document).where(
                 Document.id == document_id,
@@ -249,7 +268,7 @@ def _candidate_timing_fact(
         and timing.start_date is not None
         and evidence
     ):
-        visible_timing = StatementTiming.day(evidence[0].quote, timing.start_date)
+        visible_timing = _visible_day_timing(timing, evidence)
     return CandidateTimingFact(
         is_present=is_present,
         timing=timing,
@@ -268,6 +287,8 @@ def _candidate_timing_fact(
 
 
 def _parse_candidate_timing(value: object) -> StatementTiming | None:
+    from corridor.external_statements import StatementTiming
+
     if isinstance(value, dict):
         text = str(value.get("text") or "").strip()
         precision = str(value.get("precision") or "").strip()
@@ -301,6 +322,32 @@ def _candidate_timing_invalid_reason(value: object) -> str:
         if start is not None and end is not None:
             return "invalid_calendar_bounds"
     return "invalid_shape"
+
+
+def _visible_day_timing(
+    timing: StatementTiming,
+    evidence: tuple[CandidateEvidence, ...],
+) -> StatementTiming | None:
+    """Preserve the exact visible day wording instead of substituting its quote."""
+    from corridor.external_statements import StatementTiming
+
+    value = timing.start_date
+    if value is None:
+        return None
+    named = re.compile(
+        rf"\b{re.escape(value.strftime('%B'))}\s+0?{value.day}"
+        rf"(?:st|nd|rd|th)?(?:,\s*|\s+){value.year}\b",
+        re.IGNORECASE,
+    )
+    numeric = re.compile(
+        rf"\b0?{value.month}/0?{value.day}/(?:{value.year}|{value.year % 100:02d})\b"
+    )
+    for item in evidence:
+        for source_text in (item.quote, item.page_text or ""):
+            match = named.search(source_text) or numeric.search(source_text)
+            if match is not None:
+                return StatementTiming.day(match.group(0), value)
+    return None
 
 
 def _parse_date(value: object) -> date | None:

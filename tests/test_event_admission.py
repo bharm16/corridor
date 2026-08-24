@@ -533,7 +533,7 @@ def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
         )
     )
     assert page is not None
-    page.text = "The package is due. 2025-06-01"
+    page.text = "Tejas Pipeline project context. The package is due. 2025-06-01"
     _run(session, minutes, [candidate])
     declare_single_run_documents(session, project.id, principal=OPERATOR)
     session.flush()
