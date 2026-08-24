@@ -340,7 +340,7 @@ def test_candidate_lane_explains_a_durable_successor_extraction_failure(
     assert r.status_code == 200
     assert dependency.ref_code in r.text
     assert "Extraction failed" in r.text
-    assert "completed Active Run is required" in r.text
+    assert "completed current document reading is required" in r.text
     assert "Current Evidence is unavailable" in r.text
     assert ">Reconfirm<" not in r.text
 
@@ -2874,7 +2874,7 @@ def test_decided_rehearsal_cohort_resumes_admitted_dependency_coordination(
 
     page = client.get(lane).text
 
-    assert "Candidate review complete" in page
+    assert "Extracted conflict review complete" in page
     assert "1 admitted Dependency needs coordination" in page
     assert "Admitted" in page
     assert "internal owner" in page
@@ -2920,7 +2920,7 @@ def test_decided_rehearsal_cohort_keeps_coordinated_dependency_openable(
 
     page = client.get(lane).text
 
-    assert "Candidate review complete" in page
+    assert "Extracted conflict review complete" in page
     assert "Every admitted Dependency currently has a Coordination Plan" in page
     assert "Review coordination" in page
     detail_url = _link_href(page, "Review coordination")
@@ -2951,7 +2951,7 @@ def test_rehearsal_cohort_summary_flag_clears_default_coordinate_focus(
 
     page = client.get(f"{lane}&summary=1").text
 
-    assert "Candidate review complete" in page
+    assert "Extracted conflict review complete" in page
     assert "Continue coordination" in page
     assert f"coordinate={dependency_id}" in page
     assert 'name="owner"' not in page
@@ -3484,7 +3484,7 @@ def test_decided_rehearsal_cohort_names_when_nothing_was_admitted(
 
     page = client.get(lane).text
 
-    assert "Candidate review complete" in page
+    assert "Extracted conflict review complete" in page
     assert "No Dependencies were admitted from this cohort" in page
     assert "W4" in page
     assert "rejected" in page
@@ -3505,7 +3505,7 @@ def test_decided_rehearsal_cohort_fails_closed_on_missing_admission_link(
         f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
     ).text
 
-    assert "Candidate review complete" in page
+    assert "Extracted conflict review complete" in page
     assert "W4" in page
     assert "Admitted record unavailable" in page
     assert f'href="/ledger/{project.slug}/' not in page

@@ -57,7 +57,7 @@
     {% set needs_coordination = active_admitted|selectattr("coordination_gaps")|list %}
     {% set unresolved = rail|selectattr("admission_refusal")|list %}
     <section class="cohort-progress" aria-labelledby="cohort-progress-heading">
-      <h1 id="cohort-progress-heading">Candidate review complete</h1>
+      <h1 id="cohort-progress-heading">Extracted conflict review complete</h1>
       {% if needs_coordination %}
         <p>{{ needs_coordination|length }} admitted Dependenc{{ 'y' if needs_coordination|length == 1 else 'ies' }} need{{ 's' if needs_coordination|length == 1 else '' }} coordination.</p>
       {% elif unresolved %}

@@ -1356,7 +1356,7 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
             "label": (
                 "Marked Not Relevant"
                 if disposition.disposition == "not_relevant"
-                else "Accepted statement Candidate"
+                else "Accepted extracted statement"
             ),
             "detail": disposition.reason.replace("_", " ") if disposition.reason else "",
         }
@@ -1368,7 +1368,7 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
             "label": (
                 "Undid guided Save"
                 if reversal.receipt_id is not None
-                else "Restored Not Relevant Candidate"
+                else "Restored extracted statement"
             ),
             "detail": (
                 f"grouping receipt {reversal.receipt_id}"

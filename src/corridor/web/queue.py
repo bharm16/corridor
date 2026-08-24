@@ -97,14 +97,16 @@ def build_supersession_review_view(
     details = {
         "awaiting_extraction": "No successor extraction attempt exists.",
         "extraction_failed": (
-            "The successor extraction failed; a completed Active Run is required "
-            "before this Dependency can be reviewed."
+            "The newer document could not be read; a completed current "
+            "document reading is required before this Dependency can be reviewed."
         ),
         "awaiting_active_run": (
-            "A successor extraction completed, but no Active Run is declared."
+            "A newer document was read, but Corridor has not declared the "
+            "current document reading yet."
         ),
         "awaiting_comparison": (
-            "The successor has an Active Run, but its Revision Comparison is not ready."
+            "The current document reading is available, but the Revision "
+            "Comparison is not ready."
         ),
         "blocked": "This Dependency cannot be routed safely from the current lineage.",
     }

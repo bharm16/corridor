@@ -1563,7 +1563,7 @@ def test_non_cell_page_without_an_available_image_is_disabled_and_refused(
         assert "disabled" in supporting_control
         with pytest.raises(
             StatementCoordinationRefusal,
-            match="Save unavailable until every Candidate Evidence page",
+            match="Save unavailable until every registered source page for this extracted statement",
         ):
             supporting_statement_evidence(
                 session,
@@ -1621,13 +1621,13 @@ def test_http_save_refuses_original_pdf_evidence_without_a_rendered_image(
             )
 
         assert screen.status_code == 200
-        assert "Save unavailable until every Candidate Evidence page" in screen.text
+        assert "Save unavailable until every registered source page for this extracted statement" in screen.text
         assert (
             '<button type="submit" disabled>Save statement and Coordination Plan</button>'
             in screen.text
         )
         assert response.status_code == 400
-        assert "Save unavailable until every Candidate Evidence page" in response.text
+        assert "Save unavailable until every registered source page for this extracted statement" in response.text
         assert candidate.state == "pending"
         assert session.scalar(
             select(func.count())
@@ -2009,7 +2009,7 @@ def test_form_adapter_refuses_when_any_original_candidate_evidence_is_filtered(
 
     with pytest.raises(
         StatementCoordinationRefusal,
-        match="Save unavailable until every Candidate Evidence page",
+            match="Save unavailable until every registered source page for this extracted statement",
     ):
         supporting_statement_evidence(
             session,

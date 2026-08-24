@@ -67,7 +67,7 @@
     {% for evidence in candidate_evidence %}
       <section class="evidence">
         <span class="muted">{{ evidence.filename }} · registered page {{ evidence.page_no }}</span>
-        <span class="quote"><b>Candidate Evidence</b> — {{ evidence.quote }}</span>
+        <span class="quote"><b>Verified Evidence excerpt</b> — {{ evidence.quote }}</span>
         {% if evidence.supporting_quote_available %}
           <b>Complete registered page context</b>
           {% if evidence.has_page_image %}
@@ -85,7 +85,7 @@
         {% endif %}
       </section>
     {% else %}
-      <p class="error">This Candidate has no complete Evidence identity and cannot be saved.</p>
+      <p class="error">This extracted statement has no complete registered Evidence and cannot be saved.</p>
     {% endfor %}
 
     {% if candidate_party and not candidate_affected_party_id %}

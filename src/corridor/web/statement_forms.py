@@ -30,9 +30,9 @@ from corridor.statement_coordination import (
 
 
 CANDIDATE_EVIDENCE_UNAVAILABLE = (
-    "Save unavailable until every Candidate Evidence page has its registered "
-    "context: a rendered image for PDF or OCR pages, or registered cell text "
-    "for a worksheet."
+    "Save unavailable until every registered source page for this extracted "
+    "statement has its complete context: a rendered image for PDF or OCR "
+    "pages, or registered cell text for a worksheet."
 )
 
 
