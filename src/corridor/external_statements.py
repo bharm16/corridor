@@ -574,7 +574,6 @@ def _require_evidence_bound_party_resolution(
         and resolution.principal == str(resolution_principal or "").strip()
         and resolution.evidence == evidence
         and prepared is not None
-        and prepared.evidence_is_complete
         and isinstance(source_party, str)
         and source_party.strip() == stated_party.strip()
     )
