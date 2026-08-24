@@ -27,21 +27,27 @@ Registrations, Need Dates, Ready, Exceptions, Evaluation, Coordination Plans,
 Report review, and one Approved Export.
 
 Extraction is fresh. Existing Active Runs are pinned comparison inputs, not reused
-as the proving run's output. A baseline must use the same extractor version and
-model configuration; incompatible lineage refuses before semantic comparison. The
-new Extraction Runs must match the baseline's canonical Candidate facts and
-Evidence. Candidate identities and ordering may differ; an External Party
-Statement, External Party, timing, or citation that appears, disappears, or changes
-meaning is a repeatability failure and stops the run before Admission. Baseline
-equality proves repeatability, not correctness; Evidence validation, deterministic
-Admission, and simulated-practitioner decisions remain separate checks.
+as the proving run's output. A baseline must use the same extractor version, model,
+schema version, and prompt digest; incompatible lineage refuses before semantic
+comparison even when both runs produced zero Candidates. The new Extraction Runs
+must match the baseline's canonical Candidate facts and Evidence. Candidate
+identities and ordering may differ; an External Party Statement, External Party,
+timing, or citation that appears, disappears, or changes meaning is a repeatability
+failure and stops the run before Admission. Baseline equality proves repeatability,
+not correctness; Evidence validation, deterministic Admission, and
+simulated-practitioner decisions remain separate checks.
 
 Every residual Candidate produced by the exact packet is inspected. There is no
 arbitrary Work Item count limit. The simulated practitioner records a supported
 decision, marks the Candidate Not Relevant when appropriate, or leaves it explicitly
 unresolved with the exact Evidence or authority gap. The run fails when the frontend
-cannot represent the honest outcome. It also exercises one refused invalid action,
-one factual correction, and one Work Decision change before the final Report.
+cannot represent the honest outcome. It also exercises one refused invalid action
+and one Work Decision change before the final Report. A factual correction, Not
+Relevant disposition, closure, or Verbal is exercised only when the bounded packet
+supports that act. Otherwise the receipt records that the packet did not support it;
+the simulated practitioner never fabricates a fact to satisfy a test checklist.
+Report verification requires correct provenance on every published value, not the
+presence of a provenance class for which the bounded Project Record has no source.
 
 Corridor Operations may use managed commands before the practitioner phase. Once
 the Work List is open, ordinary project work must remain in the frontend. A terminal
@@ -51,13 +57,16 @@ Approved Export is a product failure. Non-blocking friction is recorded; a defec
 that blocks or falsifies the workflow preserves a failed receipt, triggers a product
 fix, restores the baseline, and requires a complete rerun.
 
-The current development state is sealed before the run. Test decisions and
-append-only history remain in place for the complete scenario so corrections and
-later reads exercise real lifecycle behavior. After the receipt is published, the
-database is restored to the exact sealed baseline. A proving result requires two
-consecutive complete passes from that same restored baseline. This tests reset
-integrity, state isolation, extraction repeatability, and the absence of lucky leaked
-state.
+The current development state is sealed before the run. The seal covers every
+public PostgreSQL base table and sequence, not a hand-selected ORM projection, and
+its data dump is restored and compared in a freshly migrated disposable database
+before the first shared-development write. Test decisions and append-only history
+remain in place for the complete scenario so later reads exercise real lifecycle
+behavior. After every terminal pass, the shared development database is restored to
+the exact sealed baseline and the complete table-and-sequence fingerprint is read
+again. A proving result requires two consecutive complete passes from that same
+restored baseline. This tests reset integrity, state isolation, extraction
+repeatability, and the absence of lucky leaked state.
 
 The first proving run excludes Document revision processing. A separate follow-on
 scenario introduces a successor Document and tests Supersession, Revision
@@ -84,6 +93,9 @@ Report.
   nondeterministic makes practitioner work unpredictable.
 - Sampling residual Candidates can hide unsupported outcomes; grinding through an
   arbitrary fixed cap turns an extraction failure into unmeasured human labor.
+- Requiring a correction, Not Relevant decision, closure, or Verbal when the exact
+  packet supplies no support for it turns an acceptance checklist into false Project
+  Record data.
 - Combining revision processing with the first weekly workflow makes failures harder
   to isolate.
 - Reading an already completed manual Report and reproducing it tests document

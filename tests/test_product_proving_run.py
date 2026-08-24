@@ -12,6 +12,7 @@ from corridor.product_proving_run import (
     CandidateSetComparison,
     CorruptProductProvingBundle,
     ExpectedPreflight,
+    ExtractionConfiguration,
     ObservedPreflight,
     ProductProvingCapture,
     ProductProvingFailureCapture,
@@ -24,6 +25,20 @@ from corridor.product_proving_run import (
     verify_product_proving_failure_bundle,
     verify_two_pass_capture,
 )
+
+
+def _configuration(
+    prompt_version: str = "minutes_v3",
+    *,
+    schema_version: str | None = None,
+    prompt_sha256: str = "9" * 64,
+) -> ExtractionConfiguration:
+    return ExtractionConfiguration(
+        prompt_version=prompt_version,
+        model="gpt-5.6-luna",
+        schema_version=schema_version or prompt_version,
+        prompt_sha256=prompt_sha256,
+    )
 
 
 def _candidate(
@@ -87,6 +102,8 @@ def test_candidate_comparison_ignores_only_identity_order_and_nonsemantic_scores
         fresh_run_id=200001,
         baseline=[first, second],
         fresh=reordered,
+        baseline_configuration=_configuration(),
+        fresh_configuration=_configuration(),
     )
 
     assert comparison.equal
@@ -110,6 +127,8 @@ def test_candidate_comparison_stops_on_semantic_addition_and_loss(change, expect
         fresh_run_id=200001,
         baseline=[_candidate(1)],
         fresh=[_candidate(2, **change)],
+        baseline_configuration=_configuration(),
+        fresh_configuration=_configuration(),
     )
 
     assert not comparison.equal
@@ -172,7 +191,17 @@ def test_preflight_refuses_every_changed_pin(observed, message):
 
 
 def _comparison(document_id: int, baseline: int, fresh: int) -> CandidateSetComparison:
-    return CandidateSetComparison(document_id, baseline, fresh, (), (), ())
+    configuration = _configuration()
+    return CandidateSetComparison(
+        document_id=document_id,
+        baseline_run_id=baseline,
+        fresh_run_id=fresh,
+        baseline_configuration=configuration,
+        fresh_configuration=configuration,
+        added=(),
+        missing=(),
+        matched_sha256=(),
+    )
 
 
 def _pass(number: int) -> ProductProvingPass:
@@ -194,12 +223,12 @@ def _pass(number: int) -> ProductProvingPass:
         frontend_actions=("open_work_list", "release_approved_export"),
         invalid_action_refused=True,
         invalid_action_write_set={},
-        correction_preserved_predecessor=True,
+        factual_correction_outcome="not_supported_by_packet",
         work_decision_change_preserved_predecessor=True,
         report_pdf_sha256=pdf_sha256,
         approved_export_sha256=pdf_sha256,
         approved_export_bytes=pdf_bytes,
-        report_provenance_classes=("Assertion", "Derivation", "Work Decision", "Verbal"),
+        report_provenance_classes=("Assertion", "Derivation", "Work Decision"),
         write_set={"documents": [], "extraction_runs": [200000 + number]},
         operations_elapsed_seconds=10.0,
         practitioner_elapsed_seconds=20.0,
@@ -237,6 +266,13 @@ def test_two_pass_capture_requires_frontend_truth_restore_and_equivalent_outputs
         verify_two_pass_capture(
             replace(_capture(), pass_two=replace(_pass(2), approved_export_sha256="6" * 64))
         )
+    with pytest.raises(ValueError, match="factual correction outcome"):
+        verify_two_pass_capture(
+            replace(
+                _capture(),
+                pass_two=replace(_pass(2), factual_correction_outcome="invented"),
+            )
+        )
 
 
 def test_receipt_survives_database_restoration_and_detects_tampering(tmp_path):
@@ -264,6 +300,8 @@ def test_failed_repeatability_receipt_is_publishable_but_can_never_claim_pass(tm
         fresh_run_id=206508,
         baseline=[_candidate(1)],
         fresh=[_candidate(2, event_type="response")],
+        baseline_configuration=_configuration(),
+        fresh_configuration=_configuration(),
     )
     failure = ProductProvingFailureCapture(
         expected=_expected_preflight(),
@@ -283,6 +321,9 @@ def test_failed_repeatability_receipt_is_publishable_but_can_never_claim_pass(tm
         admission_started=False,
         source_database_mutated=False,
         operations_elapsed_seconds=19.0,
+        baseline_dump_sha256="5" * 64,
+        baseline_state_manifest_sha256="6" * 64,
+        restored_baseline_fingerprint="4" * 64,
     )
 
     bundle = publish_product_proving_failure_bundle(tmp_path / "failed", failure)
@@ -295,3 +336,24 @@ def test_failed_repeatability_receipt_is_publishable_but_can_never_claim_pass(tm
     assert receipt["status"] == "failed"
     assert receipt["admission_started"] is False
     assert "passed" not in (bundle.bundle_dir / "receipt.md").read_text().lower()
+
+
+def test_failed_receipt_requires_exact_post_failure_restore(tmp_path):
+    failure = ProductProvingFailureCapture(
+        expected=_expected_preflight(),
+        observed=_observed_preflight(),
+        pass_number=1,
+        phase="frontend",
+        errors=("frontend could not preserve an unresolved gap",),
+        extraction_comparisons=(),
+        extraction_run_receipts=(),
+        admission_started=True,
+        source_database_mutated=True,
+        operations_elapsed_seconds=2.0,
+        baseline_dump_sha256="5" * 64,
+        baseline_state_manifest_sha256="6" * 64,
+        restored_baseline_fingerprint="7" * 64,
+    )
+
+    with pytest.raises(ValueError, match="restore its baseline"):
+        publish_product_proving_failure_bundle(tmp_path / "failed-restore", failure)

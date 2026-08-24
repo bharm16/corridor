@@ -14,7 +14,7 @@ from corridor.extract_minutes_v4 import (
     extract_document,
 )
 from corridor.models import DocPage, Document, Project
-from corridor.product_proving_run import compare_candidate_sets
+from corridor.product_proving_run import ExtractionConfiguration, compare_candidate_sets
 
 
 CHAIN = (
@@ -132,6 +132,15 @@ def _raw(candidate):
         "citations_verified": candidate.citations_verified,
         "state": candidate.state,
     }
+
+
+def _configuration():
+    return ExtractionConfiguration(
+        prompt_version=PROMPT_VERSION,
+        model="gpt-5.6-luna",
+        schema_version=PROMPT_VERSION,
+        prompt_sha256="4" * 64,
+    )
 
 
 def test_schema_names_only_external_party_statement_types():
@@ -357,6 +366,8 @@ def test_captured_v3_variants_converge_under_v4_candidate_contract(
         fresh_run_id=2,
         baseline=[_raw(candidate) for candidate in baseline],
         fresh=[_raw(candidate) for candidate in fresh],
+        baseline_configuration=_configuration(),
+        fresh_configuration=_configuration(),
     )
 
     assert comparison.equal

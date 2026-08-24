@@ -49,6 +49,7 @@ from corridor.models import (
     CommitmentScopeMembership,
     CommitmentScopeDecision,
     Document,
+    DependencyAdmissionOutcome,
     EvidenceLink,
     ExternalParty,
     EventAdmissionOutcome,
@@ -67,10 +68,12 @@ from corridor.principals import (
 )
 from corridor.project_lock import lock_project
 from corridor.supersession import actionable_candidate_query
+from corridor.supersession_review import ordinary_candidate_ids
 from corridor.statement_lifecycle import (
     current_candidate_disposition,
     current_lineage_statement,
     current_scope_decision_filter,
+    current_statement_event_filter,
     observe_current_statement,
 )
 from corridor.verify import normalize
@@ -112,6 +115,29 @@ STATEMENT_NEXT_ACTION_CHOICES = (
     "Coordinate the selected Dependencies",
     "Obtain additional Evidence for this statement",
 )
+
+CLOSURE_TARGET_GAP = "closure_target_commitment_not_established"
+CLOSURE_TARGET_RELATIONSHIP_GAP = "closure_target_relationship_not_established"
+CLOSURE_TARGET_AMBIGUOUS_GAP = "closure_target_commitment_ambiguous"
+CLOSURE_PARTY_GAP = "closure_affected_party_not_established"
+
+
+@dataclass(frozen=True)
+class CandidateAuthorityGap:
+    """One current Candidate whose named authority gap remains unresolved."""
+
+    code: str
+    title: str
+    detail: str
+    source_family: str
+    abstention_reason: str | None = None
+    outcome_id: int | None = None
+    policy_run_id: int | None = None
+    affected_external_org_id: int | None = None
+    matching_commitment_lineage_ids: tuple[int, ...] = ()
+
+
+PendingStatementAuthorityGap = CandidateAuthorityGap
 
 
 @dataclass(frozen=True)
@@ -1079,6 +1105,311 @@ def correct_statement_facts(
     except (StatementRefusal, ValueError, IntegrityError) as exc:
         raise StatementCoordinationRefusal(str(exc)) from exc
     return successor
+
+
+_DEPENDENCY_AUTHORITY_GAP_COPY = {
+    "citations_unverified": (
+        "Source citation not verified",
+        "Dependency Admission could not verify this proposal against its cited source.",
+    ),
+    "no_utility_id": (
+        "Dependency identifier not established",
+        "The current source row does not establish an identifier for this Dependency.",
+    ),
+    "no_row_identity": (
+        "External Party identity not established",
+        "This source numbers rows within each External Party, but the current Evidence does not establish the party needed to name this Dependency.",
+    ),
+    "missing_from_agreement_document": (
+        "Current revisions do not establish one row",
+        "The current source revisions do not agree that this Dependency row is present.",
+    ),
+    "multiple_rows_in_agreement_document": (
+        "Source row identity is not unique",
+        "The current source lists more than one row with this Dependency identity.",
+    ),
+    "revisions_disagree": (
+        "Current revisions disagree",
+        "The current source revisions do not establish one supported Dependency proposal.",
+    ),
+    "revisions_disagree_on_party": (
+        "External Party differs across current Evidence",
+        "The current source revisions name different External Parties for this Dependency.",
+    ),
+    "already_admitted": (
+        "Dependency identity already exists",
+        "The Project Record already carries this proposed Dependency identity.",
+    ),
+    "asserts_nothing": (
+        "No Dependency facts established",
+        "The current source row does not establish any Dependency facts to record.",
+    ),
+    "write_refused": (
+        "Dependency write authority not established",
+        "The current proposal did not satisfy the protected Dependency write contract.",
+    ),
+}
+
+
+def _open_commitment_lineage_ids(
+    session: Session,
+    project_id: int,
+    affected_external_org_id: int,
+) -> tuple[int, ...]:
+    """Return current open Commitments for one Evidence-supported party."""
+    closed = frozenset(
+        lineage_id
+        for lineage_id in session.scalars(
+            select(ExternalPartyStatement.closes_commitment_lineage_id).where(
+                ExternalPartyStatement.project_id == project_id,
+                ExternalPartyStatement.event_type == "closure",
+                ExternalPartyStatement.closes_commitment_lineage_id.is_not(None),
+                current_statement_event_filter(ExternalPartyStatement.id),
+            )
+        ).all()
+        if lineage_id is not None
+    )
+    return tuple(
+        lineage_id
+        for lineage_id in dict.fromkeys(
+            session.scalars(
+                select(ExternalPartyStatement.commitment_lineage_id)
+                .where(
+                    ExternalPartyStatement.project_id == project_id,
+                    ExternalPartyStatement.event_type.in_(
+                        ("commitment", "committed_date_change")
+                    ),
+                    ExternalPartyStatement.affected_external_org_id
+                    == affected_external_org_id,
+                    ExternalPartyStatement.commitment_lineage_id.is_not(None),
+                    current_statement_event_filter(ExternalPartyStatement.id),
+                )
+                .order_by(ExternalPartyStatement.commitment_lineage_id)
+            ).all()
+        )
+        if lineage_id is not None and lineage_id not in closed
+    )
+
+
+def pending_candidate_authority_gap(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+) -> CandidateAuthorityGap | None:
+    """Recompute one current structured gap from Evidence or policy receipts."""
+    candidate = session.get(Candidate, candidate_id, populate_existing=True)
+    if (
+        candidate is None
+        or candidate.project_id != project_id
+        or candidate.state != "pending"
+    ):
+        return None
+    actionable = session.scalar(
+        actionable_candidate_query(project_id)
+        .where(Candidate.id == candidate.id)
+        .limit(1)
+    )
+    if actionable is None:
+        return None
+
+    if candidate.kind == "event":
+        facts = prepare_candidate_statement_facts(session, candidate)
+        if (
+            facts.fields.get("event_type") != "closure"
+            or not facts.evidence_is_complete
+            or not facts.description_is_supported
+        ):
+            return None
+        affected_external_org_id = facts.affected_party.external_org_id
+        if affected_external_org_id is None:
+            return CandidateAuthorityGap(
+                code=CLOSURE_PARTY_GAP,
+                title="Affected External Party not established",
+                detail=(
+                    "The Evidence establishes a closure statement, but it does "
+                    "not establish the registered External Party whose Commitment "
+                    "could be closed."
+                ),
+                source_family="external-party-statement",
+            )
+        matching_lineage_ids = _open_commitment_lineage_ids(
+            session,
+            project_id,
+            affected_external_org_id,
+        )
+        if len(matching_lineage_ids) == 1:
+            return CandidateAuthorityGap(
+                code=CLOSURE_TARGET_RELATIONSHIP_GAP,
+                title="Closure-to-Commitment relationship not established",
+                detail=(
+                    "The Project Record has one open Commitment for this External "
+                    "Party, but the closure Evidence does not establish that it is "
+                    "the Commitment being closed."
+                ),
+                source_family="external-party-statement",
+                affected_external_org_id=affected_external_org_id,
+                matching_commitment_lineage_ids=matching_lineage_ids,
+            )
+        if len(matching_lineage_ids) > 1:
+            return CandidateAuthorityGap(
+                code=CLOSURE_TARGET_AMBIGUOUS_GAP,
+                title="Several open Commitments could be the closure target",
+                detail=(
+                    "The Project Record has several open Commitments for this "
+                    "External Party, and the closure Evidence does not identify "
+                    "which exact Commitment it closes."
+                ),
+                source_family="external-party-statement",
+                affected_external_org_id=affected_external_org_id,
+                matching_commitment_lineage_ids=matching_lineage_ids,
+            )
+        return CandidateAuthorityGap(
+            code=CLOSURE_TARGET_GAP,
+            title="Exact target Commitment not established",
+            detail=(
+                "The Evidence establishes a closure statement, but it does not "
+                "identify an open Commitment in the Project Record that it closes."
+            ),
+            source_family="external-party-statement",
+            affected_external_org_id=affected_external_org_id,
+        )
+
+    if candidate.kind != "dependency" or candidate.id not in ordinary_candidate_ids(
+        session, project_id
+    ):
+        return None
+    row = session.execute(
+        select(DependencyAdmissionOutcome, PolicyRun)
+        .join(PolicyRun, PolicyRun.id == DependencyAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project_id,
+            PolicyRun.family == "dependency-admission",
+            DependencyAdmissionOutcome.candidate_id == candidate.id,
+            DependencyAdmissionOutcome.outcome == "abstained",
+        )
+        .order_by(DependencyAdmissionOutcome.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    outcome, policy_run = row
+    copy = _DEPENDENCY_AUTHORITY_GAP_COPY.get(outcome.reason or "")
+    if copy is None:
+        return None
+    title, detail = copy
+    return CandidateAuthorityGap(
+        code=f"dependency_admission_{outcome.reason}",
+        title=title,
+        detail=detail,
+        source_family="dependency-admission",
+        abstention_reason=outcome.reason,
+        outcome_id=outcome.id,
+        policy_run_id=policy_run.id,
+    )
+
+
+def pending_statement_authority_gap(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+) -> PendingStatementAuthorityGap | None:
+    """Compatibility read seam for the closure-specific screen."""
+    gap = pending_candidate_authority_gap(session, project_id, candidate_id)
+    candidate = session.get(Candidate, candidate_id)
+    return gap if candidate is not None and candidate.kind == "event" else None
+
+
+def keep_candidate_unresolved(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    *,
+    principal: HumanPrincipal,
+) -> AuditLog:
+    """Acknowledge a recomputed structured gap without disposing of the work."""
+    recorder = require_human_principal(principal)
+    try:
+        with session.begin_nested():
+            lock_project(session, project_id)
+            gap = pending_candidate_authority_gap(session, project_id, candidate_id)
+            if gap is None:
+                raise StaleStatementCoordination(
+                    "this Candidate no longer has an allowed unresolved authority gap"
+                )
+            after = {
+                "candidate_state": "pending",
+                "authority_gap": gap.code,
+            }
+            if gap.source_family == "dependency-admission":
+                after.update(
+                    {
+                        "source_family": gap.source_family,
+                        "abstention_reason": gap.abstention_reason,
+                        "dependency_admission_outcome_id": gap.outcome_id,
+                        "policy_run_id": gap.policy_run_id,
+                    }
+                )
+            elif gap.source_family == "external-party-statement":
+                after.update(
+                    {
+                        "affected_external_org_id": gap.affected_external_org_id,
+                        "matching_open_commitment_lineage_ids": list(
+                            gap.matching_commitment_lineage_ids
+                        ),
+                    }
+                )
+            latest = session.scalar(
+                select(AuditLog)
+                .where(
+                    AuditLog.entity_type == audit.CANDIDATE,
+                    AuditLog.entity_id == candidate_id,
+                    AuditLog.action == audit.KEEP_CANDIDATE_UNRESOLVED,
+                )
+                .order_by(AuditLog.id.desc())
+                .limit(1)
+            )
+            if (
+                latest is not None
+                and latest.actor == recorder.subject
+                and latest.human_principal == recorder.subject
+                and latest.before_json == {"candidate_state": "pending"}
+                and latest.after_json == after
+            ):
+                return latest
+            return audit.record(
+                session,
+                principal=recorder,
+                action=audit.KEEP_CANDIDATE_UNRESOLVED,
+                entity_type=audit.CANDIDATE,
+                entity_id=candidate_id,
+                before={"candidate_state": "pending"},
+                after=after,
+            )
+    except StaleStatementCoordination:
+        raise
+    except (ValueError, IntegrityError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
+
+
+def keep_statement_unresolved(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    *,
+    principal: HumanPrincipal,
+) -> AuditLog:
+    """Compatibility command for the closure-specific route."""
+    candidate = session.get(Candidate, candidate_id)
+    if candidate is None or candidate.kind != "event":
+        raise StatementCoordinationRefusal(
+            "only a pending closure can use the statement unresolved action"
+        )
+    return keep_candidate_unresolved(
+        session,
+        project_id,
+        candidate_id,
+        principal=principal,
+    )
 
 
 def mark_statement_not_relevant(

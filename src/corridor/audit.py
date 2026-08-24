@@ -95,6 +95,11 @@ CORRECT_STATEMENT_SCOPE = "correct_statement_scope"
 CORRECT_STATEMENT_FACTS = "correct_statement_facts"
 MARK_STATEMENT_NOT_RELEVANT = "mark_statement_not_relevant"
 RESTORE_STATEMENT_NOT_RELEVANT = "restore_statement_not_relevant"
+KEEP_CANDIDATE_UNRESOLVED = "keep_candidate_unresolved"
+# Compatibility name for the first statement-only caller. The stored action is
+# candidate-generic because the same attributable receipt now covers Dependency
+# Admission residue.
+KEEP_STATEMENT_UNRESOLVED = KEEP_CANDIDATE_UNRESOLVED
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -141,6 +146,7 @@ ACTIONS = frozenset(
         CORRECT_STATEMENT_FACTS,
         MARK_STATEMENT_NOT_RELEVANT,
         RESTORE_STATEMENT_NOT_RELEVANT,
+        KEEP_CANDIDATE_UNRESOLVED,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )

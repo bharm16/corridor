@@ -8,9 +8,17 @@ from pathlib import Path
 import re
 import sys
 
+from corridor.product_proving_database import (
+    ProductProvingDatabaseBaselineConfig,
+    SharedDevelopmentRestoreConfig,
+    capture_product_proving_database_baseline,
+    restore_shared_development_database,
+    verify_product_proving_database_baseline,
+)
 from corridor.product_proving_run import (
     CandidateSetComparison,
     ExpectedPreflight,
+    ExtractionConfiguration,
     ObservedPreflight,
     ProductProvingCapture,
     ProductProvingFailureCapture,
@@ -51,6 +59,32 @@ def _parser() -> argparse.ArgumentParser:
     verify_failure.add_argument("bundle_dir", type=Path)
     verify_failure.add_argument(
         "--expected-manifest-sha256", type=_sha256, required=True
+    )
+    database_capture = commands.add_parser("database-capture")
+    database_capture.add_argument("--source-database-url", required=True)
+    database_capture.add_argument("--postgres-admin-url", required=True)
+    database_capture.add_argument("--expected-clean-git-revision", required=True)
+    database_capture.add_argument("--expected-migration-head", required=True)
+    database_capture.add_argument("--output-dir", type=Path, required=True)
+    database_capture.add_argument("--repo-root", type=Path, default=Path.cwd())
+    database_verify = commands.add_parser("database-verify")
+    database_verify.add_argument("bundle_dir", type=Path)
+    database_verify.add_argument(
+        "--expected-manifest-sha256", type=_sha256, required=True
+    )
+    database_restore = commands.add_parser("database-restore")
+    database_restore.add_argument("bundle_dir", type=Path)
+    database_restore.add_argument("--source-database-url", required=True)
+    database_restore.add_argument("--postgres-admin-url", required=True)
+    database_restore.add_argument("--expected-source-database-name", required=True)
+    database_restore.add_argument("--expected-clean-git-revision", required=True)
+    database_restore.add_argument("--expected-migration-head", required=True)
+    database_restore.add_argument(
+        "--expected-manifest-sha256", type=_sha256, required=True
+    )
+    database_restore.add_argument("--repo-root", type=Path, default=Path.cwd())
+    database_restore.add_argument(
+        "--allow-shared-development-restore", action="store_true"
     )
     return parser
 
@@ -97,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
                 "integrity_manifest_sha256": verified.integrity_manifest_sha256,
                 "canonical_content_sha256": verified.canonical_content_sha256,
             }
-        else:
+        elif args.command == "verify-failure":
             verified = verify_product_proving_failure_bundle(
                 args.bundle_dir,
                 expected_integrity_manifest_sha256=args.expected_manifest_sha256,
@@ -109,6 +143,63 @@ def main(argv: list[str] | None = None) -> int:
                 "integrity_manifest_sha256": verified.integrity_manifest_sha256,
                 "canonical_content_sha256": verified.canonical_content_sha256,
                 "status": "failed",
+            }
+        elif args.command == "database-capture":
+            summary = capture_product_proving_database_baseline(
+                ProductProvingDatabaseBaselineConfig(
+                    source_database_url=args.source_database_url,
+                    postgres_admin_url=args.postgres_admin_url,
+                    expected_checkout_revision=args.expected_clean_git_revision,
+                    expected_migration_head=args.expected_migration_head,
+                    output_dir=args.output_dir,
+                    repo_root=args.repo_root,
+                )
+            )
+            payload = {
+                "command": "database-capture",
+                "bundle_dir": str(summary.bundle_dir),
+                "manifest_sha256": summary.manifest_sha256,
+                "dump_sha256": summary.dump_sha256,
+                "state_sha256": summary.state_sha256,
+                "table_count": summary.table_count,
+                "sequence_count": summary.sequence_count,
+            }
+        elif args.command == "database-verify":
+            verified = verify_product_proving_database_baseline(
+                args.bundle_dir,
+                expected_manifest_sha256=args.expected_manifest_sha256,
+            )
+            payload = {
+                "command": "database-verify",
+                "bundle_dir": str(args.bundle_dir),
+                "valid": True,
+                "manifest_sha256": verified.manifest_sha256,
+                "dump_sha256": verified.dump_sha256,
+                "state_sha256": verified.fingerprint.state_sha256,
+            }
+        else:
+            summary = restore_shared_development_database(
+                SharedDevelopmentRestoreConfig(
+                    source_database_url=args.source_database_url,
+                    postgres_admin_url=args.postgres_admin_url,
+                    expected_source_database_name=args.expected_source_database_name,
+                    expected_checkout_revision=args.expected_clean_git_revision,
+                    expected_migration_head=args.expected_migration_head,
+                    bundle_dir=args.bundle_dir,
+                    expected_manifest_sha256=args.expected_manifest_sha256,
+                    repo_root=args.repo_root,
+                    allow_shared_development_restore=(
+                        args.allow_shared_development_restore
+                    ),
+                )
+            )
+            payload = {
+                "command": "database-restore",
+                "source_database_name": summary.source_database_name,
+                "previous_state_sha256": summary.previous_state_sha256,
+                "restored_state_sha256": summary.restored_state_sha256,
+                "manifest_sha256": summary.manifest_sha256,
+                "dump_sha256": summary.dump_sha256,
             }
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
@@ -145,13 +236,16 @@ def _failure_capture(raw: dict) -> ProductProvingFailureCapture:
         phase=raw["phase"],
         errors=tuple(raw["errors"]),
         extraction_comparisons=tuple(
-            CandidateSetComparison(**comparison)
+            _comparison(comparison)
             for comparison in raw["extraction_comparisons"]
         ),
         extraction_run_receipts=tuple(raw["extraction_run_receipts"]),
         admission_started=raw["admission_started"],
         source_database_mutated=raw["source_database_mutated"],
         operations_elapsed_seconds=raw["operations_elapsed_seconds"],
+        baseline_dump_sha256=raw["baseline_dump_sha256"],
+        baseline_state_manifest_sha256=raw["baseline_state_manifest_sha256"],
+        restored_baseline_fingerprint=raw["restored_baseline_fingerprint"],
     )
 
 
@@ -191,7 +285,7 @@ def _pass(raw: dict, pdf_bytes: bytes) -> ProductProvingPass:
         pass_number=raw["pass_number"],
         restored_baseline_fingerprint=raw["restored_baseline_fingerprint"],
         extraction_comparisons=tuple(
-            CandidateSetComparison(**comparison)
+            _comparison(comparison)
             for comparison in raw["extraction_comparisons"]
         ),
         extraction_failures=tuple(raw["extraction_failures"]),
@@ -204,7 +298,7 @@ def _pass(raw: dict, pdf_bytes: bytes) -> ProductProvingPass:
         frontend_actions=tuple(raw["frontend_actions"]),
         invalid_action_refused=raw["invalid_action_refused"],
         invalid_action_write_set=raw["invalid_action_write_set"],
-        correction_preserved_predecessor=raw["correction_preserved_predecessor"],
+        factual_correction_outcome=raw["factual_correction_outcome"],
         work_decision_change_preserved_predecessor=raw[
             "work_decision_change_preserved_predecessor"
         ],
@@ -217,6 +311,21 @@ def _pass(raw: dict, pdf_bytes: bytes) -> ProductProvingPass:
         practitioner_elapsed_seconds=raw["practitioner_elapsed_seconds"],
         non_blocking_friction=tuple(raw["non_blocking_friction"]),
         workarounds=tuple(raw["workarounds"]),
+    )
+
+
+def _comparison(raw: dict) -> CandidateSetComparison:
+    return CandidateSetComparison(
+        document_id=raw["document_id"],
+        baseline_run_id=raw["baseline_run_id"],
+        fresh_run_id=raw["fresh_run_id"],
+        baseline_configuration=ExtractionConfiguration(
+            **raw["baseline_configuration"]
+        ),
+        fresh_configuration=ExtractionConfiguration(**raw["fresh_configuration"]),
+        added=tuple(raw["added"]),
+        missing=tuple(raw["missing"]),
+        matched_sha256=tuple(raw["matched_sha256"]),
     )
 
 

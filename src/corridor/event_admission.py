@@ -53,16 +53,18 @@ from corridor.models import (
     ExternalOrg,
     PolicyRun,
     Project,
+    StatementTimingRecord,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.verify import normalize
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v2"
 UNKNOWN_SCOPE_POLICY_VERSION = "event-admission-v3-unknown-scope"
 FAMILY = "event-admission"
 ABSTENTION_REASON_VERSION = "event-admission-abstentions-v3"
-UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v4"
+UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v5"
 MACHINE_ACTOR = "corridor:event-admission"
 
 OUTCOME_ADMITTED = "admitted"
@@ -114,8 +116,19 @@ UNKNOWN_SCOPE_ABSTENTION_REASONS = frozenset(
         "stale_active_run_or_candidate",
         "cross_project_association",
         "write_integrity_failure",
+        "matching_open_commitment_exists",
     }
 )
+
+type CommitmentSignature = tuple[
+    int,
+    int,
+    str,
+    str,
+    str,
+    date | None,
+    date | None,
+]
 
 
 @dataclass(frozen=True)
@@ -479,12 +492,13 @@ def _run_unknown_scope_admission(
         .order_by(EventAdmissionOutcome.id)
     ):
         prior_abstentions.setdefault(outcome.candidate_id, []).append(outcome)
-    registry_sha256 = policy.canonical_sha256(
+    external_org_registry_sha256 = policy.canonical_sha256(
         [
             {"id": org.id, "name": org.name, "aliases": sorted(org.aliases or [])}
             for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id))
         ]
     )
+    open_commitment_signatures = _open_commitment_signatures(session, project.id)
 
     prepared: list[UnknownScopeAdmission] = []
     abstentions: list[EventAdmissionAbstention] = []
@@ -493,10 +507,17 @@ def _run_unknown_scope_admission(
         input_receipt = _unknown_scope_input_receipt(
             candidate,
             policy_sha256=policy_sha256,
-            external_org_registry_sha256=registry_sha256,
+            external_org_registry_sha256=external_org_registry_sha256,
+            open_commitment_registry_sha256=_commitment_registry_sha256(
+                open_commitment_signatures
+            ),
         )
         verdict = _evaluate_unknown_scope(
-            session, project, candidate, input_receipt=input_receipt
+            session,
+            project,
+            candidate,
+            input_receipt=input_receipt,
+            open_commitment_signatures=open_commitment_signatures,
         )
         if isinstance(verdict, str):
             if policy.has_matching_abstention(
@@ -516,6 +537,7 @@ def _run_unknown_scope_admission(
             )
         else:
             prepared.append(verdict)
+            open_commitment_signatures.add(_unknown_scope_signature(verdict))
 
     admitted: list[
         tuple[
@@ -782,6 +804,7 @@ def _evaluate_unknown_scope(
     candidate: Candidate,
     *,
     input_receipt: dict,
+    open_commitment_signatures: set[CommitmentSignature],
 ) -> str | UnknownScopeAdmission:
     """Prove ADR-0042's class without consulting model-derived confidence."""
     document = session.get(Document, candidate.source_document_id)
@@ -866,7 +889,7 @@ def _evaluate_unknown_scope(
         if "timing" in message or "calendar bounds" in message:
             return "timing_invalid"
         return "statement_draft_invalid"
-    return UnknownScopeAdmission(
+    placement = UnknownScopeAdmission(
         candidate=candidate,
         fields=fields,
         event_date=event_date,
@@ -876,6 +899,9 @@ def _evaluate_unknown_scope(
         evidence=evidence,
         input_receipt=input_receipt,
     )
+    if _unknown_scope_signature(placement) in open_commitment_signatures:
+        return "matching_open_commitment_exists"
+    return placement
 
 
 def _has_non_commitment_language(description: str) -> bool:
@@ -900,15 +926,118 @@ def _has_non_commitment_language(description: str) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _open_commitment_signatures(
+    session: Session, project_id: int
+) -> set[CommitmentSignature]:
+    """Return the exact current, attributable Commitments still open.
+
+    Statement identity, source Document, extraction Run, and statement date do
+    not distinguish two promises with the same party, wording, and timing.
+    Corrections contribute only their current tail. A verified Closure removes
+    its one Commitment Lineage from this registry without changing history.
+    """
+    closed_lineage_ids = dependency_events._closed_party_commitment_lineages(
+        session, project_id
+    )
+    rows = session.execute(
+        select(DependencyEvent, StatementTimingRecord)
+        .join(
+            StatementTimingRecord,
+            StatementTimingRecord.event_id == DependencyEvent.id,
+        )
+        .where(
+            DependencyEvent.project_id == project_id,
+            DependencyEvent.event_type.in_(dependency_events.COMMITTED_EVENT_TYPES),
+            DependencyEvent.commitment_lineage_id.is_not(None),
+            DependencyEvent.affected_external_org_id.is_not(None),
+            DependencyEvent.stated_external_org_id.is_not(None),
+            DependencyEvent.attribution_state == "resolved",
+            StatementTimingRecord.kind == "new",
+            current_statement_event_filter(DependencyEvent.id),
+        )
+        .order_by(DependencyEvent.commitment_lineage_id, DependencyEvent.id)
+    ).all()
+    return {
+        _commitment_signature(
+            affected_external_org_id=event.affected_external_org_id,
+            stated_external_org_id=event.stated_external_org_id,
+            description=event.description,
+            timing=timing,
+        )
+        for event, timing in rows
+        if event.commitment_lineage_id not in closed_lineage_ids
+        and event.affected_external_org_id is not None
+        and event.stated_external_org_id is not None
+    }
+
+
+def _unknown_scope_signature(placement: UnknownScopeAdmission) -> CommitmentSignature:
+    return _commitment_signature(
+        affected_external_org_id=placement.stated_external_org_id,
+        stated_external_org_id=placement.stated_external_org_id,
+        description=str(placement.fields.get("description") or ""),
+        timing=placement.new_timing,
+    )
+
+
+def _commitment_signature(
+    *,
+    affected_external_org_id: int,
+    stated_external_org_id: int,
+    description: str,
+    timing: StatementTiming | StatementTimingRecord,
+) -> CommitmentSignature:
+    return (
+        affected_external_org_id,
+        stated_external_org_id,
+        normalize(description),
+        timing.precision,
+        timing.text.strip(),
+        timing.start_date,
+        timing.end_date,
+    )
+
+
+def _commitment_registry_sha256(
+    signatures: set[CommitmentSignature],
+) -> str:
+    """Seal the mutable open-Commitment input used by an Abstention."""
+    return policy.canonical_sha256(
+        [
+            {
+                "affected_external_org_id": affected_external_org_id,
+                "stated_external_org_id": stated_external_org_id,
+                "normalized_description": description,
+                "timing": {
+                    "precision": precision,
+                    "text": timing_text,
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None,
+                },
+            }
+            for (
+                affected_external_org_id,
+                stated_external_org_id,
+                description,
+                precision,
+                timing_text,
+                start_date,
+                end_date,
+            ) in sorted(signatures, key=repr)
+        ]
+    )
+
+
 def _unknown_scope_input_receipt(
     candidate: Candidate,
     *,
     policy_sha256: str,
     external_org_registry_sha256: str,
+    open_commitment_registry_sha256: str,
 ) -> dict:
     """Exact deterministic inputs that make an unchanged Abstention idempotent."""
     return {
-        "receipt_version": "event-admission-unknown-scope-input-v1",
+        "receipt_version": "event-admission-unknown-scope-input-v2",
         "project_id": candidate.project_id,
         "candidate_id": candidate.id,
         "source_document_id": candidate.source_document_id,
@@ -918,6 +1047,7 @@ def _unknown_scope_input_receipt(
         "candidate_state": candidate.state,
         "policy_sha256": policy_sha256,
         "external_org_registry_sha256": external_org_registry_sha256,
+        "open_commitment_registry_sha256": open_commitment_registry_sha256,
     }
 
 
@@ -1158,6 +1288,7 @@ def canonical_event_admission_policy(
                 "no_previous_timing",
                 "no_conflict_reference",
                 "ordinary_statement_validators",
+                "no_matching_open_commitment",
             ]
             if unknown_scope
             else [

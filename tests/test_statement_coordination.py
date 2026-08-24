@@ -43,6 +43,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.statement_coordination import (
+    CLOSURE_TARGET_RELATIONSHIP_GAP,
     StaleStatementCoordination,
     StatementCoordinationDraft,
     StatementCoordinationRefusal,
@@ -51,6 +52,8 @@ from corridor.statement_coordination import (
     correct_statement_facts,
     correct_statement_scope,
     mark_statement_not_relevant,
+    keep_statement_unresolved,
+    pending_statement_authority_gap,
     restore_statement_not_relevant,
     StatementFactCorrectionDraft,
     StatementScopeCorrection,
@@ -1444,6 +1447,124 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
             assert restored.status_code == 303
             session.refresh(irrelevant_candidate)
             assert irrelevant_candidate.state == "pending"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_closure_without_an_exact_target_can_only_be_kept_as_attributable_unresolved_work(
+    session, project, party
+):
+    quote = "As-built package for the Kinder Morgan crossing is Complete."
+    document = _document(session, project, "meeting-notes/kinder-morgan.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "closure",
+            "event_date": "2025-01-16",
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+        },
+    )
+
+    receipt = keep_statement_unresolved(
+        session,
+        project.id,
+        candidate.id,
+        principal=RECORDER,
+    )
+    repeated = keep_statement_unresolved(
+        session,
+        project.id,
+        candidate.id,
+        principal=RECORDER,
+    )
+
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+    assert receipt.action == audit.KEEP_STATEMENT_UNRESOLVED
+    assert receipt.entity_type == audit.CANDIDATE
+    assert receipt.entity_id == candidate.id
+    assert receipt.actor == RECORDER.subject
+    assert receipt.human_principal == RECORDER.subject
+    assert receipt.before_json == {"candidate_state": "pending"}
+    assert receipt.after_json == {
+        "candidate_state": "pending",
+        "authority_gap": "closure_target_commitment_not_established",
+        "affected_external_org_id": party.id,
+        "matching_open_commitment_lineage_ids": [],
+    }
+    assert repeated.id == receipt.id
+    assert session.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(
+            AuditLog.entity_id == candidate.id,
+            AuditLog.action == audit.KEEP_CANDIDATE_UNRESOLVED,
+        )
+    ) == 1
+
+
+def test_pending_closure_screen_names_the_authority_gap_without_timing_or_scope_quizzes(
+    session, project, party
+):
+    quote = "As-built package for the Kinder Morgan crossing is Complete."
+    document = _document(session, project, "meeting-notes/kinder-morgan.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "closure",
+            "event_date": "2025-01-16",
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+
+            assert screen.status_code == 200
+            assert quote in screen.text
+            assert "Closure Evidence" in screen.text
+            assert "Exact target Commitment not established" in screen.text
+            assert (
+                "The Evidence establishes a closure statement, but it does not "
+                "identify an open Commitment in the Project Record that it closes."
+                in screen.text
+            )
+            assert "No structured timing is available" not in screen.text
+            assert "Commitment Scope" not in screen.text
+            assert 'name="scope_mode"' not in screen.text
+            assert "Mark Not Relevant" not in screen.text
+            assert (
+                f'action="/statements/{project.slug}/{candidate.id}/keep-unresolved"'
+                in screen.text
+            )
+
+            saved = client.post(
+                f"/statements/{project.slug}/{candidate.id}/keep-unresolved",
+                follow_redirects=False,
+            )
+            assert saved.status_code == 303
+            session.refresh(candidate)
+            assert candidate.state == "pending"
+
+            acknowledged = client.get(saved.headers["location"])
+            assert acknowledged.status_code == 200
+            assert "Kept unresolved in the Work List" in acknowledged.text
+            assert "Recorded unresolved authority gap" in acknowledged.text
+            assert "Closure target Commitment not established" in acknowledged.text
     finally:
         app.dependency_overrides.clear()
 

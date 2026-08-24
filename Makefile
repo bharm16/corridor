@@ -173,6 +173,11 @@ sh99-coordinator-rehearsal:
 # Publish or independently verify the external two-pass ADR-0046 receipt:
 #   make product-proving ARGS="publish --capture-json=<json> --pass-1-approved-export=<pdf> --pass-2-approved-export=<pdf> --output-dir=<new-dir>"
 #   make product-proving ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+# Capture and clone-verify the exact local development database before a pass;
+# restore requires an explicit exact-target opt-in and re-verifies every public
+# table and sequence after replacing the database:
+#   make product-proving ARGS="database-capture --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-migration-head=<head> --output-dir=<new-dir>"
+#   make product-proving ARGS="database-restore <bundle-dir> --source-database-url=<url> --postgres-admin-url=<url> --expected-source-database-name=corridor --expected-clean-git-revision=<sha> --expected-migration-head=<head> --expected-manifest-sha256=<sha> --allow-shared-development-restore"
 # A terminal failure uses `publish-failure` and `verify-failure`; it can never
 # be read through the successful two-pass verifier.
 product-proving:

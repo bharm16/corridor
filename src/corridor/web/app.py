@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from corridor import audit
 from corridor.adjudicate import (
     AlreadyAdjudicated,
     AlreadyDismissed,
@@ -75,6 +76,7 @@ from corridor.ledger import (
 )
 from corridor.models import (
     RESOLUTION_STRATEGIES,
+    AuditLog,
     Candidate,
     CandidateDisposition,
     CommitmentLineage,
@@ -167,6 +169,7 @@ from corridor.models import (
 )
 from corridor.statement_coordination import (
     AdmittedStatementCoordination,
+    CLOSURE_TARGET_GAP,
     STATEMENT_NEXT_ACTION_CHOICES,
     StaleStatementCoordination,
     StatementCoordinationRefusal,
@@ -175,7 +178,11 @@ from corridor.statement_coordination import (
     coordinate_statement,
     correct_statement_facts,
     correct_statement_scope,
+    keep_candidate_unresolved,
+    keep_statement_unresolved,
     mark_statement_not_relevant,
+    pending_candidate_authority_gap,
+    pending_statement_authority_gap,
     read_admitted_statement_coordination,
     restore_statement_not_relevant,
     set_admitted_statement_next_action,
@@ -790,13 +797,49 @@ async def save_admitted_statement_scope(
     )
     if coordination is None:
         raise HTTPException(404, "no mechanically admitted statement in this project")
-    return _statement_coordination_screen(
+    response = _statement_coordination_screen(
         request,
         session,
         project,
         candidate,
         error="Use Correct to change Commitment Scope after admission.",
         status_code=400,
+    )
+    response.status_code = 400
+    return response
+
+
+@app.post("/statements/{slug}/{candidate_id}/keep-unresolved")
+def keep_unresolved_statement(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Acknowledge a recomputed structured gap and retain pending work."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    try:
+        keep_statement_unresolved(
+            session,
+            project.id,
+            candidate.id,
+            principal=principal,
+        )
+    except (StatementCoordinationRefusal, StaleStatementCoordination) as exc:
+        return _statement_coordination_screen(
+            request,
+            session,
+            project,
+            candidate,
+            error=str(exc),
+            status_code=409,
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate",
+        status_code=303,
     )
 
 
@@ -1252,6 +1295,21 @@ def _statement_coordination_screen(
         else None
     )
     history = _statement_coordination_history(session, candidate.id)
+    pending_authority_gap = pending_statement_authority_gap(
+        session,
+        project.id,
+        candidate.id,
+    )
+    unresolved_acknowledgment = session.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_type == audit.CANDIDATE,
+            AuditLog.entity_id == candidate.id,
+            AuditLog.action == audit.KEEP_STATEMENT_UNRESOLVED,
+        )
+        .order_by(AuditLog.id.desc())
+        .limit(1)
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "statement_coordinate.html",
@@ -1297,6 +1355,13 @@ def _statement_coordination_screen(
             "line": line,
             "not_relevant": not_relevant,
             "history": history,
+            "pending_authority_gap": pending_authority_gap,
+            "pending_authority_gap_label": (
+                _authority_gap_label(pending_authority_gap.code)
+                if pending_authority_gap is not None
+                else None
+            ),
+            "unresolved_acknowledgment": unresolved_acknowledgment,
             "error": error,
         },
         status_code=status_code,
@@ -1342,6 +1407,15 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
         .where(StatementCoordinationReversal.candidate_id == candidate_id)
         .order_by(StatementCoordinationReversal.id)
     ).all()
+    unresolved = session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_type == audit.CANDIDATE,
+            AuditLog.entity_id == candidate_id,
+            AuditLog.action == audit.KEEP_STATEMENT_UNRESOLVED,
+        )
+        .order_by(AuditLog.id)
+    ).all()
     rows = [
         {
             "created_at": receipt.created_at,
@@ -1378,7 +1452,23 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
         }
         for reversal in reversals
     )
+    rows.extend(
+        {
+            "created_at": entry.ts,
+            "label": "Recorded unresolved authority gap",
+            "detail": _authority_gap_label(
+                str((entry.after_json or {}).get("authority_gap") or "")
+            ),
+        }
+        for entry in unresolved
+    )
     return tuple(sorted(rows, key=lambda row: (row["created_at"], row["label"])))
+
+
+def _authority_gap_label(code: str) -> str:
+    if code == "closure_target_commitment_not_established":
+        return "Closure target Commitment not established"
+    return code.replace("_", " ")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1618,8 +1708,17 @@ def coordinator_home(
 
     def view(item):
         if item.kind == "candidate":
-            action_url = f"/statements/{project.slug}/{item.candidate_id}/coordinate"
-            action_label = "Review extracted statement"
+            if item.candidate_kind == "dependency":
+                action_url = (
+                    f"/queue/{project.slug}?lane=candidate&mode=review"
+                    f"&candidate_id={item.candidate_id}"
+                )
+                action_label = "Review extracted Dependency"
+            else:
+                action_url = (
+                    f"/statements/{project.slug}/{item.candidate_id}/coordinate"
+                )
+                action_label = "Review extracted statement"
         elif item.kind == "dependency":
             action_url = f"/ledger/{project.slug}/{item.dependency_id}"
             action_label = "Open Dependency"
@@ -1656,6 +1755,8 @@ def coordinator_home(
             "candidate_backlog_page": work_list.candidate_backlog_page,
             "candidate_backlog_pages": work_list.candidate_backlog_pages,
             "candidate_search": work_list.candidate_search,
+            "event_candidate_total": work_list.event_candidate_total,
+            "dependency_candidate_total": work_list.dependency_candidate_total,
         },
     )
 
@@ -1863,6 +1964,22 @@ def queue(
 
     reason = _review_reason(session, project, candidate)
     headline, guidance = REVIEW_REASONS.get(reason or "", (None, None))
+    candidate_authority_gap = pending_candidate_authority_gap(
+        session,
+        project.id,
+        candidate.id,
+    )
+    unresolved_acknowledgments = tuple(
+        session.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == audit.CANDIDATE,
+                AuditLog.entity_id == candidate.id,
+                AuditLog.action == audit.KEEP_CANDIDATE_UNRESOLVED,
+            )
+            .order_by(AuditLog.id)
+        ).all()
+    )
     siblings, differences = (
         _revision_panels(session, project, candidate)
         if reason == "revisions_disagree"
@@ -1884,6 +2001,8 @@ def queue(
             "project": project,
             "review_headline": headline,
             "review_guidance": guidance,
+            "candidate_authority_gap": candidate_authority_gap,
+            "unresolved_acknowledgments": unresolved_acknowledgments,
             "differences": differences,
             "evidence_panels": evidence_panels,
             "view": build_view(
@@ -2296,6 +2415,33 @@ def page_image(document_id: int, page_no: int, session: Session = Depends(get_se
     if page is None or not page.image_path or not Path(page.image_path).exists():
         raise HTTPException(404, "no rendered image for that page")
     return FileResponse(page.image_path, media_type="image/png")
+
+
+@app.post("/candidates/{candidate_id}/keep-unresolved")
+def keep_unresolved_candidate(
+    candidate_id: int,
+    slug: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Acknowledge the latest structured gap and retain the pending proposal."""
+    project = _project(session, slug)
+    candidate = _project_candidate(session, project, candidate_id)
+    try:
+        keep_candidate_unresolved(
+            session,
+            project.id,
+            candidate.id,
+            principal=principal,
+        )
+    except (StatementCoordinationRefusal, StaleStatementCoordination) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/queue/{project.slug}?lane=candidate&mode=review"
+        f"&candidate_id={candidate.id}",
+        status_code=303,
+    )
 
 
 @app.post("/candidates/{candidate_id}/accept")

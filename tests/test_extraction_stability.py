@@ -4,7 +4,7 @@ from datetime import date
 
 from corridor.extract_minutes_v4 import PROMPT_VERSION, _to_candidate
 from corridor.models import DocPage, Document
-from corridor.product_proving_run import compare_candidate_sets
+from corridor.product_proving_run import ExtractionConfiguration, compare_candidate_sets
 
 
 def _raw_candidate(candidate):
@@ -58,6 +58,15 @@ def _matrix_candidate(prompt_version: str):
     }
 
 
+def _configuration(prompt_version: str, prompt_sha256: str):
+    return ExtractionConfiguration(
+        prompt_version=prompt_version,
+        model="gpt-5.6-luna",
+        schema_version="matrix_candidate_shape_v1",
+        prompt_sha256=prompt_sha256,
+    )
+
+
 def test_proving_comparison_refuses_incompatible_extractor_lineage():
     baseline = _matrix_candidate("matrix_tiered_v2")
     fresh = _matrix_candidate("matrix_tiered_v3")
@@ -69,6 +78,8 @@ def test_proving_comparison_refuses_incompatible_extractor_lineage():
             fresh_run_id=206506,
             baseline=[baseline],
             fresh=[fresh],
+            baseline_configuration=_configuration("matrix_tiered_v2", "2" * 64),
+            fresh_configuration=_configuration("matrix_tiered_v3", "3" * 64),
         )
     except ValueError as exc:
         assert "configuration-compatible" in str(exc)
@@ -76,6 +87,33 @@ def test_proving_comparison_refuses_incompatible_extractor_lineage():
         raise AssertionError(
             "incompatible extractor versions reached semantic Candidate comparison"
         )
+
+
+def test_zero_candidate_runs_still_require_compatible_run_configuration():
+    try:
+        compare_candidate_sets(
+            document_id=1435,
+            baseline_run_id=1,
+            fresh_run_id=2,
+            baseline=[],
+            fresh=[],
+            baseline_configuration=ExtractionConfiguration(
+                prompt_version="minutes_v4",
+                model="gpt-5.6-luna",
+                schema_version="minutes_v4",
+                prompt_sha256="4" * 64,
+            ),
+            fresh_configuration=ExtractionConfiguration(
+                prompt_version="minutes_v4",
+                model="gpt-5.6-luna",
+                schema_version="minutes_v4",
+                prompt_sha256="5" * 64,
+            ),
+        )
+    except ValueError as exc:
+        assert "configuration-compatible" in str(exc)
+    else:
+        raise AssertionError("empty Candidate sets bypassed run configuration")
 
 
 def test_same_minutes_evidence_produces_stable_candidate_meaning():
@@ -127,6 +165,18 @@ def test_same_minutes_evidence_produces_stable_candidate_meaning():
         fresh_run_id=206507,
         baseline=[_raw_candidate(baseline)],
         fresh=[_raw_candidate(fresh)],
+        baseline_configuration=ExtractionConfiguration(
+            prompt_version=PROMPT_VERSION,
+            model="gpt-5.6-luna",
+            schema_version=PROMPT_VERSION,
+            prompt_sha256="4" * 64,
+        ),
+        fresh_configuration=ExtractionConfiguration(
+            prompt_version=PROMPT_VERSION,
+            model="gpt-5.6-luna",
+            schema_version=PROMPT_VERSION,
+            prompt_sha256="4" * 64,
+        ),
     )
 
     assert comparison.equal

@@ -43,6 +43,9 @@ FAILURE_BUNDLE_FILES = (
     "receipt.md",
 )
 _OUTCOMES = frozenset({"supported", "not_relevant", "unresolved"})
+_FACTUAL_CORRECTION_OUTCOMES = frozenset(
+    {"preserved_predecessor", "not_supported_by_packet"}
+)
 _PROVENANCE_CLASSES = frozenset(
     {"Assertion", "Derivation", "Work Decision", "Verbal"}
 )
@@ -82,12 +85,24 @@ class ObservedPreflight:
 
 
 @dataclass(frozen=True)
+class ExtractionConfiguration:
+    """The exact extractor lineage required before semantic comparison."""
+
+    prompt_version: str
+    model: str | None
+    schema_version: str
+    prompt_sha256: str
+
+
+@dataclass(frozen=True)
 class CandidateSetComparison:
     """Semantic comparison of two exact Extraction Runs for one Document."""
 
     document_id: int
     baseline_run_id: int
     fresh_run_id: int
+    baseline_configuration: ExtractionConfiguration
+    fresh_configuration: ExtractionConfiguration
     added: tuple[dict[str, Any], ...]
     missing: tuple[dict[str, Any], ...]
     matched_sha256: tuple[str, ...]
@@ -112,7 +127,9 @@ class ProductProvingPass:
     frontend_actions: tuple[str, ...]
     invalid_action_refused: bool
     invalid_action_write_set: Mapping[str, Any]
-    correction_preserved_predecessor: bool
+    factual_correction_outcome: Literal[
+        "preserved_predecessor", "not_supported_by_packet"
+    ]
     work_decision_change_preserved_predecessor: bool
     report_pdf_sha256: str
     approved_export_sha256: str
@@ -153,6 +170,9 @@ class ProductProvingFailureCapture:
     admission_started: bool
     source_database_mutated: bool
     operations_elapsed_seconds: float
+    baseline_dump_sha256: str
+    baseline_state_manifest_sha256: str
+    restored_baseline_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -170,6 +190,8 @@ def compare_candidate_sets(
     fresh_run_id: int,
     baseline: Sequence[Mapping[str, Any]],
     fresh: Sequence[Mapping[str, Any]],
+    baseline_configuration: ExtractionConfiguration,
+    fresh_configuration: ExtractionConfiguration,
 ) -> CandidateSetComparison:
     """Compare Candidate meaning while ignoring only identities and ordering.
 
@@ -179,8 +201,10 @@ def compare_candidate_sets(
     Duplicate semantic Candidates remain significant through the Counter.
     """
 
-    baseline_configuration = _candidate_configuration(baseline, "baseline")
-    fresh_configuration = _candidate_configuration(fresh, "fresh")
+    _validate_extraction_configuration(
+        baseline_configuration, baseline, "baseline"
+    )
+    _validate_extraction_configuration(fresh_configuration, fresh, "fresh")
     if baseline_configuration != fresh_configuration:
         raise ValueError(
             "Product Proving Candidate comparison requires a "
@@ -206,27 +230,39 @@ def compare_candidate_sets(
         document_id=document_id,
         baseline_run_id=baseline_run_id,
         fresh_run_id=fresh_run_id,
+        baseline_configuration=baseline_configuration,
+        fresh_configuration=fresh_configuration,
         added=added,
         missing=missing,
         matched_sha256=matched,
     )
 
 
-def _candidate_configuration(
-    candidates: Sequence[Mapping[str, Any]], label: str
-) -> tuple[str | None, str | None] | None:
-    """Return one extractor identity, or refuse mixed Candidate lineage."""
+def _validate_extraction_configuration(
+    configuration: ExtractionConfiguration,
+    candidates: Sequence[Mapping[str, Any]],
+    label: str,
+) -> None:
+    """Bind run-level configuration even when a valid run produced no rows."""
+    if (
+        not configuration.prompt_version.strip()
+        or not configuration.schema_version.strip()
+        or len(configuration.prompt_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in configuration.prompt_sha256
+        )
+    ):
+        raise ValueError(f"Product Proving {label} extractor configuration is invalid")
     configurations = {
         (candidate.get("prompt_version"), candidate.get("model"))
         for candidate in candidates
     }
-    if not configurations:
-        return None
-    if len(configurations) != 1:
+    expected = (configuration.prompt_version, configuration.model)
+    if configurations and configurations != {expected}:
         raise ValueError(
-            f"Product Proving {label} Candidate set mixes extractor configurations"
+            f"Product Proving {label} Candidate set disagrees with its Extraction Run"
         )
-    return configurations.pop()
 
 
 def verify_preflight(expected: ExpectedPreflight, observed: ObservedPreflight) -> None:
@@ -342,6 +378,17 @@ def publish_product_proving_failure_bundle(
         raise ValueError("failed Product Proving receipt needs a phase and error")
     if capture.operations_elapsed_seconds < 0:
         raise ValueError("failed Product Proving timing must be non-negative")
+    if not all(
+        _is_sha256(value)
+        for value in (
+            capture.baseline_dump_sha256,
+            capture.baseline_state_manifest_sha256,
+            capture.restored_baseline_fingerprint,
+        )
+    ):
+        raise ValueError("failed Product Proving restoration evidence is invalid")
+    if capture.restored_baseline_fingerprint != capture.expected.baseline_fingerprint:
+        raise ValueError("failed Product Proving pass did not restore its baseline")
     if capture.phase == "extraction_repeatability" and capture.admission_started:
         raise ValueError("repeatability failure must stop before Admission")
     canonical = asdict(capture)
@@ -456,6 +503,23 @@ def verify_product_proving_failure_bundle(
         raise CorruptProductProvingBundle(
             "repeatability failure incorrectly claims Admission started"
         )
+    restoration_fields = (
+        "baseline_dump_sha256",
+        "baseline_state_manifest_sha256",
+        "restored_baseline_fingerprint",
+    )
+    if any(field in canonical for field in restoration_fields):
+        if not all(_is_sha256(canonical.get(field)) for field in restoration_fields):
+            raise CorruptProductProvingBundle(
+                "failure restoration evidence is incomplete"
+            )
+        expected_baseline = (canonical.get("expected") or {}).get(
+            "baseline_fingerprint"
+        )
+        if canonical["restored_baseline_fingerprint"] != expected_baseline:
+            raise CorruptProductProvingBundle(
+                "failure receipt does not prove exact baseline restoration"
+            )
     return verified
 
 
@@ -490,8 +554,8 @@ def _verify_pass(
         raise ValueError("practitioner phase used a terminal or database workaround")
     if not run.invalid_action_refused or run.invalid_action_write_set:
         raise ValueError("invalid frontend action was not refused atomically")
-    if not run.correction_preserved_predecessor:
-        raise ValueError("factual correction did not preserve its predecessor")
+    if run.factual_correction_outcome not in _FACTUAL_CORRECTION_OUTCOMES:
+        raise ValueError("factual correction outcome is invalid")
     if not run.work_decision_change_preserved_predecessor:
         raise ValueError("Work Decision change did not preserve its predecessor")
     if run.report_pdf_sha256 != run.approved_export_sha256:
@@ -500,8 +564,13 @@ def _verify_pass(
         raise ValueError("Approved Export bytes do not match the recorded digest")
     if not run.approved_export_bytes.startswith(b"%PDF-"):
         raise ValueError("Approved Export is not a PDF")
-    if not _PROVENANCE_CLASSES <= set(run.report_provenance_classes):
-        raise ValueError("Report does not preserve every required provenance class")
+    provenance = set(run.report_provenance_classes)
+    if (
+        not provenance
+        or not provenance <= _PROVENANCE_CLASSES
+        or not {"Assertion", "Derivation", "Work Decision"} <= provenance
+    ):
+        raise ValueError("Report provenance classes do not match the bounded record")
     if run.operations_elapsed_seconds < 0 or run.practitioner_elapsed_seconds < 0:
         raise ValueError("Product Proving timings must be non-negative")
 
@@ -527,6 +596,10 @@ def _verify_equivalent_passes(
     second_shape = {key: len(value) for key, value in second.write_set.items()}
     if first_shape != second_shape:
         raise ValueError("the second pass changed declared write-set behavior")
+    if first.factual_correction_outcome != second.factual_correction_outcome:
+        raise ValueError("the second pass changed factual-correction support")
+    if set(first.report_provenance_classes) != set(second.report_provenance_classes):
+        raise ValueError("the second pass changed Report provenance behavior")
 
 
 def _canonical_candidate(
@@ -624,6 +697,7 @@ def _failure_markdown(canonical: Mapping[str, Any]) -> str:
             f"- Admission started: `{str(canonical['admission_started']).lower()}`",
             f"- Fresh Extraction Runs retained: `{len(canonical['extraction_run_receipts'])}`",
             f"- Candidate comparisons retained: `{len(comparisons)}`",
+            f"- Restored baseline: `{canonical['restored_baseline_fingerprint']}`",
             "",
             "Errors:",
             *[f"- {error}" for error in canonical["errors"]],
@@ -638,6 +712,12 @@ def _failure_markdown(canonical: Mapping[str, Any]) -> str:
 
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _sha256(value: bytes) -> str:
