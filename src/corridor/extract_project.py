@@ -95,6 +95,7 @@ def extract_project(
     redo: bool = False,
     commit: bool = True,
     document_registry_id: str | None = None,
+    document_id: int | None = None,
 ) -> list[Outcome]:
     """Extract every matrix in the project, one Outcome per document.
 
@@ -120,17 +121,25 @@ def extract_project(
                 extract=extract,
             )
 
-    if document_registry_id is not None:
+    if document_registry_id is not None and document_id is not None:
+        raise ValueError("pass exactly one Document selector")
+    if document_registry_id is not None or document_id is not None:
+        criterion = (
+            Document.registry_id == document_registry_id
+            if document_registry_id is not None
+            else Document.id == document_id
+        )
         named = session.scalars(
-            select(Document).where(
-                Document.project_id == project.id,
-                Document.registry_id == document_registry_id,
-            )
+            select(Document).where(Document.project_id == project.id, criterion)
         ).first()
         if named is None:
+            identity = (
+                repr(document_registry_id)
+                if document_registry_id is not None
+                else str(document_id)
+            )
             raise UnknownDocument(
-                f"no document in {project.slug!r} carries registry id "
-                f"{document_registry_id!r}"
+                f"no document in {project.slug!r} carries identity {identity}"
             )
         if named.doc_type != "matrix":
             raise UnextractableDocument(
@@ -431,15 +440,29 @@ def main(argv: list[str]) -> int:
     args = [a for a in argv if not a.startswith("-")]
     flags = {a for a in argv if a.startswith("-")}
     document_registry_id = None
+    document_id = None
     for flag in sorted(flags):
         if flag.startswith("--document="):
             document_registry_id = flag.removeprefix("--document=")
             flags.discard(flag)
-            break
+        elif flag.startswith("--document-id="):
+            raw_document_id = flag.removeprefix("--document-id=")
+            try:
+                document_id = int(raw_document_id)
+            except ValueError:
+                document_id = 0
+            flags.discard(flag)
     unknown = flags - {"--redo"}
-    if not args or unknown or document_registry_id == "":
+    if (
+        not args
+        or unknown
+        or document_registry_id == ""
+        or (document_id is not None and document_id <= 0)
+        or (document_registry_id is not None and document_id is not None)
+    ):
         print(
-            "usage: extract <project-slug> [--document=<registry-id>] [--redo]"
+            "usage: extract <project-slug> "
+            "[--document=<registry-id>|--document-id=<id>] [--redo]"
             + (f"\nunknown flag(s): {', '.join(sorted(unknown))}" if unknown else ""),
             file=sys.stderr,
         )
@@ -468,6 +491,7 @@ def main(argv: list[str]) -> int:
                 select_route=lambda document: extraction_route(document, client=client),
                 redo="--redo" in flags,
                 document_registry_id=document_registry_id,
+                document_id=document_id,
             )
         finally:
             client.close()

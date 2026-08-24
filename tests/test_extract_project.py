@@ -938,6 +938,43 @@ def test_a_named_document_extracts_alone(session, project):
     assert [run.document_id for run in runs] == [first.id]
 
 
+def test_an_exact_database_document_id_extracts_alone(session, project):
+    first = add_matrix(session, project, "legacy-without-registry-id.pdf", "a" * 64)
+    second = add_matrix(session, project, "other.pdf", "b" * 64)
+
+    outcomes = extract_project(
+        session,
+        project,
+        extract=extractor(**{"legacy-without-registry-id.pdf": [True]}),
+        prompt_version=PROMPT_VERSION,
+        commit=False,
+        document_id=first.id,
+    )
+
+    assert [outcome.document_id for outcome in outcomes] == [first.id]
+    runs = session.scalars(
+        select(ExtractionRun).where(
+            ExtractionRun.document_id.in_([first.id, second.id])
+        )
+    ).all()
+    assert [run.document_id for run in runs] == [first.id]
+
+
+def test_document_selection_refuses_two_competing_identities(session, project):
+    document = add_matrix(session, project, "matrix.pdf", "a" * 64)
+    document.registry_id = "matrix-registry"
+
+    with pytest.raises(ValueError, match="one Document selector"):
+        extract_project(
+            session,
+            project,
+            extract=extractor(),
+            commit=False,
+            document_registry_id=document.registry_id,
+            document_id=document.id,
+        )
+
+
 def test_naming_an_unknown_document_refuses(session, project):
     add_matrix(session, project, "feb.pdf", "a" * 64)
 

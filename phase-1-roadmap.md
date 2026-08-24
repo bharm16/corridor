@@ -1,6 +1,6 @@
-# Phase 1 Roadmap — External-Party Readiness Ledger
+# Phase 1 Roadmap — External-Party Readiness Project Record
 
-**Goal of Phase 1:** a working, demoable system of record for utility and external-party readiness, running on 2-3 real highway projects, operable by one person, no external accounts required.
+**Goal of Phase 1:** a working, demoable Project Record for utility and External Party readiness, running on 2-3 real highway projects, operable by one person, no external accounts required.
 
 **Companion docs:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec.md` covers document assembly, which runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; `docs/adr/` records decisions with lasting consequences. Build nothing past M5 until M5 is done.
 
@@ -19,7 +19,7 @@ Phase 1 never includes: CAD/GIS, scheduling engine, document-management or PMIS 
 No documents are in hand. Corpus assembly is the schedule's critical path rather than its warm-up, and is specified in `corpus-acquisition-spec.md`.
 
 - Assemble document sets for 2-3 real projects from public sources. Each project needs a **spine** (dependency records — filled conflict matrix, utility agreements, special provisions) and a **stream** (dated assertions that change over time — serial status reports, meeting minutes, board packets). Neither role alone exercises the data model. Construct a milestone list per project.
-- File public-records requests in week 0, scoped to the same project as the spine so returns merge into one ledger.
+- File public-records requests in week 0, scoped to the same project as the spine so returns join one Project Record.
 - Repo, Postgres, object storage dirs, one-command boot.
 
 **Done when:** the manifest resolves to files on disk with source provenance, cataloged by project and type; stack boots with one command.
@@ -39,17 +39,17 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 
 **Done when:** candidates generated for Project A with verified citations; candidate junk rate under ~30%.
 
-### M3 — Adjudication and ledger (1.5-2 wk)
+### M3 — Adjudication and Project Record (1.5-2 wk)
 
 - Review queue: accept / edit / merge / reject, keyboard-driven.
 - Entity resolution assist (same dependency across matrix, minutes, email → merge).
-- Canonical dependency ledger with event history and append-only audit log. Every merged claim is retained as an assertion against the record, so competing source values survive rather than overwriting each other.
+- Project Record with a Dependency Ledger, External Party Statements, Work Decisions, Evidence, and append-only receipts. Every merged claim is retained as an Assertion against the record, so competing source values survive rather than overwriting each other.
 
-**Done when:** all Project A candidates adjudicated; ledger browsable by location, organization, status, resolution strategy; a record with conflicting source values shows both.
+**Done when:** all Project A Candidates have an explicit outcome; the Ledger is browsable by location, External Party, Resolution Strategy, Ready, and Exception; a Dependency with conflicting Assertions shows both.
 
 ### M4 — Schedule link and exceptions (1 wk)
 
-- Milestone import (CSV), need-date linkage per dependency.
+- Immutable Milestone Registration from exact CSV source rows and digests; Need Date is derived from the current registration linked to each Dependency.
 - Exception engine: missing owner, missing date, missing evidence, stale, due-soon, overdue, contradiction, orphan (exact rules in build spec).
 
 **Done when:** exception list matches a hand-check of Project A.
@@ -57,8 +57,8 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 ### M5 — Reporting and demo (1 wk) — **v0 complete**
 
 - Cited weekly readiness report (HTML/PDF): milestone rollup, critical items, exceptions, changes since last report, aging.
-- Ledger export to XLSX.
-- End-to-end demo path: raw documents → adjudicated ledger → report, live in under 15 minutes.
+- Project Record export to XLSX.
+- End-to-end demo path: raw Documents → Admission and Adjudication → Project Record → reviewed Approved Export, live in under 15 minutes.
 
 **Done when:** report contains zero uncited assertions; full run works on Project A. This is the demo checkpoint artifact.
 
@@ -77,7 +77,7 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 
 ### M8 — Document versioning and revisions (1-1.5 wk)
 
-- Document Supersession (rev B → rev C), exact-run Revision Comparison, affected Ledger records, and Operative Support that cites a superseded revision.
+- Document Supersession (rev B → rev C), exact-run Revision Comparison, affected Project Record support, and Operative Support that cites a superseded revision.
 - Design is decision-complete in ADR-0015 through ADR-0023: supersession registry, `SUPERSEDED_CITATION` on operative support, role-scoped resolver, Revision Comparison, fail-closed queue with declared Active Runs, retirement of the noncompliant development Ledger, opt-in Automatic Carry-Forward for exact unchanged support, and machine-reference limits; ADR-0024 adds that its acceptance captures are regression artifacts, never production run lineage. Vocabulary in `CONTEXT.md`.
 
 **Done when:** registering a revised document yields a Revision Comparison and a Supersession Review worklist; Revision Processing read-verifies the Comparison before invoking any authorized policy; exact-run Extraction Measurement is reproducible; human Reconfirmation or policy-authorized Automatic Carry-Forward moves existing Operative Support; and uncertain cases produce durable versioned Abstentions. Production history and sealed receipts are never overwritten; identical automation reruns do not duplicate outcomes; ADR-0021's development-only retirement is explicit, immutable, and independently verifiable.
@@ -85,8 +85,8 @@ No documents are in hand. Corpus assembly is the schedule's critical path rather
 ### M9 — Second user and write-back lite (1.5-2 wk)
 
 - Basic auth, three roles (admin / reviewer / viewer).
-- P6 XER import (replacing the CSV milestone stopgap).
-- Round-trip export: ledger back out in the matrix format the project already uses.
+- P6 XER input that appends Milestone Registrations rather than mutating bare dates.
+- Round-trip export: Project Record values back out in the matrix format the project already uses.
 - Backup/restore.
 
 **Done when:** a second person can review safely; the ledger round-trips into the project's existing matrix format.

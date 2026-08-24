@@ -8,7 +8,7 @@ Corpus assembly is specified separately in `corpus-acquisition-spec.md` and runs
 
 Given one real highway project's document set, produce three things, with a human (you) adjudicating everything the AI proposes:
 
-1. A dependency ledger: every utility/external-party dependency as a structured record, every factual field cited to a source document, page, and quote.
+1. A Project Record with a Dependency Ledger: every utility/External Party Dependency as a structured record, every document-sourced field cited to a Document, page, and quote.
 2. An exception list: what's missing an owner, a date, or evidence; what's stale, due soon, overdue, or contradictory.
 3. A generated weekly readiness report that could replace the one a project builds by hand.
 
@@ -23,14 +23,14 @@ manifest → fetch (download, hash, stamp provenance)
          → ingest (register, extract text/OCR, render pages)
          → extract (type-specific LLM extractors → cited candidates)
          → verify citations (quote must match cited page)
-         → adjudicate (review queue: accept/edit/merge/reject)
-         → ledger (canonical records + assertions + event history + audit log)
-         → link (milestones/need dates) → exceptions engine
-         → outputs (weekly report HTML/PDF, XLSX export)
+         → Admission / adjudicate (policy Abstention or human decision)
+         → Project Record (Dependency Ledger + Assertions + External Party Statements + Work Decisions)
+         → register Milestones / derive Need Dates → Evaluation
+         → outputs (reviewed Report → Approved Export, XLSX export)
          → eval (gold set, recall/precision/citation metrics)
 ```
 
-The ledger stores **conclusions**; assertions store **what each document claimed**. Extractors never write to the ledger — the only path in is a human keystroke.
+The Project Record stores accepted conclusions, External Party facts, and project-controlled Work Decisions; Assertions store what each Document claimed. Extractors write only Candidates. Admission is either an attributable human act or one enumerated deterministic policy class with an immutable receipt; every unsupported case Abstains.
 
 ## 4. Stack
 
@@ -64,21 +64,21 @@ Schema is keyed by `project_id` from day one even though v0 runs one project.
 
 **external_orgs** — id, name, org_type (`utility | railroad | agency | consultant | other`), aliases[]
 
-**dependencies** — id, project_id, ref_code (human-readable, e.g. `DEP-014`), dep_type (`utility_relocation | agreement | permit | row | railroad | access | other`), title, location_desc, station_from, station_to, external_org_id, external_contact, internal_owner, status (`identified | in_progress | committed | blocked | closed`), resolution_strategy (`relocate | remove | abandon_deactivate | adjust_vertical | protect_in_place | change_design | exception`, nullable — most documents assert none), committed_date, need_date, milestone_id, evidence_required (text: what closes this), notes
+**dependencies** — id, project_id, ref_code (human-readable, e.g. `DEP-014`), dep_type (`utility_relocation | agreement | permit | row | railroad | access | other`), title, location_desc, station_from, station_to, external_org_id, resolution_strategy (`relocate | remove | abandon_deactivate | adjust_vertical | protect_in_place | change_design | exception`, nullable), need_date, milestone_id, evidence_required. There is no authoritative Dependency status field: Ready, Criticality, Exceptions, and current coordination are derived or projected from their own receipts.
 
 **assertions** — id, dependency_id, field_name, asserted_value, evidence_link_id, doc_date, created_at. One row per claim by one document about one field. See ADR-0001.
 
-**dependency_events** — id, dependency_id, event_type (`commitment | response | slip | escalation | status_change | closure`), event_date, description, created_by
+**dependency_events** — stored External Party Statements (`commitment | committed_date_change | commitment_closure`) with attributable External Party, timing, Commitment Lineage, Commitment Scope, and Evidence or Verbal provenance. Extracted responses and status changes remain Candidates until the product can represent an honest supported outcome.
 
 **evidence_links** — id, parent (dependency_id or event_id), document_id, page_no, quote, verified (bool), satisfies_requirement (bool, default false)
 
 **candidates** — id, project_id, kind (`dependency | event`), payload_json, source_document_id, source_pages[], confidence, prompt_version, model, state (`pending | accepted | merged | rejected`), merged_into, adjudicated_at
 
-**milestones** — id, project_id, code, name, need_date, source
+**milestones / milestone_registrations** — stable Milestone identity plus an append-only chain binding each exact source row, source digest, recording principal, and predecessor. Current dates are projections of the registration chain; Need Dates derive from them.
 
 **report_runs** — id, project_id, ts, ruleset_version, snapshot_json, output_path. The "changes since last report" diff reads the previous run's snapshot.
 
-**audit_log** — id, actor, action, entity_type, entity_id, before_json, after_json, ts. Append-only. Every ledger mutation writes here.
+**audit_log** — id, principal, action, entity_type, entity_id, before_json, after_json, ts. Append-only. Authority-bearing facts also retain their typed immutable receipt; the generic audit row is not their source of truth.
 
 **eval_runs** — id, ts, corpus, prompt_version, model, ruleset_version, metrics_json
 
@@ -116,7 +116,7 @@ Rules that are not negotiable:
 
 - Every asserted field value must be supported by at least one citation.
 - The verifier checks each quote against the cited page text (normalized fuzzy match, ≥0.9 similarity). Failed citations mark the candidate `unverified` and sink it in the queue — they are never silently dropped.
-- Extractors never write to the ledger. They only create candidates.
+- Extractors never write to the Project Record. They only create Candidates.
 - Every candidate records `prompt_version` and `model`. Without both, eval history across runs is not comparable and you cannot tell which change moved the numbers.
 - **One source does not mean one layout.** A document series changes shape over time and across agencies: the Rockwall county reports switch from per-owner narrative to a four-bucket form mid-series; TxDOT bid proposals have at least three confirmed column schemas, one lacking stationing entirely. Extractors are written against a *record type* with multiple layout variants, never against one observed layout. An extractor that assumes its first sample's shape fails silently on the rest of the same series.
 
@@ -141,8 +141,8 @@ Prompt files live in the repo, versioned (`prompts/minutes_v3.md`); `prompt_vers
 Three screens. Keyboard-driven; you will adjudicate hundreds of candidates.
 
 1. **Queue** — one candidate at a time: extracted fields left, cited page image with quote highlighted right. Actions: `a` accept, `e` edit-then-accept, `m` merge into existing (pre-ranked, see below), `r` reject (reason: duplicate / wrong / irrelevant / bad-citation). Target throughput: ≥60 candidates/hour.
-2. **Ledger** — table of dependencies; filter by status, org, resolution strategy (including `critical`, the reading of it), milestone, exception type. Row → detail: fields, **the assertions behind each field with their sources**, event timeline, evidence gallery, audit history. A field value shown without its competing assertions reproduces the silent-overwrite behavior this tool exists to replace.
-3. **Run report** — button + preview (section 10).
+2. **Ledger** — table of Dependencies; filter by External Party, Resolution Strategy (including derived Criticality), Milestone, Ready, and Exception type. Row → detail: fields, **the Assertions behind each field with their sources**, External Party Statement timeline, Evidence gallery, and receipt history. A field value shown without its competing Assertions reproduces the silent-overwrite behavior this tool exists to replace.
+3. **Prepare Report** — render one fixed PDF, review those exact bytes, then release an Approved Export without regeneration (section 10).
 
 Merging is the core interaction: the same dependency will arrive from the matrix, minutes, status reports, and email. Accepting a duplicate instead of merging corrupts the ledger — the pre-ranked merge search must be good before anything else gets polish.
 
@@ -164,11 +164,11 @@ Computed as queries, not stored state. Exceptions carry no severity (ADR-0010, w
 
 | Rule | Logic |
 |---|---|
-| MISSING_OWNER | internal_owner is null, not Ready, status not `closed` |
-| MISSING_DATE | committed_date is null and status in (`identified`,`in_progress`,`committed`) |
+| MISSING_OWNER | the current Coordination Plan has no Internal Owner and the Dependency is not Ready |
+| MISSING_DATE | no current supported External Party Statement supplies a Committed Date |
 | MISSING_EVIDENCE | no verified evidence_link on the record or its latest commitment event |
-| STALE | last_evidenced_at > 14 days ago, not Ready, status not `closed` |
-| DUE_SOON | need_date within 30 days, not Ready, status not `closed` |
+| STALE | last_evidenced_at > 14 days ago and the Dependency is not Ready |
+| DUE_SOON | Need Date is within 30 days and the Dependency is not Ready |
 | OVERDUE | committed_date < today and no closure event |
 | CONTRADICTION | ≥2 assertions on the same (dependency, field) with distinct asserted_value, each backed by verified evidence |
 | ORPHAN | milestone_id is null |
@@ -181,16 +181,17 @@ Thresholds (14 d, 30 d) are per-project config. The ruleset carries a version, r
 
 ## 10. Weekly readiness report
 
-HTML → PDF. **No cell is bare.** Every published cell carries one of three provenance classes (ADR-0003, ADR-0025):
+HTML → fixed reviewed PDF → Approved Export. **No cell is bare.** Every published cell carries one of four provenance classes (ADR-0003, ADR-0025, ADR-0040):
 
 - an **Assertion** — citation marker `[D12 p.4]` linking to the verified quote
 - a **Derivation** — ruleset version plus the record IDs aggregated, drilling through to those records' evidence
 - a **Work Decision** — the exact decision ids displayed: recording principal, timestamp, and before/after values, field-exact
+- a **Verbal** — an attributable External Party Statement heard by a named project person on a stated date
 
 Enforced by the verifier, not by convention.
 
 1. **Milestone readiness rollup** — per milestone: total dependencies, ready, at-risk, blocked, % with verified evidence.
-2. **Critical items** — the critical records (criticality read from the resolution strategy, as a filter — ADR-0010), ordered by need-date proximity as declared presentation; where no dates exist the section says so rather than faking an order: owner, next action, committed date, status, citation.
+2. **Critical items** — the critical records (Criticality read from Resolution Strategy, as a filter — ADR-0010), ordered by Need Date proximity as declared presentation; where no dates exist the section says so rather than faking an order: Internal Owner, Next Action, Committed Date, Ready, provenance.
 3. **Exceptions summary** — counts by rule; within a rule, the largest quantity (most days overdue, longest silence), not a severity-ranked "worst" (ADR-0010).
 4. **Changes since last report** — new, closed, slipped, escalated. Diffed against the previous `report_runs.snapshot_json`.
 5. **Aging** — overdue items by days overdue.
@@ -264,8 +265,8 @@ Nights-and-weekends pace roughly doubles the calendar.
 - [ ] All candidates adjudicated through the UI at ≥60/hour.
 - [ ] Merge suggestions rank the correct existing dependency first, with the reason visible.
 - [ ] Exception list matches a manual check on Project A.
-- [ ] Weekly report generates with no bare cells — every figure an Assertion, a Derivation or a Work Decision (ADR-0025).
-- [ ] Ready is reachable only by marking verified evidence; no status field can be set to it.
+- [ ] Weekly Report generates with no bare cells — every value is an Assertion, Derivation, Work Decision, or Verbal.
+- [ ] Ready is derived only from current verified Evidence plus an attributable sufficiency judgment; no status field can set it.
 - [ ] Entire pipeline runs on Project B with config-only changes.
 - [ ] First eval run recorded; critical recall measured (gate to hit in M7: ≥95%).
 - [ ] Live demo, raw docs to report, in under 15 minutes.

@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -72,6 +72,7 @@ agreements:
 # needs OPENAI_API_KEY:
 #   make extract ARGS="nhhip-3c2"
 #   make extract ARGS="nhhip-3c2 --redo"
+#   make extract ARGS="sh99-grand-parkway --document-id=1311 --redo"
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
 
@@ -168,6 +169,12 @@ event-admission-acceptance:
 #   make sh99-coordinator-rehearsal ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
 sh99-coordinator-rehearsal:
 	uv run python -m corridor.sh99_coordinator_rehearsal_cli $(ARGS)
+
+# Publish or independently verify the external two-pass ADR-0046 receipt:
+#   make product-proving ARGS="publish --capture-json=<json> --pass-1-approved-export=<pdf> --pass-2-approved-export=<pdf> --output-dir=<new-dir>"
+#   make product-proving ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+product-proving:
+	uv run python -m corridor.product_proving_run_cli $(ARGS)
 
 # Run one current Unplaced Statement Candidate through the hidden, read-only
 # Evidence Investigator and append a terminal local receipt. Needs OPENAI_API_KEY:
