@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Interface operation is not human decision authorship
 
 > **Clarified by ADR-0042.** This boundary forbids agent impersonation. It does

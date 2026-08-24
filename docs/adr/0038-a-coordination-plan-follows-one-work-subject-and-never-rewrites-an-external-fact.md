@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A Coordination Plan follows one work subject and never rewrites an external fact
 
 ADR-0025 introduced the Work Decision so an Internal Owner, Next Action, and

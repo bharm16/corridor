@@ -1,11 +1,9 @@
-"""Policy-authorized machine transfer of exact unchanged operative support.
+"""Corridor-managed transfer of exact unchanged Operative Support.
 
 Automatic Carry-Forward is deliberately not Admission and not human
-Reconfirmation under a borrowed identity.  A human authorizes one immutable,
-project-bound policy.  The server may then transfer only the complete support
-scope already grounded in an attributable human Admission, and records the
-act as a distinct machine receipt. Every uncertain row remains unresolved with
-a stable refusal reason.
+Reconfirmation under a borrowed identity. The released policy may transfer only
+the complete support scope already grounded in an attributable Admission. Every
+uncertain row remains unresolved with a stable Abstention reason.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
@@ -30,20 +28,12 @@ from corridor import supersession as supersession_module
 from corridor import supersession_review as supersession_review_module
 from corridor import support_transfer as support_transfer_module
 from corridor.models import (
-    ActiveAutomaticCarryForwardPolicy,
-    AuditLog,
     AutomaticCarryForwardOutcome,
-    PolicyApproval,
     AutomaticCarryForwardReceipt,
     PolicyRun,
     Project,
 )
 from corridor.operative_support import UnsafeSupportTransfer
-from corridor.principals import (
-    HumanPrincipal,
-    InvalidHumanPrincipal,
-    require_human_principal,
-)
 from corridor.project_lock import lock_project
 from corridor.revision_comparison import (
     DEFAULT_MATCHER_CONFIG,
@@ -60,7 +50,7 @@ from corridor.supersession_review import (
 )
 
 
-POLICY_VERSION = "automatic-carry-forward-v1"
+POLICY_VERSION = "automatic-carry-forward-v2"
 MACHINE_ACTOR = audit.AUTOMATIC_CARRY_FORWARD_ACTOR
 ABSTENTION_REASON_VERSION = "automatic-carry-forward-abstentions-v1"
 OUTCOME_CARRIED = "carried"
@@ -150,15 +140,11 @@ class AutomaticCarryForwardResult:
 
 @dataclass(frozen=True)
 class AutomaticCarryForwardStatus:
-    """Current read-only policy and routing status for one project."""
+    """Current read-only released-policy and routing status for one project."""
 
     project_id: int
-    enabled: bool
-    policy_current: bool
-    policy_approval_id: int | None
-    policy_version: str | None
-    policy_sha256: str | None
-    approved_by: str | None
+    policy_version: str
+    policy_sha256: str
     carried_count: int
     eligible_count: int
     abstention_reason_version: str
@@ -234,144 +220,6 @@ def _effective_runtime(
     return runtime if runtime is not None else AutomaticCarryForwardRuntime.deployed()
 
 
-def authorize_automatic_carry_forward(
-    session: Session,
-    project_id: int,
-    principal: HumanPrincipal,
-    *,
-    _runtime: AutomaticCarryForwardRuntime | None = None,
-) -> PolicyApproval:
-    """Append and activate the current server-owned policy for one project."""
-
-    principal = require_human_principal(principal)
-    with session.begin_nested():
-        project = session.get(Project, project_id)
-        if project is None:
-            raise ValueError(f"project {project_id} does not exist")
-        session.flush()
-        lock_project(session, project_id)
-        session.expire_all()
-        if session.get(Project, project_id) is None:
-            raise ValueError(f"project {project_id} does not exist")
-
-        runtime = _effective_runtime(_runtime)
-        policy_json = _canonical_policy_json(runtime=runtime)
-        approval = PolicyApproval(
-            project_id=project_id,
-            family="automatic-carry-forward",
-            policy_version=POLICY_VERSION,
-            approved_by=principal.subject,
-            policy_json=policy_json,
-            policy_sha256=policy.canonical_sha256(policy_json),
-        )
-        session.add(approval)
-        session.flush([approval])
-
-        active = session.get(
-            ActiveAutomaticCarryForwardPolicy,
-            project_id,
-            populate_existing=True,
-        )
-        if active is None:
-            session.add(
-                ActiveAutomaticCarryForwardPolicy(
-                    project_id=project_id,
-                    policy_approval_id=approval.id,
-                )
-            )
-        else:
-            session.execute(
-                update(ActiveAutomaticCarryForwardPolicy)
-                .where(
-                    ActiveAutomaticCarryForwardPolicy.project_id
-                    == project_id
-                )
-                .values(
-                    policy_approval_id=approval.id,
-                    activated_at=func.now(),
-                )
-            )
-        audit.record(
-            session,
-            principal=principal,
-            action=audit.AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
-            entity_type=audit.PROJECT,
-            entity_id=project_id,
-            after={
-                "policy_approval_id": approval.id,
-                "policy_version": approval.policy_version,
-                "policy_sha256": approval.policy_sha256,
-            },
-        )
-        session.flush()
-        return approval
-
-
-def disable_automatic_carry_forward(
-    session: Session,
-    project_id: int,
-    principal: HumanPrincipal,
-) -> PolicyApproval | None:
-    """Remove only the active pointer; approvals and receipts remain history."""
-
-    principal = require_human_principal(principal)
-    with session.begin_nested():
-        project = session.get(Project, project_id)
-        if project is None:
-            raise ValueError(f"project {project_id} does not exist")
-        session.flush()
-        lock_project(session, project_id)
-        session.expire_all()
-        active = session.get(
-            ActiveAutomaticCarryForwardPolicy,
-            project_id,
-            populate_existing=True,
-        )
-        if active is None:
-            return None
-        approval = session.get(
-            PolicyApproval,
-            active.policy_approval_id,
-        )
-        session.execute(
-            delete(ActiveAutomaticCarryForwardPolicy).where(
-                ActiveAutomaticCarryForwardPolicy.project_id == project_id
-            )
-        )
-        audit.record(
-            session,
-            principal=principal,
-            action=audit.DISABLE_AUTOMATIC_CARRY_FORWARD,
-            entity_type=audit.PROJECT,
-            entity_id=project_id,
-            before={
-                "policy_approval_id": active.policy_approval_id,
-            },
-            after={"policy_approval_id": None},
-        )
-        return approval
-
-
-def active_carry_forward_policy(
-    session: Session,
-    project_id: int,
-) -> PolicyApproval | None:
-    """Return the explicitly active approval, never an inferred latest row."""
-
-    return session.scalar(
-        select(PolicyApproval)
-        .join(
-            ActiveAutomaticCarryForwardPolicy,
-            ActiveAutomaticCarryForwardPolicy.policy_approval_id
-            == PolicyApproval.id,
-        )
-        .where(
-            ActiveAutomaticCarryForwardPolicy.project_id == project_id,
-            PolicyApproval.project_id == project_id,
-        )
-    )
-
-
 def automatic_carry_forward_status(
     session: Session,
     project_id: int,
@@ -384,7 +232,8 @@ def automatic_carry_forward_status(
     if session.get(Project, project_id) is None:
         raise ValueError(f"project {project_id} does not exist")
     runtime = _effective_runtime(_runtime)
-    approval = active_carry_forward_policy(session, project_id)
+    policy_json = _canonical_policy_json(runtime=runtime)
+    policy_sha256 = policy.canonical_sha256(policy_json)
     carried_count, reason_counts = _durable_outcome_counts(session, project_id)
     durable_abstentions = _durable_abstention_identities(session, project_id)
     if worklist is None:
@@ -394,69 +243,37 @@ def automatic_carry_forward_status(
         abstention = _abstention(review, reason)
         if _abstention_identity(abstention) in durable_abstentions:
             return
-        reason_counts[abstention.reason] = (
-            reason_counts.get(abstention.reason, 0) + 1
-        )
+        reason_counts[abstention.reason] = reason_counts.get(abstention.reason, 0) + 1
 
-    if approval is None:
-        return AutomaticCarryForwardStatus(
+    edited_conclusion_reviews = tuple(
+        review
+        for review in worklist.ordinary
+        if review.dependency_id is not None
+        and review.reason == "admission_fields_changed"
+    )
+    for review in worklist.ordinary:
+        if review.dependency_id is None or review in edited_conclusion_reviews:
+            continue
+        count_if_new(review, _ordinary_reason(review))
+    eligible_count = 0
+    for review in worklist.reconfirmation + edited_conclusion_reviews:
+        _receipt, reason = _carry_one(
+            session,
             project_id=project_id,
-            enabled=False,
-            policy_current=False,
-            policy_approval_id=None,
-            policy_version=None,
-            policy_sha256=None,
-            approved_by=None,
-            carried_count=carried_count,
-            eligible_count=0,
-            abstention_reason_version=ABSTENTION_REASON_VERSION,
-            abstention_counts=dict(sorted(reason_counts.items())),
-    )
-
-    policy_current = _approval_is_current_policy(
-        session,
-        approval,
-        runtime=runtime,
-    )
-    if not policy_current:
-        for review in worklist.reviews:
-            if review.dependency_id is None:
-                continue
-            count_if_new(review, "comparison_policy_unapproved")
-        eligible_count = 0
-    else:
-        edited_conclusion_reviews = tuple(
-            review
-            for review in worklist.ordinary
-            if review.dependency_id is not None
-            and review.reason == "admission_fields_changed"
+            policy_json=policy_json,
+            policy_sha256=policy_sha256,
+            review=review,
+            assess_only=True,
         )
-        for review in worklist.ordinary:
-            if review.dependency_id is None or review in edited_conclusion_reviews:
-                continue
-            count_if_new(review, _ordinary_reason(review))
-        eligible_count = 0
-        for review in worklist.reconfirmation + edited_conclusion_reviews:
-            _receipt, reason = _carry_one(
-                session,
-                project_id=project_id,
-                approval=approval,
-                review=review,
-                assess_only=True,
-            )
-            if reason is None:
-                eligible_count += 1
-            else:
-                count_if_new(review, reason)
+        if reason is None:
+            eligible_count += 1
+        else:
+            count_if_new(review, reason)
 
     return AutomaticCarryForwardStatus(
         project_id=project_id,
-        enabled=True,
-        policy_current=policy_current,
-        policy_approval_id=approval.id,
-        policy_version=approval.policy_version,
-        policy_sha256=approval.policy_sha256,
-        approved_by=approval.approved_by,
+        policy_version=POLICY_VERSION,
+        policy_sha256=policy_sha256,
         carried_count=carried_count,
         eligible_count=eligible_count,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
@@ -473,8 +290,8 @@ def run_automatic_carry_forward(
     """Run one serialized, idempotent project batch with per-row savepoints."""
 
     runtime = _effective_runtime(_runtime)
-    if active_carry_forward_policy(session, project_id) is None:
-        return AutomaticCarryForwardResult(carried=(), abstentions=())
+    policy_json = _canonical_policy_json(runtime=runtime)
+    policy_sha256 = policy.canonical_sha256(policy_json)
 
     carried: list[AutomaticCarryForwardReceipt] = []
     abstentions: list[AutomaticCarryForwardAbstention] = []
@@ -482,31 +299,6 @@ def run_automatic_carry_forward(
         session.flush()
         lock_project(session, project_id)
         session.expire_all()
-        approval = active_carry_forward_policy(session, project_id)
-        if approval is None:
-            return AutomaticCarryForwardResult(carried=(), abstentions=())
-        if not _approval_is_current_policy(
-            session,
-            approval,
-            runtime=runtime,
-        ):
-            worklist = build_reviewer_worklist(session, project_id)
-            result = AutomaticCarryForwardResult(
-                carried=(),
-                abstentions=tuple(
-                    _abstention(review, "comparison_policy_unapproved")
-                    for review in worklist.reviews
-                    if review.dependency_id is not None
-                ),
-            )
-            _record_run_outcomes(
-                session,
-                project_id=project_id,
-                approval=approval,
-                result=result,
-            )
-            return result
-
         worklist = build_reviewer_worklist(session, project_id)
         edited_conclusion_reviews = tuple(
             review
@@ -522,9 +314,7 @@ def run_automatic_carry_forward(
             )
         )
 
-        carry_candidates = (
-            worklist.reconfirmation + edited_conclusion_reviews
-        )
+        carry_candidates = worklist.reconfirmation + edited_conclusion_reviews
         for seed in sorted(carry_candidates, key=_review_key):
             with session.begin_nested():
                 current = _current_review(session, project_id, seed)
@@ -534,7 +324,8 @@ def run_automatic_carry_forward(
                 receipt, reason = _carry_one(
                     session,
                     project_id=project_id,
-                    approval=approval,
+                    policy_json=policy_json,
+                    policy_sha256=policy_sha256,
                     review=current,
                 )
                 if reason is not None:
@@ -550,7 +341,7 @@ def run_automatic_carry_forward(
         _record_run_outcomes(
             session,
             project_id=project_id,
-            approval=approval,
+            policy_sha256=policy_sha256,
             result=result,
         )
         return result
@@ -565,7 +356,8 @@ def _carry_one(
     session: Session,
     *,
     project_id: int,
-    approval: PolicyApproval,
+    policy_json: dict,
+    policy_sha256: str,
     review: SupersessionReview,
     assess_only: bool = False,
 ) -> tuple[AutomaticCarryForwardReceipt | None, str | None]:
@@ -574,12 +366,8 @@ def _carry_one(
             session,
             project_id=project_id,
             review=review,
-            expected_matcher_version=approval.policy_json.get(
-                "matcher_version"
-            ),
-            expected_matcher_config_sha256=approval.policy_json.get(
-                "matcher_config_sha256"
-            ),
+            expected_matcher_version=policy_json.get("matcher_version"),
+            expected_matcher_config_sha256=policy_json.get("matcher_config_sha256"),
             require_exact_admitted_fields=True,
         )
     except SupportTransferProofRefusal as exc:
@@ -590,7 +378,8 @@ def _carry_one(
 
     try:
         transfer = apply_proven_support_transfer(
-            session, proof,
+            session,
+            proof,
             designated_by=MACHINE_ACTOR,
         )
     except UnsafeSupportTransfer:
@@ -598,8 +387,8 @@ def _carry_one(
     new_evidence = transfer.evidence
     before_receipt = transfer.before_json
     after_receipt = {
-        "policy_approval_id": approval.id,
-        "policy_sha256": approval.policy_sha256,
+        "policy_version": POLICY_VERSION,
+        "policy_sha256": policy_sha256,
         "comparison_id": proof.comparison.id,
         "finding_id": proof.finding.id,
         "predecessor_candidate_id": review.predecessor_candidate_id,
@@ -624,7 +413,9 @@ def _carry_one(
     receipt = AutomaticCarryForwardReceipt(
         audit_log_id=audit_entry.id,
         project_id=project_id,
-        policy_approval_id=approval.id,
+        policy_approval_id=None,
+        policy_version=POLICY_VERSION,
+        policy_sha256=policy_sha256,
         dependency_id=proof.dependency.id,
         comparison_id=proof.comparison.id,
         finding_id=proof.finding.id,
@@ -671,51 +462,12 @@ def _safety_source_paths() -> tuple[tuple[str, Path], ...]:
             Path(__file__).parent
             / "migrations/versions/9d4f2a7c1e83_add_automatic_carry_forward.py",
         ),
+        (
+            "corridor.migrations.f315b4c6d8e0",
+            Path(__file__).parent
+            / "migrations/versions/f315b4c6d8e0_carry_forward_is_corridor_managed.py",
+        ),
     )
-
-
-def _approval_is_current_policy(
-    session: Session,
-    approval: PolicyApproval,
-    *,
-    runtime: AutomaticCarryForwardRuntime,
-) -> bool:
-    try:
-        HumanPrincipal(approval.approved_by)
-    except InvalidHumanPrincipal:
-        return False
-    expected = _canonical_policy_json(runtime=runtime)
-    if not (
-        approval.policy_version == POLICY_VERSION
-        and approval.policy_json == expected
-        and approval.policy_sha256 == policy.canonical_sha256(expected)
-    ):
-        return False
-    authorization_entries = tuple(
-        session.scalars(
-            select(AuditLog).where(
-                AuditLog.entity_type == audit.PROJECT,
-                AuditLog.entity_id == approval.project_id,
-                AuditLog.action
-                == audit.AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
-            )
-        ).all()
-    )
-    expected_after = {
-        "policy_approval_id": approval.id,
-        "policy_version": approval.policy_version,
-        "policy_sha256": approval.policy_sha256,
-    }
-    matches = tuple(
-        entry
-        for entry in authorization_entries
-        if (
-            entry.actor == approval.approved_by
-            and entry.human_principal == approval.approved_by
-            and entry.after_json == expected_after
-        )
-    )
-    return len(matches) == 1
 
 
 def _durable_outcome_counts(
@@ -748,9 +500,7 @@ def _durable_outcome_counts(
         ).all()
     )
     return carried_count, {
-        reason: count
-        for reason, count in sorted(abstentions)
-        if reason is not None
+        reason: count for reason, count in sorted(abstentions) if reason is not None
     }
 
 
@@ -797,7 +547,7 @@ def _record_run_outcomes(
     session: Session,
     *,
     project_id: int,
-    approval: PolicyApproval,
+    policy_sha256: str,
     result: AutomaticCarryForwardResult,
 ) -> PolicyRun:
     existing_carried_receipt_ids = frozenset(
@@ -811,9 +561,7 @@ def _record_run_outcomes(
         ).all()
         if receipt_audit_log_id is not None
     )
-    existing_abstention_identities = _durable_abstention_identities(
-        session, project_id
-    )
+    existing_abstention_identities = _durable_abstention_identities(session, project_id)
     seen_carried_receipt_ids: set[int] = set()
     new_receipts_list: list[AutomaticCarryForwardReceipt] = []
     for receipt in result.carried:
@@ -842,9 +590,9 @@ def _record_run_outcomes(
     run = PolicyRun(
         project_id=project_id,
         family="automatic-carry-forward",
-        policy_approval_id=approval.id,
-        policy_version=approval.policy_version,
-        policy_sha256=approval.policy_sha256,
+        policy_approval_id=None,
+        policy_version=POLICY_VERSION,
+        policy_sha256=policy_sha256,
         abstention_reason_version=ABSTENTION_REASON_VERSION,
         applied_count=len(new_receipts),
         abstained_count=len(new_abstentions),
@@ -856,7 +604,7 @@ def _record_run_outcomes(
             AutomaticCarryForwardOutcome(
                 run_id=run.id,
                 project_id=project_id,
-                policy_approval_id=approval.id,
+                policy_approval_id=None,
                 dependency_id=receipt.dependency_id,
                 outcome=OUTCOME_CARRIED,
                 reason=None,
@@ -873,7 +621,7 @@ def _record_run_outcomes(
             AutomaticCarryForwardOutcome(
                 run_id=run.id,
                 project_id=project_id,
-                policy_approval_id=approval.id,
+                policy_approval_id=None,
                 dependency_id=abstention.dependency_id,
                 outcome=OUTCOME_ABSTAINED,
                 reason=abstention.reason,
@@ -889,8 +637,6 @@ def _record_run_outcomes(
     return run
 
 
-
-
 def _current_review(
     session: Session,
     project_id: int,
@@ -901,8 +647,7 @@ def _current_review(
         for review in build_reviewer_worklist(session, project_id).reviews
         if (
             review.dependency_id == seed.dependency_id
-            and review.predecessor_document_id
-            == seed.predecessor_document_id
+            and review.predecessor_document_id == seed.predecessor_document_id
             and review.successor_candidate_id == seed.successor_candidate_id
             and review.comparison_id == seed.comparison_id
             and review.finding_id == seed.finding_id

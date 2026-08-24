@@ -217,7 +217,6 @@ def test_database_refuses_reassigning_direct_evidence_with_a_readiness_role(
         dep_type="utility_relocation",
         title="Second owner",
         external_org_id=first.external_org_id,
-        status="identified",
     )
     session.add(second)
     session.flush()

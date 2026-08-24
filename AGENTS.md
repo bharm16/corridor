@@ -65,4 +65,4 @@ The five canonical triage roles, each label string equal to its name. See `docs/
 
 ### Domain docs
 
-Single-context — `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Multi-context — start with `CONTEXT-MAP.md`, then read the mapped Project Record or Corridor Operations glossary and the relevant `docs/adr/`. See `docs/agents/domain.md`.

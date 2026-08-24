@@ -1,13 +1,13 @@
 """Derive the coordinator's one-item-per-statement work list.
 
-The Ledger keeps all External Party facts and the exceptions reader keeps its
-Dependency facts.  Neither can safely stand in for the coordinator's work:
+The Project Record keeps all External Party facts and the Ledger keeps its
+Dependencies. Neither can safely stand in for the coordinator's work:
 an unknown-scope Commitment is real work but does not belong to an invented
 Dependency.  This module is the public read seam for that gap.  It groups
 current statement facts by Commitment Lineage, preserves timing precision, and
 returns derived Attention Reasons without storing flags or copying facts.  It
 also uses source-visible Candidate proposals only to select a bounded set for
-human review; those cards remain explicitly outside the Ledger, and every
+human review; those cards remain explicitly outside the Project Record, and every
 other actionable proposal stays searchable in the same read model.
 """
 
@@ -31,14 +31,14 @@ from corridor.models import (
     Candidate,
     CommitmentLineage,
     Dependency,
-    DependencyEvent,
-    DependencyEventEvidence,
-    DependencyEventScopeDecision,
-    DependencyEventTiming,
+    ExternalPartyStatement,
+    StatementEvidence,
+    CommitmentScopeDecision,
+    StatementTimingRecord,
     Document,
     EvidenceLink,
     EventAdmissionOutcome,
-    ExternalOrg,
+    ExternalParty,
     PolicyRun,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
@@ -176,34 +176,36 @@ def build_work_list(
     closed_lineages = _closed_commitment_lineages(session, project_id)
     rows = session.execute(
         select(
-            DependencyEvent,
-            DependencyEventTiming,
-            DependencyEventScopeDecision,
+            ExternalPartyStatement,
+            StatementTimingRecord,
+            CommitmentScopeDecision,
             CommitmentLineage,
         )
         .join(
-            DependencyEventTiming,
-            DependencyEventTiming.event_id == DependencyEvent.id,
+            StatementTimingRecord,
+            StatementTimingRecord.event_id == ExternalPartyStatement.id,
         )
         .join(
-            DependencyEventScopeDecision,
-            DependencyEventScopeDecision.event_id == DependencyEvent.id,
+            CommitmentScopeDecision,
+            CommitmentScopeDecision.event_id == ExternalPartyStatement.id,
         )
         .join(
             CommitmentLineage,
-            CommitmentLineage.id == DependencyEvent.commitment_lineage_id,
+            CommitmentLineage.id == ExternalPartyStatement.commitment_lineage_id,
         )
         .where(
-            DependencyEvent.project_id == project_id,
-            DependencyEvent.event_type.in_(("commitment", "committed_date_change")),
-            DependencyEvent.attribution_state == "resolved",
-            DependencyEvent.stated_external_org_id.is_not(None),
-            DependencyEvent.commitment_lineage_id.is_not(None),
-            DependencyEventTiming.kind == "new",
-            current_statement_event_filter(DependencyEvent.id),
+            ExternalPartyStatement.project_id == project_id,
+            ExternalPartyStatement.event_type.in_(
+                ("commitment", "committed_date_change")
+            ),
+            ExternalPartyStatement.attribution_state == "resolved",
+            ExternalPartyStatement.stated_external_org_id.is_not(None),
+            ExternalPartyStatement.commitment_lineage_id.is_not(None),
+            StatementTimingRecord.kind == "new",
+            current_statement_event_filter(ExternalPartyStatement.id),
             current_scope_decision_filter(),
         )
-        .order_by(DependencyEvent.id)
+        .order_by(ExternalPartyStatement.id)
     ).all()
 
     candidate_ids = _source_candidate_ids(session, project_id)
@@ -233,7 +235,9 @@ def build_work_list(
             reason_codes.append("unknown_scope")
         if lineage.next_action is not None and is_closed:
             reason_codes.append("external_closure_follow_up")
-        if not lineage.internal_owner and (not is_closed or lineage.next_action is not None):
+        if not lineage.internal_owner and (
+            not is_closed or lineage.next_action is not None
+        ):
             reason_codes.append("missing_internal_owner")
         if lineage.next_action:
             if lineage.action_due_date is None:
@@ -252,7 +256,9 @@ def build_work_list(
             candidate_id=None,
             source_candidate_id=candidate_ids.get(event.commitment_lineage_id),
             timing_text=_display_timing(timing),
-            attention_reason_codes=tuple(sorted(reason_codes, key=_REASON_ORDER.__getitem__)),
+            attention_reason_codes=tuple(
+                sorted(reason_codes, key=_REASON_ORDER.__getitem__)
+            ),
             past_due=past_due,
             deferral_reason=lineage.deferral_reason,
             return_date=lineage.deferral_return_date,
@@ -289,9 +295,7 @@ def build_work_list(
     if backlog_pages:
         resolved_backlog_page = min(resolved_backlog_page, backlog_pages)
     backlog_start = (resolved_backlog_page - 1) * WORK_BACKLOG_PAGE_SIZE
-    backlog_page_items = backlog[
-        backlog_start : backlog_start + WORK_BACKLOG_PAGE_SIZE
-    ]
+    backlog_page_items = backlog[backlog_start : backlog_start + WORK_BACKLOG_PAGE_SIZE]
     candidate_backlog = candidate_leads[open_slots:] + remaining_candidates
     normalized_search = " ".join(candidate_search.split())
     if normalized_search:
@@ -330,8 +334,8 @@ def build_work_list(
 
 
 def _past_due(
-    event: DependencyEvent,
-    timing: DependencyEventTiming,
+    event: ExternalPartyStatement,
+    timing: StatementTimingRecord,
     evaluated_on: date,
     source_evidence_link_ids: tuple[int, ...],
 ) -> PastDueCommitment | None:
@@ -352,21 +356,17 @@ def _past_due(
     )
 
 
-def party_commitment_due_after(timing: DependencyEventTiming) -> date | None:
+def party_commitment_due_after(timing: StatementTimingRecord) -> date | None:
     """Return the last supported day before a party-level Commitment is due.
 
     Exact-day and month timing can establish a boundary; approximate and
     legacy-unknown wording cannot.  Report readers use this same public rule
     so a report and the coordinator work list never disagree about overdue.
     """
-    return (
-        timing.end_date
-        if timing.precision in ("day", "month")
-        else None
-    )
+    return timing.end_date if timing.precision in ("day", "month") else None
 
 
-def _display_timing(timing: DependencyEventTiming) -> str:
+def _display_timing(timing: StatementTimingRecord) -> str:
     if timing.precision == "month" and timing.start_date is not None:
         return timing.start_date.strftime("%B %Y")
     return timing.text
@@ -425,13 +425,11 @@ def _statement_changed(
     return (
         (
             decision.observed_statement_event_id is not None
-            and decision.observed_statement_event_id
-            != observation.statement_event_id
+            and decision.observed_statement_event_id != observation.statement_event_id
         )
         or (
             decision.observed_scope_decision_id is not None
-            and decision.observed_scope_decision_id
-            != observation.scope_decision_id
+            and decision.observed_scope_decision_id != observation.scope_decision_id
         )
         or (
             decision.observed_milestone_impact_decision_id is not None
@@ -450,7 +448,6 @@ def _dependency_items(
         .where(
             Dependency.project_id == project_id,
             Dependency.dismissed_at.is_(None),
-            Dependency.status != "closed",
         )
         .order_by(Dependency.id)
     ).all()
@@ -461,12 +458,14 @@ def _dependency_items(
     }
     external_org_names = dict(
         session.execute(
-            select(ExternalOrg.id, ExternalOrg.name).where(
-                ExternalOrg.id.in_(external_org_ids)
+            select(ExternalParty.id, ExternalParty.name).where(
+                ExternalParty.id.in_(external_org_ids)
             )
         ).all()
     )
-    disputed = contradicted_fields(session, [dependency.id for dependency in dependencies])
+    disputed = contradicted_fields(
+        session, [dependency.id for dependency in dependencies]
+    )
     items = []
     for dependency in dependencies:
         reason_codes: list[str] = []
@@ -509,13 +508,13 @@ def _dependency_items(
 def _closed_commitment_lineages(session: Session, project_id: int) -> frozenset[int]:
     """Only a provenance-backed closure of this exact lineage ends past due work."""
     closures = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.project_id == project_id,
-            DependencyEvent.event_type == "closure",
-            DependencyEvent.closes_commitment_lineage_id.is_not(None),
-            DependencyEvent.attribution_state == "resolved",
-            DependencyEvent.stated_external_org_id.is_not(None),
-            current_statement_event_filter(DependencyEvent.id),
+        select(ExternalPartyStatement).where(
+            ExternalPartyStatement.project_id == project_id,
+            ExternalPartyStatement.event_type == "closure",
+            ExternalPartyStatement.closes_commitment_lineage_id.is_not(None),
+            ExternalPartyStatement.attribution_state == "resolved",
+            ExternalPartyStatement.stated_external_org_id.is_not(None),
+            current_statement_event_filter(ExternalPartyStatement.id),
         )
     ).all()
     return frozenset(
@@ -581,20 +580,20 @@ def _statement_work_state(session: Session, rows) -> _StatementWorkState:
     if event_ids:
         evidence_rows = session.execute(
             select(
-                DependencyEventEvidence.event_id,
-                DependencyEventEvidence.evidence_link_id,
+                StatementEvidence.event_id,
+                StatementEvidence.evidence_link_id,
             )
             .join(
                 EvidenceLink,
-                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+                EvidenceLink.id == StatementEvidence.evidence_link_id,
             )
             .where(
-                DependencyEventEvidence.event_id.in_(event_ids),
+                StatementEvidence.event_id.in_(event_ids),
                 EvidenceLink.verified.is_(True),
             )
             .order_by(
-                DependencyEventEvidence.event_id,
-                DependencyEventEvidence.evidence_link_id,
+                StatementEvidence.event_id,
+                StatementEvidence.evidence_link_id,
             )
         ).all()
         for event_id, evidence_link_id in evidence_rows:
@@ -611,7 +610,9 @@ def _statement_work_state(session: Session, rows) -> _StatementWorkState:
             receipt.next_action_decision_id: receipt
             for receipt in session.scalars(
                 select(StatementCoordinationReceipt).where(
-                    StatementCoordinationReceipt.next_action_decision_id.in_(decision_ids)
+                    StatementCoordinationReceipt.next_action_decision_id.in_(
+                        decision_ids
+                    )
                 )
             ).all()
         }
@@ -630,7 +631,7 @@ def _statement_work_state(session: Session, rows) -> _StatementWorkState:
 
 
 def _is_provenance_backed_closure(
-    session: Session, closure: DependencyEvent
+    session: Session, closure: ExternalPartyStatement
 ) -> bool:
     """A cited closure must still match its registered page and quote exactly."""
     if closure.source_kind == "verbal":
@@ -640,11 +641,11 @@ def _is_provenance_backed_closure(
     evidence_rows = session.execute(
         select(EvidenceLink)
         .join(
-            DependencyEventEvidence,
-            DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+            StatementEvidence,
+            StatementEvidence.evidence_link_id == EvidenceLink.id,
         )
         .where(
-            DependencyEventEvidence.event_id == closure.id,
+            StatementEvidence.event_id == closure.id,
             EvidenceLink.verified.is_(True),
         )
     ).scalars()
@@ -669,9 +670,7 @@ def _candidate_items(
     session: Session, project_id: int
 ) -> tuple[tuple[WorkItem, ...], tuple[WorkItem, ...]]:
     """Use verified proposal metadata only to choose what a human reads first."""
-    waiting_items = waiting_statements(
-        session, project_id, include_attachability=False
-    )
+    waiting_items = waiting_statements(session, project_id, include_attachability=False)
     document_ids = {
         waiting["candidate"].source_document_id for waiting in waiting_items
     }

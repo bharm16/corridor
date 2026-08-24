@@ -44,13 +44,13 @@ from corridor.models import (
     CommitmentLineage,
     AuditLog,
     Dependency,
-    DependencyEvent,
-    DependencyEventEvidence,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
+    ExternalPartyStatement,
+    StatementEvidence,
+    CommitmentScopeMembership,
+    CommitmentScopeDecision,
     Document,
     EvidenceLink,
-    ExternalOrg,
+    ExternalParty,
     EventAdmissionOutcome,
     PolicyRun,
     ProjectRosterEntry,
@@ -60,7 +60,11 @@ from corridor.models import (
     StatementCoordinationReversalEffect,
     WorkDecisionMilestoneImpact,
 )
-from corridor.principals import HumanPrincipal, InvalidHumanPrincipal, require_human_principal
+from corridor.principals import (
+    HumanPrincipal,
+    InvalidHumanPrincipal,
+    require_human_principal,
+)
 from corridor.project_lock import lock_project
 from corridor.supersession import actionable_candidate_query
 from corridor.statement_lifecycle import (
@@ -123,10 +127,10 @@ class AdmittedStatementEvidence:
 class AdmittedStatementCoordination:
     """Accepted statement facts plus exactly one residual human decision."""
 
-    event: DependencyEvent
+    event: ExternalPartyStatement
     affected_party_name: str
     lineage: CommitmentLineage
-    scope: DependencyEventScopeDecision
+    scope: CommitmentScopeDecision
     outcome: EventAdmissionOutcome
     policy_run: PolicyRun
     evidence: tuple[AdmittedStatementEvidence, ...]
@@ -197,7 +201,7 @@ class StatementCoordinationResult:
     """The separately attributable rows created by one grouped Save."""
 
     receipt: StatementCoordinationReceipt
-    event: DependencyEvent
+    event: ExternalPartyStatement
     internal_owner_decision: WorkDecision
     next_action_decision: WorkDecision
     milestone_impact_decision: WorkDecision | None
@@ -271,7 +275,7 @@ def read_admitted_statement_coordination(
     ):
         return None
     event = observation.event
-    admitted_event = session.get(DependencyEvent, outcome.dependency_event_id)
+    admitted_event = session.get(ExternalPartyStatement, outcome.dependency_event_id)
     if (
         admitted_event is None
         or admitted_event.project_id != project_id
@@ -286,12 +290,12 @@ def read_admitted_statement_coordination(
     if lineage is None or lineage.project_id != project_id:
         return None
     scope = observation.scope_decision
-    affected_party = session.get(ExternalOrg, event.affected_external_org_id)
+    affected_party = session.get(ExternalParty, event.affected_external_org_id)
     scope_dependency_ids = tuple(
         session.scalars(
-            select(DependencyEventScope.dependency_id)
-            .where(DependencyEventScope.scope_decision_id == scope.id)
-            .order_by(DependencyEventScope.dependency_id)
+            select(CommitmentScopeMembership.dependency_id)
+            .where(CommitmentScopeMembership.scope_decision_id == scope.id)
+            .order_by(CommitmentScopeMembership.dependency_id)
         ).all()
     )
     scope_dependencies = tuple(
@@ -307,18 +311,18 @@ def read_admitted_statement_coordination(
     evidence = tuple(
         AdmittedStatementEvidence(document.filename, link.page_no, link.quote)
         for _membership, link, document in session.execute(
-            select(DependencyEventEvidence, EvidenceLink, Document)
+            select(StatementEvidence, EvidenceLink, Document)
             .join(
                 EvidenceLink,
-                EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+                EvidenceLink.id == StatementEvidence.evidence_link_id,
             )
             .join(Document, Document.id == EvidenceLink.document_id)
             .where(
-                DependencyEventEvidence.event_id == event.id,
+                StatementEvidence.event_id == event.id,
                 EvidenceLink.verified.is_(True),
                 Document.project_id == project_id,
             )
-            .order_by(DependencyEventEvidence.evidence_link_id)
+            .order_by(StatementEvidence.evidence_link_id)
         ).all()
     )
     roster = tuple(
@@ -342,13 +346,9 @@ def read_admitted_statement_coordination(
     authority_gap = None
     if not evidence:
         next_decision = "blocked"
-        authority_gap = (
-            "Verified statement Evidence is unavailable; residual decisions remain pending."
-        )
+        authority_gap = "Verified statement Evidence is unavailable; residual decisions remain pending."
     elif next_decision == "owner" and not roster:
-        authority_gap = (
-            "No active project roster choices are available; Internal Owner remains pending."
-        )
+        authority_gap = "No active project roster choices are available; Internal Owner remains pending."
     return AdmittedStatementCoordination(
         event=event,
         affected_party_name=(
@@ -466,9 +466,7 @@ def coordinate_statement(
             _check_expected_predecessors(session, candidate.project_id, draft.expected)
 
             candidate_evidence = _candidate_evidence(session, candidate)
-            all_evidence = _deduplicate_evidence(
-                (*candidate_evidence, *draft.evidence)
-            )
+            all_evidence = _deduplicate_evidence((*candidate_evidence, *draft.evidence))
             _require_evidence_support(draft, all_evidence)
             _require_plan_shape(draft)
             party_resolution = _guided_party_resolution(
@@ -495,7 +493,9 @@ def coordinate_statement(
             )
             scope_decision = _current_scope_decision(session, event.id)
             if scope_decision is None:
-                raise RuntimeError("the accepted statement did not receive a scope decision")
+                raise RuntimeError(
+                    "the accepted statement did not receive a scope decision"
+                )
 
             subject = CoordinationSubject.statement(event.commitment_lineage_id)
             internal_owner_decision = assign_internal_owner(
@@ -603,16 +603,22 @@ def undo_statement_coordination(
     recorder = require_human_principal(principal)
     receipt = session.get(StatementCoordinationReceipt, receipt_id)
     if receipt is None:
-        raise StatementCoordinationUndoRefusal("the guided Save receipt no longer exists")
+        raise StatementCoordinationUndoRefusal(
+            "the guided Save receipt no longer exists"
+        )
     candidate = session.get(Candidate, receipt.candidate_id)
     if candidate is None:
-        raise StatementCoordinationUndoRefusal("the guided Save Candidate no longer exists")
+        raise StatementCoordinationUndoRefusal(
+            "the guided Save Candidate no longer exists"
+        )
 
     try:
         with session.begin_nested():
             lock_project(session, candidate.project_id)
             _require_undoable_save(session, receipt, candidate)
-            disposition = session.get(CandidateDisposition, receipt.candidate_disposition_id)
+            disposition = session.get(
+                CandidateDisposition, receipt.candidate_disposition_id
+            )
             if disposition is None:
                 raise StatementCoordinationUndoRefusal(
                     "this historical guided Save has no reversible Candidate disposition"
@@ -645,7 +651,9 @@ def undo_statement_coordination(
             candidate.adjudicated_at = None
             lineage = session.get(CommitmentLineage, receipt.commitment_lineage_id)
             if lineage is None:
-                raise StatementCoordinationUndoRefusal("the grouped Commitment Lineage no longer exists")
+                raise StatementCoordinationUndoRefusal(
+                    "the grouped Commitment Lineage no longer exists"
+                )
             lineage.internal_owner = None
             lineage.next_action = None
             lineage.action_due_date = None
@@ -658,8 +666,9 @@ def undo_statement_coordination(
 
             dependency_ids = tuple(
                 session.scalars(
-                    select(DependencyEventScope.dependency_id).where(
-                        DependencyEventScope.scope_decision_id == receipt.scope_decision_id
+                    select(CommitmentScopeMembership.dependency_id).where(
+                        CommitmentScopeMembership.scope_decision_id
+                        == receipt.scope_decision_id
                     )
                 ).all()
             )
@@ -677,11 +686,14 @@ def _require_undoable_save(
     receipt: StatementCoordinationReceipt,
     candidate: Candidate,
 ) -> None:
-    if session.scalar(
-        select(StatementCoordinationReversal.id).where(
-            StatementCoordinationReversal.receipt_id == receipt.id
+    if (
+        session.scalar(
+            select(StatementCoordinationReversal.id).where(
+                StatementCoordinationReversal.receipt_id == receipt.id
+            )
         )
-    ) is not None:
+        is not None
+    ):
         raise StatementCoordinationUndoRefusal("this guided Save was already undone")
     disposition = current_candidate_disposition(session, candidate.id)
     if (
@@ -734,23 +746,23 @@ def _require_no_later_downstream_act(
         )
     dependency_ids = tuple(
         session.scalars(
-            select(DependencyEventScope.dependency_id).where(
-                DependencyEventScope.scope_decision_id == receipt.scope_decision_id
+            select(CommitmentScopeMembership.dependency_id).where(
+                CommitmentScopeMembership.scope_decision_id == receipt.scope_decision_id
             )
         ).all()
     )
     later_closure = (
         session.scalar(
-            select(DependencyEvent.id)
+            select(ExternalPartyStatement.id)
             .join(
-                DependencyEventScope,
-                DependencyEventScope.event_id == DependencyEvent.id,
+                CommitmentScopeMembership,
+                CommitmentScopeMembership.event_id == ExternalPartyStatement.id,
             )
             .where(
-                DependencyEvent.project_id == lineage.project_id,
-                DependencyEvent.event_type == "closure",
-                DependencyEventScope.dependency_id.in_(dependency_ids),
-                DependencyEvent.id > receipt.dependency_event_id,
+                ExternalPartyStatement.project_id == lineage.project_id,
+                ExternalPartyStatement.event_type == "closure",
+                CommitmentScopeMembership.dependency_id.in_(dependency_ids),
+                ExternalPartyStatement.id > receipt.dependency_event_id,
             )
             .limit(1)
         )
@@ -807,9 +819,7 @@ def _require_no_later_audited_save_reference(
         )
 
 
-def _audit_references_save(
-    value: object, referenced_ids: dict[str, set[int]]
-) -> bool:
+def _audit_references_save(value: object, referenced_ids: dict[str, set[int]]) -> bool:
     """Find a typed exact Save reference in append-only audit detail."""
     if isinstance(value, dict):
         return any(
@@ -843,7 +853,9 @@ def _report_published_scoped_dependency(
     for report in reports:
         published_ids = {
             value.get("id")
-            for value in ((report.snapshot_json or {}).get("dependencies") or {}).values()
+            for value in (
+                (report.snapshot_json or {}).get("dependencies") or {}
+            ).values()
             if isinstance(value, dict)
         }
         if published_ids.intersection(dependency_ids):
@@ -893,10 +905,10 @@ def correct_statement_scope(
     correction: StatementScopeCorrection,
     *,
     principal: HumanPrincipal,
-) -> DependencyEventScopeDecision:
+) -> CommitmentScopeDecision:
     """Append one scope correction without changing the External Party fact."""
     recorder = require_human_principal(principal)
-    event = session.get(DependencyEvent, correction.event_id)
+    event = session.get(ExternalPartyStatement, correction.event_id)
     if event is None:
         raise StatementCoordinationRefusal("the statement to correct no longer exists")
     try:
@@ -909,13 +921,14 @@ def correct_statement_scope(
                     "the statement changed; reload the newer state"
                 )
             predecessor = _current_scope_decision(session, event.id)
-            if predecessor is None or predecessor.id != correction.expected_scope_decision_id:
+            if (
+                predecessor is None
+                or predecessor.id != correction.expected_scope_decision_id
+            ):
                 raise StaleStatementCoordination(
                     "the statement scope changed; reload the newer state"
                 )
-            if _scope_correction_is_noop(
-                session, event, predecessor, correction.scope
-            ):
+            if _scope_correction_is_noop(session, event, predecessor, correction.scope):
                 raise StatementCoordinationRefusal(
                     "Commitment Scope already has this exact value; "
                     "no correction was recorded"
@@ -947,8 +960,8 @@ def correct_statement_scope(
 
 def _scope_correction_is_noop(
     session: Session,
-    event: DependencyEvent,
-    predecessor: DependencyEventScopeDecision,
+    event: ExternalPartyStatement,
+    predecessor: CommitmentScopeDecision,
     requested: StatementScope,
 ) -> bool:
     """Refuse an attributable scope receipt that changes no scope state."""
@@ -956,9 +969,9 @@ def _scope_correction_is_noop(
         return False
     current_ids = tuple(
         session.scalars(
-            select(DependencyEventScope.dependency_id)
-            .where(DependencyEventScope.scope_decision_id == predecessor.id)
-            .order_by(DependencyEventScope.dependency_id)
+            select(CommitmentScopeMembership.dependency_id)
+            .where(CommitmentScopeMembership.scope_decision_id == predecessor.id)
+            .order_by(CommitmentScopeMembership.dependency_id)
         ).all()
     )
     if requested.mode == "unknown":
@@ -973,7 +986,6 @@ def _scope_correction_is_noop(
                     Dependency.project_id == event.project_id,
                     Dependency.external_org_id == event.affected_external_org_id,
                     Dependency.dismissed_at.is_(None),
-                    Dependency.status != "closed",
                 )
                 .order_by(Dependency.id)
             ).all()
@@ -988,10 +1000,10 @@ def correct_statement_facts(
     draft: StatementFactCorrectionDraft,
     *,
     principal: HumanPrincipal,
-) -> DependencyEvent:
+) -> ExternalPartyStatement:
     """Append a supported statement successor while retaining the plan lineage."""
     recorder = require_human_principal(principal)
-    predecessor = session.get(DependencyEvent, draft.expected_statement_event_id)
+    predecessor = session.get(ExternalPartyStatement, draft.expected_statement_event_id)
     if predecessor is None:
         raise StatementCoordinationRefusal("the statement to correct no longer exists")
     try:
@@ -1007,16 +1019,22 @@ def correct_statement_facts(
                 )
             scope_decision = _current_scope_decision(session, predecessor.id)
             if scope_decision is None:
-                raise StatementCoordinationRefusal("the statement has no current Commitment Scope")
+                raise StatementCoordinationRefusal(
+                    "the statement has no current Commitment Scope"
+                )
             scope_ids = tuple(
                 session.scalars(
-                    select(DependencyEventScope.dependency_id)
-                    .where(DependencyEventScope.scope_decision_id == scope_decision.id)
-                    .order_by(DependencyEventScope.dependency_id)
+                    select(CommitmentScopeMembership.dependency_id)
+                    .where(
+                        CommitmentScopeMembership.scope_decision_id == scope_decision.id
+                    )
+                    .order_by(CommitmentScopeMembership.dependency_id)
                 ).all()
             )
             scope = StatementScope(
-                "unknown" if scope_decision.scope_mode == "unknown" else "carried_forward",
+                "unknown"
+                if scope_decision.scope_mode == "unknown"
+                else "carried_forward",
                 scope_ids,
             )
             evidence = _deduplicate_evidence(draft.evidence)
@@ -1079,12 +1097,16 @@ def mark_statement_not_relevant(
         raise StatementCoordinationRefusal("Not Relevant needs explicit confirmation")
     candidate = session.get(Candidate, candidate_id)
     if candidate is None or candidate.kind != "event":
-        raise StatementCoordinationRefusal("only an Unplaced Statement can be marked Not Relevant")
+        raise StatementCoordinationRefusal(
+            "only an Unplaced Statement can be marked Not Relevant"
+        )
     try:
         with session.begin_nested():
             lock_project(session, candidate.project_id)
             session.refresh(candidate)
-            if candidate.state != "pending" or current_candidate_disposition(session, candidate.id):
+            if candidate.state != "pending" or current_candidate_disposition(
+                session, candidate.id
+            ):
                 raise StaleStatementCoordination(
                     "the statement Candidate changed; reload the newer state"
                 )
@@ -1139,15 +1161,23 @@ def restore_statement_not_relevant(
     recorder = require_human_principal(principal)
     disposition = session.get(CandidateDisposition, disposition_id)
     if disposition is None or disposition.disposition != "not_relevant":
-        raise StatementCoordinationRefusal("the Not Relevant disposition no longer exists")
+        raise StatementCoordinationRefusal(
+            "the Not Relevant disposition no longer exists"
+        )
     candidate = session.get(Candidate, disposition.candidate_id)
     if candidate is None:
-        raise StatementCoordinationRefusal("the Not Relevant Candidate no longer exists")
+        raise StatementCoordinationRefusal(
+            "the Not Relevant Candidate no longer exists"
+        )
     try:
         with session.begin_nested():
             lock_project(session, candidate.project_id)
             current = current_candidate_disposition(session, candidate.id)
-            if candidate.state != "rejected" or current is None or current.id != disposition.id:
+            if (
+                candidate.state != "rejected"
+                or current is None
+                or current.id != disposition.id
+            ):
                 raise StaleStatementCoordination(
                     "the Candidate changed after Not Relevant; reload the newer state"
                 )
@@ -1206,15 +1236,21 @@ def _require_current_candidate(
     expected: StatementCoordinationPredecessors,
 ) -> None:
     if candidate.kind != "event":
-        raise StatementCoordinationRefusal("only an Unplaced Statement can use guided coordination")
+        raise StatementCoordinationRefusal(
+            "only an Unplaced Statement can use guided coordination"
+        )
     if candidate.state != expected.candidate_state:
         raise StaleStatementCoordination(
             f"the statement Candidate is already {candidate.state}; reload its newer state"
         )
     if expected.candidate_state != "pending":
-        raise StatementCoordinationRefusal("a guided Save must begin from a pending Candidate")
+        raise StatementCoordinationRefusal(
+            "a guided Save must begin from a pending Candidate"
+        )
     if not candidate.citations_verified:
-        raise StatementCoordinationRefusal("the statement Candidate has unverified Evidence")
+        raise StatementCoordinationRefusal(
+            "the statement Candidate has unverified Evidence"
+        )
     actionable = session.scalar(
         actionable_candidate_query(candidate.project_id)
         .where(Candidate.id == candidate.id, Candidate.kind == "event")
@@ -1265,12 +1301,21 @@ def _check_expected_predecessors(
 
     lineage = session.get(CommitmentLineage, expected.commitment_lineage_id)
     if lineage is None or lineage.project_id != project_id:
-        raise StaleStatementCoordination("the expected Commitment Lineage is no longer current")
+        raise StaleStatementCoordination(
+            "the expected Commitment Lineage is no longer current"
+        )
     observation = observe_current_statement(session, lineage.id)
-    if observation is None or observation.statement_event_id != expected.statement_event_id:
-        raise StaleStatementCoordination("the statement changed; reload the newer state")
+    if (
+        observation is None
+        or observation.statement_event_id != expected.statement_event_id
+    ):
+        raise StaleStatementCoordination(
+            "the statement changed; reload the newer state"
+        )
     if observation.scope_decision_id != expected.scope_decision_id:
-        raise StaleStatementCoordination("the statement scope changed; reload the newer state")
+        raise StaleStatementCoordination(
+            "the statement scope changed; reload the newer state"
+        )
     subject = CoordinationSubject.statement(lineage.id)
     actual = (
         _decision_id(current_internal_owner_decision(session, subject)),
@@ -1283,11 +1328,13 @@ def _check_expected_predecessors(
         expected.milestone_impact_decision_id,
     )
     if actual != expected_ids:
-        raise StaleStatementCoordination("the Coordination Plan changed; reload the newer state")
+        raise StaleStatementCoordination(
+            "the Coordination Plan changed; reload the newer state"
+        )
 
 
 def _require_candidate_owns_lineage(
-    session: Session, candidate_id: int, event: DependencyEvent
+    session: Session, candidate_id: int, event: ExternalPartyStatement
 ) -> None:
     """Bind Correct to the Candidate whose accepted receipt owns the lineage."""
     candidate = session.get(Candidate, candidate_id)
@@ -1330,21 +1377,20 @@ def _require_candidate_owns_lineage(
 
 def _current_scope_decision(
     session: Session, event_id: int
-) -> DependencyEventScopeDecision | None:
-    successor = DependencyEventScopeDecision.__table__.alias("successor")
+) -> CommitmentScopeDecision | None:
+    successor = CommitmentScopeDecision.__table__.alias("successor")
     return session.scalar(
-        select(DependencyEventScopeDecision)
+        select(CommitmentScopeDecision)
         .where(
-            DependencyEventScopeDecision.event_id == event_id,
-            current_scope_decision_filter(DependencyEventScopeDecision.id),
+            CommitmentScopeDecision.event_id == event_id,
+            current_scope_decision_filter(CommitmentScopeDecision.id),
             ~select(successor.c.id)
             .where(
-                successor.c.supersedes_scope_decision_id
-                == DependencyEventScopeDecision.id
+                successor.c.supersedes_scope_decision_id == CommitmentScopeDecision.id
             )
             .exists(),
         )
-        .order_by(DependencyEventScopeDecision.id)
+        .order_by(CommitmentScopeDecision.id)
     )
 
 
@@ -1358,7 +1404,7 @@ def _candidate_evidence(
 
 
 def _deduplicate_evidence(
-    evidence: tuple[CitedStatementEvidence, ...]
+    evidence: tuple[CitedStatementEvidence, ...],
 ) -> tuple[CitedStatementEvidence, ...]:
     deduplicated: list[CitedStatementEvidence] = []
     seen: set[tuple[int, int, str]] = set()
@@ -1416,7 +1462,7 @@ def _require_plan_shape(draft: StatementCoordinationDraft) -> None:
 
 def _accepted_facts(
     draft: StatementCoordinationDraft,
-    event: DependencyEvent,
+    event: ExternalPartyStatement,
     scope_decision_id: int,
     roster_entry_id: int,
     evidence: tuple[CitedStatementEvidence, ...],
@@ -1467,9 +1513,11 @@ def _guided_party_resolution(
     evidence: tuple[CitedStatementEvidence, ...],
     principal: HumanPrincipal,
 ) -> EvidenceBoundPartyResolution | None:
-    selected_party = session.get(ExternalOrg, draft.stated_external_org_id)
+    selected_party = session.get(ExternalParty, draft.stated_external_org_id)
     if selected_party is None:
-        raise StatementCoordinationRefusal("the selected External Party no longer exists")
+        raise StatementCoordinationRefusal(
+            "the selected External Party no longer exists"
+        )
     stated_party = draft.stated_party.strip()
     registered_spellings = {
         normalize(value)
@@ -1485,7 +1533,9 @@ def _guided_party_resolution(
         if candidate is not None and candidate.project_id == project_id
         else None
     )
-    source_party = prepared.source_stated_party_wording if prepared is not None else None
+    source_party = (
+        prepared.source_stated_party_wording if prepared is not None else None
+    )
     if not isinstance(source_party, str) or source_party.strip() != stated_party:
         raise StatementCoordinationRefusal(
             "guided resolution requires the Candidate's exact source party wording"
@@ -1522,7 +1572,10 @@ def _timing_json(timing: StatementTiming | None) -> dict | None:
 
 def _payload_sha256(candidate: Candidate) -> str:
     canonical = json.dumps(
-        candidate.payload_json, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        candidate.payload_json,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
 

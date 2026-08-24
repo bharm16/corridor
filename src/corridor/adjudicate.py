@@ -342,9 +342,7 @@ def accept_candidate(
     session.add(dependency)
     session.flush()
 
-    links = [
-        _evidence_link(session, dependency, citation) for citation in citations
-    ]
+    links = [_evidence_link(session, dependency, citation) for citation in citations]
     # Never empty: provenance refuses a Candidate that cites nothing, above
     # and before any of this. `if links else None` said an Assertion may
     # exist without evidence, which `models.Assertion.evidence_link_id`,
@@ -412,25 +410,17 @@ def admit_dependency_by_policy(
     *,
     machine_actor: str,
 ) -> Dependency:
-    """Admit one dependency under an authorized deterministic policy.
+    """Admit one Dependency under an exact deterministic policy.
 
-    ADR-0027's write path. Eligibility — exact agreement between the
-    stated revisions — is the caller's proven premise, and this function
-    stays the Ledger's only writer by doing exactly what human acceptance
-    does with a machine actor the audit log names: the primary candidate
-    becomes the record, each identical sibling merges so its citation
-    attaches as corroboration, and publication support is designated
-    under the actor with the human authorization standing behind it in
-    the run receipt.
+    Eligibility is the caller's proven premise under ADR-0029 and ADR-0042.
+    This shared materialization path records the primary Candidate and any
+    corroborating siblings under the system actor, while the Policy Run and
+    per-Candidate outcomes preserve the exact authority for the write.
     """
     dependency: Dependency | None = None
     for candidate in (primary, *siblings):
-        require_candidate_action_scope(
-            session, candidate, historical_document_id=None
-        )
-        payload, fields, citations = _validate_candidate_provenance(
-            session, candidate
-        )
+        require_candidate_action_scope(session, candidate, historical_document_id=None)
+        payload, fields, citations = _validate_candidate_provenance(session, candidate)
         if candidate is primary:
             if not any(is_claim(value) for value in fields.values()):
                 raise CandidateAssertsNothing(
@@ -443,8 +433,7 @@ def admit_dependency_by_policy(
             session.flush()
 
         links = [
-            _evidence_link(session, dependency, citation)
-            for citation in citations
+            _evidence_link(session, dependency, citation) for citation in citations
         ]
         primary_link = links[0]
         if candidate is primary:
@@ -650,15 +639,11 @@ def _edited_payload(session: Session, payload: dict, fields: dict[str, str]) -> 
         updated["unverified_fields"] = sorted(fields)
     else:
         updated["unverified_fields"] = sorted(unverified_fields(fields, page_text))
-    updated["low_confidence_tokens"] = _reconcile_low_confidence_tokens(
-        payload, fields
-    )
+    updated["low_confidence_tokens"] = _reconcile_low_confidence_tokens(payload, fields)
     return updated
 
 
-def _quote_still_holds(
-    session: Session, citation: dict, page_text: str | None
-) -> bool:
+def _quote_still_holds(session: Session, citation: dict, page_text: str | None) -> bool:
     """Whether this citation's quote is on the page it names, now.
 
     The threshold comes from where the page's text came from, exactly as
@@ -721,7 +706,9 @@ def _transcribes_cells(payload: dict) -> bool:
     """
     if payload.get("tier"):
         return True
-    return any(citation.get("whole_row") for citation in (payload.get("citations") or []))
+    return any(
+        citation.get("whole_row") for citation in (payload.get("citations") or [])
+    )
 
 
 def _cited_page_text(session: Session, payload: dict) -> str | None:
@@ -752,7 +739,9 @@ def _cited_page_text(session: Session, payload: dict) -> str | None:
     return "\n".join(texts) if texts else None
 
 
-def _reconcile_low_confidence_tokens(payload: dict, fields: dict[str, str]) -> list[str]:
+def _reconcile_low_confidence_tokens(
+    payload: dict, fields: dict[str, str]
+) -> list[str]:
     values = [normalize(value) for value in fields.values() if value]
     kept = []
     for token in payload.get("low_confidence_tokens") or []:
@@ -961,22 +950,14 @@ def _validate_candidate_provenance(
             raise InvalidCandidateProvenance("cited page is missing")
         if not isinstance(document_id, int) or isinstance(document_id, bool):
             raise InvalidCandidateProvenance("citation document must be an integer")
-        if (
-            not isinstance(page_no, int)
-            or isinstance(page_no, bool)
-            or page_no <= 0
-        ):
-            raise InvalidCandidateProvenance(
-                "cited page must be a positive integer"
-            )
+        if not isinstance(page_no, int) or isinstance(page_no, bool) or page_no <= 0:
+            raise InvalidCandidateProvenance("cited page must be a positive integer")
         if not isinstance(quote, str) or not quote.strip():
             raise InvalidCandidateProvenance(
                 "citation quote must be a non-empty string"
             )
         if "verified" in citation and not isinstance(citation["verified"], bool):
-            raise InvalidCandidateProvenance(
-                "citation verified flag must be a boolean"
-            )
+            raise InvalidCandidateProvenance("citation verified flag must be a boolean")
         if "whole_row" in citation and not isinstance(citation["whole_row"], bool):
             raise InvalidCandidateProvenance(
                 "citation whole_row flag must be a boolean"
@@ -1013,9 +994,7 @@ def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
     # party. The Assertion still records what the document printed.
     if not name or is_placeholder_party(name):
         return None
-    org = session.scalars(
-        select(ExternalOrg).where(ExternalOrg.name == name)
-    ).first()
+    org = session.scalars(select(ExternalOrg).where(ExternalOrg.name == name)).first()
     if org is not None:
         return org
     # A registered spelling resolves to its party rather than minting a
@@ -1033,13 +1012,10 @@ def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
     from corridor.identity import normalize_party
 
     wanted = normalize_party(name)
-    for candidate_org in session.scalars(
-        select(ExternalOrg).order_by(ExternalOrg.id)
-    ):
+    for candidate_org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id)):
         spellings = (candidate_org.name, *(candidate_org.aliases or []))
         if any(
-            spelling and normalize_party(spelling) == wanted
-            for spelling in spellings
+            spelling and normalize_party(spelling) == wanted for spelling in spellings
         ):
             return candidate_org
     org = ExternalOrg(name=name, org_type="utility", aliases=[])
@@ -1069,7 +1045,6 @@ def _materialize(
         "project_id": candidate.project_id,
         "ref_code": _next_ref_code(session, candidate.project_id),
         "external_org_id": org.id if org else None,
-        "status": "identified",
     }
 
     if doc_type == "matrix":
@@ -1158,8 +1133,7 @@ def dismiss_dependency(
     dismisser = require_human_principal(principal)
     if reason not in DISMISS_REASONS:
         raise InvalidDismissReason(
-            f"{reason!r} is not a dismiss reason; expected one of "
-            f"{DISMISS_REASONS}"
+            f"{reason!r} is not a dismiss reason; expected one of {DISMISS_REASONS}"
         )
     lock_project(session, dependency.project_id)
     # Re-read under the lock. The caller loaded this row before taking it,
@@ -1168,9 +1142,7 @@ def dismiss_dependency(
     # projection naming only one of them.
     session.refresh(dependency)
     if dependency.dismissed_at is not None:
-        raise AlreadyDismissed(
-            f"{dependency.ref_code} was already dismissed"
-        )
+        raise AlreadyDismissed(f"{dependency.ref_code} was already dismissed")
 
     dismissal = DependencyDismissal(
         dependency_id=dependency.id,

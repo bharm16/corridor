@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0021 and ADR-0029
+---
+
 # Admission is a human act distinct from Reconfirmation, and the development Ledger is rebuilt, not ratified
 
 > The development-Ledger rebuild in this decision is superseded by ADR-0021, and human-only Admission by ADR-0029. The distinction between Admission and Reconfirmation remains in force.

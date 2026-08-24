@@ -140,7 +140,6 @@ def legacy_ledger(session):
         dep_type="utility_relocation",
         title="Telecom — AT&T Texas",
         location_desc="IH 45",
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -869,7 +868,6 @@ def test_empty_without_archive_and_archive_plus_new_rows_fail_closed(
         ref_code="DEP-00142",
         dep_type="utility_relocation",
         title="Illegitimate post-retirement row",
-        status="identified",
     )
     session.add(new_dependency)
     session.flush()
@@ -946,7 +944,6 @@ def test_plan_fails_closed_on_a_mixed_human_and_legacy_ledger(
         dep_type="utility_relocation",
         title="Telecom - Human Utility",
         location_desc="IH 45 frontage road",
-        status="identified",
     )
     session.add(human_dependency)
     session.flush()

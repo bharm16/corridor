@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A Revision Comparison is an immutable run; the worklist it feeds is not
 
 M8's "re-extraction diff" is two domain objects with two lifecycles, not one. A **Revision Comparison** owns row correspondence and field differences between a document's extraction run and its successor's — and it is historically stable. A **Supersession Review** is the live, Ledger-facing worklist derived from the supersession registry plus the operative-support resolver (ADR-0017), enriched by a Comparison when one exists — it must show `awaiting_extraction` and `extraction_failed` before any Comparison can exist, so it never waits for one — and it changes as affected work is resolved through Reconfirmation, Automatic Carry-Forward, or Adjudication. One screen may show both; one object may not be both. Combined, the artifact either goes stale or history rewrites itself.

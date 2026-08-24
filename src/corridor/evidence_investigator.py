@@ -51,7 +51,7 @@ from corridor.models import (
 from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.verify import literal_quote_on_page
 
-TOOL_CONTRACT_VERSION = "evidence-investigator-tools-v2"
+TOOL_CONTRACT_VERSION = "evidence-investigator-tools-v3"
 VALIDATOR_VERSION = "evidence-investigator-validator-v1"
 CASE_CONTRACT_VERSION = "evidence-investigator-case-v1"
 
@@ -151,7 +151,6 @@ class DependencyShortlistItem:
     party_ref: str | None
     station_from: str | None
     station_to: str | None
-    status: str
     deterministic_signals: tuple[str, ...]
 
 
@@ -473,9 +472,7 @@ class InvestigationTools:
         context = page.text[:max_chars]
         candidate_quote = literal_quote_on_page(binding.candidate_quote, page.text)
         self.__issued_evidence_refs.add(evidence_ref)
-        issued_text = self.__issued_text_by_evidence_ref.setdefault(
-            evidence_ref, set()
-        )
+        issued_text = self.__issued_text_by_evidence_ref.setdefault(evidence_ref, set())
         issued_text.add(context)
         if candidate_quote is not None:
             issued_text.add(candidate_quote)
@@ -547,7 +544,6 @@ class InvestigationTools:
                 Dependency.project_id == self.__bound.project_id,
                 Dependency.external_org_id == party_id,
                 Dependency.dismissed_at.is_(None),
-                Dependency.status != "closed",
             )
             .order_by(Dependency.ref_code, Dependency.id)
         ).all()
@@ -592,7 +588,6 @@ class InvestigationTools:
                     party_ref=party_ref,
                     station_from=dependency.station_from,
                     station_to=dependency.station_to,
-                    status=dependency.status,
                     deterministic_signals=signals,
                 )
             )
@@ -608,7 +603,6 @@ class InvestigationTools:
                 Dependency.id == dependency_id,
                 Dependency.project_id == self.__bound.project_id,
                 Dependency.dismissed_at.is_(None),
-                Dependency.status != "closed",
             )
         )
         if dependency is None:
@@ -950,7 +944,8 @@ async def investigate_candidate(
         prepared = prepared_result
     elif prepared.bound.candidate_id != candidate_id:
         return _preflight_abstention(
-            "candidate_ineligible", "prepared investigation belongs to another Candidate"
+            "candidate_ineligible",
+            "prepared investigation belongs to another Candidate",
         )
     bound, case = prepared.bound, prepared.case
     if _read_fingerprint(session, bound) != case.read_fingerprint:
@@ -1137,7 +1132,6 @@ def _prepare_case(
         select(Dependency.id).where(
             Dependency.project_id == candidate.project_id,
             Dependency.dismissed_at.is_(None),
-            Dependency.status != "closed",
         )
     ).all()
     dependency_ref_by_id = {
@@ -1218,7 +1212,6 @@ def _read_fingerprint(session: Session, bound: _BoundCase) -> str:
             "station_from": dependency.station_from,
             "station_to": dependency.station_to,
             "external_org_id": dependency.external_org_id,
-            "status": dependency.status,
             "dismissed": dependency.dismissed_at is not None,
         }
         for dependency in session.scalars(
@@ -1327,7 +1320,6 @@ def _project_party_ids(session: Session, project_id: int) -> set[int]:
                 Dependency.project_id == project_id,
                 Dependency.external_org_id.is_not(None),
                 Dependency.dismissed_at.is_(None),
-                Dependency.status != "closed",
             )
         ).all()
         if party_id is not None

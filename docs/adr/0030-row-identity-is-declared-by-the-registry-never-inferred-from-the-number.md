@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Row identity is declared by the registry, never inferred from the number
 
 The first per-party matrix broke the guess every reader was making. SR 789's FDOT form gives each External Party its own conflict list counting from 1 — nine different conflicts, each correctly numbered 1 — and mechanical admission (ADR-0029), grouping by `utility_id` alone, loaded 1 of its 66 rows and held the rest as false duplicates. The TxDOT UCM form had hidden the guess: its numbers are project-unique, and its Retired Rows exist precisely to keep them stable. Decision: **how a matrix names its rows is a Numbering Scheme the registry declares at registration** — `project-unique` (the default) or `per-party` — **and identity is derived under the declared scheme in exactly one place**, used by admission grouping, the record's reference check, statement resolution, and lane sibling grouping. A new agency format becomes one new scheme value in one function; no reader changes.

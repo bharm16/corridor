@@ -548,7 +548,7 @@ def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
 
 
 def _activation_receipt(
-    project, *, gates, source_revision=None, migration_head="e314a3d8c6f2"
+    project, *, gates, source_revision=None, migration_head="a316c5d7e9f1"
 ):
     source_revision = source_revision or _current_source_revision()
     policy_sha256 = policy.canonical_sha256(
@@ -623,7 +623,7 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="e314a3d8c6f2",
+        migration_head="a316c5d7e9f1",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -651,7 +651,7 @@ def test_database_rejects_activation_for_a_failed_receipt(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="e314a3d8c6f2",
+        migration_head="a316c5d7e9f1",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -679,7 +679,7 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="e314a3d8c6f2",
+        migration_head="a316c5d7e9f1",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -766,7 +766,7 @@ def test_activated_extension_preserves_predecessor_selected_scope_behavior(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="e314a3d8c6f2",
+        migration_head="a316c5d7e9f1",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": True},
@@ -788,7 +788,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="e314a3d8c6f2",
+        migration_head="a316c5d7e9f1",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
@@ -798,7 +798,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision="b" * 40,
-        migration_head="e314a3d8c6f2",
+        migration_head="a316c5d7e9f1",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -828,7 +828,7 @@ def test_deployed_rule_digest_drift_suspends_activation(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="e314a3d8c6f2",
+        migration_head="a316c5d7e9f1",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
@@ -1045,7 +1045,6 @@ def test_two_dependencies_for_one_reference_abstains(
         title="Second PL1",
         dep_type="utility_relocation",
         external_org_id=admitted.external_org_id,
-        status="identified",
     )
     session.add(second)
     session.flush()
@@ -1077,7 +1076,6 @@ def test_candidate_7587_abstains_when_affected_party_does_not_prove_stated_actor
         dep_type="utility_relocation",
         title="Air Products PL35 relocation",
         external_org_id=air_products.id,
-        status="identified",
     )
     session.add(air_products_dependency)
     session.flush()
@@ -1307,7 +1305,6 @@ def _second_party_dependency(session, project, *, ref, org_name, alias=None):
         source_ref=ref,
         dep_type="utility_relocation",
         title=f"{org_name} conflict {ref}",
-        status="identified",
         external_org_id=org.id,
     )
     session.add(dependency)
@@ -1582,7 +1579,6 @@ def test_a_statement_cannot_attach_to_another_projects_record(
         source_ref="PL99",
         dep_type="utility_relocation",
         title="elsewhere",
-        status="identified",
     )
     session.add(stray)
     session.flush()

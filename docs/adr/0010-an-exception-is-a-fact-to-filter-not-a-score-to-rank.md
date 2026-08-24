@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # An Exception is a fact to filter, not a score to rank
 
 Amends [ADR-0009](0009-the-document-records-a-resolution-strategy-not-a-criticality.md): its consequence *"`severity = rule severity × criticality` needs restating"* was answered by restating the multiplier as ×3. This ADR abolishes the multiplication instead. Implementation is #112.

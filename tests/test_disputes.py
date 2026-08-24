@@ -64,7 +64,6 @@ def disputed(session, project):
         source_ref="PL1",
         dep_type="utility_relocation",
         title="Pipeline crossing",
-        status="identified",
     )
     session.add(dependency)
     session.flush()

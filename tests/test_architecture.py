@@ -7,7 +7,8 @@ from collections import defaultdict
 from pathlib import Path
 
 
-SOURCE_ROOT = Path(__file__).parents[1] / "src" / "corridor"
+REPO_ROOT = Path(__file__).parents[1]
+SOURCE_ROOT = REPO_ROOT / "src" / "corridor"
 
 
 def _module_paths() -> tuple[Path, ...]:
@@ -27,7 +28,9 @@ def _module_name(path: Path) -> str:
 
 
 def test_every_source_module_opens_with_its_reason_for_existing():
-    missing = [path.name for path in _module_paths() if ast.get_docstring(_tree(path)) is None]
+    missing = [
+        path.name for path in _module_paths() if ast.get_docstring(_tree(path)) is None
+    ]
 
     assert missing == []
 
@@ -108,3 +111,22 @@ def test_source_module_dependencies_are_acyclic():
             visiting.clear()
 
     assert cycles == []
+
+
+def test_context_map_names_both_bounded_context_glossaries():
+    context_map = (REPO_ROOT / "CONTEXT-MAP.md").read_text()
+
+    assert "[Project Record](./CONTEXT.md)" in context_map
+    assert "[Corridor Operations](./docs/operations/CONTEXT.md)" in context_map
+    assert (REPO_ROOT / "CONTEXT.md").is_file()
+    assert (REPO_ROOT / "docs" / "operations" / "CONTEXT.md").is_file()
+
+
+def test_every_adr_declares_machine_readable_status():
+    missing = []
+    for path in sorted((REPO_ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
+        lines = path.read_text().splitlines()
+        if len(lines) < 3 or lines[0] != "---" or not lines[1].startswith("status: "):
+            missing.append(path.name)
+
+    assert missing == []

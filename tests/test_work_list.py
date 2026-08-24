@@ -476,7 +476,6 @@ def test_new_scope_decision_returns_a_deferred_party_level_work_item(
         dep_type="utility_relocation",
         title="Dependency identified after the original statement",
         external_org_id=party.id,
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -770,7 +769,6 @@ def test_work_list_orders_party_past_due_before_critical_dependency_and_unplaced
         dep_type="utility_relocation",
         title="Critical relocation without a Coordination Plan",
         resolution_strategy="relocate",
-        status="identified",
     )
     session.add(critical)
     session.flush()
@@ -815,7 +813,6 @@ def test_work_list_caps_immediate_cards_after_authoritative_work_and_orders_cand
         dep_type="utility_relocation",
         title="Critical relocation without a Coordination Plan",
         resolution_strategy="relocate",
-        status="identified",
     )
     session.add(critical)
     session.flush()
@@ -977,7 +974,6 @@ def test_candidate_backlog_is_searchable_and_paginated_on_the_coordinator_home(
             dep_type="utility_relocation",
             title="Air Products workshop context",
             external_org_id=air_products.id,
-            status="identified",
         )
     )
     session.flush()
@@ -1035,7 +1031,6 @@ def test_authoritative_overflow_is_searchable_and_paginated_in_project_language(
             title=f"North corridor relocation {number:02d}",
             external_org_id=party.id,
             resolution_strategy="relocate",
-            status="identified",
         )
         for number in range(1, 49)
     )
@@ -1348,7 +1343,6 @@ def test_mechanical_commitment_shows_known_unknown_scope_and_owner_first(
             title="Equistar read-only screen choice",
             station_from="245+00",
             station_to="445+00",
-            status="identified",
             external_org_id=party.id,
         )
     )
@@ -1468,7 +1462,6 @@ def test_mechanical_commitment_asks_owner_then_structured_next_action(
         title="Equistar line",
         station_from="245+00",
         station_to="445+00",
-        status="identified",
         external_org_id=party.id,
     )
     owner = ProjectRosterEntry(
@@ -1594,7 +1587,6 @@ def test_scope_can_be_identified_after_the_coordination_plan(
         title="Equistar pipeline",
         station_from="6350+04",
         station_to="6354+23",
-        status="identified",
         external_org_id=party.id,
     )
     owner = ProjectRosterEntry(

@@ -206,7 +206,6 @@ def test_merge_requires_a_stable_human_principal(
         ref_code="DEP-00001",
         dep_type="utility_relocation",
         title="Telecom — AT&T",
-        status="identified",
     )
     session.add(target)
     session.flush()
@@ -250,7 +249,6 @@ def test_successful_merge_records_exact_principal_identity(session, project, doc
         ref_code="DEP-00001",
         dep_type="utility_relocation",
         title="Telecom — AT&T",
-        status="identified",
     )
     session.add(target)
     session.flush()

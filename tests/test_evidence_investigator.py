@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from dataclasses import fields as dataclass_fields
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -115,9 +115,7 @@ def project(session):
     return project
 
 
-def _unplaced_statement(
-    session, project, *, quote=None, page_text=None, kind="event"
-):
+def _unplaced_statement(session, project, *, quote=None, page_text=None, kind="event"):
     quote = quote or (
         "Kinder Morgan expects the relocation to finish near Station 6609+00 "
         "during June 2026."
@@ -320,7 +318,6 @@ def test_investigate_candidate_binds_capabilities_and_validates_unaccepted_optio
         station_from="6608+70",
         station_to="6616+50",
         external_org_id=party.id,
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -400,7 +397,6 @@ def test_investigate_candidate_binds_capabilities_and_validates_unaccepted_optio
     assert result.packet.possible_parties[0].party_ref.startswith("P-")
     assert result.read_fingerprint
     assert candidate.state == "pending"
-    assert dependency.status == "identified"
 
 
 class _EmptyRuntime:
@@ -597,7 +593,6 @@ def test_party_and_dependency_reads_cannot_enumerate_other_projects_or_inactive_
                 dep_type="utility_relocation",
                 title="Scoped open record",
                 external_org_id=local_party.id,
-                status="identified",
             ),
             Dependency(
                 project_id=project.id,
@@ -605,7 +600,7 @@ def test_party_and_dependency_reads_cannot_enumerate_other_projects_or_inactive_
                 dep_type="utility_relocation",
                 title="Scoped closed record",
                 external_org_id=closed_only_party.id,
-                status="closed",
+                dismissed_at=datetime.now(timezone.utc),
             ),
             Dependency(
                 project_id=other_project.id,
@@ -613,7 +608,6 @@ def test_party_and_dependency_reads_cannot_enumerate_other_projects_or_inactive_
                 dep_type="utility_relocation",
                 title="Other project record",
                 external_org_id=global_party.id,
-                status="identified",
             ),
         ]
     )
@@ -866,7 +860,6 @@ def test_dependency_detail_read_budget_fails_closed(session, project):
             dep_type="utility_relocation",
             title="Detail budget record",
             external_org_id=party.id,
-            status="identified",
         )
     )
     session.flush()
@@ -1095,7 +1088,9 @@ def test_receipted_investigation_appends_one_terminal_non_authoritative_result(
     class StubRuntime:
         async def run(self, case, tools, budget):
             return InvestigationRunOutput(
-                packet=InvestigationPacket((), (), (), ("What should the human decide?",)),
+                packet=InvestigationPacket(
+                    (), (), (), ("What should the human decide?",)
+                ),
                 turns=1,
                 input_tokens=120,
                 output_tokens=30,
@@ -1130,9 +1125,12 @@ def test_receipted_investigation_appends_one_terminal_non_authoritative_result(
     assert len(first.run.candidate_payload_sha256) == 64
     assert first.run.candidate_payload_sha256 == second.run.candidate_payload_sha256
     assert session.query(EvidenceInvestigationRun).count() == run_count + 2
-    packets = session.query(EvidenceInvestigationPacketReceipt).order_by(
-        EvidenceInvestigationPacketReceipt.id.desc()
-    ).limit(2).all()
+    packets = (
+        session.query(EvidenceInvestigationPacketReceipt)
+        .order_by(EvidenceInvestigationPacketReceipt.id.desc())
+        .limit(2)
+        .all()
+    )
     assert session.query(EvidenceInvestigationPacketReceipt).count() == packet_count + 2
     assert len(packets) == 2
     assert all(packet.non_authoritative for packet in packets)
@@ -1181,9 +1179,7 @@ def test_runtime_loads_the_sealed_v2_prompt_independent_of_process_cwd(
     )
 
     assert runtime.prompt == (
-        Path(__file__).resolve().parents[1]
-        / "prompts"
-        / "evidence_investigator_v2.md"
+        Path(__file__).resolve().parents[1] / "prompts" / "evidence_investigator_v2.md"
     ).read_text(encoding="utf-8")
     assert runtime.prompt_sha256 == PROMPT_SHA256
 
@@ -1225,9 +1221,7 @@ def test_evaluator_refuses_mixed_or_unverifiable_configuration(
         )
 
 
-def test_evaluator_refuses_mixed_tool_contract_versions(
-    session, project, tmp_path
-):
+def test_evaluator_refuses_mixed_tool_contract_versions(session, project, tmp_path):
     first, _quote = _unplaced_statement(session, project)
     second, _quote = _unplaced_statement(
         session, project, quote="CenterPoint will finish in August 2027."
@@ -1256,8 +1250,9 @@ def test_evaluator_refuses_mixed_tool_contract_versions(
     original_version = changed_run.tool_contract_version
     changed_run.tool_contract_version = "evidence-investigator-tools-v1"
 
-    with session.no_autoflush, pytest.raises(
-        EvaluationRefusal, match="one exact configuration"
+    with (
+        session.no_autoflush,
+        pytest.raises(EvaluationRefusal, match="one exact configuration"),
     ):
         evaluate_shadow_runs(
             session,
@@ -1345,13 +1340,16 @@ def test_direct_transport_is_stateless_strict_serial_and_locally_receipted(
         "repairs": 0,
     }
     assert receipt.run.terminal_status == "human_judgment_needed"
-    assert receipt.run.prompt_sha256 == hashlib.sha256(
-        b"immutable test prompt"
-    ).hexdigest()
+    assert (
+        receipt.run.prompt_sha256
+        == hashlib.sha256(b"immutable test prompt").hexdigest()
+    )
     assert receipt.run.adapter_contract_version == ADAPTER_CONTRACT_VERSION
-    [step] = session.query(EvidenceInvestigationStepReceipt).filter_by(
-        run_id=receipt.run.id
-    ).all()
+    [step] = (
+        session.query(EvidenceInvestigationStepReceipt)
+        .filter_by(run_id=receipt.run.id)
+        .all()
+    )
     assert step.usage_json == {"input_tokens": 50, "output_tokens": 20}
 
 
@@ -1603,9 +1601,7 @@ def test_prospective_shadow_freezes_before_review_and_associates_hidden_outcome(
     session.refresh(candidate)
     assert candidate.state == "pending"
 
-    observe_shadow_review(
-        session, candidate.id, boundary="start", principal=RECORDER
-    )
+    observe_shadow_review(session, candidate.id, boundary="start", principal=RECORDER)
     mark_statement_not_relevant(
         session,
         candidate.id,
@@ -1621,7 +1617,9 @@ def test_prospective_shadow_freezes_before_review_and_associates_hidden_outcome(
     assert outcome.unresolved is False
     assert "not_relevant" in outcome.strata_json
     assert outcome.review_seconds is not None
-    assert session.query(EvidenceInvestigationShadowOutcome).count() == outcome_count + 1
+    assert (
+        session.query(EvidenceInvestigationShadowOutcome).count() == outcome_count + 1
+    )
 
 
 def test_shadow_records_stale_when_bound_state_changes_during_execution(
@@ -1733,9 +1731,9 @@ def test_v2_cohort_freezes_an_explicit_hidden_reproducible_manifest(
     assert manifest["project"] == {"id": project.id, "slug": project.slug}
     assert manifest["candidate_ids"] == [second.id, first.id]
     assert manifest["selection_rule"].startswith("operator-declared:")
-    assert manifest["prompt_version"] == "evidence-investigator-v2"
+    assert manifest["prompt_version"] == "evidence-investigator-v3"
     assert manifest["prompt_sha256"] == PROMPT_SHA256
-    assert manifest["tool_contract_version"] == "evidence-investigator-tools-v2"
+    assert manifest["tool_contract_version"] == "evidence-investigator-tools-v3"
     assert manifest["adapter_contract_version"] == ADAPTER_CONTRACT_VERSION
     assert len(manifest["read_fingerprints"]) == 2
     assert len(manifest["dataset_membership"]) == 2
@@ -1786,9 +1784,7 @@ def test_v2_cohort_refuses_implicit_cross_project_or_mixed_configuration(
         )
 
 
-def test_v2_cohort_refuses_a_candidate_with_an_earlier_human_outcome(
-    session, project
-):
+def test_v2_cohort_refuses_a_candidate_with_an_earlier_human_outcome(session, project):
     candidate, _quote = _unplaced_statement(session, project)
 
     class FirstRuntime:
@@ -2009,7 +2005,10 @@ def test_shadow_evaluation_writes_reproducible_machine_and_human_receipts(
 
     original_case = shadow.case.case_json
     shadow.case.case_json = {**original_case, "later_human_outcome": "not_relevant"}
-    with session.no_autoflush, pytest.raises(EvaluationRefusal, match="later human answer"):
+    with (
+        session.no_autoflush,
+        pytest.raises(EvaluationRefusal, match="later human answer"),
+    ):
         evaluate_shadow_runs(
             session,
             [shadow.investigation.run.public_id],

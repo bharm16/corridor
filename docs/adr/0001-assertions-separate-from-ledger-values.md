@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Assertions are stored separately from ledger values
 
 Source documents routinely disagree about a Dependency's committed date or status — the conflict matrix says one date, the minutes say another, the utility's email says a third. The original schema stored a single value per field on `dependencies`, and `evidence_links` recorded no asserted value, so there was nowhere to represent the disagreement and the `CONTRADICTION` exception rule was uncomputable as written.

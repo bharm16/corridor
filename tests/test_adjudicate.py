@@ -171,7 +171,7 @@ def test_accepting_creates_a_dependency_from_the_candidate(session, document):
     assert dep.source_ref == "FOC1-1"
     assert dep.dep_type == "utility_relocation"
     assert dep.station_from == "1149+00"
-    assert dep.status == "identified"
+    assert not hasattr(dep, "status")
     assert "AT&T Texas (SWBT)" in dep.title
 
 
@@ -641,14 +641,12 @@ def test_accepting_after_a_gap_allocates_above_the_highest_existing_suffix(
                 ref_code="DEP-00001",
                 dep_type="utility_relocation",
                 title="gap one",
-                status="identified",
             ),
             Dependency(
                 project_id=document.project_id,
                 ref_code="DEP-00003",
                 dep_type="utility_relocation",
                 title="gap three",
-                status="identified",
             ),
         ]
     )
@@ -700,7 +698,6 @@ def test_ref_code_allocation_blocks_and_advances_across_two_sessions():
                 ref_code=first,
                 dep_type="utility_relocation",
                 title="first",
-                status="identified",
             )
         )
         session1.flush()

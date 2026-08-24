@@ -14,13 +14,14 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass, field
 from datetime import date
+from hashlib import sha256
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.models import Dependency, Milestone
+from corridor.models import Dependency, Milestone, MilestoneRegistration
 
 REQUIRED_COLUMNS = ("code", "name", "need_date")
 
@@ -50,7 +51,9 @@ def import_csv(
     actor: str = "import",
 ) -> ImportResult:
     path = Path(path)
-    rows = list(csv.DictReader(path.read_text().splitlines()))
+    source_bytes = path.read_bytes()
+    source_sha256 = sha256(source_bytes).hexdigest()
+    rows = list(csv.DictReader(source_bytes.decode().splitlines()))
     if not rows:
         raise MalformedMilestoneCsv(f"{path.name}: no rows")
 
@@ -87,6 +90,14 @@ def import_csv(
             )
             session.add(milestone)
             session.flush()
+            _register_milestone(
+                session,
+                milestone,
+                source_name=source or path.name,
+                source_sha256=source_sha256,
+                source_row=_source_row(code, milestone.name, need_date),
+                recorded_by=actor,
+            )
             # Recorded like a revision. Only revisions were, so the first
             # Need Date every linked Dependency inherits — the one that
             # decides whether it is overdue — entered the record with
@@ -112,6 +123,14 @@ def import_csv(
             existing.name = row.get("name") or existing.name
             existing.need_date = need_date
             existing.source = source or path.name
+            _register_milestone(
+                session,
+                existing,
+                source_name=existing.source,
+                source_sha256=source_sha256,
+                source_row=_source_row(existing.code, existing.name, need_date),
+                recorded_by=actor,
+            )
             if was != need_date:
                 # A schedule revision moves every linked Dependency's need
                 # date on the next relink, so who moved it is part of the
@@ -132,6 +151,52 @@ def import_csv(
 
     session.flush()
     return result
+
+
+def _source_row(code: str, name: str, need_date: date | None) -> dict[str, str | None]:
+    return {
+        "code": code,
+        "name": name,
+        "need_date": need_date.isoformat() if need_date is not None else None,
+    }
+
+
+def _register_milestone(
+    session: Session,
+    milestone: Milestone,
+    *,
+    source_name: str,
+    source_sha256: str,
+    source_row: dict[str, str | None],
+    recorded_by: str,
+) -> MilestoneRegistration:
+    """Append one exact source registration, or reuse the identical current one."""
+    if not isinstance(recorded_by, str) or not recorded_by.strip():
+        raise ValueError("a Milestone Registration needs a recording identity")
+    current = (
+        session.get(MilestoneRegistration, milestone.current_registration_id)
+        if milestone.current_registration_id is not None
+        else None
+    )
+    if (
+        current is not None
+        and current.source_name == source_name
+        and current.source_sha256 == source_sha256
+        and current.source_row_json == source_row
+    ):
+        return current
+    registration = MilestoneRegistration(
+        milestone_id=milestone.id,
+        source_name=source_name,
+        source_sha256=source_sha256,
+        source_row_json=source_row,
+        recorded_by=recorded_by.strip(),
+        predecessor_registration_id=current.id if current is not None else None,
+    )
+    session.add(registration)
+    session.flush([registration])
+    milestone.current_registration_id = registration.id
+    return registration
 
 
 def _parse_date(value: str | None, filename: str, line: int) -> date | None:
@@ -176,6 +241,7 @@ def link_dependency(
         "need_date": dependency.need_date.isoformat() if dependency.need_date else None,
     }
     dependency.milestone_id = milestone.id
+    dependency.milestone_registration_id = milestone.current_registration_id
     dependency.need_date = milestone.need_date
     audit.record(
         session,
@@ -186,6 +252,7 @@ def link_dependency(
         before=before,
         after={
             "milestone_id": milestone.id,
+            "milestone_registration_id": milestone.current_registration_id,
             "milestone_code": milestone.code,
             "need_date": milestone.need_date.isoformat()
             if milestone.need_date
@@ -245,9 +312,7 @@ def main(argv: list[str]) -> int:
     link_code = argv[2] if len(argv) > 2 else None
 
     with SessionFactory() as session:
-        project = session.scalars(
-            select(Project).where(Project.slug == slug)
-        ).first()
+        project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
@@ -255,7 +320,11 @@ def main(argv: list[str]) -> int:
         result = import_csv(session, project_id=project.id, path=csv_path)
         print(
             f"{len(result.created)} created, {len(result.updated)} updated"
-            + (f", {result.skipped_blank} blank rows skipped" if result.skipped_blank else ""),
+            + (
+                f", {result.skipped_blank} blank rows skipped"
+                if result.skipped_blank
+                else ""
+            ),
             flush=True,
         )
         for milestone in result.created + result.updated:

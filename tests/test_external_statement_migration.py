@@ -1929,22 +1929,23 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
                 citations_verified=True,
                 state="accepted",
             )
-            dependency = Dependency(
-                project_id=project.id,
-                ref_code="DEP-A217-1",
-                dep_type="utility_relocation",
-                title="Equistar relocation",
-                external_org_id=party.id,
-                status="identified",
-            )
-            session.add_all([candidate, dependency])
+            session.add(candidate)
             session.flush()
+            dependency_id = session.scalar(
+                text(
+                    "insert into dependencies "
+                    "(project_id, ref_code, dep_type, title, external_org_id, status) "
+                    "values (:project_id, 'DEP-A217-1', 'utility_relocation', "
+                    "'Equistar relocation', :party_id, 'identified') returning id"
+                ),
+                {"project_id": project.id, "party_id": party.id},
+            )
             session.add(
                 AuditLog(
                     actor="agent",
                     action="accept_candidate",
                     entity_type="dependency",
-                    entity_id=dependency.id,
+                    entity_id=dependency_id,
                     after_json={"candidate_id": candidate.id},
                 )
             )
@@ -1958,14 +1959,14 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
                 event_date=date(2025, 1, 16),
                 description="Equistar said it will complete by June 1.",
                 new_timing=StatementTiming.day("June 1", date(2025, 6, 1)),
-                scope=StatementScope.selected((dependency.id,)),
+                scope=StatementScope.selected((dependency_id,)),
                 created_by="local:a217-recorder",
             )
             ids = {
                 "project": project.id,
                 "party": party.id,
                 "document": document.id,
-                "dependency": dependency.id,
+                "dependency": dependency_id,
                 "verbal": verbal.id,
             }
             session.commit()
@@ -2102,24 +2103,20 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
             party = ExternalOrg(name="Equistar")
             session.add_all((project, party))
             session.flush()
-            first = Dependency(
-                project_id=project.id,
-                ref_code="DEP-A230-1",
-                dep_type="utility_relocation",
-                title="Equistar first relocation",
-                external_org_id=party.id,
-                status="identified",
-            )
-            second = Dependency(
-                project_id=project.id,
-                ref_code="DEP-A230-2",
-                dep_type="utility_relocation",
-                title="Equistar second relocation",
-                external_org_id=party.id,
-                status="identified",
-            )
-            session.add_all((first, second))
-            session.flush()
+            dependency_ids = session.execute(
+                text(
+                    "insert into dependencies "
+                    "(project_id, ref_code, dep_type, title, external_org_id, status) "
+                    "values "
+                    "(:project_id, 'DEP-A230-1', 'utility_relocation', "
+                    "'Equistar first relocation', :party_id, 'identified'), "
+                    "(:project_id, 'DEP-A230-2', 'utility_relocation', "
+                    "'Equistar second relocation', :party_id, 'identified') "
+                    "returning id"
+                ),
+                {"project_id": project.id, "party_id": party.id},
+            ).scalars().all()
+            first_id, second_id = dependency_ids
             # This shape is intentionally as close as possible to the
             # reversible legacy form: unresolved attribution, one exact day,
             # selected scope, and no correction. Only scope cardinality makes
@@ -2158,13 +2155,13 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
                     DependencyEventScope(
                         event_id=event.id,
                         scope_decision_id=decision.id,
-                        dependency_id=first.id,
+                        dependency_id=first_id,
                         recorded_by="corridor:event-admission",
                     ),
                     DependencyEventScope(
                         event_id=event.id,
                         scope_decision_id=decision.id,
-                        dependency_id=second.id,
+                        dependency_id=second_id,
                         recorded_by="corridor:event-admission",
                     ),
                 )

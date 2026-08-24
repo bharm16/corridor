@@ -34,7 +34,7 @@
 
 <main>
   <h1>Coordinate this statement</h1>
-  <p class="lead">Save the External Party fact and the project response together. The source Candidate stays unchanged.</p>
+  <p class="lead">Save the External Party fact and the project response together. The extracted source stays unchanged.</p>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
@@ -57,9 +57,9 @@
   {% elif not_relevant %}
     <section class="saved">
       <b>Marked Not Relevant.</b> Reason: {{ not_relevant.reason.replace('_', ' ') }}.
-      The Candidate, its payload, and its Evidence remain in append-only history.
+      The extracted source and its Evidence remain in append-only history.
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant/{{ not_relevant.id }}/restore">
-        <button type="submit">Restore this Candidate to prioritized work</button>
+        <button type="submit">Restore this extracted statement to prioritized work</button>
       </form>
     </section>
   {% else %}
@@ -135,7 +135,7 @@
         </div>
         <p class="muted">When a party remains unresolved, the selected registered External Party supplies the stored wording. No name transcription is required, and this decision does not register a name for future Documents.</p>
         <input type="hidden" name="event_date" value="{{ candidate_event_date }}">
-        <p><b>Statement date:</b> {{ candidate_event_date or 'not stated in the Candidate' }}</p>
+        <p><b>Statement date:</b> {{ candidate_event_date or 'not stated in the extracted statement' }}</p>
         <input type="hidden" name="description" value="{{ candidate_description }}">
         <p><b>Extracted statement:</b> {{ candidate_description or 'No supported statement description is available.' }}</p>
       </fieldset>
@@ -151,7 +151,7 @@
           <p><b>Evidence-supported timing:</b> <span class="quote">{{ candidate_timing.text }}</span></p>
           <p><b>Precision:</b> {{ candidate_timing.precision }}{% if candidate_timing.start_date %} · {{ candidate_timing.start_date }}{% endif %}{% if candidate_timing.end_date and candidate_timing.end_date != candidate_timing.start_date %} to {{ candidate_timing.end_date }}{% endif %}</p>
         {% else %}
-          <p class="error">No structured timing is available. The Candidate stays pending until extraction or Evidence supplies one.</p>
+          <p class="error">No structured timing is available. This extracted statement stays pending until Evidence supplies one.</p>
           <input type="hidden" name="new_timing_text" value="">
           <input type="hidden" name="new_timing_precision" value="">
           <input type="hidden" name="new_timing_start_date" value="">
@@ -161,7 +161,7 @@
         <input type="hidden" name="previous_timing_precision" value="">
         <input type="hidden" name="previous_timing_start_date" value="">
         <input type="hidden" name="previous_timing_end_date" value="">
-        <label>Additional supporting Evidence, only when the Candidate excerpt is incomplete</label>
+        <label>Additional supporting Evidence, only when the extracted excerpt is incomplete</label>
         {% for evidence in candidate_evidence %}
           <label class="check"><input type="radio" name="supporting_page_index" value="{{ loop.index0 }}" data-supporting-quote="{{ evidence.page_text or '' }}" {% if not evidence.supporting_quote_available %}disabled{% endif %}> Use complete registered context from {{ evidence.filename }}, page {{ evidence.page_no }}</label>
         {% endfor %}
@@ -197,13 +197,13 @@
         <label for="milestone-impact">Milestone Impact (required only for a date change)</label><select id="milestone-impact" name="milestone_impact"><option value="">Not a date change</option><option value="affects">affects</option><option value="does_not_affect">does not affect</option><option value="not_yet_known">not yet known</option></select>
         {% for milestone in milestones %}<label class="check"><input type="checkbox" name="milestone_id" value="{{ milestone.id }}"> {{ milestone.code }} — {{ milestone.name }}</label>{% endfor %}
       </fieldset>
-      {% if not roster %}<p class="error">No project roster member is available for Internal Owner. The Candidate stays pending.</p>{% endif %}
+      {% if not roster %}<p class="error">No project roster member is available for Internal Owner. This work stays pending.</p>{% endif %}
       <button type="submit"{% if not guided_save_available or not roster %} disabled{% endif %}>Save statement and Coordination Plan</button>
     </form>
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant">
       <fieldset>
         <legend>Not Relevant</legend>
-        <p class="muted">Use only when this Candidate does not belong in the project record. It creates no statement or Coordination Plan and can be reversed.</p>
+        <p class="muted">Use only when this extracted statement does not belong in the Project Record. It creates no External Party Statement or Coordination Plan and can be reversed.</p>
         <label for="not-relevant-reason">Structured reason</label>
         <select id="not-relevant-reason" name="reason" required>
           <option value="">Choose a reason</option>
@@ -212,7 +212,7 @@
           <option value="duplicate_statement">duplicate statement</option>
           <option value="insufficient_source_context">insufficient source context</option>
         </select>
-        <label class="check"><input type="checkbox" name="confirmed" value="yes" required> I confirm this Candidate is Not Relevant.</label>
+        <label class="check"><input type="checkbox" name="confirmed" value="yes" required> I confirm this extracted statement is Not Relevant.</label>
         <button type="submit">Mark Not Relevant</button>
       </fieldset>
     </form>

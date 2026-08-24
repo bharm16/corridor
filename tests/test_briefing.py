@@ -85,7 +85,6 @@ def dependency(session, project):
         ref_code="DEP-00001",
         dep_type="utility_relocation",
         title="Electric — CenterPoint Energy",
-        status="committed",
         resolution_strategy="relocate",
         committed_date=TODAY - timedelta(days=10),
         internal_owner=None,
@@ -653,7 +652,6 @@ def second_dependency(session, project, dependency):
         ref_code="DEP-00002",
         dep_type="utility_relocation",
         title="Gas — Atmos",
-        status="identified",
         resolution_strategy=None,
         internal_owner="Bryce",
     )

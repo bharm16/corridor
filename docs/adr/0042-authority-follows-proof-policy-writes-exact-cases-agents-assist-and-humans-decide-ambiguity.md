@@ -23,7 +23,7 @@ research basis is recorded in
 | --- | --- | --- | --- |
 | Create a Candidate | Extractor, including a model-backed extractor | Registered source identity, cited pages, prompt/model lineage | Extraction Run and immutable Candidate payload |
 | Admit a Dependency or External Party statement in an enumerated exact class | Named deterministic Admission policy | Current Active Run, verified Evidence, one complete replayable eligibility result | Policy version and digest, run, per-Candidate outcome, exact created identities |
-| Carry established Operative Support to exact unchanged current Evidence | Carry-Forward Policy | Authorized policy, exact unique unchanged correspondence, current Evidence | Carry-Forward Run and per-row carried or abstained outcome |
+| Carry established Operative Support to exact unchanged current Evidence | Carry-Forward Policy | Released policy version and digest, exact unique unchanged correspondence, current Evidence | Carry-Forward Run and per-row carried or abstained outcome |
 | Produce an Evidence Investigator packet | Model assistance | Server-bound Candidate, project, Evidence, opaque references, budgets, deterministic validation | Non-authoritative investigation run, redacted steps, packet or explicit Abstention |
 | Choose one, selected, or all-active Commitment Scope when Evidence does not already prove it | Human Adjudication | Visible verified Evidence and current human-readable Dependency choices | Scope decision, principal, guided grouping receipt |
 | Mark a Candidate Not Relevant, dismiss a Dependency, or settle a Dispute | Human Adjudication | The current record, Evidence, and structured reason or conclusion | Attributable append-only disposition, dismissal, or Settlement |

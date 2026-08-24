@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Workflow state is an attributable Work Decision, never Evidence
 
 The pilot's coordination loop assigns an Internal Owner, sets a Next Action and an Action Due Date, and the report must print owner and action — the build spec promised those two and never built them; the Action Due Date is new with this decision — while ADR-0003 admitted exactly two provenance classes: an Assertion (what a document said) and a Derivation (what the rules computed). Decision: project-controlled coordination state is a third class, the **Work Decision** — an attributable project-team decision recorded at a stated time, proving only what the project decided and when. This amends ADR-0003 the way ADR-0003 amended the original zero-uncited-assertions rule: "no cell is bare" is unchanged in force and generalized in class — the verifier accepts exactly three classes, and the build spec's report section moves with it. Queryable current values live on the Work Decision's exact subject, and every change writes a typed, immutable Work Decision receipt carrying the recording principal, the timestamp, exact before/after values, and its predecessor decision — the generic audit log is not the record. Later decisions supersede, never erase.

@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0009
+---
+
 # Criticality is asserted by the document, not assigned by a reviewer
 
 > **Superseded by [ADR-0009](0009-the-document-records-a-resolution-strategy-not-a-criticality.md).**

@@ -86,13 +86,13 @@ def document(session, project):
 
 def make_dep(session, project, ref="DEP-1", **kw):
     committed_date = kw.pop("committed_date", None)
+    kw.pop("status", None)
     dep = Dependency(
         project_id=project.id,
         ref_code=ref,
         dep_type="utility_relocation",
         title="Telecom — Example Utility",
         internal_owner=kw.pop("internal_owner", "Bryce"),
-        status=kw.pop("status", "identified"),
         resolution_strategy=kw.pop("resolution_strategy", None),
         **kw,
     )
@@ -191,9 +191,7 @@ def register_chain(session, project, documents, replacement_dates):
         document.registry_id = f"exceptions-{project.id}-{document.id}"
     source = Document(
         project_id=project.id,
-        sha256=hashlib.sha256(
-            f"exceptions-index-{project.id}".encode()
-        ).hexdigest(),
+        sha256=hashlib.sha256(f"exceptions-index-{project.id}".encode()).hexdigest(),
         filename="authority-index.pdf",
         doc_type="other",
         parse_status="parsed",
@@ -272,8 +270,9 @@ def test_missing_owner_fires_without_an_internal_owner(session, project, documen
     assert "MISSING_OWNER" in codes(session, dep)
 
 
-def test_missing_owner_does_not_fire_on_a_closed_record(session, project, document):
-    dep = make_dep(session, project, internal_owner=None, status="closed")
+def test_missing_owner_does_not_fire_on_a_ready_record(session, project, document):
+    dep = make_dep(session, project, internal_owner=None)
+    add_evidence(session, dep, document, verified=True, satisfies=True)
     assert "MISSING_OWNER" not in codes(session, dep)
 
 
@@ -309,7 +308,9 @@ def test_missing_evidence_cannot_fire_on_a_ready_record(session, project, docume
 def test_stale_fires_when_no_document_has_spoken_recently(session, project, document):
     """STALE measures document silence, not reviewer attention."""
     dep = make_dep(session, project)
-    add_evidence(session, dep, document, doc_date=TODAY - timedelta(days=STALE_DAYS + 1))
+    add_evidence(
+        session, dep, document, doc_date=TODAY - timedelta(days=STALE_DAYS + 1)
+    )
     assert "STALE" in codes(session, dep)
 
 
@@ -333,7 +334,9 @@ def test_due_soon_fires_inside_the_window(session, project, document):
 
 
 def test_due_soon_does_not_fire_far_out(session, project, document):
-    dep = make_dep(session, project, need_date=TODAY + timedelta(days=DUE_SOON_DAYS + 5))
+    dep = make_dep(
+        session, project, need_date=TODAY + timedelta(days=DUE_SOON_DAYS + 5)
+    )
     add_evidence(session, dep, document)
     assert "DUE_SOON" not in codes(session, dep)
 
@@ -656,7 +659,7 @@ def test_registering_a_successor_immediately_creates_provenance_review_work(
     assert "re-confirmation" in exception.detail
     assert "overdue" not in exception.detail.lower()
     assert format_exception_label(exception) == (
-        "SUPERSEDED_CITATION 11d · re-confirmation"
+        "Evidence is not current · re-confirmation 11d"
     )
 
 
@@ -800,9 +803,9 @@ def test_current_human_review_clears_the_signal_without_deleting_history(
     assert "SUPERSEDED_CITATION" not in codes(session, dependency)
     assert resolve_operative_support(session, [dependency.id])[dependency.id].is_ready
     assert session.get(EvidenceLink, historical.id).verified is True
-    historical_support = resolve_operative_support(
-        session, [dependency.id]
-    )[dependency.id]
+    historical_support = resolve_operative_support(session, [dependency.id])[
+        dependency.id
+    ]
     assert historical.id in {
         support.evidence_link_id for support in historical_support.readiness
     }
@@ -883,9 +886,7 @@ def test_an_exception_carries_no_score(session, project, document):
     assert not hasattr(exception, "severity")
 
 
-def test_criticality_is_a_flag_to_filter_never_a_multiplier(
-    session, project, document
-):
+def test_criticality_is_a_flag_to_filter_never_a_multiplier(session, project, document):
     """The moves/stays reading rides along so a view can slice on it.
 
     Same rule, same detail, whatever the strategy — the reading changes
@@ -902,8 +903,16 @@ def test_criticality_is_a_flag_to_filter_never_a_multiplier(
     for dep in (normal, critical):
         add_evidence(session, dep, document)
 
-    n = next(e for e in exceptions_for(session, normal.id, today=TODAY) if e.rule == "MISSING_OWNER")
-    c = next(e for e in exceptions_for(session, critical.id, today=TODAY) if e.rule == "MISSING_OWNER")
+    n = next(
+        e
+        for e in exceptions_for(session, normal.id, today=TODAY)
+        if e.rule == "MISSING_OWNER"
+    )
+    c = next(
+        e
+        for e in exceptions_for(session, critical.id, today=TODAY)
+        if e.rule == "MISSING_OWNER"
+    )
 
     assert (n.critical, c.critical) == (False, True)
     assert n.detail == c.detail
@@ -941,9 +950,9 @@ def test_exception_labels_include_the_rule_s_own_days_when_present(
 
     by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
 
-    assert format_exception_label(by_rule["OVERDUE"]) == "OVERDUE 8d"
-    assert format_exception_label(by_rule["DUE_SOON"]) == "DUE_SOON 3d"
-    assert format_exception_label(by_rule["STALE"]) == "STALE 21d"
+    assert format_exception_label(by_rule["OVERDUE"]) == "Committed Date passed 8d"
+    assert format_exception_label(by_rule["DUE_SOON"]) == "Need Date is near 3d"
+    assert format_exception_label(by_rule["STALE"]) == "Evidence is stale 21d"
 
 
 def test_a_rule_whose_fact_is_an_absence_carries_no_quantity(
@@ -967,14 +976,14 @@ def test_exception_labels_omit_days_for_absence_rules(session, project, document
 
     by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
 
-    assert format_exception_label(by_rule["MISSING_OWNER"]) == "MISSING_OWNER"
-    assert format_exception_label(by_rule["MISSING_DATE"]) == "MISSING_DATE"
+    assert format_exception_label(by_rule["MISSING_OWNER"]) == "No Internal Owner"
+    assert format_exception_label(by_rule["MISSING_DATE"]) == "No Committed Date"
 
 
 def test_stale_with_no_dated_evidence_at_all_has_no_quantity(
     session, project, document
 ):
-    """"No document has ever spoken" is an absence, not an age. An age
+    """ "No document has ever spoken" is an absence, not an age. An age
     would have to be measured from an invented origin."""
     dep = make_dep(session, project)
     add_evidence(session, dep, document)
@@ -991,9 +1000,7 @@ def test_stale_with_no_dated_evidence_at_all_has_no_quantity(
 # ----------------------------------------------- the facet view (#115)
 
 
-def test_facets_group_by_rule_and_order_within_by_quantity(
-    session, project, document
-):
+def test_facets_group_by_rule_and_order_within_by_quantity(session, project, document):
     """One facet function feeds every consumer, so no view invents an
     order. Within a rule, most days first — an ordering a reader can
     check against the record."""
@@ -1034,9 +1041,7 @@ def test_a_bucket_with_nothing_to_order_by_says_so(session, project, document):
     assert missing.has_quantities is False
 
 
-def test_absent_quantities_sort_after_present_ones_stably(
-    session, project, document
-):
+def test_absent_quantities_sort_after_present_ones_stably(session, project, document):
     """A row nobody can order still appears — after the ones that can be,
     in ref-code order, so two runs render identically."""
     from corridor.exceptions import facets
@@ -1079,9 +1084,7 @@ def test_evaluate_returns_every_records_exceptions(session, project, document):
     assert any(e.rule == "MISSING_OWNER" and e.dependency_id == a.id for e in result)
 
 
-def test_evaluate_is_deterministic_and_claims_no_ranking(
-    session, project, document
-):
+def test_evaluate_is_deterministic_and_claims_no_ranking(session, project, document):
     """Flat output is stable — two runs, one answer — and ordered by
     nothing but (ref_code, rule): a filing order, not a verdict. Anything
     that looks like "worst first" belongs to the facet view, where the
@@ -1162,9 +1165,7 @@ def test_an_evaluation_publishes_the_thresholds_it_used(session, project):
     assert tightened.thresholds.due_soon_days == 10
 
 
-def test_an_evaluation_groups_by_dependency_so_no_consumer_regroups(
-    session, project
-):
+def test_an_evaluation_groups_by_dependency_so_no_consumer_regroups(session, project):
     """The other grouping every consumer needs, beside `facets`."""
     first = make_dep(session, project, ref="DEP-1")
     second = make_dep(session, project, ref="DEP-2")
@@ -1225,7 +1226,9 @@ def test_missing_owner_clears_when_a_work_decision_records_one(
     assert "MISSING_OWNER" in codes(session, dep)
 
     assign_internal_owner(
-        session, dep.id, "Dana Fields",
+        session,
+        dep.id,
+        "Dana Fields",
         principal=HumanPrincipal("local:coordination-tester"),
     )
     assert "MISSING_OWNER" not in codes(session, dep)
@@ -1238,12 +1241,16 @@ def test_action_due_dates_have_their_own_lanes(session, project, document):
     from corridor.work_decisions import set_next_action
 
     recorder = HumanPrincipal("local:coordination-tester")
-    soon = make_dep(session, project, ref="DEP-soon",
-                    need_date=TODAY + timedelta(days=10))
+    soon = make_dep(
+        session, project, ref="DEP-soon", need_date=TODAY + timedelta(days=10)
+    )
     add_evidence(session, soon, document)
     set_next_action(
-        session, soon.id, "Call the City",
-        due_date=TODAY + timedelta(days=3), principal=recorder,
+        session,
+        soon.id,
+        "Call the City",
+        due_date=TODAY + timedelta(days=3),
+        principal=recorder,
     )
 
     fired = {e.rule: e for e in exceptions_for(session, soon.id, today=TODAY)}
@@ -1254,17 +1261,18 @@ def test_action_due_dates_have_their_own_lanes(session, project, document):
     late = make_dep(session, project, ref="DEP-late")
     add_evidence(session, late, document)
     set_next_action(
-        session, late.id, "Chase the schedule",
-        due_date=TODAY - timedelta(days=4), principal=recorder,
+        session,
+        late.id,
+        "Chase the schedule",
+        due_date=TODAY - timedelta(days=4),
+        principal=recorder,
     )
     fired = {e.rule: e for e in exceptions_for(session, late.id, today=TODAY)}
     assert "ACTION_OVERDUE" in fired and fired["ACTION_OVERDUE"].quantity_days == 4
     assert "OVERDUE" not in fired
 
 
-def test_the_action_horizon_is_per_project_overridable(
-    session, project, document
-):
+def test_the_action_horizon_is_per_project_overridable(session, project, document):
     from datetime import timedelta
 
     from corridor.principals import HumanPrincipal
@@ -1280,9 +1288,7 @@ def test_the_action_horizon_is_per_project_overridable(
         principal=HumanPrincipal("local:coordination-tester"),
     )
 
-    default = {
-        e.rule for e in exceptions_for(session, dep.id, today=TODAY)
-    }
+    default = {e.rule for e in exceptions_for(session, dep.id, today=TODAY)}
     assert "ACTION_DUE_SOON" not in default
 
     widened = {

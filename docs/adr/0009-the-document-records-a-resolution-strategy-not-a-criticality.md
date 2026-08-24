@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # The document records a resolution strategy, and criticality is a reading of it
 
 **Supersedes [ADR-0007](0007-criticality-is-asserted-by-the-document.md).**

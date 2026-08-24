@@ -1,10 +1,4 @@
-"""Operate project-scoped Automatic Carry-Forward without implicit authority.
-
-``status`` is read-only.  Policy authorization and disablement require an
-explicit, validated :class:`HumanPrincipal`; ``run`` performs only the
-already-authorized machine policy and never creates an authorization or an
-Admission as a side effect.
-"""
+"""Inspect or run the released project-scoped Carry-Forward Policy."""
 
 from __future__ import annotations
 
@@ -19,57 +13,20 @@ from sqlalchemy.orm import Session
 
 from corridor.automatic_carry_forward import (
     ABSTENTION_REASON_VERSION,
-    active_carry_forward_policy,
     automatic_carry_forward_status,
-    authorize_automatic_carry_forward,
-    disable_automatic_carry_forward,
     run_automatic_carry_forward,
 )
-from corridor.models import PolicyApproval, Project
-from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
-
-
-def _human_principal(value: str) -> HumanPrincipal:
-    try:
-        return HumanPrincipal(value)
-    except InvalidHumanPrincipal as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
+from corridor.models import Project
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="automatic-carry-forward")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    status = commands.add_parser(
-        "status", help="show the explicitly active project policy"
-    )
+    status = commands.add_parser("status", help="show the released policy status")
     status.add_argument("project_slug")
 
-    authorize = commands.add_parser(
-        "authorize", help="authorize and activate the current policy"
-    )
-    authorize.add_argument("project_slug")
-    authorize.add_argument(
-        "--principal",
-        required=True,
-        type=_human_principal,
-        help="stable namespaced human subject, for example oidc:00u123",
-    )
-
-    disable = commands.add_parser(
-        "disable", help="disable the active policy without deleting history"
-    )
-    disable.add_argument("project_slug")
-    disable.add_argument(
-        "--principal",
-        required=True,
-        type=_human_principal,
-        help="stable namespaced human subject, for example oidc:00u123",
-    )
-
-    run = commands.add_parser(
-        "run", help="execute only the already-authorized machine policy"
-    )
+    run = commands.add_parser("run", help="execute the released fail-closed policy")
     run.add_argument("project_slug")
     return parser
 
@@ -81,19 +38,6 @@ def _project_by_slug(session: Session, slug: str) -> Project:
     return project
 
 
-def _policy_payload(
-    approval: PolicyApproval | None,
-) -> dict[str, Any] | None:
-    if approval is None:
-        return None
-    return {
-        "approval_id": approval.id,
-        "policy_version": approval.policy_version,
-        "policy_sha256": approval.policy_sha256,
-        "approved_by": approval.approved_by,
-    }
-
-
 def _base_payload(project: Project, command: str) -> dict[str, Any]:
     return {
         "command": command,
@@ -103,16 +47,11 @@ def _base_payload(project: Project, command: str) -> dict[str, Any]:
 
 
 def _status_payload(status) -> dict[str, Any]:
-    active_policy = None
-    if status.policy_approval_id is not None:
-        active_policy = {
-            "approval_id": status.policy_approval_id,
+    return {
+        "released_policy": {
             "policy_version": status.policy_version,
             "policy_sha256": status.policy_sha256,
-            "approved_by": status.approved_by,
-        }
-    return {
-        "active_policy": active_policy,
+        },
         "carried_count": status.carried_count,
         "eligible_count": status.eligible_count,
         "abstentions": {
@@ -145,31 +84,12 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
 
             if args.command == "status":
                 payload.update(
-                    _status_payload(
-                        automatic_carry_forward_status(session, project.id)
-                    )
+                    _status_payload(automatic_carry_forward_status(session, project.id))
                 )
-            elif args.command == "authorize":
-                approval = authorize_automatic_carry_forward(
-                    session,
-                    project.id,
-                    principal=args.principal,
-                )
-                payload["active_policy"] = _policy_payload(approval)
-                session.commit()
-            elif args.command == "disable":
-                disabled = disable_automatic_carry_forward(
-                    session,
-                    project.id,
-                    principal=args.principal,
-                )
-                payload["active_policy"] = None
-                payload["disabled_policy"] = _policy_payload(disabled)
-                session.commit()
             else:
                 result = run_automatic_carry_forward(session, project.id)
-                payload["active_policy"] = _policy_payload(
-                    active_carry_forward_policy(session, project.id)
+                payload.update(
+                    _status_payload(automatic_carry_forward_status(session, project.id))
                 )
                 payload["carried_receipt_ids"] = sorted(
                     receipt.audit_log_id for receipt in result.carried

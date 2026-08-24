@@ -414,7 +414,6 @@ def _predecessor_registry_sha256(session: Session, project_id: int) -> str:
                     "id": dependency.id,
                     "source_ref": dependency.source_ref,
                     "external_org_id": dependency.external_org_id,
-                    "status": dependency.status,
                 }
                 for dependency in dependencies
             ],

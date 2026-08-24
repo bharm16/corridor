@@ -1,4 +1,4 @@
-"""Production ordering for exact Revision Comparison then authorized carry."""
+"""Production ordering for exact Revision Comparison then Carry-Forward."""
 
 from __future__ import annotations
 
@@ -9,9 +9,6 @@ import pytest
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
-from corridor.automatic_carry_forward import (
-    authorize_automatic_carry_forward,
-)
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
@@ -35,7 +32,6 @@ from corridor.supersession_review import build_reviewer_worklist
 
 
 REVIEWER = HumanPrincipal("local:revision-reviewer")
-APPROVER = HumanPrincipal("local:revision-approver")
 
 
 @pytest.fixture
@@ -101,7 +97,9 @@ def _quote(fields: dict[str, str]) -> str:
     )
 
 
-def _candidate(project: Project, document: Document, fields: dict[str, str]) -> Candidate:
+def _candidate(
+    project: Project, document: Document, fields: dict[str, str]
+) -> Candidate:
     citation = {
         "document_id": document.id,
         "page": 1,
@@ -213,16 +211,10 @@ def _seed_transition(session):
     }
 
 
-def test_process_revision_pair_creates_verifies_then_routes_authorized_carry_forward(
+def test_process_revision_pair_creates_verifies_then_routes_carry_forward(
     session,
 ):
     scenario = _seed_transition(session)
-    authorize_automatic_carry_forward(
-        session,
-        scenario["project"].id,
-        principal=APPROVER,
-    )
-
     result = process_revision_pair(
         session,
         predecessor_extraction_run_id=scenario["predecessor_run"].id,
@@ -239,11 +231,6 @@ def test_process_revision_pair_does_not_route_carry_forward_when_readback_fails(
     session, monkeypatch
 ):
     scenario = _seed_transition(session)
-    authorize_automatic_carry_forward(
-        session,
-        scenario["project"].id,
-        principal=APPROVER,
-    )
     seen = []
 
     monkeypatch.setattr(
@@ -265,10 +252,13 @@ def test_process_revision_pair_does_not_route_carry_forward_when_readback_fails(
         )
 
     assert seen == []
-    assert session.scalars(
-        select(AuditLog).where(
-            AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
-            AuditLog.action == "automatic_carry_forward",
-        )
-    ).all() == []
+    assert (
+        session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "dependency",
+                AuditLog.entity_id == scenario["dependency"].id,
+                AuditLog.action == "automatic_carry_forward",
+            )
+        ).all()
+        == []
+    )

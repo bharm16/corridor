@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Acceptance captures are regression artifacts, not production run lineage
 
 The M8 acceptance fixture pins five `matrix_tiered_v3` extraction runs captured from real model calls over NHHIP revision PDFs byte-identical to the registered documents, and the temptation existed to register those captured runs as the pilot's production lineage rather than pay for extraction twice. Rejected: a production Extraction Run is created only by production extraction against registered documents. The capture's original runs existed only in a disposable database and no longer exist — recreating them live would be an import wearing a run's identity, and the run schema records no fixture origin, digest, capture time, or importer, so the disguise would be permanent (`models.py`). ADR-0019 governs declaring a run already in lineage; it does not authorize minting lineage from a capture. Semantic quality is deliberately not the argument: a fresh production run is exactly as unmeasured as the capture until human review, and the capture's claim boundary (mechanical correctness only) merely says so out loud. The discriminator is identity — a production run's lineage is true because the run happened where it says it happened. An acceptance capture verifies behavior: its model-free replays exercise the mechanical pipeline, and it never populates run lineage.

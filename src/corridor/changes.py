@@ -4,7 +4,7 @@ A weekly report's most-read section is the one saying what moved. That
 section is only trustworthy if it can distinguish two things that look
 identical in the numbers:
 
-- the **project** changed — a date slipped, a record closed
+- the **project** changed — a Committed Date moved, a record became Ready
 - the **rules** changed — STALE tightened from 14 days to 10
 
 Those call for opposite responses, so every snapshot records the ruleset
@@ -34,7 +34,7 @@ from corridor.models import (
 @dataclass
 class Change:
     ref_code: str
-    kind: str  # new | closed | dismissed | slipped | escalated | became_ready
+    kind: str  # new | closed | dismissed | committed_date_change | escalated | became_ready
     detail: str
     # The Dependency this change is about, so a report cell describing it
     # drills through to the record rather than citing nothing (ADR-0003).
@@ -95,15 +95,12 @@ def snapshot(
         return published_committed_dates.get(row.dependency.id)
 
     publication = evaluation.statement_publication
-    party_statements = (
-        () if publication is None else publication.party_statements
-    )
+    party_statements = () if publication is None else publication.party_statements
     return {
         "ruleset_version": evaluation.ruleset_version,
         "dependencies": {
             row.dependency.ref_code: {
                 "id": row.dependency.id,
-                "status": row.dependency.status,
                 "resolution_strategy": row.dependency.resolution_strategy,
                 "committed_date": (
                     published_committed_date(row).isoformat()
@@ -170,9 +167,7 @@ def diff_since_last(
     if retirement_boundary is not None:
         previous_query = previous_query.where(ReportRun.ts > retirement_boundary)
     previous = session.scalars(
-        previous_query
-        .order_by(ReportRun.ts.desc(), ReportRun.id.desc())
-        .limit(1)
+        previous_query.order_by(ReportRun.ts.desc(), ReportRun.id.desc()).limit(1)
     ).first()
 
     current = snapshot(
@@ -205,16 +200,11 @@ def diff_since_last(
                 Change(
                     ref,
                     "new",
-                    f"added to the ledger as {now['status']}",
+                    "added to the Ledger",
                     now.get("id"),
                 )
             )
             continue
-
-        if now["status"] == "closed" and was["status"] != "closed":
-            diff.changes.append(
-                Change(ref, "closed", "status moved to closed", now.get("id"))
-            )
 
         if now["ready"] and not was["ready"]:
             diff.changes.append(
@@ -226,14 +216,14 @@ def diff_since_last(
                 )
             )
 
-        # A slip is the committed date moving *later*. Moving earlier is not
-        # a slip and should not be reported as one.
+        # A Committed Date Change can move earlier or later; both are factual
+        # changes and neither is reduced to the vague legacy term "slip".
         if was["committed_date"] and now["committed_date"]:
-            if now["committed_date"] > was["committed_date"]:
+            if now["committed_date"] != was["committed_date"]:
                 diff.changes.append(
                     Change(
                         ref,
-                        "slipped",
+                        "committed_date_change",
                         f"committed date moved {was['committed_date']} → "
                         f"{now['committed_date']}",
                         now.get("id"),
@@ -255,9 +245,11 @@ def diff_since_last(
         # report an escalation for every record that merely became readable,
         # on the first report after the migration — a change in the schema
         # announced as a change in the world.
-        if "resolution_strategy" in was and is_critical(
-            now["resolution_strategy"]
-        ) and not is_critical(was["resolution_strategy"]):
+        if (
+            "resolution_strategy" in was
+            and is_critical(now["resolution_strategy"])
+            and not is_critical(was["resolution_strategy"])
+        ):
             diff.changes.append(
                 Change(
                     ref,
@@ -274,9 +266,7 @@ def diff_since_last(
             appeared = set(now["exceptions"]) - set(was["exceptions"])
             for rule in sorted(appeared):
                 diff.changes.append(
-                    Change(
-                        ref, "escalated", f"new exception: {rule}", now.get("id")
-                    )
+                    Change(ref, "escalated", f"new exception: {rule}", now.get("id"))
                 )
 
     for ref in before:
@@ -292,8 +282,7 @@ def diff_since_last(
                     Change(
                         ref,
                         "dismissed",
-                        f"dismissed as {dismissal.reason} "
-                        f"by {dismissal.dismissed_by}",
+                        f"dismissed as {dismissal.reason} by {dismissal.dismissed_by}",
                         before[ref].get("id"),
                     )
                 )

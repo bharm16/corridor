@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Readiness is computed from evidence, never set
 
 `ready` was a value in the `dependencies.status` enum, which would let a reviewer click a Dependency into readiness without proof — the precise failure this product exists to prevent, and inconsistent with the exception engine's own rule that derived conditions are queries rather than stored state.

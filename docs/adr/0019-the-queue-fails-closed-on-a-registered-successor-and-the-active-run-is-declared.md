@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # The queue fails closed on a registered successor, and the Active Run is declared, not latest
 
 > ADR-0022 adds Automatic Carry-Forward before reviewer presentation for the exact policy-eligible subset. Rows that are not carried retain the two-lane routing decided here.

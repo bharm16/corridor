@@ -17,7 +17,6 @@ from corridor.adjudicate import (
     reject_candidate,
 )
 from corridor.admission import load_project
-from corridor.automatic_carry_forward import authorize_automatic_carry_forward
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -215,13 +214,10 @@ def test_queue_exposes_two_counted_exclusive_review_lanes(client, project):
     r = client.get(f"/queue/{project.slug}")
 
     assert r.status_code == 200
-    assert (
-        f'href="/queue/{project.slug}?lane=candidate" aria-current="page"'
-        in r.text
-    )
+    assert f'href="/queue/{project.slug}?lane=candidate" aria-current="page"' in r.text
     assert f'href="/queue/{project.slug}?lane=reconfirmation"' in r.text
-    assert "Candidate Adjudication (0)" in r.text
-    assert "Reconfirmation (0)" in r.text
+    assert "Extracted conflicts (0)" in r.text
+    assert "Changed Document Evidence (0)" in r.text
 
 
 def test_the_review_screen_states_what_is_left_and_reaches_the_record(
@@ -240,7 +236,7 @@ def test_the_review_screen_states_what_is_left_and_reaches_the_record(
     assert r.status_code == 200
     assert "1 waiting for you" in r.text
     assert f'href="/ledger/{project.slug}"' in r.text
-    assert "Candidate Adjudication (" not in r.text
+    assert "Extracted conflicts (" not in r.text
 
 
 def _seed_waiting_supersession_review(session, project, predecessor):
@@ -249,7 +245,6 @@ def _seed_waiting_supersession_review(session, project, predecessor):
         ref_code="DEP-WAITING-REVISION",
         dep_type="utility_relocation",
         title="Telecom — waiting for current revision",
-        status="identified",
     )
     successor = Document(
         project_id=project.id,
@@ -313,13 +308,13 @@ def test_candidate_lane_surfaces_dependency_work_while_extraction_is_pending(
 
     assert r.status_code == 200
     assert "Queue empty" not in r.text
-    assert "Candidate Adjudication (1)" in r.text
+    assert "Extracted conflicts (1)" in r.text
     assert dependency.ref_code in r.text
     assert document.filename in r.text
     assert successor.filename in r.text
     assert "Awaiting extraction" in r.text
     assert "No successor extraction attempt exists" in r.text
-    assert "Reconfirmation unavailable" in r.text
+    assert "Current Evidence is unavailable" in r.text
     assert ">Reconfirm<" not in r.text
 
 
@@ -346,7 +341,7 @@ def test_candidate_lane_explains_a_durable_successor_extraction_failure(
     assert dependency.ref_code in r.text
     assert "Extraction failed" in r.text
     assert "completed Active Run is required" in r.text
-    assert "Reconfirmation unavailable" in r.text
+    assert "Current Evidence is unavailable" in r.text
     assert ">Reconfirm<" not in r.text
 
 
@@ -393,12 +388,12 @@ def test_empty_reconfirmation_lane_points_to_remaining_candidate_work(
 
     assert r.status_code == 200
     assert "Queue empty" in r.text
-    assert "Candidate Adjudication (1)" in r.text
+    assert "Extracted conflicts (1)" in r.text
     assert (
         f'href="/queue/{project.slug}?lane=reconfirmation" '
         'aria-current="page"' in r.text
     )
-    assert "1 item(s) remain in Candidate Adjudication" in r.text
+    assert "1 extracted conflict item(s) remain" in r.text
     assert "AT&amp;T Texas (SWBT)" not in r.text
 
 
@@ -447,9 +442,7 @@ def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
     session, project, document
 ):
     page = session.scalars(
-        select(DocPage).where(
-            DocPage.document_id == document.id, DocPage.page_no == 1
-        )
+        select(DocPage).where(DocPage.document_id == document.id, DocPage.page_no == 1)
     ).one()
     page.text = "BAD-1 GOOD-1 AT&T Texas (SWBT) 1149+00"
     session.flush()
@@ -520,9 +513,7 @@ def test_only_an_unverified_citation_is_announced(client, session, project, docu
     unverified = make_candidate(
         session, project, document, uid="FOC2-2", verified=False
     )
-    r = client.get(
-        f"/queue/{project.slug}?mode=review&candidate_id={unverified.id}"
-    )
+    r = client.get(f"/queue/{project.slug}?mode=review&candidate_id={unverified.id}")
     assert "Citation unverified" in r.text
 
 
@@ -668,7 +659,9 @@ def _seed_supersession_chain(
         candidates=(predecessor_candidate,),
         model="gpt-4o-mini",
     )
-    declare_active_run(session, predecessor.id, predecessor_run.id, principal=TEST_PRINCIPAL)
+    declare_active_run(
+        session, predecessor.id, predecessor_run.id, principal=TEST_PRINCIPAL
+    )
 
     successor_candidate = None
     if successor_failed:
@@ -734,7 +727,9 @@ def _seed_supersession_chain(
         else None,
         "successor_run": successor_run,
         "register_supersession": register_supersession,
-        "activate_successor": lambda: declare_active_run(session, successor.id, successor_run.id, principal=TEST_PRINCIPAL),
+        "activate_successor": lambda: declare_active_run(
+            session, successor.id, successor_run.id, principal=TEST_PRINCIPAL
+        ),
     }
 
 
@@ -844,85 +839,47 @@ def test_safe_unchanged_successor_moves_out_of_candidate_lane(client, session, p
     assert candidate_lane.status_code == 200
     assert "FOC1-1" not in candidate_lane.text
     assert "Queue empty" in candidate_lane.text
-    assert "Candidate Adjudication (0)" in candidate_lane.text
-    assert "Reconfirmation (1)" in candidate_lane.text
+    assert "Extracted conflicts (0)" in candidate_lane.text
+    assert "Changed Document Evidence (1)" in candidate_lane.text
     assert reconfirm_lane.status_code == 200
     body = reconfirm_lane.text
     assert chain["dependency"].ref_code in body
     assert chain["predecessor"].filename in body
     assert chain["successor"].filename in body
-    assert "Mechanically verified unchanged" in body
-    assert "<kbd>c</kbd> Reconfirm operative support" in body
-    assert (
-        f'action="/supersession-review/{chain["dependency"].id}/reconfirm"'
-        in body
-    )
-    assert (
-        f'name="predecessor_document_id" value="{chain["predecessor"].id}"'
-        in body
-    )
+    assert "The source wording is unchanged" in body
+    assert "<kbd>c</kbd> Use current Evidence" in body
+    assert f'action="/supersession-review/{chain["dependency"].id}/reconfirm"' in body
+    assert f'name="predecessor_document_id" value="{chain["predecessor"].id}"' in body
     assert (
         f'name="successor_candidate_id" value="{chain["successor_candidate"].id}"'
         in body
     )
-    assert (
-        f'name="comparison_id" value="{chain["comparison"].id}"' in body
-    )
+    assert f'name="comparison_id" value="{chain["comparison"].id}"' in body
     assert 'name="finding_id" value="' in body
     assert 'name="scope_fingerprint" value=' in body
     assert ">accept<" not in body
     assert ">reject<" not in body
 
 
-def test_queue_shows_read_only_automatic_carry_forward_policy_status(
+def test_queue_keeps_automatic_carry_forward_in_the_audit_layer(
     client, session, project
 ):
     _seed_reconfirmation_ready_chain(session, project)
-    authorize_automatic_carry_forward(
-        session,
-        project.id,
-        principal=TEST_PRINCIPAL,
-    )
-
     response = client.get(f"/queue/{project.slug}?lane=reconfirmation")
 
     assert response.status_code == 200
-    assert "Automatic Carry-Forward" in response.text
-    assert "automatic-carry-forward-v1" in response.text
-    assert TEST_PRINCIPAL.subject in response.text
-    assert "1 eligible" in response.text
-    assert "0 carried" in response.text
-    assert "automatic-carry-forward-abstentions-v1" in response.text
+    assert "Automatic Carry-Forward" not in response.text
+    assert "automatic-carry-forward-v2" not in response.text
+    assert "automatic-carry-forward-abstentions-v1" not in response.text
 
 
-def test_queue_shows_versioned_automatic_abstention_counts(
-    client, project, monkeypatch
-):
-    class Status:
-        enabled = True
-        policy_current = True
-        policy_approval_id = 12
-        policy_version = "automatic-carry-forward-v1"
-        policy_sha256 = "ab" * 32
-        approved_by = TEST_PRINCIPAL.subject
-        carried_count = 4
-        eligible_count = 0
-        abstention_reason_version = (
-            "automatic-carry-forward-abstentions-v1"
-        )
-        abstention_counts = {"comparison_changed": 3}
-
-    monkeypatch.setattr(
-        "corridor.web.app.automatic_carry_forward_status",
-        lambda _session, _project_id, **_kwargs: Status(),
-    )
-
+def test_queue_hides_versioned_automatic_abstention_counts(client, project):
     response = client.get(f"/queue/{project.slug}")
 
     assert response.status_code == 200
-    assert "3 comparison changed" in response.text
-    assert "4 carried" in response.text
-    assert "automatic-carry-forward-abstentions-v1" in response.text
+    assert "3 comparison changed" not in response.text
+    assert "4 carried" not in response.text
+    assert "automatic-carry-forward-abstentions-v1" not in response.text
 
 
 def test_direct_post_cannot_admit_a_reconfirmation_only_candidate(
@@ -944,10 +901,8 @@ def test_reconfirmation_post_moves_support_and_redirects_back_to_that_lane(
     client, session, project
 ):
     chain = _seed_reconfirmation_ready_chain(session, project)
-    before = client.get(
-        f"/ledger/{project.slug}/{chain['dependency'].id}"
-    )
-    assert "SUPERSEDED_CITATION" in before.text
+    before = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+    assert "Evidence is not current" in before.text
 
     response = client.post(
         f"/supersession-review/{chain['dependency'].id}/reconfirm",
@@ -970,10 +925,10 @@ def test_reconfirmation_post_moves_support_and_redirects_back_to_that_lane(
     assert "Queue empty" in refreshed.text
     ordinary_after = client.get(f"/queue/{project.slug}?lane=candidate")
     assert "Queue empty" in ordinary_after.text
-    assert "Candidate Adjudication (0)" in ordinary_after.text
+    assert "Extracted conflicts (0)" in ordinary_after.text
     assert "FOC1-1" not in ordinary_after.text
     detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
-    assert "SUPERSEDED_CITATION" not in detail.text
+    assert "Evidence is not current" not in detail.text
     assert chain["predecessor"].filename in detail.text
     assert chain["successor"].filename in detail.text
     assert "reconfirm_operative_support" in detail.text
@@ -1002,9 +957,9 @@ def test_stale_reconfirmation_form_is_409_and_leaves_review_work_open(
     assert response.status_code == 409
     assert "stale or no longer safe" in response.json()["detail"]
     review = client.get(f"/queue/{project.slug}?lane=reconfirmation")
-    assert "Reconfirm operative support" in review.text
+    assert "Use current Evidence" in review.text
     detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
-    assert "SUPERSEDED_CITATION" in detail.text
+    assert "Evidence is not current" in detail.text
     assert chain["predecessor"].filename in detail.text
     assert chain["successor"].filename not in detail.text
 
@@ -1155,7 +1110,6 @@ def test_authoritative_mutation_apis_reject_historical_candidate_bypass(
         ref_code="DEP-SCOPE",
         dep_type="utility_relocation",
         title="Scope target",
-        status="identified",
     )
     session.add(target)
     session.flush()
@@ -1188,9 +1142,7 @@ def test_authoritative_mutation_apis_reject_historical_candidate_bypass(
         assert candidate.state == "pending"
 
 
-def test_authoritative_mutation_api_rejects_an_inactive_successor_run(
-    session, project
-):
+def test_authoritative_mutation_api_rejects_an_inactive_successor_run(session, project):
     chain = _seed_supersession_chain(session, project)
 
     with pytest.raises(InvalidCandidateScope):
@@ -1299,7 +1251,6 @@ def test_merging_into_another_projects_dependency_is_refused(
         ref_code="DEP-00001",
         dep_type="utility_relocation",
         title="unrelated",
-        status="identified",
     )
     session.add(stray)
     session.flush()
@@ -1319,9 +1270,7 @@ def test_accepting_malformed_citations_returns_400_without_writes(
 ):
     candidate = make_candidate(session, project, document)
     candidate.payload_json = {**candidate.payload_json, "citations": {"page": 1}}
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1334,9 +1283,17 @@ def test_accepting_malformed_citations_returns_400_without_writes(
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1345,9 +1302,7 @@ def test_accepting_non_mapping_payload_returns_400_without_writes(
 ):
     candidate = make_candidate(session, project, document)
     candidate.payload_json = []
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1360,9 +1315,17 @@ def test_accepting_non_mapping_payload_returns_400_without_writes(
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1371,9 +1334,7 @@ def test_accepting_non_mapping_fields_returns_400_without_writes(
 ):
     candidate = make_candidate(session, project, document)
     candidate.payload_json = {**candidate.payload_json, "fields": []}
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1386,9 +1347,17 @@ def test_accepting_non_mapping_fields_returns_400_without_writes(
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1415,9 +1384,7 @@ def test_merging_malformed_citations_returns_400_without_writes(
             }
         ],
     }
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1431,9 +1398,17 @@ def test_merging_malformed_citations_returns_400_without_writes(
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1458,9 +1433,7 @@ def test_accepting_a_candidate_that_cites_nothing_returns_400_without_writes(
         "fields": payload_fields,
         "citations": [],
     }
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1473,9 +1446,17 @@ def test_accepting_a_candidate_that_cites_nothing_returns_400_without_writes(
 
     assert response.status_code == 400
     assert candidate.state == "pending"
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1503,9 +1484,7 @@ def test_merging_a_candidate_that_cites_nothing_returns_400_without_writes(
         "fields": payload_fields,
         "citations": [],
     }
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1519,9 +1498,17 @@ def test_merging_a_candidate_that_cites_nothing_returns_400_without_writes(
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1547,9 +1534,7 @@ def test_merging_non_integer_citation_document_id_returns_400_without_writes(
             }
         ],
     }
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1563,9 +1548,17 @@ def test_merging_non_integer_citation_document_id_returns_400_without_writes(
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1591,9 +1584,7 @@ def test_merging_non_integer_cited_page_returns_400_without_writes(
             }
         ],
     }
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
@@ -1607,9 +1598,17 @@ def test_merging_non_integer_cited_page_returns_400_without_writes(
     assert response.status_code == 400
     assert candidate.state == "pending"
     assert candidate.merged_into is None
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1640,9 +1639,12 @@ def test_accepting_another_projects_candidate_is_hidden_and_refused(
 
     assert response.status_code == 404
     assert candidate.state == "pending"
-    assert session.scalars(
-        select(Dependency).where(Dependency.project_id == project.id)
-    ).all() == []
+    assert (
+        session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        ).all()
+        == []
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1673,9 +1675,12 @@ def test_rejecting_another_projects_candidate_is_hidden_and_refused(
 
     assert response.status_code == 404
     assert candidate.state == "pending"
-    assert session.scalars(
-        select(Dependency).where(Dependency.project_id == project.id)
-    ).all() == []
+    assert (
+        session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        ).all()
+        == []
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1713,9 +1718,12 @@ def test_edit_accepting_another_projects_candidate_is_hidden_and_refused(
     assert response.status_code == 404
     assert candidate.state == "pending"
     assert candidate.payload_json["fields"] == original
-    assert session.scalars(
-        select(Dependency).where(Dependency.project_id == project.id)
-    ).all() == []
+    assert (
+        session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        ).all()
+        == []
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1765,13 +1773,18 @@ def test_marking_evidence_on_another_projects_dependency_is_hidden_and_refused(
     )
 
     assert mark.status_code == 404
-    assert session.scalar(
-        select(func.count()).select_from(DependencyEvidenceSufficiency).where(
-            DependencyEvidenceSufficiency.dependency_id == dependency.id,
-            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
-            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(DependencyEvidenceSufficiency)
+            .where(
+                DependencyEvidenceSufficiency.dependency_id == dependency.id,
+                DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+                DependencyEvidenceSufficiency.scope_link_id.is_(None),
+            )
         )
-    ) == 0
+        == 0
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
@@ -1806,7 +1819,6 @@ def test_mutation_routes_refuse_without_a_configured_human_principal_and_write_n
             ref_code="DEP-00001",
             dep_type="utility_relocation",
             title="Existing dependency",
-            status="identified",
         )
         session.add(target)
         session.flush()
@@ -1871,19 +1883,22 @@ def test_mark_satisfies_route_refuses_without_a_configured_human_principal(
     )
 
     assert response.status_code == 503
-    assert session.scalar(
-        select(func.count()).select_from(DependencyEvidenceSufficiency).where(
-            DependencyEvidenceSufficiency.dependency_id == dependency.id,
-            DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
-            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(DependencyEvidenceSufficiency)
+            .where(
+                DependencyEvidenceSufficiency.dependency_id == dependency.id,
+                DependencyEvidenceSufficiency.evidence_link_id == evidence.id,
+                DependencyEvidenceSufficiency.scope_link_id.is_(None),
+            )
         )
-    ) == 0
+        == 0
+    )
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
 
 
-def test_edit_then_accept_records_the_edited_values(
-    client, session, project, document
-):
+def test_edit_then_accept_records_the_edited_values(client, session, project, document):
     candidate = make_candidate(session, project, document)
     client.post(
         f"/candidates/{candidate.id}/edit-accept",
@@ -1926,9 +1941,7 @@ def test_edit_accepting_with_every_field_box_cleared_is_refused(
     to name it by. Evidence for nothing, at 303 back to the queue.
     """
     candidate = make_candidate(session, project, document)
-    before_dependencies = session.scalar(
-        select(func.count()).select_from(Dependency)
-    )
+    before_dependencies = session.scalar(select(func.count()).select_from(Dependency))
     before_assertions = session.scalar(select(func.count()).select_from(Assertion))
     before_evidence = session.scalar(select(func.count()).select_from(EvidenceLink))
 
@@ -1946,9 +1959,17 @@ def test_edit_accepting_with_every_field_box_cleared_is_refused(
     # thing back. These tests share the caller's session, which cannot
     # tell a flush-then-rollback from a never-write — so they assert the
     # thing both harnesses agree on.
-    assert session.scalar(select(func.count()).select_from(Dependency)) == before_dependencies
-    assert session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
-    assert session.scalar(select(func.count()).select_from(EvidenceLink)) == before_evidence
+    assert (
+        session.scalar(select(func.count()).select_from(Dependency))
+        == before_dependencies
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(Assertion)) == before_assertions
+    )
+    assert (
+        session.scalar(select(func.count()).select_from(EvidenceLink))
+        == before_evidence
+    )
 
 
 def test_an_edit_is_audited_against_the_original_extraction(
@@ -2054,8 +2075,7 @@ def test_the_queue_shows_which_tier_read_the_row(session, project, document):
     """A transcribed row deserves different weight from one read off the
     text layer, the same way `text_source: ocr` already does — and today a
     reviewer cannot tell without opening the payload."""
-    rich_candidate(session, project, document, tier="transcribe",
-                   text_source="ocr")
+    rich_candidate(session, project, document, tier="transcribe", text_source="ocr")
 
     view = build_view(session, next_candidate(session, project.id))
 
@@ -2071,7 +2091,9 @@ def test_the_queue_lists_headers_the_vocabulary_could_not_place(
     which is not an extractor's decision to make. Reconstructing these from
     the payload by hand is how #85 and #97 were investigated."""
     rich_candidate(
-        session, project, document,
+        session,
+        project,
+        document,
         unmapped_columns=["Retain and Protect", "Abandon / Deactivate"],
     )
 
@@ -2080,14 +2102,14 @@ def test_the_queue_lists_headers_the_vocabulary_could_not_place(
     assert view.unmapped_columns == ["Retain and Protect", "Abandon / Deactivate"]
 
 
-def test_an_unverified_row_names_the_field_that_failed(
-    session, project, document
-):
-    """"Unverified" that names the suspect value instead of only sinking
+def test_an_unverified_row_names_the_field_that_failed(session, project, document):
+    """ "Unverified" that names the suspect value instead of only sinking
     the row. A reviewer who cannot see *which* field is unsupported has to
     re-verify all of them."""
     rich_candidate(
-        session, project, document,
+        session,
+        project,
+        document,
         unverified_fields=["station_from"],
         low_confidence_tokens=["1149"],
     )
@@ -2113,7 +2135,9 @@ def test_a_clean_row_surfaces_nothing_extra(session, project, document):
 
 def test_the_queue_page_renders_what_it_surfaces(client, session, project, document):
     rich_candidate(
-        session, project, document,
+        session,
+        project,
+        document,
         tier="transcribe",
         unmapped_columns=["Retain and Protect"],
         unverified_fields=["station_from"],
@@ -2177,19 +2201,17 @@ def test_a_sheet_candidate_shows_its_cells_instead_of_a_page_image(
     body = client.get(f"/queue/{project.slug}").text
 
     assert "UC-1 CenterPoint Energy 1149+00" in body
-    assert f'/page-image/{document.id}/1' not in body
+    assert f"/page-image/{document.id}/1" not in body
 
 
-def test_a_pdf_candidate_still_shows_its_page_image(
-    client, session, project, document
-):
+def test_a_pdf_candidate_still_shows_its_page_image(client, session, project, document):
     """The common case is untouched — a printout has a rendering and the
     quote is shown against it."""
     make_candidate(session, project, document)
 
     body = client.get(f"/queue/{project.slug}").text
 
-    assert f'/page-image/{document.id}/1' in body
+    assert f"/page-image/{document.id}/1" in body
 
 
 def test_a_sheet_candidate_is_labelled_as_read_from_cells(client, session, project):
@@ -2235,7 +2257,6 @@ def two_overdue(session, project):
             ref_code=ref,
             dep_type="utility_relocation",
             title=f"Telecom — {ref}",
-            status="committed",
             resolution_strategy=strategy,
             external_org_id=party.id,
             internal_owner="Bryce",
@@ -2273,13 +2294,13 @@ def two_overdue(session, project):
 
 
 def test_ledger_pills_carry_the_rules_own_days(client, session, project):
-    """"OVERDUE 40d" is a fact a reviewer can check against the record;
+    """ "Committed Date passed 40d" is a fact a reviewer can check against the record;
     the score it replaces was not."""
     two_overdue(session, project)
 
     body = client.get(f"/ledger/{project.slug}").text
 
-    assert "OVERDUE 40d" in body
+    assert "Committed Date passed 40d" in body
 
 
 def test_no_severity_markup_survives_anywhere(client, session, project):
@@ -2308,19 +2329,17 @@ def test_overdue_criticals_is_one_query(client, session, project):
     assert "DEP-PLAIN" not in body
 
 
-def test_the_dependency_view_states_days_beside_each_rule(
-    client, session, project
-):
+def test_the_dependency_view_states_days_beside_each_rule(client, session, project):
     deps = two_overdue(session, project)
 
     body = client.get(f"/ledger/{project.slug}/{deps[0].id}").text
 
-    assert "OVERDUE" in body
+    assert "Committed Date passed" in body
     assert "40d" in body
 
 
 def test_a_zero_day_quantity_still_renders(client, session, project):
-    """"Needed in 0 days" is due today, and 0 is not None: a truthiness
+    """ "Needed in 0 days" is due today, and 0 is not None: a truthiness
     check would have swallowed exactly the row a reviewer most needs."""
     from datetime import date
 
@@ -2329,7 +2348,6 @@ def test_a_zero_day_quantity_still_renders(client, session, project):
         ref_code="DEP-TODAY",
         dep_type="utility_relocation",
         title="Telecom — DEP-TODAY",
-        status="committed",
         need_date=date.today(),
         committed_date=date.today(),
         internal_owner="Bryce",
@@ -2339,7 +2357,7 @@ def test_a_zero_day_quantity_still_renders(client, session, project):
 
     body = client.get(f"/ledger/{project.slug}").text
 
-    assert "DUE_SOON 0d" in body
+    assert "Need Date is near 0d" in body
 
 
 def test_superseded_citation_is_visible_as_reconfirmation_work(
@@ -2350,7 +2368,6 @@ def test_superseded_citation_is_visible_as_reconfirmation_work(
         ref_code="DEP-PROVENANCE-REVIEW",
         dep_type="utility_relocation",
         title="Telecom — provenance review",
-        status="identified",
     )
     successor = Document(
         project_id=project.id,
@@ -2403,7 +2420,7 @@ def test_superseded_citation_is_visible_as_reconfirmation_work(
     detail = client.get(f"/ledger/{project.slug}/{dependency.id}").text
 
     for body in (ledger, detail):
-        assert "SUPERSEDED_CITATION 0d · re-confirmation" in body
+        assert "Evidence is not current · re-confirmation 0d" in body
         assert "needs human re-confirmation against the current revision" in body
 
 
@@ -2497,7 +2514,6 @@ def test_the_record_view_assigns_an_owner_as_a_visible_project_decision(
         ref_code="WD-WEB-1",
         dep_type="utility_relocation",
         title="Water main at 1102+20",
-        status="identified",
     )
     session.add(dep)
     session.flush()
@@ -2524,7 +2540,6 @@ def test_a_blank_owner_refuses_at_the_form_boundary(session, client, project):
         ref_code="WD-WEB-2",
         dep_type="utility_relocation",
         title="Duct bank at 1117+00",
-        status="identified",
     )
     session.add(dep)
     session.flush()
@@ -2539,15 +2554,12 @@ def test_a_blank_owner_refuses_at_the_form_boundary(session, client, project):
     assert dep.internal_owner is None
 
 
-def test_the_action_lifecycle_runs_from_the_record_view(
-    session, client, project
-):
+def test_the_action_lifecycle_runs_from_the_record_view(session, client, project):
     dep = Dependency(
         project_id=project.id,
         ref_code="WD-WEB-3",
         dep_type="utility_relocation",
         title="Duct bank at 1117+00",
-        status="identified",
     )
     session.add(dep)
     session.flush()
@@ -2621,9 +2633,7 @@ def _rehearsal_receipt(
         )
         session.add(document)
         session.flush()
-        session.add(
-            DocPage(document_id=document.id, page_no=1, text="rehearsal rows")
-        )
+        session.add(DocPage(document_id=document.id, page_no=1, text="rehearsal rows"))
         session.flush()
         return document
 
@@ -2707,9 +2717,7 @@ def _rehearsal_receipt(
     declare_active_run(
         session, december.id, predecessor_run.id, principal=TEST_PRINCIPAL
     )
-    declare_active_run(
-        session, february.id, successor_run.id, principal=TEST_PRINCIPAL
-    )
+    declare_active_run(session, february.id, successor_run.id, principal=TEST_PRINCIPAL)
     comparison = create_revision_comparison(
         session, predecessor_run.id, successor_run.id
     )
@@ -2762,9 +2770,7 @@ def test_the_boundary_refuses_a_non_member_mutation(session, client, project):
     assert accepted.status_code == 303
 
 
-def test_the_boundary_refuses_a_receipt_from_another_project(
-    session, client, project
-):
+def test_the_boundary_refuses_a_receipt_from_another_project(session, client, project):
     """The read path already refused this; every write path allowed it.
 
     Rendering the lane checked that the named receipt belonged to the
@@ -2796,9 +2802,7 @@ def test_the_boundary_refuses_a_receipt_from_another_project(
     assert member.state == "pending"
 
 
-def test_accept_flows_into_the_coordination_strip_and_back(
-    session, client, project
-):
+def test_accept_flows_into_the_coordination_strip_and_back(session, client, project):
     """One pass: admit, assign, set the action, land on the next row."""
     receipt, candidates = _rehearsal_receipt(session, project)
     member = next(
@@ -2987,8 +2991,7 @@ def test_decided_rehearsal_cohort_does_not_hide_a_mixed_unresolved_member(
     session.flush([w5])
 
     page = client.get(
-        f"/queue/{project.slug}?lane=rehearsal"
-        f"&cohort_receipt_id={receipt.id}&summary=1"
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}&summary=1"
     ).text
 
     assert "Every admitted Dependency currently has a Coordination Plan" not in page
@@ -3034,8 +3037,7 @@ def test_decided_rehearsal_cohort_orders_incomplete_before_coordinated(
     )
 
     page = client.get(
-        f"/queue/{project.slug}?lane=rehearsal"
-        f"&cohort_receipt_id={receipt.id}&summary=1"
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}&summary=1"
     ).text
 
     assert page.index("W5") < page.index("W4")
@@ -3297,15 +3299,12 @@ def test_rehearsal_cohort_exposes_record_evidence_and_exact_return(
     assert member.state == before_candidate_state
 
 
-def test_dependency_detail_refuses_an_unsafe_cohort_return(
-    session, client, project
-):
+def test_dependency_detail_refuses_an_unsafe_cohort_return(session, client, project):
     dependency = Dependency(
         project_id=project.id,
         ref_code="DEP-RETURN-SAFE",
         dep_type="utility_relocation",
         title="Safe return test",
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -3369,7 +3368,6 @@ def test_dependency_detail_without_cohort_context_returns_to_ledger(
         ref_code="DEP-LEDGER-BACK",
         dep_type="utility_relocation",
         title="Ordinary detail",
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -3446,8 +3444,7 @@ def test_rehearsal_cohort_summary_keeps_report_navigation_available(
     )
 
     page = client.get(
-        f"/queue/{project.slug}?lane=rehearsal"
-        f"&cohort_receipt_id={receipt.id}&summary=1"
+        f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}&summary=1"
     ).text
     anchor = _anchor_before_label(page, "Prepare Report (opens in new tab)")
 
@@ -3527,7 +3524,6 @@ def test_decided_rehearsal_cohort_links_a_merged_member_to_its_exact_dependency(
         ref_code="DEP-MERGED-W4",
         dep_type="utility_relocation",
         title="City water crossing",
-        status="identified",
     )
     session.add(target)
     session.flush()
@@ -3631,7 +3627,6 @@ def test_rehearsal_cohort_does_not_open_a_dependency_outside_its_receipt(
         ref_code="DEP-OUTSIDE-COHORT",
         dep_type="utility_relocation",
         title="Outside the pinned receipt",
-        status="identified",
     )
     session.add(outsider)
     session.flush()
@@ -3699,7 +3694,6 @@ def test_direct_coordination_forms_fall_back_to_dependency_detail(
         ref_code="WD-WEB-DIRECT",
         dep_type="utility_relocation",
         title="Direct detail fallback",
-        status="identified",
     )
     session.add(dep)
     session.flush()
@@ -3735,7 +3729,6 @@ def test_unsafe_coordination_form_return_is_rejected_before_any_write(
         ref_code="WD-WEB-RD",
         dep_type="utility_relocation",
         title="Redirect test",
-        status="identified",
     )
     session.add(dep)
     session.flush()
@@ -3797,9 +3790,7 @@ def _event_cohort_lane(session, project):
         )
         session.add(document)
         session.flush()
-        session.add(
-            DocPage(document_id=document.id, page_no=1, text="event lane rows")
-        )
+        session.add(DocPage(document_id=document.id, page_no=1, text="event lane rows"))
         session.flush()
         return document
 
@@ -3899,9 +3890,7 @@ def _event_cohort_lane(session, project):
     run(rev_a, [pl7_a])
     run(rev_b, [pl7_b, pl8_b])
     run(minutes, [event(minutes, "PL7")])
-    declare_single_run_documents(
-        session, project.id, principal=TEST_PRINCIPAL
-    )
+    declare_single_run_documents(session, project.id, principal=TEST_PRINCIPAL)
     receipt = derive_event_cohort_receipt(session, project.id)
     return receipt, {"pl7_a": pl7_a, "pl7_b": pl7_b, "pl8_b": pl8_b}
 
@@ -3978,9 +3967,7 @@ def test_the_event_lane_boundary_refuses_a_non_member_mutation(
     )
 
 
-def test_accept_merges_checked_siblings_in_one_gesture(
-    session, client, project
-):
+def test_accept_merges_checked_siblings_in_one_gesture(session, client, project):
     receipt, c = _event_cohort_lane(session, project)
 
     response = client.post(
@@ -3998,9 +3985,7 @@ def test_accept_merges_checked_siblings_in_one_gesture(
     session.refresh(c["pl7_a"])
     assert c["pl7_b"].state == "accepted"
     assert c["pl7_a"].state == "merged"
-    dependency_id = int(
-        response.headers["location"].rsplit("coordinate=", 1)[1]
-    )
+    dependency_id = int(response.headers["location"].rsplit("coordinate=", 1)[1])
     assert c["pl7_a"].merged_into == dependency_id
 
 
@@ -4025,9 +4010,7 @@ def test_a_sibling_outside_the_conflict_refuses_the_whole_gesture(
     assert c["pl8_b"].state == "pending"
 
 
-def test_every_mutation_route_holds_the_event_lane_boundary(
-    session, client, project
-):
+def test_every_mutation_route_holds_the_event_lane_boundary(session, client, project):
     """edit-accept, merge, and reject refuse a non-member exactly as
     accept does — the keyboard shortcuts are not a side door."""
     receipt, c = _event_cohort_lane(session, project)
@@ -4116,9 +4099,7 @@ def test_the_queue_asks_for_no_signature_before_showing_the_list(
     assert f"/projects/{project.slug}/admission/events" not in page
 
 
-def test_landing_documents_put_their_conflicts_on_the_record(
-    session, client, project
-):
+def test_landing_documents_put_their_conflicts_on_the_record(session, client, project):
     """PL7 is stated identically by both revisions; PL8 by one. Both are
     conflicts, and one matrix is enough to be one."""
     _event_cohort_lane(session, project)
@@ -4141,7 +4122,6 @@ def test_landing_documents_put_their_conflicts_on_the_record(
 def test_a_statement_attaches_to_its_conflict_in_the_same_pass(
     session, client, project
 ):
-    from corridor.models import DependencyEvent, DependencyEventScope
 
     _event_cohort_lane(session, project)
     result = load_project(session, project.id)
@@ -4326,9 +4306,7 @@ def test_a_disagreement_shows_both_pages(session, client, project):
     assert "ucm-may.pdf" in page
 
 
-def test_settling_a_dispute_closes_it_and_is_attributable(
-    session, client, project
-):
+def test_settling_a_dispute_closes_it_and_is_attributable(session, client, project):
     dependency = _disputed_record(session, project)
 
     # Both stations differ between the revisions, so both are disputed:
@@ -4339,9 +4317,10 @@ def test_settling_a_dispute_closes_it_and_is_attributable(
         follow_redirects=False,
     )
     assert first.status_code == 303
-    assert "sources disagree on station_to" in client.get(
-        f"/ledger/{project.slug}/{dependency.id}"
-    ).text
+    assert (
+        "sources disagree on station_to"
+        in client.get(f"/ledger/{project.slug}/{dependency.id}").text
+    )
 
     client.post(
         f"/ledger/{project.slug}/{dependency.id}/settle",
@@ -4385,15 +4364,14 @@ def test_a_later_revision_disagreeing_again_reopens_the_dispute(
             value="1105+00",
             principal=TEST_PRINCIPAL,
         )
-    assert "sources disagree" not in client.get(
-        f"/ledger/{project.slug}/{dependency.id}"
-    ).text
+    assert (
+        "sources disagree"
+        not in client.get(f"/ledger/{project.slug}/{dependency.id}").text
+    )
 
     # A third revision states something else, cited and verified.
     link = session.scalars(
-        select(EvidenceLink).where(
-            EvidenceLink.dependency_id == dependency.id
-        )
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
     ).first()
     session.add(
         Assertion(
@@ -4405,9 +4383,9 @@ def test_a_later_revision_disagreeing_again_reopens_the_dispute(
     )
     session.flush()
 
-    assert "sources disagree" in client.get(
-        f"/ledger/{project.slug}/{dependency.id}"
-    ).text
+    assert (
+        "sources disagree" in client.get(f"/ledger/{project.slug}/{dependency.id}").text
+    )
 
 
 def test_settling_a_field_nobody_disputes_refuses(session, client, project):
@@ -4450,9 +4428,7 @@ def test_a_row_with_no_identifier_is_offered_with_its_reason(
     assert "no_utility_id" not in page
 
 
-def test_flagged_rows_sink_below_clean_work(
-    session, client, project, document
-):
+def test_flagged_rows_sink_below_clean_work(session, client, project, document):
     """A reviewer meets the rows they can act on first."""
     # Both unverifiable, so both stay for a human; the one whose quote
     # holds is served before the one whose does not.
@@ -4477,9 +4453,7 @@ def test_correcting_a_flagged_row_against_its_page_clears_the_flag(
 ):
     """The page says GOOD-1; the extractor read BAD-1. Correcting it
     re-runs verification rather than taking the reviewer's word."""
-    candidate = make_candidate(
-        session, project, document, uid="BAD-1", verified=False
-    )
+    candidate = make_candidate(session, project, document, uid="BAD-1", verified=False)
     assert candidate.citations_verified is False
 
     response = client.post(
@@ -4510,9 +4484,7 @@ def test_correcting_a_flagged_row_against_its_page_clears_the_flag(
     assert entry is not None and entry.actor == TEST_PRINCIPAL.subject
 
 
-def test_no_separate_lane_holds_the_unverified(
-    session, client, project, document
-):
+def test_no_separate_lane_holds_the_unverified(session, client, project, document):
     """One list. A flagged row is reachable from the ordinary queue with
     no filter, tab, or mode to find first."""
     make_candidate(session, project, document, uid="BAD-1", verified=False)
@@ -4640,9 +4612,7 @@ def test_ordinary_statement_review_records_pre_shadow_start_without_exposing_pac
 ):
     candidate = _unplaced_statement(session, project)
 
-    response = client.get(
-        f"/statements/{project.slug}/{candidate.id}/coordinate"
-    )
+    response = client.get(f"/statements/{project.slug}/{candidate.id}/coordinate")
 
     assert response.status_code == 200
     start = session.scalar(
@@ -4656,9 +4626,7 @@ def test_ordinary_statement_review_records_pre_shadow_start_without_exposing_pac
     assert "dependency_options" not in response.text
 
 
-def test_the_queue_points_at_the_pile_without_becoming_it(
-    session, client, project
-):
+def test_the_queue_points_at_the_pile_without_becoming_it(session, client, project):
     _unplaced_statement(session, project)
 
     page = client.get(f"/queue/{project.slug}").text
@@ -4666,10 +4634,7 @@ def test_the_queue_points_at_the_pile_without_becoming_it(
     assert "1 statement to place" in page
 
 
-def test_attaching_from_the_pile_puts_it_on_the_record(
-    session, client, project
-):
-    from corridor.models import DependencyEvent, DependencyEventScope
+def test_attaching_from_the_pile_puts_it_on_the_record(session, client, project):
 
     _unplaced_statement(session, project)
     dependency = session.scalars(
@@ -4698,9 +4663,7 @@ def test_attaching_from_the_pile_puts_it_on_the_record(
     assert "Nothing waiting" in client.get(f"/statements/{project.slug}").text
 
 
-def test_naming_a_record_that_does_not_exist_refuses(
-    session, client, project
-):
+def test_naming_a_record_that_does_not_exist_refuses(session, client, project):
     _unplaced_statement(session, project)
     candidate = session.scalars(
         select(Candidate).where(
@@ -4795,9 +4758,7 @@ def test_dismissing_preserves_the_row_its_evidence_and_its_history(
     dependency = _record_on_the_list(session, project, document)
     before = len(
         session.scalars(
-            select(EvidenceLink).where(
-                EvidenceLink.dependency_id == dependency.id
-            )
+            select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
         ).all()
     )
 
@@ -4812,9 +4773,7 @@ def test_dismissing_preserves_the_row_its_evidence_and_its_history(
     assert (
         len(
             session.scalars(
-                select(EvidenceLink).where(
-                    EvidenceLink.dependency_id == dependency.id
-                )
+                select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
             ).all()
         )
         == before
@@ -4831,9 +4790,7 @@ def test_dismissing_preserves_the_row_its_evidence_and_its_history(
     assert client.get(f"/ledger/{project.slug}/{dependency.id}").status_code == 200
 
 
-def test_an_unknown_dismiss_reason_refuses(
-    session, client, project, document
-):
+def test_an_unknown_dismiss_reason_refuses(session, client, project, document):
     dependency = _record_on_the_list(session, project, document)
 
     refused = client.post(
@@ -4991,9 +4948,7 @@ def test_a_dismissed_record_refuses_a_merge(session, client, project, document):
     assert candidate.state == "pending"
 
 
-def test_a_dismissed_record_refuses_work_decisions(
-    session, client, project, document
-):
+def test_a_dismissed_record_refuses_work_decisions(session, client, project, document):
     dependency = _record_on_the_list(session, project, document)
     client.post(
         f"/ledger/{project.slug}/{dependency.id}/dismiss",

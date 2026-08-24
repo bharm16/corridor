@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A holdout is spent once, on a complete measurement, with labelling blind to extraction
 
 > The hand-labelling method in this decision is superseded by ADR-0023. The one-shot holdout, predeclared criteria, no-retake rule, and requirement to publish limitations remain in force.

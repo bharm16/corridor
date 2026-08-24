@@ -1,4 +1,10 @@
+---
+status: accepted
+---
+
 # One approvals table, one runs table; outcomes stay with their family
+
+> ADR-0029 and ADR-0034 remove project approval as authority for Admission and Automatic Carry-Forward. `policy_approvals` now preserves historical approvals; current Corridor-managed Policy Runs bind their released policy version and digest directly.
 
 Three policy families write records or move support under an accountable principal's authorization: Automatic Carry-Forward (ADR-0022), event admission (ADR-0026), dependency admission (ADR-0027). Each arrived with a private copy of the same three tables — approvals, runs, outcomes — because each ADR said "mirror the family you joined," and mirroring meant copying. The copies have already rotted measurably: the Carry-Forward runs and outcomes tables carry a third trigger — a deferred counts-reconciliation check nobody re-created for the admission families — so an admission run's stored counts could silently disagree with its own outcome rows while a Carry-Forward run's cannot. Nobody decided that difference. And a fourth family is already forecast by our own refusal message: agreement documents "need their own eligibility rule."
 

@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Admission is mechanical on verified evidence, and no sign-off gates the product
 
 > **Amended by ADR-0034.** The Carry-Forward authorization carve-out below no

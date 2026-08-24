@@ -2,8 +2,8 @@
 
 This CLI accepts only two explicit positive Extraction Run ids. It always
 creates one exact Revision Comparison, immediately reads it back to verify the
-sealed content, then routes only already-authorized Automatic Carry-Forward for
-that exact project. It never infers runs from recency and never accepts human
+sealed content, then routes the released Carry-Forward Policy for that exact
+project. It never infers runs from recency and never accepts human
 identity or policy-mutation flags.
 """
 
@@ -90,7 +90,7 @@ def _print_json(payload: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None, *, session_factory=None) -> int:
-    """Run one exact comparison, verify it, and route authorized support only."""
+    """Run one exact comparison, verify it, and route released-policy support."""
 
     try:
         args = _parser().parse_args(argv)
@@ -105,19 +105,13 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
             try:
                 result = process_revision_pair(
                     session,
-                    predecessor_extraction_run_id=(
-                        args.predecessor_extraction_run_id
-                    ),
+                    predecessor_extraction_run_id=(args.predecessor_extraction_run_id),
                     successor_extraction_run_id=args.successor_extraction_run_id,
                 )
                 payload = _payload(
                     result,
-                    predecessor_extraction_run_id=(
-                        args.predecessor_extraction_run_id
-                    ),
-                    successor_extraction_run_id=(
-                        args.successor_extraction_run_id
-                    ),
+                    predecessor_extraction_run_id=(args.predecessor_extraction_run_id),
+                    successor_extraction_run_id=(args.successor_extraction_run_id),
                 )
                 session.commit()
             except Exception:

@@ -109,13 +109,9 @@ def build_supersession_review_view(
         "blocked": "This Dependency cannot be routed safely from the current lineage.",
     }
     reason = getattr(review, "reason", None)
-    successor_candidate_ids = tuple(
-        getattr(review, "successor_candidate_ids", ())
-    )
+    successor_candidate_ids = tuple(getattr(review, "successor_candidate_ids", ()))
     successor_candidate_id = (
-        successor_candidate_ids[0]
-        if len(successor_candidate_ids) == 1
-        else None
+        successor_candidate_ids[0] if len(successor_candidate_ids) == 1 else None
     )
     refusal_detail = (
         str(reason).replace("_", " ").capitalize()
@@ -128,9 +124,7 @@ def build_supersession_review_view(
         predecessor=session.get(
             Document, getattr(review, "predecessor_document_id", None)
         ),
-        successor=session.get(
-            Document, getattr(review, "successor_document_id", None)
-        ),
+        successor=session.get(Document, getattr(review, "successor_document_id", None)),
         successor_candidate=(
             session.get(Candidate, successor_candidate_id)
             if successor_candidate_id is not None
@@ -140,7 +134,7 @@ def build_supersession_review_view(
         status_label=status.replace("_", " ").capitalize(),
         status_detail=details.get(
             status,
-            "This revision needs ordinary Candidate Adjudication before support can move.",
+            "This revision needs a decision about the extracted conflict before current Evidence can move.",
         ),
         refusal_detail=refusal_detail,
     )
@@ -188,8 +182,7 @@ def next_candidate(
         query
         # Unverified citations sink. Never filtered out — a candidate whose
         # quote could not be found is a signal, not noise.
-        .order_by(Candidate.citations_verified.desc(), Candidate.id)
-        .limit(1)
+        .order_by(Candidate.citations_verified.desc(), Candidate.id).limit(1)
     ).first()
 
 
@@ -400,9 +393,7 @@ def build_cohort_rail(
     for member in receipt.members:
         matching_candidates = candidates_by_utility.get(member["utility_id"], [])
         candidate = matching_candidates[0] if len(matching_candidates) == 1 else None
-        fields = (
-            (candidate.payload_json or {}).get("fields", {}) if candidate else {}
-        )
+        fields = (candidate.payload_json or {}).get("fields", {}) if candidate else {}
         dependency = (
             admitted_by_candidate.get(candidate.id) if candidate is not None else None
         )
@@ -424,8 +415,7 @@ def build_cohort_rail(
                 utility_type=fields.get("utility_type") or "—",
                 state=candidate.state if candidate else "unresolved",
                 current=(
-                    candidate is not None
-                    and candidate.id == current_candidate_id
+                    candidate is not None and candidate.id == current_candidate_id
                 ),
                 dependency_id=dependency.id if dependency is not None else None,
                 dependency_ref=dependency.ref_code if dependency is not None else None,
@@ -519,11 +509,7 @@ def next_incomplete_cohort_dependency_id(
         index = incomplete_ids.index(current_dependency_id)
     except ValueError:
         return None
-    return (
-        incomplete_ids[index + 1]
-        if index + 1 < len(incomplete_ids)
-        else None
-    )
+    return incomplete_ids[index + 1] if index + 1 < len(incomplete_ids) else None
 
 
 def _admitted_dependencies_by_candidate(
@@ -569,9 +555,7 @@ def _coordination_gaps(dependency: Dependency) -> tuple[str, ...]:
         gaps.append("Internal Owner")
     if not dependency.next_action:
         gaps.append("Next Action")
-    elif not (
-        dependency.action_due_date or dependency.action_due_date_reason
-    ):
+    elif not (dependency.action_due_date or dependency.action_due_date_reason):
         gaps.append("Action Due Date")
     return tuple(gaps)
 
@@ -590,9 +574,7 @@ def change_strip(session, receipt, candidate: Candidate) -> list[ChangeEntry]:
             RevisionComparisonFinding.revision_comparison_run_id
             == receipt.revision_comparison_run_id,
             RevisionComparisonFinding.state == "changed",
-            RevisionComparisonFinding.successor_candidate_ids.contains(
-                [candidate.id]
-            ),
+            RevisionComparisonFinding.successor_candidate_ids.contains([candidate.id]),
         )
     ).first()
     if finding is None:
@@ -600,7 +582,9 @@ def change_strip(session, receipt, candidate: Candidate) -> list[ChangeEntry]:
     return [
         ChangeEntry(
             field=str(change.get("field")),
-            before=str(change.get("before") if change.get("before") is not None else "—"),
+            before=str(
+                change.get("before") if change.get("before") is not None else "—"
+            ),
             after=str(change.get("after") if change.get("after") is not None else "—"),
         )
         for change in finding.field_changes

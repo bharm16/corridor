@@ -527,8 +527,6 @@ def test_already_extracted_lets_a_killed_run_resume(session, document):
     """Without this a restart duplicates every document already finished."""
     from corridor.extract_batch import already_extracted, extract_documents
     from corridor.extract_minutes import PROMPT_VERSION, _to_candidate
-    from corridor.models import Candidate
-
     assert already_extracted(session, document.project_id, PROMPT_VERSION) == set()
 
     client = StubClient([{"events": [event()]}])

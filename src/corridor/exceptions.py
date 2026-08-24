@@ -81,6 +81,21 @@ RULES: tuple[str, ...] = (
     "ACTION_OVERDUE",
 )
 
+CUSTOMER_RULE_NAMES = {
+    "MISSING_EVIDENCE": "No verified Evidence",
+    "MISSING_DATE": "No Committed Date",
+    "MISSING_OWNER": "No Internal Owner",
+    "OVERDUE": "Committed Date passed",
+    "DUE_SOON": "Need Date is near",
+    "STALE": "Evidence is stale",
+    "CONTRADICTION": "Sources disagree",
+    "ORPHAN": "No Milestone",
+    "SUPERSEDED_CITATION": "Evidence is not current",
+    "MISSING_ACTION": "No Next Action",
+    "ACTION_DUE_SOON": "Next Action is due soon",
+    "ACTION_OVERDUE": "Next Action is overdue",
+}
+
 # The rules whose fact carries a number of days. The rest state absences,
 # and an absence has no quantity — inventing 0 or infinity for one would be
 # the scalar sneaking back in.
@@ -95,10 +110,8 @@ QUANTITY_RULES = frozenset(
     }
 )
 
+
 # Neither of these is "on track", so time-based rules stay quiet on them.
-SETTLED_STATUSES = ("closed",)
-
-
 @dataclass(frozen=True)
 class Thresholds:
     stale_days: int = STALE_DAYS
@@ -132,7 +145,7 @@ class Exception_:
 
 def format_exception_name(rule: str) -> str:
     """Name a rule without making provenance review look like lateness."""
-    return rule + _exception_name_suffix(rule)
+    return CUSTOMER_RULE_NAMES.get(rule, rule) + _exception_name_suffix(rule)
 
 
 def _exception_name_suffix(rule: str) -> str:
@@ -146,11 +159,9 @@ def format_exception_label(exception: Exception_) -> str:
     rule's own quantity rather than a derived or weighted score.
     """
     quantity = (
-        f" {exception.quantity_days}d"
-        if exception.quantity_days is not None
-        else ""
+        f" {exception.quantity_days}d" if exception.quantity_days is not None else ""
     )
-    return f"{exception.rule}{quantity}{_exception_name_suffix(exception.rule)}"
+    return f"{format_exception_name(exception.rule)}{quantity}"
 
 
 @dataclass(frozen=True)
@@ -238,7 +249,9 @@ def evaluate(
         if set(statement_publication.by_dependency) != {
             dependency.id for dependency in dependencies
         }:
-            raise ValueError("the statement publication has a different Ledger population")
+            raise ValueError(
+                "the statement publication has a different Ledger population"
+            )
         current_statements = None
     else:
         current_statements = current_dependency_statements(
@@ -456,9 +469,7 @@ def evaluate_dependency(
                     ),
                     today,
                     thresholds,
-                    committed_date=(
-                        committed_date
-                    ),
+                    committed_date=(committed_date),
                 )
             )
         ),
@@ -503,14 +514,10 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
     return view
 
 
-def _gather(
-    session: Session, dependency: Dependency, *, is_closed: bool
-) -> _Facts:
+def _gather(session: Session, dependency: Dependency, *, is_closed: bool) -> _Facts:
     support = resolve_operative_support(session, [dependency.id])[dependency.id]
 
-    contradicted = contradicted_fields(session, [dependency.id]).get(
-        dependency.id, []
-    )
+    contradicted = contradicted_fields(session, [dependency.id]).get(dependency.id, [])
 
     return _Facts(
         dependency=dependency,
@@ -532,13 +539,13 @@ def _apply(
     committed_date: date | None = None,
 ) -> list[Exception_]:
     dependency = facts.dependency
-    settled = dependency.status in SETTLED_STATUSES
-    # "On track" for time-based rules means neither proven done nor closed.
+    # "On track" for time-based rules means neither proven Ready nor closed
+    # by an attributable External Party fact.
     # Supersession can lapse currency without changing the underlying
     # schedule fact. The record needs provenance review, but registration
     # alone must not manufacture new DUE_SOON/STALE/MISSING_OWNER findings
     # that were suppressed while the same proof was current (ADR-0016).
-    live = not facts.is_ready and not facts.readiness_lapsed and not settled
+    live = not facts.is_ready and not facts.readiness_lapsed and not facts.has_closure
 
     # (rule, detail, quantity_days) — the quantity is the rule's own
     # number, and None where the fact is an absence.
@@ -555,9 +562,7 @@ def _apply(
         )
 
     if not dependency.next_action and live:
-        found.append(
-            ("MISSING_ACTION", "no Work Decision sets a next action", None)
-        )
+        found.append(("MISSING_ACTION", "no Work Decision sets a next action", None))
 
     if dependency.next_action and dependency.action_due_date and live:
         days_until = (dependency.action_due_date - today).days
@@ -580,16 +585,12 @@ def _apply(
                 )
             )
 
-    if not committed_date and dependency.status in (
-        "identified",
-        "in_progress",
-        "committed",
-    ):
+    if not committed_date and live:
         found.append(
             ("MISSING_DATE", "no committed date from the external party", None)
         )
 
-    if not facts.has_verified_evidence and not settled:
+    if not facts.has_verified_evidence and not facts.has_closure:
         found.append(("MISSING_EVIDENCE", "no verified evidence on this record", None))
 
     if live:
@@ -665,7 +666,7 @@ def _apply(
             )
         )
 
-    if dependency.milestone_id is None and not settled:
+    if dependency.milestone_id is None and live:
         found.append(("ORPHAN", "not linked to any milestone", None))
 
     # The Criticality reading rides along for filtering — a view slices on
@@ -696,9 +697,7 @@ def main(argv: list[str]) -> int:
 
     slug = argv[0] if argv else "nhhip-3c2"
     with SessionFactory() as session:
-        project = session.scalars(
-            select(Project).where(Project.slug == slug)
-        ).first()
+        project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1

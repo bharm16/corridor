@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # An External Party commitment preserves who spoke, the date as stated, and its known scope
 
 The SH 99 date rehearsal exposed three facts that the existing event shape had

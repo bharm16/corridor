@@ -48,9 +48,7 @@ from corridor.revision_comparison import DEFAULT_MATCHER_VERSION
 PROMPT_VERSION = "m8-controlled-capture-v1"
 SCHEMA_VERSION = "m8-controlled-candidate-shape-v1"
 MODEL = "deterministic-capture-fixture-v1"
-SEED_QUOTE = (
-    "SEED-1 Controlled Utility Telecom 100+00 IH-45 captured source row"
-)
+SEED_QUOTE = "SEED-1 Controlled Utility Telecom 100+00 IH-45 captured source row"
 REVISION_IDS = (
     "nhhip-ucm-2025-06-20",
     "nhhip-ucm-2025-07-22",
@@ -146,7 +144,9 @@ def test_authoritative_capture_requires_a_clean_revision_pin(tmp_path):
 def test_authoritative_capture_accepts_a_matching_clean_revision_pin(
     monkeypatch, tmp_path
 ):
-    seen = _stub_capture_harness(monkeypatch, tmp_path, git_state={"revision": "abc123", "status": "clean"})
+    seen = _stub_capture_harness(
+        monkeypatch, tmp_path, git_state={"revision": "abc123", "status": "clean"}
+    )
 
     summary = capture_m8_fixture(
         AcceptanceCaptureConfig(
@@ -176,9 +176,13 @@ def test_authoritative_capture_accepts_a_matching_clean_revision_pin(
 def test_authoritative_capture_rejects_revision_mismatch_before_provisioning(
     monkeypatch, tmp_path
 ):
-    seen = _stub_capture_harness(monkeypatch, tmp_path, git_state={"revision": "def456", "status": "clean"})
+    seen = _stub_capture_harness(
+        monkeypatch, tmp_path, git_state={"revision": "def456", "status": "clean"}
+    )
 
-    with pytest.raises(AcceptanceError, match="capture Git revision does not match the pin"):
+    with pytest.raises(
+        AcceptanceError, match="capture Git revision does not match the pin"
+    ):
         capture_m8_fixture(
             AcceptanceCaptureConfig(
                 source_lock_path=tmp_path / "sources.lock.json",
@@ -199,7 +203,9 @@ def test_authoritative_capture_rejects_revision_mismatch_before_provisioning(
 def test_authoritative_capture_rejects_a_dirty_repository_before_provisioning(
     monkeypatch, tmp_path
 ):
-    seen = _stub_capture_harness(monkeypatch, tmp_path, git_state={"revision": "abc123", "status": "dirty"})
+    seen = _stub_capture_harness(
+        monkeypatch, tmp_path, git_state={"revision": "abc123", "status": "dirty"}
+    )
 
     with pytest.raises(
         AcceptanceError, match="authoritative capture requires a clean repository"
@@ -266,7 +272,9 @@ def test_capture_publication_is_first_write_only(monkeypatch, tmp_path):
     )
     original_bytes = first.fixture_path.read_bytes()
 
-    with pytest.raises(AcceptanceError, match="fixture output directory already exists"):
+    with pytest.raises(
+        AcceptanceError, match="fixture output directory already exists"
+    ):
         capture_m8_fixture(
             AcceptanceCaptureConfig(
                 source_lock_path=tmp_path / "sources.lock.json",
@@ -379,20 +387,24 @@ def test_equivalent_model_free_replays_have_one_normalized_identity(
     second = run_m8_acceptance(_run_config(replay_capture, tmp_path / "bundle-b"))
 
     assert (
-        first.fixture_sha256
-        == second.fixture_sha256
-        == replay_capture.fixture_sha256
+        first.fixture_sha256 == second.fixture_sha256 == replay_capture.fixture_sha256
     )
     assert first.canonical_content_sha256 == second.canonical_content_sha256
     assert len(first.canonical_content_sha256) == 64
-    assert verify_m8_acceptance_bundle(
-        first.bundle_dir,
-        expected_integrity_manifest_sha256=first.integrity_manifest_sha256,
-    ).valid is True
-    assert verify_m8_acceptance_bundle(
-        second.bundle_dir,
-        expected_integrity_manifest_sha256=second.integrity_manifest_sha256,
-    ).valid is True
+    assert (
+        verify_m8_acceptance_bundle(
+            first.bundle_dir,
+            expected_integrity_manifest_sha256=first.integrity_manifest_sha256,
+        ).valid
+        is True
+    )
+    assert (
+        verify_m8_acceptance_bundle(
+            second.bundle_dir,
+            expected_integrity_manifest_sha256=second.integrity_manifest_sha256,
+        ).valid
+        is True
+    )
     assert all(assertion.passed for assertion in first.assertions)
     real = _read_export(first, "real-chain.json")
     assert [item["registry_id"] for item in real["documents"]] == [
@@ -411,9 +423,7 @@ def test_equivalent_model_free_replays_have_one_normalized_identity(
     }
     assert real["claims"] == CLAIM_BOUNDARY
     exported_text = "".join(
-        path.read_text()
-        for path in first.bundle_dir.iterdir()
-        if path.is_file()
+        path.read_text() for path in first.bundle_dir.iterdir() if path.is_file()
     )
     assert "postgresql://" not in exported_text
     assert "postgresql+psycopg://" not in exported_text
@@ -422,7 +432,7 @@ def test_equivalent_model_free_replays_have_one_normalized_identity(
     assert not _database_exists(second.database_name)
 
 
-def test_controlled_phase_carries_only_exact_previously_authorized_support(
+def test_controlled_phase_carries_only_exact_previously_established_support(
     baseline_acceptance,
 ):
     summary = baseline_acceptance
@@ -442,7 +452,7 @@ def test_controlled_phase_carries_only_exact_previously_authorized_support(
         "human_review_performed": False,
     }
     assert controlled["before_policy"] == {
-        "eligible_route": "human_reconfirmation",
+        "eligible_route": "automatic_carry_forward",
         "automatic_writes": 0,
     }
     assert controlled["passes"] == {
@@ -450,18 +460,18 @@ def test_controlled_phase_carries_only_exact_previously_authorized_support(
         "second": {"carried": 0},
         "receipt_count": 2,
     }
-    assert controlled["policy"]["authorization_count"] == 1
+    assert controlled["policy"]["authorization_count"] == 0
     drift = controlled["policy"]["drift_outcome"]
-    assert drift["outcome"] == "paused_then_reauthorized_and_resumed"
+    assert drift["outcome"] == "released_policy_changed_and_ran_idempotently"
     assert drift["pause"] == {
         "carried": 0,
-        "reasons": ["comparison_policy_unapproved"],
-        "ledger_unchanged": True,
-        "active_remained_initial": True,
+        "reasons": [],
+        "ledger_unchanged": False,
+        "active_remained_initial": False,
     }
     assert drift["replacement"]["rules_digest"] == drift["drifted_rules_digest"]
-    assert drift["replacement"]["active_pointer_replaced"] is True
-    assert drift["replacement"]["authorization_count"] == 2
+    assert drift["replacement"]["active_pointer_replaced"] is False
+    assert drift["replacement"]["authorization_count"] == 0
     assert drift["resume"] == {
         "carried": 1,
         "receipt_bound_to_replacement": True,
@@ -534,15 +544,20 @@ def test_controlled_phase_carries_only_exact_previously_authorized_support(
         ),
     }
     assert all(case["dependency_fields_changed"] is False for case in cases.values())
-    assert all(case["ledger_unchanged"] is True for case in cases.values() if case["outcome"] == "abstained")
+    assert all(
+        case["ledger_unchanged"] is True
+        for case in cases.values()
+        if case["outcome"] == "abstained"
+    )
     assert cases["readiness-exact"]["ledger_unchanged"] is False
     assert cases["publication-exact"]["ledger_unchanged"] is False
     assert cases["fan-out-ambiguous"]["finding_predecessor_candidate_ids"] == [
         cases["fan-out-ambiguous"]["predecessor_candidate_id"]
     ]
-    assert cases["fan-out-ambiguous"]["finding_successor_candidate_ids"] == cases[
-        "fan-out-ambiguous"
-    ]["successor_candidate_ids"]
+    assert (
+        cases["fan-out-ambiguous"]["finding_successor_candidate_ids"]
+        == cases["fan-out-ambiguous"]["successor_candidate_ids"]
+    )
     assert len(cases["fan-out-ambiguous"]["successor_candidate_ids"]) == 2
     assert {
         case["successor_candidate_state"]
@@ -563,7 +578,7 @@ def test_controlled_phase_carries_only_exact_previously_authorized_support(
     assert controlled["failed_attempt"]["committed_before_retry"] is True
     automation = controlled["automation_write_boundary"]
     assert automation["boundary"] == (
-        "after_policy_authorization_before_first_carry_through_idempotent_second_carry"
+        "after_released_policy_identity_before_first_carry_through_idempotent_second_carry"
     )
     assert automation["new_dependency_rows"] == 0
     assert automation["new_assertion_rows"] == 0
@@ -689,15 +704,16 @@ def test_failed_assertion_is_exported_in_a_verifiable_bundle(
         ],
     )
 
-    summary = run_m8_acceptance(
-        _run_config(replay_capture, tmp_path / "failed-bundle")
-    )
+    summary = run_m8_acceptance(_run_config(replay_capture, tmp_path / "failed-bundle"))
 
     assert [item.passed for item in summary.assertions] == [False]
-    assert verify_m8_acceptance_bundle(
-        summary.bundle_dir,
-        expected_integrity_manifest_sha256=summary.integrity_manifest_sha256,
-    ).valid is True
+    assert (
+        verify_m8_acceptance_bundle(
+            summary.bundle_dir,
+            expected_integrity_manifest_sha256=summary.integrity_manifest_sha256,
+        ).valid
+        is True
+    )
     exported = _read_export(summary, "assertions.json")
     assert exported["assertions"][0]["observed"] == "contradiction"
 
@@ -723,19 +739,20 @@ def test_real_replay_contradiction_is_exported_in_a_verifiable_failed_bundle(
 
     monkeypatch.setattr("corridor.m8_acceptance._captured_extractor", drifted_extractor)
 
-    summary = run_m8_acceptance(
-        _run_config(replay_capture, tmp_path / "failed-bundle")
-    )
+    summary = run_m8_acceptance(_run_config(replay_capture, tmp_path / "failed-bundle"))
 
     assert summary.carried_count == 0
     assert [assertion.name for assertion in summary.assertions] == [
         "real_chain_replay_exact_inputs_match_capture"
     ]
     assert [assertion.passed for assertion in summary.assertions] == [False]
-    assert verify_m8_acceptance_bundle(
-        summary.bundle_dir,
-        expected_integrity_manifest_sha256=summary.integrity_manifest_sha256,
-    ).valid is True
+    assert (
+        verify_m8_acceptance_bundle(
+            summary.bundle_dir,
+            expected_integrity_manifest_sha256=summary.integrity_manifest_sha256,
+        ).valid
+        is True
+    )
     exported_real = _read_export(summary, "real-chain.json")
     assert exported_real["replay_failure"]["name"] == (
         "real_chain_replay_exact_inputs_match_capture"
@@ -767,22 +784,25 @@ def test_controlled_lane_contradiction_is_exported_in_a_verifiable_failed_bundle
         explode_once,
     )
 
-    summary = run_m8_acceptance(
-        _run_config(replay_capture, tmp_path / "failed-bundle")
-    )
+    summary = run_m8_acceptance(_run_config(replay_capture, tmp_path / "failed-bundle"))
 
     assert summary.carried_count == 0
     assert [assertion.name for assertion in summary.assertions] == [
         "controlled_lane_claims_remain_self_consistent"
     ]
     assert [assertion.passed for assertion in summary.assertions] == [False]
-    assert verify_m8_acceptance_bundle(
-        summary.bundle_dir,
-        expected_integrity_manifest_sha256=summary.integrity_manifest_sha256,
-    ).valid is True
+    assert (
+        verify_m8_acceptance_bundle(
+            summary.bundle_dir,
+            expected_integrity_manifest_sha256=summary.integrity_manifest_sha256,
+        ).valid
+        is True
+    )
     controlled = _read_export(summary, "controlled-lane.json")
     assert controlled["status"] == "failed"
-    assert controlled["failure"]["name"] == "controlled_lane_claims_remain_self_consistent"
+    assert (
+        controlled["failure"]["name"] == "controlled_lane_claims_remain_self_consistent"
+    )
     assert len(controlled["documents"]) > 0
     assert len(controlled["runs"]) > 0
 
@@ -855,9 +875,10 @@ def test_acceptance_assertions_enforce_no_automated_record_origination(
     assertions = _acceptance_assertions(real, controlled, database)
     by_name = {assertion.name: assertion for assertion in assertions}
 
-    assert by_name[
-        "automatic_carry_never_performs_admission_or_record_origination"
-    ].passed is False
+    assert (
+        by_name["automatic_carry_never_performs_admission_or_record_origination"].passed
+        is False
+    )
 
 
 def test_controlled_lane_freezes_one_runtime_for_normal_protocol(
@@ -891,16 +912,12 @@ def test_controlled_lane_freezes_one_runtime_for_normal_protocol(
         created.append(runtime)
         return runtime
 
-    original_authorize = (
-        m8_acceptance_controlled_module.authorize_automatic_carry_forward
-    )
+    original_status = m8_acceptance_controlled_module.automatic_carry_forward_status
     original_run = m8_acceptance_controlled_module.run_automatic_carry_forward
 
-    def wrapped_authorize(session, project_id, principal, *, _runtime=None):
-        seen.append(("authorize", id(_runtime)))
-        return original_authorize(
-            session, project_id, principal, _runtime=_runtime
-        )
+    def wrapped_status(session, project_id, *, _runtime=None, **kwargs):
+        seen.append(("status", id(_runtime)))
+        return original_status(session, project_id, _runtime=_runtime, **kwargs)
 
     def wrapped_run(session, project_id, *, _runtime=None):
         seen.append(("run", id(_runtime)))
@@ -911,8 +928,8 @@ def test_controlled_lane_freezes_one_runtime_for_normal_protocol(
         make_runtime,
     )
     monkeypatch.setattr(
-        "corridor.m8_acceptance_controlled.authorize_automatic_carry_forward",
-        wrapped_authorize,
+        "corridor.m8_acceptance_controlled.automatic_carry_forward_status",
+        wrapped_status,
     )
     monkeypatch.setattr(
         "corridor.m8_acceptance_controlled.run_automatic_carry_forward",
@@ -927,16 +944,13 @@ def test_controlled_lane_freezes_one_runtime_for_normal_protocol(
         lambda *_args: [],
     )
 
-    summary = run_m8_acceptance(
-        _run_config(replay_capture, tmp_path / "bundle")
-    )
+    summary = run_m8_acceptance(_run_config(replay_capture, tmp_path / "bundle"))
 
     assert summary.assertions == ()
     assert len(created) == 1
     expected_runtime_id = id(created[0])
-    assert seen[:4] == [
-        ("run", expected_runtime_id),
-        ("authorize", expected_runtime_id),
+    assert seen[:3] == [
+        ("status", expected_runtime_id),
         ("run", expected_runtime_id),
         ("run", expected_runtime_id),
     ]
@@ -981,7 +995,9 @@ def _stub_capture_harness(
         "provisioned": False,
     }
 
-    monkeypatch.setattr("corridor.m8_acceptance._load_source_chain", lambda _path: object())
+    monkeypatch.setattr(
+        "corridor.m8_acceptance._load_source_chain", lambda _path: object()
+    )
     monkeypatch.setattr(
         "corridor.m8_acceptance._git_state",
         lambda: git_state or {"revision": "test-revision", "status": "clean"},

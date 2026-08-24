@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Adjudication — {{ project.name }}</title>
+<title>Extracted conflicts — {{ project.name }}</title>
 <style>
   body { font: 15px/1.6 system-ui, sans-serif; margin: 0; display:grid;
          place-items:center; height:100vh; color:#111; }
@@ -47,10 +47,9 @@
 </style>
 <div>
   <nav aria-label="Review lanes">
-    <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Candidate Adjudication ({{ candidate_count }})</a>
-    <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Reconfirmation ({{ reconfirmation_count }})</a>
+    <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Extracted conflicts ({{ candidate_count }})</a>
+    <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Changed Document Evidence ({{ reconfirmation_count }})</a>
   </nav>
-  {% if lane != "rehearsal" %}{% include "_automatic_carry_forward_status.html" %}{% endif %}
   {% include "_coordinate.html" %}
   {% if lane == "rehearsal" and rail %}
     {% set admitted = rail|selectattr("dependency_id")|list %}
@@ -119,7 +118,7 @@
           {{ view.predecessor.filename if view.predecessor else "unknown predecessor" }}
           → {{ view.successor.filename if view.successor else "unknown successor" }}
         </p>
-        <p class="refusal"><b>Reconfirmation unavailable.</b> {{ view.refusal_detail }}</p>
+        <p class="refusal"><b>Current Evidence is unavailable.</b> {{ view.refusal_detail }}</p>
       </section>
     {% endfor %}
   {% else %}
@@ -131,10 +130,10 @@
       <p><a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to place</a></p>
     {% endif %}
     {% if lane == "candidate" and reconfirmation_count %}
-      <p>{{ reconfirmation_count }} item(s) remain in Reconfirmation.</p>
+      <p>{{ reconfirmation_count }} item(s) have changed Document Evidence.</p>
     {% elif lane == "reconfirmation" and candidate_count %}
-      <p>{{ candidate_count }} item(s) remain in Candidate Adjudication.</p>
+      <p>{{ candidate_count }} extracted conflict item(s) remain.</p>
     {% endif %}
-    <p>Historical Candidates remain preserved and never return by fallback.</p>
+    <p>Historical extracted sources remain preserved and never return by fallback.</p>
   {% endif %}
 </div>

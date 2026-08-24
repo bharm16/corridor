@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Ready judgment is an explicit human act
 
 Admission is mechanical (ADR-0029), and exact unchanged Operative Support may move

@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from corridor import audit
 from corridor.models import (
@@ -47,9 +47,14 @@ from corridor.models import (
 )
 from corridor.project_lock import lock_project
 
-ARCHIVE_FORMAT_VERSION = "legacy-ledger-v3"
+ARCHIVE_FORMAT_VERSION = "legacy-ledger-v4"
 _READABLE_ARCHIVE_FORMATS = frozenset(
-    {"legacy-ledger-v1", "legacy-ledger-v2", ARCHIVE_FORMAT_VERSION}
+    {
+        "legacy-ledger-v1",
+        "legacy-ledger-v2",
+        "legacy-ledger-v3",
+        ARCHIVE_FORMAT_VERSION,
+    }
 )
 RETIREMENT_ACTOR = "system:legacy-ledger-retirement/v1"
 STATEMENT_RETIREMENT_ROLE = "corridor_statement_retirement"
@@ -126,9 +131,14 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
     if project is None:
         raise ValueError(f"project {project_id} does not exist")
 
+    dependency_query = select(Dependency)
+    if _database_has_column(session, "dependencies", "milestone_registration_id"):
+        dependency_query = dependency_query.options(
+            undefer(Dependency.milestone_registration_id)
+        )
     dependencies = list(
         session.scalars(
-            select(Dependency)
+            dependency_query
             .where(Dependency.project_id == project_id)
             .order_by(Dependency.id)
         ).all()
@@ -271,9 +281,14 @@ def plan_retirement(session: Session, project_id: int) -> RetirementPlan:
             if dependency.milestone_id is not None
         }
     )
+    milestone_query = select(Milestone)
+    if _database_has_column(session, "milestones", "current_registration_id"):
+        milestone_query = milestone_query.options(
+            undefer(Milestone.current_registration_id)
+        )
     milestones = list(
         session.scalars(
-            select(Milestone)
+            milestone_query
             .where(Milestone.id.in_(milestone_ids or [0]))
             .order_by(Milestone.id)
         ).all()
@@ -689,10 +704,25 @@ def _for_dependencies(
 
 
 def _row_content(row: Any) -> dict[str, Any]:
+    inspected = sqlalchemy_inspect(row)
     return {
         attribute.key: _json_value(getattr(row, attribute.key))
-        for attribute in sqlalchemy_inspect(row).mapper.column_attrs
+        for attribute in inspected.mapper.column_attrs
+        if attribute.key not in inspected.unloaded
     }
+
+
+def _database_has_column(session: Session, table: str, column: str) -> bool:
+    return bool(
+        session.scalar(
+            text(
+                "select exists (select 1 from information_schema.columns "
+                "where table_schema = 'public' and table_name = :table "
+                "and column_name = :column)"
+            ),
+            {"table": table, "column": column},
+        )
+    )
 
 
 def _json_value(value: Any) -> Any:

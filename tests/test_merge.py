@@ -4,7 +4,6 @@ from sqlalchemy import select
 from corridor.db import Session, engine
 from corridor.merge import (
     MIN_MATCH_SCORE,
-    rank_matches,
     STATION_TOLERANCE_FT,
     parse_station,
     rank_matches,
@@ -114,7 +113,6 @@ def make_dep(session, project, org, ref, **kw):
         dep_type=kw.pop("dep_type", "utility_relocation"),
         title=kw.pop("title", "Telecom — MT AT&T"),
         external_org_id=org.id if org else None,
-        status="identified",
         **kw,
     )
     session.add(dep)

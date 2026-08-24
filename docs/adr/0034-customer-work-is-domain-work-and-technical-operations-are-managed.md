@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Customer work is domain work, and technical operations are managed
 
 Corridor's first users are construction workers and project coordinators. The
@@ -161,6 +165,8 @@ plain self-service workflow exists. The permission boundary for construction wor
 remains explicitly deferred; this ADR grants them no Ledger-write authority.
 
 ## Interview decision inventory
+
+The inventories below are historical loss-prevention records. The normative current decisions live in the focused ADR sections above and ADR-0035 through ADR-0045; issue numbers, branch names, hashes, and delivery order below are not product architecture.
 
 This appendix is the loss-prevention ledger for the 82 numbered decisions settled in
 the product interview. Later decisions control where the interview corrected an

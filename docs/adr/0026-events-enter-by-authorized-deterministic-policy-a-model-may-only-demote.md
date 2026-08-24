@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Events enter by deterministic policy, and a model may only demote
 
 > **Amended by ADR-0029 and ADR-0036.** The accountable-human authorization in

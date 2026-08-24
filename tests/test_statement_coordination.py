@@ -187,7 +187,6 @@ def _dependency(session, project, party, ref_code: str, title: str) -> Dependenc
         station_from="6608+70",
         station_to="6616+50",
         external_org_id=party.id,
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -454,9 +453,21 @@ def test_command_rolls_back_every_result_when_a_late_milestone_refuses(
         )
 
     assert candidate.state == "pending"
-    assert session.scalar(select(func.count()).select_from(DependencyEvent)) == 0
-    assert session.scalar(select(func.count()).select_from(StatementCoordinationReceipt)) == 0
-    assert session.scalar(select(func.count()).select_from(WorkDecision)) == 0
+    assert session.scalar(
+        select(func.count())
+        .select_from(DependencyEvent)
+        .where(DependencyEvent.project_id == project.id)
+    ) == 0
+    assert session.scalar(
+        select(func.count())
+        .select_from(StatementCoordinationReceipt)
+        .where(StatementCoordinationReceipt.candidate_id == candidate.id)
+    ) == 0
+    assert session.scalar(
+        select(func.count())
+        .select_from(CandidateDisposition)
+        .where(CandidateDisposition.candidate_id == candidate.id)
+    ) == 0
 
 
 def test_command_refuses_stale_resubmission_without_partial_second_save(
@@ -479,13 +490,21 @@ def test_command_refuses_stale_resubmission_without_partial_second_save(
         new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
         evidence=(CitedStatementEvidence(document.id, 1, quote),),
     )
-    coordinate_statement(session, draft, principal=RECORDER)
+    result = coordinate_statement(session, draft, principal=RECORDER)
 
     with pytest.raises(StaleStatementCoordination, match="already accepted"):
         coordinate_statement(session, draft, principal=RECORDER)
 
-    assert session.scalar(select(func.count()).select_from(DependencyEvent)) == 1
-    assert session.scalar(select(func.count()).select_from(StatementCoordinationReceipt)) == 1
+    assert session.scalar(
+        select(func.count())
+        .select_from(DependencyEvent)
+        .where(DependencyEvent.commitment_lineage_id == result.event.commitment_lineage_id)
+    ) == 1
+    assert session.scalar(
+        select(func.count())
+        .select_from(StatementCoordinationReceipt)
+        .where(StatementCoordinationReceipt.candidate_id == candidate.id)
+    ) == 1
 
 
 def test_command_refuses_party_or_timing_that_the_verified_evidence_does_not_support(
@@ -518,7 +537,11 @@ def test_command_refuses_party_or_timing_that_the_verified_evidence_does_not_sup
         )
 
     assert candidate.state == "pending"
-    assert session.scalar(select(func.count()).select_from(DependencyEvent)) == 0
+    assert session.scalar(
+        select(func.count())
+        .select_from(DependencyEvent)
+        .where(DependencyEvent.project_id == project.id)
+    ) == 0
 
 
 def test_command_requires_a_project_roster_selection_and_preserves_unknown_due_reason(
@@ -689,7 +712,11 @@ def test_undo_reverses_exactly_one_guided_save_without_deleting_its_history(
     subject = CoordinationSubject.statement(result.event.commitment_lineage_id)
     assert current_internal_owner_decision(session, subject) is None
     assert current_next_action_decision(session, subject) is None
-    assert session.scalar(select(func.count()).select_from(DependencyEventEvidence)) == 1
+    assert session.scalar(
+        select(func.count())
+        .select_from(DependencyEventEvidence)
+        .where(DependencyEventEvidence.event_id == result.event.id)
+    ) == 1
     assert current_dependency_statements(session, (dependency.id,))[dependency.id].event is None
 
     resaved = coordinate_statement(
@@ -1213,8 +1240,16 @@ def test_not_relevant_is_reasoned_reversible_and_never_creates_a_statement_or_pl
     session.refresh(candidate)
     assert candidate.state == "rejected"
     assert disposition.reason == "outside_project_scope"
-    assert session.scalar(select(func.count()).select_from(DependencyEvent)) == 0
-    assert session.scalar(select(func.count()).select_from(StatementCoordinationReceipt)) == 0
+    assert session.scalar(
+        select(func.count())
+        .select_from(DependencyEvent)
+        .where(DependencyEvent.project_id == project.id)
+    ) == 0
+    assert session.scalar(
+        select(func.count())
+        .select_from(StatementCoordinationReceipt)
+        .where(StatementCoordinationReceipt.candidate_id == candidate.id)
+    ) == 0
     reversal = restore_statement_not_relevant(session, disposition.id, principal=RECORDER)
 
     session.refresh(candidate)

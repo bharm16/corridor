@@ -3,9 +3,9 @@
 Three points differ from a naive reading of the spec and are easy to get
 wrong, so they are called out here as well as in the ADRs:
 
-- `Dependency.status` has no `ready` value. Readiness is computed from
-  verified Evidence carrying a separate Dependency sufficiency judgment
-  (ADR-0002).
+- A Dependency has no mutable lifecycle status. Ready, Dismissal, Commitment
+  Closure, Exceptions, and Coordination Plans supply the supported states
+  (ADR-0002, ADR-0044).
 - `Assertion` is a table, not a column. A ledger field value is an
   adjudicated conclusion; the assertions beneath it preserve what each
   source actually claimed (ADR-0001).
@@ -95,8 +95,6 @@ DEP_TYPES = (
     "access",
     "other",
 )
-DEP_STATUSES = ("identified", "in_progress", "committed", "blocked", "closed")
-
 # How a utility conflict is to be resolved, as the document says it
 # (ADR-0009). SHRP2 R15B publishes four alternatives; the first is
 # decomposed along the Red/Brown split FDOT prints on its plans, which is
@@ -220,8 +218,7 @@ def is_placeholder_party(name: str | None) -> bool:
 def _enum(*values: str, name: str) -> Enum:
     """A VARCHAR plus a CHECK, not a native PG type.
 
-    These value sets are still moving — `ready` was removed from
-    DEP_STATUSES during design, and `status_report` was added to DOC_TYPES
+    These value sets are still moving — `status_report` was added to DOC_TYPES
     once the corpus research found serial reporting. Native enums make
     every such change an ALTER TYPE; a CHECK is a one-line migration.
 
@@ -276,6 +273,7 @@ class Project(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+
 # The three families that write records or move support under an
 # authorized policy (ADRs 0022, 0026, 0027). ADR-0028 joined their
 # approval and run tables — the shapes were identical, and copies drift —
@@ -288,8 +286,7 @@ POLICY_FAMILIES = (
 )
 
 _POLICY_FAMILY_CHECK = (
-    "family in ('automatic-carry-forward', 'event-admission', "
-    "'dependency-admission')"
+    "family in ('automatic-carry-forward', 'event-admission', 'dependency-admission')"
 )
 
 
@@ -304,12 +301,8 @@ class PolicyApproval(Base):
 
     __tablename__ = "policy_approvals"
     __table_args__ = (
-        UniqueConstraint(
-            "project_id", "id", name="uq_policy_approvals_project_id"
-        ),
-        UniqueConstraint(
-            "family", "id", name="uq_policy_approvals_family_id"
-        ),
+        UniqueConstraint("project_id", "id", name="uq_policy_approvals_project_id"),
+        UniqueConstraint("family", "id", name="uq_policy_approvals_family_id"),
         UniqueConstraint(
             "project_id",
             "family",
@@ -336,44 +329,6 @@ class PolicyApproval(Base):
     policy_sha256: Mapped[str] = mapped_column(String(64))
     approved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class ActiveAutomaticCarryForwardPolicy(Base):
-    """The explicitly selected project policy; absence means disabled.
-
-    Carry-Forward keeps its explicit pointer where the admission families
-    use newest-matching — a decision, not drift (ADR-0022 re-validates
-    against the audit log). The pointer's family column is pinned to its
-    literal so it can never elect another family's approval.
-    """
-
-    __tablename__ = "active_automatic_carry_forward_policies"
-    __table_args__ = (
-        CheckConstraint(
-            "family = 'automatic-carry-forward'",
-            name="ck_active_automatic_carry_forward_policy_family",
-        ),
-        ForeignKeyConstraint(
-            ["project_id", "family", "policy_approval_id"],
-            [
-                "policy_approvals.project_id",
-                "policy_approvals.family",
-                "policy_approvals.id",
-            ],
-            name="fk_active_automatic_carry_forward_policy_project",
-        ),
-    )
-
-    project_id: Mapped[int] = mapped_column(
-        ForeignKey("projects.id"), primary_key=True
-    )
-    family: Mapped[str] = mapped_column(
-        String(32), server_default="automatic-carry-forward"
-    )
-    policy_approval_id: Mapped[int] = mapped_column(BigInteger, unique=True)
-    activated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -419,10 +374,8 @@ class PolicyRun(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     family: Mapped[str] = mapped_column(String(32))
-    # Null for a policy that runs without a human authorization: the
-    # admission families run as a pipeline stage and stand on the version
-    # and digest recorded here beside them (ADR-0029). Carry-Forward
-    # still names its approval.
+    # Null for normal Corridor-managed policies. Historical project-approved
+    # Carry-Forward runs retain the approval they originally named.
     policy_approval_id: Mapped[int | None] = mapped_column(BigInteger)
     policy_version: Mapped[str] = mapped_column(String(64))
     policy_sha256: Mapped[str] = mapped_column(String(64))
@@ -438,9 +391,7 @@ class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
         UniqueConstraint("project_id", "sha256"),
-        UniqueConstraint(
-            "project_id", "id", name="uq_documents_project_id_id"
-        ),
+        UniqueConstraint("project_id", "id", name="uq_documents_project_id_id"),
         UniqueConstraint(
             "project_id", "registry_id", name="uq_documents_project_registry_id"
         ),
@@ -790,9 +741,7 @@ class EventAdmissionOutcome(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     policy_run_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    family: Mapped[str] = mapped_column(
-        String(32), server_default="event-admission"
-    )
+    family: Mapped[str] = mapped_column(String(32), server_default="event-admission")
     candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
     outcome: Mapped[str] = mapped_column(String(9))
     reason: Mapped[str | None] = mapped_column(String(64))
@@ -916,8 +865,7 @@ class DependencyAdmissionOutcome(Base):
             name="ck_dependency_admission_outcome_family",
         ),
         CheckConstraint(
-            "eligibility_sha256 is null or "
-            "eligibility_sha256 ~ '^[0-9a-f]{64}$'",
+            "eligibility_sha256 is null or eligibility_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_dependency_admission_outcome_eligibility_sha256",
         ),
         CheckConstraint(
@@ -943,9 +891,7 @@ class DependencyAdmissionOutcome(Base):
     candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
     outcome: Mapped[str] = mapped_column(String(9))
     reason: Mapped[str | None] = mapped_column(String(64))
-    dependency_id: Mapped[int | None] = mapped_column(
-        ForeignKey("dependencies.id")
-    )
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
     eligibility_json: Mapped[dict | None] = mapped_column(JSONB)
     eligibility_sha256: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
@@ -1182,7 +1128,9 @@ class RevisionComparisonFinding(Base):
     matcher_detail: Mapped[dict] = mapped_column(JSONB)
 
 
-class ExternalOrg(Base):
+class ExternalParty(Base):
+    """One registered External Party with every confirmed source alias."""
+
     __tablename__ = "external_orgs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1197,6 +1145,10 @@ class ExternalOrg(Base):
     aliases: Mapped[list[str]] = mapped_column(
         ARRAY(Text), default=list, server_default="{}"
     )
+
+
+# Physical schema and older integrations used this implementation name.
+ExternalOrg = ExternalParty
 
 
 class ReportRun(Base):
@@ -1239,9 +1191,7 @@ class ExternalReportArtifact(Base):
 
     __tablename__ = "external_report_artifacts"
     __table_args__ = (
-        CheckConstraint(
-            "format = 'pdf'", name="ck_external_report_artifacts_pdf_only"
-        ),
+        CheckConstraint("format = 'pdf'", name="ck_external_report_artifacts_pdf_only"),
         CheckConstraint(
             "pdf_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_external_report_artifacts_pdf_sha256",
@@ -1301,9 +1251,7 @@ class ExternalReportRelease(Base):
 
     __tablename__ = "external_report_releases"
     __table_args__ = (
-        CheckConstraint(
-            "format = 'pdf'", name="ck_external_report_releases_pdf_only"
-        ),
+        CheckConstraint("format = 'pdf'", name="ck_external_report_releases_pdf_only"),
         CheckConstraint(
             "pdf_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_external_report_releases_pdf_sha256",
@@ -1334,13 +1282,10 @@ class ExternalReportRelease(Base):
             name="ck_external_report_releases_released_by",
         ),
         CheckConstraint(
-            "released_by_display is not null "
-            "and length(trim(released_by_display)) > 0",
+            "released_by_display is not null and length(trim(released_by_display)) > 0",
             name="ck_external_report_releases_released_by_display",
         ),
-        UniqueConstraint(
-            "artifact_id", name="uq_external_report_releases_artifact_id"
-        ),
+        UniqueConstraint("artifact_id", name="uq_external_report_releases_artifact_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1484,6 +1429,11 @@ class Dependency(Base):
     station_to: Mapped[str | None] = mapped_column(String(32))
     external_org_id: Mapped[int | None] = mapped_column(ForeignKey("external_orgs.id"))
     milestone_id: Mapped[int | None] = mapped_column(ForeignKey("milestones.id"))
+    milestone_registration_id: Mapped[int | None] = mapped_column(
+        ForeignKey("milestone_registrations.id"),
+        deferred=True,
+        server_default=text("null"),
+    )
     external_contact: Mapped[str | None] = mapped_column(Text)
     internal_owner: Mapped[str | None] = mapped_column(Text)
     # The step the project decided must happen next, and either the date the
@@ -1495,11 +1445,6 @@ class Dependency(Base):
     action_due_date_reason: Mapped[str | None] = mapped_column(String(64))
     deferral_reason: Mapped[str | None] = mapped_column(String(64))
     deferral_return_date: Mapped[date | None] = mapped_column(Date)
-    status: Mapped[str] = mapped_column(
-        _enum(*DEP_STATUSES, name="dep_status"),
-        default="identified",
-        server_default="identified",
-    )
     # What the document says is to be done about the conflict, as an
     # adjudicated conclusion drawn from its Assertions. Criticality is read
     # off this rather than stored beside it (ADR-0009).
@@ -1526,9 +1471,7 @@ class Dependency(Base):
     # the newest DependencyDismissal, which is the authority — readers
     # filter on this rather than joining, the same way they read the
     # projected Committed Date (ADR-0032). Never a delete.
-    dismissed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -1593,21 +1536,19 @@ class ProjectRosterEntry(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     principal_subject: Mapped[str] = mapped_column(String(128))
     display_name: Mapped[str] = mapped_column(Text)
-    active: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default=true()
-    )
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
 
-class DependencyEvent(Base):
-    """One attributable External Party statement, with scope kept separately.
+class ExternalPartyStatement(Base):
+    """One attributable External Party Statement, with scope kept separately.
 
-    An event is project- and affected-party-scoped; a statement may concern no
-    known Dependency, one Dependency, or several.  ``DependencyEventScope``
-    is the only authority for that relationship.  Timings live in their own
-    rows so a month or approximate phrase never has to pretend to be one day.
+    A statement may concern no known Dependency, one Dependency, or several.
+    Commitment Scope membership is the only authority for that relationship.
+    Timings live in their own rows so a month or approximate phrase never has
+    to pretend to be one day.
     """
 
     __tablename__ = "dependency_events"
@@ -1697,11 +1638,18 @@ class DependencyEvent(Base):
 
     @property
     def previous_timing(self) -> "DependencyEventTiming | None":
-        return next((timing for timing in self.timings if timing.kind == "previous"), None)
+        return next(
+            (timing for timing in self.timings if timing.kind == "previous"), None
+        )
 
     @property
     def new_timing(self) -> "DependencyEventTiming | None":
         return next((timing for timing in self.timings if timing.kind == "new"), None)
+
+
+# The table keeps its historical physical name; domain-facing code can use the
+# current ubiquitous language without a destructive table rename.
+DependencyEvent = ExternalPartyStatement
 
 
 class DependencyEventTiming(Base):
@@ -1850,11 +1798,15 @@ class DependencyEventEvidence(Base):
     )
 
 
+StatementTimingRecord = DependencyEventTiming
+CommitmentScopeDecision = DependencyEventScopeDecision
+CommitmentScopeMembership = DependencyEventScope
+StatementEvidence = DependencyEventEvidence
+
+
 class EvidenceLink(Base):
     __tablename__ = "evidence_links"
-    __table_args__ = (
-        UniqueConstraint("dependency_id", "id"),
-    )
+    __table_args__ = (UniqueConstraint("dependency_id", "id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # Direct record Evidence owns one Dependency. Statement Evidence leaves
@@ -1871,6 +1823,7 @@ class EvidenceLink(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
 
 class DependencyEvidenceSufficiency(Base):
     """A Dependency-specific sufficiency judgment on direct or event Evidence."""
@@ -1965,7 +1918,73 @@ class Milestone(Base):
     need_date: Mapped[date | None] = mapped_column(Date)
     # Where this came from — a CSV filename in v0, a P6 XER export in M9.
     source: Mapped[str | None] = mapped_column(Text)
+    current_registration_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "milestone_registrations.id",
+            name="fk_milestones_current_registration",
+            use_alter=True,
+        ),
+        deferred=True,
+        server_default=text("null"),
+    )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MilestoneRegistration(Base):
+    """One immutable registered revision of a project Milestone."""
+
+    __tablename__ = "milestone_registrations"
+    __table_args__ = (
+        UniqueConstraint(
+            "predecessor_registration_id",
+            name="uq_milestone_registrations_predecessor",
+        ),
+        CheckConstraint(
+            "source_sha256 is null or source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_milestone_registrations_source_sha256",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(source_row_json) = 'object'",
+            name="ck_milestone_registrations_source_row",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_milestone_registrations_recorded_by",
+        ),
+        Index(
+            "uq_milestone_registrations_one_root",
+            "milestone_id",
+            unique=True,
+            postgresql_where=text("predecessor_registration_id is null"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    milestone_id: Mapped[int] = mapped_column(ForeignKey("milestones.id"), index=True)
+    source_name: Mapped[str] = mapped_column(Text)
+    source_sha256: Mapped[str | None] = mapped_column(String(64))
+    source_row_json: Mapped[dict] = mapped_column(JSONB)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    predecessor_registration_id: Mapped[int | None] = mapped_column(
+        ForeignKey("milestone_registrations.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class RetiredDependencyStatus(Base):
+    """The unauthoritative legacy status preserved when ADR-0044 retired it."""
+
+    __tablename__ = "retired_dependency_statuses"
+
+    dependency_id: Mapped[int] = mapped_column(
+        ForeignKey("dependencies.id"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(32))
+    retired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
@@ -1988,10 +2007,10 @@ class WorkDecisionMilestoneImpact(Base):
 
 
 class Candidate(Base):
-    """An extractor's proposal, not yet part of the Ledger.
+    """An extractor's proposal, not yet part of the Project Record.
 
-    Extractors write only here. The single path into the ledger is a human
-    keystroke, which is what makes an LLM pipeline auditable.
+    Extractors write only here. Admission requires either human Adjudication or
+    one exact deterministic policy outcome with an immutable receipt.
     """
 
     __tablename__ = "candidates"
@@ -2019,7 +2038,7 @@ class Candidate(Base):
     # Mechanical: every citation's quote was found on its cited page, and —
     # where the extractor transcribes rather than parses — every field value
     # is text on that page too. Kept separate from `state`, which is the
-    # human adjudication lifecycle. A candidate that fails either check is
+    # Admission and disposition lifecycle. A Candidate that fails either check is
     # sunk in the queue, never dropped.
     citations_verified: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
@@ -2447,9 +2466,7 @@ class ReconfirmationReceipt(Base):
     dependency_id: Mapped[int] = mapped_column(
         ForeignKey("dependencies.id"), index=True
     )
-    successor_candidate_id: Mapped[int] = mapped_column(
-        ForeignKey("candidates.id")
-    )
+    successor_candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
     before_json: Mapped[dict] = mapped_column(JSONB)
     after_json: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
@@ -2506,7 +2523,9 @@ class AutomaticCarryForwardReceipt(Base):
     family: Mapped[str] = mapped_column(
         String(32), server_default="automatic-carry-forward"
     )
-    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    policy_approval_id: Mapped[int | None] = mapped_column(BigInteger)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
     dependency_id: Mapped[int] = mapped_column(
         ForeignKey("dependencies.id"), index=True
     )
@@ -2516,16 +2535,10 @@ class AutomaticCarryForwardReceipt(Base):
     finding_id: Mapped[int] = mapped_column(
         ForeignKey("revision_comparison_findings.id")
     )
-    predecessor_candidate_id: Mapped[int] = mapped_column(
-        ForeignKey("candidates.id")
-    )
-    successor_candidate_id: Mapped[int] = mapped_column(
-        ForeignKey("candidates.id")
-    )
+    predecessor_candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    successor_candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
     new_evidence_link_id: Mapped[int] = mapped_column(BigInteger)
-    origin_admission_audit_id: Mapped[int] = mapped_column(
-        ForeignKey("audit_log.id")
-    )
+    origin_admission_audit_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"))
     predecessor_support_transfer_audit_id: Mapped[int | None] = mapped_column(
         ForeignKey("audit_log.id")
     )
@@ -2608,7 +2621,7 @@ class AutomaticCarryForwardOutcome(Base):
     family: Mapped[str] = mapped_column(
         String(32), server_default="automatic-carry-forward"
     )
-    policy_approval_id: Mapped[int] = mapped_column(BigInteger)
+    policy_approval_id: Mapped[int | None] = mapped_column(BigInteger)
     dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
     outcome: Mapped[str] = mapped_column(String(32))
     reason: Mapped[str | None] = mapped_column(String(128))

@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Nothing the machine surfaced is lost, and nothing is deleted
 
 Mechanical admission (ADR-0029) changed what the residue is made of. Two kinds now arrive that the old sign-off flow never had to answer for: statements from the minutes the policy could not place on any record, and junk that reaches the record because rows enter without a human first agreeing to each one. Decision: **both are handled in the open, and neither by deletion.**

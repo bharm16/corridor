@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # External Report release seals one fixed PDF artifact
 
 An internal Report and an externally released artifact are different products of

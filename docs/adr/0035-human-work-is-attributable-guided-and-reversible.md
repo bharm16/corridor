@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Human work is attributable, guided, and reversible
 
 The first working screens exposed the shape of the database to the person doing

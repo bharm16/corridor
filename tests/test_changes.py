@@ -78,13 +78,13 @@ def latest_run(session, project):
 
 
 def make_dep(session, project, ref, **kw):
+    kw.pop("status", None)
     d = Dependency(
         project_id=project.id,
         ref_code=ref,
         dep_type="utility_relocation",
         title="Telecom — Example",
         internal_owner="Bryce",
-        status=kw.pop("status", "identified"),
         resolution_strategy=kw.pop("resolution_strategy", None),
         **kw,
     )
@@ -193,7 +193,9 @@ def _record(session, project, **kwargs):
 def test_snapshot_writers_refuse_an_evaluation_from_another_project(
     session, project, operation
 ):
-    foreign = Project(slug=f"foreign-{operation.__name__}", name="Foreign", is_synthetic=True)
+    foreign = Project(
+        slug=f"foreign-{operation.__name__}", name="Foreign", is_synthetic=True
+    )
     session.add(foreign)
     session.flush()
 
@@ -228,7 +230,7 @@ def test_a_snapshot_captures_state_and_its_ruleset(session, project, document):
     snap = _snapshot(session, project)
     assert snap["ruleset_version"]
     entry = snap["dependencies"]["DEP-1"]
-    assert entry["status"] == "identified"
+    assert "status" not in entry
     assert entry["committed_date"] == "2026-09-01"
     assert entry["ready"] is False
     assert "ORPHAN" in entry["exceptions"]
@@ -240,7 +242,7 @@ def test_a_snapshot_captures_state_and_its_ruleset(session, project, document):
 def test_the_first_report_says_so_rather_than_reporting_no_changes(
     session, project, document
 ):
-    """"0 changes" reads as "nothing moved", which is a different claim."""
+    """ "0 changes" reads as "nothing moved", which is a different claim."""
     dep = make_dep(session, project, "DEP-1")
     add_evidence(session, dep, document)
 
@@ -261,7 +263,7 @@ def test_a_new_dependency_is_reported_as_new(session, project, document):
     assert [c.ref_code for c in diff.of_kind("new")] == ["DEP-2"]
 
 
-def test_a_later_committed_date_is_a_slip(session, project, document):
+def test_a_later_committed_date_is_a_committed_date_change(session, project, document):
     dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 6, 3))
     add_evidence(session, dep, document)
     _record(session, project)
@@ -274,7 +276,7 @@ def test_a_later_committed_date_is_a_slip(session, project, document):
         committed_date=date(2026, 8, 15),
     )
 
-    [change] = _diff(session, project).of_kind("slipped")
+    [change] = _diff(session, project).of_kind("committed_date_change")
     assert "2026-06-03" in change.detail and "2026-08-15" in change.detail
 
 
@@ -306,23 +308,32 @@ def test_snapshot_and_diff_read_the_current_statement_over_a_stale_scalar(
     dep.committed_date = date(2026, 6, 3)
     session.flush()
 
-    assert _snapshot(session, project)["dependencies"]["DEP-1"][
-        "committed_date"
-    ] == "2026-08-15"
-    [change] = _diff(session, project).of_kind("slipped")
+    assert (
+        _snapshot(session, project)["dependencies"]["DEP-1"]["committed_date"]
+        == "2026-08-15"
+    )
+    [change] = _diff(session, project).of_kind("committed_date_change")
     assert "2026-06-03" in change.detail and "2026-08-15" in change.detail
 
 
-def test_an_earlier_committed_date_is_not_a_slip(session, project, document):
-    """Pulling a date forward is good news, not a slip."""
+def test_an_earlier_committed_date_is_a_committed_date_change(
+    session, project, document
+):
     dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 8, 15))
     add_evidence(session, dep, document)
     _record(session, project)
 
-    dep.committed_date = date(2026, 6, 3)
-    session.flush()
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 9, 1),
+        committed_date=date(2026, 6, 3),
+    )
 
-    assert _diff(session, project).of_kind("slipped") == []
+    [change] = _diff(session, project).of_kind("committed_date_change")
+    assert "2026-08-15" in change.detail
+    assert "2026-06-03" in change.detail
 
 
 def test_becoming_ready_is_reported(session, project, document):
@@ -392,18 +403,6 @@ def test_a_snapshot_written_before_the_strategy_existed_does_not_escalate(
     assert _diff(session, project).of_kind("escalated") == []
 
 
-def test_a_closed_dependency_is_reported_as_closed(session, project, document):
-    dep = make_dep(session, project, "DEP-1")
-    add_evidence(session, dep, document)
-    _record(session, project)
-
-    dep.status = "closed"
-    session.flush()
-
-    [change] = _diff(session, project).of_kind("closed")
-    assert change.ref_code == "DEP-1"
-
-
 def test_a_new_exception_is_reported(session, project, document):
     dep = make_dep(session, project, "DEP-1")
     add_evidence(session, dep, document)
@@ -455,7 +454,7 @@ def test_exception_churn_is_suppressed_across_a_ruleset_change(
 def test_real_movement_still_reports_across_a_ruleset_change(
     session, project, document
 ):
-    """Only exception churn is suppressed; a slipped date is a fact about
+    """Only exception churn is suppressed; a Committed Date Change is a fact about
     the project regardless of which ruleset was in force."""
     dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 6, 3))
     add_evidence(session, dep, document)
@@ -471,7 +470,7 @@ def test_real_movement_still_reports_across_a_ruleset_change(
         committed_date=date(2026, 9, 9),
     )
 
-    assert _diff(session, project).of_kind("slipped")
+    assert _diff(session, project).of_kind("committed_date_change")
 
 
 # ------------------------------------------------------------------ storage
@@ -510,5 +509,5 @@ def test_the_diff_reads_the_most_recent_run(session, project, document):
     )
 
     # Diffed against the July snapshot, not the June one.
-    [change] = _diff(session, project).of_kind("slipped")
+    [change] = _diff(session, project).of_kind("committed_date_change")
     assert "2026-07-01" in change.detail

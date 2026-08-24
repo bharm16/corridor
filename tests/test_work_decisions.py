@@ -73,7 +73,6 @@ def dependency(session, project):
         ref_code="WD-1",
         dep_type="utility_relocation",
         title="Water main at 1102+20",
-        status="identified",
     )
     session.add(d)
     session.flush()

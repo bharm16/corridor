@@ -17,8 +17,8 @@ from sqlalchemy.orm import aliased
 
 from corridor.models import (
     CandidateDisposition,
-    DependencyEvent,
-    DependencyEventScopeDecision,
+    ExternalPartyStatement,
+    CommitmentScopeDecision,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
     WorkDecision,
@@ -29,8 +29,8 @@ from corridor.models import (
 class CurrentStatementObservation:
     """The current External Party fact and project response it can invalidate."""
 
-    event: DependencyEvent
-    scope_decision: DependencyEventScopeDecision | None
+    event: ExternalPartyStatement
+    scope_decision: CommitmentScopeDecision | None
     milestone_impact_decision: WorkDecision | None
 
     @property
@@ -52,7 +52,7 @@ class CurrentStatementObservation:
 
 def current_statement_event_filter(event_id):
     """Keep only unreversed statement tails, never their stale predecessors."""
-    successor = DependencyEvent.__table__.alias("successor")
+    successor = ExternalPartyStatement.__table__.alias("successor")
     return (
         ~exists(
             select(StatementCoordinationReversal.id)
@@ -71,15 +71,15 @@ def current_statement_event_filter(event_id):
 
 def current_lineage_statement(
     session, commitment_lineage_id: int
-) -> DependencyEvent | None:
+) -> ExternalPartyStatement | None:
     """Return the current, unreversed statement at one lineage tail."""
     return session.scalar(
-        select(DependencyEvent)
+        select(ExternalPartyStatement)
         .where(
-            DependencyEvent.commitment_lineage_id == commitment_lineage_id,
-            current_statement_event_filter(DependencyEvent.id),
+            ExternalPartyStatement.commitment_lineage_id == commitment_lineage_id,
+            current_statement_event_filter(ExternalPartyStatement.id),
         )
-        .order_by(DependencyEvent.id)
+        .order_by(ExternalPartyStatement.id)
     )
 
 
@@ -100,15 +100,19 @@ def observe_current_statements(
     if not lineage_ids:
         return {}
     events = session.scalars(
-        select(DependencyEvent)
+        select(ExternalPartyStatement)
         .where(
-            DependencyEvent.commitment_lineage_id.in_(lineage_ids),
-            DependencyEvent.event_type.in_(("commitment", "committed_date_change")),
-            DependencyEvent.attribution_state == "resolved",
-            DependencyEvent.stated_external_org_id.is_not(None),
-            current_statement_event_filter(DependencyEvent.id),
+            ExternalPartyStatement.commitment_lineage_id.in_(lineage_ids),
+            ExternalPartyStatement.event_type.in_(
+                ("commitment", "committed_date_change")
+            ),
+            ExternalPartyStatement.attribution_state == "resolved",
+            ExternalPartyStatement.stated_external_org_id.is_not(None),
+            current_statement_event_filter(ExternalPartyStatement.id),
         )
-        .order_by(DependencyEvent.commitment_lineage_id, DependencyEvent.id)
+        .order_by(
+            ExternalPartyStatement.commitment_lineage_id, ExternalPartyStatement.id
+        )
     ).all()
     events_by_lineage = {
         event.commitment_lineage_id: event
@@ -118,24 +122,24 @@ def observe_current_statements(
     if not events_by_lineage:
         return {}
 
-    scope_successor = aliased(DependencyEventScopeDecision)
+    scope_successor = aliased(CommitmentScopeDecision)
     scopes = session.scalars(
-        select(DependencyEventScopeDecision)
+        select(CommitmentScopeDecision)
         .where(
-            DependencyEventScopeDecision.event_id.in_(
+            CommitmentScopeDecision.event_id.in_(
                 event.id for event in events_by_lineage.values()
             ),
-            current_scope_decision_filter(DependencyEventScopeDecision.id),
+            current_scope_decision_filter(CommitmentScopeDecision.id),
             ~select(scope_successor.id)
             .where(
                 scope_successor.supersedes_scope_decision_id
-                == DependencyEventScopeDecision.id
+                == CommitmentScopeDecision.id
             )
             .exists(),
         )
         .order_by(
-            DependencyEventScopeDecision.event_id,
-            DependencyEventScopeDecision.id,
+            CommitmentScopeDecision.event_id,
+            CommitmentScopeDecision.id,
         )
     ).all()
     scopes_by_event = {scope.event_id: scope for scope in scopes}
@@ -197,9 +201,12 @@ def current_work_decision_filter(work_decision_id):
         )
         .where(
             or_(
-                StatementCoordinationReceipt.internal_owner_decision_id == work_decision_id,
-                StatementCoordinationReceipt.next_action_decision_id == work_decision_id,
-                StatementCoordinationReceipt.milestone_impact_decision_id == work_decision_id,
+                StatementCoordinationReceipt.internal_owner_decision_id
+                == work_decision_id,
+                StatementCoordinationReceipt.next_action_decision_id
+                == work_decision_id,
+                StatementCoordinationReceipt.milestone_impact_decision_id
+                == work_decision_id,
             )
         )
     )
@@ -215,14 +222,17 @@ def current_candidate_disposition_filter(disposition_id):
         )
         .where(
             or_(
-                StatementCoordinationReversal.candidate_disposition_id == disposition_id,
+                StatementCoordinationReversal.candidate_disposition_id
+                == disposition_id,
                 StatementCoordinationReceipt.candidate_disposition_id == disposition_id,
             )
         )
     )
 
 
-def current_candidate_disposition(session, candidate_id: int) -> CandidateDisposition | None:
+def current_candidate_disposition(
+    session, candidate_id: int
+) -> CandidateDisposition | None:
     """Return the one unreversed disposition, if the Candidate has one."""
     return session.scalar(
         select(CandidateDisposition)

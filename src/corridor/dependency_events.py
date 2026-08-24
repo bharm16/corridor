@@ -20,11 +20,11 @@ from sqlalchemy.orm import Session
 from corridor.models import (
     CommitmentLineage,
     Dependency,
-    DependencyEvent,
-    DependencyEventEvidence,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
-    DependencyEventTiming,
+    ExternalPartyStatement,
+    StatementEvidence,
+    CommitmentScopeMembership,
+    CommitmentScopeDecision,
+    StatementTimingRecord,
     Document,
     EvidenceLink,
     WorkDecision,
@@ -42,16 +42,12 @@ COMMITTED_EVENT_TYPES = ("commitment", "committed_date_change")
 
 def current_scope_decision_filter():
     """SQL predicate for the one scope decision not replaced by a later act."""
-    superseding = aliased(DependencyEventScopeDecision)
-    return (
-        ~exists(
-            select(superseding.id).where(
-                superseding.supersedes_scope_decision_id
-                == DependencyEventScopeDecision.id
-            )
+    superseding = aliased(CommitmentScopeDecision)
+    return ~exists(
+        select(superseding.id).where(
+            superseding.supersedes_scope_decision_id == CommitmentScopeDecision.id
         )
-        & current_lifecycle_scope_decision_filter(DependencyEventScopeDecision.id)
-    )
+    ) & current_lifecycle_scope_decision_filter(CommitmentScopeDecision.id)
 
 
 @dataclass(frozen=True)
@@ -59,7 +55,7 @@ class StatementEvidenceMembership:
     """One Evidence identity visible through one current statement scope link."""
 
     dependency_id: int
-    event: DependencyEvent
+    event: ExternalPartyStatement
     scope_link_id: int
     evidence_link: EvidenceLink
     document: Document
@@ -79,9 +75,7 @@ class CurrentStatementEvidenceMemberships:
         self, dependency_id: int
     ) -> tuple[StatementEvidenceMembership, ...]:
         return tuple(
-            member
-            for member in self.members
-            if member.dependency_id == dependency_id
+            member for member in self.members if member.dependency_id == dependency_id
         )
 
     def contains(self, dependency_id: int, evidence_link_id: int) -> bool:
@@ -117,36 +111,35 @@ def current_statement_evidence_memberships(
         return CurrentStatementEvidenceMemberships(())
     rows = session.execute(
         select(
-            DependencyEventScope.dependency_id,
-            DependencyEvent,
-            DependencyEventScope.id,
+            CommitmentScopeMembership.dependency_id,
+            ExternalPartyStatement,
+            CommitmentScopeMembership.id,
             EvidenceLink,
             Document,
         )
         .join(
-            DependencyEventScopeDecision,
-            DependencyEventScope.scope_decision_id
-            == DependencyEventScopeDecision.id,
+            CommitmentScopeDecision,
+            CommitmentScopeMembership.scope_decision_id == CommitmentScopeDecision.id,
         )
         .join(
-            DependencyEventEvidence,
-            DependencyEventEvidence.event_id == DependencyEventScope.event_id,
+            StatementEvidence,
+            StatementEvidence.event_id == CommitmentScopeMembership.event_id,
         )
         .join(
-            DependencyEvent,
-            DependencyEvent.id == DependencyEventEvidence.event_id,
+            ExternalPartyStatement,
+            ExternalPartyStatement.id == StatementEvidence.event_id,
         )
         .join(
             EvidenceLink,
-            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            EvidenceLink.id == StatementEvidence.evidence_link_id,
         )
         .join(Document, Document.id == EvidenceLink.document_id)
         .where(
-            DependencyEventScope.dependency_id.in_(ids),
+            CommitmentScopeMembership.dependency_id.in_(ids),
             current_scope_decision_filter(),
-            current_statement_event_filter(DependencyEvent.id),
+            current_statement_event_filter(ExternalPartyStatement.id),
         )
-        .order_by(DependencyEventScope.dependency_id, EvidenceLink.id)
+        .order_by(CommitmentScopeMembership.dependency_id, EvidenceLink.id)
     ).all()
     return CurrentStatementEvidenceMemberships(
         tuple(
@@ -171,7 +164,7 @@ class CurrentDependencyStatement:
     readers do not reimplement either scope traversal or event selection.
     """
 
-    event: DependencyEvent | None
+    event: ExternalPartyStatement | None
     effective_date: date | None
     provenance_class: str | None
     is_closed: bool
@@ -191,8 +184,8 @@ class CitedStatementProvenance:
 class PublishedDependencyStatement:
     """The statement one publisher may expose for one Dependency."""
 
-    current_event: DependencyEvent | None
-    event: DependencyEvent | None
+    current_event: ExternalPartyStatement | None
+    event: ExternalPartyStatement | None
     committed_date: date | None
     source_attribution: str | None
     cited_provenance: CitedStatementProvenance | None
@@ -219,10 +212,10 @@ class PublishedStatementCoordinationPlan:
 class PublishedPartyStatement:
     """One open unknown-scope statement a Report may publish without a Dependency."""
 
-    current_event: DependencyEvent
-    event: DependencyEvent | None
-    timings: tuple[DependencyEventTiming, ...]
-    scope_decision: DependencyEventScopeDecision
+    current_event: ExternalPartyStatement
+    event: ExternalPartyStatement | None
+    timings: tuple[StatementTimingRecord, ...]
+    scope_decision: CommitmentScopeDecision
     cited_provenance: CitedStatementProvenance | None
     is_closed: bool
     unsupported_current: bool
@@ -240,7 +233,9 @@ class StatementPublication:
 
     def __post_init__(self) -> None:
         """Keep the paired publication from being changed after it is read."""
-        object.__setattr__(self, "by_dependency", MappingProxyType(dict(self.by_dependency)))
+        object.__setattr__(
+            self, "by_dependency", MappingProxyType(dict(self.by_dependency))
+        )
         object.__setattr__(self, "party_statements", tuple(self.party_statements))
 
     @property
@@ -251,7 +246,7 @@ class StatementPublication:
         }
 
     @property
-    def committed_events(self) -> dict[int, DependencyEvent]:
+    def committed_events(self) -> dict[int, ExternalPartyStatement]:
         return {
             dependency_id: statement.event
             for dependency_id, statement in self.by_dependency.items()
@@ -368,68 +363,67 @@ def current_dependency_statements(
 
     closed_ids = set(
         session.scalars(
-            select(DependencyEventScope.dependency_id)
+            select(CommitmentScopeMembership.dependency_id)
             .join(
-                DependencyEventScopeDecision,
-                DependencyEventScope.scope_decision_id
-                == DependencyEventScopeDecision.id,
+                CommitmentScopeDecision,
+                CommitmentScopeMembership.scope_decision_id
+                == CommitmentScopeDecision.id,
             )
             .join(
-                DependencyEvent,
-                DependencyEventScope.event_id == DependencyEvent.id,
+                ExternalPartyStatement,
+                CommitmentScopeMembership.event_id == ExternalPartyStatement.id,
             )
             .where(
-                DependencyEventScope.dependency_id.in_(ids),
+                CommitmentScopeMembership.dependency_id.in_(ids),
                 current_scope_decision_filter(),
-                DependencyEvent.event_type == "closure",
+                ExternalPartyStatement.event_type == "closure",
             )
         ).all()
     )
 
     query = (
         select(
-            DependencyEventScope.dependency_id,
-            DependencyEvent,
-            DependencyEventTiming,
+            CommitmentScopeMembership.dependency_id,
+            ExternalPartyStatement,
+            StatementTimingRecord,
         )
         .join(
-            DependencyEventScopeDecision,
-            DependencyEventScope.scope_decision_id
-            == DependencyEventScopeDecision.id,
+            CommitmentScopeDecision,
+            CommitmentScopeMembership.scope_decision_id == CommitmentScopeDecision.id,
         )
         .join(
-            DependencyEvent,
-            DependencyEventScope.event_id == DependencyEvent.id,
+            ExternalPartyStatement,
+            CommitmentScopeMembership.event_id == ExternalPartyStatement.id,
         )
         .join(
-            DependencyEventTiming,
-            DependencyEventTiming.event_id == DependencyEvent.id,
+            StatementTimingRecord,
+            StatementTimingRecord.event_id == ExternalPartyStatement.id,
         )
         .where(
-            DependencyEventScope.dependency_id.in_(ids),
-            DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
-            DependencyEventScopeDecision.scope_mode.in_(
+            CommitmentScopeMembership.dependency_id.in_(ids),
+            ExternalPartyStatement.event_type.in_(COMMITTED_EVENT_TYPES),
+            CommitmentScopeDecision.scope_mode.in_(
                 ("selected", "all_active", "carried_forward")
             ),
             current_scope_decision_filter(),
-            DependencyEventTiming.kind == "new",
+            StatementTimingRecord.kind == "new",
         )
     )
     if source_kind is not None:
-        query = query.where(DependencyEvent.source_kind == source_kind)
+        query = query.where(ExternalPartyStatement.source_kind == source_kind)
     if event_ids is not None:
         query = (
-            query.where(DependencyEvent.id.in_(event_ids))
+            query.where(ExternalPartyStatement.id.in_(event_ids))
             if event_ids
             else query.where(sa_false())
         )
 
-    current: dict[int, tuple[DependencyEvent, DependencyEventTiming]] = {}
+    current: dict[int, tuple[ExternalPartyStatement, StatementTimingRecord]] = {}
     for dependency_id, event, timing in session.execute(
         query.order_by(
-            DependencyEventScope.dependency_id,
-            DependencyEvent.event_date.desc().nulls_last(),
-            DependencyEvent.id.desc(),
+            CommitmentScopeMembership.dependency_id,
+            ExternalPartyStatement.event_date.desc().nulls_last(),
+            ExternalPartyStatement.id.desc(),
         )
     ):
         current.setdefault(dependency_id, (event, timing))
@@ -564,34 +558,36 @@ def published_party_statements(
     its own current event, Evidence, or provenance mode.
     """
     rows = session.execute(
-        select(DependencyEvent, DependencyEventScopeDecision, CommitmentLineage)
+        select(ExternalPartyStatement, CommitmentScopeDecision, CommitmentLineage)
         .join(
-            DependencyEventScopeDecision,
-            DependencyEventScopeDecision.event_id == DependencyEvent.id,
+            CommitmentScopeDecision,
+            CommitmentScopeDecision.event_id == ExternalPartyStatement.id,
         )
         .join(
             CommitmentLineage,
-            CommitmentLineage.id == DependencyEvent.commitment_lineage_id,
+            CommitmentLineage.id == ExternalPartyStatement.commitment_lineage_id,
         )
         .where(
-            DependencyEvent.project_id == project_id,
-            DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
-            DependencyEvent.attribution_state == "resolved",
-            DependencyEvent.stated_external_org_id.is_not(None),
-            DependencyEvent.commitment_lineage_id.is_not(None),
-            DependencyEventScopeDecision.scope_mode == "unknown",
+            ExternalPartyStatement.project_id == project_id,
+            ExternalPartyStatement.event_type.in_(COMMITTED_EVENT_TYPES),
+            ExternalPartyStatement.attribution_state == "resolved",
+            ExternalPartyStatement.stated_external_org_id.is_not(None),
+            ExternalPartyStatement.commitment_lineage_id.is_not(None),
+            CommitmentScopeDecision.scope_mode == "unknown",
             current_scope_decision_filter(),
-            current_statement_event_filter(DependencyEvent.id),
+            current_statement_event_filter(ExternalPartyStatement.id),
         )
-        .order_by(DependencyEvent.commitment_lineage_id, DependencyEvent.id)
+        .order_by(
+            ExternalPartyStatement.commitment_lineage_id, ExternalPartyStatement.id
+        )
     ).all()
     event_ids = tuple(event.id for event, _, _ in rows)
-    timings_by_event: dict[int, list[DependencyEventTiming]] = {}
+    timings_by_event: dict[int, list[StatementTimingRecord]] = {}
     if event_ids:
         for timing in session.scalars(
-            select(DependencyEventTiming)
-            .where(DependencyEventTiming.event_id.in_(event_ids))
-            .order_by(DependencyEventTiming.event_id, DependencyEventTiming.id)
+            select(StatementTimingRecord)
+            .where(StatementTimingRecord.event_id.in_(event_ids))
+            .order_by(StatementTimingRecord.event_id, StatementTimingRecord.id)
         ):
             timings_by_event.setdefault(timing.event_id, []).append(timing)
 
@@ -675,17 +671,17 @@ def _verified_party_statement_provenance(
     # unsupported.  Do not publish an older statement in its place.
     provenance: dict[int, CitedStatementProvenance] = {}
     rows = session.execute(
-        select(DependencyEventEvidence.event_id, EvidenceLink, Document)
+        select(StatementEvidence.event_id, EvidenceLink, Document)
         .join(
             EvidenceLink,
-            EvidenceLink.id == DependencyEventEvidence.evidence_link_id,
+            EvidenceLink.id == StatementEvidence.evidence_link_id,
         )
         .join(Document, Document.id == EvidenceLink.document_id)
         .where(
-            DependencyEventEvidence.event_id.in_(ids),
+            StatementEvidence.event_id.in_(ids),
             EvidenceLink.verified.is_(True),
         )
-        .order_by(DependencyEventEvidence.event_id, EvidenceLink.id)
+        .order_by(StatementEvidence.event_id, EvidenceLink.id)
     ).all()
     for event_id, link, document in rows:
         try:
@@ -713,13 +709,13 @@ def _closed_party_commitment_lineages(
 ) -> frozenset[int]:
     """A Closure ends a party-level row only when its provenance still holds."""
     closures = session.scalars(
-        select(DependencyEvent).where(
-            DependencyEvent.project_id == project_id,
-            DependencyEvent.event_type == "closure",
-            DependencyEvent.closes_commitment_lineage_id.is_not(None),
-            DependencyEvent.attribution_state == "resolved",
-            DependencyEvent.stated_external_org_id.is_not(None),
-            current_statement_event_filter(DependencyEvent.id),
+        select(ExternalPartyStatement).where(
+            ExternalPartyStatement.project_id == project_id,
+            ExternalPartyStatement.event_type == "closure",
+            ExternalPartyStatement.closes_commitment_lineage_id.is_not(None),
+            ExternalPartyStatement.attribution_state == "resolved",
+            ExternalPartyStatement.stated_external_org_id.is_not(None),
+            current_statement_event_filter(ExternalPartyStatement.id),
         )
     ).all()
     cited = _verified_party_statement_provenance(
@@ -728,9 +724,7 @@ def _closed_party_commitment_lineages(
     return frozenset(
         closure.closes_commitment_lineage_id
         for closure in closures
-        if (
-            closure.source_kind == "verbal" and closure.event_date is not None
-        )
+        if (closure.source_kind == "verbal" and closure.event_date is not None)
         or (closure.source_kind == "cited" and closure.id in cited)
     )
 
@@ -767,7 +761,7 @@ def latest_committed_events(
     *,
     source_kind: str | None = None,
     event_ids: Collection[int] | None = None,
-) -> dict[int, DependencyEvent]:
+) -> dict[int, ExternalPartyStatement]:
     """Compatibility access to current statement identities only."""
     return {
         dependency_id: statement.event
@@ -797,11 +791,10 @@ def project_committed_dates(session: Session, dependency_ids: Iterable[int]) -> 
         project_committed_date(session, dependency_id)
 
 
-def verbal_attribution(event: DependencyEvent | None) -> str | None:
+def verbal_attribution(event: ExternalPartyStatement | None) -> str | None:
     """The source line that must travel with a verbal-backed date."""
     if event is None or event.source_kind != "verbal":
         return None
     return (
-        f"Verbal — {event.stated_party} told {event.created_by} "
-        f"on {event.event_date}"
+        f"Verbal — {event.stated_party} told {event.created_by} on {event.event_date}"
     )

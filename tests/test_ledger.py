@@ -218,11 +218,6 @@ def test_a_link_that_does_not_hold_is_still_backing_but_not_evidence(
     assert row.verified_evidence_count == 0
 
 
-def test_browse_filters_by_status(session, project, dependency):
-    assert len(_browse(session, project, status="identified")) == 1
-    assert _browse(session, project, status="closed") == []
-
-
 def test_browse_filters_by_readiness(session, project, dependency):
     """Readiness is computed, so this filter cannot be a WHERE clause."""
     assert _browse(session, project, ready=True) == []
@@ -448,9 +443,7 @@ def test_the_ledger_page_renders_rows(client, project, dependency):
     assert "LT AT&amp;T Texas" in r.text
 
 
-def test_the_detail_page_shows_each_claim_with_its_source(
-    client, project, dependency
-):
+def test_the_detail_page_shows_each_claim_with_its_source(client, project, dependency):
     r = client.get(f"/ledger/{project.slug}/{dependency.id}")
     assert r.status_code == 200
     assert "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf" in r.text
@@ -537,7 +530,6 @@ def _manual_dependency_with_links(session, project, document, *, ref_code, quote
         ref_code=ref_code,
         dep_type="utility_relocation",
         title="Telecom — Manual support fixture",
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -648,9 +640,7 @@ def test_marking_evidence_is_the_ledger_s_act_not_a_route_s(
     link = _link_of(session, dependency)
 
     assert (
-        mark_satisfies(
-            session, dependency.id, link.id, principal=TEST_PRINCIPAL
-        )
+        mark_satisfies(session, dependency.id, link.id, principal=TEST_PRINCIPAL)
         is True
     )
     assert load_dependency(session, dependency.id).is_ready is True
@@ -707,23 +697,17 @@ def test_evidence_belonging_to_another_dependency_is_refused(
     assert load_dependency(session, dependency.id).is_ready is False
 
 
-def test_marking_twice_returns_the_record_to_not_ready(
-    session, project, dependency
-):
+def test_marking_twice_returns_the_record_to_not_ready(session, project, dependency):
     """It is a toggle. Nothing in the domain names un-readying, and this
     pins the behaviour that exists rather than endorsing it."""
     link = _link_of(session, dependency)
 
     assert (
-        mark_satisfies(
-            session, dependency.id, link.id, principal=TEST_PRINCIPAL
-        )
+        mark_satisfies(session, dependency.id, link.id, principal=TEST_PRINCIPAL)
         is True
     )
     assert (
-        mark_satisfies(
-            session, dependency.id, link.id, principal=TEST_PRINCIPAL
-        )
+        mark_satisfies(session, dependency.id, link.id, principal=TEST_PRINCIPAL)
         is False
     )
     assert load_dependency(session, dependency.id).is_ready is False
@@ -815,9 +799,7 @@ def test_a_blank_asserted_value_is_not_a_source_disagreeing(
     assert not any(e.rule == "CONTRADICTION" for e in view.exceptions)
 
 
-def test_two_real_values_still_contradict_everywhere(
-    session, project, dependency
-):
+def test_two_real_values_still_contradict_everywhere(session, project, dependency):
     """The detection this metric exists for is untouched."""
     _assert_value(session, dependency, "external_org", "CenterPoint Energy")
 

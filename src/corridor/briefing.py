@@ -473,7 +473,6 @@ def _user_message(
             committed = f"{committed} ({verbal.text}; cite [{verbal.ref}])"
         lines.append(f"Record {dependency.ref_code}: {dependency.title}.")
         lines.append(
-            f"  Status {dependency.status};"
             f" resolution strategy {dependency.resolution_strategy or 'none asserted'};"
             f" committed {committed};"
             f" needed {dependency.need_date or '—'}."

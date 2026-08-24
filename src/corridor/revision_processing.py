@@ -2,8 +2,7 @@
 
 This service owns the production ordering. A Revision Comparison remains an
 immutable, Ledger-write-free receipt. Only after that receipt can be read back
-and verified does this layer hand control to already-authorized Automatic
-Carry-Forward for the affected project.
+and verified does this layer hand control to the released Carry-Forward Policy.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from corridor.revision_comparison import (
 
 @dataclass(frozen=True)
 class RevisionProcessingResult:
-    """One verified comparison plus any authorized machine support transfer."""
+    """One verified comparison plus any released-policy support transfer."""
 
     comparison: RevisionComparisonReadback
     carry_forward: AutomaticCarryForwardResult
@@ -44,7 +43,7 @@ def process_revision_pair(
     matcher_config: dict[str, Any] | None = None,
     automatic_carry_forward_runtime: AutomaticCarryForwardRuntime | None = None,
 ) -> RevisionProcessingResult:
-    """Create, read-verify, then route authorized Carry-Forward for one pair."""
+    """Create, read-verify, then route Carry-Forward for one exact pair."""
 
     comparison = create_revision_comparison(
         session,
@@ -52,9 +51,7 @@ def process_revision_pair(
         successor_extraction_run_id=successor_extraction_run_id,
         matcher_version=matcher_version,
         matcher_config=(
-            matcher_config
-            if matcher_config is not None
-            else DEFAULT_MATCHER_CONFIG
+            matcher_config if matcher_config is not None else DEFAULT_MATCHER_CONFIG
         ),
     )
     readback = read_revision_comparison(session, comparison.id)

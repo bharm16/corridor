@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Supersession is registry metadata — declared, never inferred, and not an Assertion
 
 M8 needs `documents.superseded_by` populated. TxDOT's RID index records each revision's "Replaced on" date; the manifest today transcribes those supersession facts only partially, as free-text `notes`. The chain now enters as structured manifest fields and ingest persists it as registry metadata, exactly the way `doc_date`, `doc_type` and `sealed` already enter: the manifest declares, ingest records, the authority document remains the human-checkable source.

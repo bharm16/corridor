@@ -24,13 +24,13 @@ from corridor.models import (
     Candidate,
     CommitmentLineage,
     Dependency,
-    DependencyEvent,
-    DependencyEventEvidence,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
-    DependencyEventTiming,
+    ExternalPartyStatement,
+    StatementEvidence,
+    CommitmentScopeMembership,
+    CommitmentScopeDecision,
+    StatementTimingRecord,
     EvidenceLink,
-    ExternalOrg,
+    ExternalParty,
     Project,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
@@ -109,7 +109,7 @@ def record_external_party_statement(
     allow_party_correction: bool = False,
     party_resolution: EvidenceBoundPartyResolution | None = None,
     _scope_snapshot_dependency_ids: tuple[int, ...] | None = None,
-) -> DependencyEvent:
+) -> ExternalPartyStatement:
     """Append one attributable External Party Commitment or Date Change.
 
     The caller supplies already-resolved attribution and source provenance.
@@ -135,7 +135,7 @@ def record_external_party_statement(
     lock_project(session, project.id)
 
     party = stated_party.strip()
-    stated = session.get(ExternalOrg, stated_external_org_id)
+    stated = session.get(ExternalParty, stated_external_org_id)
     if stated is None:
         # Re-check after locking the project rather than relying on a stale
         # draft read if an administrator removed an organization concurrently.
@@ -143,7 +143,7 @@ def record_external_party_statement(
     if not created_by.strip():
         raise StatementRefusal("a statement must identify who recorded it")
 
-    affected = session.get(ExternalOrg, affected_external_org_id)
+    affected = session.get(ExternalParty, affected_external_org_id)
     if affected is None:
         raise StatementRefusal("the affected and stated External Parties must exist")
     if source_kind == "verbal":
@@ -180,7 +180,7 @@ def record_external_party_statement(
             stated_external_org_id=stated.id,
             allow_party_correction=allow_party_correction,
         )
-        event = DependencyEvent(
+        event = ExternalPartyStatement(
             project_id=project.id,
             commitment_lineage_id=lineage.id,
             supersedes_event_id=predecessor.id if predecessor is not None else None,
@@ -202,19 +202,23 @@ def record_external_party_statement(
         )
         session.add(event)
         session.flush([event])
-        if predecessor is not None and _lineage_has_coordination_plan(session, lineage.id):
+        if predecessor is not None and _lineage_has_coordination_plan(
+            session, lineage.id
+        ):
             # The receipts remain current history, but changed attribution or
             # timing is not permission to silently call their response apt.
             lineage.plan_needs_review = True
         scope_decision = session.scalar(
-            select(DependencyEventScopeDecision).where(
-                DependencyEventScopeDecision.event_id == event.id
+            select(CommitmentScopeDecision).where(
+                CommitmentScopeDecision.event_id == event.id
             )
         )
         if scope_decision is None:
-            raise RuntimeError("statement event did not receive its initial scope decision")
+            raise RuntimeError(
+                "statement event did not receive its initial scope decision"
+            )
         session.add(
-            DependencyEventTiming(
+            StatementTimingRecord(
                 event_id=event.id,
                 kind="new",
                 text=new_timing.text.strip(),
@@ -225,7 +229,7 @@ def record_external_party_statement(
         )
         if previous_timing is not None:
             session.add(
-                DependencyEventTiming(
+                StatementTimingRecord(
                     event_id=event.id,
                     kind="previous",
                     text=previous_timing.text.strip(),
@@ -236,7 +240,7 @@ def record_external_party_statement(
             )
         for dependency_id in dependency_ids:
             session.add(
-                DependencyEventScope(
+                CommitmentScopeMembership(
                     event_id=event.id,
                     scope_decision_id=scope_decision.id,
                     dependency_id=dependency_id,
@@ -266,7 +270,7 @@ def record_external_party_closure(
     description: str,
     created_by: str,
     evidence: CitedStatementEvidence | None = None,
-) -> DependencyEvent:
+) -> ExternalPartyStatement:
     """Record an attributable closure for exactly one External Party Commitment.
 
     Closure ends the party-level statement fact only.  It deliberately does
@@ -304,10 +308,12 @@ def record_external_party_closure(
         or commitment.attribution_state != "resolved"
         or not commitment.stated_party
     ):
-        raise StatementRefusal("only an attributable External Party Commitment can close")
+        raise StatementRefusal(
+            "only an attributable External Party Commitment can close"
+        )
 
     with session.begin_nested():
-        closure = DependencyEvent(
+        closure = ExternalPartyStatement(
             project_id=project.id,
             closes_commitment_lineage_id=lineage.id,
             affected_external_org_id=commitment.affected_external_org_id,
@@ -331,7 +337,7 @@ def record_external_party_closure(
 
 def _record_event_evidence(
     session: Session,
-    event: DependencyEvent,
+    event: ExternalPartyStatement,
     evidence: CitedStatementEvidence,
     recorded_by: str,
 ) -> None:
@@ -346,7 +352,7 @@ def _record_event_evidence(
     session.add(event_evidence)
     session.flush([event_evidence])
     session.add(
-        DependencyEventEvidence(
+        StatementEvidence(
             evidence_link_id=event_evidence.id,
             event_id=event.id,
             recorded_by=recorded_by.strip(),
@@ -362,7 +368,7 @@ def _commitment_lineage_for_append(
     affected_external_org_id: int,
     stated_external_org_id: int,
     allow_party_correction: bool = False,
-) -> tuple[CommitmentLineage, DependencyEvent | None]:
+) -> tuple[CommitmentLineage, ExternalPartyStatement | None]:
     """Return the durable statement subject and its current factual tail."""
     if commitment_lineage_id is None:
         lineage = CommitmentLineage(project_id=project_id)
@@ -375,7 +381,9 @@ def _commitment_lineage_for_append(
         raise StatementRefusal("Commitment Lineage belongs to another project")
     predecessor = _current_commitment_event(session, lineage.id)
     if predecessor is None:
-        raise StatementRefusal("Commitment Lineage has no accepted statement to correct")
+        raise StatementRefusal(
+            "Commitment Lineage has no accepted statement to correct"
+        )
     if not allow_party_correction and (
         predecessor.affected_external_org_id != affected_external_org_id
         or predecessor.stated_external_org_id != stated_external_org_id
@@ -388,29 +396,34 @@ def _commitment_lineage_for_append(
 
 def _current_commitment_event(
     session: Session, commitment_lineage_id: int
-) -> DependencyEvent | None:
-    superseding = DependencyEvent.__table__.alias("superseding")
+) -> ExternalPartyStatement | None:
+    superseding = ExternalPartyStatement.__table__.alias("superseding")
     return session.scalar(
-        select(DependencyEvent)
+        select(ExternalPartyStatement)
         .where(
-            DependencyEvent.commitment_lineage_id == commitment_lineage_id,
-            current_statement_event_filter(DependencyEvent.id),
+            ExternalPartyStatement.commitment_lineage_id == commitment_lineage_id,
+            current_statement_event_filter(ExternalPartyStatement.id),
             ~select(superseding.c.id)
-            .where(superseding.c.supersedes_event_id == DependencyEvent.id)
+            .where(superseding.c.supersedes_event_id == ExternalPartyStatement.id)
             .exists(),
         )
-        .order_by(DependencyEvent.id)
+        .order_by(ExternalPartyStatement.id)
     )
 
 
-def _lineage_has_coordination_plan(session: Session, commitment_lineage_id: int) -> bool:
+def _lineage_has_coordination_plan(
+    session: Session, commitment_lineage_id: int
+) -> bool:
     from corridor.models import WorkDecision
 
-    return session.scalar(
-        select(WorkDecision.id)
-        .where(WorkDecision.commitment_lineage_id == commitment_lineage_id)
-        .limit(1)
-    ) is not None
+    return (
+        session.scalar(
+            select(WorkDecision.id)
+            .where(WorkDecision.commitment_lineage_id == commitment_lineage_id)
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def validate_external_party_statement_draft(
@@ -451,7 +464,7 @@ def validate_external_party_statement_draft(
     if source_kind == "verbal" and evidence is not None:
         raise StatementRefusal("a Verbal cannot be presented as cited Evidence")
 
-    stated = session.get(ExternalOrg, stated_external_org_id)
+    stated = session.get(ExternalParty, stated_external_org_id)
     if stated is None:
         raise StatementRefusal("the affected and stated External Parties must exist")
     registered_spellings = {
@@ -509,7 +522,9 @@ def _require_evidence_bound_party_resolution(
         if candidate is not None and candidate.project_id == project_id
         else None
     )
-    source_party = prepared.source_stated_party_wording if prepared is not None else None
+    source_party = (
+        prepared.source_stated_party_wording if prepared is not None else None
+    )
     expected = (
         source_kind == "cited"
         and resolution.mode == "guided_evidence_bound"
@@ -523,8 +538,10 @@ def _require_evidence_bound_party_resolution(
         and source_party.strip() == stated_party.strip()
     )
     party_words = stated_party.strip()
-    if not expected or not party_words or not any(
-        party_words in item.quote for item in evidence
+    if (
+        not expected
+        or not party_words
+        or not any(party_words in item.quote for item in evidence)
     ):
         raise StatementRefusal(
             "the guided party resolution does not match this statement and its Evidence"
@@ -551,14 +568,14 @@ def record_statement_scope_decision(
     event_id: int,
     scope: StatementScope,
     actor: HumanPrincipal | str,
-) -> DependencyEventScopeDecision:
+) -> CommitmentScopeDecision:
     """Append a correction or expansion of one statement's Dependency scope.
 
     The former decision and its links remain readable history.  Readers use
     the one decision not superseded by a later decision when deriving current
     Dependency effects.
     """
-    event = session.get(DependencyEvent, event_id)
+    event = session.get(ExternalPartyStatement, event_id)
     if event is None:
         raise StatementRefusal(f"statement event {event_id} does not exist")
     actor_subject = _scope_actor_subject(actor)
@@ -574,13 +591,13 @@ def record_statement_scope_decision(
     )
     previous_ids = tuple(
         session.scalars(
-            select(DependencyEventScope.dependency_id).where(
-                DependencyEventScope.scope_decision_id == predecessor.id
+            select(CommitmentScopeMembership.dependency_id).where(
+                CommitmentScopeMembership.scope_decision_id == predecessor.id
             )
         ).all()
     )
     with session.begin_nested():
-        decision = DependencyEventScopeDecision(
+        decision = CommitmentScopeDecision(
             event_id=event.id,
             scope_mode=scope.mode,
             supersedes_scope_decision_id=predecessor.id,
@@ -590,7 +607,7 @@ def record_statement_scope_decision(
         session.flush([decision])
         for dependency_id in dependency_ids:
             session.add(
-                DependencyEventScope(
+                CommitmentScopeMembership(
                     event_id=event.id,
                     scope_decision_id=decision.id,
                     dependency_id=dependency_id,
@@ -628,9 +645,7 @@ def _validate_timing(timing: StatementTiming) -> None:
         raise StatementRefusal(f"unknown timing precision {timing.precision!r}")
 
 
-def _timing_direction(
-    previous: StatementTiming, new: StatementTiming
-) -> str:
+def _timing_direction(previous: StatementTiming, new: StatementTiming) -> str:
     """Name movement only when the two source-supported periods prove it."""
     if previous.end_date is not None and new.start_date is not None:
         if new.start_date > previous.end_date:
@@ -662,7 +677,6 @@ def _resolve_scope(
                     Dependency.project_id == project_id,
                     Dependency.external_org_id == affected_external_org_id,
                     Dependency.dismissed_at.is_(None),
-                    Dependency.status != "closed",
                 )
                 .order_by(Dependency.id)
             ).all()
@@ -687,9 +701,9 @@ def _resolve_scope(
         if dependency.external_org_id != affected_external_org_id:
             raise StatementRefusal("selected scope names another External Party")
         if dependency.dismissed_at is not None:
-            raise StatementRefusal("selected scope cannot include a dismissed Dependency")
-        if dependency.status == "closed":
-            raise StatementRefusal("selected scope cannot include a closed Dependency")
+            raise StatementRefusal(
+                "selected scope cannot include a dismissed Dependency"
+            )
     return tuple(scope.dependency_ids)
 
 
@@ -709,20 +723,26 @@ def _resolve_scope_snapshot(
     """
     ids = tuple(dependency_ids)
     if len(ids) != len(set(ids)):
-        raise StatementRefusal("a preserved Commitment Scope contains a duplicate Dependency")
+        raise StatementRefusal(
+            "a preserved Commitment Scope contains a duplicate Dependency"
+        )
     if scope.mode == "unknown":
         if ids:
             raise StatementRefusal("unknown scope cannot name Dependencies")
         return ()
     if scope.mode not in {"selected", "all_active", "carried_forward"} or not ids:
         raise StatementRefusal("a preserved Commitment Scope is incomplete")
-    dependencies = session.scalars(select(Dependency).where(Dependency.id.in_(ids))).all()
+    dependencies = session.scalars(
+        select(Dependency).where(Dependency.id.in_(ids))
+    ).all()
     if len(dependencies) != len(ids) or any(
         dependency.project_id != project_id
         or dependency.external_org_id != affected_external_org_id
         for dependency in dependencies
     ):
-        raise StatementRefusal("a preserved Commitment Scope no longer belongs to this statement")
+        raise StatementRefusal(
+            "a preserved Commitment Scope no longer belongs to this statement"
+        )
     return ids
 
 
@@ -731,7 +751,9 @@ def _scope_actor_subject(actor: HumanPrincipal | str) -> str:
     if isinstance(actor, HumanPrincipal):
         return actor.subject
     if not isinstance(actor, str) or not actor.strip() or actor != actor.strip():
-        raise StatementRefusal("a scope decision must name its human or deployed-policy actor")
+        raise StatementRefusal(
+            "a scope decision must name its human or deployed-policy actor"
+        )
     if actor in _STATEMENT_SCOPE_POLICY_ACTORS:
         return actor
     try:
@@ -744,19 +766,18 @@ def _scope_actor_subject(actor: HumanPrincipal | str) -> str:
 
 def _current_scope_decision(
     session: Session, event_id: int
-) -> DependencyEventScopeDecision | None:
-    superseding = DependencyEventScopeDecision.__table__.alias("superseding")
+) -> CommitmentScopeDecision | None:
+    superseding = CommitmentScopeDecision.__table__.alias("superseding")
     return session.scalar(
-        select(DependencyEventScopeDecision)
+        select(CommitmentScopeDecision)
         .where(
-            DependencyEventScopeDecision.event_id == event_id,
-            current_lifecycle_scope_decision_filter(DependencyEventScopeDecision.id),
+            CommitmentScopeDecision.event_id == event_id,
+            current_lifecycle_scope_decision_filter(CommitmentScopeDecision.id),
             ~select(superseding.c.id)
             .where(
-                superseding.c.supersedes_scope_decision_id
-                == DependencyEventScopeDecision.id
+                superseding.c.supersedes_scope_decision_id == CommitmentScopeDecision.id
             )
             .exists(),
         )
-        .order_by(DependencyEventScopeDecision.id)
+        .order_by(CommitmentScopeDecision.id)
     )

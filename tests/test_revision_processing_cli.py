@@ -11,11 +11,18 @@ import pytest
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
-from corridor.automatic_carry_forward import authorize_automatic_carry_forward
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
-from corridor.models import AuditLog, Candidate, Dependency, DocPage, Document, EvidenceLink, Project
+from corridor.models import (
+    AuditLog,
+    Candidate,
+    Dependency,
+    DocPage,
+    Document,
+    EvidenceLink,
+    Project,
+)
 from corridor.principals import HumanPrincipal
 from corridor.revision_comparison import CorruptRevisionComparison
 from corridor.revision_processing_cli import main
@@ -145,7 +152,9 @@ def _quote(fields: dict[str, str]) -> str:
     )
 
 
-def _candidate(project: Project, document: Document, fields: dict[str, str]) -> Candidate:
+def _candidate(
+    project: Project, document: Document, fields: dict[str, str]
+) -> Candidate:
     citation = {
         "document_id": document.id,
         "page": 1,
@@ -255,23 +264,18 @@ def _seed_transition(session):
     }
 
 
-def test_revision_process_cli_runs_exact_pair_and_reports_compact_json(
-    session, capsys
-):
+def test_revision_process_cli_runs_exact_pair_and_reports_compact_json(session, capsys):
     scenario = _seed_transition(session)
-    authorize_automatic_carry_forward(
-        session,
-        scenario["project"].id,
-        principal=APPROVER,
+    assert (
+        main(
+            [
+                str(scenario["predecessor_run"].id),
+                str(scenario["successor_run"].id),
+            ],
+            session_factory=_OpenSession(session),
+        )
+        == 0
     )
-
-    assert main(
-        [
-            str(scenario["predecessor_run"].id),
-            str(scenario["successor_run"].id),
-        ],
-        session_factory=_OpenSession(session),
-    ) == 0
 
     payload = _json_output(capsys)
     assert payload == {
@@ -291,43 +295,56 @@ def test_revision_process_cli_runs_exact_pair_and_reports_compact_json(
         "successor_extraction_run_id": scenario["successor_run"].id,
     }
     assert len(payload["comparison"]["content_sha256"]) == 64
-    assert session.scalars(
-        select(AuditLog).where(
-            AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
-            AuditLog.action == "automatic_carry_forward",
+    assert (
+        len(
+            session.scalars(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "dependency",
+                    AuditLog.entity_id == scenario["dependency"].id,
+                    AuditLog.action == "automatic_carry_forward",
+                )
+            ).all()
         )
-    ).all()
+        == 1
+    )
 
 
-def test_revision_process_cli_keeps_no_authority_as_zero_carry(
+def test_revision_process_cli_runs_released_policy_without_project_authorization(
     session, capsys
 ):
     scenario = _seed_transition(session)
 
-    assert main(
-        [
-            str(scenario["predecessor_run"].id),
-            str(scenario["successor_run"].id),
-        ],
-        session_factory=_OpenSession(session),
-    ) == 0
+    assert (
+        main(
+            [
+                str(scenario["predecessor_run"].id),
+                str(scenario["successor_run"].id),
+            ],
+            session_factory=_OpenSession(session),
+        )
+        == 0
+    )
 
     payload = _json_output(capsys)
-    assert payload["carried_count"] == 0
+    assert payload["carried_count"] == 1
     assert payload["abstentions"] == {
         "count": 0,
         "reason_version": "automatic-carry-forward-abstentions-v1",
         "reasons": {},
     }
     assert payload["comparison"]["finding_counts"] == {"unchanged": 1}
-    assert session.scalars(
-        select(AuditLog).where(
-            AuditLog.entity_type == "dependency",
-            AuditLog.entity_id == scenario["dependency"].id,
-            AuditLog.action == "automatic_carry_forward",
+    assert (
+        len(
+            session.scalars(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "dependency",
+                    AuditLog.entity_id == scenario["dependency"].id,
+                    AuditLog.action == "automatic_carry_forward",
+                )
+            ).all()
         )
-    ).all() == []
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -339,9 +356,7 @@ def test_revision_process_cli_keeps_no_authority_as_zero_carry(
         ["1", "2", "--principal=local:bryce"],
     ],
 )
-def test_revision_process_cli_rejects_invalid_ids_and_policy_flags(
-    argv, capsys
-):
+def test_revision_process_cli_rejects_invalid_ids_and_policy_flags(argv, capsys):
     class MustNotConnect:
         def __call__(self):
             raise AssertionError("argument validation must precede DB access")

@@ -157,7 +157,6 @@ def browse(
     project_id: int,
     *,
     evaluation: Evaluation,
-    status: str | None = None,
     org_id: int | None = None,
     resolution_strategy: str | None = None,
     ready: bool | None = None,
@@ -186,8 +185,6 @@ def browse(
         Dependency.project_id == project_id,
         Dependency.dismissed_at.is_(None),
     )
-    if status:
-        query = query.where(Dependency.status == status)
     if owner:
         # `unassigned` is the question a coordinator actually asks first —
         # what has nobody — so it is a value of this filter rather than a

@@ -35,16 +35,10 @@
 
 <header>
   <b>Ledger — {{ project.name }}</b>
-  <span><a href="/queue/{{ project.slug }}">adjudication queue →</a></span>
+  <span><a href="/work/{{ project.slug }}">project work →</a></span>
 </header>
 
 <form class="filters" method="get">
-  <select name="status">
-    <option value="">any status</option>
-    {% for s in statuses %}
-      <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
-    {% endfor %}
-  </select>
   <select name="resolution_strategy">
     <option value="">any resolution</option>
     <option value="critical" {% if filters.resolution_strategy == 'critical' %}selected{% endif %}>critical (the facility moves)</option>
@@ -60,8 +54,8 @@
   </select>
   <select name="rule">
     <option value="">any exception</option>
-    {% for r in rules %}
-      <option value="{{ r }}" {% if filters.rule == r %}selected{% endif %}>{{ r }}</option>
+    {% for code, label in rules %}
+      <option value="{{ code }}" {% if filters.rule == code %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
   </select>
   <select name="ready">
@@ -85,10 +79,10 @@
     <thead>
       <tr>
         <th>Ref</th><th>Source ID</th><th>External party</th><th>Station</th>
-        <th>Status</th><th>Resolution</th><th>Ready</th>
+        <th>Resolution</th><th>Ready</th>
         <th>Owner</th><th>Next action</th><th title="What the party said it would deliver">Promised</th>
         <th title="Assertions / evidence links behind this record">Backing</th>
-        <th>Exceptions</th>
+        <th>Needs attention</th>
       </tr>
     </thead>
     <tbody>
@@ -99,7 +93,6 @@
           <td>{{ r.org_name or '—' }}
             {%- if r.contradicted %} <span class="pill contra">sources disagree</span>{% endif %}</td>
           <td class="num">{{ r.dependency.station_from or '—' }}{% if r.dependency.station_to %} → {{ r.dependency.station_to }}{% endif %}</td>
-          <td>{{ r.dependency.status }}</td>
           <td>{{ r.dependency.resolution_strategy.replace('_', ' ') if r.dependency.resolution_strategy else '—' }}</td>
           <td>
             {% if r.is_ready %}<span class="pill ready">ready</span>

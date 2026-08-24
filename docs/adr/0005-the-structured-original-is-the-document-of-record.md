@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # The structured original is the Document of Record, not its printed rendering
 
 TxDOT's Utility Conflict Matrix is a spreadsheet. The I-35 NEX South RID publishes it as one: 24 named columns, a `Field_Column Descriptions` sheet defining every field, a `Drop-Down Lists` sheet enumerating the valid values, and three merged cells in the whole workbook. It carries columns no PDF matrix in this corpus has — `Utility Company Contact`, `Estimated Resolution Date`, `Resolution Status`, test hole number and depth — and it keeps start and end stationing and offset in four separate columns.

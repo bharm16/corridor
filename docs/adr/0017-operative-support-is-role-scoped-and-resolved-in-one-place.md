@@ -1,6 +1,10 @@
+---
+status: accepted
+---
+
 # Operative support is role-scoped, designated at adjudication, and resolved in one place
 
-> ADR-0022 permits an authorized Automatic Carry-Forward to inherit already-designated scopes onto exact unchanged successor Evidence. Initial designation remains a human Adjudication decision.
+> ADR-0029 permits a deterministic Admission policy to designate initial publication support for the exact row it admits. ADR-0037 keeps initial readiness sufficiency human, and ADR-0034 makes Automatic Carry-Forward normal fail-closed processing for already-established roles.
 
 "This Evidence closes the readiness bar" and "this Evidence supports the value being printed" are different facts, and the model already knows it: every non-Ready record with a report citation is operative-but-not-satisfying, a completion letter may satisfy readiness while an earlier matrix row supports the owner and stationing, and `Assertion` already binds individual fields to individual `EvidenceLink`s. So operative support (ADR-0016) is scoped by role — readiness, published record, later published field — not expressed as one boolean.
 

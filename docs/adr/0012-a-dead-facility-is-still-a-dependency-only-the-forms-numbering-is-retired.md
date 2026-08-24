@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A dead facility is still a Dependency; only the form's numbering is retired
 
 Settles #128, raised by the labelling preparation for the M7 gate (#88) and decided before WSDOT 9540 — the same form — is fetched (ADR-0008).

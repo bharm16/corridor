@@ -10,7 +10,8 @@ from corridor.milestones import (
     link_all,
     link_dependency,
 )
-from corridor.models import Dependency, Milestone, Project
+from corridor.models import Dependency, Milestone, MilestoneRegistration, Project
+from corridor.report import build_report
 
 CSV = """code,name,need_date
 UTIL-CLEAR,Utility clearance,2026-11-01
@@ -50,7 +51,6 @@ def make_dep(session, project, ref, **kw):
         ref_code=ref,
         dep_type=kw.pop("dep_type", "utility_relocation"),
         title="x",
-        status="identified",
         **kw,
     )
     session.add(d)
@@ -66,6 +66,18 @@ def test_import_creates_milestones(session, project, tmp_path):
     util = next(m for m in result.created if m.code == "UTIL-CLEAR")
     assert util.need_date == date(2026, 11, 1)
     assert util.source == "milestones.csv"
+    [registration] = session.scalars(
+        select(MilestoneRegistration).where(
+            MilestoneRegistration.milestone_id == util.id
+        )
+    ).all()
+    assert registration.source_name == "milestones.csv"
+    assert len(registration.source_sha256) == 64
+    assert registration.source_row_json == {
+        "code": "UTIL-CLEAR",
+        "name": "Utility clearance",
+        "need_date": "2026-11-01",
+    }
 
 
 def test_reimport_updates_in_place(session, project, tmp_path):
@@ -129,20 +141,49 @@ def test_linking_copies_the_need_date_onto_the_dependency(session, project, tmp_
     the date on records already reported against the old one."""
     [util, *_] = [
         m
-        for m in import_csv(session, project_id=project.id, path=write(tmp_path)).created
+        for m in import_csv(
+            session, project_id=project.id, path=write(tmp_path)
+        ).created
         if m.code == "UTIL-CLEAR"
     ]
     dep = make_dep(session, project, "DEP-1")
     link_dependency(session, dep, util, actor="tester")
 
     assert dep.milestone_id == util.id
+    assert dep.milestone_registration_id is not None
     assert dep.need_date == date(2026, 11, 1)
+
+
+def test_report_derivations_name_the_exact_milestone_registration(
+    session, project, tmp_path
+):
+    [util, *_] = [
+        milestone
+        for milestone in import_csv(
+            session, project_id=project.id, path=write(tmp_path)
+        ).created
+        if milestone.code == "UTIL-CLEAR"
+    ]
+    dependency = make_dep(session, project, "DEP-REGISTRATION")
+    link_dependency(session, dependency, util, actor="local:scheduler")
+
+    report = build_report(session, project.id)
+    milestone_section = next(
+        section for section in report.sections if section.title == "Milestone readiness"
+    )
+    [row] = milestone_section.rows
+    expected = (f"Milestone Registration MR{dependency.milestone_registration_id}",)
+
+    assert row[0].provenance.input_refs == expected
+    assert row[1].provenance.input_refs == expected
 
 
 def test_linking_across_projects_is_refused(session, project, tmp_path):
     [util, *_] = [
         m
-        for m in import_csv(session, project_id=project.id, path=write(tmp_path)).created
+        for m in import_csv(
+            session, project_id=project.id, path=write(tmp_path)
+        ).created
         if m.code == "UTIL-CLEAR"
     ]
     other = Project(slug="ms-other", name="Other", is_synthetic=True)
@@ -164,7 +205,9 @@ def test_bulk_link_only_touches_unlinked_records(session, project, tmp_path):
     b = make_dep(session, project, "DEP-b")
     link_dependency(session, b, row, actor="tester")
 
-    count = link_all(session, project_id=project.id, milestone_code="UTIL-CLEAR", actor="tester")
+    count = link_all(
+        session, project_id=project.id, milestone_code="UTIL-CLEAR", actor="tester"
+    )
     assert count == 1
     assert a.milestone_id == util.id
     assert b.milestone_id == row.id

@@ -69,7 +69,6 @@
     <b>{{ view.dependency.title }}</b><br>
     {{ view.org_name or 'no external party' }} ·
     {{ view.dependency.station_from or '—' }}{% if view.dependency.station_to %} → {{ view.dependency.station_to }}{% endif %} ·
-    {{ view.dependency.status }} ·
     {% if view.dependency.resolution_strategy %}{{ view.dependency.resolution_strategy.replace('_', ' ') }}{% if view.is_critical %} <span class="pill contra">critical</span>{% endif %}{% else %}no resolution strategy asserted{% endif %}
     {% if view.is_ready %}<span class="pill ready">ready</span>
     {% else %}<span class="pill notready">not ready</span>{% endif %}
@@ -176,10 +175,10 @@
     </form>
   {% endif %}
 
-  <h2>Exceptions</h2>
+  <h2>Needs attention</h2>
   {% if view.exceptions %}
     <table>
-      <thead><tr><th>Rule</th><th>Why</th></tr></thead>
+      <thead><tr><th>Reason</th><th>Why</th></tr></thead>
       <tbody>
         {% for e in view.exceptions %}
           <tr>
@@ -190,7 +189,7 @@
       </tbody>
     </table>
   {% else %}
-    <p class="muted">No exceptions. Computed at read time, never stored.</p>
+    <p class="muted">Nothing needs attention from the current rules.</p>
   {% endif %}
   {% if view.evaluation %}
     <p class="muted">

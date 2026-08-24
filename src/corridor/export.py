@@ -25,7 +25,6 @@ COLUMNS = [
     "Title",
     "Station from",
     "Station to",
-    "Status",
     "Resolution strategy",
     "Committed date",
     "Committed date source",
@@ -125,7 +124,6 @@ def to_xlsx(
                 dependency.title,
                 dependency.station_from,
                 dependency.station_to,
-                dependency.status,
                 dependency.resolution_strategy,
                 statement.committed_date,
                 (

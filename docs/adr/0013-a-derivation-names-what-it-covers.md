@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A Derivation names what it covers, and a row with nothing to measure is not published
 
 Amends the enforcement of [ADR-0003](0003-every-published-number-carries-provenance.md). Its rule stands unchanged; what changes is that the verifier now checks it.

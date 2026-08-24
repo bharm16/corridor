@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Matrix extraction reads the page image, not the table structure
 
 Amended by ADR-0006: the validation gate this ADR called for was run, and what the model is trusted to produce narrowed from transcribed values to page structure. The reasoning below stands.

@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Exact unchanged support may carry forward under an authorized policy
 
 > **Partially superseded by ADR-0034.** Automatic Carry-Forward is now normal

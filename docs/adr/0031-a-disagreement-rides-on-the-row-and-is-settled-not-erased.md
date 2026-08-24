@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A disagreement rides on the row, and is settled rather than erased
 
 ADR-0029 made one matrix enough and left one gate standing: revisions stating a conflict differently still withheld it, so the rows where judgment actually pays were the rows the product would not show. That is backwards for a tool whose job is surfacing — a disagreement between the February and May matrices is the most interesting thing on the screen, not a reason to hide the conflict. Decision: **the newest revision is admitted and the rest merge whether or not they agree.** Agreement lands as corroboration; disagreement lands as a **Dispute** — every revision's claim recorded as an Assertion citing its own page, with the existing CONTRADICTION Exception naming the fields. A Dispute is therefore a query, never a stored flag, exactly as every other Exception is: nothing was withheld to create it, so nothing must be resolved to undo it, and a disputed row is an ordinary workable row that can take an owner and a next action while the disagreement stands. The newest revision supplies the record's provisional field values, said out loud rather than silently — the CONTRADICTION is the saying.

@@ -133,7 +133,6 @@ def legacy_project(session):
         dep_type="utility_relocation",
         title="Telecom - AT&T Texas",
         location_desc="IH 45",
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -259,7 +258,6 @@ def test_plan_fails_cleanly_on_a_mixed_human_and_legacy_ledger(
         dep_type="utility_relocation",
         title="Telecom - Human Utility",
         location_desc="IH 45 frontage road",
-        status="identified",
     )
     session.add(dependency)
     session.flush()
@@ -414,7 +412,7 @@ def test_retire_verify_and_export_use_the_sealed_archive(
             "dependencies": 1,
             "evidence_links": 1,
         },
-        "format_version": "legacy-ledger-v3",
+        "format_version": "legacy-ledger-v4",
         "project_id": legacy_project.id,
         "project_slug": archived_slug,
         "ref_code_high_watermark": 141,

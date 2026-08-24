@@ -171,9 +171,7 @@ def test_frozen_project_reading_pairs_one_population_and_statement_read(
     assert {row.dependency.id for row in reading.rows} == set(
         reading.statement_publication.by_dependency
     )
-    assert reading.dependency_ids == tuple(
-        row.dependency.id for row in reading.rows
-    )
+    assert reading.dependency_ids == tuple(row.dependency.id for row in reading.rows)
 
 
 def _record_exact_cited_statement(
@@ -331,7 +329,7 @@ def test_a_critical_record_with_no_verified_evidence_is_still_published(
     by_ref = {record.ref_code: record for record in records}
     for row in rows:
         record = by_ref[row[0].value]
-        for cell in row[:5]:
+        for cell in row[:4]:
             assert isinstance(cell.provenance, Derivation)
             # Its own record. A tuple of every critical record would drill
             # to a set the reader did not ask about, and with one row in
@@ -379,9 +377,12 @@ def test_striking_a_records_verification_removes_no_row_from_the_report(
     record, and it is the finding.
     """
     critical = make_critical(session, project_with_two_dependencies)
-    before = [row[0].value for row in section(
-        build_report(session, project_with_two_dependencies.id), "Critical items"
-    ).rows]
+    before = [
+        row[0].value
+        for row in section(
+            build_report(session, project_with_two_dependencies.id), "Critical items"
+        ).rows
+    ]
 
     _unverify_evidence_of(session, critical)
     report = build_report(session, project_with_two_dependencies.id)
@@ -392,9 +393,7 @@ def test_striking_a_records_verification_removes_no_row_from_the_report(
     assert critical.ref_code in render(report)
 
 
-def test_the_report_has_the_documented_sections(
-    session, project_with_two_dependencies
-):
+def test_the_report_has_the_documented_sections(session, project_with_two_dependencies):
     report = build_report(session, project_with_two_dependencies.id)
     titles = [s.title for s in report.sections]
     assert titles == [
@@ -412,7 +411,7 @@ def test_the_report_has_the_documented_sections(
 def test_an_empty_section_says_why_rather_than_showing_nothing(
     session, project_with_two_dependencies
 ):
-    """"No milestones imported" and "nothing is overdue" are different
+    """ "No milestones imported" and "nothing is overdue" are different
     facts, and a blank table conveys neither."""
     report = build_report(session, project_with_two_dependencies.id)
     milestones = section(report, "Milestone readiness")
@@ -473,9 +472,7 @@ def test_the_report_states_what_it_does_not_cover(
     from corridor.models import Candidate, Document
 
     doc = session.scalars(
-        select(Document).where(
-            Document.project_id == project_with_two_dependencies.id
-        )
+        select(Document).where(Document.project_id == project_with_two_dependencies.id)
     ).first()
     session.add(
         Candidate(
@@ -496,21 +493,17 @@ def test_the_report_states_what_it_does_not_cover(
     assert "awaiting adjudication" in render(report)
 
 
-def test_the_exceptions_section_counts_by_rule(
-    session, project_with_two_dependencies
-):
+def test_the_exceptions_section_counts_by_rule(session, project_with_two_dependencies):
     report = build_report(session, project_with_two_dependencies.id)
     rules = {row[0].value for row in section(report, "Exceptions").rows}
-    assert "ORPHAN" in rules
+    assert "No Milestone" in rules
 
 
 def test_report_names_superseded_citations_as_reconfirmation_work(
     session, project_with_two_dependencies
 ):
     predecessor = session.scalars(
-        select(Document).where(
-            Document.project_id == project_with_two_dependencies.id
-        )
+        select(Document).where(Document.project_id == project_with_two_dependencies.id)
     ).one()
     successor = Document(
         project_id=project_with_two_dependencies.id,
@@ -550,13 +543,10 @@ def test_report_names_superseded_citations_as_reconfirmation_work(
     )
     rules = {row[0].value for row in section(report, "Exceptions").rows}
 
-    assert "SUPERSEDED_CITATION · re-confirmation" in rules
-    assert "SUPERSEDED_CITATION" not in rules
+    assert "Evidence is not current · re-confirmation" in rules
 
 
-def test_the_appendix_lists_every_ledger_record(
-    session, project_with_two_dependencies
-):
+def test_the_appendix_lists_every_ledger_record(session, project_with_two_dependencies):
     report = build_report(session, project_with_two_dependencies.id)
     assert len(section(report, "Appendix").rows) == 2
 
@@ -683,9 +673,7 @@ def test_critical_items_orders_by_need_date_proximity(
     assert [row[0].value for row in rows] == [deps[1].ref_code, deps[0].ref_code]
 
 
-def test_critical_items_with_no_dates_says_so(
-    session, project_with_two_dependencies
-):
+def test_critical_items_with_no_dates_says_so(session, project_with_two_dependencies):
     """The live corpus's case: critical records, no dates anywhere. The
     section shows them and says there is nothing to order by, instead of
     ref-code order dressed as a ranking — ADR-0010's own exhibit."""
@@ -702,7 +690,7 @@ def test_critical_items_with_no_dates_says_so(
 def test_the_critical_items_note_declares_the_ordering_and_never_a_weight(
     session, project_with_two_dependencies
 ):
-    """"Declared presentation": the note names the one quantity the list
+    """ "Declared presentation": the note names the one quantity the list
     is ordered by. Nothing multiplies, so nothing says ×."""
     project = project_with_two_dependencies
     make_critical(session, project, need_days_out=30)
@@ -735,12 +723,9 @@ def test_a_critical_row_lists_its_exceptions_as_facts(
     report = build_report(session, project.id, today=date(2026, 8, 5))
     found = section(report, "Critical items")
     exceptions_cell = found.rows[0][found.columns.index("Exceptions")]
-    by_rule = {
-        e.rule: e
-        for e in report.evaluation.for_dependency(critical.id)
-    }
+    by_rule = {e.rule: e for e in report.evaluation.for_dependency(critical.id)}
 
-    assert "ORPHAN" in exceptions_cell.value
+    assert "No Milestone" in exceptions_cell.value
     assert format_exception_label(by_rule["OVERDUE"]) in exceptions_cell.value
     assert format_exception_label(by_rule["DUE_SOON"]) in exceptions_cell.value
 
@@ -748,23 +733,21 @@ def test_a_critical_row_lists_its_exceptions_as_facts(
 def test_the_exceptions_summary_exemplar_is_the_largest_quantity_or_nothing(
     session, project_with_two_dependencies
 ):
-    """"Worst" regains a meaning: the most days, checkable against the
+    """ "Worst" regains a meaning: the most days, checkable against the
     record. A rule whose fact is an absence has no exemplar — every row
     is the same finding, and electing one would be an arbitrary pick
     wearing a superlative."""
-    report = build_report(
-        session, project_with_two_dependencies.id
-    )
+    report = build_report(session, project_with_two_dependencies.id)
     found = section(report, "Exceptions")
     by_rule = {row[0].value: row for row in found.rows}
 
     most_days = found.columns.index("Most days")
-    assert by_rule["ORPHAN"][most_days].value == "—"
+    assert by_rule["No Milestone"][most_days].value == "—"
     # The fixture's document is undated, so STALE is the absence case —
     # "no dated evidence at all" has no age, and no exemplar either. The
     # largest-quantity path is pinned at the engine seam and in the
     # critical row's exception listing.
-    assert by_rule["STALE"][most_days].value == "—"
+    assert by_rule["Evidence is stale"][most_days].value == "—"
 
 
 def _overdue_by(session, project_id, days):
@@ -1005,9 +988,7 @@ def test_a_derivation_may_name_a_scope_where_no_record_can_answer(session):
     )
 
 
-def test_a_change_cites_the_record_it_describes(
-    session, project_with_two_dependencies
-):
+def test_a_change_cites_the_record_it_describes(session, project_with_two_dependencies):
     """Every cell of the Changes section used to carry an empty tuple."""
     from corridor.models import Dependency
 
@@ -1018,8 +999,15 @@ def test_a_change_cites_the_record_it_describes(
         .where(Dependency.project_id == project_with_two_dependencies.id)
         .order_by(Dependency.id)
     ).first()
-    dependency.status = "closed"
-    session.flush()
+    evidence = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).first()
+    mark_satisfies(
+        session,
+        dependency.id,
+        evidence.id,
+        principal=TEST_PRINCIPAL,
+    )
 
     report = build_report(session, project_with_two_dependencies.id)
     changes = section(report, "Changes since last report")
@@ -1028,8 +1016,8 @@ def test_a_change_cites_the_record_it_describes(
     for row in changes.rows:
         for cell in row:
             assert cell.provenance.resolves
-    closed = next(r for r in changes.rows if r[1].value == "closed")
-    assert closed[0].provenance.record_ids == (dependency.id,)
+    ready = next(r for r in changes.rows if r[1].value == "became_ready")
+    assert ready[0].provenance.record_ids == (dependency.id,)
 
 
 def _summary(report, label):
@@ -1076,7 +1064,7 @@ def test_the_report_never_claims_evidence_for_records_it_says_have_none(
     report = build_report(session, project_with_two_dependencies.id)
     markup = render(report)
 
-    assert "MISSING_EVIDENCE" in markup
+    assert "No verified Evidence" in markup
     assert _summary(report, "With verified evidence").value == "0"
     assert _summary(report, "% with verified evidence").value == "0.0%"
 
@@ -1121,7 +1109,7 @@ def test_percent_evidenced_on_a_milestone_counts_only_evidence_that_holds(
 def test_a_milestone_nothing_is_linked_to_is_named_not_scored(
     session, project_with_two_dependencies
 ):
-    """"Ready 0" for an unlinked milestone reads as a measurement.
+    """ "Ready 0" for an unlinked milestone reads as a measurement.
 
     It is not one — nothing was measured, and the section says so rather
     than publishing four zeroes over no records.
@@ -1258,7 +1246,6 @@ def test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together(
             station_from=f"{1000 + index}+01",
             station_to=f"{1000 + index}+09",
             external_org_id=None,
-            status="identified",
         )
         session.add_all((party, dependency))
         session.flush()
@@ -1301,16 +1288,13 @@ def test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together(
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
         assert pdf.page_count > 1
         page_text = [
-            " ".join(page.get_text().split()).replace("- ", "-")
-            for page in pdf
+            " ".join(page.get_text().split()).replace("- ", "-") for page in pdf
         ]
         compact_page_text = ["".join(text.split()) for text in page_text]
         all_text = " ".join(page_text)
 
         for cell in (coordination_action, milestone_at_risk, *exception_whys):
-            published_cell = " ".join(
-                f"{cell.value} {cell.provenance.marker}".split()
-            )
+            published_cell = " ".join(f"{cell.value} {cell.provenance.marker}".split())
             assert published_cell in all_text
 
         for row in appendix_rows:
@@ -1650,7 +1634,9 @@ def test_party_commitments_leave_the_open_section_when_scoped_or_closed(
     assert known.description not in render(report)
     assert dependency.committed_date is None
 
-    closure_quote = "AT&T Texas (SWBT) confirms the unknown-scope material is delivered."
+    closure_quote = (
+        "AT&T Texas (SWBT) confirms the unknown-scope material is delivered."
+    )
     closure_document = Document(
         project_id=project.id,
         sha256=hashlib.sha256(closure_quote.encode()).hexdigest(),
@@ -1750,13 +1736,12 @@ def test_a_field_value_never_wears_the_record_quote(session):
     report = build_report(session, project.id)
     critical = section(report, "Critical items")
     [row] = critical.rows
-    ref, party, committed, need, status, exceptions = row
+    ref, party, committed, need, exceptions = row
 
     assert isinstance(ref.provenance, ReportAssertion)
     assert isinstance(committed.provenance, Derivation)
     assert committed.provenance.record_ids == (dependency.id,)
     assert isinstance(need.provenance, Derivation)
-    assert isinstance(status.provenance, Derivation)
 
 
 def test_a_designated_field_support_backs_exactly_its_own_cell(session):
@@ -1769,7 +1754,9 @@ def test_a_designated_field_support_backs_exactly_its_own_cell(session):
         dependency_id=dependency.id,
         document_id=session.scalars(
             select(Document).where(Document.project_id == project.id)
-        ).first().id,
+        )
+        .first()
+        .id,
         page_no=1,
         quote="committed to relocate by 2026-06-01",
         verified=True,
@@ -1809,9 +1796,7 @@ def _critical_dependency(session):
     from corridor.principals import HumanPrincipal
 
     principal = HumanPrincipal("local:field-exact-tester")
-    project = Project(
-        slug="field-exact-test", name="Field Exact", is_synthetic=True
-    )
+    project = Project(slug="field-exact-test", name="Field Exact", is_synthetic=True)
     session.add(project)
     session.flush()
     document = Document(

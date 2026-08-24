@@ -437,7 +437,6 @@ def _abstention_group_input(
                 "id": dependency.id,
                 "source_ref": dependency.source_ref,
                 "external_org_id": dependency.external_org_id,
-                "status": dependency.status,
             }
             for dependency in sorted(carriers, key=lambda item: item.id)
         ],

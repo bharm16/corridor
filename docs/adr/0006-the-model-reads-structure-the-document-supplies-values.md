@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # The model reads the structure; the document supplies the values
 
 Amends ADR-0004.

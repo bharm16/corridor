@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Reconfirmation — {{ project.name }}</title>
+<title>Changed Document Evidence — {{ project.name }}</title>
 <style>
   :root { --line:#ddd; --muted:#666; --ok:#067647; }
   * { box-sizing:border-box; }
@@ -29,17 +29,15 @@
 
 <header>
   <nav aria-label="Review lanes">
-    <a href="/queue/{{ project.slug }}?lane=candidate">Candidate Adjudication ({{ candidate_count }})</a>
-    <a href="/queue/{{ project.slug }}?lane=reconfirmation" aria-current="page">Reconfirmation ({{ reconfirmation_count }})</a>
+    <a href="/queue/{{ project.slug }}?lane=candidate">Extracted conflicts ({{ candidate_count }})</a>
+    <a href="/queue/{{ project.slug }}?lane=reconfirmation" aria-current="page">Changed Document Evidence ({{ reconfirmation_count }})</a>
   </nav>
 </header>
 
-{% include "_automatic_carry_forward_status.html" %}
 
 <main>
-  <p class="safe"><b>Mechanically verified unchanged.</b> The exact Active Runs
-    contain one unambiguous one-to-one match. This action moves only Operative
-    Support; it does not admit or revise the Dependency.</p>
+  <p class="safe"><b>The source wording is unchanged.</b> This action moves only
+    Operative Support to current Evidence; it does not add or revise the Dependency.</p>
 
   <h1>{{ view.dependency.ref_code if view.dependency else "Dependency unavailable" }}</h1>
   {% if view.dependency %}<p>{{ view.dependency.title }}</p>{% endif %}
@@ -71,7 +69,7 @@
     <input type="hidden" name="comparison_id" value="{{ view.review.comparison_id }}">
     <input type="hidden" name="finding_id" value="{{ view.review.finding_id }}">
     <input type="hidden" name="scope_fingerprint" value='{{ view.review.scope_fingerprint|tojson }}'>
-    <button><kbd>c</kbd> Reconfirm operative support</button>
+    <button><kbd>c</kbd> Use current Evidence</button>
   </form>
 </main>
 

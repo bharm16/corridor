@@ -72,7 +72,6 @@ def statement_record(session):
         dep_type="utility_relocation",
         title="Equistar relocation",
         external_org_id=party.id,
-        status="identified",
     )
     session.add_all([document, dependency])
     session.flush()
@@ -782,7 +781,6 @@ def test_one_exact_day_statement_links_each_selected_dependency_once_and_project
         dep_type="utility_relocation",
         title="Second Equistar relocation",
         external_org_id=party.id,
-        status="identified",
     )
     session.add(second)
     session.flush()
@@ -1159,7 +1157,6 @@ def test_all_active_scope_is_a_snapshot_and_change_keeps_both_timings(
         dep_type="utility_relocation",
         title="Second Equistar relocation",
         external_org_id=party.id,
-        status="identified",
     )
     session.add(second)
     session.flush()
@@ -1185,7 +1182,6 @@ def test_all_active_scope_is_a_snapshot_and_change_keeps_both_timings(
         dep_type="utility_relocation",
         title="Later Equistar relocation",
         external_org_id=party.id,
-        status="identified",
     )
     session.add(later_dependency)
     session.flush()
@@ -1230,7 +1226,6 @@ def test_invalid_known_scope_refuses_before_writing_any_part_of_the_statement(
         dep_type="utility_relocation",
         title="Other Utility relocation",
         external_org_id=other_party.id,
-        status="identified",
     )
     session.add(wrong_dependency)
     session.flush()

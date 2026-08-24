@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Guided statement Adjudication is Evidence-bound, atomic, and reversible
 
 An extractor may preserve a real External Party statement without enough supported

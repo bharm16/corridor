@@ -55,10 +55,9 @@ from corridor.candidate_statement_facts import (
     CandidateStatementFacts,
     prepare_candidate_statement_facts,
 )
-from corridor.automatic_carry_forward import automatic_carry_forward_status
 from corridor.db import Session as SessionFactory
 from corridor.config import settings
-from corridor.exceptions import RULES, evaluate_project
+from corridor.exceptions import RULES, evaluate_project, format_exception_name
 from corridor.lane import (
     LaneRefusal,
     SiblingsNeedTheEventLane,
@@ -76,7 +75,6 @@ from corridor.ledger import (
 )
 from corridor.models import (
     RESOLUTION_STRATEGIES,
-    DEP_STATUSES,
     Candidate,
     CandidateDisposition,
     CommitmentLineage,
@@ -1051,7 +1049,6 @@ def correct_statement_screen(
                     Dependency.project_id == project.id,
                     Dependency.external_org_id == event.affected_external_org_id,
                     Dependency.dismissed_at.is_(None),
-                    Dependency.status != "closed",
                 )
                 .order_by(Dependency.ref_code)
             ).all(),
@@ -1219,7 +1216,6 @@ def _statement_coordination_screen(
         .where(
             Dependency.project_id == project.id,
             Dependency.dismissed_at.is_(None),
-            Dependency.status != "closed",
         )
         .order_by(Dependency.ref_code)
     ).all()
@@ -1741,11 +1737,6 @@ def queue(
         "candidate_count": total + len(ordinary_reviews),
         "reconfirmation_count": len(worklist.reconfirmation),
         "ordinary_reviews": ordinary_reviews,
-        "automatic_carry_forward": automatic_carry_forward_status(
-            session,
-            project.id,
-            worklist=worklist,
-        ),
     }
     if lane == "reconfirmation" and not worklist.reconfirmation:
         return TEMPLATES.TemplateResponse(request, "empty.html", lane_context)
@@ -1979,7 +1970,6 @@ async def reconfirm_support(
 def ledger(
     request: Request,
     slug: str,
-    status: str | None = None,
     org_id: int | None = None,
     resolution_strategy: str | None = None,
     ready: str | None = None,
@@ -1995,7 +1985,6 @@ def ledger(
         session,
         project.id,
         evaluation=evaluate_project(session, project.id),
-        status=status or None,
         org_id=org_id,
         resolution_strategy=resolution_strategy or None,
         ready={"yes": True, "no": False}.get(ready or ""),
@@ -2024,15 +2013,15 @@ def ledger(
             "rows": rows,
             "orgs": orgs,
             "filters": {
-                "status": status or "",
                 "org_id": org_id or "",
                 "resolution_strategy": resolution_strategy or "",
                 "ready": ready or "",
                 "rule": rule or "",
                 "owner": owner or "",
             },
-            "rules": sorted(RULES),
-            "statuses": DEP_STATUSES,
+            "rules": [
+                (rule, format_exception_name(rule)) for rule in sorted(RULES)
+            ],
             "strategies": RESOLUTION_STRATEGIES,
             "owners": owners,
             "today": date.today(),

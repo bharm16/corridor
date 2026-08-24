@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A superseded citation is a signal on operative support, not on history — and readiness stands on the current revision
 
 > ADR-0022 adds policy-authorized Automatic Carry-Forward for exact unchanged support. Human Reconfirmation remains the path for reviewer judgment; the signal may also clear through a valid carry-forward receipt.

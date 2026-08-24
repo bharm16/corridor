@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A verbal is an appended event, never a missing citation
 
 > **Partially superseded by ADR-0036.** A later attributable timing is a

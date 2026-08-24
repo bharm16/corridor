@@ -41,6 +41,7 @@ from corridor.report_release import (
     render_external_report_pdf,
     retrieve_released_external_report,
 )
+from corridor.work_decisions import assign_internal_owner
 from corridor.web.app import app, get_human_principal, get_session
 
 
@@ -73,7 +74,6 @@ def project(session):
             ref_code="DEP-RELEASE-1",
             dep_type="utility_relocation",
             title="Release test telecom relocation",
-            status="identified",
         )
     )
     session.flush()
@@ -90,9 +90,7 @@ def client(session):
 
 
 def _rendered(session, project, *, today=date(2026, 8, 13), document_only=False):
-    report = build_report(
-        session, project.id, today=today, document_only=document_only
-    )
+    report = build_report(session, project.id, today=today, document_only=document_only)
     return RenderedExternalReport(
         artifact_name=f"{project.slug}-{today.isoformat()}.pdf",
         pdf_bytes=PDF_A,
@@ -100,9 +98,7 @@ def _rendered(session, project, *, today=date(2026, 8, 13), document_only=False)
     )
 
 
-def _rendered_real(
-    session, project, *, today=date(2026, 8, 13), document_only=False
-):
+def _rendered_real(session, project, *, today=date(2026, 8, 13), document_only=False):
     return render_external_report_pdf(
         session,
         project.id,
@@ -205,7 +201,10 @@ def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, pr
     assert release.format == "pdf"
     assert release.artifact_id == artifact.id
     assert release.pdf_bytes == PDF_A
-    assert release.pdf_sha256 == "a2231b868a02ee046abc6015b2ea72648450e70f4690c9c4614369bf45c3badd"
+    assert (
+        release.pdf_sha256
+        == "a2231b868a02ee046abc6015b2ea72648450e70f4690c9c4614369bf45c3badd"
+    )
     assert release.evaluated_on == date(2026, 8, 13)
     assert release.ruleset_version == rendered.report.ruleset_version
     assert release.evaluation_context_json == {
@@ -268,14 +267,12 @@ def test_prepared_report_review_names_unknown_scope_statement_and_frozen_source(
     )
     assert covered_statement.source_context == (
         "weekly-utility-coordination-minutes.pdf · page 7 · "
-        '“Release Test Utility will provide the cable reels in September 2026.”'
+        "“Release Test Utility will provide the cable reels in September 2026.”"
     )
     assert covered_statement.statement_version_ids == (statement.id,)
 
 
-def test_prepared_report_freezes_unknown_scope_statement_plan_display(
-    session, project
-):
+def test_prepared_report_freezes_unknown_scope_statement_plan_display(session, project):
     from corridor.work_decisions import (
         CoordinationSubject,
         assign_internal_owner,
@@ -284,9 +281,7 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(
 
     statement = _record_unknown_scope_statement(session, project)
     subject = CoordinationSubject.statement(statement.commitment_lineage_id)
-    assign_internal_owner(
-        session, subject, "Dana Fields", principal=TEST_PRINCIPAL
-    )
+    assign_internal_owner(session, subject, "Dana Fields", principal=TEST_PRINCIPAL)
     set_next_action(
         session,
         subject,
@@ -294,15 +289,11 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(
         due_date_unknown_reason="awaiting_external_information",
         principal=TEST_PRINCIPAL,
     )
-    rendered = render_external_report_pdf(
-        session, project.id, today=date(2026, 8, 13)
-    )
+    rendered = render_external_report_pdf(session, project.id, today=date(2026, 8, 13))
     import pymupdf
 
     with pymupdf.open(stream=rendered.pdf_bytes, filetype="pdf") as pdf:
-        pdf_text = " ".join(
-            "\n".join(page.get_text() for page in pdf).split()
-        )
+        pdf_text = " ".join("\n".join(page.get_text() for page in pdf).split())
     for expected in (
         "Internal Owner Dana Fields",
         "Next Action Confirm the cable-reel delivery",
@@ -324,9 +315,7 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(
         "open_status": "Open · not past due",
         "internal_owner": "Dana Fields",
         "next_action": "Confirm the cable-reel delivery",
-        "action_due": (
-            "Date not yet known (awaiting external information)"
-        ),
+        "action_due": ("Date not yet known (awaiting external information)"),
         "milestone_impact": "Not applicable",
     }
 
@@ -354,9 +343,7 @@ def test_prepare_refuses_a_pdf_that_omits_frozen_statement_plan_fields(
         session, project.id, today=date(2026, 8, 13)
     )
     _record_unknown_scope_statement(session, project)
-    report_with_statement = build_report(
-        session, project.id, today=date(2026, 8, 13)
-    )
+    report_with_statement = build_report(session, project.id, today=date(2026, 8, 13))
     mismatched = RenderedExternalReport(
         artifact_name=pdf_without_statement.artifact_name,
         pdf_bytes=pdf_without_statement.pdf_bytes,
@@ -370,9 +357,7 @@ def test_prepare_refuses_a_pdf_that_omits_frozen_statement_plan_fields(
         _prepare(session, project, rendered=mismatched)
 
 
-def test_prepared_report_excludes_a_closed_unknown_scope_statement(
-    session, project
-):
+def test_prepared_report_excludes_a_closed_unknown_scope_statement(session, project):
     statement = _record_unknown_scope_statement(session, project)
     closure_quote = "Release Test Utility confirms the cable reels were delivered."
     closure_document = Document(
@@ -573,8 +558,9 @@ def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_change
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
-    dependency.status = "closed"
-    session.flush()
+    assign_internal_owner(
+        session, dependency.id, "Changed after release", principal=TEST_PRINCIPAL
+    )
 
     stored = retrieve_released_external_report(session, project.id, release.id)
 
@@ -584,15 +570,14 @@ def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_change
     assert stored.record_context_json == release.record_context_json
 
 
-def test_release_uses_the_prepared_artifact_after_the_ledger_changes(
-    session, project
-):
+def test_release_uses_the_prepared_artifact_after_the_ledger_changes(session, project):
     artifact = _prepare(session, project)
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
-    dependency.status = "closed"
-    session.flush()
+    assign_internal_owner(
+        session, dependency.id, "Changed after preparation", principal=TEST_PRINCIPAL
+    )
 
     release = _release(session, project, artifact=artifact)
 
@@ -667,20 +652,26 @@ def test_changed_bytes_evaluation_mode_population_or_statement_version_must_crea
     changed_statement_version = _release(session, project)
 
     assert rendered_at.date() == date(2026, 8, 13)
-    assert len(
-        {
-            first.id,
-            changed_bytes.id,
-            changed_evaluation.id,
-            changed_mode.id,
-            changed_population.id,
-            changed_statement_version.id,
-        }
-    ) == 6
+    assert (
+        len(
+            {
+                first.id,
+                changed_bytes.id,
+                changed_evaluation.id,
+                changed_mode.id,
+                changed_population.id,
+                changed_statement_version.id,
+            }
+        )
+        == 6
+    )
     assert changed_population.record_context_json["dependencies"] == []
-    assert changed_statement_version.record_context_json["dependencies"][0][
-        "current_statement_event_id"
-    ] is not None
+    assert (
+        changed_statement_version.record_context_json["dependencies"][0][
+            "current_statement_event_id"
+        ]
+        is not None
+    )
 
 
 def test_release_refuses_non_pdf_bytes_bare_or_inconsistent_content_without_a_receipt(
@@ -699,19 +690,27 @@ def test_release_refuses_non_pdf_bytes_bare_or_inconsistent_content_without_a_re
         with pytest.raises(ReleaseRefusal):
             _prepare(session, project, rendered=candidate)
 
-    assert session.scalars(
-        select(ExternalReportRelease).where(
-            ExternalReportRelease.project_id == project.id
-        )
-    ).all() == []
-    assert session.scalars(
-        select(ExternalReportArtifact).where(
-            ExternalReportArtifact.project_id == project.id
-        )
-    ).all() == []
+    assert (
+        session.scalars(
+            select(ExternalReportRelease).where(
+                ExternalReportRelease.project_id == project.id
+            )
+        ).all()
+        == []
+    )
+    assert (
+        session.scalars(
+            select(ExternalReportArtifact).where(
+                ExternalReportArtifact.project_id == project.id
+            )
+        ).all()
+        == []
+    )
 
 
-def test_release_history_is_project_language_and_keeps_the_audit_digest(session, project):
+def test_release_history_is_project_language_and_keeps_the_audit_digest(
+    session, project
+):
     release = _release(session, project)
 
     [entry] = external_report_release_history(session, project.id)
@@ -811,9 +810,7 @@ def test_release_history_metadata_query_does_not_load_retained_pdf_bytes(
         event.remove(connection, "before_cursor_execute", capture_sql)
 
     [history_sql] = [
-        statement
-        for statement in statements
-        if "external_report_releases" in statement
+        statement for statement in statements if "external_report_releases" in statement
     ]
     assert "pdf_bytes" not in history_sql
 
@@ -860,7 +857,9 @@ def test_honestly_adverse_content_does_not_block_release(session, project):
 
     assert release.id is not None
     commitments = next(
-        section for section in rendered.report.sections if section.title == "External Party commitments"
+        section
+        for section in rendered.report.sections
+        if section.title == "External Party commitments"
     )
     assert commitments.rows[0][5].value == "Scope not yet known"
     assert commitments.rows[0][6].value == "Open · past due"
@@ -880,11 +879,14 @@ def test_storage_failure_rolls_back_without_a_successful_release_receipt(
     finally:
         event.remove(ExternalReportRelease, "before_insert", fail_storage)
 
-    assert session.scalars(
-        select(ExternalReportRelease).where(
-            ExternalReportRelease.project_id == project.id
-        )
-    ).all() == []
+    assert (
+        session.scalars(
+            select(ExternalReportRelease).where(
+                ExternalReportRelease.project_id == project.id
+            )
+        ).all()
+        == []
+    )
 
 
 def test_database_refuses_edits_to_a_sealed_release(session, project):
@@ -900,9 +902,9 @@ def test_database_refuses_edits_to_a_sealed_release(session, project):
                 {"release_id": release.id},
             )
 
-    assert retrieve_released_external_report(session, project.id, release.id).artifact_name == (
-        "release-test-2026-08-13.pdf"
-    )
+    assert retrieve_released_external_report(
+        session, project.id, release.id
+    ).artifact_name == ("release-test-2026-08-13.pdf")
 
 
 def test_database_refuses_truncating_sealed_releases(session, project):
@@ -912,7 +914,10 @@ def test_database_refuses_truncating_sealed_releases(session, project):
         with session.begin_nested():
             session.execute(text("truncate external_report_releases"))
 
-    assert retrieve_released_external_report(session, project.id, release.id).id == release.id
+    assert (
+        retrieve_released_external_report(session, project.id, release.id).id
+        == release.id
+    )
 
 
 def test_database_refuses_edits_or_truncation_of_rendered_artifacts(session, project):
@@ -948,7 +953,9 @@ def test_real_renderer_bytes_are_the_bytes_the_release_service_seals(session, pr
     assert release.digest_is_valid is True
 
 
-def test_renderer_failure_cannot_create_a_release_receipt(session, project, monkeypatch):
+def test_renderer_failure_cannot_create_a_release_receipt(
+    session, project, monkeypatch
+):
     import corridor.report_release as report_release
 
     monkeypatch.setattr(
@@ -960,11 +967,14 @@ def test_renderer_failure_cannot_create_a_release_receipt(session, project, monk
     with pytest.raises(OSError, match="renderer unavailable"):
         report_release.render_external_report_pdf(session, project.id)
 
-    assert session.scalars(
-        select(ExternalReportRelease).where(
-            ExternalReportRelease.project_id == project.id
-        )
-    ).all() == []
+    assert (
+        session.scalars(
+            select(ExternalReportRelease).where(
+                ExternalReportRelease.project_id == project.id
+            )
+        ).all()
+        == []
+    )
 
 
 def test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an_identity(
@@ -980,9 +990,7 @@ def test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an
     assert workspace.status_code == 200
     assert "Render fixed PDF for review" in workspace.text
 
-    response = client.post(
-        f"/reports/{project.slug}/render", data={"ordinary": "1"}
-    )
+    response = client.post(f"/reports/{project.slug}/render", data={"ordinary": "1"})
 
     assert response.status_code == 201
     assert "Review this fixed PDF" in response.text
@@ -1033,12 +1041,11 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
-    dependency.status = "closed"
-    session.flush()
-
-    released = client.post(
-        f"/reports/{project.slug}/prepared/{artifact.id}/release"
+    assign_internal_owner(
+        session, dependency.id, "Changed before release", principal=TEST_PRINCIPAL
     )
+
+    released = client.post(f"/reports/{project.slug}/prepared/{artifact.id}/release")
 
     assert released.status_code == 201
     assert "This exact PDF is now released and retained." in released.text
@@ -1047,7 +1054,9 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     assert TEST_PRINCIPAL.subject not in released.text
     assert "DEP-RELEASE-1" in released.text
     assert artifact.pdf_sha256 in released.text
-    assert "Release does not send the PDF by email or document control." in released.text
+    assert (
+        "Release does not send the PDF by email or document control." in released.text
+    )
     download = re.search(
         rf'href="(/reports/{project.slug}/releases/\d+/download)"', released.text
     )
@@ -1085,9 +1094,7 @@ def test_ordinary_review_and_history_name_party_statements_without_raw_event_ids
     assert "page 7" in review.text
     assert f">{statement.id}<" not in review.text
 
-    released = client.post(
-        f"/reports/{project.slug}/prepared/{artifact.id}/release"
-    )
+    released = client.post(f"/reports/{project.slug}/prepared/{artifact.id}/release")
 
     assert released.status_code == 201
     assert "Release Test Utility" in released.text
@@ -1112,9 +1119,7 @@ def test_render_control_prepares_a_distinct_artifact(
     monkeypatch.setattr(
         web_app,
         "render_external_report_pdf",
-        lambda _session, project_id: (
-            calls.append(("render", project_id)) or rendered
-        ),
+        lambda _session, project_id: calls.append(("render", project_id)) or rendered,
     )
     monkeypatch.setattr(
         web_app,
@@ -1195,18 +1200,14 @@ def test_ordinary_release_control_delegates_its_bound_artifact_without_rerenderi
         ),
     )
 
-    response = client.post(
-        f"/reports/{project.slug}/prepared/{artifact.id}/release"
-    )
+    response = client.post(f"/reports/{project.slug}/prepared/{artifact.id}/release")
 
     assert response.status_code == 201
     assert "This exact PDF is now released and retained." in response.text
     assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]
 
 
-def test_ordinary_artifact_routes_refuse_another_project(
-    client, session, project
-):
+def test_ordinary_artifact_routes_refuse_another_project(client, session, project):
     other_project = Project(
         slug="other-release-test",
         name="Other Release Test",
@@ -1216,20 +1217,33 @@ def test_ordinary_artifact_routes_refuse_another_project(
     session.flush()
     artifact = _prepare(session, project)
 
-    assert client.get(
-        f"/reports/{other_project.slug}/prepared/{artifact.id}"
-    ).status_code == 409
-    assert client.get(
-        f"/reports/{other_project.slug}/prepared/{artifact.id}/preview"
-    ).status_code == 409
-    assert client.get(
-        f"/reports/{other_project.slug}/prepared/{artifact.id}/download"
-    ).status_code == 409
-    assert client.post(
-        f"/reports/{other_project.slug}/prepared/{artifact.id}/release"
-    ).status_code == 409
+    assert (
+        client.get(f"/reports/{other_project.slug}/prepared/{artifact.id}").status_code
+        == 409
+    )
+    assert (
+        client.get(
+            f"/reports/{other_project.slug}/prepared/{artifact.id}/preview"
+        ).status_code
+        == 409
+    )
+    assert (
+        client.get(
+            f"/reports/{other_project.slug}/prepared/{artifact.id}/download"
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"/reports/{other_project.slug}/prepared/{artifact.id}/release"
+        ).status_code
+        == 409
+    )
 
     release = _release(session, project, artifact=artifact)
-    assert client.get(
-        f"/reports/{other_project.slug}/releases/{release.id}/download"
-    ).status_code == 404
+    assert (
+        client.get(
+            f"/reports/{other_project.slug}/releases/{release.id}/download"
+        ).status_code
+        == 404
+    )

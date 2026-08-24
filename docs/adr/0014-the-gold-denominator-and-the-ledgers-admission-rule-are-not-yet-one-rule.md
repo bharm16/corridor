@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # The gold denominator and the Ledger's admission rule are not yet one rule
 
 "What counts as a row" is implemented four times — `vocabulary.is_retired_row`, the extractor's admission sequence in `extract_matrix._structure_candidates`, `gold.author_machine_gold`, and `gold.prepare` — and answering "what is in the denominator?" means reading all four. An architecture review raised unifying them; this records why the unification has not happened, so the next review does not re-propose it without the constraint.

@@ -2,7 +2,7 @@
 
 Covers milestones M0-M5 of `phase-1-roadmap.md`. Target: ~7 focused solo weeks.
 
-Corpus assembly is specified separately in `corpus-acquisition-spec.md` and runs in parallel from week 0. Domain vocabulary is defined in `CONTEXT.md`; use those terms. Decisions with lasting consequences are recorded in `docs/adr/`.
+Corpus assembly is specified separately in `corpus-acquisition-spec.md` and runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; use those terms. Decisions with lasting consequences are recorded in `docs/adr/`.
 
 ## 1. Objective
 

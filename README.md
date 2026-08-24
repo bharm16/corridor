@@ -22,7 +22,7 @@ Postgres listens on **5433** on the host, not 5432 — see the comment in `docke
 
 | | |
 |---|---|
-| [`CONTEXT.md`](CONTEXT.md) | Domain vocabulary. Use these terms. |
+| [`CONTEXT-MAP.md`](CONTEXT-MAP.md) | Domain contexts and their canonical vocabulary. |
 | [`v0-build-spec.md`](v0-build-spec.md) | Implementation detail for M0-M5 |
 | [`corpus-acquisition-spec.md`](corpus-acquisition-spec.md) | Document assembly; runs in parallel from week 0 |
 | [`phase-1-roadmap.md`](phase-1-roadmap.md) | Milestones and sequencing rules |

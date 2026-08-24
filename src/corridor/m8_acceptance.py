@@ -213,6 +213,8 @@ _CONTROLLED_TRANSFORMATIONS_CONTRACT = {
         },
     ],
 }
+
+
 class CorruptAcceptanceFixture(AcceptanceError):
     """A captured fixture or referenced source no longer matches its digest."""
 
@@ -512,13 +514,18 @@ def _capture_chain(
             select(DocPage.page_no).where(DocPage.document_id == rid_document.id)
         ).all()
     )
-    if any(declaration.source_page not in rid_page_numbers for declaration in chain.declarations):
+    if any(
+        declaration.source_page not in rid_page_numbers
+        for declaration in chain.declarations
+    ):
         raise CorruptAcceptanceFixture("RID index is missing a declared source page")
     _verify_rid_declarations(session, rid_document, chain)
 
     run_records: list[dict[str, Any]] = []
     comparison_records: list[dict[str, Any]] = []
-    observations: list[dict[str, Any]] = [_document_observation(session, rid_document, chain.rid_index)]
+    observations: list[dict[str, Any]] = [
+        _document_observation(session, rid_document, chain.rid_index)
+    ]
     run_by_registry: dict[str, ExtractionRun] = {}
 
     for ordinal, source in enumerate(chain.revisions):
@@ -696,9 +703,7 @@ def _ingest_source(
         source_url=record.get("archive_url") or record.get("source_key"),
         retrieved_at=record.get("retrieved_at"),
         doc_date=(
-            date.fromisoformat(record["doc_date"])
-            if record.get("doc_date")
-            else None
+            date.fromisoformat(record["doc_date"]) if record.get("doc_date") else None
         ),
         registry_id=source.registry_id,
         expected_sha256=record["sha256"],
@@ -765,9 +770,7 @@ def _capture_comparison_record(
             {
                 "ordinal": finding.ordinal,
                 "state": finding.state,
-                "predecessor_candidate_ids": list(
-                    finding.predecessor_candidate_ids
-                ),
+                "predecessor_candidate_ids": list(finding.predecessor_candidate_ids),
                 "successor_candidate_ids": list(finding.successor_candidate_ids),
                 "match_score": finding.match_score,
                 "field_changes": deepcopy(finding.field_changes),
@@ -865,9 +868,7 @@ def _document_observation(
         "text_source_counts": dict(
             sorted(Counter(page.text_source for page in pages).items())
         ),
-        "page_text_sha256": [
-            _sha256((page.text or "").encode()) for page in pages
-        ],
+        "page_text_sha256": [_sha256((page.text or "").encode()) for page in pages],
     }
 
 
@@ -974,9 +975,7 @@ def _verify_rid_declarations(
 
     terminal = chain.revisions[-1]
     terminal_filename = terminal.record.get("member") or terminal.path.name
-    declared_rows = tuple(
-        row for rows in rows_by_page.values() for row in rows
-    )
+    declared_rows = tuple(row for rows in rows_by_page.values() for row in rows)
     if not any(
         _filename_token(terminal_filename) in _filename_token(row)
         for row in declared_rows
@@ -1001,11 +1000,13 @@ def _rid_rows(path: Path, page_no: int) -> tuple[str, ...]:
             continue
         group = groups[-1]
         group["words"].append(word)
-        group["center"] = sum(
-            (item[1] + item[3]) / 2 for item in group["words"]
-        ) / len(group["words"])
+        group["center"] = sum((item[1] + item[3]) / 2 for item in group["words"]) / len(
+            group["words"]
+        )
     return tuple(
-        " ".join(str(word[4]) for word in sorted(group["words"], key=lambda item: item[0]))
+        " ".join(
+            str(word[4]) for word in sorted(group["words"], key=lambda item: item[0])
+        )
         for group in groups
     )
 
@@ -1026,22 +1027,24 @@ def _ledger_counts(session: Session, project_id: int) -> dict[str, int]:
     dependency_ids = select(Dependency.id).where(Dependency.project_id == project_id)
     return {
         "dependencies": session.scalar(
-            select(func.count()).select_from(Dependency).where(Dependency.project_id == project_id)
+            select(func.count())
+            .select_from(Dependency)
+            .where(Dependency.project_id == project_id)
         ),
         "assertions": session.scalar(
-            select(func.count()).select_from(Assertion).where(
-                Assertion.dependency_id.in_(dependency_ids)
-            )
+            select(func.count())
+            .select_from(Assertion)
+            .where(Assertion.dependency_id.in_(dependency_ids))
         ),
         "evidence_links": session.scalar(
-            select(func.count()).select_from(EvidenceLink).where(
-                EvidenceLink.dependency_id.in_(dependency_ids)
-            )
+            select(func.count())
+            .select_from(EvidenceLink)
+            .where(EvidenceLink.dependency_id.in_(dependency_ids))
         ),
         "operative_support": session.scalar(
-            select(func.count()).select_from(OperativeSupport).where(
-                OperativeSupport.dependency_id.in_(dependency_ids)
-            )
+            select(func.count())
+            .select_from(OperativeSupport)
+            .where(OperativeSupport.dependency_id.in_(dependency_ids))
         ),
         "carry_forward_receipts": session.scalar(
             select(func.count())
@@ -1107,7 +1110,9 @@ def run_m8_acceptance(
         if git_state["revision"] != config.expected_clean_git_revision:
             raise AcceptanceError("replay Git revision does not match the pin")
         if git_state["status"] != "clean":
-            raise AcceptanceError("pinned acceptance replay requires a clean repository")
+            raise AcceptanceError(
+                "pinned acceptance replay requires a clean repository"
+            )
 
     assertions: list[AssertionResult] = []
     with provision_database(config.postgres_admin_url) as database:
@@ -1161,9 +1166,7 @@ def run_m8_acceptance(
             "model": fixture_content["capture"]["model"],
             "schema_pin": fixture_content["capture"]["schema_version"],
             "matcher_version": fixture_content["matcher"]["version"],
-            "matcher_config_sha256": fixture_content["matcher"][
-                "config_sha256"
-            ],
+            "matcher_config_sha256": fixture_content["matcher"]["config_sha256"],
             "policy_sha256": controlled_raw["policy"]["policy_sha256"],
             "claim_boundary": CLAIM_BOUNDARY,
         }
@@ -1191,8 +1194,7 @@ def run_m8_acceptance(
             "real_chain": real_canonical,
             "controlled_lane": controlled_canonical,
             "assertions": [
-                {"name": item.name, "passed": item.passed}
-                for item in assertions
+                {"name": item.name, "passed": item.passed} for item in assertions
             ],
         }
         manifest_path, manifest_sha256, canonical_sha256 = _write_bundle(
@@ -1293,7 +1295,9 @@ def _source_chain_from_captured_fixture(
     by_registry = {record["registry_id"]: record for record in records}
     required = {RID_INDEX_ID, *NHHIP_REVISION_IDS}
     if set(by_registry) != required:
-        raise CorruptAcceptanceFixture("captured fixture does not contain the exact chain")
+        raise CorruptAcceptanceFixture(
+            "captured fixture does not contain the exact chain"
+        )
     fixture_root = Path(fixture_path).parent.resolve()
 
     def source(registry_id: str) -> _Source:
@@ -1308,7 +1312,9 @@ def _source_chain_from_captured_fixture(
         try:
             path.relative_to(fixture_root)
         except ValueError as exc:
-            raise CorruptAcceptanceFixture(f"{registry_id} fixture path escapes") from exc
+            raise CorruptAcceptanceFixture(
+                f"{registry_id} fixture path escapes"
+            ) from exc
         value = path.read_bytes()
         if path.is_symlink() or not path.is_file():
             raise CorruptAcceptanceFixture(f"{registry_id} source bytes are absent")
@@ -1366,12 +1372,9 @@ def _replay_real_chain(
     )
     _verify_rid_declarations(session, rid_document, chain)
 
-    expected_runs = {
-        item["registry_id"]: item for item in fixture_content["runs"]
-    }
+    expected_runs = {item["registry_id"]: item for item in fixture_content["runs"]}
     expected_comparisons = {
-        item["comparison_key"]: item
-        for item in fixture_content["comparisons"]
+        item["comparison_key"]: item for item in fixture_content["comparisons"]
     }
     documents: list[dict[str, Any]] = [
         {
@@ -1382,9 +1385,7 @@ def _replay_real_chain(
             "pages": rid_document.pages,
         }
     ]
-    observations = [
-        _document_observation(session, rid_document, chain.rid_index)
-    ]
+    observations = [_document_observation(session, rid_document, chain.rid_index)]
     raw_runs: list[dict[str, Any]] = []
     active_declarations: list[dict[str, Any]] = []
     raw_comparisons: list[dict[str, Any]] = []
@@ -1761,7 +1762,9 @@ def _captured_extractor(run_record: dict[str, Any]) -> Extractor:
     return extract
 
 
-def _inputs_without_database_ids(inputs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+def _inputs_without_database_ids(
+    inputs: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
     normalized = []
     for item in inputs:
         copied = deepcopy(item)
@@ -1835,8 +1838,7 @@ def _normalized_comparison(
                     for value in item.predecessor_candidate_ids
                 ],
                 "successor_candidate_keys": [
-                    key_by_candidate_id[value]
-                    for value in item.successor_candidate_ids
+                    key_by_candidate_id[value] for value in item.successor_candidate_ids
                 ],
                 "match_score": item.match_score,
                 "field_changes": deepcopy(item.field_changes),
@@ -1967,9 +1969,7 @@ def _acceptance_assertions(
             == expected_lifecycle
             and [item["observed_status"] for item in controlled["lifecycle"]]
             == expected_lifecycle_observations,
-            observed=[
-                item["observed_status"] for item in controlled["lifecycle"]
-            ],
+            observed=[item["observed_status"] for item in controlled["lifecycle"]],
             expected=expected_lifecycle_observations,
         ),
         AssertionResult(
@@ -1977,9 +1977,7 @@ def _acceptance_assertions(
             controlled["failed_attempt"]["outcome"] == "failed"
             and controlled["failed_attempt"]["candidate_count"] == 0
             and controlled["failed_attempt"]["page_errors"] == 1
-            and controlled["failed_attempt"][
-                "partial_candidate_count_after_failure"
-            ]
+            and controlled["failed_attempt"]["partial_candidate_count_after_failure"]
             == 0
             and controlled["failed_attempt"]["active_at_failure"] is False
             and controlled["failed_attempt"]["committed_before_retry"] is True
@@ -1998,8 +1996,7 @@ def _acceptance_assertions(
         AssertionResult(
             "controlled_correspondence_matches_the_pinned_oracle",
             all(
-                item["expected_correspondence"]
-                == item["observed_correspondence"]
+                item["expected_correspondence"] == item["observed_correspondence"]
                 for item in controlled["cases"]
             ),
             observed={
@@ -2012,15 +2009,15 @@ def _acceptance_assertions(
             },
         ),
         AssertionResult(
-            "automatic_carry_is_disabled_by_default",
+            "automatic_carry_is_normal_without_project_authorization",
             controlled["before_policy"]
             == {
-                "eligible_route": "human_reconfirmation",
+                "eligible_route": "automatic_carry_forward",
                 "automatic_writes": 0,
             },
             observed=controlled["before_policy"],
             expected={
-                "eligible_route": "human_reconfirmation",
+                "eligible_route": "automatic_carry_forward",
                 "automatic_writes": 0,
             },
         ),
@@ -2041,11 +2038,9 @@ def _acceptance_assertions(
         ),
         AssertionResult(
             "readiness_is_inherited_but_not_invented",
-            cases["readiness-exact"]["inherited_scopes"]
-            == ["publication", "readiness"]
+            cases["readiness-exact"]["inherited_scopes"] == ["publication", "readiness"]
             and cases["readiness-exact"]["ready_after"] is True
-            and cases["publication-exact"]["inherited_scopes"]
-            == ["publication"]
+            and cases["publication-exact"]["inherited_scopes"] == ["publication"]
             and cases["publication-exact"]["ready_after"] is False,
             observed={
                 "readiness-exact": {
@@ -2110,34 +2105,31 @@ def _acceptance_assertions(
         AssertionResult(
             "automatic_carry_never_performs_admission_or_record_origination",
             controlled["automation_write_boundary"]["new_dependency_rows"] == 0
-            and controlled["automation_write_boundary"]["new_assertion_rows"]
-            == 0
-            and controlled["automation_write_boundary"]
-            ["admission_audit_actions_created"]
+            and controlled["automation_write_boundary"]["new_assertion_rows"] == 0
+            and controlled["automation_write_boundary"][
+                "admission_audit_actions_created"
+            ]
             == {"human": 0, "machine": 0, "other": 0, "total": 0}
             and bool(
-                controlled["automation_write_boundary"]
-                ["successor_candidate_states"]
+                controlled["automation_write_boundary"]["successor_candidate_states"]
             )
             and set(
-                controlled["automation_write_boundary"]
-                ["successor_candidate_states"].values()
+                controlled["automation_write_boundary"][
+                    "successor_candidate_states"
+                ].values()
             )
             == {"pending"}
-            and controlled["automation_write_boundary"]
-            ["observed_mutation_categories"]
-            == controlled["automation_write_boundary"]
-            ["allowed_mutation_categories"]
+            and controlled["automation_write_boundary"]["observed_mutation_categories"]
+            == controlled["automation_write_boundary"]["allowed_mutation_categories"]
             and all(
                 entry["action"] == "automatic_carry_forward"
                 and entry["actor"] == "corridor:automatic-carry-forward"
                 and entry["human_principal"] is None
-                for entry in controlled["automation_write_boundary"]
-                ["audit_entries_created"]
+                for entry in controlled["automation_write_boundary"][
+                    "audit_entries_created"
+                ]
             )
-            and len(
-                controlled["automation_write_boundary"]["audit_entries_created"]
-            )
+            and len(controlled["automation_write_boundary"]["audit_entries_created"])
             == controlled["passes"]["receipt_count"],
             observed=controlled["automation_write_boundary"],
             expected=(
@@ -2156,21 +2148,20 @@ def _acceptance_assertions(
             expected={"readiness-exact": False, "publication-exact": False},
         ),
         AssertionResult(
-            "policy_drift_pauses_until_reauthorized_then_resumes",
-            drift["outcome"] == "paused_then_reauthorized_and_resumed"
-            and drift["approval_replaced"] is True
+            "released_policy_change_is_receipted_and_idempotent",
+            drift["outcome"] == "released_policy_changed_and_ran_idempotently"
+            and drift["approval_replaced"] is False
             and drift["initial_approval_preserved"] is True
             and drift["pause"]
             == {
                 "carried": 0,
-                "reasons": ["comparison_policy_unapproved"],
-                "ledger_unchanged": True,
-                "active_remained_initial": True,
+                "reasons": [],
+                "ledger_unchanged": False,
+                "active_remained_initial": False,
             }
-            and drift["replacement"]["rules_digest"]
-            == drift["drifted_rules_digest"]
-            and drift["replacement"]["active_pointer_replaced"] is True
-            and drift["replacement"]["authorization_count"] == 2
+            and drift["replacement"]["rules_digest"] == drift["drifted_rules_digest"]
+            and drift["replacement"]["active_pointer_replaced"] is False
+            and drift["replacement"]["authorization_count"] == 0
             and drift["resume"]
             == {
                 "carried": 1,
@@ -2180,13 +2171,16 @@ def _acceptance_assertions(
                 "comparison_preserved": True,
             },
             observed=drift,
-            expected="pause, replacement authorization, one carry, idempotence",
+            expected="released policy identity, one carry, and idempotence",
         ),
         AssertionResult(
             "claims_are_mechanical_only",
             real["claims"] == CLAIM_BOUNDARY
             and controlled["claim_boundary"] == CLAIM_BOUNDARY,
-            observed={"real": real["claims"], "controlled": controlled["claim_boundary"]},
+            observed={
+                "real": real["claims"],
+                "controlled": controlled["claim_boundary"],
+            },
             expected=CLAIM_BOUNDARY,
         ),
     ]

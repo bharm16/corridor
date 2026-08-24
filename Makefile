@@ -93,7 +93,7 @@ active-run:
 	uv run python -m corridor.extraction_runs $(ARGS)
 
 # Run one exact predecessor-successor pair through comparison readback and
-# already-authorized Carry-Forward only. Never infers runs or accepts policy
+# released Carry-Forward Policy only. Never infers runs or accepts policy
 # identity flags:
 #   make revision-process ARGS="<predecessor-extraction-run-id> <successor-extraction-run-id>"
 revision-process:
@@ -126,9 +126,9 @@ gold:
 ledger-archive:
 	uv run python -m corridor.legacy_ledger_archive_cli $(ARGS)
 
-# Inspect, authorize, disable, or run project-level Automatic Carry-Forward.
-# Authorization requires an explicit stable HumanPrincipal subject:
-#   make carry-forward ARGS="authorize nhhip-3c2 --principal=local:<subject>"
+# Inspect or run project-level Automatic Carry-Forward under the released policy:
+#   make carry-forward ARGS="status nhhip-3c2"
+#   make carry-forward ARGS="run nhhip-3c2"
 carry-forward:
 	uv run python -m corridor.automatic_carry_forward_cli $(ARGS)
 

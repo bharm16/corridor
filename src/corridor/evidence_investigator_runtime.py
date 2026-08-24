@@ -50,7 +50,7 @@ from corridor.models import (
     EvidenceInvestigationStepReceipt,
 )
 
-PROMPT_VERSION = "evidence-investigator-v2"
+PROMPT_VERSION = "evidence-investigator-v3"
 PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "prompts" / "evidence_investigator_v2.md"
 )
@@ -247,20 +247,14 @@ class DirectResponsesInvestigationRuntime:
                                 opaque_references=tuple(
                                     sorted(set(_opaque_refs(arguments)))
                                 ),
-                                normalized_arguments=json.loads(
-                                    json.dumps(arguments)
-                                ),
+                                normalized_arguments=json.loads(json.dumps(arguments)),
                                 result_summary={
                                     "status": "refused",
                                     "error_type": type(exc).__name__,
                                 },
                                 usage={
-                                    "input_tokens": int(
-                                        usage.get("input_tokens", 0)
-                                    ),
-                                    "output_tokens": int(
-                                        usage.get("output_tokens", 0)
-                                    ),
+                                    "input_tokens": int(usage.get("input_tokens", 0)),
+                                    "output_tokens": int(usage.get("output_tokens", 0)),
                                 },
                                 elapsed_ms=elapsed_ms,
                                 request_sha256=sha256_json(arguments),
@@ -352,7 +346,10 @@ class DirectResponsesInvestigationRuntime:
                         name="final_packet",
                         opaque_references=tuple(sorted(set(_opaque_refs(packet_data)))),
                         normalized_arguments={},
-                        result_summary={"status": "packet", "field_count": len(packet_data)},
+                        result_summary={
+                            "status": "packet",
+                            "field_count": len(packet_data),
+                        },
                         usage={
                             "input_tokens": int(usage.get("input_tokens", 0)),
                             "output_tokens": int(usage.get("output_tokens", 0)),
@@ -439,7 +436,9 @@ class DirectResponsesInvestigationRuntime:
         step = InvestigationStep(
             step_type="tool",
             name=name,
-            opaque_references=tuple(sorted(set(_opaque_refs({"arguments": arguments, "result": result})))),
+            opaque_references=tuple(
+                sorted(set(_opaque_refs({"arguments": arguments, "result": result})))
+            ),
             normalized_arguments=json.loads(json.dumps(arguments)),
             result_summary=summary,
             usage=usage,
@@ -486,12 +485,18 @@ def _fact(value: dict) -> EvidenceFact:
 
 def _packet_from_json(value: dict) -> InvestigationPacket:
     return InvestigationPacket(
-        source_findings=tuple(SourceFinding(**item) for item in value["source_findings"]),
+        source_findings=tuple(
+            SourceFinding(**item) for item in value["source_findings"]
+        ),
         possible_parties=tuple(
             PossibleParty(
                 party_ref=item["party_ref"],
-                supporting_facts=tuple(_fact(fact) for fact in item["supporting_facts"]),
-                contradicting_facts=tuple(_fact(fact) for fact in item["contradicting_facts"]),
+                supporting_facts=tuple(
+                    _fact(fact) for fact in item["supporting_facts"]
+                ),
+                contradicting_facts=tuple(
+                    _fact(fact) for fact in item["contradicting_facts"]
+                ),
             )
             for item in value["possible_parties"]
         ),
@@ -499,8 +504,12 @@ def _packet_from_json(value: dict) -> InvestigationPacket:
             DependencyOption(
                 dependency_ref=item["dependency_ref"],
                 rank=item["rank"],
-                supporting_facts=tuple(_fact(fact) for fact in item["supporting_facts"]),
-                contradicting_facts=tuple(_fact(fact) for fact in item["contradicting_facts"]),
+                supporting_facts=tuple(
+                    _fact(fact) for fact in item["supporting_facts"]
+                ),
+                contradicting_facts=tuple(
+                    _fact(fact) for fact in item["contradicting_facts"]
+                ),
             )
             for item in value["dependency_options"]
         ),

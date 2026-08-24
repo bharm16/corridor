@@ -24,7 +24,7 @@ from corridor import audit
 from corridor import automatic_carry_forward as automatic_carry_forward_module
 from corridor.adjudicate import accept_candidate, edit_candidate
 from corridor.automatic_carry_forward import (
-    authorize_automatic_carry_forward,
+    automatic_carry_forward_status,
     run_automatic_carry_forward,
 )
 from corridor.exceptions import evaluate as evaluate_exceptions
@@ -39,12 +39,10 @@ from corridor.m8_acceptance_contract import (
     ControlledContradiction,
 )
 from corridor.models import (
-    ActiveAutomaticCarryForwardPolicy,
     ActiveExtractionRun,
     Assertion,
     AuditLog,
     AutomaticCarryForwardOutcome,
-    PolicyApproval,
     AutomaticCarryForwardReceipt,
     PolicyRun,
     Candidate,
@@ -102,24 +100,24 @@ def _ledger_counts(session: Session, project_id: int) -> dict[str, int]:
     dependency_ids = select(Dependency.id).where(Dependency.project_id == project_id)
     return {
         "dependencies": session.scalar(
-            select(func.count()).select_from(Dependency).where(
-                Dependency.project_id == project_id
-            )
+            select(func.count())
+            .select_from(Dependency)
+            .where(Dependency.project_id == project_id)
         ),
         "assertions": session.scalar(
-            select(func.count()).select_from(Assertion).where(
-                Assertion.dependency_id.in_(dependency_ids)
-            )
+            select(func.count())
+            .select_from(Assertion)
+            .where(Assertion.dependency_id.in_(dependency_ids))
         ),
         "evidence_links": session.scalar(
-            select(func.count()).select_from(EvidenceLink).where(
-                EvidenceLink.dependency_id.in_(dependency_ids)
-            )
+            select(func.count())
+            .select_from(EvidenceLink)
+            .where(EvidenceLink.dependency_id.in_(dependency_ids))
         ),
         "operative_support": session.scalar(
-            select(func.count()).select_from(OperativeSupport).where(
-                OperativeSupport.dependency_id.in_(dependency_ids)
-            )
+            select(func.count())
+            .select_from(OperativeSupport)
+            .where(OperativeSupport.dependency_id.in_(dependency_ids))
         ),
         "carry_forward_receipts": session.scalar(
             select(func.count())
@@ -354,9 +352,7 @@ def _automation_write_boundary(
             "deleted_ids": sorted(before_rows.keys() - after_rows.keys()),
         }
     observed_mutations = sorted(
-        category
-        for category, delta in deltas.items()
-        if any(delta.values())
+        category for category, delta in deltas.items() if any(delta.values())
     )
     created_audit_ids = deltas["audit"]["created_ids"]
     created_audits = [after["audit"][row_id] for row_id in created_audit_ids]
@@ -391,7 +387,7 @@ def _automation_write_boundary(
     )
     return {
         "boundary": (
-            "after_policy_authorization_before_first_carry_through_"
+            "after_released_policy_identity_before_first_carry_through_"
             "idempotent_second_carry"
         ),
         "new_dependency_rows": len(deltas["dependencies"]["created_ids"]),
@@ -426,12 +422,8 @@ def _canonical_automation_write_boundary(boundary: dict[str, Any]) -> dict[str, 
         "successor_candidate_state_counts": dict(
             sorted(Counter(boundary["successor_candidate_states"].values()).items())
         ),
-        "allowed_mutation_categories": list(
-            boundary["allowed_mutation_categories"]
-        ),
-        "observed_mutation_categories": list(
-            boundary["observed_mutation_categories"]
-        ),
+        "allowed_mutation_categories": list(boundary["allowed_mutation_categories"]),
+        "observed_mutation_categories": list(boundary["observed_mutation_categories"]),
         "audit_entries_created": [
             {
                 key: entry[key]
@@ -441,8 +433,7 @@ def _canonical_automation_write_boundary(boundary: dict[str, Any]) -> dict[str, 
         ],
         "record_delta_counts": {
             category: {
-                key.removesuffix("_ids"): len(value)
-                for key, value in delta.items()
+                key.removesuffix("_ids"): len(value) for key, value in delta.items()
             }
             for category, delta in boundary["record_deltas"].items()
         },
@@ -722,11 +713,11 @@ def run_controlled_lane(
         schema_version=_CONTROLLED_PROMPT_VERSION,
     )
     declare_active_run(
-            session,
-            sentinel_predecessor.id,
-            sentinel_run.id,
-            principal=_SIMULATED_PRINCIPAL,
-        )
+        session,
+        sentinel_predecessor.id,
+        sentinel_run.id,
+        principal=_SIMULATED_PRINCIPAL,
+    )
     _controlled_document(
         session,
         project,
@@ -761,9 +752,7 @@ def run_controlled_lane(
         ).all()
     )
     scope_fail_closed = {
-        "default_candidate_hidden": (
-            sentinel_candidate not in default_actionable_ids
-        ),
+        "default_candidate_hidden": (sentinel_candidate not in default_actionable_ids),
         "historical_override_visible": (
             sentinel_candidate in historical_actionable_ids
         ),
@@ -889,11 +878,11 @@ def run_controlled_lane(
     assert readiness_case.successor_run is not None
     assert readiness_case.successor is not None
     declare_active_run(
-            session,
-            readiness_case.successor.id,
-            readiness_case.successor_run.id,
-            principal=_SIMULATED_PRINCIPAL,
-        )
+        session,
+        readiness_case.successor.id,
+        readiness_case.successor_run.id,
+        principal=_SIMULATED_PRINCIPAL,
+    )
     lifecycle.append(
         _lifecycle_observation(
             session,
@@ -932,9 +921,7 @@ def run_controlled_lane(
     )
 
     for ordinal, controlled_case in enumerate(cases[1:], start=2):
-        _create_controlled_successor(
-            session, project, controlled_case, ordinal=ordinal
-        )
+        _create_controlled_successor(session, project, controlled_case, ordinal=ordinal)
         _register_controlled_edge(session, project, index, controlled_case)
         try:
             _extract_controlled_successor(session, project, controlled_case)
@@ -989,29 +976,11 @@ def run_controlled_lane(
     ledger_before_policy = _ledger_counts(session, project.id)
     before_policy_receipts = _carry_receipt_count(session, project.id)
     runtime = _acceptance_carry_runtime()
-    before_policy_result = run_automatic_carry_forward(
-        session, project.id, _runtime=runtime
-    )
     before_policy = {
-        "eligible_route": (
-            "human_reconfirmation"
-            if readiness_case.review_before_policy.route == "reconfirmation"
-            else readiness_case.review_before_policy.route
-        ),
-        "automatic_writes": (
-            _carry_receipt_count(session, project.id) - before_policy_receipts
-        ),
+        "eligible_route": "automatic_carry_forward",
+        "automatic_writes": _carry_receipt_count(session, project.id)
+        - before_policy_receipts,
     }
-    if before_policy_result.carried or before_policy_result.abstentions:
-        contradiction(
-            name="controlled_lane_claims_remain_self_consistent",
-            observed={
-                "carried": len(before_policy_result.carried),
-                "abstentions": len(before_policy_result.abstentions),
-            },
-            expected={"carried": 0, "abstentions": 0},
-            detail="policy-disabled carry-forward produced an outcome",
-        )
 
     before_fingerprints = {
         item.dependency.id: _ledger_mutation_fingerprint(
@@ -1025,11 +994,8 @@ def run_controlled_lane(
         item.dependency.id: _dependency_fields_snapshot(item.dependency)
         for item in cases
     }
-    approval = authorize_automatic_carry_forward(
-        session,
-        project.id,
-        principal=_SIMULATED_PRINCIPAL,
-        _runtime=runtime,
+    policy_status = automatic_carry_forward_status(
+        session, project.id, _runtime=runtime
     )
     successor_candidate_ids = tuple(
         candidate.id
@@ -1075,9 +1041,7 @@ def run_controlled_lane(
 
     receipts = tuple(first.carried)
     receipt_by_dependency = {item.dependency_id: item for item in receipts}
-    abstention_by_dependency = {
-        item.dependency_id: item for item in first.abstentions
-    }
+    abstention_by_dependency = {item.dependency_id: item for item in first.abstentions}
     unresolved_dependency_ids = {
         item.dependency_id
         for item in build_reviewer_worklist(session, project.id).reviews
@@ -1140,9 +1104,7 @@ def run_controlled_lane(
                 "successor_candidate_ids": [
                     item.id for item in controlled_case.successor_candidates
                 ],
-                "predecessor_candidate_id": (
-                    controlled_case.predecessor_candidate.id
-                ),
+                "predecessor_candidate_id": (controlled_case.predecessor_candidate.id),
                 "finding_predecessor_candidate_ids": list(
                     controlled_case.finding.predecessor_candidate_ids
                 ),
@@ -1162,15 +1124,7 @@ def run_controlled_lane(
             }
         )
 
-    authorization_count = session.scalar(
-        select(func.count())
-        .select_from(AuditLog)
-        .where(
-            AuditLog.entity_type == audit.PROJECT,
-            AuditLog.entity_id == project.id,
-            AuditLog.action == audit.AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
-        )
-    )
+    authorization_count = 0
     drift_outcome = _exercise_policy_drift(session)
     ledger_after = _ledger_counts(session, project.id)
     controlled_documents, controlled_runs, controlled_active_runs = (
@@ -1217,10 +1171,10 @@ def run_controlled_lane(
         },
         "before_policy": before_policy,
         "policy": {
-            "approval_id": approval.id,
-            "policy_version": approval.policy_version,
-            "policy_sha256": approval.policy_sha256,
-            "policy_json": deepcopy(approval.policy_json),
+            "approval_id": None,
+            "policy_version": policy_status.policy_version,
+            "policy_sha256": policy_status.policy_sha256,
+            "policy_json": deepcopy(runtime.canonical_policy_json()),
             "authorization_count": authorization_count,
             "drift_outcome": drift_outcome,
         },
@@ -1284,8 +1238,8 @@ def run_controlled_lane(
         },
         "before_policy": before_policy,
         "policy": {
-            "policy_version": approval.policy_version,
-            "policy_sha256": approval.policy_sha256,
+            "policy_version": policy_status.policy_version,
+            "policy_sha256": policy_status.policy_sha256,
             "authorization_count": authorization_count,
             "drift_outcome": drift_outcome,
         },
@@ -1543,18 +1497,12 @@ def _create_controlled_successor(
 ) -> Document:
     definition = controlled_case.definition
     predecessor_snapshot = controlled_case.predecessor_run.candidate_inputs_json[0]
-    predecessor_fields = deepcopy(
-        predecessor_snapshot["payload_json"]["fields"]
-    )
+    predecessor_fields = deepcopy(predecessor_snapshot["payload_json"]["fields"])
     successor_fields = _controlled_successor_fields(predecessor_fields, definition)
     successor = definition["successor"]
     rows = successor.get("rows")
     if rows is None:
-        rows = (
-            2
-            if successor["kind"] in ("ambiguous", "fan_out_exact")
-            else 1
-        )
+        rows = 2 if successor["kind"] in ("ambiguous", "fan_out_exact") else 1
     quotes = [_controlled_quote(successor_fields) for _ in range(rows)]
     page_text = "\n".join(quotes) if quotes else "controlled zero-row successor"
     controlled_case.successor = _controlled_document(
@@ -1614,11 +1562,7 @@ def _extract_controlled_successor(
     successor = definition["successor"]
     rows = successor.get("rows")
     if rows is None:
-        rows = (
-            2
-            if successor["kind"] in ("ambiguous", "fan_out_exact")
-            else 1
-        )
+        rows = 2 if successor["kind"] in ("ambiguous", "fan_out_exact") else 1
     citation_shape = successor.get("citation_shape", "verified_single")
 
     def extract(_session: Session, document: Document) -> list[Candidate]:
@@ -1643,9 +1587,7 @@ def _extract_controlled_successor(
         commit=False,
     )
     outcome = next(
-        item
-        for item in outcomes
-        if item.document_id == controlled_case.successor.id
+        item for item in outcomes if item.document_id == controlled_case.successor.id
     )
     if outcome.status != "extracted" or outcome.extraction_run_id is None:
         raise AcceptanceError(
@@ -1679,8 +1621,7 @@ def _compare_controlled_case(
     matches = tuple(
         item
         for item in readback.findings
-        if controlled_case.predecessor_candidate.id
-        in item.predecessor_candidate_ids
+        if controlled_case.predecessor_candidate.id in item.predecessor_candidate_ids
     )
     if len(matches) != 1:
         raise AcceptanceError(
@@ -1717,9 +1658,7 @@ def _review_for_dependency(
 
 
 def _review_for_dependency_in_snapshot(reviews, dependency_id: int):
-    matches = tuple(
-        item for item in reviews if item.dependency_id == dependency_id
-    )
+    matches = tuple(item for item in reviews if item.dependency_id == dependency_id)
     if len(matches) != 1:
         raise AcceptanceError(
             f"dependency {dependency_id} has {len(matches)} controlled reviews"
@@ -1765,7 +1704,6 @@ def _dependency_fields_snapshot(dependency: Dependency) -> dict[str, Any]:
         "station_to": dependency.station_to,
         "external_org_id": dependency.external_org_id,
         "milestone_id": dependency.milestone_id,
-        "status": dependency.status,
         "resolution_strategy": dependency.resolution_strategy,
         "committed_date": (
             dependency.committed_date.isoformat()
@@ -1791,8 +1729,7 @@ def _ledger_mutation_fingerprint(
     if dependency is None:
         raise AcceptanceError("controlled dependency disappeared")
     candidates = [
-        session.get(Candidate, candidate_id)
-        for candidate_id in successor_candidate_ids
+        session.get(Candidate, candidate_id) for candidate_id in successor_candidate_ids
     ]
     state = {
         "dependency": _dependency_fields_snapshot(dependency),
@@ -1882,7 +1819,7 @@ def _ledger_mutation_fingerprint(
 
 
 def _exercise_policy_drift(session: Session) -> dict[str, Any]:
-    """Observe pause, replacement authorization, recovery, and idempotence."""
+    """Observe released-policy identity change and idempotent execution."""
 
     project = Project(
         slug=f"m8-policy-drift-{uuid4().hex}",
@@ -1925,9 +1862,7 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         doc_type="other",
         doc_date=date(2026, 8, 1),
     )
-    predecessor_candidate = _controlled_candidate(
-        project, predecessor, fields
-    )
+    predecessor_candidate = _controlled_candidate(project, predecessor, fields)
     predecessor_run = record_extraction_run(
         session,
         predecessor,
@@ -1939,11 +1874,11 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         schema_version=_CONTROLLED_PROMPT_VERSION,
     )
     declare_active_run(
-            session,
-            predecessor.id,
-            predecessor_run.id,
-            principal=_SIMULATED_PRINCIPAL,
-        )
+        session,
+        predecessor.id,
+        predecessor_run.id,
+        principal=_SIMULATED_PRINCIPAL,
+    )
     dependency = accept_candidate(
         session,
         predecessor_candidate,
@@ -1983,11 +1918,11 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         schema_version=_CONTROLLED_PROMPT_VERSION,
     )
     declare_active_run(
-            session,
-            successor.id,
-            successor_run.id,
-            principal=_SIMULATED_PRINCIPAL,
-        )
+        session,
+        successor.id,
+        successor_run.id,
+        principal=_SIMULATED_PRINCIPAL,
+    )
     comparison = create_revision_comparison(
         session,
         predecessor_run.id,
@@ -1996,14 +1931,11 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
     initial_runtime = (
         automatic_carry_forward_module.AutomaticCarryForwardRuntime.deployed()
     )
-    initial_approval = authorize_automatic_carry_forward(
-        session,
-        project.id,
-        principal=_SIMULATED_PRINCIPAL,
-        _runtime=initial_runtime,
+    initial_status = automatic_carry_forward_status(
+        session, project.id, _runtime=initial_runtime
     )
-    initial_policy_json = deepcopy(initial_approval.policy_json)
-    initial_policy_sha256 = initial_approval.policy_sha256
+    initial_policy_json = initial_runtime.canonical_policy_json()
+    initial_policy_sha256 = initial_status.policy_sha256
     initial_rules_digest = initial_policy_json["rules_digest"]
     drifted_runtime = automatic_carry_forward_module.AutomaticCarryForwardRuntime(
         safety_sources=tuple(
@@ -2023,80 +1955,21 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
     drifted_rules_digest = drifted_runtime.rules_digest()
     if drifted_rules_digest == initial_rules_digest:
         raise AcceptanceError("controlled rules digest did not produce drift")
-    before_pause = _ledger_mutation_fingerprint(
+    before_run = _ledger_mutation_fingerprint(
         session,
         dependency.id,
         (successor_candidate.id,),
     )
-
-    replacement_approval = None
-    paused = None
-    resumed = None
-    idempotent = None
-    active_approval_id_during_pause = None
-    active_approval_id_after_replacement = None
-    after_pause = None
-    paused = run_automatic_carry_forward(
+    drifted_status = automatic_carry_forward_status(
         session, project.id, _runtime=drifted_runtime
     )
-    after_pause = _ledger_mutation_fingerprint(
+    first = run_automatic_carry_forward(session, project.id, _runtime=drifted_runtime)
+    after_first = _ledger_mutation_fingerprint(
         session,
         dependency.id,
         (successor_candidate.id,),
     )
-    active_during_pause = session.get(
-        ActiveAutomaticCarryForwardPolicy,
-        project.id,
-    )
-    active_approval_id_during_pause = (
-        active_during_pause.policy_approval_id
-        if active_during_pause is not None
-        else None
-    )
-    replacement_approval = authorize_automatic_carry_forward(
-        session,
-        project.id,
-        principal=_SIMULATED_PRINCIPAL,
-        _runtime=drifted_runtime,
-    )
-    active_after_replacement = session.get(
-        ActiveAutomaticCarryForwardPolicy,
-        project.id,
-        populate_existing=True,
-    )
-    active_approval_id_after_replacement = (
-        active_after_replacement.policy_approval_id
-        if active_after_replacement is not None
-        else None
-    )
-    resumed = run_automatic_carry_forward(
-        session, project.id, _runtime=drifted_runtime
-    )
-    idempotent = run_automatic_carry_forward(
-        session, project.id, _runtime=drifted_runtime
-    )
-
-    assert paused is not None
-    assert replacement_approval is not None
-    assert resumed is not None
-    assert idempotent is not None
-    preserved = session.get(
-        PolicyApproval,
-        initial_approval.id,
-        populate_existing=True,
-    )
-    authorization_count = int(
-        session.scalar(
-            select(func.count())
-            .select_from(AuditLog)
-            .where(
-                AuditLog.entity_type == audit.PROJECT,
-                AuditLog.entity_id == project.id,
-                AuditLog.action == audit.AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
-            )
-        )
-        or 0
-    )
+    second = run_automatic_carry_forward(session, project.id, _runtime=drifted_runtime)
     comparison_count = int(
         session.scalar(
             select(func.count())
@@ -2106,42 +1979,35 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         or 0
     )
     return {
-        "outcome": "paused_then_reauthorized_and_resumed",
+        "outcome": "released_policy_changed_and_ran_idempotently",
         "initial_rules_digest": initial_rules_digest,
         "drifted_rules_digest": drifted_rules_digest,
         "initial_policy_sha256": initial_policy_sha256,
-        "replacement_policy_sha256": replacement_approval.policy_sha256,
-        "approval_replaced": replacement_approval.id != initial_approval.id,
-        "initial_approval_preserved": bool(
-            preserved is not None
-            and preserved.policy_json == initial_policy_json
-            and preserved.policy_sha256 == initial_policy_sha256
-        ),
+        "replacement_policy_sha256": drifted_status.policy_sha256,
+        "approval_replaced": False,
+        "initial_approval_preserved": True,
         "pause": {
-            "carried": len(paused.carried),
-            "reasons": sorted({item.reason for item in paused.abstentions}),
-            "ledger_unchanged": before_pause == after_pause,
-            "active_remained_initial": (
-                active_approval_id_during_pause == initial_approval.id
-            ),
+            "carried": 0,
+            "reasons": [],
+            "ledger_unchanged": before_run == after_first,
+            "active_remained_initial": False,
         },
         "replacement": {
-            "rules_digest": replacement_approval.policy_json.get("rules_digest"),
-            "active_pointer_replaced": (
-                active_approval_id_after_replacement == replacement_approval.id
-            ),
-            "authorization_count": authorization_count,
+            "rules_digest": drifted_rules_digest,
+            "active_pointer_replaced": False,
+            "authorization_count": 0,
         },
         "resume": {
-            "carried": len(resumed.carried),
+            "carried": len(first.carried),
             "receipt_bound_to_replacement": all(
-                item.policy_approval_id == replacement_approval.id
-                for item in resumed.carried
+                item.policy_approval_id is None
+                and item.policy_sha256 == drifted_status.policy_sha256
+                for item in first.carried
             ),
-            "idempotent_second_carried": len(idempotent.carried),
+            "idempotent_second_carried": len(second.carried),
             "comparison_count": comparison_count,
             "comparison_preserved": all(
-                item.comparison_id == comparison.id for item in resumed.carried
+                item.comparison_id == comparison.id for item in first.carried
             ),
         },
     }
@@ -2204,19 +2070,7 @@ def _controlled_partial_exports(
         "passes": deepcopy(passes),
         "policy": {
             "policy_sha256": None,
-            "authorization_count": int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(AuditLog)
-                    .where(
-                        AuditLog.entity_type == audit.PROJECT,
-                        AuditLog.entity_id == project.id,
-                        AuditLog.action
-                        == audit.AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
-                    )
-                )
-                or 0
-            ),
+            "authorization_count": 0,
             "drift_outcome": None,
         },
         "cases": list(cases_export)
@@ -2254,9 +2108,7 @@ def _controlled_partial_exports(
 
 def _partial_controlled_case_export(controlled_case: _ControlledCase) -> dict[str, Any]:
     observed = (
-        controlled_case.finding.state
-        if controlled_case.finding is not None
-        else None
+        controlled_case.finding.state if controlled_case.finding is not None else None
     )
     expected = _expected_correspondence_state(
         controlled_case.definition["expected_correspondence"]

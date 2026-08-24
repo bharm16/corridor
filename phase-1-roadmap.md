@@ -2,7 +2,7 @@
 
 **Goal of Phase 1:** a working, demoable system of record for utility and external-party readiness, running on 2-3 real highway projects, operable by one person, no external accounts required.
 
-**Companion docs:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec.md` covers document assembly, which runs in parallel from week 0. `CONTEXT.md` defines the domain vocabulary; `docs/adr/` records decisions with lasting consequences. Build nothing past M5 until M5 is done.
+**Companion docs:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec.md` covers document assembly, which runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; `docs/adr/` records decisions with lasting consequences. Build nothing past M5 until M5 is done.
 
 ---
 

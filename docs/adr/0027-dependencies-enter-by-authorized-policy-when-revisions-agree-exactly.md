@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0029
+---
+
 # Dependencies enter by authorized policy when revisions agree exactly
 
 > The accountable-human authorization and the two-document agreement gate are superseded by ADR-0029: one matrix admits mechanically, revision agreement is a confirmation signal, and disagreement rides the row as a Dispute. The deterministic checks and the receipt discipline remain in force.

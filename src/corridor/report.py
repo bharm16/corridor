@@ -84,21 +84,34 @@ class Derivation:
     # Ledger has no id left to cite. A named scope is provenance; an empty
     # tuple on its own is a bare cell wearing a marker.
     scope: str = ""
+    input_refs: tuple[str, ...] = ()
 
     @property
     def resolves(self) -> bool:
-        return bool(self.record_ids) or bool(self.scope)
+        return bool(self.record_ids) or bool(self.scope) or bool(self.input_refs)
 
     @property
     def marker(self) -> str:
         if self.record_ids:
-            return f"[{self.ruleset_version} over {len(self.record_ids)} records]"
+            inputs = f" + {len(self.input_refs)} inputs" if self.input_refs else ""
+            return (
+                f"[{self.ruleset_version} over {len(self.record_ids)} records{inputs}]"
+            )
+        if self.input_refs:
+            return f"[{self.ruleset_version} over {len(self.input_refs)} inputs]"
         return f"[{self.ruleset_version} · {self.scope}]"
 
     @property
     def drill(self) -> str:
-        if self.record_ids:
-            return "records: " + ", ".join(str(i) for i in self.record_ids[:20])
+        if self.record_ids or self.input_refs:
+            parts = []
+            if self.record_ids:
+                parts.append(
+                    "records: " + ", ".join(str(i) for i in self.record_ids[:20])
+                )
+            if self.input_refs:
+                parts.append("inputs: " + ", ".join(self.input_refs))
+            return "; ".join(parts)
         return f"covers: {self.scope}"
 
 
@@ -146,10 +159,7 @@ class Verbal:
 
     @property
     def marker(self) -> str:
-        return (
-            f"[verbal: {self.stated_party} told {self.heard_by} "
-            f"{self.heard_on}]"
-        )
+        return f"[verbal: {self.stated_party} told {self.heard_by} {self.heard_on}]"
 
     @property
     def drill(self) -> str:
@@ -222,8 +232,19 @@ class Report:
 EMPTY_LEDGER = "an empty ledger"
 
 
-def _derived(label: str, value: str, records, *, scope: str = "") -> Cell:
-    return Cell(label, value, Derivation(RULESET_VERSION, tuple(records), scope))
+def _derived(
+    label: str,
+    value: str,
+    records,
+    *,
+    scope: str = "",
+    input_refs: tuple[str, ...] = (),
+) -> Cell:
+    return Cell(
+        label,
+        value,
+        Derivation(RULESET_VERSION, tuple(records), scope, input_refs),
+    )
 
 
 def build_report(
@@ -376,51 +397,59 @@ def _milestone_rollup(
 
     section = Section(
         "Milestone readiness",
-        columns=["Milestone", "Need date", "Total", "Ready", "At risk", "Blocked", "% evidenced"],
+        columns=["Milestone", "Need date", "Total", "Ready", "At risk", "% evidenced"],
         empty_message="No milestones imported, so nothing is measured against a date.",
     )
 
-    groups: list[tuple[str, str, list[LedgerRow]]] = [
-        (m.name, m.need_date.isoformat() if m.need_date else "—",
-         [r for r in rows if r.dependency.milestone_id == m.id])
+    groups: list[tuple[str, str, list[LedgerRow], tuple[str, ...]]] = [
+        (
+            m.name,
+            m.need_date.isoformat() if m.need_date else "—",
+            [r for r in rows if r.dependency.milestone_id == m.id],
+            (f"Milestone Registration MR{m.current_registration_id}",)
+            if m.current_registration_id is not None
+            else (),
+        )
         for m in milestones
     ]
     unlinked = [r for r in rows if r.dependency.milestone_id is None]
     if unlinked:
-        groups.append(("Not linked to a milestone", "—", unlinked))
+        groups.append(("Not linked to a milestone", "—", unlinked, ()))
 
     # A milestone nothing is linked to has no records to measure, and
     # publishing "Ready 0" for it reads as "none of your records are
     # ready" rather than "no records are linked". Named in the note
     # instead, so the omission is stated rather than silent.
-    empty = [name for name, _, group in groups if not group]
+    empty = [name for name, _, group, _ in groups if not group]
     groups = [g for g in groups if g[2]]
     if empty:
         section.note = (
-            "Nothing is linked to " + ", ".join(empty) + ", so "
+            "Nothing is linked to "
+            + ", ".join(empty)
+            + ", so "
             + ("they are" if len(empty) > 1 else "it is")
             + " not measured below."
         )
 
-    for name, need_date, group in groups:
+    for name, need_date, group, input_refs in groups:
         ids = [r.dependency.id for r in group]
         ready = [r.dependency.id for r in group if r.is_ready]
         at_risk = [
             r.dependency.id
             for r in group
-            if not r.is_ready and any(
+            if not r.is_ready
+            and any(
                 e.rule in ("OVERDUE", "DUE_SOON", "CONTRADICTION") for e in r.exceptions
             )
         ]
-        blocked = [r.dependency.id for r in group if r.dependency.status == "blocked"]
         # Verified, as in the summary tile: "% evidenced" is a claim about
         # evidence that holds, not about links that exist.
         evidenced = [r.dependency.id for r in group if r.verified_evidence_count]
         pct = (100 * len(evidenced) / len(ids)) if ids else 0.0
         section.rows.append(
             [
-                _derived("Milestone", name, ids),
-                _derived("Need date", need_date, ids),
+                _derived("Milestone", name, ids, input_refs=input_refs),
+                _derived("Need date", need_date, ids, input_refs=input_refs),
                 _derived("Total", str(len(ids)), ids),
                 # A count of none is still derived from the records it
                 # examined — the matching subset when there is one, the
@@ -428,7 +457,6 @@ def _milestone_rollup(
                 # records drills through to nothing (ADR-0003).
                 _derived("Ready", str(len(ready)), ready or ids),
                 _derived("At risk", str(len(at_risk)), at_risk or ids),
-                _derived("Blocked", str(len(blocked)), blocked or ids),
                 _derived("% evidenced", f"{pct:.0f}%", evidenced or ids),
             ]
         )
@@ -479,24 +507,19 @@ def _critical_items(
     if len(critical_rows) > len(ranked):
         # A cap nobody states is a selection wearing completeness — the
         # device this section exists to abolish.
-        note += (
-            f" Showing the first {len(ranked)} of {len(critical_rows)}."
-        )
+        note += f" Showing the first {len(ranked)} of {len(critical_rows)}."
     if ranked and not dated:
         note += " No dates known: nothing here carries a need date to order by."
 
     section = Section(
         "Critical items",
         note=note,
-        columns=["Ref", "External party", "Committed", "Need", "Status", "Exceptions"],
+        columns=["Ref", "External party", "Committed", "Need", "Exceptions"],
         empty_message=(
-            "No not-ready record's document asserts a critical resolution "
-            "strategy."
+            "No not-ready record's document asserts a critical resolution strategy."
         ),
     )
-    resolved = resolve_operative_support(
-        session, [r.dependency.id for r in ranked]
-    )
+    resolved = resolve_operative_support(session, [r.dependency.id for r in ranked])
     for row in ranked:
         dependency_id = row.dependency.id
         support = resolved.get(dependency_id)
@@ -518,9 +541,7 @@ def _critical_items(
 
         def cited_field(field_name: str | None) -> Assertion | Derivation:
             designated = (
-                support.publication_for(field_name)
-                if support is not None
-                else None
+                support.publication_for(field_name) if support is not None else None
             )
             if designated is not None and designated.verified:
                 return Assertion(
@@ -540,14 +561,15 @@ def _critical_items(
                 # not borrow that field support to look publishable.
                 provenance = (
                     record_fallback
-                    if document_only
-                    or statement.unsupported_current
+                    if document_only or statement.unsupported_current
                     else cited_field("committed_date")
                 )
                 return Cell("Committed", "—", provenance)
             if committed_event is None:
                 return Cell(
-                    "Committed", committed_date.isoformat(), cited_field("committed_date")
+                    "Committed",
+                    committed_date.isoformat(),
+                    cited_field("committed_date"),
                 )
             provenance = _statement_provenance(statement)
             if provenance is None:
@@ -584,9 +606,12 @@ def _critical_items(
                     if row.dependency.need_date
                     else "—",
                     (dependency_id,),
+                    input_refs=(
+                        f"Milestone Registration MR{row.dependency.milestone_registration_id}",
+                    )
+                    if row.dependency.milestone_registration_id is not None
+                    else (),
                 ),
-                # Adjudication workflow state: a record fact.
-                _derived("Status", row.dependency.status, (dependency_id,)),
                 _derived(
                     "Exceptions",
                     listed or "—",
@@ -655,11 +680,15 @@ def _changes_since_last(
         return section
 
     if diff.is_first_report:
-        section.note = "First report for this project — there is nothing to compare against."
+        section.note = (
+            "First report for this project — there is nothing to compare against."
+        )
         section.empty_message = section.note
         return section
 
-    section.note = f"Compared against the report of {diff.previous_ts:%Y-%m-%d %H:%M} UTC."
+    section.note = (
+        f"Compared against the report of {diff.previous_ts:%Y-%m-%d %H:%M} UTC."
+    )
     if diff.ruleset_changed:
         section.note += (
             f" The ruleset changed ({diff.previous_ruleset} → {RULESET_VERSION}), "
@@ -674,13 +703,12 @@ def _changes_since_last(
         provenance = (
             Derivation(RULESET_VERSION, (change.dependency_id,))
             if change.dependency_id is not None
-            else Derivation(
-                RULESET_VERSION, scope=f"report run {diff.previous_run_id}"
-            )
+            else Derivation(RULESET_VERSION, scope=f"report run {diff.previous_run_id}")
         )
         event = committed_events.get(change.dependency_id)
-        date_change = change.kind == "slipped" or change.detail.startswith(
-            "first committed date:"
+        date_change = (
+            change.kind == "committed_date_change"
+            or change.detail.startswith("first committed date:")
         )
         if date_change and event is not None and event.source_kind == "verbal":
             provenance = Verbal(
@@ -701,7 +729,7 @@ def _changes_since_last(
 
 def _customer_change_name(kind: str) -> str:
     """Render the current domain term without rewriting historical records."""
-    return "Committed Date Change" if kind == "slipped" else kind
+    return "Committed Date Change" if kind == "committed_date_change" else kind
 
 
 def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
@@ -752,9 +780,7 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
         section.rows.append(
             [
                 _derived("Ref", dependency.ref_code, (dependency.id,)),
-                decided(
-                    "Internal owner", dependency.internal_owner, owner_tail
-                ),
+                decided("Internal owner", dependency.internal_owner, owner_tail),
                 decided("Next action", dependency.next_action, action_tail),
                 decided(
                     "Action due",
@@ -930,14 +956,19 @@ def _party_timing_precision(event, previous, new) -> str:
 def _party_timing_field(event, previous, new, field: str) -> str:
     """Render one source field while preserving both sides of a date change."""
     if event.event_type == "committed_date_change":
-        return "; ".join(
-            value
-            for value in (
-                f"Previous: {getattr(previous, field)}" if previous is not None else None,
-                f"Current: {getattr(new, field)}" if new is not None else None,
+        return (
+            "; ".join(
+                value
+                for value in (
+                    f"Previous: {getattr(previous, field)}"
+                    if previous is not None
+                    else None,
+                    f"Current: {getattr(new, field)}" if new is not None else None,
+                )
+                if value is not None
             )
-            if value is not None
-        ) or "—"
+            or "—"
+        )
     return getattr(new, field) if new is not None else "—"
 
 
@@ -1022,7 +1053,9 @@ def _party_milestone_impact_cell(
                 (decision.id,), decision.recorded_by, decision.recorded_at.date()
             ),
         )
-    value = "Not applicable" if statement.current_event.event_type == "commitment" else "—"
+    value = (
+        "Not applicable" if statement.current_event.event_type == "commitment" else "—"
+    )
     return Cell(
         "Milestone Impact",
         value,
@@ -1097,7 +1130,14 @@ def _aging(
 def _appendix(rows: list[LedgerRow]) -> Section:
     section = Section(
         "Appendix — full ledger",
-        columns=["Ref", "Source ID", "External party", "Station", "Status", "Ready", "Exceptions"],
+        columns=[
+            "Ref",
+            "Source ID",
+            "External party",
+            "Station",
+            "Ready",
+            "Exceptions",
+        ],
         empty_message="The ledger is empty.",
     )
     for row in rows:
@@ -1111,7 +1151,6 @@ def _appendix(rows: list[LedgerRow]) -> Section:
                 _derived("Source ID", row.dependency.source_ref or "—", ids),
                 _derived("External party", row.org_name or "—", ids),
                 _derived("Station", station, ids),
-                _derived("Status", row.dependency.status, ids),
                 _derived("Ready", "yes" if row.is_ready else "no", ids),
                 _derived(
                     "Exceptions",
@@ -1212,7 +1251,9 @@ def render(report: Report) -> str:
 
     def section_html(section: Section) -> str:
         head = "".join(f"<th>{html.escape(c)}</th>" for c in section.columns)
-        note = f'<p class="note">{html.escape(section.note)}</p>' if section.note else ""
+        note = (
+            f'<p class="note">{html.escape(section.note)}</p>' if section.note else ""
+        )
         if not section.rows:
             return (
                 f"<h2>{html.escape(section.title)}</h2>{note}"
@@ -1231,9 +1272,7 @@ def render(report: Report) -> str:
         }
         body = "".join(
             "<tr>"
-            + "".join(
-                cell_html(c, include_label=is_party_statements) for c in row
-            )
+            + "".join(cell_html(c, include_label=is_party_statements) for c in row)
             + "</tr>"
             for row in section.rows
         )
@@ -1269,9 +1308,7 @@ def render(report: Report) -> str:
     # second, so a report built for a stated date printed today's date over
     # last week's numbers.
     evaluated = (
-        f" · evaluated {report.evaluation.today:%Y-%m-%d}"
-        if report.evaluation
-        else ""
+        f" · evaluated {report.evaluation.today:%Y-%m-%d}" if report.evaluation else ""
     )
 
     return f"""<!doctype html>
@@ -1389,20 +1426,14 @@ def main(argv: list[str]) -> int:
         print("usage: report [<project-slug>] [--document-only]", file=sys.stderr)
         return 2
     slug = arguments[0] if arguments else "nhhip-3c2"
-    out = Path(
-        "out/report-document-only.html" if document_only else "out/report.html"
-    )
+    out = Path("out/report-document-only.html" if document_only else "out/report.html")
     with SessionFactory() as session:
-        project = session.scalars(
-            select(Project).where(Project.slug == slug)
-        ).first()
+        project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
-        report = build_report(
-            session, project.id, document_only=document_only
-        )
+        report = build_report(session, project.id, document_only=document_only)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(render(report))
         xlsx = ""

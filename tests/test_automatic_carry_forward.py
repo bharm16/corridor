@@ -1,9 +1,9 @@
-"""Policy-authorized Automatic Carry-Forward at the public domain seam.
+"""Corridor-managed Automatic Carry-Forward at the public domain seam.
 
 These tests deliberately exercise the same real-Postgres boundary used by
-Supersession Review.  Automatic Carry-Forward is not a faster spelling of
-human Reconfirmation: a human approves one project policy, then a distinct
-machine act may inherit only support that human decisions already established.
+Supersession Review. Automatic Carry-Forward is not a faster spelling of
+human Reconfirmation: a released deterministic policy may inherit only support
+that human decisions already established, without project authorization.
 """
 
 from __future__ import annotations
@@ -24,10 +24,7 @@ from corridor import automatic_carry_forward as automatic
 from corridor.adjudicate import accept_candidate
 from corridor.automatic_carry_forward import (
     ABSTENTION_REASON_VERSION,
-    active_carry_forward_policy,
     automatic_carry_forward_status,
-    authorize_automatic_carry_forward,
-    disable_automatic_carry_forward,
     run_automatic_carry_forward,
 )
 from corridor.db import Session, engine
@@ -35,7 +32,6 @@ from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
 from corridor.models import (
-    ActiveAutomaticCarryForwardPolicy,
     ActiveExtractionRun,
     Assertion,
     AuditLog,
@@ -57,7 +53,7 @@ from corridor.models import (
     RevisionComparisonRun,
 )
 from corridor.operative_support import resolve_operative_support
-from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.principals import HumanPrincipal
 from corridor.revision_comparison import (
     DEFAULT_MATCHER_CONFIG,
     DEFAULT_MATCHER_VERSION,
@@ -77,7 +73,7 @@ from corridor.support_transfer import prove_support_transfer
 
 REVIEWER = HumanPrincipal("local:carry-forward-reviewer")
 APPROVER = HumanPrincipal("local:carry-forward-approver")
-POLICY_VERSION = "automatic-carry-forward-v1"
+POLICY_VERSION = "automatic-carry-forward-v2"
 MACHINE_ACTOR = "corridor:automatic-carry-forward"
 
 
@@ -275,12 +271,8 @@ def _seed_transition(
         page_text="REV-A superseded by REV-B on 2026-08-01",
     )
 
-    predecessor_candidate = _candidate(
-        project, predecessor, predecessor_fields
-    )
-    predecessor_run = _completed_run(
-        session, predecessor, predecessor_candidate
-    )
+    predecessor_candidate = _candidate(project, predecessor, predecessor_fields)
+    predecessor_run = _completed_run(session, predecessor, predecessor_candidate)
     if admitted_station is not None:
         page = session.scalars(
             select(DocPage).where(DocPage.document_id == predecessor.id)
@@ -293,9 +285,7 @@ def _seed_transition(
         }
         predecessor_candidate.payload_json = edited_payload
         session.flush([page, predecessor_candidate])
-    dependency = accept_candidate(
-        session, predecessor_candidate, principal=REVIEWER
-    )
+    dependency = accept_candidate(session, predecessor_candidate, principal=REVIEWER)
     dependency.evidence_required = "approved relocation closeout"
     old_evidence = session.scalars(
         select(EvidenceLink)
@@ -334,9 +324,7 @@ def _seed_transition(
             citation_count=successor_citation_count,
         )
         successor_candidates = (successor_candidate,)
-    successor_run = _completed_run(
-        session, successor, *successor_candidates
-    )
+    successor_run = _completed_run(session, successor, *successor_candidates)
     comparison_kwargs = {"matcher_version": matcher_version}
     if matcher_config is not None:
         comparison_kwargs["matcher_config"] = matcher_config
@@ -348,9 +336,7 @@ def _seed_transition(
     )
     finding = next(
         finding
-        for finding in read_revision_comparison(
-            session, comparison.id
-        ).findings
+        for finding in read_revision_comparison(session, comparison.id).findings
         if predecessor_candidate.id in finding.predecessor_candidate_ids
     )
 
@@ -424,11 +410,8 @@ def _append_terminal_transition(
     )
     finding = next(
         finding
-        for finding in read_revision_comparison(
-            session, comparison.id
-        ).findings
-        if scenario.successor_candidate.id
-        in finding.predecessor_candidate_ids
+        for finding in read_revision_comparison(session, comparison.id).findings
+        if scenario.successor_candidate.id in finding.predecessor_candidate_ids
     )
     return TerminalTransition(
         document=terminal,
@@ -450,7 +433,6 @@ def _dependency_state(dependency: Dependency) -> tuple:
         dependency.station_to,
         dependency.external_org_id,
         dependency.milestone_id,
-        dependency.status,
         dependency.resolution_strategy,
         dependency.committed_date,
         dependency.need_date,
@@ -475,18 +457,19 @@ def _assertion_state(session, dependency_id: int) -> tuple:
 
 
 def _direct_sufficiency(session, dependency_id: int, evidence_link_id: int) -> bool:
-    return session.scalar(
-        select(DependencyEvidenceSufficiency.id).where(
-            DependencyEvidenceSufficiency.dependency_id == dependency_id,
-            DependencyEvidenceSufficiency.evidence_link_id == evidence_link_id,
-            DependencyEvidenceSufficiency.scope_link_id.is_(None),
+    return (
+        session.scalar(
+            select(DependencyEvidenceSufficiency.id).where(
+                DependencyEvidenceSufficiency.dependency_id == dependency_id,
+                DependencyEvidenceSufficiency.evidence_link_id == evidence_link_id,
+                DependencyEvidenceSufficiency.scope_link_id.is_(None),
+            )
         )
-    ) is not None
+        is not None
+    )
 
 
-def _ledger_mutation_state(
-    session, scenario: TransitionScenario
-) -> tuple:
+def _ledger_mutation_state(session, scenario: TransitionScenario) -> tuple:
     candidate = scenario.successor_candidate
     return (
         _dependency_state(scenario.dependency),
@@ -511,10 +494,14 @@ def _ledger_mutation_state(
                 .where(EvidenceLink.dependency_id == scenario.dependency.id)
                 .outerjoin(
                     DependencyEvidenceSufficiency,
-                    (DependencyEvidenceSufficiency.dependency_id
-                     == EvidenceLink.dependency_id)
-                    & (DependencyEvidenceSufficiency.evidence_link_id
-                       == EvidenceLink.id)
+                    (
+                        DependencyEvidenceSufficiency.dependency_id
+                        == EvidenceLink.dependency_id
+                    )
+                    & (
+                        DependencyEvidenceSufficiency.evidence_link_id
+                        == EvidenceLink.id
+                    )
                     & DependencyEvidenceSufficiency.scope_link_id.is_(None),
                 )
                 .order_by(EvidenceLink.id)
@@ -529,10 +516,7 @@ def _ledger_mutation_state(
                     OperativeSupport.field_name,
                     OperativeSupport.designated_by,
                 )
-                .where(
-                    OperativeSupport.dependency_id
-                    == scenario.dependency.id
-                )
+                .where(OperativeSupport.dependency_id == scenario.dependency.id)
                 .order_by(OperativeSupport.id)
             ).all()
         ),
@@ -553,12 +537,6 @@ def _ledger_mutation_state(
                 .order_by(AuditLog.id)
             ).all()
         ),
-    )
-
-
-def _authorize(session, project: Project):
-    return authorize_automatic_carry_forward(
-        session, project.id, principal=APPROVER
     )
 
 
@@ -599,9 +577,7 @@ def _carry_outcomes(
 
 
 def _human_reconfirm(session, scenario, transition) -> EvidenceLink:
-    [review] = build_reviewer_worklist(
-        session, scenario.project.id
-    ).reconfirmation
+    [review] = build_reviewer_worklist(session, scenario.project.id).reconfirmation
     return reconfirm_operative_support(
         session,
         project_id=scenario.project.id,
@@ -642,9 +618,7 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
         )
         run_ids = tuple(
             cleanup.scalars(
-                select(PolicyRun.id).where(
-                    PolicyRun.project_id == project_id
-                )
+                select(PolicyRun.id).where(PolicyRun.project_id == project_id)
             ).all()
         )
 
@@ -653,11 +627,7 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
                 AutomaticCarryForwardOutcome.run_id.in_(run_ids)
             )
         )
-        cleanup.execute(
-            delete(PolicyRun).where(
-                PolicyRun.id.in_(run_ids)
-            )
-        )
+        cleanup.execute(delete(PolicyRun).where(PolicyRun.id.in_(run_ids)))
         cleanup.execute(
             delete(AutomaticCarryForwardReceipt).where(
                 AutomaticCarryForwardReceipt.dependency_id.in_(dependency_ids)
@@ -669,14 +639,7 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
             )
         )
         cleanup.execute(
-            delete(ActiveAutomaticCarryForwardPolicy).where(
-                ActiveAutomaticCarryForwardPolicy.project_id == project_id
-            )
-        )
-        cleanup.execute(
-            delete(PolicyApproval).where(
-                PolicyApproval.project_id == project_id
-            )
+            delete(PolicyApproval).where(PolicyApproval.project_id == project_id)
         )
         cleanup.execute(
             delete(AuditLog).where(
@@ -705,15 +668,11 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
             delete(Assertion).where(Assertion.dependency_id.in_(dependency_ids))
         )
         cleanup.execute(
-            delete(EvidenceLink).where(
-                EvidenceLink.dependency_id.in_(dependency_ids)
-            )
+            delete(EvidenceLink).where(EvidenceLink.dependency_id.in_(dependency_ids))
         )
         cleanup.execute(
             delete(RevisionComparisonFinding).where(
-                RevisionComparisonFinding.revision_comparison_run_id.in_(
-                    comparison_ids
-                )
+                RevisionComparisonFinding.revision_comparison_run_id.in_(comparison_ids)
             )
         )
         cleanup.execute(
@@ -721,21 +680,15 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
                 RevisionComparisonRun.id.in_(comparison_ids)
             )
         )
-        cleanup.execute(
-            delete(Candidate).where(Candidate.project_id == project_id)
-        )
-        cleanup.execute(
-            delete(Dependency).where(Dependency.project_id == project_id)
-        )
+        cleanup.execute(delete(Candidate).where(Candidate.project_id == project_id))
+        cleanup.execute(delete(Dependency).where(Dependency.project_id == project_id))
         cleanup.execute(
             delete(ActiveExtractionRun).where(
                 ActiveExtractionRun.document_id.in_(document_ids)
             )
         )
         cleanup.execute(
-            delete(ExtractionRun).where(
-                ExtractionRun.document_id.in_(document_ids)
-            )
+            delete(ExtractionRun).where(ExtractionRun.document_id.in_(document_ids))
         )
         cleanup.execute(
             update(Document)
@@ -747,39 +700,26 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
                 supersession_source_page=None,
             )
         )
-        cleanup.execute(
-            delete(DocPage).where(DocPage.document_id.in_(document_ids))
-        )
+        cleanup.execute(delete(DocPage).where(DocPage.document_id.in_(document_ids)))
         cleanup.execute(delete(Document).where(Document.project_id == project_id))
         cleanup.execute(delete(Project).where(Project.id == project_id))
         cleanup.commit()
 
 
-def test_automatic_carry_forward_is_disabled_by_default(session):
+def test_automatic_carry_forward_is_normal_processing(session):
     scenario = _seed_transition(session)
-    before = _ledger_mutation_state(session, scenario)
-
-    assert active_carry_forward_policy(
-        session, scenario.project.id
-    ) is None
 
     result = run_automatic_carry_forward(session, scenario.project.id)
 
-    assert result.carried == ()
+    assert len(result.carried) == 1
     assert result.abstentions == ()
-    assert _ledger_mutation_state(session, scenario) == before
-    [review] = build_reviewer_worklist(
-        session, scenario.project.id
-    ).reconfirmation
-    assert review.successor_candidate_id == scenario.successor_candidate.id
-    assert _automatic_entries(session, scenario.dependency.id) == ()
+    assert build_reviewer_worklist(session, scenario.project.id).reconfirmation == ()
+    assert len(_automatic_entries(session, scenario.dependency.id)) == 1
 
 
 def test_support_transfer_proof_freezes_one_exact_current_read(session):
     scenario = _seed_transition(session)
-    [review] = build_reviewer_worklist(
-        session, scenario.project.id
-    ).reconfirmation
+    [review] = build_reviewer_worklist(session, scenario.project.id).reconfirmation
 
     proof = prove_support_transfer(
         session,
@@ -800,68 +740,21 @@ def test_support_transfer_proof_freezes_one_exact_current_read(session):
     assert proof.scope_fingerprint == review.scope_fingerprint
 
 
-def test_policy_authorization_is_attributable_canonical_and_explicitly_active(
-    session, project
-):
-    approval = _authorize(session, project)
-
-    assert approval.project_id == project.id
-    assert approval.policy_version == POLICY_VERSION
-    assert approval.approved_by == APPROVER.subject
-    assert approval.policy_json["field_equality"] == "exact-admitted-fields-v1"
-    assert approval.policy_json["matcher_version"] == DEFAULT_MATCHER_VERSION
-    assert len(approval.policy_json["matcher_config_sha256"]) == 64
-    canonical = json.dumps(
-        approval.policy_json,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    assert hashlib.sha256(canonical).hexdigest() == approval.policy_sha256
-    assert active_carry_forward_policy(session, project.id).id == approval.id
-
-    [entry] = session.scalars(
-        select(AuditLog).where(
-            AuditLog.entity_type == "project",
-            AuditLog.entity_id == project.id,
-            AuditLog.action == "authorize_automatic_carry_forward",
-        )
-    ).all()
-    assert entry.actor == APPROVER.subject
-    assert entry.human_principal == APPROVER.subject
-    assert entry.after_json == {
-        "policy_approval_id": approval.id,
-        "policy_version": POLICY_VERSION,
-        "policy_sha256": approval.policy_sha256,
-    }
-
-    disable_automatic_carry_forward(
-        session, project.id, principal=APPROVER
-    )
-    assert active_carry_forward_policy(session, project.id) is None
-    replacement = _authorize(session, project)
-    assert replacement.id != approval.id
-    assert session.get(type(approval), approval.id) is not None
-
-
-def test_policy_authorization_refuses_a_role_label(session, project):
+def test_released_policy_is_current_without_project_authorization(session, project):
     before = tuple(session.scalars(select(AuditLog.id)).all())
 
-    with pytest.raises(InvalidHumanPrincipal):
-        authorize_automatic_carry_forward(
-            session, project.id, principal="reviewer"
-        )
+    status = automatic_carry_forward_status(session, project.id)
 
-    assert active_carry_forward_policy(session, project.id) is None
+    assert status.policy_version == POLICY_VERSION
+    assert len(status.policy_sha256) == 64
+    assert status.eligible_count == 0
     assert tuple(session.scalars(select(AuditLog.id)).all()) == before
 
 
 def test_exact_success_moves_support_without_admitting_or_revising(session):
     scenario = _seed_transition(session)
-    approval = _authorize(session, scenario.project)
     dependency_before = _dependency_state(scenario.dependency)
-    candidate_payload_before = deepcopy(
-        scenario.successor_candidate.payload_json
-    )
+    candidate_payload_before = deepcopy(scenario.successor_candidate.payload_json)
     assertions_before = _assertion_state(session, scenario.dependency.id)
 
     result = run_automatic_carry_forward(session, scenario.project.id)
@@ -870,16 +763,18 @@ def test_exact_success_moves_support_without_admitting_or_revising(session):
     assert result.abstentions == ()
     assert receipt.dependency_id == scenario.dependency.id
     assert receipt.successor_candidate_id == scenario.successor_candidate.id
-    assert receipt.policy_approval_id == approval.id
+    assert receipt.policy_approval_id is None
+    assert receipt.policy_version == POLICY_VERSION
+    assert len(receipt.policy_sha256) == 64
 
-    support = resolve_operative_support(
-        session, (scenario.dependency.id,)
-    )[scenario.dependency.id]
+    support = resolve_operative_support(session, (scenario.dependency.id,))[
+        scenario.dependency.id
+    ]
     assert support.publication.document_id == scenario.successor.id
     assert support.is_ready is True
-    assert {
-        evidence.document_id for evidence in support.current_readiness
-    } == {scenario.successor.id}
+    assert {evidence.document_id for evidence in support.current_readiness} == {
+        scenario.successor.id
+    }
     assert _dependency_state(scenario.dependency) == dependency_before
     assert scenario.successor_candidate.state == "pending"
     assert scenario.successor_candidate.merged_into is None
@@ -896,9 +791,7 @@ def test_exact_success_moves_support_without_admitting_or_revising(session):
     assert worklist.ordinary == ()
     rules = {
         exception.rule
-        for exception in evaluate_exceptions(
-            session, scenario.project.id
-        )
+        for exception in evaluate_exceptions(session, scenario.project.id)
         if exception.dependency_id == scenario.dependency.id
     }
     assert "SUPERSEDED_CITATION" not in rules
@@ -912,19 +805,16 @@ def test_a_human_edited_conclusion_carries_only_when_successor_proves_it(
         admitted_station="100 + 00",
         successor_station="100 + 00",
     )
-    _authorize(session, scenario.project)
-    [review] = build_reviewer_worklist(
-        session, scenario.project.id
-    ).ordinary
+    [review] = build_reviewer_worklist(session, scenario.project.id).ordinary
     assert review.reason == "admission_fields_changed"
 
     result = run_automatic_carry_forward(session, scenario.project.id)
 
     assert len(result.carried) == 1
     assert result.abstentions == ()
-    support = resolve_operative_support(
-        session, (scenario.dependency.id,)
-    )[scenario.dependency.id]
+    support = resolve_operative_support(session, (scenario.dependency.id,))[
+        scenario.dependency.id
+    ]
     assert support.publication.document_id == scenario.successor.id
     assert scenario.dependency.station_from == "100 + 00"
 
@@ -935,7 +825,6 @@ def test_a_human_edit_abstains_when_successor_does_not_prove_it(session):
         admitted_station="100 + 00",
         successor_station="100+00",
     )
-    _authorize(session, scenario.project)
     before = _ledger_mutation_state(session, scenario)
 
     result = run_automatic_carry_forward(session, scenario.project.id)
@@ -948,13 +837,8 @@ def test_a_human_edit_abstains_when_successor_does_not_prove_it(session):
 
 
 @pytest.mark.parametrize("prior_satisfying", [False, True])
-def test_readiness_is_inherited_but_never_invented(
-    session, prior_satisfying
-):
-    scenario = _seed_transition(
-        session, prior_satisfying=prior_satisfying
-    )
-    _authorize(session, scenario.project)
+def test_readiness_is_inherited_but_never_invented(session, prior_satisfying):
+    scenario = _seed_transition(session, prior_satisfying=prior_satisfying)
     evidence_required = scenario.dependency.evidence_required
 
     result = run_automatic_carry_forward(session, scenario.project.id)
@@ -966,19 +850,18 @@ def test_readiness_is_inherited_but_never_invented(
         .order_by(EvidenceLink.id.desc())
     ).first()
     assert evidence.document_id == scenario.successor.id
-    assert _direct_sufficiency(
-        session, scenario.dependency.id, evidence.id
-    ) is prior_satisfying
-    support = resolve_operative_support(
-        session, (scenario.dependency.id,)
-    )[scenario.dependency.id]
+    assert (
+        _direct_sufficiency(session, scenario.dependency.id, evidence.id)
+        is prior_satisfying
+    )
+    support = resolve_operative_support(session, (scenario.dependency.id,))[
+        scenario.dependency.id
+    ]
     assert support.is_ready is prior_satisfying
     assert scenario.dependency.evidence_required == evidence_required
 
     entry = session.get(AuditLog, receipt.audit_log_id)
-    inherited_roles = {
-        moved["role"] for moved in entry.after_json["moved_scopes"]
-    }
+    inherited_roles = {moved["role"] for moved in entry.after_json["moved_scopes"]}
     assert ("readiness" in inherited_roles) is prior_satisfying
 
 
@@ -1004,7 +887,6 @@ def test_unapproved_matcher_policy_pauses_automation(
         matcher_version=matcher_version,
         matcher_config=matcher_config,
     )
-    _authorize(session, scenario.project)
     before = _ledger_mutation_state(session, scenario)
 
     result = run_automatic_carry_forward(session, scenario.project.id)
@@ -1014,63 +896,38 @@ def test_unapproved_matcher_policy_pauses_automation(
         "comparison_policy_unapproved"
     }
     assert _ledger_mutation_state(session, scenario) == before
-    assert len(
-        build_reviewer_worklist(
-            session, scenario.project.id
-        ).reconfirmation
-    ) == 1
+    assert (
+        len(build_reviewer_worklist(session, scenario.project.id).reconfirmation) == 1
+    )
 
 
-def test_rules_source_digest_drift_pauses_automation(session):
-    scenario = _seed_transition(session)
-    approval = _authorize(session, scenario.project)
+def test_released_policy_digest_changes_with_deployed_source_bytes(session, project):
     drifted_runtime = automatic.AutomaticCarryForwardRuntime.deployed(
-        source_overrides={
-            "corridor.automatic_carry_forward": b"policy-drift-v1"
-        }
+        source_overrides={"corridor.automatic_carry_forward": b"policy-drift-v1"}
     )
-    assert "rules_digest" in approval.policy_json
-    before = _ledger_mutation_state(session, scenario)
-
-    result = run_automatic_carry_forward(
-        session,
-        scenario.project.id,
-        _runtime=drifted_runtime,
+    deployed = automatic_carry_forward_status(session, project.id)
+    drifted = automatic_carry_forward_status(
+        session, project.id, _runtime=drifted_runtime
     )
 
-    assert result.carried == ()
-    assert {item.reason for item in result.abstentions} == {
-        "comparison_policy_unapproved"
-    }
-    assert _ledger_mutation_state(session, scenario) == before
+    assert deployed.policy_sha256 != drifted.policy_sha256
 
 
-def test_authorization_digest_changes_when_supersession_source_bytes_change(
+def test_released_policy_digest_changes_when_supersession_source_bytes_change(
     session, project
 ):
     base_runtime = automatic.AutomaticCarryForwardRuntime.deployed()
     drifted_runtime = automatic.AutomaticCarryForwardRuntime.deployed(
-        source_overrides={
-            "corridor.supersession": b"supersession-rules-drift-v1"
-        }
+        source_overrides={"corridor.supersession": b"supersession-rules-drift-v1"}
     )
 
-    original = authorize_automatic_carry_forward(
-        session,
-        project.id,
-        principal=APPROVER,
-        _runtime=base_runtime,
+    original = automatic_carry_forward_status(
+        session, project.id, _runtime=base_runtime
     )
-    replacement = authorize_automatic_carry_forward(
-        session,
-        project.id,
-        principal=APPROVER,
-        _runtime=drifted_runtime,
+    replacement = automatic_carry_forward_status(
+        session, project.id, _runtime=drifted_runtime
     )
 
-    assert original.policy_json["rules_digest"] != replacement.policy_json[
-        "rules_digest"
-    ]
     assert original.policy_sha256 != replacement.policy_sha256
 
 
@@ -1096,23 +953,18 @@ def test_unsafe_or_inexact_rows_abstain_without_ledger_writes(
             if case == "normalized_only"
             else "100+00"
         ),
-        "successor_citation_count": (
-            2 if case == "multiple_citations" else 1
-        ),
+        "successor_citation_count": (2 if case == "multiple_citations" else 1),
         "successor_dropped": case == "dropped",
         "unattributable_admission": case == "unattributable_admission",
         "stale_successor_after_comparison": case == "stale_successor",
     }
     scenario = _seed_transition(session, **options)
-    _authorize(session, scenario.project)
     before = _ledger_mutation_state(session, scenario)
 
     result = run_automatic_carry_forward(session, scenario.project.id)
 
     assert result.carried == ()
-    assert {item.reason for item in result.abstentions} == {
-        expected_reason
-    }
+    assert {item.reason for item in result.abstentions} == {expected_reason}
     assert _ledger_mutation_state(session, scenario) == before
     worklist = build_reviewer_worklist(session, scenario.project.id)
     if case == "normalized_only":
@@ -1126,7 +978,6 @@ def test_unsafe_or_inexact_rows_abstain_without_ledger_writes(
 
 def test_batch_replay_is_idempotent(session):
     scenario = _seed_transition(session)
-    _authorize(session, scenario.project)
 
     first = run_automatic_carry_forward(session, scenario.project.id)
     state_after_first = _ledger_mutation_state(session, scenario)
@@ -1142,19 +993,19 @@ def test_batch_replay_is_idempotent(session):
 
 def test_machine_act_has_honest_audit_identity_and_exact_receipt(session):
     scenario = _seed_transition(session)
-    approval = _authorize(session, scenario.project)
 
     result = run_automatic_carry_forward(session, scenario.project.id)
 
     [receipt] = result.carried
     [entry] = _automatic_entries(session, scenario.dependency.id)
     assert receipt.audit_log_id == entry.id
-    assert receipt.policy_approval_id == approval.id
+    assert receipt.policy_approval_id is None
     assert entry.actor == MACHINE_ACTOR
     assert entry.human_principal is None
     assert entry.action == "automatic_carry_forward"
-    assert entry.after_json["policy_approval_id"] == approval.id
-    assert entry.after_json["policy_sha256"] == approval.policy_sha256
+    assert "policy_approval_id" not in entry.after_json
+    assert entry.after_json["policy_version"] == receipt.policy_version
+    assert entry.after_json["policy_sha256"] == receipt.policy_sha256
     assert entry.after_json["comparison_id"] == scenario.comparison.id
     assert entry.after_json["finding_id"] == scenario.finding.id
     assert entry.after_json["predecessor_candidate_id"] == (
@@ -1163,9 +1014,7 @@ def test_machine_act_has_honest_audit_identity_and_exact_receipt(session):
     assert entry.after_json["successor_candidate_id"] == (
         scenario.successor_candidate.id
     )
-    assert entry.after_json["new_evidence_link_id"] == (
-        receipt.new_evidence_link_id
-    )
+    assert entry.after_json["new_evidence_link_id"] == (receipt.new_evidence_link_id)
     assert entry.after_json["origin_admission_audit_id"] is not None
     assert entry.after_json["predecessor_support_transfer_audit_id"] is None
     assert entry.before_json["operative_scopes"]
@@ -1190,7 +1039,6 @@ def test_actor_human_principal_mismatch_abstains_without_trigger_crashing(
     session,
 ):
     scenario = _seed_transition(session)
-    _authorize(session, scenario.project)
     before = _ledger_mutation_state(session, scenario)
     admission = session.scalars(
         select(AuditLog).where(
@@ -1214,26 +1062,17 @@ def test_actor_human_principal_mismatch_abstains_without_trigger_crashing(
     assert _automatic_entries(session, scenario.dependency.id) == ()
 
 
-def test_tampered_policy_authorization_invalidates_machine_lineage(session):
+def test_tampered_released_policy_identity_invalidates_machine_lineage(session):
     scenario = _seed_transition(session, prior_satisfying=False)
-    approval = _authorize(session, scenario.project)
-    [receipt] = run_automatic_carry_forward(
-        session, scenario.project.id
-    ).carried
+    [receipt] = run_automatic_carry_forward(session, scenario.project.id).carried
     terminal = _append_terminal_transition(session, scenario)
-    authorization = session.scalars(
-        select(AuditLog).where(
-            AuditLog.entity_type == audit.PROJECT,
-            AuditLog.entity_id == scenario.project.id,
-            AuditLog.action == audit.AUTHORIZE_AUTOMATIC_CARRY_FORWARD,
-        )
-    ).one()
-    authorization.human_principal = None
-    session.flush([authorization])
+    entry = session.get(AuditLog, receipt.audit_log_id)
+    entry.after_json = {**entry.after_json, "policy_sha256": "0" * 64}
+    session.flush([entry])
 
     worklist = build_reviewer_worklist(session, scenario.project.id)
 
-    assert receipt.policy_approval_id == approval.id
+    assert receipt.policy_approval_id is None
     assert worklist.reconfirmation == ()
     review = next(
         item
@@ -1256,7 +1095,6 @@ def test_sequential_support_transfers_retain_original_human_lineage(
     session, first_kind, second_kind
 ):
     scenario = _seed_transition(session)
-    approval = None
     if first_kind == "human":
         first_transition = TerminalTransition(
             document=scenario.successor,
@@ -1267,7 +1105,6 @@ def test_sequential_support_transfers_retain_original_human_lineage(
         )
         _human_reconfirm(session, scenario, first_transition)
     else:
-        approval = _authorize(session, scenario.project)
         [first_receipt] = run_automatic_carry_forward(
             session, scenario.project.id
         ).carried
@@ -1276,8 +1113,6 @@ def test_sequential_support_transfers_retain_original_human_lineage(
     if second_kind == "human":
         _human_reconfirm(session, scenario, terminal)
     else:
-        if approval is None:
-            approval = _authorize(session, scenario.project)
         [second_receipt] = run_automatic_carry_forward(
             session, scenario.project.id
         ).carried
@@ -1321,12 +1156,13 @@ def test_sequential_support_transfers_retain_original_human_lineage(
         entry.after_json["origin_admission_audit_id"] == admission.id
         for entry in transfer_entries
     )
-    assert transfer_entries[1].after_json[
-        "predecessor_support_transfer_audit_id"
-    ] == transfer_entries[0].id
-    support = resolve_operative_support(
-        session, (scenario.dependency.id,)
-    )[scenario.dependency.id]
+    assert (
+        transfer_entries[1].after_json["predecessor_support_transfer_audit_id"]
+        == transfer_entries[0].id
+    )
+    support = resolve_operative_support(session, (scenario.dependency.id,))[
+        scenario.dependency.id
+    ]
     assert support.publication.document_id == terminal.document.id
     assert support.is_ready is True
     worklist = build_reviewer_worklist(session, scenario.project.id)
@@ -1334,46 +1170,15 @@ def test_sequential_support_transfers_retain_original_human_lineage(
     assert worklist.ordinary == ()
 
     if first_kind == "automatic":
-        assert first_receipt.policy_approval_id == approval.id
+        assert first_receipt.policy_approval_id is None
     if second_kind == "automatic":
-        assert second_receipt.policy_approval_id == approval.id
+        assert second_receipt.policy_approval_id is None
 
 
-def test_policy_approvals_and_machine_receipts_are_immutable(session):
+def test_machine_receipts_are_immutable(session):
     scenario = _seed_transition(session)
-    approval = _authorize(session, scenario.project)
-    [receipt] = run_automatic_carry_forward(
-        session, scenario.project.id
-    ).carried
-    approval_type = type(approval)
+    [receipt] = run_automatic_carry_forward(session, scenario.project.id).carried
     receipt_type = type(receipt)
-
-    with pytest.raises(IntegrityError, match="append-only|immutable"):
-        with session.begin_nested():
-            session.execute(
-                update(approval_type)
-                .where(approval_type.id == approval.id)
-                .values(policy_sha256="0" * 64)
-            )
-    with pytest.raises(IntegrityError, match="append-only|immutable"):
-        with session.begin_nested():
-            session.execute(
-                delete(approval_type).where(approval_type.id == approval.id)
-            )
-    with pytest.raises(IntegrityError, match="append-only|immutable"):
-        with session.begin_nested():
-            session.execute(
-                text(
-                    "set constraints "
-                    "policy_runs_must_match_outcomes, "
-                    "automatic_carry_forward_outcomes_must_match_runs immediate"
-                )
-            )
-            session.execute(
-                text(
-                    f"truncate table {approval_type.__tablename__} cascade"
-                )
-            )
 
     with pytest.raises(IntegrityError, match="append-only|immutable"):
         with session.begin_nested():
@@ -1402,16 +1207,12 @@ def test_policy_approvals_and_machine_receipts_are_immutable(session):
                 text(f"truncate table {receipt_type.__tablename__} cascade")
             )
 
-    assert session.get(approval_type, approval.id) is not None
     assert session.get(receipt_type, receipt.audit_log_id) is not None
 
 
 def test_database_rejects_a_receipt_bound_to_a_changed_finding(session):
     scenario = _seed_transition(session)
-    _authorize(session, scenario.project)
-    [receipt] = run_automatic_carry_forward(
-        session, scenario.project.id
-    ).carried
+    [receipt] = run_automatic_carry_forward(session, scenario.project.id).carried
     receipt_type = type(receipt)
     finding_type = type(scenario.finding)
     values = {
@@ -1425,9 +1226,7 @@ def test_database_rejects_a_receipt_bound_to_a_changed_finding(session):
     # under test and must reject the semantically unsafe binding.
     session.execute(text("set local session_replication_role = replica"))
     session.execute(
-        delete(receipt_type).where(
-            receipt_type.audit_log_id == receipt.audit_log_id
-        )
+        delete(receipt_type).where(receipt_type.audit_log_id == receipt.audit_log_id)
     )
     session.execute(
         update(finding_type)
@@ -1445,10 +1244,7 @@ def test_database_rejects_a_receipt_whose_evidence_is_not_the_exact_citation(
     session,
 ):
     scenario = _seed_transition(session)
-    _authorize(session, scenario.project)
-    [receipt] = run_automatic_carry_forward(
-        session, scenario.project.id
-    ).carried
+    [receipt] = run_automatic_carry_forward(session, scenario.project.id).carried
     receipt_type = type(receipt)
     values = {
         column.name: getattr(receipt, column.name)
@@ -1458,9 +1254,7 @@ def test_database_rejects_a_receipt_whose_evidence_is_not_the_exact_citation(
 
     session.execute(text("set local session_replication_role = replica"))
     session.execute(
-        delete(receipt_type).where(
-            receipt_type.audit_log_id == receipt.audit_log_id
-        )
+        delete(receipt_type).where(receipt_type.audit_log_id == receipt.audit_log_id)
     )
     session.execute(
         update(EvidenceLink)
@@ -1478,10 +1272,7 @@ def test_database_binds_receipt_citation_to_the_immutable_comparison_input(
     session,
 ):
     scenario = _seed_transition(session)
-    _authorize(session, scenario.project)
-    [receipt] = run_automatic_carry_forward(
-        session, scenario.project.id
-    ).carried
+    [receipt] = run_automatic_carry_forward(session, scenario.project.id).carried
     assert scenario.successor_candidate is not None
     receipt_type = type(receipt)
     values = {
@@ -1494,9 +1285,7 @@ def test_database_binds_receipt_citation_to_the_immutable_comparison_input(
 
     session.execute(text("set local session_replication_role = replica"))
     session.execute(
-        delete(receipt_type).where(
-            receipt_type.audit_log_id == receipt.audit_log_id
-        )
+        delete(receipt_type).where(receipt_type.audit_log_id == receipt.audit_log_id)
     )
     session.execute(
         update(Candidate)
@@ -1517,10 +1306,7 @@ def test_database_binds_receipt_citation_to_the_immutable_comparison_input(
 
 def test_database_rejects_a_receipt_with_an_unrelated_human_admission(session):
     scenario = _seed_transition(session)
-    _authorize(session, scenario.project)
-    [receipt] = run_automatic_carry_forward(
-        session, scenario.project.id
-    ).carried
+    [receipt] = run_automatic_carry_forward(session, scenario.project.id).carried
     assert scenario.successor_candidate is not None
     unrelated_admission = audit.record(
         session,
@@ -1530,9 +1316,7 @@ def test_database_rejects_a_receipt_with_an_unrelated_human_admission(session):
         entity_id=scenario.dependency.id,
         after={
             "candidate_id": scenario.successor_candidate.id,
-            "fields": deepcopy(
-                scenario.successor_candidate.payload_json["fields"]
-            ),
+            "fields": deepcopy(scenario.successor_candidate.payload_json["fields"]),
         },
     )
     receipt_type = type(receipt)
@@ -1549,9 +1333,7 @@ def test_database_rejects_a_receipt_with_an_unrelated_human_admission(session):
 
     session.execute(text("set local session_replication_role = replica"))
     session.execute(
-        delete(receipt_type).where(
-            receipt_type.audit_log_id == receipt.audit_log_id
-        )
+        delete(receipt_type).where(receipt_type.audit_log_id == receipt.audit_log_id)
     )
     session.execute(
         update(AuditLog)
@@ -1565,14 +1347,9 @@ def test_database_rejects_a_receipt_with_an_unrelated_human_admission(session):
             session.execute(insert(receipt_type).values(**values))
 
 
-def test_a_late_readiness_refusal_leaves_zero_partial_writes(
-    session, monkeypatch
-):
+def test_a_late_readiness_refusal_leaves_zero_partial_writes(session, monkeypatch):
     scenario = _seed_transition(session, prior_satisfying=True)
-    _authorize(session, scenario.project)
-    rendered_worklist = build_reviewer_worklist(
-        session, scenario.project.id
-    )
+    rendered_worklist = build_reviewer_worklist(session, scenario.project.id)
     [rendered_review] = rendered_worklist.reconfirmation
 
     # Model the row changing after the batch rendered its candidate but before
@@ -1595,18 +1372,14 @@ def test_a_late_readiness_refusal_leaves_zero_partial_writes(
     result = run_automatic_carry_forward(session, scenario.project.id)
 
     assert result.carried == ()
-    assert {item.reason for item in result.abstentions} == {
-        "readiness_source_changed"
-    }
+    assert {item.reason for item in result.abstentions} == {"readiness_source_changed"}
     assert _ledger_mutation_state(session, scenario) == before
     assert _automatic_entries(session, scenario.dependency.id) == ()
 
 
-def test_authorized_runs_write_durable_run_and_outcome_receipts(session):
+def test_released_policy_runs_write_durable_run_and_outcome_receipts(session):
     carry = _seed_transition(session)
     abstain = _seed_transition(session, successor_station="101+00")
-    _authorize(session, carry.project)
-    _authorize(session, abstain.project)
 
     carry_result = run_automatic_carry_forward(session, carry.project.id)
     abstain_result = run_automatic_carry_forward(session, abstain.project.id)
@@ -1656,27 +1429,18 @@ def test_rerunning_identical_dropped_abstention_does_not_duplicate_durable_outco
     session,
 ):
     scenario = _seed_transition(session, successor_dropped=True)
-    _authorize(session, scenario.project)
 
     first = run_automatic_carry_forward(session, scenario.project.id)
-    status_after_first = automatic_carry_forward_status(
-        session, scenario.project.id
-    )
+    status_after_first = automatic_carry_forward_status(session, scenario.project.id)
     second = run_automatic_carry_forward(session, scenario.project.id)
-    status_after_second = automatic_carry_forward_status(
-        session, scenario.project.id
-    )
+    status_after_second = automatic_carry_forward_status(session, scenario.project.id)
     runs = _carry_runs(session, scenario.project.id)
     outcomes = _carry_outcomes(session, scenario.project.id)
 
     assert first.carried == ()
-    assert {item.reason for item in first.abstentions} == {
-        "comparison_dropped"
-    }
+    assert {item.reason for item in first.abstentions} == {"comparison_dropped"}
     assert second.carried == ()
-    assert {item.reason for item in second.abstentions} == {
-        "comparison_dropped"
-    }
+    assert {item.reason for item in second.abstentions} == {"comparison_dropped"}
     assert len(runs) == 2
     assert (runs[0].applied_count, runs[0].abstained_count) == (0, 1)
     assert (runs[1].applied_count, runs[1].abstained_count) == (0, 0)
@@ -1691,28 +1455,15 @@ def test_read_only_status_exposes_policy_eligibility_and_lifetime_carries(sessio
     scenario = _seed_transition(session)
     before = _ledger_mutation_state(session, scenario)
 
-    disabled = automatic_carry_forward_status(session, scenario.project.id)
+    available = automatic_carry_forward_status(session, scenario.project.id)
 
-    assert disabled.enabled is False
-    assert disabled.policy_current is False
-    assert disabled.policy_approval_id is None
-    assert disabled.eligible_count == 0
-    assert disabled.carried_count == 0
-    assert disabled.abstention_reason_version == ABSTENTION_REASON_VERSION
-    # Disabled projects retain human Reconfirmation work; policy absence is
-    # not a machine decision and therefore cannot create an Abstention.
-    assert disabled.abstention_counts == {}
+    assert available.policy_version == POLICY_VERSION
+    assert len(available.policy_sha256) == 64
+    assert available.eligible_count == 1
+    assert available.carried_count == 0
+    assert available.abstention_reason_version == ABSTENTION_REASON_VERSION
+    assert available.abstention_counts == {}
     assert _ledger_mutation_state(session, scenario) == before
-
-    approval = _authorize(session, scenario.project)
-    authorized = automatic_carry_forward_status(session, scenario.project.id)
-    assert authorized.enabled is True
-    assert authorized.policy_current is True
-    assert authorized.policy_approval_id == approval.id
-    assert authorized.policy_version == POLICY_VERSION
-    assert authorized.approved_by == APPROVER.subject
-    assert authorized.eligible_count == 1
-    assert authorized.abstention_counts == {}
 
     run_automatic_carry_forward(session, scenario.project.id)
     carried = automatic_carry_forward_status(session, scenario.project.id)
@@ -1725,12 +1476,9 @@ def test_status_keeps_durable_abstentions_after_human_reconfirmation_clears_work
     session,
 ):
     scenario = _seed_transition(session, successor_station="100 + 00")
-    _authorize(session, scenario.project)
 
     first = run_automatic_carry_forward(session, scenario.project.id)
-    status_before_human = automatic_carry_forward_status(
-        session, scenario.project.id
-    )
+    status_before_human = automatic_carry_forward_status(session, scenario.project.id)
     _human_reconfirm(
         session,
         scenario,
@@ -1743,28 +1491,19 @@ def test_status_keeps_durable_abstentions_after_human_reconfirmation_clears_work
         ),
     )
 
-    status_after_human = automatic_carry_forward_status(
-        session, scenario.project.id
-    )
+    status_after_human = automatic_carry_forward_status(session, scenario.project.id)
 
     assert first.carried == ()
-    assert {item.reason for item in first.abstentions} == {
-        "successor_fields_not_exact"
-    }
-    assert status_before_human.abstention_counts == {
-        "successor_fields_not_exact": 1
-    }
+    assert {item.reason for item in first.abstentions} == {"successor_fields_not_exact"}
+    assert status_before_human.abstention_counts == {"successor_fields_not_exact": 1}
     assert status_after_human.eligible_count == 0
-    assert status_after_human.abstention_counts == {
-        "successor_fields_not_exact": 1
-    }
+    assert status_after_human.abstention_counts == {"successor_fields_not_exact": 1}
 
 
 def test_cross_session_human_reconfirmation_beats_a_stale_machine_runner():
     project_id: int | None = None
     with Session() as setup:
         scenario = _seed_transition(setup)
-        _authorize(setup, scenario.project)
         project_id = scenario.project.id
         dependency_id = scenario.dependency.id
         evidence_before = tuple(
@@ -1851,36 +1590,45 @@ def test_cross_session_human_reconfirmation_beats_a_stale_machine_runner():
 
         assert result.carried == ()
         assert result.abstentions == ()
-        assert tuple(
-            stale_machine.scalars(
-                select(EvidenceLink.id)
-                .where(EvidenceLink.dependency_id == dependency_id)
-                .order_by(EvidenceLink.id)
-            ).all()
-        ) == evidence_ids_before_machine
-        assert tuple(
-            stale_machine.execute(
-                select(
-                    OperativeSupport.id,
-                    OperativeSupport.evidence_link_id,
-                    OperativeSupport.role,
-                    OperativeSupport.field_name,
-                )
-                .where(OperativeSupport.dependency_id == dependency_id)
-                .order_by(OperativeSupport.id)
-            ).all()
-        ) == support_before_machine
-        assert tuple(
-            stale_machine.scalars(
-                select(AuditLog.id)
-                .where(
-                    AuditLog.entity_type == audit.DEPENDENCY,
-                    AuditLog.entity_id == dependency_id,
-                    AuditLog.action == audit.AUTOMATIC_CARRY_FORWARD,
-                )
-                .order_by(AuditLog.id)
-            ).all()
-        ) == machine_audits_before
+        assert (
+            tuple(
+                stale_machine.scalars(
+                    select(EvidenceLink.id)
+                    .where(EvidenceLink.dependency_id == dependency_id)
+                    .order_by(EvidenceLink.id)
+                ).all()
+            )
+            == evidence_ids_before_machine
+        )
+        assert (
+            tuple(
+                stale_machine.execute(
+                    select(
+                        OperativeSupport.id,
+                        OperativeSupport.evidence_link_id,
+                        OperativeSupport.role,
+                        OperativeSupport.field_name,
+                    )
+                    .where(OperativeSupport.dependency_id == dependency_id)
+                    .order_by(OperativeSupport.id)
+                ).all()
+            )
+            == support_before_machine
+        )
+        assert (
+            tuple(
+                stale_machine.scalars(
+                    select(AuditLog.id)
+                    .where(
+                        AuditLog.entity_type == audit.DEPENDENCY,
+                        AuditLog.entity_id == dependency_id,
+                        AuditLog.action == audit.AUTOMATIC_CARRY_FORWARD,
+                    )
+                    .order_by(AuditLog.id)
+                ).all()
+            )
+            == machine_audits_before
+        )
         assert stale_review.successor_candidate_id is not None
         assert evidence_before != ()
         assert support_before != ()
@@ -1904,7 +1652,6 @@ def test_status_uses_the_same_versioned_abstention_reasons_as_execution(
     session, scenario_options, reason
 ):
     scenario = _seed_transition(session, **scenario_options)
-    _authorize(session, scenario.project)
 
     status = automatic_carry_forward_status(session, scenario.project.id)
     result = run_automatic_carry_forward(session, scenario.project.id)
@@ -1913,28 +1660,26 @@ def test_status_uses_the_same_versioned_abstention_reasons_as_execution(
     assert status.abstention_counts == {reason: 1}
     assert status.eligible_count == 0
     assert {item.reason for item in result.abstentions} == {reason}
-    assert {
-        item.reason_version for item in result.abstentions
-    } == {ABSTENTION_REASON_VERSION}
+    assert {item.reason_version for item in result.abstentions} == {
+        ABSTENTION_REASON_VERSION
+    }
 
 
 def test_database_rejects_an_abstained_outcome_with_unknown_reason_or_version(
     session,
 ):
     scenario = _seed_transition(session, successor_station="101+00")
-    approval = _authorize(session, scenario.project)
-    [abstention] = run_automatic_carry_forward(
-        session, scenario.project.id
-    ).abstentions
+    policy_status = automatic_carry_forward_status(session, scenario.project.id)
+    [abstention] = run_automatic_carry_forward(session, scenario.project.id).abstentions
 
     with pytest.raises(IntegrityError, match="binding is invalid"):
         with session.begin_nested():
             run = PolicyRun(
                 family="automatic-carry-forward",
                 project_id=scenario.project.id,
-                policy_approval_id=approval.id,
-                policy_version=approval.policy_version,
-                policy_sha256=approval.policy_sha256,
+                policy_approval_id=None,
+                policy_version=policy_status.policy_version,
+                policy_sha256=policy_status.policy_sha256,
                 abstention_reason_version=ABSTENTION_REASON_VERSION,
                 applied_count=0,
                 abstained_count=1,
@@ -1945,7 +1690,7 @@ def test_database_rejects_an_abstained_outcome_with_unknown_reason_or_version(
                 AutomaticCarryForwardOutcome(
                     run_id=run.id,
                     project_id=scenario.project.id,
-                    policy_approval_id=approval.id,
+                    policy_approval_id=None,
                     dependency_id=abstention.dependency_id,
                     outcome="abstained",
                     reason="forged_reason",
@@ -1965,8 +1710,8 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
 ):
     carry = _seed_transition(session)
     count_drift = _seed_transition(session, successor_station="101+00")
-    carry_approval = _authorize(session, carry.project)
-    count_drift_approval = _authorize(session, count_drift.project)
+    carry_policy = automatic_carry_forward_status(session, carry.project.id)
+    count_drift_policy = automatic_carry_forward_status(session, count_drift.project.id)
     [receipt] = run_automatic_carry_forward(session, carry.project.id).carried
 
     with pytest.raises(
@@ -1976,9 +1721,9 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
             inflated = PolicyRun(
                 family="automatic-carry-forward",
                 project_id=carry.project.id,
-                policy_approval_id=carry_approval.id,
-                policy_version=carry_approval.policy_version,
-                policy_sha256=carry_approval.policy_sha256,
+                policy_approval_id=None,
+                policy_version=carry_policy.policy_version,
+                policy_sha256=carry_policy.policy_sha256,
                 abstention_reason_version=ABSTENTION_REASON_VERSION,
                 applied_count=2,
                 abstained_count=0,
@@ -2000,9 +1745,9 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
             run = PolicyRun(
                 family="automatic-carry-forward",
                 project_id=count_drift.project.id,
-                policy_approval_id=count_drift_approval.id,
-                policy_version=count_drift_approval.policy_version,
-                policy_sha256=count_drift_approval.policy_sha256,
+                policy_approval_id=None,
+                policy_version=count_drift_policy.policy_version,
+                policy_sha256=count_drift_policy.policy_sha256,
                 abstention_reason_version=ABSTENTION_REASON_VERSION,
                 applied_count=0,
                 abstained_count=1,
@@ -2013,7 +1758,7 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
                 AutomaticCarryForwardOutcome(
                     run_id=run.id,
                     project_id=count_drift.project.id,
-                    policy_approval_id=count_drift_approval.id,
+                    policy_approval_id=None,
                     dependency_id=count_drift.dependency.id,
                     outcome="abstained",
                     reason="comparison_changed",
@@ -2029,7 +1774,7 @@ def test_deferred_run_count_constraints_reject_inflated_runs_and_extra_outcomes(
                 AutomaticCarryForwardOutcome(
                     run_id=run.id,
                     project_id=count_drift.project.id,
-                    policy_approval_id=count_drift_approval.id,
+                    policy_approval_id=None,
                     dependency_id=count_drift.dependency.id,
                     outcome="abstained",
                     reason="comparison_ambiguous",

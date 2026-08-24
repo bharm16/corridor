@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # The development Ledger is archived and retired, not rebuilt
 
 ADR-0020 correctly preserved human-only Admission but chose to rebuild 141 noncompliant development Dependencies through manual Adjudication. That rebuild is superseded: the records have no production identity worth preserving, and asking a maintainer to curate them creates labor without creating independent truth. Corridor seals and verifies the complete development graph and original actor labels as one immutable, independently readable **Development Ledger Archive receipt**, then physically deletes only the corresponding active Assertions, Operative Support, Evidence Links, Dependency Events, and Dependencies. The Candidate backlog remains, and the compliant Ledger starts empty. Production Admission remains attributable to a human; automation must never relabel or re-admit these development artifacts merely to make the Ledger look populated.

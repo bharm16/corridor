@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # A model may brief on the record, never be it
 
 The exception engine is deterministic by construction and blind by measurement.
@@ -18,7 +22,7 @@ Four constraints, each inherited from a boundary this system already enforces:
 
 2. **The Briefing is a view, never the record.** It is regenerable, labelled as model-drafted, and stamped with the prompt version and model that produced it (the provenance every Candidate already carries, v0-build-spec §7) **plus the evaluation time and ruleset version of the Exceptions it cites** — because Exceptions are computed at read time and stored nowhere, a citation to one is only re-checkable against the moment and ruleset that computed it. That is ADR-0003's own discipline for Derivations, applied to prose. Deleting every Briefing loses no fact. It is never stored as record, never diffed as record, never cited as record.
 
-3. **What the model surfaces becomes record only through the front door.** If the Briefing notices what looks like a Commitment, a Committed Date Change, or a new risk, that observation enters as a **Candidate** with citations and waits for **Adjudication** — the only path into the Ledger, exactly as the glossary defines those terms and v0-build-spec §8 mandates for every extractor. The model proposes; a human accepts; nothing model-written touches the Ledger directly. The Briefing is an extractor whose input happens to be the whole record instead of one page.
+3. **What the model surfaces becomes record only through the front door.** If the Briefing notices what looks like a Commitment, a Committed Date Change, or a new risk, that observation enters as a **Candidate** with citations. It reaches the Project Record only through human Adjudication or an exact deterministic Admission class under ADR-0042; the model verdict itself never admits.
 
 4. **The floor is not negotiable.** Every fired Exception appears in or under the Briefing; the model may explain one, contextualize one, or argue one is less alarming than it looks — it may never omit or bury one. The deterministic list is the floor the narrative stands on, and the model does not get to talk the floor out of the report.
 
