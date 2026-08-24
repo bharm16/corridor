@@ -10,4 +10,3 @@
 - **Corridor Operations -> Project Record**: verified Candidates enter through Admission; an Abstention leaves the Project Record unchanged.
 - **Project Record -> Corridor Operations**: Operative Support and registered Supersession identify the revision work that Corridor Operations must process.
 - **Project Record -> Publication**: Reports and Briefings read the Project Record; an Approved Export seals one fixed external Report.
-

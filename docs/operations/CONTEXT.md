@@ -75,4 +75,3 @@ _Avoid_: cohort, sample, batch
 **Lane**:
 A bounded operations path whose offered Candidates and allowed mutations share one scope.
 _Avoid_: tab, view, filter, mode
-
