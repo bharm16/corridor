@@ -42,6 +42,7 @@ from corridor.report import (
     render,
 )
 from corridor.principals import HumanPrincipal
+from corridor.project_reading import freeze_project_reading
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 TEST_PRINCIPAL = HumanPrincipal("local:bryce")
@@ -152,6 +153,27 @@ def _a_link_of(session, project_id):
         .where(Dependency.project_id == project_id)
         .order_by(EvidenceLink.id)
     ).first()
+
+
+def test_frozen_project_reading_pairs_one_population_and_statement_read(
+    session, project_with_two_dependencies
+):
+    reading = freeze_project_reading(
+        session,
+        project_with_two_dependencies.id,
+        today=date(2026, 8, 24),
+    )
+
+    assert reading.evaluation.statement_publication is reading.statement_publication
+    assert reading.evaluation.committed_dates == (
+        reading.statement_publication.committed_dates
+    )
+    assert {row.dependency.id for row in reading.rows} == set(
+        reading.statement_publication.by_dependency
+    )
+    assert reading.dependency_ids == tuple(
+        row.dependency.id for row in reading.rows
+    )
 
 
 def _record_exact_cited_statement(

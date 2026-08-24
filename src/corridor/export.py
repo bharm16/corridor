@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_events import StatementPublication
 from corridor.exceptions import Evaluation, format_exception_label
-from corridor.ledger import browse, primary_evidence
-from corridor.models import Dependency, Project
+from corridor.ledger import primary_evidence
+from corridor.models import Project
+from corridor.project_reading import freeze_project_reading
 
 COLUMNS = [
     "Ref",
@@ -85,40 +85,15 @@ def to_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
-    project = session.get(Project, project_id)
-    if evaluation.project_id != project_id:
-        raise ValueError("the evaluation belongs to another project")
-    if statement_publication.project_id != project_id:
-        raise ValueError("the statement publication belongs to another project")
-    if evaluation.committed_dates != statement_publication.committed_dates:
-        raise ValueError(
-            "the evaluation and statement publication describe different "
-            "Committed Date readings"
-        )
-    if evaluation.statement_publication_fingerprint != statement_publication.fingerprint:
-        raise ValueError(
-            "the evaluation and statement publication describe different "
-            "statement provenance"
-        )
-    current_population = set(
-        session.scalars(
-            select(Dependency.id).where(
-                Dependency.project_id == project_id,
-                Dependency.dismissed_at.is_(None),
-            )
-        ).all()
+    reading = freeze_project_reading(
+        session,
+        project_id,
+        document_only=statement_publication.document_only,
+        evaluation=evaluation,
+        statement_publication=statement_publication,
     )
-    if current_population != set(statement_publication.by_dependency):
-        raise ValueError(
-            "the Ledger population changed after the paired evaluation and "
-            "statement publication"
-        )
-    rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
-    if {row.dependency.id for row in rows} != set(statement_publication.by_dependency):
-        raise ValueError(
-            "the Ledger population changed after the paired evaluation and "
-            "statement publication"
-        )
+    project = reading.project
+    rows = list(reading.rows)
 
     by_dependency = {
         dependency_id: [format_exception_label(e) for e in found]

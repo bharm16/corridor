@@ -31,6 +31,7 @@ from corridor.models import (
     ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.project_reading import validate_frozen_reading
 from corridor.report import Report, assert_no_bare_cells, build_report, render
 
 if TYPE_CHECKING:
@@ -392,21 +393,23 @@ def _validate_rendered_report(
         raise ReleaseRefusal("released content requires one frozen Evaluation and statement reading")
     if report.document_only != publication.document_only:
         raise ReleaseRefusal("Report provenance mode disagrees with its statement reading")
-    if evaluation.project_id != project_id or publication.project_id != project_id:
-        raise ReleaseRefusal("released content belongs to another project")
+    covered_ids = tuple(dependency_id for dependency_id, _ in report.covered_records)
+    if len(covered_ids) != len(set(covered_ids)):
+        raise ReleaseRefusal("Report covered records disagree with its statement reading")
+    try:
+        validate_frozen_reading(
+            project_id=project_id,
+            evaluation=evaluation,
+            statement_publication=publication,
+            dependency_ids=covered_ids,
+            document_only=report.document_only,
+        )
+    except ValueError as exc:
+        raise ReleaseRefusal(str(exc)) from exc
     if evaluation.statement_publication is not publication:
         raise ReleaseRefusal("Evaluation and Report do not share one frozen statement reading")
-    if evaluation.statement_publication_fingerprint != publication.fingerprint:
-        raise ReleaseRefusal("Evaluation and Report statement versions are inconsistent")
     if dict(report.committed_dates) != dict(evaluation.committed_dates):
         raise ReleaseRefusal("Report and Evaluation Committed Date readings are inconsistent")
-    if dict(evaluation.committed_dates) != publication.committed_dates:
-        raise ReleaseRefusal("Evaluation and statement reading have inconsistent Committed Dates")
-    covered_ids = tuple(dependency_id for dependency_id, _ in report.covered_records)
-    if len(covered_ids) != len(set(covered_ids)) or set(covered_ids) != set(
-        publication.by_dependency
-    ):
-        raise ReleaseRefusal("Report covered records disagree with its statement reading")
     try:
         assert_no_bare_cells(report)
     except Exception as exc:

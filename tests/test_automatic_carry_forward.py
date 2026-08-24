@@ -72,6 +72,7 @@ from corridor.supersession_review import (
     build_reviewer_worklist,
     reconfirm_operative_support,
 )
+from corridor.support_transfer import prove_support_transfer
 
 
 REVIEWER = HumanPrincipal("local:carry-forward-reviewer")
@@ -772,6 +773,31 @@ def test_automatic_carry_forward_is_disabled_by_default(session):
     ).reconfirmation
     assert review.successor_candidate_id == scenario.successor_candidate.id
     assert _automatic_entries(session, scenario.dependency.id) == ()
+
+
+def test_support_transfer_proof_freezes_one_exact_current_read(session):
+    scenario = _seed_transition(session)
+    [review] = build_reviewer_worklist(
+        session, scenario.project.id
+    ).reconfirmation
+
+    proof = prove_support_transfer(
+        session,
+        project_id=scenario.project.id,
+        review=review,
+    )
+
+    assert proof.dependency.id == scenario.dependency.id
+    assert proof.comparison.id == scenario.comparison.id
+    assert proof.finding.id == scenario.finding.id
+    assert proof.successor_candidate.id == scenario.successor_candidate.id
+    assert proof.citation == {
+        "document_id": scenario.successor.id,
+        "page": 1,
+        "quote": "FOC1-1 AT&T Telecom 100+00",
+        "verified": True,
+    }
+    assert proof.scope_fingerprint == review.scope_fingerprint
 
 
 def test_policy_authorization_is_attributable_canonical_and_explicitly_active(

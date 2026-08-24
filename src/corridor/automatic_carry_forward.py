@@ -28,7 +28,7 @@ from corridor import project_lock as project_lock_module
 from corridor import revision_comparison as revision_comparison_module
 from corridor import supersession as supersession_module
 from corridor import supersession_review as supersession_review_module
-from corridor.extraction_runs import candidate_input_snapshot
+from corridor import support_transfer as support_transfer_module
 from corridor.models import (
     ActiveAutomaticCarryForwardPolicy,
     AuditLog,
@@ -36,16 +36,9 @@ from corridor.models import (
     PolicyApproval,
     AutomaticCarryForwardReceipt,
     PolicyRun,
-    Candidate,
-    Dependency,
-    EvidenceLink,
     Project,
 )
-from corridor.operative_support import (
-    UnsafeSupportTransfer,
-    _transfer_operative_scopes_under_lock,
-    evidence_is_scoped_to_dependency,
-)
+from corridor.operative_support import UnsafeSupportTransfer
 from corridor.principals import (
     HumanPrincipal,
     InvalidHumanPrincipal,
@@ -55,15 +48,14 @@ from corridor.project_lock import lock_project
 from corridor.revision_comparison import (
     DEFAULT_MATCHER_CONFIG,
     DEFAULT_MATCHER_VERSION,
-    RevisionComparisonError,
-    read_revision_comparison,
+)
+from corridor.support_transfer import (
+    SupportTransferProofRefusal,
+    apply_proven_support_transfer,
+    prove_support_transfer,
 )
 from corridor.supersession_review import (
     SupersessionReview,
-    _admission_for_scope,
-    _finding_by_id,
-    _input_by_candidate_id,
-    _verified_successor_citation,
     build_reviewer_worklist,
 )
 
@@ -577,114 +569,28 @@ def _carry_one(
     review: SupersessionReview,
     assess_only: bool = False,
 ) -> tuple[AutomaticCarryForwardReceipt | None, str | None]:
-    dependency = session.get(Dependency, review.dependency_id)
-    if dependency is None or dependency.project_id != project_id:
-        return None, "dependency_unavailable"
-    if (
-        review.predecessor_document_id is None
-        or review.successor_document_id is None
-        or review.comparison_id is None
-        or review.finding_id is None
-        or review.predecessor_candidate_id is None
-        or review.successor_candidate_id is None
-    ):
-        return None, "comparison_not_one_to_one"
-
     try:
-        readback = read_revision_comparison(session, review.comparison_id)
-    except RevisionComparisonError:
-        return None, "comparison_integrity_failure"
-    comparison = readback.comparison
-    if (
-        comparison.matcher_version
-        != approval.policy_json.get("matcher_version")
-        or policy.canonical_sha256(comparison.matcher_config)
-        != approval.policy_json.get("matcher_config_sha256")
-    ):
-        return None, "comparison_policy_unapproved"
-    finding = _finding_by_id(readback, review.finding_id)
-    if finding is None:
-        return None, "predecessor_finding_unavailable"
-    if finding.state != "unchanged":
-        return None, f"comparison_{finding.state}"
-
-    admissions = audit.admission_records_for_dependencies(
-        session, (dependency.id,)
-    ).get(dependency.id, ())
-    support_transfers = audit.support_transfer_records_for_dependencies(
-        session, (dependency.id,)
-    ).get(dependency.id, ())
-    admission, _, admission_reason = _admission_for_scope(
-        session,
-        dependency,
-        review.predecessor_document_id,
-        admissions,
-        support_transfers,
-    )
-    if admission is None:
-        return None, admission_reason or "admission_link_unavailable"
-
-    predecessor_input = _input_by_candidate_id(
-        readback.predecessor_inputs,
-        review.predecessor_candidate_id,
-    )
-    successor_input = _input_by_candidate_id(
-        readback.successor_inputs,
-        review.successor_candidate_id,
-    )
-    if predecessor_input is None or successor_input is None:
-        return None, "comparison_input_unavailable"
-    successor_fields = (
-        successor_input.get("payload_json") or {}
-    ).get("fields")
-    if (
-        not isinstance(admission.admitted_fields, dict)
-        or not isinstance(successor_fields, dict)
-        or successor_fields != admission.admitted_fields
-    ):
-        return None, "successor_fields_not_exact"
-
-    successor = session.get(Candidate, review.successor_candidate_id)
-    if successor is None:
-        return None, "successor_not_actionable"
-    live_input = {
-        **candidate_input_snapshot(successor),
-        "extraction_run_id": successor.extraction_run_id,
-    }
-    if live_input != successor_input:
-        return None, "successor_candidate_changed"
-    try:
-        citation = _verified_successor_citation(
-            successor_input,
-            review.successor_document_id,
+        proof = prove_support_transfer(
+            session,
+            project_id=project_id,
+            review=review,
+            expected_matcher_version=approval.policy_json.get(
+                "matcher_version"
+            ),
+            expected_matcher_config_sha256=approval.policy_json.get(
+                "matcher_config_sha256"
+            ),
+            require_exact_admitted_fields=True,
         )
-    except ValueError:
-        return None, "successor_provenance_unsafe"
-
-    for scope in review.superseded_scopes:
-        if scope.role == "publication":
-            continue
-        if scope.role != "readiness":
-            return None, "unsupported_operative_support_role"
-        prior_readiness = session.get(
-            EvidenceLink,
-            scope.evidence.evidence_link_id,
-        )
-        if not evidence_is_scoped_to_dependency(
-            session, prior_readiness, dependency.id, require_sufficiency=True
-        ):
-            return None, "readiness_source_changed"
+    except SupportTransferProofRefusal as exc:
+        return None, exc.reason
 
     if assess_only:
         return None, None
 
     try:
-        transfer = _transfer_operative_scopes_under_lock(
-            session,
-            dependency_id=dependency.id,
-            successor_document_id=review.successor_document_id,
-            citation=citation,
-            scopes=review.superseded_scopes,
+        transfer = apply_proven_support_transfer(
+            session, proof,
             designated_by=MACHINE_ACTOR,
         )
     except UnsafeSupportTransfer:
@@ -694,15 +600,15 @@ def _carry_one(
     after_receipt = {
         "policy_approval_id": approval.id,
         "policy_sha256": approval.policy_sha256,
-        "comparison_id": comparison.id,
-        "finding_id": finding.id,
+        "comparison_id": proof.comparison.id,
+        "finding_id": proof.finding.id,
         "predecessor_candidate_id": review.predecessor_candidate_id,
         "successor_candidate_id": review.successor_candidate_id,
         "new_evidence_link_id": new_evidence.id,
-        "scope_fingerprint": [list(item) for item in review.scope_fingerprint],
-        "origin_admission_audit_id": admission.origin.audit_id,
+        "scope_fingerprint": [list(item) for item in proof.scope_fingerprint],
+        "origin_admission_audit_id": proof.admission.origin.audit_id,
         "predecessor_support_transfer_audit_id": (
-            admission.latest_support_transfer_audit_id
+            proof.admission.latest_support_transfer_audit_id
         ),
         "moved_scopes": list(transfer.moved_scopes),
     }
@@ -711,7 +617,7 @@ def _carry_one(
         actor=MACHINE_ACTOR,
         action=audit.AUTOMATIC_CARRY_FORWARD,
         entity_type=audit.DEPENDENCY,
-        entity_id=dependency.id,
+        entity_id=proof.dependency.id,
         before=before_receipt,
         after=after_receipt,
     )
@@ -719,15 +625,15 @@ def _carry_one(
         audit_log_id=audit_entry.id,
         project_id=project_id,
         policy_approval_id=approval.id,
-        dependency_id=dependency.id,
-        comparison_id=comparison.id,
-        finding_id=finding.id,
+        dependency_id=proof.dependency.id,
+        comparison_id=proof.comparison.id,
+        finding_id=proof.finding.id,
         predecessor_candidate_id=review.predecessor_candidate_id,
         successor_candidate_id=review.successor_candidate_id,
         new_evidence_link_id=new_evidence.id,
-        origin_admission_audit_id=admission.origin.audit_id,
+        origin_admission_audit_id=proof.admission.origin.audit_id,
         predecessor_support_transfer_audit_id=(
-            admission.latest_support_transfer_audit_id
+            proof.admission.latest_support_transfer_audit_id
         ),
         before_json=before_receipt,
         after_json=after_receipt,
@@ -759,6 +665,7 @@ def _safety_source_paths() -> tuple[tuple[str, Path], ...]:
         ("corridor.revision_comparison", Path(revision_comparison_module.__file__)),
         ("corridor.supersession", Path(supersession_module.__file__)),
         ("corridor.supersession_review", Path(supersession_review_module.__file__)),
+        ("corridor.support_transfer", Path(support_transfer_module.__file__)),
         (
             "corridor.migrations.9d4f2a7c1e83",
             Path(__file__).parent

@@ -66,15 +66,10 @@ from corridor.m8_acceptance_database import (
     provision_disposable_postgres,
     read_migration_head,
 )
+from corridor.rehearsal_environment import SealedRehearsalEnvironment
 from corridor.sh99_admission_acceptance import (
     REPO_ROOT,
-    _database_url,
-    _dump_source_database,
     _provision_database,
-    _require_clean_source,
-    _restore_source_database,
-    _source_database,
-    _source_migration_head,
 )
 from corridor.supersession import actionable_candidate_query
 from corridor.work_list import build_work_list
@@ -126,23 +121,19 @@ def run_event_admission_acceptance(
 ) -> EventAdmissionAcceptanceResult:
     """Replay both policy versions and append only the resulting gate receipt."""
     provision = provision_database or _provision_database
-    source = _require_clean_source(config.expected_clean_git_revision)
-    migration_head = _source_migration_head()
-    shared_head = read_migration_head(
-        config.source_database_url,
+    rehearsal = SealedRehearsalEnvironment.open(
+        source_database_url=config.source_database_url,
+        expected_checkout_revision=config.expected_clean_git_revision,
         repo_root=REPO_ROOT,
-        error_cls=ValueError,
     )
-    if shared_head != migration_head:
-        raise ValueError("source database migration head does not match checked-out source")
+    source = rehearsal.checkout
+    migration_head = rehearsal.checkout_migration_head
     migration_rehearsal = _rehearse_predecessor_upgrade(
         config.postgres_admin_url, expected_head=migration_head
     )
-    source_database = _source_database(config.source_database_url)
-
     with tempfile.TemporaryDirectory(prefix="corridor-event-admission-acceptance-") as parent:
         dump_path = Path(parent) / "source.dump"
-        _dump_source_database(source_database, dump_path)
+        rehearsal.capture(dump_path)
         source_dump_sha256 = hashlib.sha256(dump_path.read_bytes()).hexdigest()
         clone_names: list[str] = []
 
@@ -150,11 +141,11 @@ def run_event_admission_acceptance(
             clone_names.append(predecessor_database.name)
             if predecessor_database.migration_head != migration_head:
                 raise ValueError("predecessor clone migration head does not match source")
-            _restore_source_database(
-                source_database, dump_path, predecessor_database.name
-            )
+            rehearsal.restore(dump_path, predecessor_database.name)
             predecessor = _run_policy_clone(
-                _database_url(config.postgres_admin_url, predecessor_database.name),
+                rehearsal.clone_url(
+                    config.postgres_admin_url, predecessor_database.name
+                ),
                 config.project_slug,
                 EVENT_ADMISSION_POLICY_VERSION,
                 repeat=False,
@@ -164,9 +155,11 @@ def run_event_admission_acceptance(
             clone_names.append(opt_in_database.name)
             if opt_in_database.migration_head != migration_head:
                 raise ValueError("opt-in clone migration head does not match source")
-            _restore_source_database(source_database, dump_path, opt_in_database.name)
+            rehearsal.restore(dump_path, opt_in_database.name)
             opt_in = _run_policy_clone(
-                _database_url(config.postgres_admin_url, opt_in_database.name),
+                rehearsal.clone_url(
+                    config.postgres_admin_url, opt_in_database.name
+                ),
                 config.project_slug,
                 UNKNOWN_SCOPE_POLICY_VERSION,
                 repeat=True,
@@ -854,7 +847,9 @@ def _rehearse_predecessor_upgrade(
         database_prefix="corridor_unknown_scope_upgrade_",
         migration_revision=predecessor,
     ) as database:
-        database_url = _database_url(postgres_admin_url, database.name)
+        database_url = SealedRehearsalEnvironment.clone_url(
+            postgres_admin_url, database.name
+        )
         completed = subprocess.run(
             ["uv", "run", "alembic", "upgrade", "head"],
             cwd=REPO_ROOT,

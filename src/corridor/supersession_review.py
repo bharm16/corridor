@@ -38,8 +38,6 @@ from corridor.models import (
 from corridor.operative_support import (
     ResolvedSupport,
     SupersededOperativeScope,
-    UnsafeSupportTransfer,
-    _transfer_operative_scopes_under_lock,
     evidence_is_scoped_to_dependency,
     readiness_frontier_before_audit,
     resolve_operative_support,
@@ -692,74 +690,38 @@ def reconfirm_operative_support(
                 "the selected Reconfirmation is stale or no longer safe"
             )
         review = matches[0]
-        admission_records = audit.admission_records_for_dependencies(
-            session, (dependency_id,)
-        ).get(dependency_id, ())
-        support_transfer_records = (
-            audit.support_transfer_records_for_dependencies(
-                session, (dependency_id,)
-            ).get(dependency_id, ())
+        from corridor.support_transfer import (
+            SupportTransferProofRefusal,
+            apply_proven_support_transfer,
+            prove_support_transfer,
         )
-        admission, _, admission_reason = _admission_for_scope(
-            session,
-            dependency,
-            predecessor_document_id,
-            admission_records,
-            support_transfer_records,
-        )
-        if admission is None:
-            raise ReconfirmationUnavailable(
-                admission_reason or "Admission lineage is unavailable"
-            )
-
         try:
-            readback = read_revision_comparison(session, comparison_id)
-        except RevisionComparisonError as exc:
-            raise ReconfirmationUnavailable(str(exc)) from exc
-        finding = _finding_by_id(readback, finding_id)
-        if finding is None:
-            raise ReconfirmationUnavailable(
-                "the selected comparison finding does not exist"
-            )
-        successor_input = _input_by_candidate_id(
-            readback.successor_inputs, successor_candidate_id
-        )
-        if successor_input is None:
-            raise ReconfirmationUnavailable(
-                "the selected successor is not an immutable comparison input"
-            )
-        citation = _verified_successor_citation(
-            successor_input, review.successor_document_id
-        )
-
-        try:
-            transfer = _transfer_operative_scopes_under_lock(
+            proof = prove_support_transfer(
                 session,
-                dependency_id=dependency_id,
-                successor_document_id=review.successor_document_id,
-                citation=citation,
-                scopes=review.superseded_scopes,
+                project_id=project_id,
+                review=review,
+            )
+            transfer = apply_proven_support_transfer(
+                session, proof,
                 designated_by=principal.subject,
             )
-        except UnsafeSupportTransfer as exc:
+        except (SupportTransferProofRefusal, ValueError) as exc:
             raise ReconfirmationUnavailable(str(exc)) from exc
         new_evidence = transfer.evidence
         before_receipt = transfer.before_json
         after_receipt = {
-            "comparison_id": comparison_id,
-            "finding_id": finding_id,
+            "comparison_id": proof.comparison.id,
+            "finding_id": proof.finding.id,
             "predecessor_candidate_id": review.predecessor_candidate_id,
             "successor_candidate_id": successor_candidate_id,
             "new_evidence_link_id": new_evidence.id,
-            "scope_fingerprint": [
-                list(item) for item in submitted_scope_fingerprint
-            ],
-            "origin_admission_audit_id": admission.origin.audit_id,
+            "scope_fingerprint": [list(item) for item in proof.scope_fingerprint],
+            "origin_admission_audit_id": proof.admission.origin.audit_id,
             "predecessor_support_transfer_audit_id": (
-                admission.latest_support_transfer_audit_id
+                proof.admission.latest_support_transfer_audit_id
             ),
             "predecessor_reconfirmation_audit_id": (
-                admission.latest_support_transfer_audit_id
+                proof.admission.latest_support_transfer_audit_id
             ),
             "moved_scopes": list(transfer.moved_scopes),
         }

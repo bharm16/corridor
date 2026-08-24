@@ -44,7 +44,6 @@ from corridor.exceptions import (
     Evaluation,
     Thresholds,
     evaluate_dependency,
-    evaluate_project,
 )
 from corridor.models import (
     Assertion,
@@ -52,6 +51,7 @@ from corridor.models import (
     DocPage,
     EvidenceLink,
 )
+from corridor.project_reading import freeze_project_reading
 from corridor.verify import quote_appears_on, threshold_for
 
 # Versioned like every extractor, and for the same reason (ADR-0003's
@@ -184,42 +184,22 @@ def brief_project(
     stays one read and one model call per invocation; there is no per-record
     fan-out and no batch path.
     """
-    from corridor.models import Project
-
-    project = session.get(Project, project_id)
-    if project is None:
-        raise LookupError(f"no project {project_id}")
-    dependencies = list(
-        session.scalars(
-            select(Dependency)
-            .where(
-                Dependency.project_id == project_id,
-                # A briefing narrates the working list; a dismissed record
-                # left it, with its reason on file (ADR-0032).
-                Dependency.dismissed_at.is_(None),
-            )
-            .order_by(Dependency.ref_code)
-        )
-    )
-    publication = published_dependency_statements(
+    reading = freeze_project_reading(
         session,
-        (dependency.id for dependency in dependencies),
-        project_id=project_id,
+        project_id,
+        today=today,
     )
+    dependencies = [row.dependency for row in reading.rows]
+    publication = reading.statement_publication
     return _brief(
         session,
         dependencies,
-        ref_code=f"{project.slug} — {len(dependencies)} records",
+        ref_code=f"{reading.project.slug} — {len(dependencies)} records",
         client=client,
         # One reading for the whole briefing. Every record used to take
         # its own `exceptions_for`, so a project briefing spanning N
         # records computed N clocks and stamped one of them.
-        evaluation=evaluate_project(
-            session,
-            project_id,
-            today=today,
-            statement_publication=publication,
-        ),
+        evaluation=reading.evaluation,
         publication=publication,
         project_scope=True,
     )

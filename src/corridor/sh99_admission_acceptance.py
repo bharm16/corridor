@@ -25,13 +25,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 from typing import Any
 
 from sqlalchemy import create_engine, or_, select, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -42,8 +40,6 @@ from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     ProvisionedDatabase,
     provision_disposable_postgres,
-    read_migration_head,
-    require_local_postgres_host,
 )
 from corridor.models import (
     ActiveExtractionRun,
@@ -72,6 +68,7 @@ from corridor.models import (
     WorkDecision,
 )
 from corridor.m8_acceptance_publication import publish_directory_once
+from corridor.rehearsal_environment import SealedRehearsalEnvironment
 
 
 SNAPSHOT_SCHEMA_VERSION = "corridor.sh99-real-admission-source-snapshot.v1"
@@ -104,7 +101,6 @@ HUMAN_APPROVAL_GATE = (
     "approve any shared-database Admission operation."
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_DATABASE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 class CorruptSH99AdmissionBundle(ValueError):
@@ -162,15 +158,15 @@ def run_sh99_shared_admission_seal(
     """Seal the exact ordinary shared Admission path on an isolated clone."""
     if provision_database is None:
         provision_database = _provision_shared_seal_database
-    source = _require_clean_source(config.expected_clean_git_revision)
-    origin_main_revision = _require_origin_main_revision(source["revision"])
-    source_head = _source_migration_head()
-    source_database = _source_database(config.source_database_url)
-    shared_head = read_migration_head(
-        config.source_database_url, repo_root=REPO_ROOT, error_cls=ValueError
+    rehearsal = SealedRehearsalEnvironment.open(
+        source_database_url=config.source_database_url,
+        expected_checkout_revision=config.expected_clean_git_revision,
+        repo_root=REPO_ROOT,
     )
-    if shared_head != source_head:
-        raise ValueError("shared database migration head does not match checked-out source")
+    source = rehearsal.checkout
+    origin_main_revision = _require_origin_main_revision(source["revision"])
+    source_head = rehearsal.checkout_migration_head
+    source_database = rehearsal.source_database
 
     with tempfile.TemporaryDirectory(prefix="corridor-sh99-shared-seal-") as parent:
         dump_path = Path(parent) / "source.dump"
@@ -186,7 +182,7 @@ def run_sh99_shared_admission_seal(
             source_revision=source["revision"],
             migration_head=source_head,
         )
-        _dump_source_database(source_database, dump_path)
+        rehearsal.capture(dump_path)
         source_snapshot = {
             "schema_version": SHARED_SEAL_SCHEMA_VERSION,
             "source": {
@@ -209,8 +205,8 @@ def run_sh99_shared_admission_seal(
                 raise ValueError(
                     "disposable database migration head does not match checked-out source"
                 )
-            _restore_source_database(source_database, dump_path, database.name)
-            clone_url = _database_url(config.postgres_admin_url, database.name)
+            rehearsal.restore(dump_path, database.name)
+            clone_url = rehearsal.clone_url(config.postgres_admin_url, database.name)
             clone_before = _read_shared_seal_state(
                 clone_url, config.project_slug, evaluated_on=evaluated_on
             )
@@ -292,19 +288,21 @@ def run_sh99_admission_acceptance(
 
     if provision_database is None:
         provision_database = _provision_database
-    source = _require_clean_source(config.expected_clean_git_revision)
-    source_head = _source_migration_head()
-    source_database = _source_database(config.source_database_url)
-    shared_head = read_migration_head(
-        config.source_database_url, repo_root=REPO_ROOT, error_cls=ValueError
+    rehearsal = SealedRehearsalEnvironment.open(
+        source_database_url=config.source_database_url,
+        expected_checkout_revision=config.expected_clean_git_revision,
+        repo_root=REPO_ROOT,
     )
-    if shared_head != source_head:
-        raise ValueError("shared database migration head does not match checked-out source")
+    source = rehearsal.checkout
+    source_head = rehearsal.checkout_migration_head
+    source_database = rehearsal.source_database
 
     with tempfile.TemporaryDirectory(prefix="corridor-sh99-real-admission-") as parent:
         dump_path = Path(parent) / "source.dump"
-        source_state = _read_project_state(config.source_database_url, config.project_slug)
-        _dump_source_database(source_database, dump_path)
+        source_state = read_rehearsal_project_state(
+            config.source_database_url, config.project_slug
+        )
+        rehearsal.capture(dump_path)
         source_snapshot = {
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "source": {
@@ -323,19 +321,23 @@ def run_sh99_admission_acceptance(
                 raise ValueError(
                     "disposable database migration head does not match checked-out source"
                 )
-            _restore_source_database(source_database, dump_path, database.name)
-            clone_before = _read_project_state(
-                _database_url(config.postgres_admin_url, database.name),
+            rehearsal.restore(dump_path, database.name)
+            clone_before = read_rehearsal_project_state(
+                rehearsal.clone_url(config.postgres_admin_url, database.name),
                 config.project_slug,
             )
             if clone_before != source_state:
                 raise ValueError("restored SH 99 clone does not match its pinned source state")
 
-            clone_url = _database_url(config.postgres_admin_url, database.name)
+            clone_url = rehearsal.clone_url(config.postgres_admin_url, database.name)
             first_operation = _run_shared_operation(clone_url, config.project_slug)
-            after_first_run = _read_project_state(clone_url, config.project_slug)
+            after_first_run = read_rehearsal_project_state(
+                clone_url, config.project_slug
+            )
             second_operation = _run_shared_operation(clone_url, config.project_slug)
-            after_second_run = _read_project_state(clone_url, config.project_slug)
+            after_second_run = read_rehearsal_project_state(
+                clone_url, config.project_slug
+            )
             first_run = _run_receipt(clone_before, after_first_run, first_operation)
             second_run = _run_receipt(after_first_run, after_second_run, second_operation)
             protected = _protected_cases(first_run, after_second_run)
@@ -343,7 +345,7 @@ def run_sh99_admission_acceptance(
 
         late_refusal = _late_refusal_receipt(
             config=config,
-            source_database=source_database,
+            rehearsal=rehearsal,
             source_head=source_head,
             dump_path=dump_path,
             provision_database=provision_database,
@@ -441,15 +443,6 @@ def _provision_shared_seal_database(admin_url: str):
     )
 
 
-def _require_clean_source(expected_checkout_revision: str) -> dict[str, str]:
-    revision = _git("rev-parse", "HEAD")
-    if _git("status", "--porcelain"):
-        raise ValueError("SH 99 Admission replay requires a clean source checkout")
-    if revision != expected_checkout_revision:
-        raise ValueError("checkout revision does not match the caller-provided pin")
-    return {"expected_checkout_revision": expected_checkout_revision, "revision": revision}
-
-
 def _git(*args: str) -> str:
     return subprocess.run(
         ["git", *args],
@@ -465,127 +458,6 @@ def _require_origin_main_revision(source_revision: str) -> str:
     if source_revision != origin_main_revision:
         raise ValueError("shared Admission seal requires HEAD to equal origin/main")
     return origin_main_revision
-
-
-def _source_migration_head() -> str:
-    completed = subprocess.run(
-        ["uv", "run", "alembic", "heads"],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    heads = [
-        match.group(1)
-        for line in completed.stdout.splitlines()
-        if (match := re.match(r"^([0-9a-f]+) \(head\)$", line.strip()))
-    ]
-    if completed.returncode or len(heads) != 1:
-        raise ValueError("checked-out source must declare exactly one Alembic head")
-    return heads[0]
-
-
-def _source_database(url: str) -> dict[str, str]:
-    parsed = make_url(url)
-    if parsed.get_backend_name() != "postgresql":
-        raise ValueError("SH 99 Admission replay requires PostgreSQL")
-    require_local_postgres_host(parsed.host, error_cls=ValueError)
-    if not parsed.database or not _DATABASE_NAME.fullmatch(parsed.database):
-        raise ValueError("source database name is invalid")
-    if not parsed.username or not _DATABASE_NAME.fullmatch(parsed.username):
-        raise ValueError("source database username is invalid")
-    return {"database": parsed.database, "username": parsed.username}
-
-
-def _database_url(admin_url: str, database_name: str) -> str:
-    return make_url(admin_url).set(database=database_name).render_as_string(
-        hide_password=False
-    )
-
-
-def _dump_source_database(
-    source_database: dict[str, str],
-    dump_path: Path,
-    *,
-    compose_root: Path | None = None,
-) -> None:
-    """Capture PostgreSQL 16 data inside the local Compose service, read only."""
-
-    runtime_compose_root = Path(compose_root).resolve() if compose_root else REPO_ROOT
-    with dump_path.open("wb") as output:
-        completed = subprocess.run(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "postgres",
-                "pg_dump",
-                "--format=custom",
-                "--data-only",
-                "--no-owner",
-                "--no-privileges",
-                "--exclude-table-data=alembic_version",
-                "--username",
-                source_database["username"],
-                "--dbname",
-                source_database["database"],
-            ],
-            cwd=runtime_compose_root,
-            stdout=output,
-            stderr=subprocess.PIPE,
-            text=False,
-            check=False,
-        )
-    if completed.returncode or not dump_path.stat().st_size:
-        detail = completed.stderr.decode(errors="replace").strip().splitlines()
-        raise ValueError(
-            "could not capture the shared database"
-            + (f": {detail[-1]}" if detail else "")
-        )
-
-
-def _restore_source_database(
-    source_database: dict[str, str],
-    dump_path: Path,
-    database_name: str,
-    *,
-    compose_root: Path | None = None,
-) -> None:
-    """Restore the captured data only into an already-migrated disposable clone."""
-
-    runtime_compose_root = Path(compose_root).resolve() if compose_root else REPO_ROOT
-    with dump_path.open("rb") as source:
-        completed = subprocess.run(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "postgres",
-                "pg_restore",
-                "--data-only",
-                "--disable-triggers",
-                "--exit-on-error",
-                "--no-owner",
-                "--no-privileges",
-                "--username",
-                source_database["username"],
-                "--dbname",
-                database_name,
-            ],
-            cwd=runtime_compose_root,
-            stdin=source,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    if completed.returncode:
-        detail = completed.stderr.decode(errors="replace").strip().splitlines()
-        raise ValueError(
-            "could not restore the pinned SH 99 source snapshot"
-            + (f": {detail[-1]}" if detail else "")
-        )
 
 
 def _run_shared_operation(
@@ -628,7 +500,10 @@ def _run_shared_operation(
     }
 
 
-def _read_project_state(database_url: str, project_slug: str) -> dict[str, Any]:
+def read_rehearsal_project_state(
+    database_url: str, project_slug: str
+) -> dict[str, Any]:
+    """Read the exact SH 99 scenario state without permitting a write."""
     engine = create_engine(database_url, poolclass=NullPool, future=True)
     try:
         with Session(engine) as session:
@@ -1526,7 +1401,7 @@ def _require_protected_outcomes(protected: dict[str, Any], second_run: dict[str,
 def _late_refusal_receipt(
     *,
     config: SH99AdmissionAcceptanceConfig,
-    source_database: dict[str, str],
+    rehearsal: SealedRehearsalEnvironment,
     source_head: str,
     dump_path: Path,
     provision_database: DatabaseProvisioner,
@@ -1536,16 +1411,16 @@ def _late_refusal_receipt(
     with provision_database(config.postgres_admin_url) as database:
         if database.migration_head != source_head:
             raise ValueError("disposable refusal database is not at the source migration head")
-        _restore_source_database(source_database, dump_path, database.name)
-        clone_url = _database_url(config.postgres_admin_url, database.name)
-        before = _read_project_state(clone_url, config.project_slug)
+        rehearsal.restore(dump_path, database.name)
+        clone_url = rehearsal.clone_url(config.postgres_admin_url, database.name)
+        before = read_rehearsal_project_state(clone_url, config.project_slug)
         _install_dependency_refusal(clone_url)
         operation = _run_shared_operation(
             clone_url,
             config.project_slug,
             expected_failure_marker="forced SH 99 acceptance dependency refusal",
         )
-        after = _read_project_state(clone_url, config.project_slug)
+        after = read_rehearsal_project_state(clone_url, config.project_slug)
         unchanged = {
             "candidates": before["candidates"] == after["candidates"],
             "ledger": before["ledger"] == after["ledger"],

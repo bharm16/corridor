@@ -68,15 +68,9 @@ from corridor.exceptions import RULESET_VERSION, Thresholds
 from corridor.principals import HumanPrincipal
 from corridor.report_release import retrieve_released_external_report
 from corridor.sh99_admission_acceptance import (
-    _database_url,
-    _dump_source_database,
-    _project_state,
-    _read_project_state,
-    _require_clean_source,
-    _restore_source_database,
-    _source_database,
-    _source_migration_head,
+    read_rehearsal_project_state,
 )
+from corridor.rehearsal_environment import SealedRehearsalEnvironment
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.work_list import build_work_list
 
@@ -495,8 +489,15 @@ def run_sh99_coordinator_rehearsal(
         raise RuntimeError(
             "ordinary Report Evaluation defaults no longer match the frozen v3 contract"
         )
-    source = _require_clean_source(config.expected_clean_git_revision)
-    checkout_head = _source_migration_head()
+    rehearsal = SealedRehearsalEnvironment.open(
+        source_database_url=config.source_database_url,
+        expected_checkout_revision=config.expected_clean_git_revision,
+        repo_root=repo_root,
+        compose_root=asset_root,
+        expected_database_migration_head=config.expected_source_migration_head,
+    )
+    source = rehearsal.checkout
+    checkout_head = rehearsal.checkout_migration_head
     if checkout_head != config.expected_target_migration_head:
         raise ValueError("checked-out migration head does not match the explicit target")
     _require_direct_migration_successor(
@@ -504,16 +505,11 @@ def run_sh99_coordinator_rehearsal(
         source_revision=config.expected_source_migration_head,
         target_revision=config.expected_target_migration_head,
     )
-    source_head_before = read_migration_head(
-        config.source_database_url,
-        repo_root=repo_root,
-        error_cls=ValueError,
-    )
+    source_head_before = rehearsal.database_migration_head
     if source_head_before != config.expected_source_migration_head:
         raise ValueError("shared database is not at the explicitly pinned source head")
-    source_database = _source_database(config.source_database_url)
     shared_admission_receipt = _verified_shared_admission_receipt(config)
-    source_state_before = _read_project_state(
+    source_state_before = read_rehearsal_project_state(
         config.source_database_url, config.project_slug
     )
     _require_admitted_source_state(source_state_before)
@@ -548,7 +544,7 @@ def run_sh99_coordinator_rehearsal(
     }
     with tempfile.TemporaryDirectory(prefix="corridor-sh99-coordinator-source-") as parent:
         dump_path = Path(parent) / "source.dump"
-        _dump_source_database(source_database, dump_path, compose_root=asset_root)
+        rehearsal.capture(dump_path)
         source_dump_sha256 = _sha256(dump_path.read_bytes())
         with provision_database(
             config.postgres_admin_url,
@@ -559,14 +555,13 @@ def run_sh99_coordinator_rehearsal(
                 raise ValueError(
                     "disposable database was not provisioned at the source head"
                 )
-            _restore_source_database(
-                source_database,
-                dump_path,
-                database.name,
-                compose_root=asset_root,
+            rehearsal.restore(dump_path, database.name)
+            clone_url = rehearsal.clone_url(
+                config.postgres_admin_url, database.name
             )
-            clone_url = _database_url(config.postgres_admin_url, database.name)
-            clone_state_at_source = _read_project_state(clone_url, config.project_slug)
+            clone_state_at_source = read_rehearsal_project_state(
+                clone_url, config.project_slug
+            )
             if clone_state_at_source != source_state_before:
                 raise ValueError(
                     "restored predecessor clone does not match the pinned source state"
@@ -589,7 +584,9 @@ def run_sh99_coordinator_rehearsal(
                 target_revision=config.expected_target_migration_head,
             )
             clone_upgrade = asdict(upgrade_receipt)
-            if _read_project_state(clone_url, config.project_slug) != source_state_before:
+            if read_rehearsal_project_state(
+                clone_url, config.project_slug
+            ) != source_state_before:
                 raise ValueError(
                     "disposable clone domain state changed during the schema upgrade"
                 )
@@ -690,7 +687,7 @@ def run_sh99_coordinator_rehearsal(
         repo_root=repo_root,
         error_cls=ValueError,
     )
-    source_state_after = _read_project_state(
+    source_state_after = read_rehearsal_project_state(
         config.source_database_url, config.project_slug
     )
     scenario_source_receipts_after = _read_scenario_input_receipts(

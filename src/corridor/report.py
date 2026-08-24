@@ -26,17 +26,15 @@ from corridor.dependency_events import (
     PublishedDependencyStatement,
     PublishedPartyStatement,
     StatementPublication,
-    published_dependency_statements,
 )
 from corridor.exceptions import (
     RULESET_VERSION,
     Evaluation,
-    evaluate_project,
     format_exception_label,
     format_exception_name,
 )
 from corridor.operative_support import resolve_operative_support
-from corridor.ledger import Evidence, LedgerRow, browse
+from corridor.ledger import Evidence, LedgerRow
 from corridor.models import (
     Dependency,
     DependencyEvent,
@@ -45,6 +43,7 @@ from corridor.models import (
     is_critical,
 )
 from corridor.dependency_events import current_scope_decision_filter
+from corridor.project_reading import freeze_project_reading
 from corridor.work_list import party_commitment_due_after
 
 # Enough to act on in a weekly meeting. More than this and nobody reads it.
@@ -235,18 +234,13 @@ def build_report(
     document_only: bool = False,
 ) -> Report:
     today = today or datetime.now(timezone.utc).date()
-    dependency_ids = session.scalars(
-        select(Dependency.id).where(
-            Dependency.project_id == project_id,
-            Dependency.dismissed_at.is_(None),
-        )
-    ).all()
-    publication = published_dependency_statements(
+    reading = freeze_project_reading(
         session,
-        dependency_ids,
-        project_id=project_id,
+        project_id,
+        today=today,
         document_only=document_only,
     )
+    publication = reading.statement_publication
     committed_dates = publication.committed_dates
     committed_events = publication.committed_events
     # One evaluation for the whole report. `today` used to reach two
@@ -254,15 +248,9 @@ def build_report(
     # against `date.today()` by a separate call, so a report built for a
     # stated date disagreed with itself about how many days overdue a
     # record was.
-    evaluation = evaluate_project(
-        session,
-        project_id,
-        today=today,
-        committed_dates=committed_dates,
-        statement_publication=publication,
-    )
-    project = session.get(Project, project_id)
-    rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
+    evaluation = reading.evaluation
+    project = reading.project
+    rows = list(reading.rows)
     by_id = {r.dependency.id: r for r in rows}
     ids = tuple(by_id)
 

@@ -12,17 +12,16 @@ pytestmark = pytest.mark.slow
 
 from corridor.config import settings
 from corridor.m8_acceptance_bundle import publish_verified_bundle
+from corridor.rehearsal_environment import SealedRehearsalEnvironment
 from corridor.sh99_admission_acceptance import (
     BUNDLE_FILES,
     BUNDLE_SCHEMA_VERSION,
     CorruptSH99AdmissionBundle,
     SH99AdmissionAcceptanceConfig,
     _canonical_json,
-    _dump_source_database,
     _json_sha256,
-    _read_project_state,
-    _restore_source_database,
     _sha256,
+    read_rehearsal_project_state,
     run_sh99_admission_acceptance,
     verify_sh99_admission_bundle,
 )
@@ -87,7 +86,7 @@ def _classify_sh99_admission_lifecycle_signature(
 def _source_sh99_lifecycle_gate(database_url: str | None = None) -> str:
     """Read the one-time #248 lifecycle signature without mutating its source."""
     try:
-        state = _read_project_state(
+        state = read_rehearsal_project_state(
             database_url or settings.database_url,
             "sh99-grand-parkway",
         )
@@ -284,8 +283,8 @@ def test_replay_refuses_a_checkout_that_does_not_match_the_caller_pin(monkeypatc
     """The shared source is not even inspected when the caller pin is wrong."""
 
     monkeypatch.setattr(
-        "corridor.sh99_admission_acceptance._git",
-        lambda *args: "a" * 40 if args == ("rev-parse", "HEAD") else "",
+        "corridor.rehearsal_environment._git",
+        lambda _root, *args: "a" * 40 if args == ("rev-parse", "HEAD") else "",
     )
 
     with pytest.raises(ValueError, match="caller-provided pin"):
@@ -299,15 +298,15 @@ def test_replay_refuses_a_shared_database_at_a_different_migration_head(monkeypa
     """A source/head mismatch fails before pg_dump or disposable provisioning."""
 
     monkeypatch.setattr(
-        "corridor.sh99_admission_acceptance._require_clean_source",
-        lambda revision: {"expected_checkout_revision": revision, "revision": revision},
+        "corridor.rehearsal_environment._git",
+        lambda _root, *args: "a" * 40 if args == ("rev-parse", "HEAD") else "",
     )
     monkeypatch.setattr(
-        "corridor.sh99_admission_acceptance._source_migration_head",
-        lambda: "source-head",
+        "corridor.rehearsal_environment._source_migration_head",
+        lambda _root: "source-head",
     )
     monkeypatch.setattr(
-        "corridor.sh99_admission_acceptance.read_migration_head",
+        "corridor.rehearsal_environment.read_migration_head",
         lambda *args, **kwargs: "shared-head",
     )
 
@@ -332,13 +331,18 @@ def test_dump_source_database_uses_the_explicit_runtime_compose_root(
             seen["argv"], 0, stdout=b"", stderr=b""
         )
 
-    monkeypatch.setattr("corridor.sh99_admission_acceptance.subprocess.run", fake_run)
+    monkeypatch.setattr("corridor.rehearsal_environment.subprocess.run", fake_run)
 
-    _dump_source_database(
-        {"database": "corridor", "username": "corridor"},
-        dump_path,
+    environment = SealedRehearsalEnvironment(
+        source_database_url="postgresql://corridor:corridor@localhost:5433/corridor",
+        checkout={"revision": "a" * 40},
+        checkout_migration_head="head",
+        database_migration_head="head",
+        source_database={"database": "corridor", "username": "corridor"},
+        repo_root=tmp_path,
         compose_root=tmp_path,
     )
+    environment.capture(dump_path)
 
     assert seen["cwd"] == tmp_path.resolve()
     assert dump_path.read_bytes() == b"dump-bytes"
@@ -359,14 +363,18 @@ def test_restore_source_database_uses_the_explicit_runtime_compose_root(
             seen["argv"], 0, stdout=b"", stderr=b""
         )
 
-    monkeypatch.setattr("corridor.sh99_admission_acceptance.subprocess.run", fake_run)
+    monkeypatch.setattr("corridor.rehearsal_environment.subprocess.run", fake_run)
 
-    _restore_source_database(
-        {"database": "corridor", "username": "corridor"},
-        dump_path,
-        "corridor_clone",
+    environment = SealedRehearsalEnvironment(
+        source_database_url="postgresql://corridor:corridor@localhost:5433/corridor",
+        checkout={"revision": "a" * 40},
+        checkout_migration_head="head",
+        database_migration_head="head",
+        source_database={"database": "corridor", "username": "corridor"},
+        repo_root=tmp_path,
         compose_root=tmp_path,
     )
+    environment.restore(dump_path, "corridor_clone")
 
     assert seen["cwd"] == tmp_path.resolve()
     assert seen["stdin_bytes"] == b"dump-bytes"
