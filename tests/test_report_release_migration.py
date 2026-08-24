@@ -18,6 +18,8 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.report_release import external_report_release_history
 
+pytestmark = pytest.mark.slow
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f253a7c4d9e2"

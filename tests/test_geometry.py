@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 from corridor.geometry import (
     cell_text,
     dedupe_hint,

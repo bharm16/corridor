@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+pytestmark = pytest.mark.slow
+
 from corridor.admission import load_project
 from corridor.db import Session, engine
 from corridor.event_admission import (
@@ -251,10 +253,13 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
         )
 
 
-def test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded():
+def test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded(
+    shared_source_database_url,
+):
     try:
         state = _read_shared_seal_state(
-            settings.database_url, "sh99-grand-parkway"
+            shared_source_database_url,
+            "sh99-grand-parkway",
         )
     except ValueError as error:
         if str(error) == "no project with slug 'sh99-grand-parkway'":
@@ -275,7 +280,7 @@ def test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded():
     )
     config = SH99SharedAdmissionSealConfig(
         project_slug="sh99-grand-parkway",
-        source_database_url=settings.database_url,
+        source_database_url=shared_source_database_url,
         expected_clean_git_revision=receipt["source_revision"],
         output_dir=Path("unused"),
         postgres_admin_url=settings.database_url,

@@ -12,15 +12,19 @@ from datetime import date
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
 import pymupdf
 import pytest
 from sqlalchemy import select, text
 
+pytestmark = pytest.mark.slow
+
 import corridor.m8_acceptance as m8_acceptance_module
 import corridor.m8_acceptance_controlled as m8_acceptance_controlled_module
 from corridor.config import settings
 from corridor.db import engine
+from corridor.ingest import MIN_TEXT_CHARS
 from corridor.m8_acceptance import (
     AcceptanceCaptureConfig,
     AcceptanceError,
@@ -44,6 +48,9 @@ from corridor.revision_comparison import DEFAULT_MATCHER_VERSION
 PROMPT_VERSION = "m8-controlled-capture-v1"
 SCHEMA_VERSION = "m8-controlled-candidate-shape-v1"
 MODEL = "deterministic-capture-fixture-v1"
+SEED_QUOTE = (
+    "SEED-1 Controlled Utility Telecom 100+00 IH-45 captured source row"
+)
 REVISION_IDS = (
     "nhhip-ucm-2025-06-20",
     "nhhip-ucm-2025-07-22",
@@ -353,13 +360,29 @@ def test_acceptance_rejects_remote_postgres_hosts():
         _require_local_postgres_host("prod-db.internal")
 
 
-def test_equivalent_model_free_replays_have_one_normalized_identity(tmp_path):
-    capture = _capture_fixture(tmp_path)
+def test_synthetic_matrix_pages_do_not_fall_through_to_ocr(tmp_path):
+    lock_path = _write_source_lock(tmp_path / "sources")
+    sources = json.loads(lock_path.read_text())["sources"].values()
 
-    first = run_m8_acceptance(_run_config(capture, tmp_path / "bundle-a"))
-    second = run_m8_acceptance(_run_config(capture, tmp_path / "bundle-b"))
+    for source in sources:
+        if source["doc_type"] != "matrix":
+            continue
+        with pymupdf.open(source["local_path"]) as document:
+            assert len(document[0].get_text().strip()) >= MIN_TEXT_CHARS
 
-    assert first.fixture_sha256 == second.fixture_sha256 == capture.fixture_sha256
+
+def test_equivalent_model_free_replays_have_one_normalized_identity(
+    replay_capture,
+    tmp_path,
+):
+    first = run_m8_acceptance(_run_config(replay_capture, tmp_path / "bundle-a"))
+    second = run_m8_acceptance(_run_config(replay_capture, tmp_path / "bundle-b"))
+
+    assert (
+        first.fixture_sha256
+        == second.fixture_sha256
+        == replay_capture.fixture_sha256
+    )
     assert first.canonical_content_sha256 == second.canonical_content_sha256
     assert len(first.canonical_content_sha256) == 64
     assert verify_m8_acceptance_bundle(
@@ -400,10 +423,9 @@ def test_equivalent_model_free_replays_have_one_normalized_identity(tmp_path):
 
 
 def test_controlled_phase_carries_only_exact_previously_authorized_support(
-    tmp_path,
+    baseline_acceptance,
 ):
-    capture = _capture_fixture(tmp_path)
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "bundle"))
+    summary = baseline_acceptance
 
     controlled = _read_export(summary, "controlled-lane.json")
     assert controlled["claim_boundary"] == CLAIM_BOUNDARY
@@ -578,30 +600,62 @@ def test_controlled_phase_carries_only_exact_previously_authorized_support(
     } == {("automatic_carry_forward", "corridor:automatic-carry-forward", None)}
 
 
-def test_production_verifier_rejects_a_tampered_raw_export(tmp_path):
-    capture = _capture_fixture(tmp_path)
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "bundle"))
-    controlled = summary.bundle_dir / "controlled-lane.json"
+def test_controlled_lane_reuses_worklist_snapshots_within_unchanged_phases(
+    monkeypatch,
+    replay_capture,
+    tmp_path,
+):
+    original = m8_acceptance_controlled_module.build_reviewer_worklist
+    calls = 0
+
+    def counted_worklist(session, project_id):
+        nonlocal calls
+        calls += 1
+        return original(session, project_id)
+
+    monkeypatch.setattr(
+        m8_acceptance_controlled_module,
+        "build_reviewer_worklist",
+        counted_worklist,
+    )
+
+    run_m8_acceptance(_run_config(replay_capture, tmp_path / "bundle"))
+
+    # Five lifecycle transitions genuinely change state. Before-policy and
+    # after-policy case projections each share one stable project snapshot.
+    assert calls <= 7
+
+
+def test_production_verifier_rejects_a_tampered_raw_export(
+    baseline_acceptance,
+    tmp_path,
+):
+    bundle_dir = tmp_path / "bundle"
+    shutil.copytree(baseline_acceptance.bundle_dir, bundle_dir)
+    controlled = bundle_dir / "controlled-lane.json"
     controlled.write_bytes(controlled.read_bytes() + b"\n")
 
     with pytest.raises(CorruptAcceptanceBundle, match="controlled-lane.json"):
         verify_m8_acceptance_bundle(
-            summary.bundle_dir,
+            bundle_dir,
             expected_integrity_manifest_sha256=(
-                summary.integrity_manifest_sha256
+                baseline_acceptance.integrity_manifest_sha256
             ),
         )
 
 
-def test_verifier_rejects_whole_bundle_rewrite_against_pinned_manifest(tmp_path):
-    capture = _capture_fixture(tmp_path)
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "bundle"))
-    controlled_path = summary.bundle_dir / "controlled-lane.json"
+def test_verifier_rejects_whole_bundle_rewrite_against_pinned_manifest(
+    baseline_acceptance,
+    tmp_path,
+):
+    bundle_dir = tmp_path / "bundle"
+    shutil.copytree(baseline_acceptance.bundle_dir, bundle_dir)
+    controlled_path = bundle_dir / "controlled-lane.json"
     controlled = json.loads(controlled_path.read_text())
     controlled["passes"]["first"]["carried"] = 999
     controlled_bytes = _canonical_json(controlled) + b"\n"
     controlled_path.write_bytes(controlled_bytes)
-    manifest_path = summary.bundle_dir / "manifest.json"
+    manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["files"]["controlled-lane.json"] = {
         "bytes": len(controlled_bytes),
@@ -611,17 +665,18 @@ def test_verifier_rejects_whole_bundle_rewrite_against_pinned_manifest(tmp_path)
 
     with pytest.raises(CorruptAcceptanceBundle, match="manifest digest"):
         verify_m8_acceptance_bundle(
-            summary.bundle_dir,
+            bundle_dir,
             expected_integrity_manifest_sha256=(
-                summary.integrity_manifest_sha256
+                baseline_acceptance.integrity_manifest_sha256
             ),
         )
 
 
 def test_failed_assertion_is_exported_in_a_verifiable_bundle(
-    monkeypatch, tmp_path
+    monkeypatch,
+    replay_capture,
+    tmp_path,
 ):
-    capture = _capture_fixture(tmp_path)
     monkeypatch.setattr(
         "corridor.m8_acceptance._acceptance_assertions",
         lambda *_args: [
@@ -634,7 +689,9 @@ def test_failed_assertion_is_exported_in_a_verifiable_bundle(
         ],
     )
 
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "failed-bundle"))
+    summary = run_m8_acceptance(
+        _run_config(replay_capture, tmp_path / "failed-bundle")
+    )
 
     assert [item.passed for item in summary.assertions] == [False]
     assert verify_m8_acceptance_bundle(
@@ -646,9 +703,10 @@ def test_failed_assertion_is_exported_in_a_verifiable_bundle(
 
 
 def test_real_replay_contradiction_is_exported_in_a_verifiable_failed_bundle(
-    monkeypatch, tmp_path
+    monkeypatch,
+    replay_capture,
+    tmp_path,
 ):
-    capture = _capture_fixture(tmp_path)
     original = m8_acceptance_module._captured_extractor
 
     def drifted_extractor(run_record):
@@ -665,7 +723,9 @@ def test_real_replay_contradiction_is_exported_in_a_verifiable_failed_bundle(
 
     monkeypatch.setattr("corridor.m8_acceptance._captured_extractor", drifted_extractor)
 
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "failed-bundle"))
+    summary = run_m8_acceptance(
+        _run_config(replay_capture, tmp_path / "failed-bundle")
+    )
 
     assert summary.carried_count == 0
     assert [assertion.name for assertion in summary.assertions] == [
@@ -689,9 +749,10 @@ def test_real_replay_contradiction_is_exported_in_a_verifiable_failed_bundle(
 
 
 def test_controlled_lane_contradiction_is_exported_in_a_verifiable_failed_bundle(
-    monkeypatch, tmp_path
+    monkeypatch,
+    replay_capture,
+    tmp_path,
 ):
-    capture = _capture_fixture(tmp_path)
     original = m8_acceptance_controlled_module._compare_controlled_case
     raised = {"done": False}
 
@@ -706,7 +767,9 @@ def test_controlled_lane_contradiction_is_exported_in_a_verifiable_failed_bundle
         explode_once,
     )
 
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "failed-bundle"))
+    summary = run_m8_acceptance(
+        _run_config(replay_capture, tmp_path / "failed-bundle")
+    )
 
     assert summary.carried_count == 0
     assert [assertion.name for assertion in summary.assertions] == [
@@ -724,9 +787,10 @@ def test_controlled_lane_contradiction_is_exported_in_a_verifiable_failed_bundle
     assert len(controlled["runs"]) > 0
 
 
-def test_acceptance_assertions_enforce_fan_in_ambiguous_abstention(tmp_path):
-    capture = _capture_fixture(tmp_path)
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "bundle"))
+def test_acceptance_assertions_enforce_fan_in_ambiguous_abstention(
+    baseline_acceptance,
+):
+    summary = baseline_acceptance
     real = _read_export(summary, "real-chain.json")
     controlled = _read_export(summary, "controlled-lane.json")
     database = ProvisionedDatabase(
@@ -747,9 +811,10 @@ def test_acceptance_assertions_enforce_fan_in_ambiguous_abstention(tmp_path):
     assert by_name["unsafe_cases_abstain_without_ledger_mutation"].passed is False
 
 
-def test_acceptance_assertions_enforce_real_fan_out_ambiguous_abstention(tmp_path):
-    capture = _capture_fixture(tmp_path)
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "bundle"))
+def test_acceptance_assertions_enforce_real_fan_out_ambiguous_abstention(
+    baseline_acceptance,
+):
+    summary = baseline_acceptance
     real = _read_export(summary, "real-chain.json")
     controlled = _read_export(summary, "controlled-lane.json")
     database = ProvisionedDatabase(
@@ -772,9 +837,10 @@ def test_acceptance_assertions_enforce_real_fan_out_ambiguous_abstention(tmp_pat
     assert by_name["fan_out_ambiguity_is_mechanically_real"].passed is False
 
 
-def test_acceptance_assertions_enforce_no_automated_record_origination(tmp_path):
-    capture = _capture_fixture(tmp_path)
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "bundle"))
+def test_acceptance_assertions_enforce_no_automated_record_origination(
+    baseline_acceptance,
+):
+    summary = baseline_acceptance
     real = _read_export(summary, "real-chain.json")
     controlled = _read_export(summary, "controlled-lane.json")
     database = ProvisionedDatabase(
@@ -795,9 +861,10 @@ def test_acceptance_assertions_enforce_no_automated_record_origination(tmp_path)
 
 
 def test_controlled_lane_freezes_one_runtime_for_normal_protocol(
-    monkeypatch, tmp_path
+    monkeypatch,
+    replay_capture,
+    tmp_path,
 ):
-    capture = _capture_fixture(tmp_path)
     created = []
     seen = []
 
@@ -860,7 +927,9 @@ def test_controlled_lane_freezes_one_runtime_for_normal_protocol(
         lambda *_args: [],
     )
 
-    summary = run_m8_acceptance(_run_config(capture, tmp_path / "bundle"))
+    summary = run_m8_acceptance(
+        _run_config(replay_capture, tmp_path / "bundle")
+    )
 
     assert summary.assertions == ()
     assert len(created) == 1
@@ -887,6 +956,17 @@ class _Capture:
     def __init__(self, fixture_path: Path, fixture_sha256: str):
         self.fixture_path = fixture_path
         self.fixture_sha256 = fixture_sha256
+
+
+@pytest.fixture(scope="module")
+def replay_capture(tmp_path_factory):
+    return _capture_fixture(tmp_path_factory.mktemp("m8-replay-capture"))
+
+
+@pytest.fixture(scope="module")
+def baseline_acceptance(replay_capture, tmp_path_factory):
+    output_dir = tmp_path_factory.mktemp("m8-baseline") / "bundle"
+    return run_m8_acceptance(_run_config(replay_capture, output_dir))
 
 
 def _stub_capture_harness(
@@ -986,7 +1066,7 @@ def _run_config(capture: _Capture, output_dir: Path) -> AcceptanceRunConfig:
 
 
 def _capture_extractor(session, document):
-    quote = "SEED-1 Controlled Utility Telecom 100+00 IH-45"
+    quote = SEED_QUOTE
     page = session.scalar(
         select(DocPage).where(
             DocPage.document_id == document.id,
@@ -1046,7 +1126,7 @@ def _write_source_lock(
     ),
 ) -> Path:
     directory.mkdir(parents=True)
-    quote = "SEED-1 Controlled Utility Telecom 100+00 IH-45"
+    quote = SEED_QUOTE
     filenames = tuple(f"{registry_id}.pdf" for registry_id in REVISION_IDS)
     index = _write_pdf(
         directory / "rid-index.pdf",

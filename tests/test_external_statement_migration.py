@@ -41,8 +41,11 @@ from corridor.models import (
     ExternalOrg,
     Project,
 )
+
 import corridor.adjudicate as adjudicate_module
 import corridor.models as models_module
+
+pytestmark = pytest.mark.slow
 
 
 _ROOT = Path(__file__).resolve().parents[1]

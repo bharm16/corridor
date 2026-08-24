@@ -1,4 +1,6 @@
-.PHONY: boot up down psql test corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+
+TEST_WORKERS ?= 4
 
 # One command from a clean clone.
 boot:
@@ -15,7 +17,20 @@ down:
 psql:
 	docker compose exec postgres psql -U corridor -d corridor
 
+# Fast PostgreSQL-backed developer loop. Exhaustive rehearsals stay in test-full.
 test:
+	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "not slow"
+
+# Release/CI gate: behavior, real-corpus geometry, acceptance, and migrations.
+test-full:
+	uv run pytest -n $(TEST_WORKERS) --dist loadfile
+
+# Exhaustive tests only, for changes inside those seams.
+test-slow:
+	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m slow
+
+# Single-process fallback for debugger use and scheduler diagnosis.
+test-serial:
 	uv run pytest
 
 # Resolve corpus/manifest.yaml to files on disk. Re-running is a no-op for

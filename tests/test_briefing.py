@@ -11,7 +11,7 @@ never the phrasing of prose, which belongs to no contract.
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
 
 from corridor.briefing import PROMPT_VERSION, brief, render
 from corridor.db import Session, engine
@@ -902,7 +902,9 @@ def test_a_dismissed_record_is_not_narrated(session, project, dependency):
     assert client.calls == []
 
 
-def test_live_nhhip_project_floor_is_bounded_by_buckets(session):
+def test_live_nhhip_project_floor_is_bounded_by_buckets(
+    shared_source_database_url,
+):
     """The populated project is the scale regression from #127.
 
     Fresh databases skip because they deliberately carry no production corpus;
@@ -911,37 +913,54 @@ def test_live_nhhip_project_floor_is_bounded_by_buckets(session):
     """
     from corridor.briefing import brief_project
 
-    project = session.scalars(
-        select(Project).where(Project.slug == "nhhip-3c2")
-    ).first()
-    if project is None:
-        pytest.skip("the shared NHHIP corpus is not present")
+    shared_engine = create_engine(shared_source_database_url)
+    connection = shared_engine.connect()
+    shared_session = Session(bind=connection)
+    try:
+        project = shared_session.scalars(
+            select(Project).where(Project.slug == "nhhip-3c2")
+        ).first()
+        if project is None:
+            pytest.skip("the shared NHHIP corpus is not present")
 
-    class FloorCoveringClient:
-        model = "scripted-floor-coverer"
+        class FloorCoveringClient:
+            model = "scripted-floor-coverer"
 
-        def complete(self, *, system, user, schema, images=(), logprobs=False):
-            floor_line = next(
-                line
-                for line in user.splitlines()
-                if line.startswith("Every one of these")
-            )
-            refs = floor_line.rsplit(":", 1)[1].strip().removesuffix(".").split(", ")
-            return drafted(*[(f"Bucket {ref} holds.", [ref]) for ref in refs])
+            def complete(self, *, system, user, schema, images=(), logprobs=False):
+                floor_line = next(
+                    line
+                    for line in user.splitlines()
+                    if line.startswith("Every one of these")
+                )
+                refs = (
+                    floor_line.rsplit(":", 1)[1]
+                    .strip()
+                    .removesuffix(".")
+                    .split(", ")
+                )
+                return drafted(*[(f"Bucket {ref} holds.", [ref]) for ref in refs])
 
-    briefing = brief_project(
-        session,
-        project.id,
-        client=FloorCoveringClient(),
-        today=TODAY,
-    )
+        briefing = brief_project(
+            shared_session,
+            project.id,
+            client=FloorCoveringClient(),
+            today=TODAY,
+        )
 
-    assert not briefing.refused
-    assert briefing.floor
-    assert all(ref.startswith("XB") for ref in briefing.floor)
-    assert len(
-        [citable for citable in briefing.citables if citable.kind == "exception"]
-    ) > len(briefing.floor)
-    assert {sentence.cites[0] for sentence in briefing.sentences} == set(
-        briefing.floor
-    )
+        assert not briefing.refused
+        assert briefing.floor
+        assert all(ref.startswith("XB") for ref in briefing.floor)
+        assert len(
+            [
+                citable
+                for citable in briefing.citables
+                if citable.kind == "exception"
+            ]
+        ) > len(briefing.floor)
+        assert {sentence.cites[0] for sentence in briefing.sentences} == set(
+            briefing.floor
+        )
+    finally:
+        shared_session.close()
+        connection.close()
+        shared_engine.dispose()

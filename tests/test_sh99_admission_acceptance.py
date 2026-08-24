@@ -8,6 +8,8 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 from corridor.config import settings
 from corridor.m8_acceptance_bundle import publish_verified_bundle
 from corridor.sh99_admission_acceptance import (
@@ -82,10 +84,13 @@ def _classify_sh99_admission_lifecycle_signature(
     return "other"
 
 
-def _source_sh99_lifecycle_gate() -> str:
+def _source_sh99_lifecycle_gate(database_url: str | None = None) -> str:
     """Read the one-time #248 lifecycle signature without mutating its source."""
     try:
-        state = _read_project_state(settings.database_url, "sh99-grand-parkway")
+        state = _read_project_state(
+            database_url or settings.database_url,
+            "sh99-grand-parkway",
+        )
     except ValueError as error:
         if str(error) == "no project with slug 'sh99-grand-parkway'":
             return "missing"
@@ -110,8 +115,14 @@ def _source_sh99_lifecycle_gate() -> str:
     return _classify_sh99_admission_lifecycle_signature(lifecycle)
 
 
-def _require_expected_pre_admission_lifecycle_signature() -> None:
-    lifecycle_gate = _source_sh99_lifecycle_gate()
+def _require_expected_pre_admission_lifecycle_signature(
+    database_url: str | None = None,
+) -> None:
+    lifecycle_gate = (
+        _source_sh99_lifecycle_gate()
+        if database_url is None
+        else _source_sh99_lifecycle_gate(database_url)
+    )
     if lifecycle_gate == "expected-pre-admission-signature":
         if not _worktree_is_clean():
             pytest.skip(
@@ -136,10 +147,15 @@ def _require_expected_pre_admission_lifecycle_signature() -> None:
     )
 
 
-def _config(tmp_path, *, expected_clean_git_revision: str) -> SH99AdmissionAcceptanceConfig:
+def _config(
+    tmp_path,
+    *,
+    expected_clean_git_revision: str,
+    source_database_url: str | None = None,
+) -> SH99AdmissionAcceptanceConfig:
     return SH99AdmissionAcceptanceConfig(
         project_slug="sh99-grand-parkway",
-        source_database_url=settings.database_url,
+        source_database_url=source_database_url or settings.database_url,
         expected_clean_git_revision=expected_clean_git_revision,
         output_dir=tmp_path / "bundle",
         postgres_admin_url=settings.database_url,
@@ -197,12 +213,21 @@ def test_admission_artifact_skip_names_the_consumed_gate_without_claiming_comple
     assert "post-Admission" not in reason
 
 
-def test_real_sh99_clone_replays_the_exact_shared_operation_twice(tmp_path):
+def test_real_sh99_clone_replays_the_exact_shared_operation_twice(
+    shared_source_database_url,
+    tmp_path,
+):
     """The 3,030-Candidate SH 99 operation is proved only on an isolated clone."""
-    _require_expected_pre_admission_lifecycle_signature()
+    _require_expected_pre_admission_lifecycle_signature(
+        shared_source_database_url
+    )
 
     summary = run_sh99_admission_acceptance(
-        _config(tmp_path, expected_clean_git_revision=_git_revision())
+        _config(
+            tmp_path,
+            expected_clean_git_revision=_git_revision(),
+            source_database_url=shared_source_database_url,
+        )
     )
 
     verified = verify_sh99_admission_bundle(

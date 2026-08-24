@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
@@ -13,6 +14,8 @@ from sqlalchemy.engine import make_url
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
+
+pytestmark = pytest.mark.slow
 
 
 ROOT = Path(__file__).resolve().parents[1]

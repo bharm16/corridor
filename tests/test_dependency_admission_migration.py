@@ -21,6 +21,8 @@ from sqlalchemy.exc import ProgrammingError
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
+pytestmark = pytest.mark.slow
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "d257f2b9c537"

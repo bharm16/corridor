@@ -969,10 +969,12 @@ def _run_controlled_lane(
                 detail=str(exc),
             )
 
+    reviews_before_policy = build_reviewer_worklist(session, project.id).reviews
     for controlled_case in cases:
         try:
-            controlled_case.review_before_policy = _review_for_dependency(
-                session, project.id, controlled_case.dependency.id
+            controlled_case.review_before_policy = _review_for_dependency_in_snapshot(
+                reviews_before_policy,
+                controlled_case.dependency.id,
             )
         except AcceptanceError as exc:
             contradiction(
@@ -1076,6 +1078,11 @@ def _run_controlled_lane(
     abstention_by_dependency = {
         item.dependency_id: item for item in first.abstentions
     }
+    unresolved_dependency_ids = {
+        item.dependency_id
+        for item in build_reviewer_worklist(session, project.id).reviews
+        if item.dependency_id is not None
+    }
     cases_export: list[dict[str, Any]] = []
     for controlled_case in cases:
         case_id = controlled_case.definition["case_id"]
@@ -1105,10 +1112,7 @@ def _run_controlled_lane(
             controlled_case.definition["expected_correspondence"]
         )
         actual_state = controlled_case.finding.state
-        unresolved_after = any(
-            item.dependency_id == dependency_id
-            for item in build_reviewer_worklist(session, project.id).reviews
-        )
+        unresolved_after = dependency_id in unresolved_dependency_ids
         outcome = "carried" if receipt is not None else "abstained"
         cases_export.append(
             {
@@ -1706,10 +1710,15 @@ def _review_for_dependency(
     project_id: int,
     dependency_id: int,
 ):
+    return _review_for_dependency_in_snapshot(
+        build_reviewer_worklist(session, project_id).reviews,
+        dependency_id,
+    )
+
+
+def _review_for_dependency_in_snapshot(reviews, dependency_id: int):
     matches = tuple(
-        item
-        for item in build_reviewer_worklist(session, project_id).reviews
-        if item.dependency_id == dependency_id
+        item for item in reviews if item.dependency_id == dependency_id
     )
     if len(matches) != 1:
         raise AcceptanceError(
