@@ -179,6 +179,14 @@ def compare_candidate_sets(
     Duplicate semantic Candidates remain significant through the Counter.
     """
 
+    baseline_configuration = _candidate_configuration(baseline, "baseline")
+    fresh_configuration = _candidate_configuration(fresh, "fresh")
+    if baseline_configuration != fresh_configuration:
+        raise ValueError(
+            "Product Proving Candidate comparison requires a "
+            "configuration-compatible baseline"
+        )
+
     baseline_values = [_canonical_candidate(document_id, item) for item in baseline]
     fresh_values = [_canonical_candidate(document_id, item) for item in fresh]
     baseline_encoded = [_canonical_json(item) for item in baseline_values]
@@ -202,6 +210,23 @@ def compare_candidate_sets(
         missing=missing,
         matched_sha256=matched,
     )
+
+
+def _candidate_configuration(
+    candidates: Sequence[Mapping[str, Any]], label: str
+) -> tuple[str | None, str | None] | None:
+    """Return one extractor identity, or refuse mixed Candidate lineage."""
+    configurations = {
+        (candidate.get("prompt_version"), candidate.get("model"))
+        for candidate in candidates
+    }
+    if not configurations:
+        return None
+    if len(configurations) != 1:
+        raise ValueError(
+            f"Product Proving {label} Candidate set mixes extractor configurations"
+        )
+    return configurations.pop()
 
 
 def verify_preflight(expected: ExpectedPreflight, observed: ObservedPreflight) -> None:

@@ -19,7 +19,7 @@ registration, ingestion, fresh extraction, Active Run declaration, and Admission
 the simulated practitioner then enters through the Work List and performs ordinary
 project work only through the frontend.
 
-The first packet uses one SH99 Utility Conflict Matrix, the two `minutes_v3`
+The first packet uses one SH99 Utility Conflict Matrix, the two `minutes_v4`
 Equistar Meeting Minutes Documents, and the SH99 Milestone input. Meeting Minutes
 are one Stream source, not the center or starting point of the product. The proving
 path continues through the Project Record, Dependency Ledger, Milestone
@@ -27,13 +27,14 @@ Registrations, Need Dates, Ready, Exceptions, Evaluation, Coordination Plans,
 Report review, and one Approved Export.
 
 Extraction is fresh. Existing Active Runs are pinned comparison inputs, not reused
-as the proving run's output. The new Extraction Runs must match the baseline's
-canonical Candidate facts and Evidence. Candidate identities and ordering may
-differ; a Commitment, response, status change, External Party, timing, or citation
-that appears, disappears, or changes meaning is a repeatability failure and stops
-the run before Admission. Baseline equality proves repeatability, not correctness;
-Evidence validation, deterministic Admission, and simulated-practitioner decisions
-remain separate checks.
+as the proving run's output. A baseline must use the same extractor version and
+model configuration; incompatible lineage refuses before semantic comparison. The
+new Extraction Runs must match the baseline's canonical Candidate facts and
+Evidence. Candidate identities and ordering may differ; an External Party
+Statement, External Party, timing, or citation that appears, disappears, or changes
+meaning is a repeatability failure and stops the run before Admission. Baseline
+equality proves repeatability, not correctness; Evidence validation, deterministic
+Admission, and simulated-practitioner decisions remain separate checks.
 
 Every residual Candidate produced by the exact packet is inspected. There is no
 arbitrary Work Item count limit. The simulated practitioner records a supported

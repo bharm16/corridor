@@ -201,7 +201,7 @@ evidence-shadow-eval:
 # appends a fresh attempt without changing the declared Active Run:
 #   make minutes ARGS="sh99-grand-parkway --document-id 1435 --document-id 1438 --redo"
 minutes:
-	uv run python -m corridor.extract_minutes $(ARGS)
+	uv run python -m corridor.extract_minutes_v4 $(ARGS)
 
 # Build the weekly report without re-running the pipeline:
 #   make report ARGS="nhhip-3c2"
