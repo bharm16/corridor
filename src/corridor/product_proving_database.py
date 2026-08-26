@@ -347,7 +347,7 @@ def _fingerprint_public_schema(
 
     columns = connection.execute(
         text(
-            "select c.relname as table_name, a.attnum as ordinal, "
+            "select c.relname as table_name, "
             "a.attname as column_name, format_type(a.atttypid, a.atttypmod) "
             "as data_type, a.attnotnull as not_null, "
             "coalesce(pg_get_expr(d.adbin, d.adrelid, true), '') "
@@ -366,7 +366,7 @@ def _fingerprint_public_schema(
             "left join pg_catalog.pg_namespace cn on cn.oid = coll.collnamespace "
             "where n.nspname = 'public' and c.relkind in ('r', 'p') "
             "and a.attnum > 0 and not a.attisdropped "
-            "order by c.relname collate \"C\", a.attnum"
+            "order by c.relname collate \"C\", a.attname collate \"C\""
         )
     ).mappings()
     for row in columns:
@@ -374,7 +374,7 @@ def _fingerprint_public_schema(
         objects.append(
             _schema_object(
                 "column",
-                f"{row['table_name']}.{row['ordinal']}.{row['column_name']}",
+                f"{row['table_name']}.{row['column_name']}",
                 definition,
             )
         )
