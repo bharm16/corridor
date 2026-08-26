@@ -194,7 +194,7 @@ def _expected_preflight() -> ExpectedPreflight:
     return ExpectedPreflight(
         source_revision="a" * 40,
         origin_main_revision="b" * 40,
-        migration_head="b317c5d7e9f2",
+        migration_head="c318d6e8f0a3",
         policy_digests={"dependency-admission": "c" * 64},
         documents={1311: "d" * 64, 1435: "e" * 64, 1438: "f" * 64},
         baseline_runs={1311: 117, 1435: 193811, 1438: 193812},

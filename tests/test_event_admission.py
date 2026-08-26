@@ -23,6 +23,7 @@ from datetime import date
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy.orm import object_session
 
 from corridor.adjudicate import accept_candidate
 from corridor.db import Session, engine
@@ -1171,10 +1172,19 @@ def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
     assert session.get(Candidate, candidate.id).state == "pending"
 
 
+def _database_migration_head(project) -> str:
+    session = object_session(project)
+    assert session is not None
+    migration_head = _current_migration_head(session)
+    assert migration_head is not None
+    return migration_head
+
+
 def _activation_receipt(
-    project, *, gates, source_revision=None, migration_head="b317c5d7e9f2"
+    project, *, gates, source_revision=None, migration_head=None
 ):
     source_revision = source_revision or _current_source_revision()
+    migration_head = migration_head or _database_migration_head(project)
     policy_sha256 = policy.canonical_sha256(
         canonical_event_admission_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     )
@@ -1247,7 +1257,7 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="b317c5d7e9f2",
+        migration_head=_database_migration_head(project),
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -1275,7 +1285,7 @@ def test_database_rejects_activation_for_a_failed_receipt(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="b317c5d7e9f2",
+        migration_head=_database_migration_head(project),
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -1303,7 +1313,7 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="b317c5d7e9f2",
+        migration_head=_database_migration_head(project),
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -1390,7 +1400,7 @@ def test_activated_extension_preserves_predecessor_selected_scope_behavior(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="b317c5d7e9f2",
+        migration_head=_database_migration_head(project),
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": True},
@@ -1412,7 +1422,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="b317c5d7e9f2",
+        migration_head=_database_migration_head(project),
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
@@ -1422,7 +1432,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision="b" * 40,
-        migration_head="b317c5d7e9f2",
+        migration_head=_database_migration_head(project),
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -1452,7 +1462,7 @@ def test_deployed_rule_digest_drift_suspends_activation(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="b317c5d7e9f2",
+        migration_head=_database_migration_head(project),
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
