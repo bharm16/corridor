@@ -396,5 +396,7 @@ def test_production_batch_seam_emits_action_items_when_model_returns_none(
     assert run.schema_version == "minutes_v5"
     assert run.candidate_count == 2
     assert session.scalars(
-        select(Candidate).where(Candidate.source_document_id == document.id)
+        select(Candidate)
+        .where(Candidate.source_document_id == document.id)
+        .order_by(Candidate.id)
     ).all() == created
