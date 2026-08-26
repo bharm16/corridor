@@ -36,13 +36,24 @@ from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
 from corridor.extraction_runs import record_extraction_run
+from corridor.extractor_lineage import (
+    token_usage_delta,
+    usage_snapshot,
+    zero_token_usage,
+)
 from corridor.extract_matrix import (
     ExtractionFailed,
     PROMPT_VERSION,
     SequencingSemanticsDetected,
 )
 from corridor.geometry import NoMatrixFound
-from corridor.models import Candidate, Document, DocumentQuarantine, Project
+from corridor.models import (
+    Candidate,
+    Document,
+    DocumentQuarantine,
+    ExtractionRun,
+    Project,
+)
 from corridor.pipeline import ExtractionRoute, extraction_route
 
 # An extractor reads one Document and returns the Candidates it produced,
@@ -119,6 +130,7 @@ def extract_project(
                 effective_prompt_version=prompt_version,
                 schema_version=prompt_version,
                 extract=extract,
+                allow_unsealed_legacy=True,
             )
 
     if document_registry_id is not None and document_sha256 is not None:
@@ -159,6 +171,7 @@ def extract_project(
 
     for document in documents:
         route = select_route(document)
+        usage_before = usage_snapshot(route.usage_client)
         effective_prompt_version = route.effective_prompt_version
         done = done_by_version.get(effective_prompt_version)
         if done is None:
@@ -185,14 +198,15 @@ def extract_project(
 
         if document.parse_status != "parsed":
             detail = f"ingest parse_status is {document.parse_status!r}"
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="unreadable",
-                schema_version=route.schema_version,
+                model=route.model,
                 error_detail=detail,
             )
             if commit:
@@ -215,26 +229,26 @@ def extract_project(
             # on the next run depends on being impossible.
             with session.begin_nested():
                 candidates = route.extract(session, document)
-                run = record_extraction_run(
+                run = _record_routed_run(
                     session,
                     document,
-                    prompt_version=effective_prompt_version,
+                    route,
+                    usage_before,
                     candidate_count=len(candidates),
                     page_errors=0,
                     outcome="completed",
                     candidates=tuple(candidates),
                     model=_run_model(candidates, route.model),
-                    schema_version=route.schema_version,
                 )
         except SequencingSemanticsDetected as exc:
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="quarantined",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -256,14 +270,14 @@ def extract_project(
             )
             continue
         except NoMatrixFound as exc:
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="no_matrix",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -281,14 +295,14 @@ def extract_project(
             )
             continue
         except ExtractionFailed as exc:
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="failed",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -306,14 +320,14 @@ def extract_project(
             )
             continue
         except Exception as exc:
-            record_extraction_run(
+            _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="failed",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=f"{type(exc).__name__}: {exc}",
             )
@@ -350,6 +364,40 @@ def _run_model(
     if configured_model is not None and models and models != {configured_model}:
         raise ValueError("Candidate model does not match the configured extraction model")
     return configured_model or next(iter(models), None)
+
+
+def _record_routed_run(
+    session: Session,
+    document: Document,
+    route: ExtractionRoute,
+    usage_before: dict[str, int] | None,
+    **values,
+) -> ExtractionRun:
+    """Persist the exact route seal and its per-document usage delta."""
+
+    if route.extractor_config is None:
+        # Explicit injected test routes created before configuration receipts
+        # remain available through the route seam. Deployed route selection
+        # always carries a seal.
+        token_usage = None
+    elif route.usage_client is None and route.extractor_config.model is None:
+        token_usage = zero_token_usage(document.id)
+    else:
+        token_usage = token_usage_delta(
+            usage_before,
+            usage_snapshot(route.usage_client),
+            document_ids=[document.id],
+        )
+    return record_extraction_run(
+        session,
+        document,
+        prompt_version=route.effective_prompt_version,
+        schema_version=route.schema_version,
+        extractor_config=route.extractor_config,
+        token_usage=token_usage,
+        allow_unsealed_legacy=route.allow_unsealed_legacy,
+        **values,
+    )
 
 
 def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> str:

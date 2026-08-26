@@ -508,6 +508,179 @@ class ExtractionRun(Base):
     __tablename__ = "extraction_runs"
     __table_args__ = (
         UniqueConstraint("document_id", "id"),
+        CheckConstraint(
+            """
+            (
+                prompt_sha256 is null
+                and schema_sha256 is null
+                and postprocessor_sha256 is null
+                and extractor_config_json is null
+                and extractor_config_sha256 is null
+                and token_usage_json is null
+            )
+            or
+            (
+                prompt_sha256 is not null
+                and schema_sha256 is not null
+                and postprocessor_sha256 is not null
+                and extractor_config_json is not null
+                and extractor_config_sha256 is not null
+                and token_usage_json is not null
+                and prompt_sha256 ~ '^[0-9a-f]{64}$'
+                and schema_sha256 ~ '^[0-9a-f]{64}$'
+                and postprocessor_sha256 ~ '^[0-9a-f]{64}$'
+                and extractor_config_sha256 ~ '^[0-9a-f]{64}$'
+                and jsonb_typeof(extractor_config_json) = 'object'
+                and extractor_config_json ?& array[
+                    'receipt_version', 'extractor', 'prompt_version', 'model',
+                    'schema_version', 'prompt_sha256', 'schema_sha256',
+                    'postprocessor_sha256', 'request_controls', 'runtime'
+                ]
+                and jsonb_typeof(
+                    extractor_config_json -> 'receipt_version'
+                ) = 'number'
+                and extractor_config_json ->> 'receipt_version' = '1'
+                and jsonb_typeof(
+                    extractor_config_json -> 'extractor'
+                ) = 'string'
+                and length(trim(extractor_config_json ->> 'extractor')) > 0
+                and jsonb_typeof(
+                    extractor_config_json -> 'prompt_version'
+                ) = 'string'
+                and jsonb_typeof(
+                    extractor_config_json -> 'schema_version'
+                ) = 'string'
+                and jsonb_typeof(
+                    extractor_config_json -> 'prompt_sha256'
+                ) = 'string'
+                and jsonb_typeof(
+                    extractor_config_json -> 'schema_sha256'
+                ) = 'string'
+                and jsonb_typeof(
+                    extractor_config_json -> 'postprocessor_sha256'
+                ) = 'string'
+                and jsonb_typeof(
+                    extractor_config_json -> 'request_controls'
+                ) = 'object'
+                and jsonb_typeof(
+                    extractor_config_json -> 'runtime'
+                ) = 'object'
+                and extractor_config_json -> 'runtime' ?& array[
+                    'python_implementation', 'python_version',
+                    'dependency_lock_sha256', 'packages'
+                ]
+                and jsonb_typeof(
+                    extractor_config_json -> 'runtime' ->
+                        'python_implementation'
+                ) = 'string'
+                and length(trim(
+                    extractor_config_json -> 'runtime' ->>
+                        'python_implementation'
+                )) > 0
+                and jsonb_typeof(
+                    extractor_config_json -> 'runtime' -> 'python_version'
+                ) = 'string'
+                and length(trim(
+                    extractor_config_json -> 'runtime' ->> 'python_version'
+                )) > 0
+                and jsonb_typeof(
+                    extractor_config_json -> 'runtime' ->
+                        'dependency_lock_sha256'
+                ) = 'string'
+                and extractor_config_json -> 'runtime' ->>
+                    'dependency_lock_sha256' ~ '^[0-9a-f]{64}$'
+                and jsonb_typeof(
+                    extractor_config_json -> 'runtime' -> 'packages'
+                ) = 'object'
+                and extractor_config_json ->> 'prompt_version' = prompt_version
+                and extractor_config_json ->> 'schema_version' = schema_version
+                and extractor_config_json ->> 'prompt_sha256' = prompt_sha256
+                and extractor_config_json ->> 'schema_sha256' = schema_sha256
+                and extractor_config_json ->> 'postprocessor_sha256' =
+                    postprocessor_sha256
+                and (
+                    (
+                        model is null
+                        and jsonb_typeof(
+                            extractor_config_json -> 'model'
+                        ) = 'null'
+                    )
+                    or (
+                        model is not null
+                        and jsonb_typeof(
+                            extractor_config_json -> 'model'
+                        ) = 'string'
+                        and extractor_config_json ->> 'model' = model
+                    )
+                )
+                and jsonb_typeof(token_usage_json) = 'object'
+                and token_usage_json ?& array[
+                    'scope', 'document_ids', 'measurement'
+                ]
+                and jsonb_typeof(token_usage_json -> 'scope') = 'string'
+                and jsonb_typeof(token_usage_json -> 'measurement') = 'string'
+                and token_usage_json ->> 'scope' in ('run', 'batch')
+                and jsonb_typeof(token_usage_json -> 'document_ids') = 'array'
+                and jsonb_array_length(token_usage_json -> 'document_ids') > 0
+                and (
+                    (
+                        token_usage_json ->> 'scope' = 'run'
+                        and jsonb_array_length(
+                            token_usage_json -> 'document_ids'
+                        ) = 1
+                    )
+                    or (
+                        token_usage_json ->> 'scope' = 'batch'
+                        and jsonb_array_length(
+                            token_usage_json -> 'document_ids'
+                        ) > 1
+                    )
+                )
+                and (
+                    (
+                        token_usage_json ->> 'measurement' = 'unavailable'
+                        and token_usage_json ? 'reason'
+                        and jsonb_typeof(
+                            token_usage_json -> 'reason'
+                        ) = 'string'
+                        and length(trim(token_usage_json ->> 'reason')) > 0
+                    )
+                    or (
+                        token_usage_json ->> 'measurement' = 'exact'
+                        and token_usage_json ?& array[
+                            'prompt_tokens', 'completion_tokens',
+                            'reasoning_tokens', 'cached_tokens'
+                        ]
+                        and jsonb_typeof(
+                            token_usage_json -> 'prompt_tokens'
+                        ) = 'number'
+                        and jsonb_typeof(
+                            token_usage_json -> 'completion_tokens'
+                        ) = 'number'
+                        and jsonb_typeof(
+                            token_usage_json -> 'reasoning_tokens'
+                        ) = 'number'
+                        and jsonb_typeof(
+                            token_usage_json -> 'cached_tokens'
+                        ) = 'number'
+                        and token_usage_json ->> 'prompt_tokens' ~ '^[0-9]+$'
+                        and token_usage_json ->> 'completion_tokens' ~ '^[0-9]+$'
+                        and token_usage_json ->> 'reasoning_tokens' ~ '^[0-9]+$'
+                        and token_usage_json ->> 'cached_tokens' ~ '^[0-9]+$'
+                        and (token_usage_json ->> 'prompt_tokens')::numeric >= 0
+                        and (token_usage_json ->> 'completion_tokens')::numeric >= 0
+                        and (token_usage_json ->> 'reasoning_tokens')::numeric >= 0
+                        and (token_usage_json ->> 'cached_tokens')::numeric >= 0
+                    )
+                )
+                and extraction_token_usage_membership_is_valid(
+                    document_id,
+                    token_usage_json
+                )
+            ) is true
+            """,
+            name="ck_extraction_runs_config_receipt_shape",
+        ),
         Index(
             "ix_extraction_runs_completed_prompt_document",
             "prompt_version",
@@ -532,6 +705,15 @@ class ExtractionRun(Base):
     # The extractor-time Candidate payloads owned by this run. Candidate
     # review state and edited payloads remain mutable; this snapshot does not.
     candidate_inputs_json: Mapped[list | None] = mapped_column(JSONB)
+    # Exact bytes and strict request controls are sealed when the extractor
+    # starts, then copied here. Historical rows remain null rather than being
+    # reconstructed from whatever source happens to be deployed today.
+    prompt_sha256: Mapped[str | None] = mapped_column(String(64))
+    schema_sha256: Mapped[str | None] = mapped_column(String(64))
+    postprocessor_sha256: Mapped[str | None] = mapped_column(String(64))
+    extractor_config_json: Mapped[dict | None] = mapped_column(JSONB)
+    extractor_config_sha256: Mapped[str | None] = mapped_column(String(64))
+    token_usage_json: Mapped[dict | None] = mapped_column(JSONB)
     completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

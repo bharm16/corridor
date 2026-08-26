@@ -638,6 +638,7 @@ def run_controlled_lane(
             candidates=tuple(predecessor_candidates),
             model=_CONTROLLED_MODEL,
             schema_version=_CONTROLLED_PROMPT_VERSION,
+            allow_unsealed_legacy=True,
         )
         declare_active_run(
             session,
@@ -711,6 +712,7 @@ def run_controlled_lane(
         candidates=(sentinel_candidate,),
         model=_CONTROLLED_MODEL,
         schema_version=_CONTROLLED_PROMPT_VERSION,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(
         session,
@@ -1872,6 +1874,7 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         candidates=(predecessor_candidate,),
         model=_CONTROLLED_MODEL,
         schema_version=_CONTROLLED_PROMPT_VERSION,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(
         session,
@@ -1916,6 +1919,7 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         candidates=(successor_candidate,),
         model=_CONTROLLED_MODEL,
         schema_version=_CONTROLLED_PROMPT_VERSION,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(
         session,

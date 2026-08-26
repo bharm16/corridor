@@ -247,11 +247,32 @@ def _candidate_lineage(
         record = direct[0]
         if not record.attributable:
             return None, "admission_not_attributable"
-        state_consistent = (
-            candidate.state == "accepted" and candidate.merged_into is None
-            if record.action == audit.ACCEPT_CANDIDATE
-            else candidate.state == "merged" and candidate.merged_into == dependency.id
-        )
+        if record.action == audit.ACCEPT_CANDIDATE:
+            state_consistent = (
+                candidate.state == "accepted" and candidate.merged_into is None
+            )
+        elif record.action == audit.MERGE_CANDIDATE:
+            state_consistent = (
+                candidate.state == "merged"
+                and candidate.merged_into == dependency.id
+            )
+        elif (
+            record.action == audit.ADMIT_DEPENDENCY
+            and record.durable_outcome == "admitted"
+        ):
+            state_consistent = (
+                candidate.state == "accepted" and candidate.merged_into is None
+            )
+        elif (
+            record.action == audit.ADMIT_DEPENDENCY
+            and record.durable_outcome == "merged"
+        ):
+            state_consistent = (
+                candidate.state == "merged"
+                and candidate.merged_into == dependency.id
+            )
+        else:
+            state_consistent = False
         if not state_consistent:
             return None, "admission_state_inconsistent"
         return AdmissionLineage(record, candidate, record.fields), None

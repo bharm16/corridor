@@ -129,6 +129,7 @@ def project_with_two_dependencies(session):
         candidate_count=len(candidates),
         page_errors=0,
         candidates=tuple(candidates),
+        allow_unsealed_legacy=True,
     )
     session.flush()
     declare_active_run(session, doc.id, run.id, principal=TEST_PRINCIPAL)
@@ -1858,6 +1859,7 @@ def _critical_dependency(session):
         candidate_count=1,
         page_errors=0,
         candidates=(candidate,),
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=principal)
     dependency = accept_candidate(session, candidate, principal=principal)

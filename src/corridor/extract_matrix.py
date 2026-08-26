@@ -82,8 +82,9 @@ SCHEMA_VERSION = "matrix_candidate_shape_v1"
 # Superseded prompts are kept beside the current one rather than edited:
 # their Candidates are still in the database, and a prompt that has been
 # overwritten cannot say what produced them (ADR-0003).
-STRUCTURE_PROMPT = Path("prompts/matrix_structure_v3.md")
-TRANSCRIBE_PROMPT = Path("prompts/matrix_v1.md")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+STRUCTURE_PROMPT = _REPO_ROOT / "prompts/matrix_structure_v3.md"
+TRANSCRIBE_PROMPT = _REPO_ROOT / "prompts/matrix_v1.md"
 
 TIER_STRUCTURE = "structure"
 TIER_TRANSCRIBE = "transcribe"
@@ -262,6 +263,10 @@ def extract_document(
     *,
     client: StructuredClient | None = None,
     max_pages: int | None = None,
+    structure_system: str | None = None,
+    transcribe_system: str | None = None,
+    structure_schema: dict | None = None,
+    transcribe_schema: dict | None = None,
 ) -> list[Candidate]:
     """Every conflict row on every page of one matrix.
 
@@ -272,6 +277,20 @@ def extract_document(
     conflicts.
     """
     client = client or OpenAIClient()
+    structure_system = (
+        STRUCTURE_PROMPT.read_text()
+        if structure_system is None
+        else structure_system
+    )
+    transcribe_system = (
+        TRANSCRIBE_PROMPT.read_text()
+        if transcribe_system is None
+        else transcribe_system
+    )
+    structure_schema = STRUCTURE_SCHEMA if structure_schema is None else structure_schema
+    transcribe_schema = (
+        TRANSCRIBE_SCHEMA if transcribe_schema is None else transcribe_schema
+    )
 
     pages = [
         page
@@ -307,8 +326,8 @@ def extract_document(
     if structure_pages:
         results = complete_many(
             client,
-            system=STRUCTURE_PROMPT.read_text(),
-            schema=STRUCTURE_SCHEMA,
+            system=structure_system,
+            schema=structure_schema,
             users=[_structure_user(document, p, grids[p.page_no]) for p in structure_pages],
             images=[[p.image_path] for p in structure_pages],
         )
@@ -340,8 +359,8 @@ def extract_document(
     if transcribe_pages:
         results = complete_many(
             client,
-            system=TRANSCRIBE_PROMPT.read_text(),
-            schema=TRANSCRIBE_SCHEMA,
+            system=transcribe_system,
+            schema=transcribe_schema,
             users=[_transcribe_user(document, p) for p in transcribe_pages],
             images=[[p.image_path] for p in transcribe_pages],
             # Only this tier writes values, so only this tier needs a

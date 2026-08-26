@@ -121,6 +121,7 @@ def _run(session, document, candidates):
         candidates=candidates,
         model="gpt-test",
         schema_version="matrix_candidate_shape_v1",
+        allow_unsealed_legacy=True,
     )
     session.flush()
     return run

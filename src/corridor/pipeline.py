@@ -6,6 +6,7 @@ single path onward is a human keystroke in `corridor.adjudicate`.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,10 +18,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.extraction_runs import record_extraction_run
+from corridor.extractor_lineage import (
+    ExtractorConfig,
+    deployed_extractor_config,
+    deployed_matrix_config,
+    token_usage_delta,
+    usage_snapshot,
+    zero_token_usage,
+)
 from corridor.extract_matrix import ExtractionFailed
 from corridor.geometry import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
-from corridor.models import Candidate, DocPage, Document
+from corridor.models import Candidate, DocPage, Document, ExtractionRun
 from corridor.storage import stored_file
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
@@ -39,6 +48,15 @@ class ExtractionRoute:
     # run still identifies the model that read the document. Deterministic
     # routes, such as native spreadsheet extraction, leave this null.
     model: str | None = None
+    # Computed before the reader runs. The receipt owns these exact source
+    # bytes even if the checkout changes before anybody reads the run later.
+    extractor_config: ExtractorConfig | None = None
+    # The cumulative provider counter whose per-document delta is exact.
+    # Native routes have no client and record an exact zero instead.
+    usage_client: object | None = None
+    # Only explicit synthetic/historical adapters may opt into null lineage.
+    # Deployed route selection never sets this.
+    allow_unsealed_legacy: bool = False
 
 
 def ingest_manifest(
@@ -204,25 +222,51 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
             effective_prompt_version=SHEET_PROMPT_VERSION,
             schema_version=SHEET_SCHEMA_VERSION,
             extract=extract_sheet,
+            extractor_config=deployed_extractor_config("sheet", client=None),
         )
 
     from corridor.extract_matrix import (
         PROMPT_VERSION as MATRIX_PROMPT_VERSION,
         SCHEMA_VERSION as MATRIX_SCHEMA_VERSION,
+        STRUCTURE_PROMPT,
+        STRUCTURE_SCHEMA,
+        TRANSCRIBE_PROMPT,
+        TRANSCRIBE_SCHEMA,
         extract_document as extract_matrix,
     )
     from corridor.llm import OpenAIClient
 
     matrix_client = client or OpenAIClient()
+    structure_system = STRUCTURE_PROMPT.read_text()
+    transcribe_system = TRANSCRIBE_PROMPT.read_text()
+    structure_schema = deepcopy(STRUCTURE_SCHEMA)
+    transcribe_schema = deepcopy(TRANSCRIBE_SCHEMA)
+    extractor_config = deployed_matrix_config(
+        client=matrix_client,
+        structure_system=structure_system,
+        transcribe_system=transcribe_system,
+        structure_schema=structure_schema,
+        transcribe_schema=transcribe_schema,
+    )
 
     def extract(session: Session, document: Document) -> list[Candidate]:
-        return extract_matrix(session, document, client=matrix_client)
+        return extract_matrix(
+            session,
+            document,
+            client=matrix_client,
+            structure_system=structure_system,
+            transcribe_system=transcribe_system,
+            structure_schema=structure_schema,
+            transcribe_schema=transcribe_schema,
+        )
 
     return ExtractionRoute(
         effective_prompt_version=MATRIX_PROMPT_VERSION,
         schema_version=MATRIX_SCHEMA_VERSION,
         extract=extract,
         model=getattr(matrix_client, "model", None),
+        extractor_config=extractor_config,
+        usage_client=matrix_client,
     )
 
 
@@ -242,55 +286,56 @@ def extract_any(
     spreadsheet. It is not.
     """
     route = extraction_route(document, client=client)
+    usage_before = usage_snapshot(route.usage_client)
     try:
         with session.begin_nested():
             candidates = route.extract(session, document)
-            record_extraction_run(
+            _record_route_run(
                 session,
                 document,
-                prompt_version=route.effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=len(candidates),
                 page_errors=0,
                 outcome="completed",
                 candidates=tuple(candidates),
                 model=_run_model(candidates, route.model),
-                schema_version=route.schema_version,
             )
     except NoMatrixFound as exc:
-        record_extraction_run(
+        _record_route_run(
             session,
             document,
-            prompt_version=route.effective_prompt_version,
+            route,
+            usage_before,
             candidate_count=0,
             page_errors=1,
             outcome="no_matrix",
-            schema_version=route.schema_version,
             model=route.model,
             error_detail=str(exc),
         )
         raise
     except ExtractionFailed as exc:
-        record_extraction_run(
+        _record_route_run(
             session,
             document,
-            prompt_version=route.effective_prompt_version,
+            route,
+            usage_before,
             candidate_count=0,
             page_errors=1,
             outcome="failed",
-            schema_version=route.schema_version,
             model=route.model,
             error_detail=str(exc),
         )
         raise
     except Exception as exc:
-        record_extraction_run(
+        _record_route_run(
             session,
             document,
-            prompt_version=route.effective_prompt_version,
+            route,
+            usage_before,
             candidate_count=0,
             page_errors=1,
             outcome="failed",
-            schema_version=route.schema_version,
             model=route.model,
             error_detail=f"{type(exc).__name__}: {exc}",
         )
@@ -307,6 +352,35 @@ def _run_model(candidates: list[Candidate], configured_model: str | None) -> str
     if configured_model is not None and observed and observed != {configured_model}:
         raise ValueError("Candidate model does not match the configured extraction model")
     return configured_model or next(iter(observed), None)
+
+
+def _record_route_run(
+    session: Session,
+    document: Document,
+    route: ExtractionRoute,
+    usage_before: dict[str, int] | None,
+    **values,
+) -> ExtractionRun:
+    if route.extractor_config is None:
+        raise ValueError("a deployed extraction route must carry its configuration")
+    token_usage = (
+        zero_token_usage(document.id)
+        if route.usage_client is None and route.extractor_config.model is None
+        else token_usage_delta(
+            usage_before,
+            usage_snapshot(route.usage_client),
+            document_ids=[document.id],
+        )
+    )
+    return record_extraction_run(
+        session,
+        document,
+        prompt_version=route.effective_prompt_version,
+        schema_version=route.schema_version,
+        extractor_config=route.extractor_config,
+        token_usage=token_usage,
+        **values,
+    )
 
 
 def _basename(url: str) -> str:
@@ -351,14 +425,15 @@ def ingest_and_extract(
     )
     if document.parse_status != "parsed":
         route = extraction_route(document, client=client)
-        record_extraction_run(
+        _record_route_run(
             session,
             document,
-            prompt_version=route.effective_prompt_version,
+            route,
+            usage_snapshot(route.usage_client),
             candidate_count=0,
             page_errors=1,
             outcome="unreadable",
-            schema_version=route.schema_version,
+            model=route.model,
             error_detail=f"ingest parse_status is {document.parse_status!r}",
         )
         return document, []

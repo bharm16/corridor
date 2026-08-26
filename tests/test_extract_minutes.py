@@ -404,7 +404,9 @@ def test_minutes_candidate_fields_are_not_cleaned_into_exact_commitments(
         **expected,
     }
     assert candidate.state == "pending"
-    assert session.scalars(select(DependencyEvent)).all() == []
+    assert session.scalars(
+        select(DependencyEvent).where(DependencyEvent.project_id == document.project_id)
+    ).all() == []
 
 
 def test_the_schema_restricts_event_type_to_the_ledgers_own_enum(session, document):
@@ -515,6 +517,7 @@ def test_batched_extraction_pools_pages_across_documents(session, document):
         items_key="events",
         max_workers=4,
         prompt_version=PROMPT_VERSION,
+        allow_unsealed_legacy=True,
         commit=False,
     )
     # Both documents' pages went out in one pooled batch.
@@ -540,6 +543,7 @@ def test_already_extracted_lets_a_killed_run_resume(session, document):
         to_candidate=_to_candidate,
         items_key="events",
         prompt_version=PROMPT_VERSION,
+        allow_unsealed_legacy=True,
         commit=False,
     )
 

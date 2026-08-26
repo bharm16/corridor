@@ -188,6 +188,7 @@ def _completed_run(session, document: Document, *candidates: Candidate):
         candidates=candidates,
         model="test-model",
         schema_version="candidate-v1",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=REVIEWER)
     session.flush()

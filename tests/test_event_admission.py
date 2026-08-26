@@ -55,6 +55,7 @@ from corridor.external_statements import (
 )
 from corridor import policy
 from corridor.extraction_runs import (
+    declare_active_run,
     declare_single_run_documents,
     record_extraction_run,
 )
@@ -164,6 +165,7 @@ def _run(session, document, candidates):
         candidates=candidates,
         model="gpt-test",
         schema_version="matrix_candidate_shape_v1",
+        allow_unsealed_legacy=True,
     )
     session.flush()
     return run
@@ -234,8 +236,8 @@ def _minutes_with(
         candidate.payload_json["citations"][0]["quote"]
         for candidate in candidates
     )
-    _run(session, minutes, candidates)
-    declare_single_run_documents(session, project.id, principal=OPERATOR)
+    run = _run(session, minutes, candidates)
+    declare_active_run(session, minutes.id, run.id, principal=OPERATOR)
     return candidates
 
 
@@ -390,7 +392,11 @@ def test_unknown_scope_policy_is_opt_in_and_idempotent(session, project):
             EventAdmissionOutcome.outcome == "admitted",
         )
     ) == 1
-def _unknown_scope_commitment(*, event_date="2025-01-16", description=None, timing=None):
+
+
+def _unknown_scope_commitment(
+    *, event_date="2025-01-16", description=None, timing=None
+):
     return _event(
         ref=None,
         event_date=event_date,
@@ -404,6 +410,15 @@ def _unknown_scope_commitment(*, event_date="2025-01-16", description=None, timi
         description=description
         or "Tejas Pipeline will deliver the Barlow calculation in June 2025.",
     )
+
+
+def _reextract_candidate(session, project, original, fields):
+    document = session.get(Document, original.source_document_id)
+    assert document is not None
+    candidate = _candidate(document, kind="event", fields=fields)
+    run = _run(session, document, [candidate])
+    declare_active_run(session, document.id, run.id, principal=OPERATOR)
+    return candidate
 
 
 def test_unknown_scope_policy_abstains_from_same_document_duplicate_commitment(
@@ -493,6 +508,143 @@ def test_unknown_scope_policy_abstains_from_other_document_duplicate_commitment(
     ]
     assert session.get(Candidate, first.id).state == "accepted"
     assert session.get(Candidate, duplicate.id).state == "pending"
+    [statement] = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.project_id == project.id,
+            DependencyEvent.event_type == "commitment",
+        )
+    ).all()
+    outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == result.run_id,
+            EventAdmissionOutcome.candidate_id == duplicate.id,
+        )
+    )
+    assert outcome is not None
+    assert "commitment_registry_sha256" not in outcome.eligibility_json["input"]
+    assert outcome.eligibility_json["input"]["matching_commitments"] == [
+        {
+            "basis": "open_facts",
+            "commitment_lineage_id": statement.commitment_lineage_id,
+            "statement_event_id": statement.id,
+            "closure_event_id": None,
+            "closure_event_date": None,
+        }
+    ]
+    assert session.scalar(
+        select(func.count()).select_from(CommitmentLineage).where(
+            CommitmentLineage.project_id == project.id
+        )
+    ) == 1
+
+
+def test_unknown_scope_source_replay_after_correction_matches_lineage_history(
+    session, project
+):
+    party = ExternalOrg(name=PIPELINE, aliases=[])
+    session.add(party)
+    session.flush()
+    original_fields = _unknown_scope_commitment()
+    [original] = _minutes_with(
+        session,
+        project,
+        [original_fields],
+        filename="commitment-before-correction.pdf",
+    )
+    first = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    assert first.admitted_count == 1
+    [root] = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.project_id == project.id,
+            DependencyEvent.event_type == "commitment",
+        )
+    ).all()
+    correction_quote = (
+        "Tejas Pipeline will deliver the Barlow calculation in July 2025."
+    )
+    page = session.scalar(
+        select(DocPage).where(DocPage.document_id == original.source_document_id)
+    )
+    assert page is not None
+    page.text = f"{page.text}\n{correction_quote}"
+    correction = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party=PIPELINE,
+        stated_external_org_id=party.id,
+        source_kind="cited",
+        event_date=date(2025, 2, 20),
+        description=correction_quote,
+        new_timing=StatementTiming.month("July 2025", 2025, 7),
+        previous_timing=StatementTiming.month("June 2025", 2025, 6),
+        scope=StatementScope.unknown(),
+        created_by=OPERATOR.subject,
+        evidence=CitedStatementEvidence(
+            original.source_document_id, 1, correction_quote
+        ),
+        commitment_lineage_id=root.commitment_lineage_id,
+    )
+    replay = _reextract_candidate(session, project, original, original_fields)
+
+    result = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert result.admitted_count == 0
+    assert result.abstentions[0].reason == "commitment_evidence_already_recorded"
+    assert session.get(Candidate, replay.id).state == "pending"
+    outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == result.run_id,
+            EventAdmissionOutcome.candidate_id == replay.id,
+        )
+    )
+    assert outcome is not None
+    assert outcome.eligibility_json["input"]["matching_commitments"] == [
+        {
+            "basis": "historical_evidence",
+            "commitment_lineage_id": root.commitment_lineage_id,
+            "statement_event_id": root.id,
+            "closure_event_id": None,
+            "closure_event_date": None,
+        }
+    ]
+    [distinct_source_replay] = _minutes_with(
+        session,
+        project,
+        [_unknown_scope_commitment(event_date="2025-03-03")],
+        filename="distinct-source-after-correction.pdf",
+    )
+    later = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    assert later.abstentions == [
+        EventAdmissionAbstention(
+            candidate_id=distinct_source_replay.id,
+            reason="matching_open_commitment_exists",
+            reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        )
+    ]
+    later_outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == later.run_id,
+            EventAdmissionOutcome.candidate_id == distinct_source_replay.id,
+        )
+    )
+    assert later_outcome is not None
+    assert later_outcome.eligibility_json["input"]["matching_commitments"] == [
+        {
+            "basis": "open_lineage_history",
+            "commitment_lineage_id": root.commitment_lineage_id,
+            "statement_event_id": root.id,
+            "closure_event_id": None,
+            "closure_event_date": None,
+        }
+    ]
+    assert correction.supersedes_event_id == root.id
     assert session.scalar(
         select(func.count()).select_from(CommitmentLineage).where(
             CommitmentLineage.project_id == project.id
@@ -501,6 +653,134 @@ def test_unknown_scope_policy_abstains_from_other_document_duplicate_commitment(
     assert session.scalar(
         select(func.count()).select_from(DependencyEvent).where(
             DependencyEvent.project_id == project.id
+        )
+    ) == 2
+    assert session.scalar(
+        select(func.count())
+        .select_from(CandidateDisposition)
+        .join(Candidate, Candidate.id == CandidateDisposition.candidate_id)
+        .where(Candidate.project_id == project.id)
+    ) == 1
+
+
+def test_unknown_scope_duplicate_abstention_ignores_unrelated_registry_churn(
+    session, project
+):
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    _minutes_with(
+        session,
+        project,
+        [_unknown_scope_commitment()],
+        filename="registry-churn-original.pdf",
+    )
+    assert run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    ).admitted_count == 1
+    [duplicate] = _minutes_with(
+        session,
+        project,
+        [_unknown_scope_commitment(event_date="2025-02-20")],
+        filename="registry-churn-duplicate.pdf",
+    )
+    first_duplicate = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    assert first_duplicate.abstained_count == 1
+    _minutes_with(
+        session,
+        project,
+        [
+            _unknown_scope_commitment(
+                description=(
+                    "Tejas Pipeline will deliver the separate survey in July 2025."
+                ),
+                timing={
+                    "text": "July 2025",
+                    "precision": "month",
+                    "start_date": "2025-07-01",
+                    "end_date": "2025-07-31",
+                },
+            )
+        ],
+        filename="registry-churn-unrelated.pdf",
+    )
+    unrelated = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    replay = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert unrelated.admitted_count == 1
+    assert unrelated.abstained_count == 0
+    assert replay.admitted_count == 0
+    assert replay.abstained_count == 0
+    assert session.scalar(
+        select(func.count()).select_from(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == duplicate.id
+        )
+    ) == 1
+    assert session.scalar(
+        select(func.count()).select_from(DependencyEvent).where(
+            DependencyEvent.project_id == project.id
+        )
+    ) == 2
+
+
+def test_unknown_scope_ordinary_abstention_ignores_unrelated_success(
+    session, project
+):
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    [response] = _minutes_with(
+        session,
+        project,
+        [_event(ref=None, event_type="response")],
+        filename="ordinary-abstention.pdf",
+    )
+    first = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    assert first.abstentions[0].reason == "event_type_outside_policy"
+    first_outcome = session.scalar(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == first.run_id,
+            EventAdmissionOutcome.candidate_id == response.id,
+        )
+    )
+    assert first_outcome is not None
+    assert "commitment_registry_sha256" not in first_outcome.eligibility_json["input"]
+    _minutes_with(
+        session,
+        project,
+        [
+            _unknown_scope_commitment(
+                description="Tejas Pipeline will deliver the survey in August 2025.",
+                timing={
+                    "text": "August 2025",
+                    "precision": "month",
+                    "start_date": "2025-08-01",
+                    "end_date": "2025-08-31",
+                },
+            )
+        ],
+        filename="unrelated-success.pdf",
+    )
+    unrelated = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    replay = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert unrelated.admitted_count == 1
+    assert unrelated.abstained_count == 0
+    assert replay.admitted_count == 0
+    assert replay.abstained_count == 0
+    assert session.scalar(
+        select(func.count()).select_from(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.candidate_id == response.id
         )
     ) == 1
     assert session.scalar(
@@ -559,17 +839,82 @@ def test_unknown_scope_duplicate_guard_keeps_changed_wording_and_timing_eligible
     ) == 3
 
 
+def test_unknown_scope_duplicate_falls_through_after_first_write_failure(
+    session, project
+):
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    first, fallback = _minutes_with(
+        session,
+        project,
+        [
+            _unknown_scope_commitment(event_date="2025-01-16"),
+            _unknown_scope_commitment(event_date="2025-02-20"),
+        ],
+        filename="duplicate-write-fallback.pdf",
+    )
+    session.execute(
+        text(
+            """
+            create function refuse_first_duplicate_commitment()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+                if new.event_type = 'commitment'
+                   and new.event_date = date '2025-01-16' then
+                    raise exception 'first duplicate refused' using errcode = '23514';
+                end if;
+                return new;
+            end;
+            $$;
+            """
+        )
+    )
+    session.execute(
+        text(
+            """
+            create trigger refuse_first_duplicate_commitment
+            before insert on dependency_events
+            for each row execute function refuse_first_duplicate_commitment();
+            """
+        )
+    )
+
+    result = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+
+    assert result.admitted_count == 1
+    assert result.abstentions == [
+        EventAdmissionAbstention(
+            candidate_id=first.id,
+            reason="write_integrity_failure",
+            reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        )
+    ]
+    assert session.get(Candidate, first.id).state == "pending"
+    assert session.get(Candidate, fallback.id).state == "accepted"
+    assert session.scalar(
+        select(func.count()).select_from(DependencyEvent).where(
+            DependencyEvent.project_id == project.id
+        )
+    ) == 1
+
+
 def test_unknown_scope_duplicate_guard_does_not_match_a_closed_lineage(
     session, project
 ):
     session.add(ExternalOrg(name=PIPELINE, aliases=[]))
     session.flush()
-    _minutes_with(
+    original_fields = _unknown_scope_commitment()
+    [original] = _minutes_with(
         session,
         project,
-        [_unknown_scope_commitment()],
+        [original_fields],
         filename="commitment-before-closure.pdf",
     )
+    session.get(Document, original.source_document_id).doc_date = date(2025, 1, 16)
     first = run_event_admission(
         session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
     )
@@ -580,17 +925,12 @@ def test_unknown_scope_duplicate_guard_does_not_match_a_closed_lineage(
             DependencyEvent.event_type == "commitment",
         )
     ).all()
-    [repeat] = _minutes_with(
-        session,
-        project,
-        [_unknown_scope_commitment(event_date="2025-03-03")],
-        filename="commitment-after-closure.pdf",
-    )
+    repeat = _reextract_candidate(session, project, original, original_fields)
     blocked = run_event_admission(
         session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
     )
     assert blocked.admitted_count == 0
-    assert blocked.abstentions[0].reason == "matching_open_commitment_exists"
+    assert blocked.abstentions[0].reason == "commitment_evidence_already_recorded"
     record_external_party_closure(
         session,
         project_id=project.id,
@@ -601,13 +941,47 @@ def test_unknown_scope_duplicate_guard_does_not_match_a_closed_lineage(
         created_by=OPERATOR.subject,
     )
 
+    replay_after_closure = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    assert replay_after_closure.admitted_count == 0
+    assert replay_after_closure.abstained_count == 0
+    assert replay_after_closure.abstentions == []
+    assert session.get(Candidate, repeat.id).state == "pending"
+    [old_distinct_source] = _minutes_with(
+        session,
+        project,
+        [_unknown_scope_commitment(event_date="2025-02-01")],
+        filename="distinct-source-before-closure.pdf",
+    )
+    session.get(Document, old_distinct_source.source_document_id).doc_date = date(
+        2025, 2, 1
+    )
+    [new_post_closure_source] = _minutes_with(
+        session,
+        project,
+        [_unknown_scope_commitment(event_date="2025-03-03")],
+        filename="distinct-source-after-closure.pdf",
+    )
+    session.get(Document, new_post_closure_source.source_document_id).doc_date = date(
+        2025, 3, 3
+    )
+
     result = run_event_admission(
         session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
     )
 
     assert result.admitted_count == 1
-    assert result.abstained_count == 0
-    assert session.get(Candidate, repeat.id).state == "accepted"
+    assert result.abstentions == [
+        EventAdmissionAbstention(
+            candidate_id=old_distinct_source.id,
+            reason="matching_closed_commitment_not_post_closure",
+            reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        )
+    ]
+    assert session.get(Candidate, repeat.id).state == "pending"
+    assert session.get(Candidate, old_distinct_source.id).state == "pending"
+    assert session.get(Candidate, new_post_closure_source.id).state == "accepted"
     assert session.scalar(
         select(func.count()).select_from(CommitmentLineage).where(
             CommitmentLineage.project_id == project.id
@@ -798,7 +1172,7 @@ def test_model_confidence_cannot_replace_exact_party_evidence(session, project):
 
 
 def _activation_receipt(
-    project, *, gates, source_revision=None, migration_head="a316c5d7e9f1"
+    project, *, gates, source_revision=None, migration_head="b317c5d7e9f2"
 ):
     source_revision = source_revision or _current_source_revision()
     policy_sha256 = policy.canonical_sha256(
@@ -873,7 +1247,7 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="a316c5d7e9f1",
+        migration_head="b317c5d7e9f2",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -901,7 +1275,7 @@ def test_database_rejects_activation_for_a_failed_receipt(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="a316c5d7e9f1",
+        migration_head="b317c5d7e9f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -929,7 +1303,7 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="a316c5d7e9f1",
+        migration_head="b317c5d7e9f2",
         receipt_json=_activation_receipt(
             project,
             gates={
@@ -1016,7 +1390,7 @@ def test_activated_extension_preserves_predecessor_selected_scope_behavior(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="a316c5d7e9f1",
+        migration_head="b317c5d7e9f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": True},
@@ -1038,7 +1412,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="a316c5d7e9f1",
+        migration_head="b317c5d7e9f2",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
@@ -1048,7 +1422,7 @@ def test_newer_failed_replay_suspends_older_activation(session, project):
         session,
         project_id=project.id,
         source_revision="b" * 40,
-        migration_head="a316c5d7e9f1",
+        migration_head="b317c5d7e9f2",
         receipt_json=_activation_receipt(
             project,
             gates={"eligible_case_observed": False},
@@ -1078,7 +1452,7 @@ def test_deployed_rule_digest_drift_suspends_activation(
         session,
         project_id=project.id,
         source_revision=_current_source_revision(),
-        migration_head="a316c5d7e9f1",
+        migration_head="b317c5d7e9f2",
         receipt_json=_activation_receipt(
             project, gates={"eligible_case_observed": True}
         ),
@@ -1481,6 +1855,35 @@ def test_the_receipt_records_the_deployed_checks_that_ran(
     monkeypatch.setattr(module, "_rule_source_bytes", edited)
     after = run_event_admission(session, project.id)
     assert session.get(PolicyRun, after.run_id).policy_sha256 != before_sha
+
+
+@pytest.mark.parametrize(
+    "dependency_name",
+    ["corridor.statement_lifecycle", "corridor.verify"],
+)
+def test_duplicate_guard_dependencies_are_sealed_in_the_rules_digest(
+    dependency_name, monkeypatch
+):
+    from corridor import event_admission as module
+
+    sources = module._rule_source_bytes()
+    assert dependency_name in dict(sources)
+    before = module._rules_digest()
+    monkeypatch.setattr(
+        module,
+        "_rule_source_bytes",
+        lambda: tuple(
+            (
+                name,
+                source + b"\n# duplicate predicate changed\n"
+                if name == dependency_name
+                else source,
+            )
+            for name, source in sources
+        ),
+    )
+
+    assert module._rules_digest() != before
 
 
 def test_the_receipt_records_the_project_side_parties_that_ran(

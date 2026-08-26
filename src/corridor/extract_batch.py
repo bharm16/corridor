@@ -26,6 +26,13 @@ from dataclasses import dataclass
 
 from corridor.admission import load_and_report
 from corridor.extraction_runs import completed_document_ids, record_extraction_run
+from corridor.extractor_lineage import (
+    ExtractorConfig,
+    deployed_extractor_config,
+    token_usage_delta,
+    usage_snapshot,
+    validate_runtime_config,
+)
 from corridor.llm import DEFAULT_WORKERS, complete_many
 from corridor.models import Candidate, DocPage, Document
 
@@ -85,8 +92,20 @@ def extract_documents(
     max_workers: int | None = None,
     on_document: Callable[[Document, list[Candidate], int], None] | None = None,
     prompt_version: str,
+    extractor_config: ExtractorConfig | None = None,
+    allow_unsealed_legacy: bool = False,
     commit: bool = True,
 ) -> list[Candidate]:
+    if extractor_config is None and not allow_unsealed_legacy:
+        raise ValueError("extract_documents requires an exact extractor configuration")
+    if extractor_config is not None:
+        validate_runtime_config(
+            extractor_config,
+            prompt_version=prompt_version,
+            model=getattr(client, "model", None),
+            prompt_bytes=system.encode("utf-8"),
+            schema=schema,
+        )
     workers = max_workers or getattr(client, "max_workers", DEFAULT_WORKERS)
     # Enough pages in flight to keep every worker busy without letting one
     # group grow so large that a crash loses much progress.
@@ -100,6 +119,7 @@ def extract_documents(
     def run(group):
         work = [(doc, page) for doc, pages in group for page in pages]
         results = []
+        usage_before = usage_snapshot(client)
         if work:
             users = [
                 f"Page {page.page_no} of {doc.filename}:\n\n{(page.text or '').strip()}"
@@ -108,6 +128,15 @@ def extract_documents(
             results = complete_many(
                 client, system=system, schema=schema, users=users, max_workers=workers
             )
+        token_usage = (
+            token_usage_delta(
+                usage_before,
+                usage_snapshot(client),
+                document_ids=[document.id for document, _ in group],
+            )
+            if extractor_config is not None
+            else None
+        )
 
         per_document: dict[int, list[Candidate]] = {d.id: [] for d, _ in group}
         unreadable = {d.id for d, pages in group if not pages}
@@ -144,7 +173,11 @@ def extract_documents(
                 ),
                 candidates=tuple(batch),
                 model=model,
-                schema_version=prompt_version,
+                schema_version=(
+                    extractor_config.schema_version
+                    if extractor_config is not None
+                    else prompt_version
+                ),
                 error_detail=(
                     "no eligible readable pages"
                     if doc.id in unreadable
@@ -152,6 +185,9 @@ def extract_documents(
                     if errors[doc.id]
                     else None
                 ),
+                extractor_config=extractor_config,
+                token_usage=token_usage,
+                allow_unsealed_legacy=allow_unsealed_legacy,
             )
         session.flush()
         if commit:
@@ -189,6 +225,8 @@ def run_extraction(
     to_candidate: Callable,
     items_key: str,
     noun: Noun,
+    extractor_config: ExtractorConfig | None = None,
+    extractor_registry_key: str | None = None,
     client_factory: Callable | None = None,
     session_factory: Callable | None = None,
 ) -> int:
@@ -223,6 +261,10 @@ def run_extraction(
     )
     if slug is None:
         return 1
+    if (extractor_config is None) == (extractor_registry_key is None):
+        raise TypeError(
+            "pass exactly one of extractor_config= or extractor_registry_key="
+        )
 
     with (session_factory or DefaultSessionFactory)() as session:
         project = session.scalars(
@@ -264,6 +306,21 @@ def run_extraction(
             return 0
 
         client = (client_factory or OpenAIClient)()
+        try:
+            sealed_config = extractor_config or deployed_extractor_config(
+                extractor_registry_key,
+                client=client,
+            )
+            validate_runtime_config(
+                sealed_config,
+                prompt_version=prompt_version,
+                model=getattr(client, "model", None),
+                prompt_bytes=system.encode("utf-8"),
+                schema=schema,
+            )
+        except BaseException:
+            client.close()
+            raise
         started = time.time()
         print(
             f"{len(documents)} {noun.plural} at {client.max_workers}-way "
@@ -298,6 +355,7 @@ def run_extraction(
                 items_key=items_key,
                 on_document=report,
                 prompt_version=prompt_version,
+                extractor_config=sealed_config,
             )
         finally:
             client.close()

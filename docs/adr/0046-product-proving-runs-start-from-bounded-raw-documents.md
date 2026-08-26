@@ -44,8 +44,10 @@ unresolved with the exact Evidence or authority gap. The run fails when the fron
 cannot represent the honest outcome. It also exercises one refused invalid action
 and one Work Decision change before the final Report. A factual correction, Not
 Relevant disposition, closure, or Verbal is exercised only when the bounded packet
-supports that act. Otherwise the receipt records that the packet did not support it;
-the simulated practitioner never fabricates a fact to satisfy a test checklist.
+supports that act. The simulated practitioner never fabricates a fact to satisfy a
+test checklist. When no correction is exercised, the receipt records only that no
+exact structured correction was observed; it does not claim that raw Evidence could
+not support one.
 Report verification requires correct provenance on every published value, not the
 presence of a provenance class for which the bounded Project Record has no source.
 

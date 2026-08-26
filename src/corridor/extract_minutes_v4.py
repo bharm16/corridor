@@ -433,6 +433,7 @@ def main(argv: list[str]) -> int:
         to_candidate=_to_candidate,
         items_key="events",
         noun=Noun("notes", "External Party Statements"),
+        extractor_registry_key="minutes",
     )
 
 

@@ -32,6 +32,7 @@ from corridor.models import (
     DependencyEventScopeDecision,
     DocPage,
     Document,
+    EvidenceInvestigationCandidateReviewStart,
     EvidenceLink,
     EventAdmissionOutcome,
     ExternalOrg,
@@ -196,6 +197,7 @@ def _record_pending_statement_candidates(session, project, specifications):
         page_errors=0,
         candidates=tuple(candidates),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=RECORDER)
     admission_run = PolicyRun(
@@ -278,6 +280,7 @@ def _record_pending_dependency_candidates(session, project, specifications):
         page_errors=0,
         candidates=tuple(candidates),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=RECORDER)
     admission_run = PolicyRun(
@@ -1185,6 +1188,24 @@ def test_work_list_includes_every_active_run_dependency_proposal_with_ordinary_q
         f'action="/candidates/{exact.id}/keep-unresolved"'
         in queue.text
     )
+    review_start = session.scalar(
+        select(EvidenceInvestigationCandidateReviewStart).where(
+            EvidenceInvestigationCandidateReviewStart.candidate_id == exact.id
+        )
+    )
+    assert review_start is not None
+    assert review_start.principal == RECORDER.subject
+    frontend_routes = {
+        (entry.after_json or {}).get("route_name")
+        for entry in session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "project",
+                AuditLog.entity_id == project.id,
+                AuditLog.action == "product_proving_frontend_request",
+            )
+        ).all()
+    }
+    assert {"coordinator_home", "queue"} <= frontend_routes
 
     kept = client.post(
         f"/candidates/{exact.id}/keep-unresolved",
@@ -1207,6 +1228,30 @@ def test_work_list_includes_every_active_run_dependency_proposal_with_ordinary_q
     assert receipt.actor == RECORDER.subject
     assert receipt.human_principal == RECORDER.subject
     assert receipt.after_json["abstention_reason"] == "no_row_identity"
+    assert session.scalar(
+        select(AuditLog).where(
+            AuditLog.entity_type == "project",
+            AuditLog.entity_id == project.id,
+            AuditLog.action == "product_proving_frontend_request",
+            AuditLog.after_json["route_name"].astext == "keep_unresolved_candidate",
+        )
+    ) is not None
+
+    repeated = client.post(
+        f"/candidates/{exact.id}/keep-unresolved",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    assert repeated.status_code == 303
+    assert len(
+        session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "candidate",
+                AuditLog.entity_id == exact.id,
+                AuditLog.action == "keep_candidate_unresolved",
+            )
+        ).all()
+    ) == 1
 
     acknowledged = client.get(kept.headers["location"])
     assert acknowledged.status_code == 200
@@ -1389,6 +1434,7 @@ def test_coordinator_home_renders_the_public_work_list_and_guided_statement_link
         page_errors=0,
         candidates=(candidate,),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=RECORDER)
 

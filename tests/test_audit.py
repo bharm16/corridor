@@ -111,6 +111,7 @@ def make_candidate(session, document, *, utility_id="FOC1-1", activate=True):
             page_errors=0,
             candidates=(c,),
             model=c.model,
+            allow_unsealed_legacy=True,
         )
         declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()
@@ -260,6 +261,7 @@ def test_another_record_s_candidate_history_does_not_leak_in(session, document):
         page_errors=0,
         candidates=(mine, theirs),
         model=mine.model,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     audit.record(
@@ -289,6 +291,11 @@ def test_an_unknown_action_is_refused(session):
             entity_type=audit.DEPENDENCY,
             entity_id=1,
         )
+
+
+def test_dependency_candidate_replay_is_not_an_admission_action():
+    assert audit.REPLAY_DEPENDENCY_CANDIDATE in audit.ACTIONS
+    assert audit.REPLAY_DEPENDENCY_CANDIDATE != audit.ADMIT_DEPENDENCY
 
 
 def test_reconfirmation_is_a_distinct_attributable_audit_action(

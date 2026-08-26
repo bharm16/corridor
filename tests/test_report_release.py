@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select, text
 
+from corridor.changes import record_run as record_report_run
 from corridor.db import Session, engine
 from corridor.external_statements import (
     CitedStatementEvidence,
@@ -18,6 +19,7 @@ from corridor.external_statements import (
     record_external_party_statement,
 )
 from corridor.models import (
+    AuditLog,
     Dependency,
     DependencyEvent,
     DependencyEventTiming,
@@ -27,6 +29,7 @@ from corridor.models import (
     ExternalReportArtifact,
     Project,
     ProjectRosterEntry,
+    ReportRun,
 )
 from corridor.principals import HumanPrincipal
 from corridor.report import Cell, build_report
@@ -124,6 +127,30 @@ def _release(session, project, *, artifact=None):
     )
 
 
+def test_prepare_refuses_a_report_run_from_another_ledger_reading(session, project):
+    rendered = _rendered(session, project)
+    assert rendered.report.evaluation is not None
+    report_run = record_report_run(
+        session,
+        project.id,
+        evaluation=rendered.report.evaluation,
+        committed_dates=rendered.report.committed_dates,
+        document_only=rendered.report.document_only,
+    )
+    report_run.snapshot_json = {
+        **report_run.snapshot_json,
+        "dependencies": {},
+    }
+
+    with pytest.raises(ReleaseRefusal, match="does not match the rendered Report"):
+        prepare_external_report(
+            session,
+            project_id=project.id,
+            rendered=rendered,
+            report_run=report_run,
+        )
+
+
 def _record_statement_version(session, project):
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
@@ -219,17 +246,32 @@ def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, pr
     assert release.provenance_mode == "all-supported-sources"
     assert release.released_by == TEST_PRINCIPAL.subject
     assert release.released_by_display == "Project person (display name not recorded)"
-    assert release.record_context_json == {
-        "dependencies": [
-            {
-                "dependency_id": next(iter(rendered.report.committed_dates)),
-                "ref_code": "DEP-RELEASE-1",
-                "current_statement_event_id": None,
-                "published_statement_event_id": None,
-            }
-        ],
-        "party_statements": [],
+    provenance_names = {
+        "Assertion": "Assertion",
+        "Derivation": "Derivation",
+        "WorkDecision": "Work Decision",
+        "Verbal": "Verbal",
     }
+    assert release.record_context_json["dependencies"] == [
+        {
+            "dependency_id": next(iter(rendered.report.committed_dates)),
+            "ref_code": "DEP-RELEASE-1",
+            "current_statement_event_id": None,
+            "published_statement_event_id": None,
+        }
+    ]
+    assert release.record_context_json["document_only"] is rendered.report.document_only
+    assert release.record_context_json["party_statements"] == []
+    assert release.record_context_json["provenance_classes"] == sorted(
+        {
+            provenance_names[type(cell.provenance).__name__]
+            for cell in rendered.report.cells
+            if cell.provenance is not None
+        }
+    )
+    assert len(release.record_context_json["report_cells"]) == len(
+        rendered.report.cells
+    )
 
 
 def test_prepared_report_review_uses_only_the_fixed_artifact_context(session, project):
@@ -978,8 +1020,13 @@ def test_renderer_failure_cannot_create_a_release_receipt(
 
 
 def test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an_identity(
-    client, project
+    client, session, project
 ):
+    before_runs = tuple(
+        session.scalars(
+            select(ReportRun).where(ReportRun.project_id == project.id)
+        ).all()
+    )
     coordinator_home = client.get(f"/work/{project.slug}")
     assert coordinator_home.status_code == 200
     assert f'href="/reports/{project.slug}"' in coordinator_home.text
@@ -1009,6 +1056,30 @@ def test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an
     )
     assert re.search(
         rf'data="/reports/{project.slug}/prepared/\d+/preview"', response.text
+    )
+    after_runs = tuple(
+        session.scalars(
+            select(ReportRun).where(ReportRun.project_id == project.id)
+        ).all()
+    )
+    assert len(after_runs) == len(before_runs) + 1
+    assert (
+        after_runs[-1].snapshot_json["ruleset_version"]
+        == after_runs[-1].ruleset_version
+    )
+    render_receipt = session.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.action == "product_proving_frontend_request",
+            AuditLog.entity_type == "project",
+            AuditLog.entity_id == project.id,
+            AuditLog.after_json["route_name"].astext == "render_report",
+        )
+        .order_by(AuditLog.id.desc())
+    )
+    assert render_receipt is not None
+    assert (render_receipt.after_json or {})["subject"]["report_run_id"] == (
+        after_runs[-1].id
     )
 
 
@@ -1061,6 +1132,22 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
         rf'href="(/reports/{project.slug}/releases/\d+/download)"', released.text
     )
     assert download is not None
+    frontend_routes = {
+        (entry.after_json or {}).get("route_name")
+        for entry in session.scalars(
+            select(AuditLog).where(
+                AuditLog.action == "product_proving_frontend_request",
+                AuditLog.entity_type == "project",
+                AuditLog.entity_id == project.id,
+            )
+        ).all()
+    }
+    assert {
+        "review_report",
+        "preview_prepared_report",
+        "download_prepared_report",
+        "release_prepared_report",
+    } <= frontend_routes
 
     released_pdf = client.get(download.group(1))
 
@@ -1074,6 +1161,69 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     assert TEST_PRINCIPAL.subject not in history.text
     assert "DEP-RELEASE-1" in history.text
     assert artifact.pdf_sha256 in history.text
+
+
+def test_report_response_render_failure_rolls_back_artifact_and_frontend_receipt(
+    session, client, project, monkeypatch
+):
+    import importlib
+
+    web_app = importlib.import_module("corridor.web.app")
+    real_template_response = web_app.TEMPLATES.TemplateResponse
+    before_run_ids = tuple(
+        session.scalars(
+            select(ReportRun.id).where(ReportRun.project_id == project.id)
+        ).all()
+    )
+    before_artifact_ids = tuple(
+        session.scalars(
+            select(ExternalReportArtifact.id).where(
+                ExternalReportArtifact.project_id == project.id
+            )
+        ).all()
+    )
+    before_receipt_ids = tuple(
+        session.scalars(
+            select(AuditLog.id).where(
+                AuditLog.entity_type == "project",
+                AuditLog.entity_id == project.id,
+                AuditLog.action == "product_proving_frontend_request",
+            )
+        ).all()
+    )
+
+    def fail_report_review(request, name, *args, **kwargs):
+        if name == "report_review.html":
+            raise RuntimeError("synthetic report response failure")
+        return real_template_response(request, name, *args, **kwargs)
+
+    monkeypatch.setattr(web_app.TEMPLATES, "TemplateResponse", fail_report_review)
+
+    with pytest.raises(RuntimeError, match="synthetic report response failure"):
+        client.post(f"/reports/{project.slug}/render", data={"ordinary": "1"})
+
+    session.expire_all()
+    assert tuple(
+        session.scalars(
+            select(ReportRun.id).where(ReportRun.project_id == project.id)
+        ).all()
+    ) == before_run_ids
+    assert tuple(
+        session.scalars(
+            select(ExternalReportArtifact.id).where(
+                ExternalReportArtifact.project_id == project.id
+            )
+        ).all()
+    ) == before_artifact_ids
+    assert tuple(
+        session.scalars(
+            select(AuditLog.id).where(
+                AuditLog.entity_type == "project",
+                AuditLog.entity_id == project.id,
+                AuditLog.action == "product_proving_frontend_request",
+            )
+        ).all()
+    ) == before_receipt_ids
 
 
 def test_ordinary_review_and_history_name_party_statements_without_raw_event_ids(
@@ -1114,18 +1264,21 @@ def test_render_control_prepares_a_distinct_artifact(
 
     rendered = _rendered(session, project)
     artifact = _prepare(session, project, rendered=rendered)
+    report_run = record_report_run(
+        session,
+        project.id,
+        evaluation=rendered.report.evaluation,
+        committed_dates=rendered.report.committed_dates,
+        document_only=rendered.report.document_only,
+    )
     calls = []
 
     monkeypatch.setattr(
         web_app,
-        "render_external_report_pdf",
-        lambda _session, project_id: calls.append(("render", project_id)) or rendered,
-    )
-    monkeypatch.setattr(
-        web_app,
-        "prepare_external_report",
-        lambda _session, *, project_id, rendered: (
-            calls.append(("prepare", project_id, rendered)) or artifact
+        "render_and_prepare_external_report",
+        lambda _session, *, project_id: (
+            calls.append(("render_and_prepare", project_id))
+            or (rendered, report_run, artifact)
         ),
     )
 
@@ -1137,10 +1290,7 @@ def test_render_control_prepares_a_distinct_artifact(
         "artifact_name": artifact.artifact_name,
         "pdf_sha256": artifact.pdf_sha256,
     }
-    assert calls == [
-        ("render", project.id),
-        ("prepare", project.id, rendered),
-    ]
+    assert calls == [("render_and_prepare", project.id)]
 
 
 def test_release_control_authorizes_a_prepared_artifact_without_rerendering(
@@ -1154,7 +1304,7 @@ def test_release_control_authorizes_a_prepared_artifact_without_rerendering(
 
     monkeypatch.setattr(
         web_app,
-        "render_external_report_pdf",
+        "render_and_prepare_external_report",
         lambda *_args, **_kwargs: pytest.fail("release must not rerender a Report"),
     )
     monkeypatch.setattr(
@@ -1189,7 +1339,7 @@ def test_ordinary_release_control_delegates_its_bound_artifact_without_rerenderi
 
     monkeypatch.setattr(
         web_app,
-        "render_external_report_pdf",
+        "render_and_prepare_external_report",
         lambda *_args, **_kwargs: pytest.fail("release must not rerender a Report"),
     )
     monkeypatch.setattr(

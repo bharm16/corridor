@@ -64,6 +64,9 @@ def _configuration(prompt_version: str, prompt_sha256: str):
         model="gpt-5.6-luna",
         schema_version="matrix_candidate_shape_v1",
         prompt_sha256=prompt_sha256,
+        schema_sha256="6" * 64,
+        postprocessor_sha256="7" * 64,
+        config_sha256="8" * 64,
     )
 
 
@@ -102,12 +105,18 @@ def test_zero_candidate_runs_still_require_compatible_run_configuration():
                 model="gpt-5.6-luna",
                 schema_version="minutes_v4",
                 prompt_sha256="4" * 64,
+                schema_sha256="6" * 64,
+                postprocessor_sha256="7" * 64,
+                config_sha256="8" * 64,
             ),
             fresh_configuration=ExtractionConfiguration(
                 prompt_version="minutes_v4",
                 model="gpt-5.6-luna",
                 schema_version="minutes_v4",
                 prompt_sha256="5" * 64,
+                schema_sha256="6" * 64,
+                postprocessor_sha256="7" * 64,
+                config_sha256="8" * 64,
             ),
         )
     except ValueError as exc:
@@ -170,12 +179,18 @@ def test_same_minutes_evidence_produces_stable_candidate_meaning():
             model="gpt-5.6-luna",
             schema_version=PROMPT_VERSION,
             prompt_sha256="4" * 64,
+            schema_sha256="5" * 64,
+            postprocessor_sha256="6" * 64,
+            config_sha256="7" * 64,
         ),
         fresh_configuration=ExtractionConfiguration(
             prompt_version=PROMPT_VERSION,
             model="gpt-5.6-luna",
             schema_version=PROMPT_VERSION,
             prompt_sha256="4" * 64,
+            schema_sha256="5" * 64,
+            postprocessor_sha256="6" * 64,
+            config_sha256="7" * 64,
         ),
     )
 

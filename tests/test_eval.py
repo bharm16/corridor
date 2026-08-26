@@ -164,6 +164,7 @@ def record_run(
         candidates=tuple(candidates),
         model=model,
         schema_version=prompt_version,
+        allow_unsealed_legacy=True,
     )
     session.flush()
     return run

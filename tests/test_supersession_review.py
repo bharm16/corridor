@@ -194,6 +194,7 @@ def _completed_run(session, document: Document, *candidates: Candidate):
         candidates=candidates,
         model="test-model",
         schema_version="candidate-v1",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=REVIEWER)
     session.flush()
@@ -579,6 +580,7 @@ def test_a_durable_failed_attempt_is_not_awaiting_extraction(session):
         model="test-model",
         schema_version="candidate-v1",
         error_detail="page could not be read",
+        allow_unsealed_legacy=True,
     )
     session.flush()
 
@@ -621,6 +623,7 @@ def test_completed_but_inactive_successor_run_fails_closed(session):
         candidates=(successor_candidate,),
         model="test-model",
         schema_version="candidate-v1",
+        allow_unsealed_legacy=True,
     )
     # A later failure must not turn the completed receipt into "latest
     # failed" policy. Neither receipt is operative until a human declares
@@ -635,6 +638,7 @@ def test_completed_but_inactive_successor_run_fails_closed(session):
         model="test-model",
         schema_version="candidate-v1",
         error_detail="retry failed",
+        allow_unsealed_legacy=True,
     )
     session.flush()
 

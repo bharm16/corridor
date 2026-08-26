@@ -140,6 +140,9 @@ def _configuration():
         model="gpt-5.6-luna",
         schema_version=PROMPT_VERSION,
         prompt_sha256="4" * 64,
+        schema_sha256="5" * 64,
+        postprocessor_sha256="6" * 64,
+        config_sha256="7" * 64,
     )
 
 

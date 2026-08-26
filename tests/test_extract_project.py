@@ -23,6 +23,7 @@ from corridor.extract_project import (
     render,
 )
 from corridor.extract_matrix import SequencingSemanticsDetected
+from corridor.extractor_lineage import injected_extractor_config
 from corridor.models import (
     Candidate,
     Document,
@@ -130,6 +131,16 @@ def route_selector(**by_filename):
             schema_version=schema_version or prompt_version,
             extract=extract,
             model=configured_model,
+            extractor_config=injected_extractor_config(
+                extractor="matrix-route-fixture",
+                prompt_version=prompt_version,
+                model=configured_model,
+                schema_version=schema_version or prompt_version,
+                prompt_bytes=b"matrix route fixture",
+                schema={"type": "object"},
+                postprocessor_bytes=b"matrix route fixture rules",
+                request_controls={"strict": True},
+            ),
         )
 
     return select_route
@@ -316,6 +327,16 @@ def test_a_model_backed_zero_row_run_keeps_the_configured_model(session, project
             schema_version="schema-zero-row-v1",
             extract=lambda session, target: [],
             model="gpt-zero-row",
+            extractor_config=injected_extractor_config(
+                extractor="zero-row-fixture",
+                prompt_version=PROMPT_VERSION,
+                model="gpt-zero-row",
+                schema_version="schema-zero-row-v1",
+                prompt_bytes=b"zero row fixture",
+                schema={"type": "object"},
+                postprocessor_bytes=b"zero row fixture rules",
+                request_controls={"strict": True},
+            ),
         )
 
     outcomes = extract_project(
@@ -676,6 +697,16 @@ def test_a_route_records_schema_version_independently_from_prompt(session, proje
     [run] = _runs(session, document)
     assert run.prompt_version == "prompt-v3"
     assert run.schema_version == "candidate-shape-v7"
+    assert run.extractor_config_json["prompt_version"] == "prompt-v3"
+    assert run.token_usage_json == {
+        "scope": "run",
+        "document_ids": [document.id],
+        "measurement": "exact",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+    }
 
 
 def test_a_failed_document_writes_a_receipt_and_retries_on_the_next_run(
@@ -709,6 +740,7 @@ def test_a_failed_document_writes_a_receipt_and_retries_on_the_next_run(
             effective_prompt_version=PROMPT_VERSION,
             schema_version="schema-transient-v1",
             extract=extract,
+            allow_unsealed_legacy=True,
         )
 
     first = extract_project(

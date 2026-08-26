@@ -833,7 +833,10 @@ def _require_no_later_audited_save_reference(
         ),
     }
     later_audits = session.scalars(
-        select(AuditLog).where(AuditLog.id > receipt.audit_log_id)
+        select(AuditLog).where(
+            AuditLog.id > receipt.audit_log_id,
+            AuditLog.action != audit.PRODUCT_PROVING_FRONTEND_REQUEST,
+        )
     )
     if any(
         _audit_references_save(entry.after_json, referenced_ids)
@@ -1139,6 +1142,12 @@ _DEPENDENCY_AUTHORITY_GAP_COPY = {
     "already_admitted": (
         "Dependency identity already exists",
         "The Project Record already carries this proposed Dependency identity.",
+    ),
+    "same_document_replay_unproven": (
+        "Same-source Dependency replay not established",
+        "This same source row was previously handled, but its current Dependency "
+        "association or extracted facts no longer prove safe replay. Keep it "
+        "pending for Evidence review.",
     ),
     "asserts_nothing": (
         "No Dependency facts established",
@@ -1675,7 +1684,7 @@ def _require_candidate_owns_lineage(
         or candidate.state != "accepted"
         or candidate.project_id != event.project_id
     ):
-        raise StatementCoordinationRefusal(
+        raise StaleStatementCoordination(
             "the statement Candidate does not own this correction target"
         )
     receipt = session.scalar(
@@ -1701,7 +1710,7 @@ def _require_candidate_owns_lineage(
         )
     )
     if receipt is None and admission is None:
-        raise StatementCoordinationRefusal(
+        raise StaleStatementCoordination(
             "the statement Candidate does not own this correction target"
         )
 

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from corridor.db import engine
@@ -13,31 +17,43 @@ from corridor.extraction_runs import (
     declare_active_run_by_policy,
     record_extraction_run,
 )
+from corridor.extractor_lineage import injected_extractor_config, zero_token_usage
 from corridor.models import (
     ActiveExtractionRun,
     Candidate,
     CandidateDisposition,
     Dependency,
+    DocPage,
     Document,
+    EvidenceInvestigationCandidateReviewStart,
     ExternalParty,
     ExtractionRun,
     Milestone,
     MilestoneRegistration,
+    PolicyRun,
     Project,
     ReportRun,
     WorkDecision,
 )
 from corridor.product_proving_execution import (
     GitCheckoutObservation,
+    capture_live_product_proving_operations,
     capture_project_write_set,
     compare_extraction_runs,
     diff_project_write_sets,
     load_extraction_run_candidate_set,
     observe_product_proving_preflight,
-    residual_candidate_ids_from_active_runs,
+    proving_database_identity,
+    residual_candidate_ids_from_operations,
     run_bounded_product_proving_operations,
 )
+from corridor.product_proving_database import (
+    DatabaseFingerprint,
+    VerifiedProductProvingDatabaseBaseline,
+    observe_database_connection_identity,
+)
 from corridor.principals import HumanPrincipal
+from corridor.product_proving_run import ExpectedPreflight
 
 
 @pytest.fixture
@@ -127,6 +143,25 @@ def _candidate(
     )
 
 
+def _config(
+    *,
+    prompt_version: str,
+    schema_version: str,
+    model: str | None = "gpt-5.6-luna",
+    extractor: str = "test-extractor",
+):
+    return injected_extractor_config(
+        extractor=extractor,
+        prompt_version=prompt_version,
+        model=model,
+        schema_version=schema_version,
+        prompt_bytes=f"stable {extractor} prompt".encode(),
+        schema={"type": "object", "additionalProperties": False},
+        postprocessor_bytes=f"stable {extractor} postprocessor".encode(),
+        request_controls={"strict": True},
+    )
+
+
 def _run(
     session: Session,
     project: Project,
@@ -135,6 +170,11 @@ def _run(
     quote: str = "Equistar will provide the title package by January 2025.",
 ) -> ExtractionRun:
     candidate = _candidate(project, document, quote=quote)
+    config = _config(
+        extractor="test-minutes",
+        prompt_version="minutes_v4",
+        schema_version="minutes_v4",
+    )
     run = record_extraction_run(
         session,
         document,
@@ -144,19 +184,66 @@ def _run(
         candidates=(candidate,),
         model="gpt-5.6-luna",
         schema_version="minutes_v4",
+        extractor_config=config,
+        token_usage=zero_token_usage(document.id),
     )
     session.flush()
     return run
 
 
-def _prompt_sources(_version, _root):
-    return (("test-prompt", b"stable test prompt"),)
+def _test_commit(db: Session) -> None:
+    """Exercise the commit boundary without escaping the rollback fixture."""
+
+    db.flush()
+
+
+def _verified_baseline(
+    session: Session,
+    *,
+    revision: str,
+    migration_head: str,
+    state_sha256: str = "f" * 64,
+) -> VerifiedProductProvingDatabaseBaseline:
+    database_url = _database_url(session)
+    source_identity = proving_database_identity(database_url)
+    fingerprint = DatabaseFingerprint(
+        tables=(),
+        sequences=(),
+        state_sha256=state_sha256,
+    )
+    return VerifiedProductProvingDatabaseBaseline(
+        bundle_dir=Path("/verified-test-baseline"),
+        manifest_sha256="d" * 64,
+        dump_sha256="e" * 64,
+        baseline={
+            "checkout": {
+                "revision": revision,
+                "migration_head": migration_head,
+            },
+            "source_database": source_identity,
+            "source_connection": observe_database_connection_identity(
+                database_url
+            ).as_dict(),
+        },
+        fingerprint=fingerprint,
+    )
+
+
+def _database_url(session: Session) -> str:
+    bound = session.get_bind()
+    bound_engine = getattr(bound, "engine", bound)
+    return bound_engine.url.render_as_string(hide_password=False)
 
 
 def test_preflight_is_constructed_from_live_project_and_registration_state(session):
     project = _project(session, "preflight")
     matrix = _document(
         session, project, doc_type="matrix", name="registered-matrix.pdf"
+    )
+    matrix_config = _config(
+        extractor="test-matrix",
+        prompt_version="matrix_tiered_v3",
+        schema_version="matrix_candidate_shape_v1",
     )
     matrix_run = record_extraction_run(
         session,
@@ -166,6 +253,8 @@ def test_preflight_is_constructed_from_live_project_and_registration_state(sessi
         page_errors=0,
         model="gpt-5.6-luna",
         schema_version="matrix_candidate_shape_v1",
+        extractor_config=matrix_config,
+        token_usage=zero_token_usage(matrix.id),
     )
     session.flush()
     declare_active_run_by_policy(session, matrix.id, matrix_run.id)
@@ -193,16 +282,24 @@ def test_preflight_is_constructed_from_live_project_and_registration_state(sessi
     milestone.current_registration_id = registration.id
     session.flush()
 
+    migration_head = str(session.scalar(text("select version_num from alembic_version")))
+    verified_baseline = _verified_baseline(
+        session,
+        revision="a" * 40,
+        migration_head=migration_head,
+    )
     observed = observe_product_proving_preflight(
         session,
         project_slug=project.slug,
         document_ids=(matrix.id,),
-        baseline_fingerprint=lambda: "f" * 64,
+        verified_baseline=verified_baseline,
+        database_url=_database_url(session),
         git_observer=lambda _root: GitCheckoutObservation(
             source_revision="a" * 40,
             origin_main_revision="b" * 40,
             clean_worktree=True,
         ),
+        _fingerprint_for_test=lambda _url: verified_baseline.fingerprint,
     )
 
     assert observed.source_revision == "a" * 40
@@ -227,19 +324,18 @@ def test_run_comparison_reads_immutable_inputs_and_exact_configuration(session):
     loaded = load_extraction_run_candidate_set(
         session,
         baseline.id,
-        prompt_source_resolver=_prompt_sources,
     )
     comparison = compare_extraction_runs(
         session,
         baseline.id,
         fresh.id,
-        prompt_source_resolver=_prompt_sources,
     )
 
     assert loaded.candidates == tuple(baseline.candidate_inputs_json)
-    assert loaded.configuration.prompt_sha256 == sha256(
-        b"test-prompt\0stable test prompt\0"
-    ).hexdigest()
+    assert loaded.configuration.prompt_sha256 == baseline.prompt_sha256
+    assert loaded.configuration.schema_sha256 == baseline.schema_sha256
+    assert loaded.configuration.postprocessor_sha256 == baseline.postprocessor_sha256
+    assert loaded.configuration.config_sha256 == baseline.extractor_config_sha256
     assert comparison.equal
 
     fresh.candidate_inputs_json[0]["model"] = "a different model"
@@ -247,8 +343,72 @@ def test_run_comparison_reads_immutable_inputs_and_exact_configuration(session):
         load_extraction_run_candidate_set(
             session,
             fresh.id,
-            prompt_source_resolver=_prompt_sources,
         )
+
+
+def test_live_capture_builds_observed_comparisons_and_write_sets_without_json(session):
+    project = _project(session, "live-capture")
+    document = _document(session, project)
+    baseline = _run(session, project, document)
+    declare_active_run_by_policy(session, document.id, baseline.id)
+    git = GitCheckoutObservation(
+        source_revision="a" * 40,
+        origin_main_revision="b" * 40,
+        clean_worktree=True,
+    )
+    migration_head = str(session.scalar(text("select version_num from alembic_version")))
+    verified_baseline = _verified_baseline(
+        session,
+        revision=git.source_revision,
+        migration_head=migration_head,
+    )
+    observed = observe_product_proving_preflight(
+        session,
+        project_slug=project.slug,
+        document_ids=(document.id,),
+        verified_baseline=verified_baseline,
+        database_url=_database_url(session),
+        git_observer=lambda _root: git,
+        _fingerprint_for_test=lambda _url: verified_baseline.fingerprint,
+    )
+    expected = ExpectedPreflight(
+        source_revision=observed.source_revision,
+        origin_main_revision=observed.origin_main_revision,
+        migration_head=observed.migration_head,
+        policy_digests=observed.policy_digests,
+        documents=observed.documents,
+        baseline_runs=observed.baseline_runs,
+        milestone_sources=observed.milestone_sources,
+        baseline_fingerprint=observed.baseline_fingerprint,
+    )
+
+    capture = capture_live_product_proving_operations(
+        session,
+        project_slug=project.slug,
+        expected=expected,
+        verified_baseline=verified_baseline,
+        database_url=_database_url(session),
+        pass_number=1,
+        extraction_operation=lambda db, doc: _run(db, project, doc),
+        active_run_operation=lambda db, document_id, run_id: declare_active_run(
+            db,
+            document_id,
+            run_id,
+            principal=HumanPrincipal("local:live-capture"),
+        ),
+        admission_operation=lambda _db, _project_id: "admitted",
+        git_observer=lambda _root: git,
+        _commit_for_test=_test_commit,
+        _fingerprint_for_test=lambda _url: verified_baseline.fingerprint,
+    )
+
+    assert capture.expected == expected
+    assert capture.observed == observed
+    assert capture.operations.extraction_equal
+    assert capture.operations.write_set.created["extraction_runs"]
+    assert capture.operations.residual_candidate_ids
+    assert capture.pass_number == 1
+    assert capture.prior_restore_operation_id is None
 
 
 def test_write_set_capture_derives_actual_rows_and_id_independent_digests(session):
@@ -297,6 +457,14 @@ def test_write_set_capture_derives_actual_rows_and_id_independent_digests(sessio
         )
     )
     session.add(
+        EvidenceInvestigationCandidateReviewStart(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            principal="local:practitioner",
+            observed_at=datetime.now(timezone.utc),
+        )
+    )
+    session.add(
         ReportRun(
             project_id=project.id,
             ruleset_version="report-v1",
@@ -309,6 +477,10 @@ def test_write_set_capture_derives_actual_rows_and_id_independent_digests(sessio
     write_set = diff_project_write_sets(before, after)
 
     assert len(write_set.created["candidate_dispositions"]) == 1
+    assert (
+        len(write_set.created["evidence_investigation_candidate_review_starts"])
+        == 1
+    )
     assert len(write_set.created["report_runs"]) == 1
     assert len(write_set.updated["candidates"]) == 1
     candidate_rows = after.rows["candidates"]
@@ -316,7 +488,7 @@ def test_write_set_capture_derives_actual_rows_and_id_independent_digests(sessio
     assert candidate_rows[0].content_sha256 != candidate_rows[1].content_sha256
     assert (
         original_fingerprint.stable_content_sha256
-        != candidate_rows[1].stable_content_sha256
+        == candidate_rows[1].stable_content_sha256
     )
     assert write_set.as_write_set()["report_runs"][0]["operation"] == "created"
     assert len(before.rows["external_orgs"]) == 1
@@ -326,6 +498,17 @@ def test_write_set_capture_derives_actual_rows_and_id_independent_digests(sessio
         work_decision_rows[0].stable_content_sha256
         != work_decision_rows[1].stable_content_sha256
     ), "different Dependency relationships must not collapse after ids are remapped"
+    assert {
+        "evidence_investigation_runs",
+        "evidence_investigation_step_receipts",
+        "evidence_investigation_packet_receipts",
+        "evidence_investigation_shadow_cases",
+        "evidence_investigation_shadow_executions",
+        "evidence_investigation_review_observations",
+        "evidence_investigation_candidate_review_starts",
+        "evidence_investigation_shadow_outcomes",
+        "evidence_investigation_evaluation_receipts",
+    }.issubset(after.rows)
 
 
 def test_bounded_operations_never_declare_or_admit_after_semantic_difference(session):
@@ -334,6 +517,7 @@ def test_bounded_operations_never_declare_or_admit_after_semantic_difference(ses
     baseline = _run(session, project, document)
     declare_active_run_by_policy(session, document.id, baseline.id)
     calls: list[tuple] = []
+    commits: list[str] = []
 
     result = run_bounded_product_proving_operations(
         session,
@@ -347,14 +531,63 @@ def test_bounded_operations_never_declare_or_admit_after_semantic_difference(ses
         ),
         active_run_operation=lambda *values: calls.append(("declare", *values[1:])),
         admission_operation=lambda *values: calls.append(("admit", *values[1:])),
-        prompt_source_resolver=_prompt_sources,
+        _commit_for_test=lambda db: (commits.append("commit"), db.flush())[1],
     )
 
     assert not result.extraction_equal
     assert result.admission_started is False
     assert result.active_run_document_ids == ()
     assert calls == []
+    assert commits == ["commit"]
+    assert result.observed_active_runs == {document.id: baseline.id}
+    assert len(result.write_set.created["extraction_runs"]) == 1
     assert session.get(ActiveExtractionRun, document.id).extraction_run_id == baseline.id
+
+
+def test_bounded_operations_preserve_a_terminal_failed_extraction_receipt(session):
+    project = _project(session, "terminal-extraction-failure")
+    document = _document(session, project)
+    baseline = _run(session, project, document)
+    declare_active_run_by_policy(session, document.id, baseline.id)
+    commits: list[str] = []
+
+    def failed_extraction(db, doc):
+        config = _config(
+            extractor="test-minutes",
+            prompt_version="minutes_v4",
+            schema_version="minutes_v4",
+        )
+        return record_extraction_run(
+            db,
+            doc,
+            prompt_version="minutes_v4",
+            candidate_count=0,
+            page_errors=1,
+            outcome="failed",
+            model="gpt-5.6-luna",
+            schema_version="minutes_v4",
+            error_detail="model request failed",
+            extractor_config=config,
+            token_usage=zero_token_usage(doc.id),
+        )
+
+    result = run_bounded_product_proving_operations(
+        session,
+        project_slug=project.slug,
+        baseline_runs={document.id: baseline.id},
+        extraction_operation=failed_extraction,
+        active_run_operation=lambda *_args: pytest.fail("must not declare"),
+        admission_operation=lambda *_args: pytest.fail("must not admit"),
+        _commit_for_test=lambda db: (commits.append("commit"), db.flush())[1],
+    )
+
+    [failed_run_id] = result.fresh_run_ids.values()
+    failed_run = session.get(ExtractionRun, failed_run_id)
+    assert commits == ["commit"]
+    assert result.admission_started is False
+    assert "not complete without errors" in result.extraction_failures[0]
+    assert failed_run.outcome == "failed"
+    assert failed_run.error_detail == "model request failed"
 
 
 def test_bounded_operations_declare_every_equal_run_before_admission(session):
@@ -363,6 +596,24 @@ def test_bounded_operations_declare_every_equal_run_before_admission(session):
     baseline = _run(session, project, document)
     declare_active_run_by_policy(session, document.id, baseline.id)
     calls: list[tuple] = []
+    commits: list[str] = []
+
+    def admit(db, project_id):
+        calls.append(("admit", project_id))
+        db.add(
+            PolicyRun(
+                project_id=project_id,
+                family="event-admission",
+                policy_approval_id=None,
+                policy_version="test-event-admission",
+                policy_sha256="a" * 64,
+                abstention_reason_version="test-reasons",
+                applied_count=0,
+                abstained_count=0,
+            )
+        )
+        db.flush()
+        return "admitted"
 
     result = run_bounded_product_proving_operations(
         session,
@@ -378,11 +629,8 @@ def test_bounded_operations_declare_every_equal_run_before_admission(session):
             ),
             calls.append(("declare", document_id, run_id)),
         )[0],
-        admission_operation=lambda _db, project_id: calls.append(
-            ("admit", project_id)
-        )
-        or "admitted",
-        prompt_source_resolver=_prompt_sources,
+        admission_operation=admit,
+        _commit_for_test=lambda db: (commits.append("commit"), db.flush())[1],
     )
 
     assert result.extraction_equal
@@ -390,6 +638,106 @@ def test_bounded_operations_declare_every_equal_run_before_admission(session):
     assert result.admission_result == "admitted"
     assert calls[0][0] == "declare"
     assert calls[1] == ("admit", project.id)
+    assert commits == ["commit"]
+    assert result.observed_active_runs == result.fresh_run_ids
+    assert len(result.admission_policy_receipts) == 1
+    assert result.admission_policy_receipts[0].policy_sha256 == "a" * 64
+    fresh_run_id = next(iter(result.fresh_run_ids.values()))
+    assert result.residual_candidate_ids == tuple(
+        session.scalars(
+            select(Candidate.id).where(Candidate.extraction_run_id == fresh_run_id)
+        ).all()
+    )
+
+
+def test_bounded_operations_trace_and_commit_real_dependency_admission(session):
+    project = _project(session, "real-admission")
+    document = _document(
+        session, project, doc_type="matrix", name="real-admission-matrix.pdf"
+    )
+    fields = {
+        "utility_id": "PL1",
+        "external_org": "Tejas Pipeline Co",
+        "utility_type": "Petroleum and Gaseous Materials",
+        "baseline": "SH99",
+        "station_from": "1102+20",
+        "station_to": "1102+20",
+    }
+    quote = " | ".join(fields.values())
+    session.add(DocPage(document_id=document.id, page_no=1, text=quote))
+
+    def matrix_run(db, doc):
+        candidate = Candidate(
+            project_id=project.id,
+            kind="dependency",
+            payload_json={
+                "kind": "dependency",
+                "fields": fields,
+                "citations": [
+                    {
+                        "document_id": doc.id,
+                        "page": 1,
+                        "quote": quote,
+                        "verified": True,
+                        "whole_row": True,
+                    }
+                ],
+                "dedupe_hint": quote,
+                "text_source": "text_layer",
+            },
+            source_document_id=doc.id,
+            source_pages=[1],
+            confidence=0.99,
+            prompt_version="matrix_tiered_v3",
+            model="gpt-5.6-luna",
+            citations_verified=True,
+            state="pending",
+        )
+        config = _config(
+            extractor="test-matrix",
+            prompt_version="matrix_tiered_v3",
+            schema_version="matrix_candidate_shape_v1",
+        )
+        return record_extraction_run(
+            db,
+            doc,
+            prompt_version="matrix_tiered_v3",
+            candidate_count=1,
+            page_errors=0,
+            candidates=(candidate,),
+            model="gpt-5.6-luna",
+            schema_version="matrix_candidate_shape_v1",
+            extractor_config=config,
+            token_usage=zero_token_usage(doc.id),
+        )
+
+    baseline = matrix_run(session, document)
+    session.flush()
+    declare_active_run_by_policy(session, document.id, baseline.id)
+    result = run_bounded_product_proving_operations(
+        session,
+        project_slug=project.slug,
+        baseline_runs={document.id: baseline.id},
+        extraction_operation=matrix_run,
+        active_run_operation=lambda db, document_id, run_id: declare_active_run(
+            db,
+            document_id,
+            run_id,
+            principal=HumanPrincipal("local:real-admission"),
+        ),
+        _commit_for_test=_test_commit,
+    )
+
+    assert result.admission_started
+    assert {receipt.family for receipt in result.admission_policy_receipts} == {
+        "dependency-admission",
+        "event-admission",
+    }
+    admitted = session.scalar(
+        select(Dependency).where(Dependency.project_id == project.id)
+    )
+    assert admitted is not None
+    assert admitted.source_ref == "PL1"
 
 
 def test_bounded_operations_roll_back_an_extractor_that_changes_active_state(session):
@@ -415,7 +763,7 @@ def test_bounded_operations_roll_back_an_extractor_that_changes_active_state(ses
         extraction_operation=invalid_extraction,
         active_run_operation=lambda *_args: pytest.fail("must not declare"),
         admission_operation=lambda *_args: pytest.fail("must not admit"),
-        prompt_source_resolver=_prompt_sources,
+        _commit_for_test=_test_commit,
     )
 
     assert result.admission_started is False
@@ -423,30 +771,63 @@ def test_bounded_operations_roll_back_an_extractor_that_changes_active_state(ses
     assert session.get(ActiveExtractionRun, document.id).extraction_run_id == baseline.id
 
 
-def test_residual_candidates_are_read_only_from_exact_fresh_active_runs(session):
+def test_bounded_operations_reject_and_roll_back_out_of_packet_project_writes(session):
+    project = _project(session, "write-allowlist")
+    document = _document(session, project)
+    baseline = _run(session, project, document)
+    declare_active_run_by_policy(session, document.id, baseline.id)
+
+    def widening_extraction(db, doc):
+        fresh = _run(db, project, doc)
+        db.add(
+            ReportRun(
+                project_id=project.id,
+                ruleset_version="not-an-extraction-write",
+                snapshot_json={},
+                document_only=False,
+            )
+        )
+        return fresh
+
+    result = run_bounded_product_proving_operations(
+        session,
+        project_slug=project.slug,
+        baseline_runs={document.id: baseline.id},
+        extraction_operation=widening_extraction,
+        active_run_operation=lambda *_args: pytest.fail("must not declare"),
+        admission_operation=lambda *_args: pytest.fail("must not admit"),
+        _commit_for_test=_test_commit,
+    )
+
+    assert result.admission_started is False
+    assert "out-of-packet tables: report_runs" in result.extraction_failures[0]
+    assert session.scalar(
+        select(ReportRun.id).where(ReportRun.project_id == project.id)
+    ) is None
+
+
+def test_residual_candidates_refuse_a_caller_narrowed_operations_packet(session):
     project = _project(session, "residual")
     document = _document(session, project)
     baseline = _run(session, project, document)
-    fresh = _run(session, project, document)
     declare_active_run_by_policy(session, document.id, baseline.id)
-    declare_active_run(
-        session,
-        document.id,
-        fresh.id,
-        principal=HumanPrincipal("local:product-proving-residual"),
-    )
-    session.flush()
-    fresh_candidate_id = fresh.candidate_inputs_json[0]["candidate_id"]
-
-    assert residual_candidate_ids_from_active_runs(
+    result = run_bounded_product_proving_operations(
         session,
         project_slug=project.slug,
-        active_runs={document.id: fresh.id},
-    ) == (fresh_candidate_id,)
+        baseline_runs={document.id: baseline.id},
+        extraction_operation=lambda db, doc: _run(db, project, doc),
+        active_run_operation=lambda db, document_id, run_id: declare_active_run(
+            db,
+            document_id,
+            run_id,
+            principal=HumanPrincipal("local:product-proving-residual"),
+        ),
+        admission_operation=lambda _db, _project_id: "admitted",
+        _commit_for_test=_test_commit,
+    )
+    assert residual_candidate_ids_from_operations(session, result)
 
-    with pytest.raises(ValueError, match="exact completed fresh Active Run"):
-        residual_candidate_ids_from_active_runs(
-            session,
-            project_slug=project.slug,
-            active_runs={document.id: baseline.id},
+    with pytest.raises(ValueError, match="complete compared Active Run set"):
+        residual_candidate_ids_from_operations(
+            session, replace(result, active_run_document_ids=())
         )

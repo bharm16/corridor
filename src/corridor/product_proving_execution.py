@@ -14,19 +14,22 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
 from typing import Any, Protocol
+from uuid import uuid4
 
 from sqlalchemy import and_, false, or_, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from corridor import dependency_admission, event_admission, policy
+from corridor.extractor_lineage import canonical_json_bytes, validate_config_json_shape
 from corridor.models import (
     ActiveExtractionRun,
     ActiveRunDeclaration,
@@ -55,6 +58,15 @@ from corridor.models import (
     EventAdmissionActivation,
     EventAdmissionOutcome,
     EventCohortReceipt,
+    EvidenceInvestigationCandidateReviewStart,
+    EvidenceInvestigationEvaluationReceipt,
+    EvidenceInvestigationPacketReceipt,
+    EvidenceInvestigationReviewObservation,
+    EvidenceInvestigationRun,
+    EvidenceInvestigationShadowCase,
+    EvidenceInvestigationShadowExecution,
+    EvidenceInvestigationShadowOutcome,
+    EvidenceInvestigationStepReceipt,
     EvidenceLink,
     ExternalParty,
     ExternalPartyStatement,
@@ -82,9 +94,17 @@ from corridor.models import (
 )
 from corridor.product_proving_run import (
     CandidateSetComparison,
+    ExpectedPreflight,
     ExtractionConfiguration,
     ObservedPreflight,
     compare_candidate_sets,
+    verify_preflight,
+)
+from corridor.product_proving_database import (
+    DatabaseFingerprint,
+    VerifiedProductProvingDatabaseBaseline,
+    fingerprint_database_url,
+    observe_database_connection_identity,
 )
 
 
@@ -209,6 +229,12 @@ class BoundedProductProvingOperations:
     active_run_document_ids: tuple[int, ...]
     admission_started: bool
     admission_result: Any | None
+    observed_active_runs: Mapping[int, int]
+    admission_policy_receipts: tuple["AdmissionPolicyReceipt", ...]
+    residual_candidate_ids: tuple[int, ...]
+    before_write_set: ProjectWriteSetSnapshot
+    after_write_set: ProjectWriteSetSnapshot
+    write_set: ProjectWriteSetDiff
 
     @property
     def extraction_equal(self) -> bool:
@@ -217,19 +243,47 @@ class BoundedProductProvingOperations:
         )
 
 
+@dataclass(frozen=True)
+class AdmissionPolicyReceipt:
+    """A newly committed Admission Policy Run re-read after durability."""
+
+    run_id: int
+    family: str
+    policy_version: str
+    policy_sha256: str
+    applied_count: int
+    abstained_count: int
+
+
+@dataclass(frozen=True)
+class LiveProductProvingOperationsCapture:
+    """Caller-held pins joined to observations produced by the live seam."""
+
+    expected: ExpectedPreflight
+    observed: ObservedPreflight
+    operations: BoundedProductProvingOperations
+    database_baseline_manifest_sha256: str
+    database_baseline_dump_sha256: str
+    database_baseline_state_sha256: str
+    database_baseline_fingerprint: DatabaseFingerprint
+    database_source_identity: Mapping[str, object]
+    database_source_connection_identity: Mapping[str, object]
+    pass_number: int
+    execution_id: str
+    started_at: str
+    prior_restore_operation_id: str | None
+    prior_restore_bundle_manifest_sha256: str | None
+    prior_restore_bundle_canonical_sha256: str | None
+
+
 class GitObserver(Protocol):
     def __call__(self, repo_root: Path) -> GitCheckoutObservation: ...
-
-
-class PromptSourceResolver(Protocol):
-    def __call__(
-        self, prompt_version: str, repo_root: Path
-    ) -> Sequence[tuple[str, bytes]]: ...
 
 
 ExtractionOperation = Callable[[Session, Document], int | ExtractionRun]
 ActiveRunOperation = Callable[[Session, int, int], Any]
 AdmissionOperation = Callable[[Session, int], Any]
+CommitOperation = Callable[[Session], None]
 
 
 def observe_git_checkout(repo_root: Path | str) -> GitCheckoutObservation:
@@ -250,6 +304,7 @@ def observe_git_checkout(repo_root: Path | str) -> GitCheckoutObservation:
             raise ValueError(f"cannot observe Git checkout: {detail}")
         return completed.stdout.strip()
 
+    git("fetch", "--quiet", "origin", "main")
     source_revision = git("rev-parse", "HEAD")
     origin_main_revision = git("rev-parse", "origin/main")
     if not _is_git_revision(source_revision) or not _is_git_revision(
@@ -264,7 +319,7 @@ def observe_git_checkout(repo_root: Path | str) -> GitCheckoutObservation:
     )
 
 
-def observe_product_proving_preflight(
+def _observe_product_proving_preflight_from_fingerprint(
     session: Session,
     *,
     project_slug: str,
@@ -361,14 +416,97 @@ def observe_product_proving_preflight(
     )
 
 
+def observe_product_proving_preflight(
+    session: Session,
+    *,
+    project_slug: str,
+    document_ids: Sequence[int],
+    verified_baseline: VerifiedProductProvingDatabaseBaseline,
+    database_url: str,
+    repo_root: Path | str | None = None,
+    git_observer: GitObserver = observe_git_checkout,
+    _fingerprint_for_test: Callable[[str], DatabaseFingerprint] | None = None,
+) -> ObservedPreflight:
+    """Observe preflight only against a verified baseline and its live database."""
+    read_fingerprint = _fingerprint_for_test or fingerprint_database_url
+    live_fingerprint = read_fingerprint(database_url)
+    if live_fingerprint != verified_baseline.fingerprint:
+        raise ValueError("live database does not match the verified proving baseline")
+    baseline_source = verified_baseline.baseline.get("source_database") or {}
+    baseline_connection = verified_baseline.baseline.get("source_connection") or {}
+    require_proving_session_database_identity(
+        session,
+        database_url=database_url,
+        expected_identity=baseline_source,
+    )
+    if observe_database_connection_identity(database_url).as_dict() != baseline_connection:
+        raise ValueError("live PostgreSQL server identity differs from the baseline")
+    observed = _observe_product_proving_preflight_from_fingerprint(
+        session,
+        project_slug=project_slug,
+        document_ids=document_ids,
+        baseline_fingerprint=live_fingerprint.state_sha256,
+        repo_root=repo_root,
+        git_observer=git_observer,
+    )
+    checkout = verified_baseline.baseline.get("checkout") or {}
+    if (
+        checkout.get("revision") != observed.source_revision
+        or checkout.get("migration_head") != observed.migration_head
+    ):
+        raise ValueError("verified baseline checkout pins do not match live preflight")
+    return observed
+
+
+def proving_database_identity(database_url: str) -> dict[str, object]:
+    """Return the exact non-secret PostgreSQL identity used by proving receipts."""
+    parsed = make_url(database_url)
+    if (
+        parsed.get_backend_name() != "postgresql"
+        or not parsed.database
+        or not parsed.username
+        or parsed.query
+    ):
+        raise ValueError("Product Proving database URL identity is unsafe")
+    return {
+        "backend": parsed.get_backend_name(),
+        "host": parsed.host,
+        "port": parsed.port,
+        "database": parsed.database,
+        "username": parsed.username,
+    }
+
+
+def require_proving_session_database_identity(
+    session: Session,
+    *,
+    database_url: str,
+    expected_identity: Mapping[str, object],
+) -> None:
+    """Bind a live Session and its configured engine to one exact database URL."""
+
+    current_database, current_user = session.execute(
+        text("select current_database(), current_user")
+    ).one()
+    bound = session.get_bind()
+    bound_engine = getattr(bound, "engine", bound)
+    bound_url = getattr(bound_engine, "url", None)
+    if (
+        not current_database
+        or current_database != expected_identity.get("database")
+        or current_user != expected_identity.get("username")
+        or proving_database_identity(database_url) != dict(expected_identity)
+        or bound_url is None
+        or proving_database_identity(str(bound_url)) != dict(expected_identity)
+    ):
+        raise ValueError("live Session does not use the verified baseline database")
+
+
 def load_extraction_run_candidate_set(
     session: Session,
     run_id: int,
-    *,
-    repo_root: Path | str | None = None,
-    prompt_source_resolver: PromptSourceResolver | None = None,
 ) -> ExtractionRunCandidateSet:
-    """Load one immutable, completed run and bind it to deployed prompt bytes."""
+    """Load one immutable completed run from its extractor-time receipt."""
 
     run = session.get(ExtractionRun, run_id)
     if run is None:
@@ -391,27 +529,37 @@ def load_extraction_run_candidate_set(
         _require_candidate_input(run, value)
         for value in run.candidate_inputs_json
     )
-    root = (
-        Path(repo_root).resolve()
-        if repo_root is not None
-        else Path(__file__).resolve().parents[2]
-    )
-    resolver = prompt_source_resolver or deployed_prompt_sources
-    sources = tuple(sorted(resolver(run.prompt_version, root), key=lambda item: item[0]))
-    if not sources or any(
-        not isinstance(name, str)
-        or not name
-        or not isinstance(source_bytes, bytes)
-        for name, source_bytes in sources
+    config_json = run.extractor_config_json
+    if (
+        not isinstance(config_json, dict)
+        or not run.prompt_sha256
+        or not run.schema_sha256
+        or not run.postprocessor_sha256
+        or not run.extractor_config_sha256
+        or not isinstance(run.token_usage_json, dict)
     ):
-        raise ValueError(
-            f"Extraction Run {run_id} deployed prompt sources are invalid"
-        )
+        raise ValueError(f"Extraction Run {run_id} has no extractor-time config receipt")
+    validate_config_json_shape(config_json)
+    if sha256(canonical_json_bytes(config_json)).hexdigest() != run.extractor_config_sha256:
+        raise ValueError(f"Extraction Run {run_id} config receipt digest is invalid")
+    expected_config = {
+        "prompt_version": run.prompt_version,
+        "model": run.model,
+        "schema_version": run.schema_version,
+        "prompt_sha256": run.prompt_sha256,
+        "schema_sha256": run.schema_sha256,
+        "postprocessor_sha256": run.postprocessor_sha256,
+    }
+    if any(config_json.get(name) != value for name, value in expected_config.items()):
+        raise ValueError(f"Extraction Run {run_id} config receipt disagrees with its row")
     configuration = ExtractionConfiguration(
         prompt_version=run.prompt_version,
         model=run.model,
         schema_version=run.schema_version,
-        prompt_sha256=policy.source_digest(sources),
+        prompt_sha256=run.prompt_sha256,
+        schema_sha256=run.schema_sha256,
+        postprocessor_sha256=run.postprocessor_sha256,
+        config_sha256=run.extractor_config_sha256,
     )
     return ExtractionRunCandidateSet(
         run_id=run.id,
@@ -425,24 +573,11 @@ def compare_extraction_runs(
     session: Session,
     baseline_run_id: int,
     fresh_run_id: int,
-    *,
-    repo_root: Path | str | None = None,
-    prompt_source_resolver: PromptSourceResolver | None = None,
 ) -> CandidateSetComparison:
     """Compare two completed attempts for the same exact Document."""
 
-    baseline = load_extraction_run_candidate_set(
-        session,
-        baseline_run_id,
-        repo_root=repo_root,
-        prompt_source_resolver=prompt_source_resolver,
-    )
-    fresh = load_extraction_run_candidate_set(
-        session,
-        fresh_run_id,
-        repo_root=repo_root,
-        prompt_source_resolver=prompt_source_resolver,
-    )
+    baseline = load_extraction_run_candidate_set(session, baseline_run_id)
+    fresh = load_extraction_run_candidate_set(session, fresh_run_id)
     if baseline.document_id != fresh.document_id:
         raise ValueError("Extraction Runs do not belong to the same Document")
     return compare_candidate_sets(
@@ -454,44 +589,6 @@ def compare_extraction_runs(
         baseline_configuration=baseline.configuration,
         fresh_configuration=fresh.configuration,
     )
-
-
-def deployed_prompt_sources(
-    prompt_version: str, repo_root: Path
-) -> Sequence[tuple[str, bytes]]:
-    """Resolve every deployed prompt/reader source used by a run version.
-
-    Old prompt files remain immutable in the repository, so historical Runs
-    stay verifiable.  Native spreadsheet extraction has no prompt; its exact
-    reader source is the configuration-bearing deployed bytes instead.
-    """
-
-    filenames: tuple[str, ...]
-    if prompt_version.startswith("minutes_v"):
-        filenames = (f"prompts/{prompt_version}.md",)
-    elif prompt_version.startswith("agreement_v"):
-        filenames = (f"prompts/{prompt_version}.md",)
-    elif prompt_version.startswith("matrix_tiered_v"):
-        suffix = prompt_version.removeprefix("matrix_tiered_v")
-        filenames = (
-            f"prompts/matrix_structure_v{suffix}.md",
-            "prompts/matrix_v1.md",
-        )
-    elif prompt_version == "sheet_native_v1":
-        filenames = ("src/corridor/extract_sheet.py",)
-    else:
-        raise ValueError(
-            f"no deployed prompt-source registry for {prompt_version!r}"
-        )
-    sources: list[tuple[str, bytes]] = []
-    for filename in filenames:
-        path = repo_root / filename
-        if not path.is_file():
-            raise ValueError(
-                f"deployed prompt source {filename!r} does not exist"
-            )
-        sources.append((filename, path.read_bytes()))
-    return tuple(sources)
 
 
 def capture_project_write_set(
@@ -609,6 +706,27 @@ def capture_project_write_set(
         RevisionComparisonRun.project_id == project.id,
     )
     comparison_run_ids = _ids(comparison_runs)
+    investigation_runs = _rows(
+        session,
+        EvidenceInvestigationRun,
+        EvidenceInvestigationRun.project_id == project.id,
+    )
+    investigation_run_ids = _ids(investigation_runs)
+    shadow_cases = _rows(
+        session,
+        EvidenceInvestigationShadowCase,
+        EvidenceInvestigationShadowCase.project_id == project.id,
+    )
+    shadow_case_ids = _ids(shadow_cases)
+    investigation_evaluations = tuple(
+        value
+        for value in session.scalars(
+            select(EvidenceInvestigationEvaluationReceipt).order_by(
+                EvidenceInvestigationEvaluationReceipt.id
+            )
+        ).all()
+        if set(value.selected_run_ids_json or ()) & set(investigation_run_ids)
+    )
 
     model_rows: list[tuple[type[Any], Sequence[Any]]] = [
         (Project, (project,)),
@@ -641,6 +759,72 @@ def capture_project_write_set(
         ),
         (Candidate, candidates),
         (CandidateDisposition, dispositions),
+        (EvidenceInvestigationRun, investigation_runs),
+        (
+            EvidenceInvestigationStepReceipt,
+            _rows(
+                session,
+                EvidenceInvestigationStepReceipt,
+                EvidenceInvestigationStepReceipt.run_id.in_(
+                    investigation_run_ids
+                ),
+            ),
+        ),
+        (
+            EvidenceInvestigationPacketReceipt,
+            _rows(
+                session,
+                EvidenceInvestigationPacketReceipt,
+                EvidenceInvestigationPacketReceipt.run_id.in_(
+                    investigation_run_ids
+                ),
+            ),
+        ),
+        (EvidenceInvestigationShadowCase, shadow_cases),
+        (
+            EvidenceInvestigationShadowExecution,
+            _rows(
+                session,
+                EvidenceInvestigationShadowExecution,
+                or_(
+                    EvidenceInvestigationShadowExecution.shadow_case_id.in_(
+                        shadow_case_ids
+                    ),
+                    EvidenceInvestigationShadowExecution.run_id.in_(
+                        investigation_run_ids
+                    ),
+                ),
+            ),
+        ),
+        (
+            EvidenceInvestigationReviewObservation,
+            _rows(
+                session,
+                EvidenceInvestigationReviewObservation,
+                EvidenceInvestigationReviewObservation.shadow_case_id.in_(
+                    shadow_case_ids
+                ),
+            ),
+        ),
+        (
+            EvidenceInvestigationCandidateReviewStart,
+            _rows(
+                session,
+                EvidenceInvestigationCandidateReviewStart,
+                EvidenceInvestigationCandidateReviewStart.project_id == project.id,
+            ),
+        ),
+        (
+            EvidenceInvestigationShadowOutcome,
+            _rows(
+                session,
+                EvidenceInvestigationShadowOutcome,
+                EvidenceInvestigationShadowOutcome.shadow_case_id.in_(
+                    shadow_case_ids
+                ),
+            ),
+        ),
+        (EvidenceInvestigationEvaluationReceipt, investigation_evaluations),
         (
             CohortReceipt,
             _rows(session, CohortReceipt, CohortReceipt.project_id == project.id),
@@ -947,65 +1131,6 @@ def diff_project_write_sets(
     )
 
 
-def residual_candidate_ids_from_active_runs(
-    session: Session,
-    *,
-    project_slug: str,
-    active_runs: Mapping[int, int],
-) -> tuple[int, ...]:
-    """Return pending Candidates owned by the exact fresh Active Runs.
-
-    This is an after-Admission observation.  It refuses a stale or cross-
-    project mapping before reading residue, so a proving receipt cannot blend
-    Candidates from a superseded extraction attempt into the practitioner
-    work population.
-    """
-
-    if not active_runs:
-        raise ValueError("residual Candidate observation needs Active Runs")
-    project = _require_project(session, project_slug)
-    documents = _exact_documents(
-        session, project.id, tuple(active_runs.keys())
-    )
-    run_pairs = []
-    for document in documents:
-        run_id = active_runs[document.id]
-        active = session.get(
-            ActiveExtractionRun,
-            document.id,
-            populate_existing=True,
-        )
-        run = session.get(ExtractionRun, run_id)
-        if (
-            active is None
-            or active.extraction_run_id != run_id
-            or run is None
-            or run.document_id != document.id
-            or run.outcome != "completed"
-            or run.page_errors != 0
-        ):
-            raise ValueError(
-                f"Document {document.id} does not have the exact completed fresh Active Run"
-            )
-        run_pairs.append(
-            and_(
-                Candidate.source_document_id == document.id,
-                Candidate.extraction_run_id == run_id,
-            )
-        )
-    return tuple(
-        session.scalars(
-            select(Candidate.id)
-            .where(
-                Candidate.project_id == project.id,
-                Candidate.state == "pending",
-                or_(*run_pairs),
-            )
-            .order_by(Candidate.id)
-        ).all()
-    )
-
-
 def run_bounded_product_proving_operations(
     session: Session,
     *,
@@ -1014,8 +1139,7 @@ def run_bounded_product_proving_operations(
     extraction_operation: ExtractionOperation,
     active_run_operation: ActiveRunOperation,
     admission_operation: AdmissionOperation | None = None,
-    repo_root: Path | str | None = None,
-    prompt_source_resolver: PromptSourceResolver | None = None,
+    _commit_for_test: CommitOperation | None = None,
 ) -> BoundedProductProvingOperations:
     """Extract exact Documents, compare, then declare/admit only on equality.
 
@@ -1025,6 +1149,7 @@ def run_bounded_product_proving_operations(
     semantic Candidate difference.
     """
 
+    commit = _commit_for_test or _commit_session
     if not baseline_runs:
         raise ValueError("Product Proving needs at least one baseline Run")
     project = _require_project(session, project_slug)
@@ -1038,6 +1163,12 @@ def run_bounded_product_proving_operations(
                 f"Document {document.id} does not have its pinned baseline Active Run"
             )
 
+    before_write_set = capture_project_write_set(session, project_slug)
+    before_policy_run_ids = set(
+        session.scalars(
+            select(PolicyRun.id).where(PolicyRun.project_id == project.id)
+        ).all()
+    )
     fresh_run_ids: dict[int, int] = {}
     comparisons: list[CandidateSetComparison] = []
     failures: list[str] = []
@@ -1060,18 +1191,30 @@ def run_bounded_product_proving_operations(
                         raise ValueError(
                             "extraction operation changed an Active Run before comparison"
                         )
-            fresh_run_id = result.id if isinstance(result, ExtractionRun) else result
-            if not isinstance(fresh_run_id, int) or fresh_run_id <= 0:
-                raise ValueError("extractor did not return one Extraction Run id")
-            if fresh_run_id == baseline_runs[document.id]:
-                raise ValueError("extractor returned the pinned baseline Run")
+                fresh_run_id = (
+                    result.id if isinstance(result, ExtractionRun) else result
+                )
+                if not isinstance(fresh_run_id, int) or fresh_run_id <= 0:
+                    raise ValueError("extractor did not return one Extraction Run id")
+                if fresh_run_id == baseline_runs[document.id]:
+                    raise ValueError("extractor returned the pinned baseline Run")
+                prospective_runs = {**fresh_run_ids, document.id: fresh_run_id}
+                extraction_snapshot = capture_project_write_set(
+                    session, project_slug
+                )
+                validate_bounded_operations_write_set(
+                    session,
+                    before=before_write_set,
+                    after=extraction_snapshot,
+                    baseline_runs=baseline_runs,
+                    fresh_run_ids=prospective_runs,
+                    admission_started=False,
+                )
             fresh_run_ids[document.id] = fresh_run_id
             comparison = compare_extraction_runs(
                 session,
                 baseline_runs[document.id],
                 fresh_run_id,
-                repo_root=repo_root,
-                prompt_source_resolver=prompt_source_resolver,
             )
             comparisons.append(comparison)
             if not comparison.equal:
@@ -1083,49 +1226,832 @@ def run_bounded_product_proving_operations(
             failures.append(f"Document {document.id}: {error}")
 
     if failures:
-        return BoundedProductProvingOperations(
+        return _commit_and_observe_operations(
+            session,
+            project_slug=project_slug,
             project_id=project.id,
+            baseline_runs=baseline_runs,
+            before_write_set=before_write_set,
+            before_policy_run_ids=before_policy_run_ids,
             fresh_run_ids=fresh_run_ids,
-            extraction_comparisons=tuple(comparisons),
-            extraction_failures=tuple(failures),
+            comparisons=tuple(comparisons),
+            failures=tuple(failures),
             active_run_document_ids=(),
             admission_started=False,
             admission_result=None,
+            commit=commit,
         )
 
     admission = admission_operation or _run_admission_without_declaration
-    # One savepoint keeps a declaration failure from leaving a partially
-    # changed Active Run set.  The caller retains transaction/commit control.
-    with session.begin_nested():
-        for document in documents:
-            active_run_operation(
-                session, document.id, fresh_run_ids[document.id]
-            )
-        session.flush()
-        for document in documents:
-            active = session.get(
-                ActiveExtractionRun,
-                document.id,
-                populate_existing=True,
-            )
-            if (
-                active is None
-                or active.extraction_run_id != fresh_run_ids[document.id]
-            ):
-                raise ValueError(
-                    f"Document {document.id} fresh Run was not explicitly declared"
+    try:
+        # One savepoint keeps a declaration/Admission failure from leaving a
+        # partial Project Record while retaining the completed extraction
+        # receipts outside it.
+        with session.begin_nested():
+            for document in documents:
+                active_run_operation(
+                    session, document.id, fresh_run_ids[document.id]
                 )
-        admission_result = admission(session, project.id)
-        session.flush()
-    return BoundedProductProvingOperations(
+            session.flush()
+            for document in documents:
+                active = session.get(
+                    ActiveExtractionRun,
+                    document.id,
+                    populate_existing=True,
+                )
+                if (
+                    active is None
+                    or active.extraction_run_id != fresh_run_ids[document.id]
+                ):
+                    raise ValueError(
+                        f"Document {document.id} fresh Run was not explicitly declared"
+                    )
+            admission_result = admission(session, project.id)
+            session.flush()
+            provisional_after = capture_project_write_set(session, project_slug)
+            validate_bounded_operations_write_set(
+                session,
+                before=before_write_set,
+                after=provisional_after,
+                baseline_runs=baseline_runs,
+                fresh_run_ids=fresh_run_ids,
+                admission_started=True,
+            )
+    except Exception as error:
+        return _commit_and_observe_operations(
+            session,
+            project_slug=project_slug,
+            project_id=project.id,
+            baseline_runs=baseline_runs,
+            before_write_set=before_write_set,
+            before_policy_run_ids=before_policy_run_ids,
+            fresh_run_ids=fresh_run_ids,
+            comparisons=tuple(comparisons),
+            failures=(f"Active Run / Admission: {error}",),
+            active_run_document_ids=(),
+            admission_started=False,
+            admission_result=None,
+            commit=commit,
+        )
+    return _commit_and_observe_operations(
+        session,
+        project_slug=project_slug,
         project_id=project.id,
+        baseline_runs=baseline_runs,
+        before_write_set=before_write_set,
+        before_policy_run_ids=before_policy_run_ids,
         fresh_run_ids=fresh_run_ids,
-        extraction_comparisons=tuple(comparisons),
-        extraction_failures=(),
+        comparisons=tuple(comparisons),
+        failures=(),
         active_run_document_ids=tuple(item.id for item in documents),
         admission_started=True,
         admission_result=admission_result,
+        commit=commit,
     )
+
+
+_EXTRACTION_WRITE_TABLES = frozenset({"extraction_runs", "candidates"})
+_ADMISSION_WRITE_TABLES = frozenset(
+    {
+        *_EXTRACTION_WRITE_TABLES,
+        "active_extraction_runs",
+        "active_run_declarations",
+        "policy_runs",
+        "dependency_admission_outcomes",
+        "event_admission_outcomes",
+        "dependencies",
+        "external_orgs",
+        "evidence_links",
+        "operative_support",
+        "assertions",
+        "commitment_lineages",
+        "dependency_events",
+        "dependency_event_timings",
+        "dependency_event_scope_decisions",
+        "dependency_event_scopes",
+        "dependency_event_evidence",
+        "candidate_dispositions",
+        "audit_log",
+    }
+)
+
+
+def validate_bounded_operations_write_set(
+    session: Session,
+    *,
+    before: ProjectWriteSetSnapshot,
+    after: ProjectWriteSetSnapshot,
+    baseline_runs: Mapping[int, int],
+    fresh_run_ids: Mapping[int, int],
+    admission_started: bool,
+) -> ProjectWriteSetDiff:
+    """Refuse writes outside the exact extraction/Admission packet.
+
+    The allowlist is only the first gate.  Every created Run and Candidate is
+    matched to one exact Document/Run pair, every Admission outcome must name
+    one of those Candidates, and every downstream Project Record identity is
+    traced through those outcomes.  Tables used by the later practitioner and
+    Report phases are deliberately absent.
+    """
+
+    if not set(fresh_run_ids).issubset(baseline_runs):
+        raise ValueError("fresh Extraction Runs widened the bounded Document set")
+    if admission_started and set(fresh_run_ids) != set(baseline_runs):
+        raise ValueError("Admission requires one compared fresh Run per Document")
+    write_set = diff_project_write_sets(before, after)
+    if any(write_set.deleted.values()):
+        raise ValueError("bounded Product Proving operations deleted protected rows")
+    changed_tables = _changed_tables(write_set)
+    allowed = (
+        _ADMISSION_WRITE_TABLES
+        if admission_started
+        else _EXTRACTION_WRITE_TABLES
+    )
+    unexpected = sorted(changed_tables - allowed)
+    if unexpected:
+        raise ValueError(
+            "bounded Product Proving operations changed out-of-packet tables: "
+            + ", ".join(unexpected)
+        )
+
+    expected_run_ids = set(fresh_run_ids.values())
+    created_run_ids = _write_set_ids(write_set, "extraction_runs", "created")
+    if created_run_ids != expected_run_ids:
+        raise ValueError("Extraction Run writes do not equal the returned fresh Runs")
+    if _write_set_ids(write_set, "extraction_runs", "updated"):
+        raise ValueError("an immutable Extraction Run was updated")
+    runs = tuple(
+        session.scalars(
+            select(ExtractionRun).where(ExtractionRun.id.in_(expected_run_ids))
+        ).all()
+    )
+    expected_pairs = {(document_id, run_id) for document_id, run_id in fresh_run_ids.items()}
+    if {(run.document_id, run.id) for run in runs} != expected_pairs:
+        raise ValueError("fresh Extraction Runs do not belong to the bounded Documents")
+
+    fresh_candidates = tuple(
+        session.scalars(
+            select(Candidate)
+            .where(
+                Candidate.project_id == before.project_id,
+                Candidate.extraction_run_id.in_(expected_run_ids),
+            )
+            .order_by(Candidate.id)
+        ).all()
+    )
+    fresh_candidate_ids = {candidate.id for candidate in fresh_candidates}
+    if _write_set_ids(write_set, "candidates", "created") != fresh_candidate_ids:
+        raise ValueError("Candidate writes are not exactly owned by the fresh Runs")
+    if _write_set_ids(write_set, "candidates", "updated") - fresh_candidate_ids:
+        raise ValueError("operations changed a Candidate outside the fresh Runs")
+    if any(
+        fresh_run_ids.get(candidate.source_document_id)
+        != candidate.extraction_run_id
+        for candidate in fresh_candidates
+    ):
+        raise ValueError("a fresh Candidate crossed the bounded Document/Run pairs")
+
+    if not admission_started:
+        return write_set
+
+    bounded_document_ids = set(fresh_run_ids)
+    active_ids = _write_set_ids(
+        write_set,
+        "active_extraction_runs",
+        "updated",
+        identity_key="document_id",
+    ) | _write_set_ids(
+        write_set,
+        "active_extraction_runs",
+        "created",
+        identity_key="document_id",
+    )
+    if active_ids != bounded_document_ids:
+        raise ValueError("Active Run writes do not equal the compared Documents")
+    declarations = tuple(
+        session.scalars(
+            select(ActiveRunDeclaration).where(
+                ActiveRunDeclaration.id.in_(
+                    _write_set_ids(write_set, "active_run_declarations", "created")
+                )
+            )
+        ).all()
+    )
+    if {
+        (declaration.document_id, declaration.extraction_run_id)
+        for declaration in declarations
+    } != expected_pairs:
+        raise ValueError("Active Run declarations do not name the exact fresh Runs")
+
+    policy_run_ids = _write_set_ids(write_set, "policy_runs", "created")
+    policy_runs = tuple(
+        session.scalars(
+            select(PolicyRun).where(PolicyRun.id.in_(policy_run_ids))
+        ).all()
+    )
+    if any(
+        run.project_id != before.project_id
+        or run.family not in {"dependency-admission", "event-admission"}
+        for run in policy_runs
+    ):
+        raise ValueError("a Policy Run is outside the two Admission families")
+    dependency_outcomes = tuple(
+        session.scalars(
+            select(DependencyAdmissionOutcome).where(
+                DependencyAdmissionOutcome.policy_run_id.in_(policy_run_ids)
+            )
+        ).all()
+    )
+    event_outcomes = tuple(
+        session.scalars(
+            select(EventAdmissionOutcome).where(
+                EventAdmissionOutcome.policy_run_id.in_(policy_run_ids)
+            )
+        ).all()
+    )
+    if (
+        {item.id for item in dependency_outcomes}
+        != _write_set_ids(write_set, "dependency_admission_outcomes", "created")
+        or {item.id for item in event_outcomes}
+        != _write_set_ids(write_set, "event_admission_outcomes", "created")
+    ):
+        raise ValueError("Admission outcomes do not belong to the new Policy Runs")
+    if any(
+        outcome.candidate_id not in fresh_candidate_ids
+        for outcome in (*dependency_outcomes, *event_outcomes)
+    ):
+        raise ValueError("an Admission outcome names a Candidate outside the packet")
+
+    dependency_ids = {
+        value
+        for value in (
+            *(outcome.dependency_id for outcome in dependency_outcomes),
+        )
+        if value is not None
+    }
+    event_ids = {
+        value
+        for value in (outcome.dependency_event_id for outcome in event_outcomes)
+        if value is not None
+    }
+    lineage_ids = {
+        value
+        for value in (outcome.commitment_lineage_id for outcome in event_outcomes)
+        if value is not None
+    }
+    scope_decision_ids = {
+        value
+        for value in (outcome.scope_decision_id for outcome in event_outcomes)
+        if value is not None
+    }
+    disposition_ids = {
+        value
+        for value in (outcome.candidate_disposition_id for outcome in event_outcomes)
+        if value is not None
+    }
+    audit_ids = {
+        value
+        for value in (outcome.audit_log_id for outcome in event_outcomes)
+        if value is not None
+    }
+    scopes = tuple(
+        session.scalars(
+            select(DependencyEventScope).where(
+                DependencyEventScope.event_id.in_(event_ids)
+            )
+        ).all()
+    )
+    dependency_ids.update(scope.dependency_id for scope in scopes)
+
+    _require_changed_ids_within(write_set, "dependencies", dependency_ids)
+    _require_changed_ids_within(write_set, "dependency_events", event_ids)
+    _require_changed_ids_within(write_set, "commitment_lineages", lineage_ids)
+    _require_changed_ids_within(
+        write_set, "dependency_event_scope_decisions", scope_decision_ids
+    )
+    _require_changed_ids_within(
+        write_set, "candidate_dispositions", disposition_ids
+    )
+    _require_changed_ids_within(write_set, "audit_log", audit_ids | _admission_audit_ids(
+        session,
+        write_set,
+        dependency_ids=dependency_ids,
+        lineage_ids=lineage_ids,
+    ))
+
+    _require_foreign_key_subset(
+        session,
+        write_set,
+        Assertion,
+        "assertions",
+        "dependency_id",
+        dependency_ids,
+    )
+    _require_foreign_key_subset(
+        session,
+        write_set,
+        OperativeSupport,
+        "operative_support",
+        "dependency_id",
+        dependency_ids,
+    )
+    _require_foreign_key_subset(
+        session,
+        write_set,
+        DependencyEventTiming,
+        "dependency_event_timings",
+        "event_id",
+        event_ids,
+    )
+    _require_foreign_key_subset(
+        session,
+        write_set,
+        DependencyEventScope,
+        "dependency_event_scopes",
+        "event_id",
+        event_ids,
+    )
+    _require_foreign_key_subset(
+        session,
+        write_set,
+        DependencyEventEvidence,
+        "dependency_event_evidence",
+        "event_id",
+        event_ids,
+        identity_key="evidence_link_id",
+    )
+    evidence_ids = _write_set_ids(write_set, "evidence_links", "created")
+    evidence = tuple(
+        session.scalars(
+            select(EvidenceLink).where(EvidenceLink.id.in_(evidence_ids))
+        ).all()
+    )
+    if any(
+        item.document_id not in bounded_document_ids
+        or (
+            item.dependency_id is not None
+            and item.dependency_id not in dependency_ids
+        )
+        for item in evidence
+    ):
+        raise ValueError("created Evidence is not traceable to the bounded packet")
+
+    changed_party_ids = _all_changed_ids(write_set, "external_orgs")
+    traced_parties = {
+        value
+        for value in session.scalars(
+            select(Dependency.external_org_id).where(
+                Dependency.id.in_(dependency_ids)
+            )
+        ).all()
+        if value is not None
+    }
+    traced_parties.update(
+        value
+        for row in session.execute(
+            select(
+                ExternalPartyStatement.affected_external_org_id,
+                ExternalPartyStatement.stated_external_org_id,
+            ).where(ExternalPartyStatement.id.in_(event_ids))
+        ).all()
+        for value in row
+        if value is not None
+    )
+    if changed_party_ids - traced_parties:
+        raise ValueError("an External Party write is not used by an admitted record")
+    return write_set
+
+
+def residual_candidate_ids_from_operations(
+    session: Session,
+    operations: BoundedProductProvingOperations,
+) -> tuple[int, ...]:
+    """Read residue only from the complete, durable operations packet."""
+
+    if not operations.admission_started or not operations.extraction_equal:
+        raise ValueError("residual Candidates require passed durable Admission")
+    comparison_runs: dict[int, int] = {}
+    for comparison in operations.extraction_comparisons:
+        if comparison.document_id in comparison_runs:
+            raise ValueError("operations repeat an extraction comparison Document")
+        if not comparison.equal:
+            raise ValueError("operations contain a failed extraction comparison")
+        comparison_runs[comparison.document_id] = comparison.fresh_run_id
+    exact_runs = dict(operations.fresh_run_ids)
+    if (
+        comparison_runs != exact_runs
+        or set(operations.active_run_document_ids) != set(exact_runs)
+        or len(operations.active_run_document_ids) != len(exact_runs)
+        or dict(operations.observed_active_runs) != exact_runs
+    ):
+        raise ValueError(
+            "residual Candidate scope is not the complete compared Active Run set"
+        )
+    project_slug = operations.after_write_set.project_slug
+    project = _require_project(session, project_slug)
+    if project.id != operations.project_id:
+        raise ValueError("operations residue names a different live Project")
+    _exact_documents(session, project.id, tuple(exact_runs))
+    run_pairs = []
+    for document_id, run_id in sorted(exact_runs.items()):
+        active = session.get(
+            ActiveExtractionRun,
+            document_id,
+            populate_existing=True,
+        )
+        run = session.get(ExtractionRun, run_id)
+        if (
+            active is None
+            or active.extraction_run_id != run_id
+            or run is None
+            or run.document_id != document_id
+            or run.outcome != "completed"
+            or run.page_errors != 0
+        ):
+            raise ValueError(
+                f"Document {document_id} no longer has its exact fresh Active Run"
+            )
+        run_pairs.append(
+            and_(
+                Candidate.source_document_id == document_id,
+                Candidate.extraction_run_id == run_id,
+            )
+        )
+    return tuple(
+        session.scalars(
+            select(Candidate.id)
+            .where(
+                Candidate.project_id == project.id,
+                Candidate.state == "pending",
+                or_(*run_pairs),
+            )
+            .order_by(Candidate.id)
+        ).all()
+    )
+
+
+def capture_live_product_proving_operations(
+    session: Session,
+    *,
+    project_slug: str,
+    expected: ExpectedPreflight,
+    verified_baseline: VerifiedProductProvingDatabaseBaseline,
+    database_url: str,
+    pass_number: int,
+    extraction_operation: ExtractionOperation,
+    active_run_operation: ActiveRunOperation,
+    admission_operation: AdmissionOperation | None = None,
+    repo_root: Path | str | None = None,
+    git_observer: GitObserver = observe_git_checkout,
+    _commit_for_test: CommitOperation | None = None,
+    _fingerprint_for_test: Callable[[str], DatabaseFingerprint] | None = None,
+    prior_restore_bundle_dir: Path | str | None = None,
+    prior_restore_manifest_sha256: str | None = None,
+) -> LiveProductProvingOperationsCapture:
+    """Run the operations phase from live pins without observed JSON input.
+
+    This is the CLI-facing composition seam: observe and verify preflight,
+    execute the bounded durable operation, and return its comparisons,
+    before/after protected snapshots, write set, committed receipts, and
+    residuals as one typed capture.
+    """
+
+    if pass_number not in {1, 2}:
+        raise ValueError("Product Proving operations pass number must be 1 or 2")
+    prior_values = (prior_restore_bundle_dir, prior_restore_manifest_sha256)
+    if pass_number == 1 and any(value is not None for value in prior_values):
+        raise ValueError("Product Proving pass 1 cannot name a prior restore")
+    if pass_number == 2 and any(value is None for value in prior_values):
+        raise ValueError("Product Proving pass 2 requires the verified pass 1 restore")
+    if set(expected.documents) != set(expected.baseline_runs):
+        raise ValueError("expected Document and baseline Run pins must be exact")
+    observed = observe_product_proving_preflight(
+        session,
+        project_slug=project_slug,
+        document_ids=tuple(expected.documents),
+        verified_baseline=verified_baseline,
+        database_url=database_url,
+        repo_root=repo_root,
+        git_observer=git_observer,
+        _fingerprint_for_test=_fingerprint_for_test,
+    )
+    verify_preflight(expected, observed)
+    prior_restore_operation_id = None
+    prior_restore_bundle_canonical_sha256 = None
+    if pass_number == 2:
+        # Runtime import avoids making the restore bundle depend on itself
+        # through frontend capture -> execution.
+        from corridor.product_proving_restore import (
+            verify_product_proving_restore_bundle,
+        )
+
+        prior = verify_product_proving_restore_bundle(
+            Path(prior_restore_bundle_dir),
+            expected_integrity_manifest_sha256=str(prior_restore_manifest_sha256),
+        )
+        receipt = prior.receipt
+        source = verified_baseline.baseline.get("source_database") or {}
+        if (
+            not prior.valid
+            or receipt.pass_number != 1
+            or receipt.database_baseline_manifest_sha256
+            != verified_baseline.manifest_sha256
+            or receipt.database_baseline_dump_sha256 != verified_baseline.dump_sha256
+            or receipt.database_baseline_state_sha256
+            != verified_baseline.fingerprint.state_sha256
+            or receipt.database_baseline_schema_sha256
+            != verified_baseline.fingerprint.schema_sha256
+            or receipt.restored_state_sha256
+            != verified_baseline.fingerprint.state_sha256
+            or dict(receipt.source_database_identity) != source
+            or dict(receipt.source_connection_identity)
+            != (verified_baseline.baseline.get("source_connection") or {})
+        ):
+            raise ValueError("Product Proving pass 2 prior restore is not its baseline")
+        prior_restore_operation_id = receipt.restore_operation_id
+        prior_restore_bundle_canonical_sha256 = prior.canonical_content_sha256
+    execution_id = str(uuid4())
+    started_at = datetime.now(timezone.utc).isoformat()
+    operations = run_bounded_product_proving_operations(
+        session,
+        project_slug=project_slug,
+        baseline_runs=expected.baseline_runs,
+        extraction_operation=extraction_operation,
+        active_run_operation=active_run_operation,
+        admission_operation=admission_operation,
+        _commit_for_test=_commit_for_test,
+    )
+    return LiveProductProvingOperationsCapture(
+        expected=expected,
+        observed=observed,
+        operations=operations,
+        database_baseline_manifest_sha256=verified_baseline.manifest_sha256,
+        database_baseline_dump_sha256=verified_baseline.dump_sha256,
+        database_baseline_state_sha256=verified_baseline.fingerprint.state_sha256,
+        database_baseline_fingerprint=verified_baseline.fingerprint,
+        database_source_identity=dict(
+            verified_baseline.baseline.get("source_database") or {}
+        ),
+        database_source_connection_identity=dict(
+            verified_baseline.baseline.get("source_connection") or {}
+        ),
+        pass_number=pass_number,
+        execution_id=execution_id,
+        started_at=started_at,
+        prior_restore_operation_id=prior_restore_operation_id,
+        prior_restore_bundle_manifest_sha256=(
+            str(prior_restore_manifest_sha256) if pass_number == 2 else None
+        ),
+        prior_restore_bundle_canonical_sha256=(
+            prior_restore_bundle_canonical_sha256 if pass_number == 2 else None
+        ),
+    )
+
+
+def _commit_and_observe_operations(
+    session: Session,
+    *,
+    project_slug: str,
+    project_id: int,
+    baseline_runs: Mapping[int, int],
+    before_write_set: ProjectWriteSetSnapshot,
+    before_policy_run_ids: set[int],
+    fresh_run_ids: Mapping[int, int],
+    comparisons: tuple[CandidateSetComparison, ...],
+    failures: tuple[str, ...],
+    active_run_document_ids: tuple[int, ...],
+    admission_started: bool,
+    admission_result: Any | None,
+    commit: CommitOperation,
+) -> BoundedProductProvingOperations:
+    provisional_after = capture_project_write_set(session, project_slug)
+    validate_bounded_operations_write_set(
+        session,
+        before=before_write_set,
+        after=provisional_after,
+        baseline_runs=baseline_runs,
+        fresh_run_ids=fresh_run_ids,
+        admission_started=admission_started,
+    )
+    commit(session)
+    session.expire_all()
+    after_write_set = capture_project_write_set(session, project_slug)
+    write_set = validate_bounded_operations_write_set(
+        session,
+        before=before_write_set,
+        after=after_write_set,
+        baseline_runs=baseline_runs,
+        fresh_run_ids=fresh_run_ids,
+        admission_started=admission_started,
+    )
+    observed_active_runs = _observe_exact_active_runs(
+        session, project_id, tuple(baseline_runs)
+    )
+    expected_active_runs = fresh_run_ids if admission_started else baseline_runs
+    if dict(observed_active_runs) != dict(expected_active_runs):
+        raise ValueError("durable Active Runs do not match the terminal operation")
+    policy_receipts = _observe_new_policy_receipts(
+        session, project_id, before_policy_run_ids
+    )
+    if not admission_started and policy_receipts:
+        raise ValueError("Admission Policy Runs were committed after a stopped operation")
+    operations = BoundedProductProvingOperations(
+        project_id=project_id,
+        fresh_run_ids=dict(fresh_run_ids),
+        extraction_comparisons=comparisons,
+        extraction_failures=failures,
+        active_run_document_ids=active_run_document_ids,
+        admission_started=admission_started,
+        admission_result=admission_result,
+        observed_active_runs=observed_active_runs,
+        admission_policy_receipts=policy_receipts,
+        residual_candidate_ids=(),
+        before_write_set=before_write_set,
+        after_write_set=after_write_set,
+        write_set=write_set,
+    )
+    if admission_started:
+        operations = replace(
+            operations,
+            residual_candidate_ids=residual_candidate_ids_from_operations(
+                session, operations
+            ),
+        )
+    return operations
+
+
+def _commit_session(session: Session) -> None:
+    """Production durability boundary; tests may inject a non-committing seam."""
+
+    session.commit()
+
+
+def _observe_exact_active_runs(
+    session: Session, project_id: int, document_ids: Sequence[int]
+) -> Mapping[int, int]:
+    documents = _exact_documents(session, project_id, document_ids)
+    observed = {}
+    for document in documents:
+        active = session.get(
+            ActiveExtractionRun,
+            document.id,
+            populate_existing=True,
+        )
+        if active is None:
+            raise ValueError(f"Document {document.id} has no durable Active Run")
+        observed[document.id] = active.extraction_run_id
+    return observed
+
+
+def _observe_new_policy_receipts(
+    session: Session, project_id: int, prior_ids: set[int]
+) -> tuple[AdmissionPolicyReceipt, ...]:
+    runs = tuple(
+        session.scalars(
+            select(PolicyRun)
+            .where(
+                PolicyRun.project_id == project_id,
+                PolicyRun.id.not_in(prior_ids),
+            )
+            .order_by(PolicyRun.id)
+        ).all()
+    )
+    return tuple(
+        AdmissionPolicyReceipt(
+            run_id=run.id,
+            family=run.family,
+            policy_version=run.policy_version,
+            policy_sha256=run.policy_sha256,
+            applied_count=run.applied_count,
+            abstained_count=run.abstained_count,
+        )
+        for run in runs
+    )
+
+
+def _changed_tables(write_set: ProjectWriteSetDiff) -> set[str]:
+    return {
+        table_name
+        for table_name in set(write_set.created)
+        | set(write_set.deleted)
+        | set(write_set.updated)
+        if write_set.created.get(table_name)
+        or write_set.deleted.get(table_name)
+        or write_set.updated.get(table_name)
+    }
+
+
+def _write_set_ids(
+    write_set: ProjectWriteSetDiff,
+    table_name: str,
+    operation: str,
+    *,
+    identity_key: str = "id",
+) -> set[int]:
+    if operation == "created":
+        values = write_set.created.get(table_name, ())
+    elif operation == "deleted":
+        values = write_set.deleted.get(table_name, ())
+    elif operation == "updated":
+        values = tuple(after for _before, after in write_set.updated.get(table_name, ()))
+    else:
+        raise ValueError(f"unknown write-set operation {operation!r}")
+    identities = set()
+    for value in values:
+        identity = value.identity.get(identity_key)
+        if not isinstance(identity, int):
+            raise ValueError(
+                f"{table_name} write identity lacks integer {identity_key}"
+            )
+        identities.add(identity)
+    return identities
+
+
+def _all_changed_ids(
+    write_set: ProjectWriteSetDiff,
+    table_name: str,
+    *,
+    identity_key: str = "id",
+) -> set[int]:
+    return _write_set_ids(
+        write_set, table_name, "created", identity_key=identity_key
+    ) | _write_set_ids(
+        write_set, table_name, "updated", identity_key=identity_key
+    )
+
+
+def _require_changed_ids_within(
+    write_set: ProjectWriteSetDiff,
+    table_name: str,
+    allowed_ids: set[int],
+    *,
+    identity_key: str = "id",
+) -> None:
+    unexpected = _all_changed_ids(
+        write_set, table_name, identity_key=identity_key
+    ) - allowed_ids
+    if unexpected:
+        raise ValueError(
+            f"{table_name} writes are not traceable to fresh Admission outcomes"
+        )
+
+
+def _require_foreign_key_subset(
+    session: Session,
+    write_set: ProjectWriteSetDiff,
+    model: type[Any],
+    table_name: str,
+    foreign_key_name: str,
+    allowed_foreign_ids: set[int],
+    *,
+    identity_key: str = "id",
+) -> None:
+    changed_ids = _all_changed_ids(
+        write_set, table_name, identity_key=identity_key
+    )
+    if not changed_ids:
+        return
+    identity_column = getattr(model, identity_key)
+    values = tuple(
+        session.scalars(
+            select(model).where(identity_column.in_(changed_ids))
+        ).all()
+    )
+    if len(values) != len(changed_ids) or any(
+        getattr(value, foreign_key_name) not in allowed_foreign_ids
+        for value in values
+    ):
+        raise ValueError(
+            f"{table_name} writes are not traceable to fresh Admission outcomes"
+        )
+
+
+def _admission_audit_ids(
+    session: Session,
+    write_set: ProjectWriteSetDiff,
+    *,
+    dependency_ids: set[int],
+    lineage_ids: set[int],
+) -> set[int]:
+    audit_ids = _all_changed_ids(write_set, "audit_log")
+    if not audit_ids:
+        return set()
+    audits = tuple(
+        session.scalars(select(AuditLog).where(AuditLog.id.in_(audit_ids))).all()
+    )
+    allowed = {
+        audit.id
+        for audit in audits
+        if (
+            audit.entity_type == "dependency"
+            and audit.entity_id in dependency_ids
+        )
+        or (
+            audit.entity_type == "commitment_lineage"
+            and audit.entity_id in lineage_ids
+        )
+    }
+    return allowed
 
 
 def _run_admission_without_declaration(session: Session, project_id: int) -> Any:
@@ -1284,6 +2210,7 @@ def _fingerprint_model_rows(
     by_table: dict[str, list[_RawProjectRow]] = {}
     for model, values in model_rows:
         table = model.__table__
+        by_table.setdefault(table.name, [])
         primary_names = frozenset(column.name for column in table.primary_key.columns)
         for value in values:
             exact = {
@@ -1386,7 +2313,11 @@ def _fingerprint_model_rows(
                 continue
             foreign_keys = tuple(
                 sorted(
-                    column.foreign_keys,
+                    (
+                        item
+                        for item in column.foreign_keys
+                        if _column_is_standalone_identity(item.column)
+                    ),
                     key=lambda item: (
                         item.column.table.name,
                         item.column.name,
@@ -1453,6 +2384,20 @@ def _fingerprint_model_rows(
             )
         output[table_name] = tuple(fingerprints)
     return output
+
+
+def _column_is_standalone_identity(column: Any) -> bool:
+    """Whether one referenced value, without composite peers, finds one row."""
+
+    table = column.table
+    if column.primary_key and len(table.primary_key.columns) == 1:
+        return True
+    return any(
+        constraint.__class__.__name__ == "UniqueConstraint"
+        and len(constraint.columns) == 1
+        and column.name in constraint.columns
+        for constraint in table.constraints
+    )
 
 
 def _json_value(value: Any) -> Any:

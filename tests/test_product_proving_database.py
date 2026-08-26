@@ -18,11 +18,13 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.product_proving_database import (
     DISPOSABLE_DATABASE_PREFIX,
+    DatabaseConnectionIdentity,
     DatabaseFingerprint,
     DatabaseReplacementReceipt,
     DatabaseReplacementRequest,
     ProductProvingDatabaseBaselineConfig,
     ProductProvingDatabaseError,
+    SchemaObjectFingerprint,
     SequenceFingerprint,
     SharedDevelopmentRestoreConfig,
     StagedDatabaseReplacement,
@@ -31,6 +33,7 @@ from corridor.product_proving_database import (
     capture_product_proving_database_baseline,
     fingerprint_database_url,
     fingerprint_public_database,
+    parse_database_fingerprint,
     restore_shared_development_database,
     stage_local_database_replacement,
     verify_product_proving_database_baseline,
@@ -43,6 +46,13 @@ MIGRATION_HEAD = "b317c5d7e9f2"
 SOURCE_URL = "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
 ADMIN_URL = SOURCE_URL
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _configured_shared_database(monkeypatch):
+    """The proving source is explicit even inside an xdist worker database."""
+
+    monkeypatch.setattr(settings, "database_url", SOURCE_URL)
 
 
 def _fingerprint(seed: str) -> DatabaseFingerprint:
@@ -66,6 +76,7 @@ def _fingerprint(seed: str) -> DatabaseFingerprint:
     canonical = {
         "tables": [table.as_dict()],
         "sequences": [sequence.as_dict()],
+        "schema_objects": [],
     }
     return DatabaseFingerprint(
         tables=(table,),
@@ -170,6 +181,8 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     assert transaction_read_only == "on"
     assert fingerprint.table_count == 62
     assert fingerprint.sequence_count == 53
+    assert fingerprint.schema_object_count > 0
+    assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
         item.name for item in fingerprint.tables
     )
@@ -182,7 +195,90 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "dependency_events",
         "statement_coordination_receipts",
     }
+    assert {item.kind for item in fingerprint.schema_objects} == {
+        "column",
+        "constraint",
+        "function",
+        "trigger",
+        "index",
+    }
+    assert any(
+        item.kind == "function"
+        and item.identity.startswith("extraction_token_usage_membership_is_valid(")
+        for item in fingerprint.schema_objects
+    )
     assert len(fingerprint.state_sha256) == 64
+
+    assert parse_database_fingerprint(fingerprint.as_dict()) == fingerprint
+    incomplete = fingerprint.as_dict()
+    incomplete.pop("schema_objects")
+    with pytest.raises(ProductProvingDatabaseError, match="members are invalid"):
+        parse_database_fingerprint(incomplete)
+
+
+@pytest.mark.slow
+def test_same_migration_head_schema_drift_changes_the_canonical_fingerprint():
+    configured = make_url(settings.database_url)
+    admin_url = configured.set(database="postgres").render_as_string(
+        hide_password=False
+    )
+    with provision_disposable_postgres(
+        admin_url,
+        repo_root=REPO_ROOT,
+        error_cls=ProductProvingDatabaseError,
+        database_prefix=DISPOSABLE_DATABASE_PREFIX,
+        migration_revision=MIGRATION_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name).render_as_string(
+            hide_password=False
+        )
+        before = fingerprint_database_url(database_url)
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "create function product_proving_same_head_drift() "
+                        "returns integer language sql immutable as 'select 1'"
+                    )
+                )
+            with engine.connect() as connection:
+                assert connection.scalar(
+                    text("select version_num from alembic_version")
+                ) == MIGRATION_HEAD
+        finally:
+            engine.dispose()
+        after = fingerprint_database_url(database_url)
+
+        assert after.tables == before.tables
+        assert after.sequences == before.sequences
+        assert after.state_sha256 != before.state_sha256
+        assert after.schema_sha256 != before.schema_sha256
+        assert after != before
+
+
+@pytest.mark.slow
+def test_fresh_databases_at_one_head_have_the_same_schema_fingerprint():
+    configured = make_url(settings.database_url)
+    admin_url = configured.set(database="postgres").render_as_string(
+        hide_password=False
+    )
+    fingerprints = []
+    for suffix in ("a_", "b_"):
+        with provision_disposable_postgres(
+            admin_url,
+            repo_root=REPO_ROOT,
+            error_cls=ProductProvingDatabaseError,
+            database_prefix=f"{DISPOSABLE_DATABASE_PREFIX}{suffix}",
+            migration_revision=MIGRATION_HEAD,
+        ) as database:
+            database_url = configured.set(database=database.name).render_as_string(
+                hide_password=False
+            )
+            fingerprints.append(fingerprint_database_url(database_url))
+
+    assert fingerprints[0].schema_objects == fingerprints[1].schema_objects
+    assert fingerprints[0].schema_sha256 == fingerprints[1].schema_sha256
 
 
 @pytest.mark.slow
@@ -247,6 +343,7 @@ def test_capture_restores_only_a_fresh_database_and_publishes_immutable_bundle(
     assert environment.restore_targets == [f"{DISPOSABLE_DATABASE_PREFIX}test"]
     assert environment.restore_targets != ["corridor"]
     assert summary.state_sha256 == expected.state_sha256
+    assert summary.schema_sha256 == expected.schema_sha256
     assert summary.table_count == 1
     assert summary.sequence_count == 1
     assert {path.name for path in summary.bundle_dir.iterdir()} == {
@@ -260,6 +357,9 @@ def test_capture_restores_only_a_fresh_database_and_publishes_immutable_bundle(
     )
     assert verified.fingerprint == expected
     assert verified.dump_sha256 == summary.dump_sha256
+    assert verified.baseline["source_connection"]["database"] == "corridor"
+    assert verified.baseline["source_connection"]["username"] == "corridor"
+    assert verified.baseline["source_connection"]["system_identifier"].isdigit()
 
     with pytest.raises(ProductProvingDatabaseError, match="already exists"):
         capture_product_proving_database_baseline(
@@ -285,6 +385,88 @@ def test_capture_refuses_a_dump_that_does_not_restore_to_the_exact_source(tmp_pa
         )
 
     assert not (tmp_path / "baseline").exists()
+
+
+def test_capture_refuses_same_head_source_schema_drift(tmp_path):
+    def with_schema(definition_sha256: str) -> DatabaseFingerprint:
+        base = _fingerprint("1")
+        objects = (
+            SchemaObjectFingerprint(
+                "function", "sealed()", definition_sha256
+            ),
+        )
+        canonical = {
+            "tables": [item.as_dict() for item in base.tables],
+            "sequences": [item.as_dict() for item in base.sequences],
+            "schema_objects": [item.as_dict() for item in objects],
+        }
+        return replace(
+            base,
+            state_sha256=sha256(
+                json.dumps(
+                    canonical,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+            schema_objects=objects,
+        )
+
+    source = with_schema("1" * 64)
+    freshly_migrated = with_schema("2" * 64)
+    reads = iter((source, freshly_migrated))
+
+    with pytest.raises(ProductProvingDatabaseError, match="does not match"):
+        capture_product_proving_database_baseline(
+            _capture_config(tmp_path),
+            provision_database=_provisioner(),
+            open_environment=_opener(_FakeEnvironment(MIGRATION_HEAD, [])),
+            fingerprint_database=lambda _url: next(reads),
+        )
+
+    assert not (tmp_path / "baseline").exists()
+
+
+def test_capture_refuses_an_arbitrary_local_clone_as_the_claimed_source(tmp_path):
+    clone_url = SOURCE_URL.rsplit("/", 1)[0] + "/corridor_clone"
+    config = replace(
+        _capture_config(tmp_path),
+        source_database_url=clone_url,
+    )
+
+    with pytest.raises(
+        ProductProvingDatabaseError,
+        match="configured shared development database",
+    ):
+        capture_product_proving_database_baseline(
+            config,
+            open_environment=lambda **_kwargs: pytest.fail(
+                "clone identity reached environment open"
+            ),
+        )
+
+
+def test_capture_refuses_when_the_url_reaches_a_different_database_role(tmp_path):
+    observed = DatabaseConnectionIdentity(
+        database="corridor",
+        username="different_role",
+        server_address="127.0.0.1",
+        server_port="5432",
+        system_identifier="123456789",
+        postgres_version="16.10",
+    )
+
+    with pytest.raises(
+        ProductProvingDatabaseError,
+        match="named database and role",
+    ):
+        capture_product_proving_database_baseline(
+            _capture_config(tmp_path),
+            open_environment=lambda **_kwargs: pytest.fail(
+                "mismatched live role reached environment open"
+            ),
+            observe_connection_identity=lambda _url: observed,
+        )
 
 
 @pytest.mark.parametrize(
@@ -340,6 +522,35 @@ def test_shared_restore_requires_opt_in_before_inspecting_a_bundle(tmp_path):
         restore_shared_development_database(config)
 
 
+def test_shared_restore_refuses_a_different_postgresql_cluster_identity(tmp_path):
+    captured, _baseline, _environment = _capture_fake_baseline(tmp_path)
+    config = SharedDevelopmentRestoreConfig(
+        source_database_url=SOURCE_URL,
+        postgres_admin_url=ADMIN_URL,
+        expected_source_database_name="corridor",
+        expected_checkout_revision=REVISION,
+        expected_migration_head=MIGRATION_HEAD,
+        bundle_dir=captured.bundle_dir,
+        expected_manifest_sha256=captured.manifest_sha256,
+        repo_root=tmp_path,
+        allow_shared_development_restore=True,
+    )
+    different_cluster = DatabaseConnectionIdentity(
+        database="corridor",
+        username="corridor",
+        server_address="127.0.0.1",
+        server_port="5432",
+        system_identifier="9999999999999999999",
+        postgres_version="16.10",
+    )
+
+    with pytest.raises(ProductProvingDatabaseError, match="server identity changed"):
+        restore_shared_development_database(
+            config,
+            observe_connection_identity=lambda _url: different_cluster,
+        )
+
+
 def test_verification_database_namespace_fits_postgresql_identifier_limit():
     assert len(f"{DISPOSABLE_DATABASE_PREFIX}{'a' * 32}".encode()) <= 63
 
@@ -380,6 +591,8 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
             replacement_database_name=request.request.replacement_database_name,
             backup_database_name="corridor_pre_proving_backup",
             restored_fingerprint=baseline,
+            previous_database_oid=request.source_database_oid,
+            restored_database_oid=request.replacement_database_oid,
         )
 
     config = SharedDevelopmentRestoreConfig(
@@ -413,6 +626,10 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
     assert request.expected_replacement_fingerprint == baseline
     assert summary.previous_state_sha256 == current.state_sha256
     assert summary.restored_state_sha256 == baseline.state_sha256
+    assert summary.operation_id
+    assert summary.started_at <= summary.completed_at
+    assert summary.previous_database_oid == 101
+    assert summary.restored_database_oid == 202
 
 
 @pytest.mark.parametrize(
@@ -555,6 +772,18 @@ def test_shared_restore_rolls_back_before_finalization_on_post_swap_validation_f
             "not an allowed exact target",
         ),
         (
+            "postgresql+psycopg://corridor:corridor@localhost:5433/"
+            "corridor_proving_restore_fake",
+            "corridor_proving_restore_fake",
+            "not an allowed exact target",
+        ),
+        (
+            "postgresql+psycopg://corridor:corridor@localhost:5433/"
+            "corridor_pre_proving_fake",
+            "corridor_pre_proving_fake",
+            "not an allowed exact target",
+        ),
+        (
             (
                 "postgresql+psycopg://corridor:corridor@localhost:5433/"
                 "corridor?host=/var/run/postgresql"
@@ -583,4 +812,25 @@ def test_shared_restore_refuses_a_nonlocal_or_differently_named_source(
     )
 
     with pytest.raises(ProductProvingDatabaseError, match=error):
+        restore_shared_development_database(config)
+
+
+def test_shared_restore_refuses_a_safe_but_unconfigured_clone_name(tmp_path):
+    clone_url = SOURCE_URL.rsplit("/", 1)[0] + "/corridor_clone"
+    config = SharedDevelopmentRestoreConfig(
+        source_database_url=clone_url,
+        postgres_admin_url=ADMIN_URL,
+        expected_source_database_name="corridor_clone",
+        expected_checkout_revision=REVISION,
+        expected_migration_head=MIGRATION_HEAD,
+        bundle_dir=tmp_path / "unused",
+        expected_manifest_sha256="f" * 64,
+        repo_root=tmp_path,
+        allow_shared_development_restore=True,
+    )
+
+    with pytest.raises(
+        ProductProvingDatabaseError,
+        match="configured shared development database",
+    ):
         restore_shared_development_database(config)

@@ -168,6 +168,7 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
         candidates=(candidate, other_candidate),
         model="gpt-test",
         schema_version="minutes_v3",
+        allow_unsealed_legacy=True,
     )
     declare_single_run_documents_by_policy(session, project.id)
     session.flush()

@@ -87,6 +87,7 @@ def _declare_candidate_active(session, document, candidate):
         page_errors=0,
         candidates=(candidate,),
         model=candidate.model,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()

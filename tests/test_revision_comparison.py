@@ -174,6 +174,7 @@ def _run(
         candidates=candidates,
         model=model,
         schema_version=schema_version,
+        allow_unsealed_legacy=True,
     )
     session.flush()
     return run, candidates
@@ -1810,6 +1811,7 @@ def test_failed_or_absent_successor_cannot_create_a_comparison(
         model="gpt-test",
         schema_version="matrix-schema-v3",
         error_detail="upstream unavailable",
+        allow_unsealed_legacy=True,
     )
     session.flush()
 
@@ -1854,6 +1856,7 @@ def test_completed_zero_row_successor_can_prove_predecessor_rows_dropped(
         page_errors=0,
         model="gpt-test",
         schema_version="matrix-schema-v3",
+        allow_unsealed_legacy=True,
     )
     session.flush()
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -43,13 +44,14 @@ from corridor.m8_acceptance_publication import publish_directory_once
 from corridor.rehearsal_environment import SealedRehearsalEnvironment
 
 
-BASELINE_SCHEMA_VERSION = "corridor.product-proving-database-baseline.v1"
+BASELINE_SCHEMA_VERSION = "corridor.product-proving-database-baseline.v2"
 MANIFEST_SCHEMA_VERSION = "corridor.product-proving-database-manifest.v1"
 BASELINE_FILENAME = "baseline.json"
 DUMP_FILENAME = "baseline.dump"
 MANIFEST_FILENAME = "manifest.json"
 BASELINE_FILES = (BASELINE_FILENAME, DUMP_FILENAME)
 DISPOSABLE_DATABASE_PREFIX = "corridor_proving_restore_"
+BACKUP_DATABASE_PREFIX = "corridor_pre_proving_"
 
 _DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _SHARED_DEVELOPMENT_DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -108,12 +110,51 @@ class SequenceFingerprint:
 
 
 @dataclass(frozen=True)
+class SchemaObjectFingerprint:
+    """Canonical definition identity for one public schema object."""
+
+    kind: str
+    identity: str
+    definition_sha256: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "identity": self.identity,
+            "definition_sha256": self.definition_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class DatabaseConnectionIdentity:
+    """Server-observed logical identity for the configured shared database."""
+
+    database: str
+    username: str
+    server_address: str
+    server_port: str
+    system_identifier: str
+    postgres_version: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "database": self.database,
+            "username": self.username,
+            "server_address": self.server_address,
+            "server_port": self.server_port,
+            "system_identifier": self.system_identifier,
+            "postgres_version": self.postgres_version,
+        }
+
+
+@dataclass(frozen=True)
 class DatabaseFingerprint:
-    """Canonical identity of all public base-table data and sequence state."""
+    """Canonical identity of public schema, table data, and sequence state."""
 
     tables: tuple[TableFingerprint, ...]
     sequences: tuple[SequenceFingerprint, ...]
     state_sha256: str
+    schema_objects: tuple[SchemaObjectFingerprint, ...] = ()
 
     @property
     def table_count(self) -> int:
@@ -123,12 +164,25 @@ class DatabaseFingerprint:
     def sequence_count(self) -> int:
         return len(self.sequences)
 
+    @property
+    def schema_object_count(self) -> int:
+        return len(self.schema_objects)
+
+    @property
+    def schema_sha256(self) -> str:
+        return _json_sha256(
+            {"schema_objects": [item.as_dict() for item in self.schema_objects]}
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "table_count": self.table_count,
             "sequence_count": self.sequence_count,
+            "schema_object_count": self.schema_object_count,
             "tables": [item.as_dict() for item in self.tables],
             "sequences": [item.as_dict() for item in self.sequences],
+            "schema_objects": [item.as_dict() for item in self.schema_objects],
+            "schema_sha256": self.schema_sha256,
             "state_sha256": self.state_sha256,
         }
 
@@ -153,6 +207,7 @@ class ProductProvingDatabaseBaselineSummary:
     manifest_sha256: str
     dump_sha256: str
     state_sha256: str
+    schema_sha256: str
     table_count: int
     sequence_count: int
     verification_database_name: str
@@ -221,6 +276,8 @@ class DatabaseReplacementReceipt:
     replacement_database_name: str
     backup_database_name: str
     restored_fingerprint: DatabaseFingerprint
+    previous_database_oid: int
+    restored_database_oid: int
 
 
 @dataclass(frozen=True)
@@ -232,6 +289,11 @@ class SharedDevelopmentRestoreSummary:
     dump_sha256: str
     verification_database_name: str
     backup_database_name: str
+    operation_id: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+    previous_database_oid: int = 0
+    restored_database_oid: int = 0
 
 
 class _EnvironmentOpener(Protocol):
@@ -247,6 +309,7 @@ class _EnvironmentOpener(Protocol):
 
 
 FingerprintReader = Callable[[str], DatabaseFingerprint]
+DatabaseConnectionIdentityReader = Callable[[str], DatabaseConnectionIdentity]
 DatabaseReplacementStager = Callable[
     [DatabaseReplacementRequest], StagedDatabaseReplacement
 ]
@@ -263,6 +326,163 @@ DatabaseRenamer = Callable[[str, str, str], None]
 DatabaseConnectionSetter = Callable[[str, str, bool], None]
 
 
+def _schema_object(
+    kind: str,
+    identity: str,
+    definition: Mapping[str, Any],
+) -> SchemaObjectFingerprint:
+    return SchemaObjectFingerprint(
+        kind=kind,
+        identity=identity,
+        definition_sha256=_json_sha256(definition),
+    )
+
+
+def _fingerprint_public_schema(
+    connection: Connection,
+) -> tuple[SchemaObjectFingerprint, ...]:
+    """Canonical public columns, constraints, functions, triggers, and indexes."""
+
+    objects: list[SchemaObjectFingerprint] = []
+
+    columns = connection.execute(
+        text(
+            "select c.relname as table_name, a.attnum as ordinal, "
+            "a.attname as column_name, format_type(a.atttypid, a.atttypmod) "
+            "as data_type, a.attnotnull as not_null, "
+            "coalesce(pg_get_expr(d.adbin, d.adrelid, true), '') "
+            "as default_expression, a.attidentity::text as identity_kind, "
+            "a.attgenerated::text as generated_kind, "
+            "a.attstorage::text as storage_kind, "
+            "coalesce(a.attcompression::text, '') as compression_kind, "
+            "coalesce(cn.nspname, '') as collation_schema, "
+            "coalesce(coll.collname, '') as collation_name "
+            "from pg_catalog.pg_attribute a "
+            "join pg_catalog.pg_class c on c.oid = a.attrelid "
+            "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+            "left join pg_catalog.pg_attrdef d "
+            "on d.adrelid = a.attrelid and d.adnum = a.attnum "
+            "left join pg_catalog.pg_collation coll on coll.oid = a.attcollation "
+            "left join pg_catalog.pg_namespace cn on cn.oid = coll.collnamespace "
+            "where n.nspname = 'public' and c.relkind in ('r', 'p') "
+            "and a.attnum > 0 and not a.attisdropped "
+            "order by c.relname collate \"C\", a.attnum"
+        )
+    ).mappings()
+    for row in columns:
+        definition = dict(row)
+        objects.append(
+            _schema_object(
+                "column",
+                f"{row['table_name']}.{row['ordinal']}.{row['column_name']}",
+                definition,
+            )
+        )
+
+    constraints = connection.execute(
+        text(
+            "select coalesce(c.relname, '') as table_name, con.conname, "
+            "con.contype::text as constraint_type, "
+            "pg_get_constraintdef(con.oid, true) as definition, "
+            "con.condeferrable as deferrable, con.condeferred as initially_deferred, "
+            "con.convalidated as validated, con.connoinherit as no_inherit "
+            "from pg_catalog.pg_constraint con "
+            "join pg_catalog.pg_namespace n on n.oid = con.connamespace "
+            "left join pg_catalog.pg_class c on c.oid = con.conrelid "
+            "where n.nspname = 'public' "
+            "order by coalesce(c.relname, '') collate \"C\", "
+            "con.conname collate \"C\", con.contype"
+        )
+    ).mappings()
+    for row in constraints:
+        objects.append(
+            _schema_object(
+                "constraint",
+                f"{row['table_name']}.{row['conname']}.{row['constraint_type']}",
+                dict(row),
+            )
+        )
+
+    functions = connection.execute(
+        text(
+            "select p.proname, pg_get_function_identity_arguments(p.oid) "
+            "as identity_arguments, p.prokind::text as function_kind, "
+            "format_type(p.prorettype, null) as result_type, "
+            "p.provolatile::text as volatility, p.proparallel::text as parallel, "
+            "p.prosecdef as security_definer, p.proleakproof as leakproof, "
+            "p.proisstrict as strict, p.proretset as returns_set, "
+            "coalesce(array_to_json(p.proconfig)::text, 'null') as settings, "
+            "pg_get_functiondef(p.oid) as definition "
+            "from pg_catalog.pg_proc p "
+            "join pg_catalog.pg_namespace n on n.oid = p.pronamespace "
+            "where n.nspname = 'public' and p.prokind in ('f', 'p') "
+            "order by p.proname collate \"C\", "
+            "pg_get_function_identity_arguments(p.oid) collate \"C\""
+        )
+    ).mappings()
+    for row in functions:
+        objects.append(
+            _schema_object(
+                "function",
+                f"{row['proname']}({row['identity_arguments']})",
+                dict(row),
+            )
+        )
+
+    triggers = connection.execute(
+        text(
+            "select c.relname as table_name, t.tgname, "
+            "t.tgenabled::text as enabled, pg_get_triggerdef(t.oid, true) "
+            "as definition "
+            "from pg_catalog.pg_trigger t "
+            "join pg_catalog.pg_class c on c.oid = t.tgrelid "
+            "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = 'public' and not t.tgisinternal "
+            "order by c.relname collate \"C\", t.tgname collate \"C\""
+        )
+    ).mappings()
+    for row in triggers:
+        objects.append(
+            _schema_object(
+                "trigger",
+                f"{row['table_name']}.{row['tgname']}",
+                dict(row),
+            )
+        )
+
+    indexes = connection.execute(
+        text(
+            "select tc.relname as table_name, ic.relname as index_name, "
+            "pg_get_indexdef(i.indexrelid, 0, true) as definition, "
+            "i.indisunique as unique_index, i.indisprimary as primary_index, "
+            "i.indisexclusion as exclusion_index, i.indisclustered as clustered, "
+            "i.indisvalid as valid, i.indisready as ready, "
+            "i.indisreplident as replica_identity "
+            "from pg_catalog.pg_index i "
+            "join pg_catalog.pg_class tc on tc.oid = i.indrelid "
+            "join pg_catalog.pg_namespace n on n.oid = tc.relnamespace "
+            "join pg_catalog.pg_class ic on ic.oid = i.indexrelid "
+            "where n.nspname = 'public' "
+            "order by tc.relname collate \"C\", ic.relname collate \"C\""
+        )
+    ).mappings()
+    for row in indexes:
+        objects.append(
+            _schema_object(
+                "index",
+                f"{row['table_name']}.{row['index_name']}",
+                dict(row),
+            )
+        )
+
+    canonical = tuple(sorted(objects, key=lambda item: (item.kind, item.identity)))
+    if len({(item.kind, item.identity) for item in canonical}) != len(canonical):
+        raise ProductProvingDatabaseError(
+            "public schema object identities are not unique"
+        )
+    return canonical
+
+
 def fingerprint_public_database(connection: Connection) -> DatabaseFingerprint:
     """Fingerprint every public base table and sequence in one read-only snapshot."""
 
@@ -277,6 +497,7 @@ def _fingerprint_public_database_snapshot(
 ) -> DatabaseFingerprint:
     """Read a snapshot after its caller has made the transaction read-only."""
 
+    schema_objects = _fingerprint_public_schema(connection)
     table_names = tuple(
         connection.scalars(
             text(
@@ -350,11 +571,13 @@ def _fingerprint_public_database_snapshot(
     canonical = {
         "tables": [item.as_dict() for item in tables],
         "sequences": [item.as_dict() for item in sequences],
+        "schema_objects": [item.as_dict() for item in schema_objects],
     }
     return DatabaseFingerprint(
         tables=tuple(tables),
         sequences=tuple(sequences),
         state_sha256=_json_sha256(canonical),
+        schema_objects=schema_objects,
     )
 
 
@@ -369,12 +592,44 @@ def fingerprint_database_url(database_url: str) -> DatabaseFingerprint:
         engine.dispose()
 
 
+def observe_database_connection_identity(
+    database_url: str,
+) -> DatabaseConnectionIdentity:
+    """Read the database, role, and PostgreSQL cluster actually reached by a URL."""
+
+    engine = create_engine(database_url, poolclass=NullPool, future=True)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "select current_database(), current_user, "
+                    "coalesce(inet_server_addr()::text, ''), "
+                    "coalesce(inet_server_port()::text, ''), "
+                    "system_identifier::text, current_setting('server_version') "
+                    "from pg_control_system()"
+                )
+            ).one()
+    finally:
+        engine.dispose()
+    return DatabaseConnectionIdentity(
+        database=str(row[0]),
+        username=str(row[1]),
+        server_address=str(row[2]),
+        server_port=str(row[3]),
+        system_identifier=str(row[4]),
+        postgres_version=str(row[5]),
+    )
+
+
 def capture_product_proving_database_baseline(
     config: ProductProvingDatabaseBaselineConfig,
     *,
     provision_database: DatabaseProvisioner | None = None,
     open_environment: _EnvironmentOpener = SealedRehearsalEnvironment.open,
     fingerprint_database: FingerprintReader = fingerprint_database_url,
+    observe_connection_identity: DatabaseConnectionIdentityReader = (
+        observe_database_connection_identity
+    ),
 ) -> ProductProvingDatabaseBaselineSummary:
     """Capture, independently restore-verify, and publish one immutable baseline."""
 
@@ -382,6 +637,7 @@ def capture_product_proving_database_baseline(
     admin_identity = _database_identity(config.postgres_admin_url)
     _require_local_identity(source_identity)
     _require_local_identity(admin_identity)
+    _require_configured_shared_development_identity(source_identity)
     if any(
         source_identity[key] != admin_identity[key]
         for key in ("host", "port", "username")
@@ -389,6 +645,13 @@ def capture_product_proving_database_baseline(
         raise ProductProvingDatabaseError(
             "PostgreSQL admin URL does not identify the exact baseline source server"
         )
+    source_connection_identity = observe_connection_identity(
+        config.source_database_url
+    )
+    _require_connection_identity_matches_url(
+        source_connection_identity,
+        source_identity,
+    )
     repo_root = Path(config.repo_root).resolve()
     compose_root = (
         Path(config.compose_root).resolve()
@@ -435,6 +698,13 @@ def capture_product_proving_database_baseline(
             raise ProductProvingDatabaseError(
                 "source database changed while its baseline was captured"
             )
+        if (
+            observe_connection_identity(config.source_database_url)
+            != source_connection_identity
+        ):
+            raise ProductProvingDatabaseError(
+                "source database server identity changed during baseline capture"
+            )
 
         baseline = {
             "schema_version": BASELINE_SCHEMA_VERSION,
@@ -443,6 +713,7 @@ def capture_product_proving_database_baseline(
                 "migration_head": config.expected_migration_head,
             },
             "source_database": source_identity,
+            "source_connection": source_connection_identity.as_dict(),
             "dump": {
                 "filename": DUMP_FILENAME,
                 "format": "postgresql-custom-data-only",
@@ -454,6 +725,7 @@ def capture_product_proving_database_baseline(
                 "restored_into_freshly_migrated_postgresql_16": True,
                 "migration_head": config.expected_migration_head,
                 "state_sha256": restored.state_sha256,
+                "schema_sha256": restored.schema_sha256,
                 "source_unchanged": True,
             },
         }
@@ -477,6 +749,7 @@ def capture_product_proving_database_baseline(
         manifest_sha256=manifest_sha256,
         dump_sha256=dump_sha256,
         state_sha256=source_before.state_sha256,
+        schema_sha256=source_before.schema_sha256,
         table_count=source_before.table_count,
         sequence_count=source_before.sequence_count,
         verification_database_name=verification_database_name,
@@ -552,20 +825,27 @@ def verify_product_proving_database_baseline(
         raise ProductProvingDatabaseError(
             "database dump identity does not match baseline.json"
         )
-    fingerprint = _parse_fingerprint(baseline.get("fingerprint"))
+    fingerprint = parse_database_fingerprint(baseline.get("fingerprint"))
     verification = baseline.get("verification")
     checkout = baseline.get("checkout")
+    source_database = baseline.get("source_database")
+    source_connection = parse_database_connection_identity(
+        baseline.get("source_connection")
+    )
     if (
         not isinstance(verification, dict)
         or not isinstance(checkout, dict)
+        or not isinstance(source_database, dict)
         or verification.get("restored_into_freshly_migrated_postgresql_16") is not True
         or verification.get("source_unchanged") is not True
         or verification.get("state_sha256") != fingerprint.state_sha256
+        or verification.get("schema_sha256") != fingerprint.schema_sha256
         or verification.get("migration_head") != checkout.get("migration_head")
     ):
         raise ProductProvingDatabaseError(
             "database baseline verification claim is invalid"
         )
+    _require_connection_identity_matches_url(source_connection, source_database)
     return VerifiedProductProvingDatabaseBaseline(
         bundle_dir=bundle_dir,
         manifest_sha256=expected_manifest_sha256,
@@ -581,6 +861,9 @@ def restore_shared_development_database(
     provision_database: DatabaseProvisioner | None = None,
     open_environment: _EnvironmentOpener = SealedRehearsalEnvironment.open,
     fingerprint_database: FingerprintReader = fingerprint_database_url,
+    observe_connection_identity: DatabaseConnectionIdentityReader = (
+        observe_database_connection_identity
+    ),
     stage_database: DatabaseReplacementStager | None = None,
     validate_staged_database: StagedDatabaseValidator | None = None,
     finalize_database: DatabaseReplacementFinalizer | None = None,
@@ -592,9 +875,12 @@ def restore_shared_development_database(
         raise ProductProvingDatabaseError(
             "shared development restore requires explicit opt-in"
         )
+    operation_id = str(uuid4())
+    started_at = datetime.now(timezone.utc).isoformat()
     _require_shared_development_source_name(config.expected_source_database_name)
     source_identity = _database_identity(config.source_database_url)
     _require_local_identity(source_identity)
+    _require_configured_shared_development_identity(source_identity)
     if source_identity["database"] != config.expected_source_database_name:
         raise ProductProvingDatabaseError(
             "source database URL does not match the exact caller-provided database name"
@@ -624,6 +910,16 @@ def restore_shared_development_database(
     if verified.baseline.get("source_database") != source_identity:
         raise ProductProvingDatabaseError(
             "database baseline does not identify the exact shared development source"
+        )
+    baseline_connection_identity = parse_database_connection_identity(
+        verified.baseline.get("source_connection")
+    )
+    source_connection_before = observe_connection_identity(
+        config.source_database_url
+    )
+    if source_connection_before != baseline_connection_identity:
+        raise ProductProvingDatabaseError(
+            "shared development database server identity changed from the baseline"
         )
 
     repo_root = Path(config.repo_root).resolve()
@@ -716,6 +1012,14 @@ def restore_shared_development_database(
         raise ProductProvingDatabaseError(
             "shared development database failed its final baseline fingerprint"
         )
+    source_connection_after = observe_connection_identity(
+        config.source_database_url
+    )
+    if source_connection_after != baseline_connection_identity:
+        raise ProductProvingDatabaseError(
+            "restored database server identity changed from the baseline"
+        )
+    completed_at = datetime.now(timezone.utc).isoformat()
     return SharedDevelopmentRestoreSummary(
         source_database_name=config.expected_source_database_name,
         previous_state_sha256=source_before.state_sha256,
@@ -724,6 +1028,11 @@ def restore_shared_development_database(
         dump_sha256=verified.dump_sha256,
         verification_database_name=verification_database_name,
         backup_database_name=replacement.backup_database_name,
+        operation_id=operation_id,
+        started_at=started_at,
+        completed_at=completed_at,
+        previous_database_oid=replacement.previous_database_oid,
+        restored_database_oid=replacement.restored_database_oid,
     )
 
 
@@ -895,6 +1204,8 @@ def finalize_staged_local_database_replacement(
         replacement_database_name=request.replacement_database_name,
         backup_database_name=staged.backup_database_name,
         restored_fingerprint=request.expected_replacement_fingerprint,
+        previous_database_oid=staged.source_database_oid,
+        restored_database_oid=staged.replacement_database_oid,
     )
 
 
@@ -1227,12 +1538,18 @@ def _publish_baseline(
         ) from exc
 
 
-def _parse_fingerprint(raw: object) -> DatabaseFingerprint:
+def parse_database_fingerprint(raw: object) -> DatabaseFingerprint:
+    """Strictly reconstruct a complete canonical database fingerprint."""
     if not isinstance(raw, dict):
         raise ProductProvingDatabaseError("database fingerprint is invalid")
     raw_tables = raw.get("tables")
     raw_sequences = raw.get("sequences")
-    if not isinstance(raw_tables, list) or not isinstance(raw_sequences, list):
+    raw_schema_objects = raw.get("schema_objects")
+    if (
+        not isinstance(raw_tables, list)
+        or not isinstance(raw_sequences, list)
+        or not isinstance(raw_schema_objects, list)
+    ):
         raise ProductProvingDatabaseError("database fingerprint members are invalid")
     try:
         tables = tuple(
@@ -1260,9 +1577,22 @@ def _parse_fingerprint(raw: object) -> DatabaseFingerprint:
             for item in raw_sequences
             if isinstance(item, dict)
         )
+        schema_objects = tuple(
+            SchemaObjectFingerprint(
+                kind=str(item["kind"]),
+                identity=str(item["identity"]),
+                definition_sha256=str(item["definition_sha256"]),
+            )
+            for item in raw_schema_objects
+            if isinstance(item, dict)
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProductProvingDatabaseError("database fingerprint is invalid") from exc
-    if len(tables) != len(raw_tables) or len(sequences) != len(raw_sequences):
+    if (
+        len(tables) != len(raw_tables)
+        or len(sequences) != len(raw_sequences)
+        or len(schema_objects) != len(raw_schema_objects)
+    ):
         raise ProductProvingDatabaseError("database fingerprint entries are invalid")
     if [item.name for item in tables] != sorted({item.name for item in tables}):
         raise ProductProvingDatabaseError(
@@ -1272,12 +1602,25 @@ def _parse_fingerprint(raw: object) -> DatabaseFingerprint:
         raise ProductProvingDatabaseError(
             "database sequence fingerprints are not canonical"
         )
+    schema_identities = [(item.kind, item.identity) for item in schema_objects]
+    if schema_identities != sorted(set(schema_identities)):
+        raise ProductProvingDatabaseError(
+            "database schema fingerprints are not canonical"
+        )
     if (
         raw.get("table_count") != len(tables)
         or raw.get("sequence_count") != len(sequences)
+        or raw.get("schema_object_count") != len(schema_objects)
         or any(
             item.row_count < 0 or not _SHA256.fullmatch(item.rows_sha256)
             for item in tables
+        )
+        or any(
+            item.kind
+            not in {"column", "constraint", "function", "trigger", "index"}
+            or not item.identity
+            or not _SHA256.fullmatch(item.definition_sha256)
+            for item in schema_objects
         )
     ):
         raise ProductProvingDatabaseError(
@@ -1286,14 +1629,21 @@ def _parse_fingerprint(raw: object) -> DatabaseFingerprint:
     canonical = {
         "tables": [item.as_dict() for item in tables],
         "sequences": [item.as_dict() for item in sequences],
+        "schema_objects": [item.as_dict() for item in schema_objects],
     }
     state_sha256 = str(raw.get("state_sha256"))
     if not _SHA256.fullmatch(state_sha256) or state_sha256 != _json_sha256(canonical):
         raise ProductProvingDatabaseError("database state fingerprint is invalid")
+    expected_schema_sha256 = _json_sha256(
+        {"schema_objects": [item.as_dict() for item in schema_objects]}
+    )
+    if raw.get("schema_sha256") != expected_schema_sha256:
+        raise ProductProvingDatabaseError("database schema fingerprint is invalid")
     return DatabaseFingerprint(
         tables=tables,
         sequences=sequences,
         state_sha256=state_sha256,
+        schema_objects=schema_objects,
     )
 
 
@@ -1375,6 +1725,71 @@ def _database_identity(database_url: str) -> dict[str, Any]:
     }
 
 
+def parse_database_connection_identity(raw: object) -> DatabaseConnectionIdentity:
+    """Strictly reconstruct one server-observed database identity."""
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "database",
+        "username",
+        "server_address",
+        "server_port",
+        "system_identifier",
+        "postgres_version",
+    }:
+        raise ProductProvingDatabaseError(
+            "database connection identity is invalid"
+        )
+    identity = DatabaseConnectionIdentity(
+        database=str(raw["database"]),
+        username=str(raw["username"]),
+        server_address=str(raw["server_address"]),
+        server_port=str(raw["server_port"]),
+        system_identifier=str(raw["system_identifier"]),
+        postgres_version=str(raw["postgres_version"]),
+    )
+    if (
+        not identity.database
+        or not identity.username
+        or not identity.system_identifier.isdigit()
+        or not identity.postgres_version
+    ):
+        raise ProductProvingDatabaseError(
+            "database connection identity is incomplete"
+        )
+    require_postgres_16(
+        identity.postgres_version,
+        error_cls=ProductProvingDatabaseError,
+    )
+    return identity
+
+
+def _require_connection_identity_matches_url(
+    observed: DatabaseConnectionIdentity,
+    url_identity: Mapping[str, Any],
+) -> None:
+    if (
+        observed.database != url_identity.get("database")
+        or observed.username != url_identity.get("username")
+    ):
+        raise ProductProvingDatabaseError(
+            "database URL does not reach its named database and role"
+        )
+    parse_database_connection_identity(observed.as_dict())
+
+
+def _require_configured_shared_development_identity(
+    identity: Mapping[str, Any],
+) -> None:
+    from corridor.config import settings
+
+    configured = _database_identity(settings.database_url)
+    _require_local_identity(configured)
+    _require_shared_development_source_name(str(configured["database"]))
+    if dict(identity) != configured:
+        raise ProductProvingDatabaseError(
+            "Product Proving source is not the configured shared development database"
+        )
+
+
 def _require_local_identity(identity: Mapping[str, Any]) -> None:
     require_local_postgres_host(
         identity.get("host"),
@@ -1423,6 +1838,8 @@ def _require_shared_development_source_name(value: str) -> None:
     if (
         not _SHARED_DEVELOPMENT_DATABASE_NAME.fullmatch(value)
         or value in _POSTGRES_MAINTENANCE_DATABASES
+        or value.startswith(DISPOSABLE_DATABASE_PREFIX)
+        or value.startswith(BACKUP_DATABASE_PREFIX)
     ):
         raise ProductProvingDatabaseError(
             "shared development source database name is not an allowed exact target"
