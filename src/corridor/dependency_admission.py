@@ -55,6 +55,7 @@ from corridor.adjudicate import (
 )
 from corridor.models import (
     ActiveExtractionRun,
+    Assertion,
     AuditLog,
     Candidate,
     Dependency,
@@ -62,6 +63,7 @@ from corridor.models import (
     ExtractionRun,
     PolicyRun,
     Document,
+    EvidenceLink,
     Project,
     is_placeholder_party,
 )
@@ -735,6 +737,9 @@ def _same_document_replay_index(
         if dependency.id in associated_dependency_ids
         and dependency.dismissed_at is None
     }
+    legacy_project_record_support = _legacy_project_record_support_index(
+        session, project_dependencies
+    )
     eligible: dict[int, _SameDocumentReplay] = {}
     unsafe: dict[int, dict] = {}
     for candidate in active_candidates:
@@ -784,19 +789,45 @@ def _same_document_replay_index(
                 and predecessor.extraction_run_id != candidate.extraction_run_id
                 for predecessor in matching
             )
-            and all(
-                predecessor_snapshot_is_exact.get(predecessor.id) is True
-                for predecessor in matching
-            )
         )
         for predecessor in matching:
             dependency_ids = sorted(associations[predecessor.id])
+            snapshot_matches = (
+                predecessor_snapshot_is_exact.get(predecessor.id) is True
+            )
+            legacy_project_record_proof = None
+            if (
+                len(dependency_ids) == 1
+                and len(association_sources[predecessor.id]) == 1
+            ):
+                legacy_project_record_proof = _legacy_project_record_proof(
+                    predecessor=predecessor,
+                    dependency_id=dependency_ids[0],
+                    facts=facts,
+                    runs=runs,
+                    association_source=association_sources[predecessor.id][0],
+                    support=legacy_project_record_support,
+                )
+            legacy_project_record_matches = legacy_project_record_proof is not None
             predecessor_receipts.append(
                 {
                     "candidate_id": predecessor.id,
                     "extraction_run_id": predecessor.extraction_run_id,
-                    "run_snapshot_matches_candidate": (
-                        predecessor_snapshot_is_exact.get(predecessor.id) is True
+                    "run_snapshot_matches_candidate": snapshot_matches,
+                    "legacy_project_record_matches_claim": (
+                        legacy_project_record_matches
+                    ),
+                    "legacy_project_record_proof": deepcopy(
+                        legacy_project_record_proof
+                    ),
+                    "proof_basis": (
+                        "immutable_run_snapshot"
+                        if snapshot_matches
+                        else (
+                            "legacy_project_record"
+                            if legacy_project_record_matches
+                            else "unproven"
+                        )
                     ),
                     "claim_facts_match": (
                         predecessor_facts[predecessor.id] == facts
@@ -810,6 +841,7 @@ def _same_document_replay_index(
             if (
                 len(dependency_ids) != 1
                 or len(association_sources[predecessor.id]) != 1
+                or not (snapshot_matches or legacy_project_record_matches)
             ):
                 association_is_exact = False
                 continue
@@ -840,6 +872,15 @@ def _same_document_replay_index(
             "supported_fields": deepcopy(facts["supported_fields"]),
             "citations": deepcopy(facts["citations"]),
             "source_quality": deepcopy(facts["source_quality"]),
+            # Replay disposes only the duplicate Candidate. It never applies an
+            # old field to a Dependency, so later human corrections remain the
+            # current Project Record conclusion.
+            "replay_effect": {
+                "candidate_disposition_only": True,
+                "dependency_projection_changed": False,
+                "assertion_written": False,
+                "evidence_link_written": False,
+            },
         }
         if not association_is_exact or len(target_ids) != 1:
             unsafe[candidate.id] = {
@@ -921,6 +962,13 @@ def _replay_receipt_matches_candidate(
         and receipt.get("supported_fields") == facts["supported_fields"]
         and receipt.get("citations") == facts["citations"]
         and receipt.get("source_quality") == facts["source_quality"]
+        and receipt.get("replay_effect")
+        == {
+            "candidate_disposition_only": True,
+            "dependency_projection_changed": False,
+            "assertion_written": False,
+            "evidence_link_written": False,
+        }
     )
 
 
@@ -1054,6 +1102,160 @@ def _candidate_matches_run_snapshot(
         source_document_id=snapshot.get("source_document_id"),
         citations_verified=snapshot.get("citations_verified"),
     )
+
+
+def _legacy_project_record_support_index(
+    session: Session, dependencies: list[Dependency]
+) -> dict:
+    """Index exact admitted facts retained before run snapshots existed."""
+
+    dependency_ids = [dependency.id for dependency in dependencies]
+    if not dependency_ids:
+        return {}
+    support: dict = {}
+    for evidence, assertion in session.execute(
+        select(EvidenceLink, Assertion)
+        .join(Assertion, Assertion.evidence_link_id == EvidenceLink.id)
+        .where(
+            EvidenceLink.dependency_id.in_(dependency_ids),
+            Assertion.dependency_id == EvidenceLink.dependency_id,
+        )
+        .order_by(EvidenceLink.id, Assertion.id)
+    ):
+        assert evidence.dependency_id is not None
+        citation = (
+            evidence.document_id,
+            evidence.page_no,
+            evidence.quote,
+            evidence.verified,
+        )
+        retained = (
+            support.setdefault(evidence.dependency_id, {})
+            .setdefault(citation, {})
+            .setdefault(
+                evidence.id,
+                {
+                    "evidence_link_id": evidence.id,
+                    "document_id": evidence.document_id,
+                    "page": evidence.page_no,
+                    "quote": evidence.quote,
+                    "verified": evidence.verified,
+                    "assertions": [],
+                },
+            )
+        )
+        retained["assertions"].append(
+            {
+                "assertion_id": assertion.id,
+                "field_name": assertion.field_name,
+                "asserted_value": assertion.asserted_value,
+                "evidence_link_id": evidence.id,
+            }
+        )
+    return support
+
+
+def _legacy_project_record_proof(
+    *,
+    predecessor: Candidate,
+    dependency_id: int,
+    facts: dict,
+    runs: dict[int, ExtractionRun],
+    association_source: dict,
+    support: dict,
+) -> dict | None:
+    """Prove an unsnapshotted predecessor claim from its Project Record.
+
+    Historical runs cannot satisfy a receipt field introduced later.  Their
+    original attributable Admission, exact verified Evidence, and Assertions
+    remain authoritative. Extractor-only annotations were not retained and are
+    named honestly in the receipt rather than manufactured. This fallback accepts
+    only that pre-migration shape; a present-but-disagreeing snapshot never falls
+    through to it.
+    """
+
+    run = runs.get(predecessor.extraction_run_id)
+    if (
+        run is None
+        or run.document_id != predecessor.source_document_id
+        or run.outcome != "completed"
+        or run.page_errors != 0
+        or run.candidate_inputs_json is not None
+        or _extraction_configuration(predecessor, runs).get("lineage_status")
+        != "historical_unsealed"
+        or association_source.get("kind") != "admission"
+    ):
+        return None
+    retained = support.get(dependency_id, {})
+    evidence_receipts: list[dict] = []
+    assertions_by_fact: dict[tuple[str, str | None], list[dict]] = {}
+    for citation in facts["citations"]:
+        exact_evidence = retained.get(
+            (
+                citation["document_id"],
+                citation["page"],
+                citation["quote"],
+                citation["verified"],
+            )
+        )
+        if not exact_evidence:
+            return None
+        for evidence_id in sorted(exact_evidence):
+            evidence = exact_evidence[evidence_id]
+            evidence_receipts.append(
+                {
+                    key: deepcopy(evidence[key])
+                    for key in (
+                        "evidence_link_id",
+                        "document_id",
+                        "page",
+                        "quote",
+                        "verified",
+                    )
+                }
+            )
+            for assertion in evidence["assertions"]:
+                assertions_by_fact.setdefault(
+                    (assertion["field_name"], assertion["asserted_value"]), []
+                ).append(assertion)
+    required = [
+        (field_name, value)
+        for field_name, value in facts["supported_fields"].items()
+        if value is not None
+    ]
+    if any(fact not in assertions_by_fact for fact in required):
+        return None
+    assertion_receipts = [
+        deepcopy(assertion)
+        for fact in sorted(required)
+        for assertion in sorted(
+            assertions_by_fact[fact], key=lambda item: item["assertion_id"]
+        )
+    ]
+    return {
+        "proof_version": "legacy-project-record-replay-v1",
+        "dependency_id": dependency_id,
+        "admission_audit_log_id": association_source.get("audit_log_id"),
+        "admission_action": association_source.get("action"),
+        "evidence_links": evidence_receipts,
+        "assertions": assertion_receipts,
+        # These extractor annotations were not retained in the historical
+        # Project Record. The receipt carries the fresh sealed values but does
+        # not falsely claim a historical comparison for them.
+        "historically_unretained_extractor_metadata": {
+            "citation_whole_row": [
+                citation["whole_row"] for citation in facts["citations"]
+            ],
+            "source_quality": deepcopy(facts["source_quality"]),
+        },
+        "claim_surface_proved": [
+            "supported_fields",
+            "citation_document",
+            "citation_page",
+            "citation_quote",
+            "citation_verified",
+        ],
+    }
 
 
 def _extraction_configuration(

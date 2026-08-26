@@ -14,7 +14,7 @@ import hashlib
 from copy import deepcopy
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
@@ -33,6 +33,7 @@ from corridor.models import (
     Dependency,
     DependencyAdmissionOutcome,
     EvidenceLink,
+    ExtractionRun,
     PolicyRun,
     DocPage,
     Document,
@@ -1169,6 +1170,82 @@ def test_exact_reextraction_replay_is_idempotent_and_changes_no_ledger_rows(
     assert lineage is not None and lineage.candidate.id == predecessor.id
 
 
+def test_exact_reextraction_can_use_legacy_project_record_when_run_snapshot_is_absent(
+    session, project
+):
+    """A historical unsealed run is proved by its admitted facts and Evidence.
+
+    Legacy Extraction Runs predate immutable Candidate snapshots.  Requiring a
+    snapshot they could never contain would turn every exact extractor upgrade
+    into hundreds of fake human decisions even though the Project Record still
+    retains the exact asserted fields and verified citation.
+    """
+
+    document = _document(session, project, filename="legacy-unsnapshotted.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    legacy_run = _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    assert run_dependency_admission(session, project.id).admitted_count == 1
+    # New rows cannot be created in this legacy shape.  Temporarily bypass the
+    # immutability trigger only to reproduce a pre-migration row inside this
+    # rollback-scoped test transaction.
+    session.execute(
+        text(
+            "alter table extraction_runs disable trigger "
+            "extraction_run_receipts_are_immutable"
+        )
+    )
+    session.execute(
+        update(ExtractionRun)
+        .where(ExtractionRun.id == legacy_run.id)
+        .values(candidate_inputs_json=None)
+    )
+    session.execute(
+        text(
+            "alter table extraction_runs enable trigger "
+            "extraction_run_receipts_are_immutable"
+        )
+    )
+    session.expire(legacy_run)
+    successor = _reextracted_candidate(document, predecessor)
+    fresh_run = _run(
+        session,
+        document,
+        [successor],
+        prompt_version="matrix_tiered_v3",
+        schema_version="matrix_candidate_shape_v3",
+    )
+    _declare_run(session, document, fresh_run)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == result.abstained_count == 0
+    assert successor.state == "merged"
+    assert successor.merged_into is not None
+    entry = session.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "replay_dependency_candidate",
+            AuditLog.after_json["candidate_id"].astext == str(successor.id),
+        )
+    )
+    assert entry is not None
+    [proof] = entry.after_json["same_document_reextraction"][
+        "predecessor_candidates"
+    ]
+    assert proof["run_snapshot_matches_candidate"] is False
+    assert proof["legacy_project_record_matches_claim"] is True
+    project_record_proof = proof["legacy_project_record_proof"]
+    assert project_record_proof["proof_version"] == "legacy-project-record-replay-v1"
+    assert project_record_proof["evidence_links"]
+    assert project_record_proof["assertions"]
+    unretained = project_record_proof["historically_unretained_extractor_metadata"]
+    assert unretained["citation_whole_row"] == [True]
+    assert unretained["source_quality"]["text_source"] == {
+        "present": True,
+        "value": "text_layer",
+    }
+
+
 def test_replay_receipt_can_prove_a_later_exact_reextraction(session, project):
     document = _document(session, project, filename="third-extraction.pdf")
     predecessor = _candidate(document, _fields("PL1"))
@@ -1315,6 +1392,7 @@ def test_projected_identity_change_does_not_turn_exact_replay_into_duplicate(
     assert result.admitted_count == result.abstained_count == 0
     assert successor.state == "merged"
     assert successor.merged_into == dependency.id
+    assert dependency.source_ref == "CORRECTED-PL1"
     assert session.scalar(
         select(func.count()).select_from(Dependency).where(
             Dependency.project_id == project.id

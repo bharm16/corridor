@@ -37,6 +37,15 @@ failure and stops the run before Admission. Baseline equality proves repeatabili
 not correctness; Evidence validation, deterministic Admission, and
 simulated-practitioner decisions remain separate checks.
 
+Some historical Matrix runs predate immutable Candidate snapshots. An exact
+same-Document replay may use the original attributable Admission plus the current
+Dependency's exact verified Evidence and Assertions as its legacy proof. That
+receipt names every supporting EvidenceLink and Assertion, explicitly identifies
+extractor-only metadata that was not historically retained, and changes only the
+duplicate Candidate disposition. It never reapplies an old field or overrides a
+later human correction. A present but disagreeing snapshot, sealed partial lineage,
+missing support, ambiguous association, or dismissed target still abstains.
+
 Every residual Candidate produced by the exact packet is inspected. There is no
 arbitrary Work Item count limit. The simulated practitioner records a supported
 decision, marks the Candidate Not Relevant when appropriate, or leaves it explicitly

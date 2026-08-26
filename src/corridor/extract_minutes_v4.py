@@ -419,6 +419,11 @@ def _supported_token(value: object, quote: str) -> str | None:
     return match.group(0) if match else None
 
 
+# Public adapter for orchestrators that need the exact deployed Minutes v4
+# Candidate conversion without importing this module's private implementation.
+to_candidate = _to_candidate
+
+
 def main(argv: list[str]) -> int:
     from corridor.extract_batch import Noun, run_extraction
 
@@ -430,7 +435,7 @@ def main(argv: list[str]) -> int:
         system=PROMPT_PATH.read_text(),
         schema=SCHEMA,
         min_page_chars=MIN_PAGE_CHARS,
-        to_candidate=_to_candidate,
+        to_candidate=to_candidate,
         items_key="events",
         noun=Noun("notes", "External Party Statements"),
         extractor_registry_key="minutes",
