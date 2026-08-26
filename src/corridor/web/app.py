@@ -305,7 +305,7 @@ def _decision_location(
     event_cohort_receipt_id: int | None = None,
     coordinate_dependency_id: int | None = None,
 ) -> str:
-    """Where a decision lands next: the same lane it was made in.
+    """Where a decision lands next: cohort lane or ordinary Work List.
 
     In the rehearsal lane an accept flows into the coordination strip for
     the record it just admitted — one pass, not two."""
@@ -322,7 +322,9 @@ def _decision_location(
         if coordinate_dependency_id is not None:
             url += f"&coordinate={coordinate_dependency_id}"
         return url
-    return _queue_location(slug, historical_document_id)
+    if historical_document_id is not None:
+        return _queue_location(slug, historical_document_id)
+    return f"/work/{slug}"
 
 
 def _cohort_summary_location(lane_url: str) -> str:
