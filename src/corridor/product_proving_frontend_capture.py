@@ -2794,7 +2794,7 @@ def _require_practitioner_work_precedes_report(
         ).all()
     )
     if {item.id for item in decisions} != decision_ids or any(
-        item.created_at > report_run.ts for item in decisions
+        item.recorded_at > report_run.ts for item in decisions
     ):
         raise ValueError("Work Decision change occurred after the final Report")
     if not (report_run.ts <= artifact.rendered_at <= release.released_at):

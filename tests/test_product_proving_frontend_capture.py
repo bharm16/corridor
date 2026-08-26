@@ -24,6 +24,7 @@ from corridor.extraction_runs import (
 )
 from corridor.extractor_lineage import injected_extractor_config, zero_token_usage
 from corridor.models import (
+    AuditLog,
     Candidate,
     Dependency,
     Document,
@@ -32,6 +33,7 @@ from corridor.models import (
     ExternalReportRelease,
     Project,
     ReportRun,
+    WorkDecision,
 )
 from corridor.principals import HumanPrincipal
 from corridor.product_proving_execution import (
@@ -181,6 +183,141 @@ def test_invalid_action_observation_requires_a_server_observed_refusal(session):
     )
     with pytest.raises(ValueError, match="same Project"):
         observe_refused_invalid_action(session, before=before, after=other_project)
+
+
+def test_report_chronology_uses_work_decision_recorded_at(session):
+    from corridor.product_proving_frontend_capture import (
+        _require_practitioner_work_precedes_report,
+    )
+
+    project = Project(slug="chronology-recorded-at", name="Chronology Recorded At")
+    session.add(project)
+    session.flush([project])
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-CHRONOLOGY-1",
+        dep_type="utility_relocation",
+        title="Chronology dependency",
+    )
+    session.add(dependency)
+    session.flush([dependency])
+
+    start = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+    decision = WorkDecision(
+        dependency_id=dependency.id,
+        commitment_lineage_id=None,
+        decision_type="assign_internal_owner",
+        field="internal_owner",
+        before_value=None,
+        after_value="Test Lead",
+        recorded_by="local:simulated-practitioner",
+        recorded_at=start,
+        predecessor_decision_id=None,
+    )
+    prerequisite = AuditLog(
+        actor="local:simulated-practitioner",
+        human_principal="local:simulated-practitioner",
+        action="chronology_prerequisite",
+        entity_type="dependency",
+        entity_id=dependency.id,
+        ts=start,
+    )
+    session.add_all((decision, prerequisite))
+    session.flush()
+
+    report_run = ReportRun(
+        project_id=project.id,
+        ts=start.replace(minute=1),
+        ruleset_version="v-test",
+        snapshot_json={},
+        document_only=False,
+    )
+    session.add(report_run)
+    session.flush([report_run])
+    pdf_bytes = b"%PDF-1.7\nchronology\n%%EOF"
+    digest = sha256(pdf_bytes).hexdigest()
+    artifact = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="chronology.pdf",
+        format="pdf",
+        pdf_bytes=pdf_bytes,
+        pdf_sha256=digest,
+        rendered_at=start.replace(minute=2),
+        evaluated_on=start.date(),
+        ruleset_version="v-test",
+        evaluation_context_json={},
+        provenance_mode="all-supported-sources",
+        record_context_json={},
+    )
+    session.add(artifact)
+    session.flush([artifact])
+
+    route_rows = []
+    for minute, route_name in enumerate(
+        ("render_report", "review_report", "preview_prepared_report"), start=3
+    ):
+        row = AuditLog(
+            actor="local:simulated-practitioner",
+            human_principal="local:simulated-practitioner",
+            action=audit.PRODUCT_PROVING_FRONTEND_REQUEST,
+            entity_type="project",
+            entity_id=project.id,
+            ts=start.replace(minute=minute),
+        )
+        session.add(row)
+        route_rows.append((route_name, row))
+    session.flush()
+    release = ExternalReportRelease(
+        project_id=project.id,
+        artifact_id=artifact.id,
+        artifact_name=artifact.artifact_name,
+        format="pdf",
+        pdf_bytes=pdf_bytes,
+        pdf_sha256=digest,
+        released_at=start.replace(minute=6),
+        evaluated_on=artifact.evaluated_on,
+        ruleset_version=artifact.ruleset_version,
+        evaluation_context_json={},
+        provenance_mode=artifact.provenance_mode,
+        record_context_json={},
+        released_by="local:simulated-practitioner",
+        released_by_display="Simulated practitioner",
+    )
+    release_request = AuditLog(
+        actor="local:simulated-practitioner",
+        human_principal="local:simulated-practitioner",
+        action=audit.PRODUCT_PROVING_FRONTEND_REQUEST,
+        entity_type="project",
+        entity_id=project.id,
+        ts=start.replace(minute=7),
+    )
+    session.add_all((release, release_request))
+    session.flush()
+    route_rows.append(("release_prepared_report", release_request))
+
+    _require_practitioner_work_precedes_report(
+        session,
+        residuals=(),
+        decision_changes=(
+            SimpleNamespace(
+                audit_log_id=prerequisite.id,
+                successor_decision_id=decision.id,
+            ),
+        ),
+        correction=SimpleNamespace(audit_log_id=None),
+        invalid_action=SimpleNamespace(
+            frontend_request_audit_id=prerequisite.id
+        ),
+        frontend_requests=tuple(
+            SimpleNamespace(route_name=route_name, audit_log_id=row.id)
+            for route_name, row in route_rows
+        ),
+        report_release=SimpleNamespace(
+            report_run_id=report_run.id,
+            artifact_id=artifact.id,
+            release_id=release.id,
+        ),
+    )
 
 
 def test_capture_refuses_durable_rows_without_server_observed_frontend(session):
