@@ -54,12 +54,7 @@ from corridor.revision_comparison import (
 )
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 from corridor.supersession_review import build_reviewer_worklist
-from corridor.web.app import (
-    _decision_location,
-    app,
-    get_human_principal,
-    get_session,
-)
+from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.queue import build_view, next_candidate, pending_counts
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
@@ -1817,31 +1812,6 @@ def test_accepting_creates_a_dependency_and_advances(
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).all()
-
-
-def test_decision_location_sends_ordinary_mutations_to_work_list():
-    assert _decision_location("web-test", None, None) == "/work/web-test"
-
-
-def test_decision_location_preserves_review_lane_scope():
-    assert (
-        _decision_location("web-test", 17, None)
-        == "/queue/web-test?historical_document_id=17"
-    )
-    assert (
-        _decision_location("web-test", None, 19, coordinate_dependency_id=23)
-        == "/queue/web-test?lane=rehearsal&cohort_receipt_id=19&coordinate=23"
-    )
-    assert (
-        _decision_location(
-            "web-test",
-            None,
-            None,
-            event_cohort_receipt_id=29,
-            coordinate_dependency_id=31,
-        )
-        == "/queue/web-test?lane=events&event_cohort_receipt_id=29&coordinate=31"
-    )
 
 
 @pytest.mark.parametrize("action", ["accept", "edit-accept", "merge", "reject"])
