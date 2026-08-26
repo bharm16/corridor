@@ -50,7 +50,7 @@ def extract_product_proving_document(
 ) -> int:
     """Run and return one current sealed Extraction Run for ``document``.
 
-    Only Matrix v3 and Minutes v4 Documents are in the proving contract.  The
+    Only Matrix v3 and Minutes v5 Documents are in the proving contract.  The
     operation refuses a missing, widened, failed, legacy-unsealed, or
     configuration-stale attempt.  It does not commit and it does not change an
     Active Run.
@@ -181,14 +181,15 @@ def _extract_minutes_document(
     document: Document,
     client: object,
 ) -> None:
-    """Run Minutes v4 with its private Candidate adapter and exact seal."""
+    """Run Minutes v5 with deterministic Action Items and its exact seal."""
 
     from corridor.extract_batch import extract_documents
-    from corridor.extract_minutes_v4 import (
+    from corridor.extract_minutes_v5 import (
         MIN_PAGE_CHARS,
         PROMPT_PATH,
         PROMPT_VERSION,
         SCHEMA,
+        extract_page_candidates,
         to_candidate,
     )
 
@@ -201,6 +202,7 @@ def _extract_minutes_document(
         schema=SCHEMA,
         min_page_chars=MIN_PAGE_CHARS,
         to_candidate=to_candidate,
+        page_candidates=extract_page_candidates,
         items_key="events",
         prompt_version=PROMPT_VERSION,
         extractor_config=config,

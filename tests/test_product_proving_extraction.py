@@ -162,7 +162,7 @@ def test_it_derives_one_new_current_sealed_run_for_the_exact_document(
     assert client.closed is False
 
 
-def test_minutes_path_uses_v4_private_wiring_without_committing_or_closing(
+def test_minutes_path_uses_v5_page_wiring_without_committing_or_closing(
     session, project, monkeypatch
 ):
     document = _document(session, project, name="meeting-minutes.pdf")
@@ -185,8 +185,8 @@ def test_minutes_path_uses_v4_private_wiring_without_committing_or_closing(
     run_id = extract_product_proving_document(session, document, client=client)
 
     run = session.get(ExtractionRun, run_id)
-    assert run.prompt_version == "minutes_v4"
-    assert run.schema_version == "minutes_v4"
+    assert run.prompt_version == "minutes_v5"
+    assert run.schema_version == "minutes_v5"
     assert run.extractor_config_json["extractor"] == "minutes"
     assert run.candidate_count == 0
     assert len(client.calls) == 1

@@ -17,7 +17,7 @@ thread-safe, so every `session.add` happens back on the calling thread.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -88,6 +88,10 @@ def extract_documents(
     schema: dict,
     min_page_chars: int,
     to_candidate: Callable[[Document, DocPage, dict, str | None], Candidate | None],
+    page_candidates: Callable[
+        [Document, DocPage, list[dict], str | None], Iterable[Candidate]
+    ]
+    | None = None,
     items_key: str,
     max_workers: int | None = None,
     on_document: Callable[[Document, list[Candidate], int], None] | None = None,
@@ -149,7 +153,13 @@ def extract_documents(
                 # This document will retry as a whole; keep counting siblings.
                 errors[doc.id] += 1
                 continue
-            for item in completion.value.get(items_key) or []:
+            items = list(completion.value.get(items_key) or [])
+            if page_candidates is not None:
+                per_document[doc.id].extend(
+                    page_candidates(doc, page, items, model)
+                )
+                continue
+            for item in items:
                 candidate = to_candidate(doc, page, item, model)
                 if candidate is not None:
                     per_document[doc.id].append(candidate)
@@ -223,6 +233,7 @@ def run_extraction(
     schema: dict,
     min_page_chars: int,
     to_candidate: Callable,
+    page_candidates: Callable | None = None,
     items_key: str,
     noun: Noun,
     extractor_config: ExtractorConfig | None = None,
@@ -352,6 +363,7 @@ def run_extraction(
                 schema=schema,
                 min_page_chars=min_page_chars,
                 to_candidate=to_candidate,
+                page_candidates=page_candidates,
                 items_key=items_key,
                 on_document=report,
                 prompt_version=prompt_version,

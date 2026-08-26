@@ -19,7 +19,7 @@ registration, ingestion, fresh extraction, Active Run declaration, and Admission
 the simulated practitioner then enters through the Work List and performs ordinary
 project work only through the frontend.
 
-The first packet uses one SH99 Utility Conflict Matrix, the two `minutes_v4`
+The first packet uses one SH99 Utility Conflict Matrix, the two `minutes_v5`
 Equistar Meeting Minutes Documents, and the SH99 Milestone input. Meeting Minutes
 are one Stream source, not the center or starting point of the product. The proving
 path continues through the Project Record, Dependency Ledger, Milestone
@@ -36,6 +36,16 @@ timing, or citation that appears, disappears, or changes meaning is a repeatabil
 failure and stops the run before Admission. Baseline equality proves repeatability,
 not correctness; Evidence validation, deterministic Admission, and
 simulated-practitioner decisions remain separate checks.
+
+For numbered Meeting Minutes Action Items, repeatability includes Candidate
+membership. Corridor enumerates those rows from the exact registered page text and
+deterministically recognizes only attributable External Party commitments with
+exact timing, committed date changes with two exact timings, and explicit
+completion wording. That deterministic set replaces model output drawn from the
+same Action Items; model omission, duplication, or reclassification cannot change
+it. Unsupported untimed work and project-side Action Items remain outside the
+Candidate set. Model extraction may still identify supported statements elsewhere
+on the page.
 
 Some historical Matrix runs predate immutable Candidate snapshots. An exact
 same-Document replay may use the original attributable Admission plus the current
@@ -102,6 +112,8 @@ Report.
 - Reusing Active Runs skips live extraction and cannot support a raw-Document claim.
 - Treating a changed semantic Candidate set as harmless because a model is
   nondeterministic makes practitioner work unpredictable.
+- Prompting the model more strongly to enumerate every numbered Action Item still
+  leaves membership under probabilistic control and cannot support repeatability.
 - Sampling residual Candidates can hide unsupported outcomes; grinding through an
   arbitrary fixed cap turns an extraction failure into unmeasured human labor.
 - Requiring a correction, Not Relevant decision, closure, or Verbal when the exact

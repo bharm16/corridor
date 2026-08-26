@@ -50,6 +50,15 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/llm.py",
     ),
     "minutes": (
+        "src/corridor/extract_minutes_v5.py",
+        "src/corridor/extract_minutes_v4.py",
+        "src/corridor/extract_batch.py",
+        "src/corridor/verify.py",
+        "src/corridor/candidates.py",
+        "src/corridor/models.py",
+        "src/corridor/llm.py",
+    ),
+    "minutes_v4": (
         "src/corridor/extract_minutes_v4.py",
         "src/corridor/extract_batch.py",
         "src/corridor/verify.py",
@@ -168,12 +177,13 @@ def deployed_extractor_config(
             structure_schema=extract_matrix.STRUCTURE_SCHEMA,
             transcribe_schema=extract_matrix.TRANSCRIBE_SCHEMA,
         )
-    if extractor in {"minutes", "minutes_v3"}:
-        module = (
-            __import__("corridor.extract_minutes_v4", fromlist=["*"])
-            if extractor == "minutes"
-            else __import__("corridor.extract_minutes", fromlist=["*"])
-        )
+    if extractor in {"minutes", "minutes_v4", "minutes_v3"}:
+        module_name = {
+            "minutes": "corridor.extract_minutes_v5",
+            "minutes_v4": "corridor.extract_minutes_v4",
+            "minutes_v3": "corridor.extract_minutes",
+        }[extractor]
+        module = __import__(module_name, fromlist=["*"])
         return _deployed_config(
             extractor=extractor,
             prompt_version=module.PROMPT_VERSION,

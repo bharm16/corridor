@@ -148,7 +148,7 @@ def test_usage_receipt_refuses_a_counter_that_moves_backwards():
     ("extractor", "prompt_version", "schema_version", "uses_images"),
     [
         ("matrix", "matrix_tiered_v3", "matrix_candidate_shape_v1", True),
-        ("minutes", "minutes_v4", "minutes_v4", False),
+        ("minutes", "minutes_v5", "minutes_v5", False),
         ("agreement", "agreement_v3", "agreement_v3", False),
         ("sheet", "sheet_native_v1", "sheet_candidate_shape_v1", False),
     ],
@@ -207,6 +207,24 @@ def test_deployed_registry_refuses_a_provider_url_that_contains_credentials():
 
     with pytest.raises(ValueError, match="must not contain credentials"):
         deployed_extractor_config("agreement", client=Client())
+
+
+def test_deployed_registry_retains_historical_minutes_v4():
+    class Client:
+        model = "gpt-fixture"
+        effort = "low"
+        flex = False
+        base_url = "https://provider.example/v1"
+
+    config = deployed_extractor_config("minutes_v4", client=Client())
+    current = deployed_extractor_config("minutes", client=Client())
+
+    assert config.prompt_version == "minutes_v4"
+    assert config.schema_version == "minutes_v4"
+    assert config.config_json["extractor"] == "minutes_v4"
+    assert current.prompt_version == "minutes_v5"
+    assert current.postprocessor_sha256 != config.postprocessor_sha256
+    assert current.config_sha256 != config.config_sha256
 
 
 def test_injected_configuration_refuses_unverifiable_runtime_identity():
