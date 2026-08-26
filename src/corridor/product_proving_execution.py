@@ -1242,7 +1242,27 @@ def run_bounded_product_proving_operations(
             commit=commit,
         )
 
-    admission = admission_operation or _run_admission_without_declaration
+    if admission_operation is None:
+        write_candidate_ids = tuple(
+            session.scalars(
+                select(Candidate.id)
+                .where(
+                    Candidate.project_id == project.id,
+                    Candidate.extraction_run_id.in_(tuple(fresh_run_ids.values())),
+                )
+                .order_by(Candidate.id)
+            ).all()
+        )
+
+        def admission(db: Session, project_id: int) -> Any:
+            return _run_admission_without_declaration(
+                db,
+                project_id,
+                write_candidate_ids=write_candidate_ids,
+            )
+
+    else:
+        admission = admission_operation
     try:
         # One savepoint keeps a declaration/Admission failure from leaving a
         # partial Project Record while retaining the completed extraction
@@ -1278,6 +1298,11 @@ def run_bounded_product_proving_operations(
                 admission_started=True,
             )
     except Exception as error:
+        # The savepoint rollback restores the database, but ORM instances read
+        # and mutated during declaration/Admission can still carry their
+        # pre-rollback attributes.  Failure capture must begin from a database
+        # re-read or it can falsely report rolled-back Active Run changes.
+        session.expire_all()
         return _commit_and_observe_operations(
             session,
             project_slug=project_slug,
@@ -2054,14 +2079,48 @@ def _admission_audit_ids(
     return allowed
 
 
-def _run_admission_without_declaration(session: Session, project_id: int) -> Any:
+def _run_admission_without_declaration(
+    session: Session,
+    project_id: int,
+    *,
+    write_candidate_ids: Sequence[int],
+) -> Any:
     """Run the two Admission families after exact Runs were declared."""
+
+    candidates = tuple(
+        session.scalars(
+            select(Candidate).where(
+                Candidate.project_id == project_id,
+                Candidate.id.in_(write_candidate_ids),
+            )
+        ).all()
+    )
+    by_kind = {
+        kind: tuple(sorted(candidate.id for candidate in candidates if candidate.kind == kind))
+        for kind in ("dependency", "event")
+    }
+    if {candidate.id for candidate in candidates} != set(write_candidate_ids):
+        raise ValueError("Product Proving Admission scope lost a fresh Candidate")
+    unexpected_kinds = sorted(
+        {candidate.kind for candidate in candidates} - {"dependency", "event"}
+    )
+    if unexpected_kinds:
+        raise ValueError(
+            "Product Proving Admission scope contains unsupported Candidate kinds: "
+            + ", ".join(unexpected_kinds)
+        )
 
     return {
         "dependencies": dependency_admission.run_dependency_admission(
-            session, project_id
+            session,
+            project_id,
+            write_candidate_ids=by_kind["dependency"],
         ),
-        "events": event_admission.run_event_admission(session, project_id),
+        "events": event_admission.run_event_admission(
+            session,
+            project_id,
+            write_candidate_ids=by_kind["event"],
+        ),
     }
 
 

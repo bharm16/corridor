@@ -349,6 +349,74 @@ def test_duplicate_rows_in_one_revision_abstain(session, project):
     }
 
 
+def test_explicit_write_scope_reads_unscoped_rows_but_mutates_only_scoped_rows(
+    session, project
+):
+    """A bounded run may read project context without widening its write set."""
+    document = _document(session, project, filename="scoped-matrix.pdf")
+    scoped = _candidate(document, _fields("PL1"))
+    duplicate_context = _candidate(document, _fields("PL1"))
+    unrelated_context = _candidate(document, _fields("PL2"))
+    _run(session, document, [scoped, duplicate_context, unrelated_context])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(
+        session,
+        project.id,
+        write_candidate_ids=(scoped.id,),
+    )
+
+    assert result.admitted_count == 0
+    assert result.abstained_count == 1
+    assert [(item.candidate_id, item.reason) for item in result.abstentions] == [
+        (scoped.id, "multiple_rows_in_agreement_document")
+    ]
+    outcomes = session.scalars(
+        select(DependencyAdmissionOutcome).where(
+            DependencyAdmissionOutcome.policy_run_id == result.run_id
+        )
+    ).all()
+    assert [outcome.candidate_id for outcome in outcomes] == [scoped.id]
+    session.refresh(duplicate_context)
+    session.refresh(unrelated_context)
+    assert duplicate_context.state == "pending"
+    assert unrelated_context.state == "pending"
+    assert session.scalar(
+        select(func.count(Dependency.id)).where(
+            Dependency.project_id == project.id
+        )
+    ) == 0
+
+    from corridor import dependency_admission as module
+    from corridor import policy
+
+    run = session.get(PolicyRun, result.run_id)
+    exact_policy = module._canonical_policy(
+        session,
+        project,
+        [document.id],
+        write_candidate_ids=(scoped.id,),
+    )
+    assert exact_policy["write_candidate_ids"] == [scoped.id]
+    assert run.policy_sha256 == policy.canonical_sha256(exact_policy)
+
+
+def test_explicit_dependency_write_scope_rejects_non_actionable_ids(
+    session, project
+):
+    document = _document(session, project, filename="invalid-scope.pdf")
+    candidate = _candidate(document, _fields("PL1"))
+    _run(session, document, [candidate])
+    # No Active Run declaration: the row is not currently actionable.
+
+    with pytest.raises(ValueError, match="current actionable pending dependency"):
+        run_dependency_admission(
+            session,
+            project.id,
+            write_candidate_ids=(candidate.id,),
+        )
+
+
 def test_an_already_admitted_reference_is_not_admitted_twice(session, project):
     feb, may, feb_c, may_c = _corpus(
         session, project, [_fields("PL1")], [_fields("PL1")]

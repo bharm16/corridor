@@ -18,6 +18,7 @@ statement, so the actor boundary is a check rather than an afterthought.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -276,11 +277,47 @@ class UnknownScopeWriteIntegrity(RuntimeError):
     """An eligible row could not produce its exact protected write set."""
 
 
+def _validated_write_candidate_ids(
+    session: Session,
+    *,
+    project_id: int,
+    write_candidate_ids: Sequence[int] | None,
+) -> tuple[int, ...] | None:
+    """Normalize an optional exact event mutation boundary."""
+    if write_candidate_ids is None:
+        return None
+    values = tuple(write_candidate_ids)
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for value in values
+    ) or len(set(values)) != len(values):
+        raise ValueError(
+            "write_candidate_ids must name unique positive event Candidate ids"
+        )
+
+    from corridor.supersession import actionable_candidate_query
+
+    observed_ids = set(
+        session.scalars(
+            actionable_candidate_query(project_id)
+            .where(Candidate.kind == "event", Candidate.id.in_(values))
+            .with_only_columns(Candidate.id)
+        ).all()
+    )
+    if observed_ids != set(values):
+        raise ValueError(
+            "write_candidate_ids must name only current actionable pending "
+            f"event Candidates in project {project_id}"
+        )
+    return tuple(sorted(values))
+
+
 def run_event_admission(
     session: Session,
     project_id: int,
     *,
     policy_version: str | None = None,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> EventAdmissionResult:
     """Attach what the minutes say to the conflicts they name.
 
@@ -291,6 +328,12 @@ def run_event_admission(
     project = session.get(Project, project_id)
     if project is None:
         raise ValueError(f"project {project_id} does not exist")
+    lock_project(session, project_id)
+    write_scope = _validated_write_candidate_ids(
+        session,
+        project_id=project_id,
+        write_candidate_ids=write_candidate_ids,
+    )
     selected_version = policy_version or normal_event_admission_policy_version(
         session, project_id
     )
@@ -299,11 +342,28 @@ def run_event_admission(
             session,
             project_id,
             policy_version=EVENT_ADMISSION_POLICY_VERSION,
+            write_candidate_ids=write_scope,
         )
+        extension_scope = write_scope
+        if write_scope is not None:
+            from corridor.supersession import actionable_candidate_query
+
+            extension_scope = tuple(
+                session.scalars(
+                    actionable_candidate_query(project_id)
+                    .where(
+                        Candidate.kind == "event",
+                        Candidate.id.in_(write_scope),
+                    )
+                    .with_only_columns(Candidate.id)
+                    .order_by(Candidate.id)
+                ).all()
+            )
         extension = run_event_admission(
             session,
             project_id,
             policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+            write_candidate_ids=extension_scope,
         )
         return EventAdmissionResult(
             run_id=extension.run_id,
@@ -312,12 +372,17 @@ def run_event_admission(
             abstentions=extension.abstentions,
         )
     if selected_version == UNKNOWN_SCOPE_POLICY_VERSION:
-        return _run_unknown_scope_admission(session, project)
+        return _run_unknown_scope_admission(
+            session,
+            project,
+            write_candidate_ids=write_scope,
+        )
     if selected_version != EVENT_ADMISSION_POLICY_VERSION:
         raise ValueError(f"unsupported Event Admission policy {selected_version!r}")
-    lock_project(session, project_id)
     policy_json = canonical_event_admission_policy(
-        project, EVENT_ADMISSION_POLICY_VERSION
+        project,
+        EVENT_ADMISSION_POLICY_VERSION,
+        write_candidate_ids=write_scope,
     )
 
     # Only candidates from declared Active Runs of current documents —
@@ -333,6 +398,11 @@ def run_event_admission(
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    if write_scope is not None:
+        writable_ids = set(write_scope)
+        candidates = [
+            candidate for candidate in candidates if candidate.id in writable_ids
+        ]
     policy_sha256 = policy.canonical_sha256(policy_json)
     registry_sha256 = _predecessor_registry_sha256(session, project.id)
     prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
@@ -563,12 +633,17 @@ def _predecessor_input_receipt(
 
 
 def _run_unknown_scope_admission(
-    session: Session, project: Project
+    session: Session,
+    project: Project,
+    *,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> EventAdmissionResult:
     """Apply only ADR-0042's exact party-level Commitment class."""
     lock_project(session, project.id)
     policy_json = canonical_event_admission_policy(
-        project, UNKNOWN_SCOPE_POLICY_VERSION
+        project,
+        UNKNOWN_SCOPE_POLICY_VERSION,
+        write_candidate_ids=write_candidate_ids,
     )
     policy_sha256 = policy.canonical_sha256(policy_json)
 
@@ -579,6 +654,11 @@ def _run_unknown_scope_admission(
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    if write_candidate_ids is not None:
+        writable_ids = set(write_candidate_ids)
+        candidates = [
+            candidate for candidate in candidates if candidate.id in writable_ids
+        ]
     prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
     for outcome in session.scalars(
         select(EventAdmissionOutcome)
@@ -1587,7 +1667,10 @@ def normal_event_admission_policy_version(
 
 
 def canonical_event_admission_policy(
-    project: Project, policy_version: str
+    project: Project,
+    policy_version: str,
+    *,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> dict:
     """The exact rules a real-state acceptance receipt proves.
 
@@ -1599,7 +1682,7 @@ def canonical_event_admission_policy(
     unknown_scope = policy_version == UNKNOWN_SCOPE_POLICY_VERSION
     if not unknown_scope and policy_version != EVENT_ADMISSION_POLICY_VERSION:
         raise ValueError(f"unsupported Event Admission policy {policy_version!r}")
-    return {
+    receipt = {
         "policy_version": policy_version,
         "abstention_reason_version": (
             UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION
@@ -1646,6 +1729,9 @@ def canonical_event_admission_policy(
         "rules_digest_method": "sha256-rule-source-files-v1",
         "rules_digest": _rules_digest(),
     }
+    if write_candidate_ids is not None:
+        receipt["write_candidate_ids"] = sorted(write_candidate_ids)
+    return receipt
 
 
 

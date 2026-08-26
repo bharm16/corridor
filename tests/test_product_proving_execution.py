@@ -740,6 +740,122 @@ def test_bounded_operations_trace_and_commit_real_dependency_admission(session):
     assert admitted.source_ref == "PL1"
 
 
+def test_bounded_operations_admit_only_fresh_candidates_not_other_active_work(
+    session,
+):
+    project = _project(session, "fresh-admission-scope")
+
+    def matrix_run(db, document, utility_id):
+        fields = {
+            "utility_id": utility_id,
+            "external_org": "Tejas Pipeline Co",
+            "utility_type": "Petroleum and Gaseous Materials",
+            "baseline": "SH99",
+            "station_from": "1102+20",
+            "station_to": "1102+20",
+        }
+        quote = " | ".join(fields.values())
+        page = db.scalar(
+            select(DocPage).where(
+                DocPage.document_id == document.id,
+                DocPage.page_no == 1,
+            )
+        )
+        if page is None:
+            db.add(DocPage(document_id=document.id, page_no=1, text=quote))
+        else:
+            page.text = quote
+        candidate = Candidate(
+            project_id=project.id,
+            kind="dependency",
+            payload_json={
+                "kind": "dependency",
+                "fields": fields,
+                "citations": [
+                    {
+                        "document_id": document.id,
+                        "page": 1,
+                        "quote": quote,
+                        "verified": True,
+                        "whole_row": True,
+                    }
+                ],
+                "dedupe_hint": quote,
+                "text_source": "text_layer",
+            },
+            source_document_id=document.id,
+            source_pages=[1],
+            confidence=0.99,
+            prompt_version="matrix_tiered_v3",
+            model="gpt-5.6-luna",
+            citations_verified=True,
+            state="pending",
+        )
+        config = _config(
+            extractor="test-matrix",
+            prompt_version="matrix_tiered_v3",
+            schema_version="matrix_candidate_shape_v1",
+        )
+        run = record_extraction_run(
+            db,
+            document,
+            prompt_version="matrix_tiered_v3",
+            candidate_count=1,
+            page_errors=0,
+            candidates=(candidate,),
+            model="gpt-5.6-luna",
+            schema_version="matrix_candidate_shape_v1",
+            extractor_config=config,
+            token_usage=zero_token_usage(document.id),
+        )
+        return run, candidate
+
+    bounded = _document(
+        session,
+        project,
+        doc_type="matrix",
+        name="bounded-matrix.pdf",
+    )
+    baseline, _ = matrix_run(session, bounded, "PL1")
+    declare_active_run_by_policy(session, bounded.id, baseline.id)
+
+    other = _document(
+        session,
+        project,
+        doc_type="matrix",
+        name="other-active-matrix.pdf",
+    )
+    other_run, out_of_packet = matrix_run(session, other, "PL9")
+    declare_active_run_by_policy(session, other.id, other_run.id)
+
+    result = run_bounded_product_proving_operations(
+        session,
+        project_slug=project.slug,
+        baseline_runs={bounded.id: baseline.id},
+        extraction_operation=lambda db, document: matrix_run(
+            db, document, "PL1"
+        )[0],
+        active_run_operation=lambda db, document_id, run_id: declare_active_run(
+            db,
+            document_id,
+            run_id,
+            principal=HumanPrincipal("local:fresh-admission-scope"),
+        ),
+        _commit_for_test=_test_commit,
+    )
+
+    assert result.admission_started is True
+    assert result.extraction_failures == ()
+    assert {
+        dependency.source_ref
+        for dependency in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    } == {"PL1"}
+    session.refresh(out_of_packet)
+    assert out_of_packet.state == "pending"
+
+
 def test_bounded_operations_roll_back_an_extractor_that_changes_active_state(session):
     project = _project(session, "extractor-boundary")
     document = _document(session, project)
@@ -801,6 +917,63 @@ def test_bounded_operations_reject_and_roll_back_out_of_packet_project_writes(se
 
     assert result.admission_started is False
     assert "out-of-packet tables: report_runs" in result.extraction_failures[0]
+    assert session.scalar(
+        select(ReportRun.id).where(ReportRun.project_id == project.id)
+    ) is None
+
+
+def test_bounded_operations_expire_rolled_back_declarations_before_failure_capture(
+    session, monkeypatch
+):
+    project = _project(session, "admission-rollback-state")
+    document = _document(session, project)
+    baseline = _run(session, project, document)
+    declare_active_run_by_policy(session, document.id, baseline.id)
+    expire_calls: list[str] = []
+    real_expire_all = session.expire_all
+
+    def observe_expiration():
+        expire_calls.append("expire")
+        real_expire_all()
+
+    monkeypatch.setattr(session, "expire_all", observe_expiration)
+
+    def invalid_admission(db, project_id):
+        db.add(
+            ReportRun(
+                project_id=project_id,
+                ruleset_version="invalid-admission-write",
+                snapshot_json={},
+                document_only=False,
+            )
+        )
+        return "invalid"
+
+    result = run_bounded_product_proving_operations(
+        session,
+        project_slug=project.slug,
+        baseline_runs={document.id: baseline.id},
+        extraction_operation=lambda db, doc: _run(db, project, doc),
+        active_run_operation=lambda db, document_id, run_id: declare_active_run(
+            db,
+            document_id,
+            run_id,
+            principal=HumanPrincipal("local:rollback-state"),
+        ),
+        admission_operation=invalid_admission,
+        _commit_for_test=_test_commit,
+    )
+
+    assert result.admission_started is False
+    assert result.active_run_document_ids == ()
+    assert "out-of-packet tables: report_runs" in result.extraction_failures[0]
+    assert result.observed_active_runs == {document.id: baseline.id}
+    # Once immediately after the failed savepoint, then again after the
+    # durable failure receipt boundary.
+    assert expire_calls == ["expire", "expire"]
+    assert session.get(
+        ActiveExtractionRun, document.id, populate_existing=True
+    ).extraction_run_id == baseline.id
     assert session.scalar(
         select(ReportRun.id).where(ReportRun.project_id == project.id)
     ) is None

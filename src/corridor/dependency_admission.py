@@ -35,6 +35,7 @@ model verdict appears anywhere in the path.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -182,8 +183,49 @@ def declared_matrix_document_ids(
     )
 
 
+def _validated_write_candidate_ids(
+    session: Session,
+    *,
+    project_id: int,
+    candidate_kind: str,
+    write_candidate_ids: Sequence[int] | None,
+) -> tuple[int, ...] | None:
+    """Normalize an optional exact mutation boundary against current work."""
+    if write_candidate_ids is None:
+        return None
+    values = tuple(write_candidate_ids)
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for value in values
+    ) or len(set(values)) != len(values):
+        raise ValueError(
+            f"write_candidate_ids must name unique positive {candidate_kind} Candidate ids"
+        )
+
+    from corridor.supersession import actionable_candidate_query
+
+    observed = tuple(
+        session.scalars(
+            actionable_candidate_query(project_id).where(
+                Candidate.kind == candidate_kind,
+                Candidate.id.in_(values),
+            )
+        ).all()
+    )
+    observed_ids = {candidate.id for candidate in observed}
+    if observed_ids != set(values):
+        raise ValueError(
+            "write_candidate_ids must name only current actionable pending "
+            f"{candidate_kind} Candidates in project {project_id}"
+        )
+    return tuple(sorted(values))
+
+
 def run_dependency_admission(
-    session: Session, project_id: int
+    session: Session,
+    project_id: int,
+    *,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> DependencyAdmissionResult:
     """Admit what the project's declared matrix revisions can anchor.
 
@@ -198,8 +240,21 @@ def run_dependency_admission(
         raise ValueError(f"project {project_id} does not exist")
     lock_project(session, project_id)
 
+    write_scope = _validated_write_candidate_ids(
+        session,
+        project_id=project_id,
+        candidate_kind="dependency",
+        write_candidate_ids=write_candidate_ids,
+    )
+    writable_ids = set(write_scope) if write_scope is not None else None
+
     document_ids = declared_matrix_document_ids(session, project_id)
-    policy_json = _canonical_policy(session, project, document_ids)
+    policy_json = _canonical_policy(
+        session,
+        project,
+        document_ids,
+        write_candidate_ids=write_scope,
+    )
     policy_sha256 = policy.canonical_sha256(policy_json)
     schemes = identity.document_numbering_schemes(session, project_id)
     aliases = identity.party_canonical_names(session)
@@ -274,18 +329,21 @@ def run_dependency_admission(
         candidates: list[Candidate],
         reason: str,
         *,
+        context_candidates: list[Candidate] | None = None,
         carriers: list[Dependency] | None = None,
         replay_inputs: dict[int, dict] | None = None,
     ) -> None:
         group_input = _abstention_group_input(
-            candidates,
+            context_candidates or candidates,
             carriers=carriers or [],
             aliases=aliases,
         )
         if replay_inputs:
             group_input["same_document_reextraction"] = [
                 replay_inputs[candidate.id]
-                for candidate in sorted(candidates, key=lambda item: item.id)
+                for candidate in sorted(
+                    context_candidates or candidates, key=lambda item: item.id
+                )
                 if candidate.id in replay_inputs
             ]
         group_sha256 = policy.canonical_sha256(group_input)
@@ -316,7 +374,8 @@ def run_dependency_admission(
 
     for reason, candidates in unnameable.items():
         for candidate in candidates:
-            abstain([candidate], reason)
+            if writable_ids is None or candidate.id in writable_ids:
+                abstain([candidate], reason)
 
     for key in identities:
         # Only the revisions that state this conflict have anything to say
@@ -329,13 +388,33 @@ def run_dependency_admission(
             if group
         ]
         participants = [c for group in stating for c in group]
+        write_participants = [
+            candidate
+            for candidate in participants
+            if writable_ids is None or candidate.id in writable_ids
+        ]
+        if not write_participants:
+            continue
 
         if any(len(group) > 1 for group in stating):
-            abstain(participants, "multiple_rows_in_agreement_document")
+            abstain(
+                write_participants,
+                "multiple_rows_in_agreement_document",
+                context_candidates=participants,
+            )
             continue
         candidates = [group[0] for group in stating]
+        write_candidates = [
+            candidate
+            for candidate in candidates
+            if writable_ids is None or candidate.id in writable_ids
+        ]
         if any(not c.citations_verified for c in candidates):
-            abstain(candidates, "citations_unverified")
+            abstain(
+                write_candidates,
+                "citations_unverified",
+                context_candidates=candidates,
+            )
             continue
         # Revisions disagreeing about the *party* is not a field dispute:
         # it asks whether these are one conflict at all, and merging two
@@ -358,52 +437,62 @@ def run_dependency_admission(
             if str(org or "").strip() and not is_placeholder_party(org)
         }
         if len(parties) > 1:
-            abstain(candidates, "revisions_disagree_on_party")
+            abstain(
+                write_candidates,
+                "revisions_disagree_on_party",
+                context_candidates=candidates,
+            )
             continue
         unsafe_replays = {
             candidate.id: replay_index.unsafe[candidate.id]
             for candidate in candidates
             if candidate.id in replay_index.unsafe
         }
-        candidate_replays = [
+        context_replays = [
             replay_index.eligible[candidate.id]
             for candidate in candidates
             if candidate.id in replay_index.eligible
         ]
-        replay_targets = {replay.dependency.id for replay in candidate_replays}
+        scoped_replays = [
+            replay
+            for replay in context_replays
+            if writable_ids is None or replay.candidate.id in writable_ids
+        ]
+        replay_targets = {replay.dependency.id for replay in context_replays}
         if unsafe_replays or len(replay_targets) > 1:
             replay_inputs = dict(unsafe_replays)
             replay_inputs.update(
                 {
                     replay.candidate.id: replay.eligibility
-                    for replay in candidate_replays
+                    for replay in context_replays
                 }
             )
             abstain(
-                candidates,
+                write_candidates,
                 "same_document_replay_unproven",
+                context_candidates=candidates,
                 replay_inputs=replay_inputs,
             )
             continue
         replay_carriers: list[Dependency] = []
-        if candidate_replays and len(replay_targets) == 1:
+        if context_replays and len(replay_targets) == 1:
             # The predecessor association is stronger than the Dependency's
             # denormalized identity columns: it is an attributable link from
             # this exact same-Document claim to one current record.  Reading
             # it before the identity lookup prevents a later correction to a
             # row's projected identity from turning an exact re-extraction
             # into a duplicate Dependency.
-            replays.extend(candidate_replays)
-            replay_carriers = [candidate_replays[0].dependency]
+            replays.extend(scoped_replays)
+            replay_carriers = [context_replays[0].dependency]
             replayed_ids = {
-                replay.candidate.id for replay in candidate_replays
+                replay.candidate.id for replay in scoped_replays
             }
-            candidates = [
+            write_candidates = [
                 candidate
-                for candidate in candidates
+                for candidate in write_candidates
                 if candidate.id not in replayed_ids
             ]
-            if not candidates:
+            if not write_candidates:
                 continue
         # No "asserts nothing" branch here: a group only exists because
         # its rows carry an identity, and the identity's own fields are
@@ -431,7 +520,12 @@ def run_dependency_admission(
             if dependency.id not in carrier_ids:
                 carriers.append(dependency)
         if carriers:
-            abstain(candidates, "already_admitted", carriers=carriers)
+            abstain(
+                write_candidates,
+                "already_admitted",
+                context_candidates=candidates,
+                carriers=carriers,
+            )
             continue
 
         # The newest revision is the primary; the rest merge. Where they
@@ -441,7 +535,7 @@ def run_dependency_admission(
         # fields they disagree about. Disagreement stopped withholding
         # the row (ADR-0031) — the newest revision is the record's
         # provisional reading, said out loud, until a human settles it.
-        admissible.append((candidates[-1], candidates[:-1]))
+        admissible.append((write_candidates[-1], write_candidates[:-1]))
 
     # Writes are attempted before the receipt exists, inside savepoints,
     # so a refused write abstains that conflict without sinking the batch
@@ -1434,7 +1528,11 @@ def _rules_digest() -> str:
 
 
 def _canonical_policy(
-    session: Session, project: Project, agreement_document_ids: list[int]
+    session: Session,
+    project: Project,
+    agreement_document_ids: list[int],
+    *,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> dict:
     """What the approval approves: the rules, the code, and the documents.
 
@@ -1468,7 +1566,7 @@ def _canonical_policy(
                 "numbering_scheme": document.numbering_scheme,
             }
         )
-    return {
+    receipt = {
         "policy_version": DEPENDENCY_ADMISSION_POLICY_VERSION,
         "abstention_reason_version": ABSTENTION_REASON_VERSION,
         "abstention_reasons": sorted(ABSTENTION_REASONS),
@@ -1488,3 +1586,6 @@ def _canonical_policy(
         "rules_digest_method": "sha256-rule-source-files-v1",
         "rules_digest": _rules_digest(),
     }
+    if write_candidate_ids is not None:
+        receipt["write_candidate_ids"] = sorted(write_candidate_ids)
+    return receipt

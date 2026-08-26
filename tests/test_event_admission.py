@@ -269,6 +269,75 @@ def test_a_clean_event_is_admitted_onto_its_dependency(
     assert candidate.state == "accepted"
 
 
+def test_explicit_event_write_scope_mutates_only_the_named_actionable_candidate(
+    session, project, admitted
+):
+    scoped, unscoped = _minutes_with(
+        session,
+        project,
+        [
+            _event(description="Tejas Pipeline committed PL1 for June."),
+            _event(
+                committed_date="2025-07-01",
+                description="Tejas Pipeline committed PL1 for July.",
+            ),
+        ],
+    )
+
+    result = run_event_admission(
+        session,
+        project.id,
+        policy_version=EVENT_ADMISSION_POLICY_VERSION,
+        write_candidate_ids=(scoped.id,),
+    )
+
+    assert result.admitted_count == 1
+    assert result.abstained_count == 0
+    outcomes = session.scalars(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == result.run_id
+        )
+    ).all()
+    assert [outcome.candidate_id for outcome in outcomes] == [scoped.id]
+    session.refresh(scoped)
+    session.refresh(unscoped)
+    assert scoped.state == "accepted"
+    assert unscoped.state == "pending"
+    assert len(_events_on(session, admitted.id)) == 1
+
+    run = session.get(PolicyRun, result.run_id)
+    exact_policy = canonical_event_admission_policy(
+        project,
+        EVENT_ADMISSION_POLICY_VERSION,
+        write_candidate_ids=(scoped.id,),
+    )
+    assert exact_policy["write_candidate_ids"] == [scoped.id]
+    assert run.policy_sha256 == policy.canonical_sha256(exact_policy)
+
+
+def test_explicit_event_write_scope_rejects_non_actionable_ids(
+    session, project
+):
+    minutes = _document(
+        session, project, filename="invalid-scope-minutes.pdf", doc_type="minutes"
+    )
+    candidate = _candidate(
+        minutes,
+        kind="event",
+        fields=_event(),
+    )
+    _run(session, minutes, [candidate])
+    # No Active Run declaration: the row is not currently actionable.
+
+    with pytest.raises(ValueError, match="current actionable pending event"):
+        run_event_admission(
+            session,
+            project.id,
+            policy_version=EVENT_ADMISSION_POLICY_VERSION,
+            write_candidate_ids=(candidate.id,),
+        )
+
+
 def test_unknown_scope_policy_admits_one_exact_party_level_commitment(
     session, project
 ):
@@ -343,6 +412,53 @@ def test_unknown_scope_policy_admits_one_exact_party_level_commitment(
     assert outcome.eligibility_sha256 is not None
     assert outcome.eligibility_json["candidate_id"] == candidate.id
     assert fields["description"] in outcome.eligibility_json["evidence"]["quote"]
+
+
+def test_unknown_scope_policy_honors_the_exact_event_write_scope(
+    session, project
+):
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
+    scoped, unscoped = _minutes_with(
+        session,
+        project,
+        [
+            _event(
+                ref=None,
+                committed_date="2025-06-01",
+                description="Tejas Pipeline will deliver the title package by June.",
+            ),
+            _event(
+                ref=None,
+                committed_date="2025-07-01",
+                description="Tejas Pipeline will deliver the permit package by July.",
+            ),
+        ],
+    )
+
+    result = run_event_admission(
+        session,
+        project.id,
+        policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+        write_candidate_ids=(scoped.id,),
+    )
+
+    assert result.admitted_count == 1
+    outcomes = session.scalars(
+        select(EventAdmissionOutcome).where(
+            EventAdmissionOutcome.policy_run_id == result.run_id
+        )
+    ).all()
+    assert [outcome.candidate_id for outcome in outcomes] == [scoped.id]
+    session.refresh(scoped)
+    session.refresh(unscoped)
+    assert scoped.state == "accepted"
+    assert unscoped.state == "pending"
+    assert session.scalar(
+        select(CandidateDisposition).where(
+            CandidateDisposition.candidate_id == unscoped.id
+        )
+    ) is None
 
 
 def test_unknown_scope_policy_is_opt_in_and_idempotent(session, project):
