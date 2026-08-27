@@ -511,6 +511,66 @@ def test_write_set_capture_derives_actual_rows_and_id_independent_digests(sessio
     }.issubset(after.rows)
 
 
+def test_candidate_confidence_does_not_change_stable_receipt_relationships(session):
+    project = _project(session, "confidence-stability")
+    document = _document(session, project)
+    first = _candidate(project, document)
+    second = _candidate(project, document)
+    first.confidence = 0.51
+    first.payload_json = {**first.payload_json, "confidence": 0.51}
+    second.confidence = 0.99
+    second.payload_json = {**second.payload_json, "confidence": 0.99}
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="minutes_v4",
+        candidate_count=2,
+        page_errors=0,
+        candidates=(first, second),
+        model="gpt-5.6-luna",
+        schema_version="minutes_v4",
+        extractor_config=_config(
+            prompt_version="minutes_v4", schema_version="minutes_v4"
+        ),
+        token_usage=zero_token_usage(document.id),
+    )
+    assert run.candidate_count == 2
+    for candidate in (first, second):
+        session.add_all(
+            (
+                CandidateDisposition(
+                    candidate_id=candidate.id,
+                    disposition="not_relevant",
+                    reason="duplicate_statement",
+                    recorded_by="local:practitioner",
+                ),
+                EvidenceInvestigationCandidateReviewStart(
+                    project_id=project.id,
+                    candidate_id=candidate.id,
+                    principal="local:practitioner",
+                    observed_at=datetime.now(timezone.utc),
+                ),
+            )
+        )
+    session.flush()
+
+    snapshot = capture_project_write_set(session, project.slug)
+    candidate_rows = snapshot.rows["candidates"]
+    assert len(candidate_rows) == 2
+    assert candidate_rows[0].content_sha256 != candidate_rows[1].content_sha256
+    assert (
+        candidate_rows[0].stable_content_sha256
+        == candidate_rows[1].stable_content_sha256
+    )
+    disposition_rows = snapshot.rows["candidate_dispositions"]
+    assert (
+        disposition_rows[0].stable_content_sha256
+        == disposition_rows[1].stable_content_sha256
+    )
+    review_rows = snapshot.rows["evidence_investigation_candidate_review_starts"]
+    assert review_rows[0].stable_content_sha256 == review_rows[1].stable_content_sha256
+
+
 def test_bounded_operations_never_declare_or_admit_after_semantic_difference(session):
     project = _project(session, "bounded-failure")
     document = _document(session, project)

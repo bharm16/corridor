@@ -2311,6 +2311,10 @@ def _fingerprint_model_rows(
         normalized: dict[str, Any] = {}
         for key, item in sorted(value.items(), key=lambda pair: str(pair[0])):
             name = str(key)
+            if name == "confidence":
+                # Confidence is an extractor aid, not a Candidate fact or
+                # Evidence member in the repeatability contract.
+                continue
             if name == "candidate_id":
                 # The containing immutable snapshot owns the candidate facts;
                 # this is only the generated row identity assigned before the
@@ -2338,6 +2342,8 @@ def _fingerprint_model_rows(
 
     def stable_column_value(row: _RawProjectRow, column_name: str) -> Any:
         value = row.exact[column_name]
+        if row.table_name == "candidates" and column_name == "confidence":
+            return None
         if (row.table_name, column_name) in {
             ("candidates", "payload_json"),
             ("extraction_runs", "candidate_inputs_json"),

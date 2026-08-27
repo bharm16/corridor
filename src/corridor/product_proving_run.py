@@ -1516,10 +1516,30 @@ def _canonical_candidate(
     }
 
 
+_SEPARATELY_VERIFIED_WRITE_TABLES = frozenset(
+    {
+        "active_extraction_runs",
+        "active_run_declarations",
+        "candidates",
+        "external_report_artifacts",
+        "external_report_releases",
+        "extraction_runs",
+    }
+)
+
+
 def _stable_write_set_signature(
     write_set: Mapping[str, Sequence[Any]],
 ) -> Counter[tuple[str, str, str, str]]:
-    """Compare measured writes without depending on generated row identities."""
+    """Compare domain writes after separately verified receipt semantics.
+
+    Extraction/Candidate semantics, residual outcomes, frontend review subjects,
+    and per-pass fixed-byte Report binding are verified independently before this
+    signature is compared. Their receipt rows may still carry pass-specific model
+    confidence, token usage, or rendered bytes, so this layer compares their exact
+    table/operation counts. All remaining Project Record writes retain full stable
+    content comparison.
+    """
     signature: Counter[tuple[str, str, str, str]] = Counter()
     if not write_set:
         raise ValueError("Product Proving write set is absent")
@@ -1536,7 +1556,12 @@ def _stable_write_set_signature(
                 stable = change.get("stable_content_sha256")
                 if not _is_sha256(stable):
                     raise ValueError("Product Proving write-set digest is invalid")
-                signature[(table_name, str(operation), str(stable), "")] += 1
+                compared = (
+                    "separately-verified"
+                    if table_name in _SEPARATELY_VERIFIED_WRITE_TABLES
+                    else str(stable)
+                )
+                signature[(table_name, str(operation), compared, "")] += 1
                 continue
             if operation == "updated":
                 before = change.get("before")
@@ -1553,6 +1578,9 @@ def _stable_write_set_signature(
                 )
                 if not _is_sha256(before_stable) or not _is_sha256(after_stable):
                     raise ValueError("Product Proving write-set digest is invalid")
+                if table_name in _SEPARATELY_VERIFIED_WRITE_TABLES:
+                    before_stable = "separately-verified"
+                    after_stable = ""
                 signature[
                     (table_name, "updated", str(before_stable), str(after_stable))
                 ] += 1

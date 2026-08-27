@@ -762,8 +762,29 @@ def test_two_pass_capture_requires_frontend_truth_restore_and_equivalent_outputs
                 pass_two=replace(_pass(2), factual_correction_outcome="invented"),
             )
         )
+    separately_verified_write_set = _measured_write_set(2)
+    for table in (
+        "active_extraction_runs",
+        "active_run_declarations",
+        "candidates",
+        "external_report_artifacts",
+        "external_report_releases",
+        "extraction_runs",
+    ):
+        separately_verified_write_set[table][0]["stable_content_sha256"] = sha256(
+            f"pass-two-{table}".encode()
+        ).hexdigest()
+    verify_two_pass_capture(
+        replace(
+            _capture(),
+            pass_two=replace(
+                _pass(2), write_set=separately_verified_write_set
+            ),
+        )
+    )
+
     changed_write_set = _measured_write_set(2)
-    changed_write_set["extraction_runs"][0]["stable_content_sha256"] = "b" * 64
+    changed_write_set["dependencies"][0]["stable_content_sha256"] = "b" * 64
     with pytest.raises(ValueError, match="write-set behavior"):
         verify_two_pass_capture(
             replace(
