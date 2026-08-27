@@ -7,15 +7,21 @@ reconstructing lineage from candidate existence, timestamps, or row order.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from hashlib import sha256
 import sys
 
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import Session, aliased
 
 from corridor import audit
+from corridor.extractor_lineage import (
+    ExtractorConfig,
+    canonical_json_bytes,
+    validate_config_json_shape,
+)
 from corridor.models import (
     EXTRACTION_OUTCOMES,
     ActiveExtractionRun,
@@ -72,6 +78,9 @@ def record_extraction_run(
     model: str | None = None,
     schema_version: str | None = None,
     error_detail: str | None = None,
+    extractor_config: ExtractorConfig | None = None,
+    token_usage: Mapping[str, object] | None = None,
+    allow_unsealed_legacy: bool = False,
 ) -> ExtractionRun:
     """Append one terminal attempt and attach every Candidate it produced."""
     if not prompt_version:
@@ -90,6 +99,15 @@ def record_extraction_run(
         raise ValueError("candidate_count does not match the attached candidates")
     if len({id(candidate) for candidate in candidates}) != len(candidates):
         raise ValueError("an Extraction Run cannot repeat a Candidate")
+    lineage = _validated_lineage(
+        document=document,
+        prompt_version=prompt_version,
+        model=model,
+        schema_version=schema_version,
+        extractor_config=extractor_config,
+        token_usage=token_usage,
+        allow_unsealed_legacy=allow_unsealed_legacy,
+    )
     for candidate in candidates:
         if candidate.extraction_run_id is not None:
             raise ValueError(
@@ -128,12 +146,113 @@ def record_extraction_run(
         schema_version=schema_version,
         error_detail=error_detail,
         candidate_inputs_json=candidate_inputs,
+        **lineage,
     )
     session.add(run)
     session.flush([run])
     for candidate in candidates:
         candidate.extraction_run_id = run.id
     return run
+
+
+def _validated_lineage(
+    *,
+    document: Document,
+    prompt_version: str,
+    model: str | None,
+    schema_version: str | None,
+    extractor_config: ExtractorConfig | None,
+    token_usage: Mapping[str, object] | None,
+    allow_unsealed_legacy: bool,
+) -> dict:
+    """Validate one all-or-nothing sealed receipt before database insertion."""
+
+    if extractor_config is None and token_usage is None:
+        if allow_unsealed_legacy is True:
+            # Explicit historical/synthetic construction remains
+            # representable. A migration cannot infer exact prompt or rule
+            # bytes for rows created before this contract.
+            return {}
+        raise ValueError(
+            "new Extraction Runs require exact extractor configuration and "
+            "token usage; pass allow_unsealed_legacy=True only for an "
+            "explicit historical or synthetic fixture"
+        )
+    if allow_unsealed_legacy is not False:
+        raise ValueError("a sealed Extraction Run cannot use the legacy escape hatch")
+    if extractor_config is None or token_usage is None:
+        raise ValueError(
+            "extractor_config and token_usage must be recorded together"
+        )
+    if extractor_config.prompt_version != prompt_version:
+        raise ValueError("extractor configuration prompt_version does not match")
+    if extractor_config.model != model:
+        raise ValueError("extractor configuration model does not match")
+    if extractor_config.schema_version != schema_version:
+        raise ValueError("extractor configuration schema_version does not match")
+
+    config_json = deepcopy(extractor_config.config_json)
+    validate_config_json_shape(config_json)
+    expected_config = {
+        "prompt_version": prompt_version,
+        "model": model,
+        "schema_version": schema_version,
+        "prompt_sha256": extractor_config.prompt_sha256,
+        "schema_sha256": extractor_config.schema_sha256,
+        "postprocessor_sha256": extractor_config.postprocessor_sha256,
+    }
+    for name, expected in expected_config.items():
+        if config_json.get(name) != expected:
+            raise ValueError(f"extractor configuration {name} is inconsistent")
+    digest = sha256(canonical_json_bytes(config_json)).hexdigest()
+    if digest != extractor_config.config_sha256:
+        raise ValueError("extractor configuration SHA-256 is inconsistent")
+
+    usage = deepcopy(dict(token_usage))
+    scope = usage.get("scope")
+    members = usage.get("document_ids")
+    if scope not in {"run", "batch"} or not isinstance(members, list):
+        raise ValueError("token usage requires run or batch document membership")
+    if any(
+        isinstance(member, bool) or not isinstance(member, int) or member <= 0
+        for member in members
+    ) or len(set(members)) != len(members):
+        raise ValueError(
+            "token usage document membership must contain unique positive integers"
+        )
+    if document.id not in members:
+        raise ValueError("token usage does not include the Extraction Run document")
+    if scope == "run" and members != [document.id]:
+        raise ValueError("run-scoped token usage must name only its document")
+    if scope == "batch" and len(members) < 2:
+        raise ValueError("batch-scoped token usage must name the complete batch")
+
+    if usage.get("measurement") == "unavailable":
+        if not str(usage.get("reason") or "").strip():
+            raise ValueError("unavailable token usage must state why")
+    elif usage.get("measurement") == "exact":
+        for name in (
+            "prompt_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "cached_tokens",
+        ):
+            value = usage.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    "measured token usage requires non-negative integer counts"
+                )
+    else:
+        raise ValueError("token usage measurement must be exact or unavailable")
+
+    return {
+        "prompt_sha256": extractor_config.prompt_sha256,
+        "schema_sha256": extractor_config.schema_sha256,
+        "postprocessor_sha256": extractor_config.postprocessor_sha256,
+        "extractor_config_json": config_json,
+        "extractor_config_sha256": extractor_config.config_sha256,
+        "token_usage_json": usage,
+    }
 
 
 def candidate_input_snapshot(candidate: Candidate) -> dict:

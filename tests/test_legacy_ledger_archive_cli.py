@@ -124,6 +124,7 @@ def legacy_project(session):
         candidates=(candidate,),
         model="legacy-model",
         schema_version="dependency-v1",
+        allow_unsealed_legacy=True,
     )
     candidate.state = "accepted"
     dependency = Dependency(

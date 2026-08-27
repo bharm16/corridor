@@ -1,0 +1,16 @@
+{
+  "schema_version": "corridor.product-proving-run-failure.v1",
+  "status": "failed",
+  "classification": "operations_sequence_failure",
+  "source_revision": "20617a3bba92fd6a284a8389e56ff85524ee5faa",
+  "migration_head": "a316c5d7e9f1",
+  "baseline_fingerprint": "1e95e7d3fa5919944c8e8f750e1de6f1cad8195b1025e41708bd54480a00ae38",
+  "event_admission_acceptance_receipt_id": 326,
+  "event_admission_acceptance_receipt_sha256": "ef629456d63d06c485dc2ebb0fdfbeb42e2e84e0290831dd0efca3e8494a2778",
+  "failed_gate": "eligible_case_observed",
+  "observed_admission_count": 0,
+  "cause": "The acceptance replay was invoked before fresh bounded extraction and Active Run declaration, so the sealed baseline contained no eligible unconsumed unknown-scope case.",
+  "repair": "Restore the sealed baseline and restart the complete pass with extraction, semantic comparison, and Active Run declaration before policy acceptance and Admission.",
+  "shared_source_database_mutated": false,
+  "claim": "This is an immutable failed setup attempt, not a Product Proving pass."
+}

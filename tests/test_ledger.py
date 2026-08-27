@@ -144,6 +144,7 @@ def make_candidate(
         page_errors=0,
         candidates=(c,),
         model=c.model,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()

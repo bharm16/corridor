@@ -38,6 +38,7 @@
     <h3>
       {% if view.item.kind == "statement" %}External Party Commitment
       {% elif view.item.kind == "dependency" %}Dependency coordination
+      {% elif view.item.candidate_kind == "dependency" %}Extracted Dependency
       {% else %}Extracted statement{% endif %}
       {% if view.item.kind != "candidate" and view.item.display_name %} — {{ view.item.display_name }}{% endif %}
     </h3>
@@ -45,6 +46,12 @@
       <p class="notice">Extracted for review — not yet in the Ledger.</p>
       {% if view.item.candidate_source.context_external_org %}
         <p>Extracted context / affected party: {{ view.item.candidate_source.context_external_org }}</p>
+      {% endif %}
+      {% if view.item.candidate_source.context_reference or view.item.candidate_source.context_description %}
+        <p>
+          {% if view.item.candidate_source.context_reference %}<b>{{ view.item.candidate_source.context_reference }}</b>{% endif %}
+          {% if view.item.candidate_source.context_description %}{% if view.item.candidate_source.context_reference %} — {% endif %}{{ view.item.candidate_source.context_description }}{% endif %}
+        </p>
       {% endif %}
       <blockquote>{{ view.item.candidate_source.quote or "No cited wording was extracted." }}</blockquote>
       <p class="source">
@@ -115,8 +122,9 @@
   </section>
 
   <section class="backlog" id="extracted-statements">
-    <h2>All extracted statements</h2>
-    <p class="muted">Search every remaining extracted statement. None is in the Ledger yet.</p>
+    <h2>All extracted work</h2>
+    <p class="muted">Search every current Active Run proposal. None is in the Ledger yet.</p>
+    <p>{{ event_candidate_total }} extracted External Party statement{% if event_candidate_total != 1 %}s{% endif %} · {{ dependency_candidate_total }} extracted Dependenc{% if dependency_candidate_total == 1 %}y{% else %}ies{% endif %}</p>
     <form class="search" method="get" action="/work/{{ project.slug }}">
       <label for="statement-search">Search source, context, or wording</label>
       <input id="statement-search" name="statement_search" value="{{ candidate_search }}">
@@ -124,14 +132,14 @@
       <input type="hidden" name="work_page" value="{{ backlog_page }}">
       <button type="submit">Search</button>
     </form>
-    <p>{{ candidate_backlog_total }} extracted statement{% if candidate_backlog_total != 1 %}s{% endif %}</p>
+    <p>{{ candidate_backlog_total }} extracted item{% if candidate_backlog_total != 1 %}s{% endif %}</p>
     {% for view in candidate_backlog %}
       {{ work_card(view) }}
     {% else %}
-      <p class="empty">No extracted statements match this search.</p>
+      <p class="empty">No extracted work matches this search.</p>
     {% endfor %}
     {% if candidate_backlog_pages %}
-      <nav class="pager" aria-label="Extracted statement pages">
+      <nav class="pager" aria-label="Extracted work pages">
         <span>
           {% if candidate_backlog_page > 1 %}
             <a href="/work/{{ project.slug }}?work_search={{ backlog_search|urlencode }}&work_page={{ backlog_page }}&statement_search={{ candidate_search|urlencode }}&statement_page={{ candidate_backlog_page - 1 }}#extracted-statements">Previous</a>

@@ -63,7 +63,7 @@
       </form>
     </section>
   {% else %}
-    <h2>Verified Evidence</h2>
+    <h2>{% if pending_authority_gap %}Closure Evidence{% else %}Verified Evidence{% endif %}</h2>
     {% for evidence in candidate_evidence %}
       <section class="evidence">
         <span class="muted">{{ evidence.filename }} · registered page {{ evidence.page_no }}</span>
@@ -88,6 +88,24 @@
       <p class="error">This extracted statement has no complete registered Evidence and cannot be saved.</p>
     {% endfor %}
 
+    {% if pending_authority_gap %}
+      <section class="choice">
+        <h2>{{ pending_authority_gap.title }}</h2>
+        <p>{{ pending_authority_gap.detail }}</p>
+        <p><b>Closure statement:</b> {{ candidate_description }}</p>
+        {% if candidate_party %}<p><b>External Party context:</b> {{ candidate_party }}</p>{% endif %}
+        <p class="muted">This work remains pending. Recording the gap does not close a Commitment, choose scope, or change any Dependency.</p>
+      </section>
+      {% if unresolved_acknowledgment %}
+        <section class="saved">
+          <b>Kept unresolved in the Work List.</b>
+          <p>Recorded unresolved authority gap: {{ pending_authority_gap_label }}.</p>
+        </section>
+      {% endif %}
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/keep-unresolved">
+        <button type="submit">Keep unresolved in the Work List</button>
+      </form>
+    {% else %}
     {% if candidate_party and not candidate_affected_party_id %}
       <p class="choice"><b>Extracted context suggestion — not yet supported as a fact:</b> {{ candidate_party }}. Resolve the affected External Party below.</p>
     {% endif %}
@@ -216,6 +234,7 @@
         <button type="submit">Mark Not Relevant</button>
       </fieldset>
     </form>
+    {% endif %}
   {% endif %}
 
   {% if history %}
@@ -238,6 +257,7 @@
   const affectedParty = document.querySelector('#affected-party');
   const statedParty = document.querySelector('#stated-party');
   const statedPartyWords = document.querySelector('input[name="stated_party"]');
+  {% if not pending_authority_gap %}
   const scopeEntries = document.querySelectorAll('[data-dependency-party]');
   const scopeModes = document.querySelectorAll('input[name="scope_mode"]');
   const selectedScope = document.querySelector('#selected-scope-dependencies');
@@ -262,6 +282,7 @@
   if (affectedParty) affectedParty.addEventListener('change', syncScopeChoices);
   for (const mode of scopeModes) mode.addEventListener('change', syncScopeChoices);
   syncScopeChoices();
+  {% endif %}
   function syncStatedPartyWords() {
     if (!statedParty || !statedPartyWords) return;
     const option = statedParty.options[statedParty.selectedIndex];

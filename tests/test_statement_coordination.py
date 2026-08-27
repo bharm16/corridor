@@ -17,7 +17,11 @@ from corridor.dependency_events import (
     current_statement_evidence_memberships,
 )
 from corridor.extraction_runs import declare_active_run, record_extraction_run
-from corridor.external_statements import CitedStatementEvidence, StatementScope, StatementTiming
+from corridor.external_statements import (
+    CitedStatementEvidence,
+    StatementScope,
+    StatementTiming,
+)
 from corridor.models import (
     Candidate,
     CandidateDisposition,
@@ -42,7 +46,9 @@ from corridor.models import (
     WorkDecisionMilestoneImpact,
 )
 from corridor.principals import HumanPrincipal
+from corridor.statement_lifecycle import current_lineage_statement
 from corridor.statement_coordination import (
+    CLOSURE_TARGET_RELATIONSHIP_GAP,
     StaleStatementCoordination,
     StatementCoordinationDraft,
     StatementCoordinationRefusal,
@@ -51,6 +57,8 @@ from corridor.statement_coordination import (
     correct_statement_facts,
     correct_statement_scope,
     mark_statement_not_relevant,
+    keep_statement_unresolved,
+    pending_statement_authority_gap,
     restore_statement_not_relevant,
     StatementFactCorrectionDraft,
     StatementScopeCorrection,
@@ -173,6 +181,7 @@ def _candidate(
         page_errors=0,
         candidates=[candidate],
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=RECORDER)
     return candidate
@@ -947,6 +956,88 @@ def test_correcting_statement_facts_appends_a_successor_and_marks_its_plan_for_r
     ]
 
 
+def test_http_fact_correction_receipt_binds_both_statement_versions(
+    session, project, party, roster_entry
+):
+    original_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    corrected_quote = "Kinder Morgan will complete relocation by July 1, 2026."
+    document = _document(
+        session,
+        project,
+        "http-fact-correction-receipt.pdf",
+        f"{original_quote}\n{corrected_quote}",
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=original_quote,
+        fields={"event_type": "commitment", "description": original_quote},
+    )
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=original_quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, original_quote),),
+        ),
+        principal=RECORDER,
+    )
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/statements/{project.slug}/{candidate.id}/correct/facts",
+                data={
+                    "expected_statement_event_id": str(result.event.id),
+                    "affected_external_org_id": str(party.id),
+                    "stated_party": party.name,
+                    "stated_external_org_id": str(party.id),
+                    "event_date": "2025-01-17",
+                    "description": corrected_quote,
+                    "new_timing_text": "July 1, 2026",
+                    "new_timing_precision": "day",
+                    "new_timing_start_date": "2026-07-01",
+                    "new_timing_end_date": "2026-07-01",
+                    "evidence_document_id": str(document.id),
+                    "evidence_page_no": "1",
+                    "evidence_quote": corrected_quote,
+                },
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    successor = current_lineage_statement(
+        session, result.event.commitment_lineage_id
+    )
+    assert successor is not None and successor.id != result.event.id
+    receipt = session.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.action == "product_proving_frontend_request",
+            AuditLog.after_json["route_name"].astext
+            == "correct_statement_facts_from_screen",
+        )
+        .order_by(AuditLog.id.desc())
+    )
+    assert receipt is not None
+    subject = receipt.after_json["subject"]
+    assert subject == {
+        "project_id": project.id,
+        "candidate_id": candidate.id,
+        "commitment_lineage_id": result.event.commitment_lineage_id,
+        "predecessor_statement_event_id": result.event.id,
+        "successor_statement_event_id": successor.id,
+    }
+
+
 def test_fact_correction_can_bind_new_source_words_to_the_same_selected_party(
     session, project, roster_entry
 ):
@@ -1375,6 +1466,41 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
             assert "PL19 — KM crossing" in correct_screen.text
             assert "6608+70" in correct_screen.text
             assert "6616+50" in correct_screen.text
+            scope_count_before_refusal = session.scalar(
+                select(func.count()).select_from(DependencyEventScopeDecision)
+            )
+            refused = client.post(
+                f"/statements/{project.slug}/{correct_candidate.id}/correct/scope",
+                data={
+                    "expected_statement_event_id": str(
+                        correct_receipt.dependency_event_id
+                    ),
+                    "expected_scope_decision_id": str(
+                        correct_receipt.scope_decision_id
+                    ),
+                    "scope_mode": "selected",
+                },
+                follow_redirects=False,
+            )
+            assert refused.status_code == 400
+            assert "selected scope must name" in refused.text
+            assert session.scalar(
+                select(func.count()).select_from(DependencyEventScopeDecision)
+            ) == scope_count_before_refusal
+            refusal_receipt = session.scalar(
+                select(AuditLog)
+                .where(
+                    AuditLog.action == "product_proving_frontend_request",
+                    AuditLog.entity_type == "project",
+                    AuditLog.entity_id == project.id,
+                    AuditLog.after_json["route_name"].astext
+                    == "correct_statement_scope_from_screen",
+                    AuditLog.after_json["status"].astext == "400",
+                )
+                .order_by(AuditLog.id.desc())
+            )
+            assert refusal_receipt is not None
+            assert refusal_receipt.human_principal == RECORDER.subject
             corrected = client.post(
                 f"/statements/{project.slug}/{correct_candidate.id}/correct/scope",
                 data={
@@ -1446,6 +1572,207 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
             assert irrelevant_candidate.state == "pending"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_same_document_replay_authority_gap_uses_project_language():
+    from corridor.statement_coordination import _DEPENDENCY_AUTHORITY_GAP_COPY
+
+    title, detail = _DEPENDENCY_AUTHORITY_GAP_COPY[
+        "same_document_replay_unproven"
+    ]
+    assert title == "Same-source Dependency replay not established"
+    assert "current Dependency association" in detail
+    assert "pending for Evidence review" in detail
+
+
+def test_closure_without_an_exact_target_can_only_be_kept_as_attributable_unresolved_work(
+    session, project, party
+):
+    quote = "As-built package for the Kinder Morgan crossing is Complete."
+    document = _document(session, project, "meeting-notes/kinder-morgan.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "closure",
+            "event_date": "2025-01-16",
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+        },
+    )
+
+    receipt = keep_statement_unresolved(
+        session,
+        project.id,
+        candidate.id,
+        principal=RECORDER,
+    )
+    repeated = keep_statement_unresolved(
+        session,
+        project.id,
+        candidate.id,
+        principal=RECORDER,
+    )
+
+    session.refresh(candidate)
+    assert candidate.state == "pending"
+    assert receipt.action == audit.KEEP_STATEMENT_UNRESOLVED
+    assert receipt.entity_type == audit.CANDIDATE
+    assert receipt.entity_id == candidate.id
+    assert receipt.actor == RECORDER.subject
+    assert receipt.human_principal == RECORDER.subject
+    assert receipt.before_json == {"candidate_state": "pending"}
+    assert receipt.after_json == {
+        "candidate_state": "pending",
+        "authority_gap": "closure_target_commitment_not_established",
+        "affected_external_org_id": party.id,
+        "matching_open_commitment_lineage_ids": [],
+    }
+    assert repeated.id == receipt.id
+    assert session.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(
+            AuditLog.entity_id == candidate.id,
+            AuditLog.action == audit.KEEP_CANDIDATE_UNRESOLVED,
+        )
+    ) == 1
+
+
+def test_pending_closure_screen_names_the_authority_gap_without_timing_or_scope_quizzes(
+    session, project, party
+):
+    quote = "As-built package for the Kinder Morgan crossing is Complete."
+    document = _document(session, project, "meeting-notes/kinder-morgan.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "closure",
+            "event_date": "2025-01-16",
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+
+            assert screen.status_code == 200
+            assert quote in screen.text
+            assert "Closure Evidence" in screen.text
+            assert "Exact target Commitment not established" in screen.text
+            assert (
+                "The Evidence establishes a closure statement, but it does not "
+                "identify an open Commitment in the Project Record that it closes."
+                in screen.text
+            )
+            assert "No structured timing is available" not in screen.text
+            assert "Commitment Scope" not in screen.text
+            assert 'name="scope_mode"' not in screen.text
+            assert "Mark Not Relevant" not in screen.text
+            assert (
+                f'action="/statements/{project.slug}/{candidate.id}/keep-unresolved"'
+                in screen.text
+            )
+
+            saved = client.post(
+                f"/statements/{project.slug}/{candidate.id}/keep-unresolved",
+                follow_redirects=False,
+            )
+            assert saved.status_code == 303
+            session.refresh(candidate)
+            assert candidate.state == "pending"
+
+            acknowledged = client.get(saved.headers["location"])
+            assert acknowledged.status_code == 200
+            assert "Kept unresolved in the Work List" in acknowledged.text
+            assert "Recorded unresolved authority gap" in acknowledged.text
+            assert "Closure target Commitment not established" in acknowledged.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_closure_gap_distinguishes_one_possible_commitment_from_an_established_target(
+    session, project, party, roster_entry
+):
+    commitment_quote = f"{party.name} will complete the crossing in June 2026."
+    commitment_document = _document(
+        session,
+        project,
+        "meeting-notes/commitment.pdf",
+        commitment_quote,
+    )
+    commitment_candidate = _candidate(
+        session,
+        project,
+        commitment_document,
+        quote=commitment_quote,
+        fields={
+            "event_type": "commitment",
+            "event_date": "2025-01-16",
+            "description": commitment_quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+        },
+    )
+    commitment = coordinate_statement(
+        session,
+        _draft(
+            commitment_candidate,
+            party,
+            roster_entry,
+            description=commitment_quote,
+            new_timing=StatementTiming.month("June 2026", 2026, 6),
+            evidence=(
+                CitedStatementEvidence(commitment_document.id, 1, commitment_quote),
+            ),
+        ),
+        principal=RECORDER,
+    )
+    closure_quote = f"The {party.name} crossing is Complete."
+    closure_document = _document(
+        session,
+        project,
+        "meeting-notes/closure.pdf",
+        closure_quote,
+    )
+    closure_candidate = _candidate(
+        session,
+        project,
+        closure_document,
+        quote=closure_quote,
+        fields={
+            "event_type": "closure",
+            "event_date": "2025-02-16",
+            "description": closure_quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+        },
+    )
+
+    gap = pending_statement_authority_gap(
+        session,
+        project.id,
+        closure_candidate.id,
+    )
+
+    assert gap is not None
+    assert gap.code == CLOSURE_TARGET_RELATIONSHIP_GAP
+    assert gap.title == "Closure-to-Commitment relationship not established"
+    assert gap.matching_commitment_lineage_ids == (
+        commitment.event.commitment_lineage_id,
+    )
 
 
 def test_http_screen_uses_supported_affected_party_without_inventing_the_speaker(

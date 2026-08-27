@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
+from corridor.extractor_lineage import injected_extractor_config
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.models import (
     ActiveExtractionRun,
@@ -77,6 +78,7 @@ def test_active_run_declared_by_explicit_run_id(session, project):
         prompt_version=PROMPT_VERSION,
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     record_extraction_run(
         session,
@@ -84,6 +86,7 @@ def test_active_run_declared_by_explicit_run_id(session, project):
         prompt_version=f"{PROMPT_VERSION}.v2",
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     session.flush()
 
@@ -104,6 +107,7 @@ def test_newer_runs_do_not_imply_active_run(session, project):
         prompt_version=f"{PROMPT_VERSION}.v1",
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     session.flush()
     extraction_runs.declare_active_run(
@@ -116,6 +120,7 @@ def test_newer_runs_do_not_imply_active_run(session, project):
         prompt_version=f"{PROMPT_VERSION}.v2-experimental",
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     _ = record_extraction_run(
         session,
@@ -123,6 +128,7 @@ def test_newer_runs_do_not_imply_active_run(session, project):
         prompt_version=f"{PROMPT_VERSION}.v2-backfill",
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     session.flush()
 
@@ -147,6 +153,7 @@ def test_a_projection_that_diverged_from_its_history_refuses_to_extend(
         prompt_version=f"{PROMPT_VERSION}.first",
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     second = record_extraction_run(
         session,
@@ -154,6 +161,7 @@ def test_a_projection_that_diverged_from_its_history_refuses_to_extend(
         prompt_version=f"{PROMPT_VERSION}.second",
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     extraction_runs.declare_active_run(
         session, doc.id, first.id, principal=DECLARER
@@ -195,6 +203,7 @@ def test_run_receipt_carries_provenance_and_owns_its_candidates(session, project
         candidates=(candidate,),
         model="test-model",
         schema_version="dependency-schema-v3",
+        allow_unsealed_legacy=True,
     )
     session.flush()
 
@@ -225,6 +234,140 @@ def test_run_receipt_carries_provenance_and_owns_its_candidates(session, project
     ]
 
 
+def test_run_receipt_persists_extractor_time_configuration_and_usage(
+    session, project
+):
+    doc = add_matrix(session, project, "sealed.pdf", "0" * 64)
+    config = injected_extractor_config(
+        extractor="fixture",
+        prompt_version=PROMPT_VERSION,
+        model="test-model",
+        schema_version="dependency-schema-v3",
+        prompt_bytes=b"exact prompt\n",
+        schema={"type": "object"},
+        postprocessor_bytes=b"exact rules\n",
+        request_controls={"strict": True, "store": False},
+    )
+    usage = {
+        "scope": "run",
+        "document_ids": [doc.id],
+        "measurement": "exact",
+        "prompt_tokens": 41,
+        "completion_tokens": 7,
+        "reasoning_tokens": 0,
+        "cached_tokens": 12,
+    }
+
+    run = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+        model="test-model",
+        schema_version="dependency-schema-v3",
+        extractor_config=config,
+        token_usage=usage,
+    )
+    session.flush()
+
+    assert run.prompt_sha256 == config.prompt_sha256
+    assert run.schema_sha256 == config.schema_sha256
+    assert run.postprocessor_sha256 == config.postprocessor_sha256
+    assert run.extractor_config_json == config.config_json
+    assert run.extractor_config_sha256 == config.config_sha256
+    assert run.token_usage_json == usage
+
+
+def test_run_receipt_rejects_partial_or_mismatched_configuration(session, project):
+    doc = add_matrix(session, project, "mismatch.pdf", "f" * 64)
+    config = injected_extractor_config(
+        extractor="fixture",
+        prompt_version=PROMPT_VERSION,
+        model="test-model",
+        schema_version="dependency-schema-v3",
+        prompt_bytes=b"exact prompt\n",
+        schema={"type": "object"},
+        postprocessor_bytes=b"exact rules\n",
+        request_controls={"strict": True},
+    )
+    usage = {
+        "scope": "run",
+        "document_ids": [doc.id],
+        "measurement": "exact",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+    }
+
+    with pytest.raises(ValueError, match="recorded together"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=0,
+            page_errors=0,
+            model="test-model",
+            schema_version="dependency-schema-v3",
+            extractor_config=config,
+        )
+
+    with pytest.raises(ValueError, match="model does not match"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=0,
+            page_errors=0,
+            model="different-model",
+            schema_version="dependency-schema-v3",
+            extractor_config=config,
+            token_usage=usage,
+        )
+
+    invalid_membership = {
+        **usage,
+        "scope": "batch",
+        "document_ids": [doc.id, -1],
+    }
+    with pytest.raises(ValueError, match="positive integers"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=0,
+            page_errors=0,
+            model="test-model",
+            schema_version="dependency-schema-v3",
+            extractor_config=config,
+            token_usage=invalid_membership,
+        )
+
+
+def test_new_run_refuses_unsealed_configuration_by_default(session, project):
+    doc = add_matrix(session, project, "unsealed.pdf", "e" * 64)
+
+    with pytest.raises(ValueError, match="exact extractor configuration"):
+        record_extraction_run(
+            session,
+            doc,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=0,
+            page_errors=0,
+        )
+
+    historical_fixture = record_extraction_run(
+        session,
+        doc,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+        allow_unsealed_legacy=True,
+    )
+    assert historical_fixture.extractor_config_json is None
+
+
 def test_run_input_snapshot_precedes_later_candidate_edits(session, project):
     doc = add_matrix(session, project, "snapshot.pdf", "9" * 64)
     candidate = Candidate(
@@ -247,6 +390,7 @@ def test_run_input_snapshot_precedes_later_candidate_edits(session, project):
         candidates=(candidate,),
         model="test-model",
         schema_version="dependency-schema-v3",
+        allow_unsealed_legacy=True,
     )
 
     candidate.payload_json = {
@@ -286,6 +430,7 @@ def test_run_receipt_rejects_missing_or_already_owned_candidate_inputs(
             candidate_count=1,
             page_errors=0,
             model="test-model",
+            allow_unsealed_legacy=True,
         )
 
     first = record_extraction_run(
@@ -296,6 +441,7 @@ def test_run_receipt_rejects_missing_or_already_owned_candidate_inputs(
         page_errors=0,
         candidates=(candidate,),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     session.flush()
     assert candidate.extraction_run_id == first.id
@@ -309,6 +455,7 @@ def test_run_receipt_rejects_missing_or_already_owned_candidate_inputs(
             page_errors=0,
             candidates=(candidate,),
             model="test-model",
+            allow_unsealed_legacy=True,
         )
 
 
@@ -342,6 +489,7 @@ def test_run_receipt_rejects_cross_project_or_duplicate_candidates(session, proj
             page_errors=0,
             candidates=(candidate,),
             model="test-model",
+            allow_unsealed_legacy=True,
         )
 
     candidate.project_id = project.id
@@ -354,6 +502,7 @@ def test_run_receipt_rejects_cross_project_or_duplicate_candidates(session, proj
             page_errors=0,
             candidates=(candidate, candidate),
             model="test-model",
+            allow_unsealed_legacy=True,
         )
 
 
@@ -372,6 +521,7 @@ def test_real_run_receipts_reject_delete_and_truncate(session):
         prompt_version=PROMPT_VERSION,
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
 
     with pytest.raises(IntegrityError, match="receipts are immutable"):
@@ -419,6 +569,7 @@ def test_attached_candidate_lineage_rejects_mutation_delete_and_truncate(session
         page_errors=0,
         candidates=(candidate,),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     another_run = record_extraction_run(
         session,
@@ -427,6 +578,7 @@ def test_attached_candidate_lineage_rejects_mutation_delete_and_truncate(session
         candidate_count=0,
         page_errors=0,
         model="test-model",
+        allow_unsealed_legacy=True,
     )
 
     for values in (
@@ -485,6 +637,7 @@ def test_non_demo_synthetic_run_receipts_still_reject_delete(session, project):
         prompt_version=PROMPT_VERSION,
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
 
     with pytest.raises(IntegrityError, match="receipts are immutable"):
@@ -518,6 +671,7 @@ def test_demo_run_receipts_remain_deletable_for_reset(session):
         page_errors=0,
         candidates=(candidate,),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
 
     session.execute(delete(Candidate).where(Candidate.id == candidate.id))
@@ -537,6 +691,7 @@ def test_failed_or_foreign_runs_cannot_be_declared_active(session, project):
         page_errors=1,
         outcome="failed",
         error_detail="upstream unavailable",
+        allow_unsealed_legacy=True,
     )
     completed = record_extraction_run(
         session,
@@ -544,6 +699,7 @@ def test_failed_or_foreign_runs_cannot_be_declared_active(session, project):
         prompt_version=PROMPT_VERSION,
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     session.flush()
 
@@ -570,6 +726,7 @@ def test_operator_entrypoint_declares_the_exact_active_run(
         prompt_version=PROMPT_VERSION,
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     session.flush()
     document_id = doc.id
@@ -625,6 +782,7 @@ def _completed_run(session, doc, suffix):
         prompt_version=f"{PROMPT_VERSION}.{suffix}",
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
 
 

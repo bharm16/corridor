@@ -1389,7 +1389,7 @@ def render(report: Report) -> str:
  @media screen {{
    body {{ margin: 2rem auto; max-width: 60rem; padding: 0 1.5rem; }}
  }}
- @page {{ size: A4; margin: 1.5cm; }}
+ @page {{ size: A4; margin: 1.5cm 1.6cm; }}
 </style>
 <h1>Readiness — {html.escape(report.project_name)}</h1>
 <p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC{evaluated} · ruleset {report.ruleset_version}</p>

@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 
+from corridor import policy
 from corridor.db import Session, engine
 from corridor.dependency_events import current_scope_decision_filter
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -24,12 +25,14 @@ from corridor.models import (
     Candidate,
     CandidateDisposition,
     Dependency,
+    DependencyAdmissionOutcome,
     DependencyEvent,
     DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
     DocPage,
     Document,
+    EvidenceInvestigationCandidateReviewStart,
     EvidenceLink,
     EventAdmissionOutcome,
     ExternalOrg,
@@ -194,6 +197,7 @@ def _record_pending_statement_candidates(session, project, specifications):
         page_errors=0,
         candidates=tuple(candidates),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=RECORDER)
     admission_run = PolicyRun(
@@ -217,6 +221,100 @@ def _record_pending_statement_candidates(session, project, specifications):
         )
         for candidate, specification in zip(candidates, specifications, strict=True)
     )
+    session.flush()
+    return tuple(candidates)
+
+
+def _record_pending_dependency_candidates(session, project, specifications):
+    """Record ordinary dependency proposals from one declared Active Run."""
+    document = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(
+            f"dependency-work-list-{project.slug}-{len(specifications)}".encode()
+        ).hexdigest(),
+        filename="utility-matrix/current-active-run.pdf",
+        doc_type="matrix",
+        doc_date=date(2025, 1, 20),
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+
+    candidates = []
+    for page_no, specification in enumerate(specifications, start=1):
+        quote = specification["quote"]
+        session.add(DocPage(document_id=document.id, page_no=page_no, text=quote))
+        candidate = Candidate(
+            project_id=project.id,
+            kind="dependency",
+            payload_json={
+                "kind": "dependency",
+                "fields": {
+                    "conflict_ref": specification["conflict_ref"],
+                    "external_org": specification["external_org"],
+                    "description": specification["description"],
+                },
+                "citations": [
+                    {
+                        "document_id": document.id,
+                        "page": page_no,
+                        "quote": quote,
+                        "verified": True,
+                    }
+                ],
+            },
+            source_document_id=document.id,
+            source_pages=[page_no],
+            confidence=0.9,
+            prompt_version="dependency-work-list-test",
+            model="test-model",
+            citations_verified=True,
+        )
+        candidates.append(candidate)
+
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="dependency-work-list-test",
+        candidate_count=len(candidates),
+        page_errors=0,
+        candidates=tuple(candidates),
+        model="test-model",
+        allow_unsealed_legacy=True,
+    )
+    declare_active_run(session, document.id, run.id, principal=RECORDER)
+    admission_run = PolicyRun(
+        project_id=project.id,
+        family="dependency-admission",
+        policy_approval_id=None,
+        policy_version="dependency-work-list-test",
+        policy_sha256="b" * 64,
+        abstention_reason_version="dependency-work-list-test",
+        applied_count=0,
+        abstained_count=len(candidates),
+    )
+    session.add(admission_run)
+    session.flush()
+    outcomes = []
+    for candidate, specification in zip(candidates, specifications, strict=True):
+        reason = specification.get("reason", "no_row_identity")
+        eligibility = {
+            "input": {"candidate_id": candidate.id},
+            "verdict": reason,
+            "reason_version": "dependency-work-list-test",
+        }
+        outcomes.append(
+            DependencyAdmissionOutcome(
+                policy_run_id=admission_run.id,
+                family="dependency-admission",
+                candidate_id=candidate.id,
+                outcome="abstained",
+                reason=reason,
+                eligibility_json=eligibility,
+                eligibility_sha256=policy.canonical_sha256(eligibility),
+            )
+        )
+    session.add_all(outcomes)
     session.flush()
     return tuple(candidates)
 
@@ -863,12 +961,10 @@ def test_work_list_caps_immediate_cards_after_authoritative_work_and_orders_cand
         "Review who spoke, what timing is supported, and where this statement belongs."
     )
     assert all(item.kind != "candidate" for item in work_list.immediate[:2])
-    assert work_list.candidate_backlog_total == 3
-    assert [item.candidate_id for item in work_list.candidate_backlog] == [
-        candidates[4].id,
-        candidates[3].id,
-        candidates[2].id,
-    ]
+    assert work_list.candidate_backlog_total == 21
+    assert {item.candidate_id for item in work_list.candidate_backlog} == {
+        candidate.id for candidate in candidates
+    }
 
 
 def test_candidate_lead_exposes_source_context_without_promoting_extracted_facts(
@@ -993,8 +1089,8 @@ def test_candidate_backlog_is_searchable_and_paginated_on_the_coordinator_home(
     first_page = client.get(f"/work/{project.slug}")
 
     assert first_page.status_code == 200
-    assert "All extracted statements" in first_page.text
-    assert "28 extracted statements" in first_page.text
+    assert "All extracted work" in first_page.text
+    assert "28 extracted items" in first_page.text
     assert "Page 1 of 2" in first_page.text
     assert "Air Products will be invited to a May workshop." in first_page.text
     assert "General extracted statement 27." in first_page.text
@@ -1012,9 +1108,155 @@ def test_candidate_backlog_is_searchable_and_paginated_on_the_coordinator_home(
     searched = client.get(f"/work/{project.slug}?statement_search=Air+Products")
 
     assert searched.status_code == 200
-    assert "1 extracted statement" in searched.text
+    assert "1 extracted item" in searched.text
     assert "Air Products will be invited to a May workshop." in searched.text
     assert "General extracted statement 01." not in searched.text
+
+
+def test_work_list_includes_every_active_run_dependency_proposal_with_ordinary_queue_links(
+    client, session, project
+):
+    [statement] = _record_pending_statement_candidates(
+        session,
+        project,
+        [
+            {
+                "event_type": "status_update",
+                "event_date": date(2025, 1, 21),
+                "external_org": "Equistar",
+                "quote": "Equistar discussed current utility coordination.",
+                "reason": "event_type_outside_policy",
+            }
+        ],
+    )
+    dependencies = _record_pending_dependency_candidates(
+        session,
+        project,
+        [
+            {
+                "conflict_ref": f"PL{number:02d}",
+                "external_org": "Equistar",
+                "description": f"Equistar utility crossing {number:02d}",
+                "quote": f"PL{number:02d} Equistar crossing at station {number:02d}+00.",
+            }
+            for number in range(1, 28)
+        ],
+    )
+
+    work_list = build_work_list(session, project.id)
+
+    assert work_list.event_candidate_total == 1
+    assert work_list.dependency_candidate_total == 27
+    assert work_list.candidate_backlog_total == 28
+    assert {item.candidate_id for item in work_list.candidate_backlog}.issubset(
+        {statement.id, *(candidate.id for candidate in dependencies)}
+    )
+
+    first_page = client.get(f"/work/{project.slug}")
+
+    assert first_page.status_code == 200
+    assert "1 extracted External Party statement" in first_page.text
+    assert "27 extracted Dependencies" in first_page.text
+    assert "28 extracted items" in first_page.text
+    assert "Page 1 of 2" in first_page.text
+    assert "PL24 Equistar crossing at station 24+00." in first_page.text
+    assert "PL27 Equistar crossing at station 27+00." not in first_page.text
+    assert "utility-matrix/current-active-run.pdf" in first_page.text
+
+    second_page = client.get(f"/work/{project.slug}?statement_page=2")
+    assert "PL27 Equistar crossing at station 27+00." in second_page.text
+
+    exact = dependencies[22]
+    searched = client.get(
+        f"/work/{project.slug}?statement_search=PL23+Equistar+crossing"
+    )
+    assert searched.status_code == 200
+    assert "1 extracted item" in searched.text
+    assert "PL23 Equistar crossing at station 23+00." in searched.text
+    assert (
+        f'href="/queue/{project.slug}?lane=candidate&amp;mode=review&amp;candidate_id={exact.id}"'
+        in searched.text
+    )
+
+    queue = client.get(
+        f"/queue/{project.slug}?lane=candidate&mode=review&candidate_id={exact.id}"
+    )
+    assert queue.status_code == 200
+    assert "PL23 Equistar crossing at station 23+00." in queue.text
+    assert "External Party identity not established" in queue.text
+    assert (
+        f'action="/candidates/{exact.id}/keep-unresolved"'
+        in queue.text
+    )
+    review_start = session.scalar(
+        select(EvidenceInvestigationCandidateReviewStart).where(
+            EvidenceInvestigationCandidateReviewStart.candidate_id == exact.id
+        )
+    )
+    assert review_start is not None
+    assert review_start.principal == RECORDER.subject
+    frontend_routes = {
+        (entry.after_json or {}).get("route_name")
+        for entry in session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "project",
+                AuditLog.entity_id == project.id,
+                AuditLog.action == "product_proving_frontend_request",
+            )
+        ).all()
+    }
+    assert {"coordinator_home", "queue"} <= frontend_routes
+
+    kept = client.post(
+        f"/candidates/{exact.id}/keep-unresolved",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    assert kept.status_code == 303
+    session.refresh(exact)
+    assert exact.state == "pending"
+    receipt = session.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_type == "candidate",
+            AuditLog.entity_id == exact.id,
+            AuditLog.action == "keep_candidate_unresolved",
+        )
+        .order_by(AuditLog.id.desc())
+    )
+    assert receipt is not None
+    assert receipt.actor == RECORDER.subject
+    assert receipt.human_principal == RECORDER.subject
+    assert receipt.after_json["abstention_reason"] == "no_row_identity"
+    assert session.scalar(
+        select(AuditLog).where(
+            AuditLog.entity_type == "project",
+            AuditLog.entity_id == project.id,
+            AuditLog.action == "product_proving_frontend_request",
+            AuditLog.after_json["route_name"].astext == "keep_unresolved_candidate",
+        )
+    ) is not None
+
+    repeated = client.post(
+        f"/candidates/{exact.id}/keep-unresolved",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    assert repeated.status_code == 303
+    assert len(
+        session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == "candidate",
+                AuditLog.entity_id == exact.id,
+                AuditLog.action == "keep_candidate_unresolved",
+            )
+        ).all()
+    ) == 1
+
+    acknowledged = client.get(kept.headers["location"])
+    assert acknowledged.status_code == 200
+    assert "Kept unresolved in the Work List" in acknowledged.text
+    assert "Unresolved acknowledgment history" in acknowledged.text
 
 
 def test_authoritative_overflow_is_searchable_and_paginated_in_project_language(
@@ -1120,7 +1362,7 @@ def test_candidate_work_list_build_has_a_bounded_query_count_at_review_scale(
         event.remove(connection, "before_cursor_execute", count_statement)
 
     assert len(work_list.immediate) == 20
-    assert work_list.candidate_backlog_total == 30
+    assert work_list.candidate_backlog_total == 50
     assert statements <= 12
 
 
@@ -1192,6 +1434,7 @@ def test_coordinator_home_renders_the_public_work_list_and_guided_statement_link
         page_errors=0,
         candidates=(candidate,),
         model="test-model",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=RECORDER)
 
@@ -1606,7 +1849,11 @@ def test_scope_can_be_identified_after_the_coordination_plan(
     )
     admitted_page = client.get(f"/statements/{project.slug}/{candidate.id}/coordinate")
     assert admitted_page.status_code == 200
-    assert "Correct accepted facts or Commitment Scope" not in admitted_page.text
+    assert "Correct accepted facts or Commitment Scope" in admitted_page.text
+    assert (
+        f'href="/statements/{project.slug}/{candidate.id}/correct"'
+        in admitted_page.text
+    )
     refused = client.post(
         f"/statements/{project.slug}/{candidate.id}/admitted/scope",
         data={"scope_mode": "selected", "dependency_id": str(dependency.id)},

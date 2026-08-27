@@ -191,6 +191,7 @@ def make_candidate(
             page_errors=0,
             candidates=(c,),
             model=model,
+            allow_unsealed_legacy=True,
         )
         declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     return c
@@ -332,6 +333,7 @@ def test_candidate_lane_explains_a_durable_successor_extraction_failure(
         page_errors=1,
         outcome="failed",
         error_detail="page could not be read",
+        allow_unsealed_legacy=True,
     )
     session.flush()
 
@@ -425,6 +427,7 @@ def test_unverified_candidates_sink_but_are_never_hidden(
         page_errors=0,
         candidates=(bad, good),
         model=bad.model,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
 
@@ -472,6 +475,7 @@ def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
         page_errors=0,
         candidates=(bad, good),
         model=bad.model,
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
 
@@ -658,6 +662,7 @@ def _seed_supersession_chain(
         page_errors=0,
         candidates=(predecessor_candidate,),
         model="gpt-4o-mini",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(
         session, predecessor.id, predecessor_run.id, principal=TEST_PRINCIPAL
@@ -675,6 +680,7 @@ def _seed_supersession_chain(
             outcome="failed",
             model="gpt-4o-mini",
             error_detail="page extraction failed",
+            allow_unsealed_legacy=True,
         )
     elif include_successor_candidate:
         successor_candidate = make_candidate(
@@ -693,6 +699,7 @@ def _seed_supersession_chain(
             page_errors=0,
             candidates=(successor_candidate,),
             model="gpt-4o-mini",
+            allow_unsealed_legacy=True,
         )
     else:
         successor_run = record_extraction_run(
@@ -702,6 +709,7 @@ def _seed_supersession_chain(
             candidate_count=0,
             page_errors=0,
             model="gpt-4o-mini",
+            allow_unsealed_legacy=True,
         )
 
     declaration = Declaration(
@@ -1049,6 +1057,7 @@ def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(
         page_errors=0,
         candidates=(experimental,),
         model="gpt-4o-mini",
+        allow_unsealed_legacy=True,
     )
     chain["activate_successor"]()
 
@@ -1798,6 +1807,7 @@ def test_accepting_creates_a_dependency_and_advances(
         follow_redirects=False,
     )
     assert r.status_code == 303
+    assert r.headers["location"] == f"/work/{project.slug}"
     assert candidate.state == "accepted"
     assert session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
@@ -2456,6 +2466,7 @@ def _event_candidate(session, project, document):
         candidate_count=1,
         page_errors=0,
         candidates=(c,),
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     return c
@@ -2688,6 +2699,7 @@ def _rehearsal_receipt(
             candidates=tuple(made),
             model="gpt-test",
             schema_version="matrix_candidate_shape_v1",
+            allow_unsealed_legacy=True,
         )
         session.flush()
         return recorded, made
@@ -3421,7 +3433,20 @@ def test_rehearsal_coordination_opens_the_existing_report_workspace_in_a_new_tab
         session.scalar(select(func.count()).select_from(WorkDecision))
         == before_decisions
     )
-    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
+    assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit + 1
+    request_receipt = session.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.action == "product_proving_frontend_request",
+            AuditLog.entity_type == "project",
+            AuditLog.entity_id == project.id,
+        )
+        .order_by(AuditLog.id.desc())
+    )
+    assert request_receipt is not None
+    assert request_receipt.after_json["route_name"] == "reports"
+    assert request_receipt.after_json["method"] == "GET"
+    assert request_receipt.after_json["status"] == 200
     session.refresh(member)
     assert member.state == before_state
 
@@ -3806,6 +3831,7 @@ def _event_cohort_lane(session, project):
             candidates=candidates,
             model="gpt-test",
             schema_version="matrix_candidate_shape_v1",
+            allow_unsealed_legacy=True,
         )
         session.flush()
         return made
@@ -4170,6 +4196,7 @@ def test_a_document_with_two_readings_waits_rather_than_being_guessed(
             page_errors=0,
             model="gpt-test",
             schema_version="matrix_candidate_shape_v1",
+            allow_unsealed_legacy=True,
         )
     session.flush()
 
@@ -4258,6 +4285,7 @@ def _disagreeing_project(session, project):
             candidates=(candidate,),
             model="gpt-test",
             schema_version="matrix_candidate_shape_v1",
+            allow_unsealed_legacy=True,
         )
         session.flush()
     declare_single_run_documents(session, project.id, principal=TEST_PRINCIPAL)
@@ -4591,6 +4619,7 @@ def _unplaced_statement(session, project):
             candidates=cs,
             model="gpt-test",
             schema_version="matrix_candidate_shape_v1",
+            allow_unsealed_legacy=True,
         )
     session.flush()
     load_project(session, project.id)
@@ -4986,3 +5015,78 @@ def test_a_dismissed_record_leaves_the_reviewer_worklist(
         if getattr(review, "dependency_id", None)
     }
     assert dependency.id not in named
+
+
+def test_same_document_replay_residual_has_human_review_copy():
+    from corridor.web.app import REVIEW_REASONS
+
+    headline, guidance = REVIEW_REASONS["same_document_replay_unproven"]
+    assert headline == (
+        "This source row was previously handled, but safe replay is not proven."
+    )
+    assert "current Dependency association" in guidance
+    assert "review the cited Evidence" in guidance
+
+
+def test_frontend_request_receipt_uses_response_status_and_type_tagged_hashes(
+    session, project
+):
+    from starlette.responses import Response
+
+    from corridor.frontend_request_receipts import (
+        FrontendRequestSubject,
+        record_frontend_request,
+        request_fields_sha256,
+    )
+
+    assert request_fields_sha256({"value": None}) != request_fields_sha256(
+        {"value": ""}
+    )
+    empty_bytes_tag = (
+        "bytes-sha256:"
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert request_fields_sha256({"value": b""}) != request_fields_sha256(
+        {"value": empty_bytes_tag}
+    )
+    assert request_fields_sha256([("b", "2"), ("a", "1")]) == (
+        request_fields_sha256([("a", "1"), ("b", "2")])
+    )
+    assert request_fields_sha256({"member": ["2", "1"]}) == (
+        request_fields_sha256({"member": ["1", "2"]})
+    )
+
+    secret = "project-person private free text"
+    entry = record_frontend_request(
+        session,
+        principal=TEST_PRINCIPAL,
+        route_name="correct_statement_scope_from_screen",
+        route_template="/statements/{slug}/{candidate_id}/correct/scope",
+        method="POST",
+        response=Response(status_code=409),
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields={"private": secret},
+    )
+
+    assert entry.after_json["status"] == 409
+    assert entry.after_json["schema_version"].endswith(".v2")
+    assert secret not in json.dumps(entry.after_json)
+
+    with pytest.raises(ValueError, match="registered route"):
+        record_frontend_request(
+            session,
+            principal=TEST_PRINCIPAL,
+            route_name="correct_statement_scope_from_screen",
+            route_template="/wrong-template",
+            method="POST",
+            response=Response(status_code=409),
+            subject=FrontendRequestSubject(project_id=project.id),
+        )
+
+
+@pytest.mark.parametrize("invalid_id", [True, 1.5, "1", 0, -1])
+def test_frontend_request_subject_refuses_non_positive_integer_ids(invalid_id):
+    from corridor.frontend_request_receipts import FrontendRequestSubject
+
+    with pytest.raises((TypeError, ValueError)):
+        FrontendRequestSubject(project_id=invalid_id).as_json()  # type: ignore[arg-type]

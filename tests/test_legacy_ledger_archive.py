@@ -131,6 +131,7 @@ def legacy_ledger(session):
         candidates=(candidate,),
         model="legacy-model",
         schema_version="dependency-v1",
+        allow_unsealed_legacy=True,
     )
     candidate.state = "accepted"
     dependency = Dependency(
@@ -721,6 +722,7 @@ def test_retired_reference_codes_are_never_reused(session, legacy_ledger):
         candidates=(candidate,),
         model="test-model",
         schema_version="dependency-v1",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=DECLARER)
 

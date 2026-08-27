@@ -107,6 +107,7 @@ def make_candidate(session, document):
         page_errors=0,
         candidates=(candidate,),
         model=candidate.model,
+        allow_unsealed_legacy=True,
     )
     session.flush()
     declare_active_run(session, document.id, run.id, principal=DECLARER)

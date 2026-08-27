@@ -321,15 +321,22 @@ def test_the_router_sends_a_pdf_to_the_page_extractor(session, project, monkeypa
 
     seen = {}
     monkeypatch.setattr(pipeline, "stored_file", lambda d: Path("x.pdf"))
-    def extract_pdf(session, target, client=None):
+    def extract_pdf(session, target, client=None, **_runtime):
         seen["client"] = client
         return []
 
     monkeypatch.setattr("corridor.extract_matrix.extract_document", extract_pdf)
 
-    pipeline.extract_any(session, document, client="the-client")
+    class Client:
+        model = "gpt-sheet-route-test"
+        effort = "none"
+        flex = False
+        base_url = "https://provider.example/v1"
 
-    assert seen["client"] == "the-client"
+    client = Client()
+    pipeline.extract_any(session, document, client=client)
+
+    assert seen["client"] is client
 
 
 def test_a_retired_row_is_excluded_by_rule_not_luck(session, project, tmp_path):

@@ -17,7 +17,7 @@ thread-safe, so every `session.add` happens back on the calling thread.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,6 +26,13 @@ from dataclasses import dataclass
 
 from corridor.admission import load_and_report
 from corridor.extraction_runs import completed_document_ids, record_extraction_run
+from corridor.extractor_lineage import (
+    ExtractorConfig,
+    deployed_extractor_config,
+    token_usage_delta,
+    usage_snapshot,
+    validate_runtime_config,
+)
 from corridor.llm import DEFAULT_WORKERS, complete_many
 from corridor.models import Candidate, DocPage, Document
 
@@ -81,12 +88,28 @@ def extract_documents(
     schema: dict,
     min_page_chars: int,
     to_candidate: Callable[[Document, DocPage, dict, str | None], Candidate | None],
+    page_candidates: Callable[
+        [Document, DocPage, list[dict], str | None], Iterable[Candidate]
+    ]
+    | None = None,
     items_key: str,
     max_workers: int | None = None,
     on_document: Callable[[Document, list[Candidate], int], None] | None = None,
     prompt_version: str,
+    extractor_config: ExtractorConfig | None = None,
+    allow_unsealed_legacy: bool = False,
     commit: bool = True,
 ) -> list[Candidate]:
+    if extractor_config is None and not allow_unsealed_legacy:
+        raise ValueError("extract_documents requires an exact extractor configuration")
+    if extractor_config is not None:
+        validate_runtime_config(
+            extractor_config,
+            prompt_version=prompt_version,
+            model=getattr(client, "model", None),
+            prompt_bytes=system.encode("utf-8"),
+            schema=schema,
+        )
     workers = max_workers or getattr(client, "max_workers", DEFAULT_WORKERS)
     # Enough pages in flight to keep every worker busy without letting one
     # group grow so large that a crash loses much progress.
@@ -100,6 +123,7 @@ def extract_documents(
     def run(group):
         work = [(doc, page) for doc, pages in group for page in pages]
         results = []
+        usage_before = usage_snapshot(client)
         if work:
             users = [
                 f"Page {page.page_no} of {doc.filename}:\n\n{(page.text or '').strip()}"
@@ -108,6 +132,15 @@ def extract_documents(
             results = complete_many(
                 client, system=system, schema=schema, users=users, max_workers=workers
             )
+        token_usage = (
+            token_usage_delta(
+                usage_before,
+                usage_snapshot(client),
+                document_ids=[document.id for document, _ in group],
+            )
+            if extractor_config is not None
+            else None
+        )
 
         per_document: dict[int, list[Candidate]] = {d.id: [] for d, _ in group}
         unreadable = {d.id for d, pages in group if not pages}
@@ -120,7 +153,13 @@ def extract_documents(
                 # This document will retry as a whole; keep counting siblings.
                 errors[doc.id] += 1
                 continue
-            for item in completion.value.get(items_key) or []:
+            items = list(completion.value.get(items_key) or [])
+            if page_candidates is not None:
+                per_document[doc.id].extend(
+                    page_candidates(doc, page, items, model)
+                )
+                continue
+            for item in items:
                 candidate = to_candidate(doc, page, item, model)
                 if candidate is not None:
                     per_document[doc.id].append(candidate)
@@ -144,7 +183,11 @@ def extract_documents(
                 ),
                 candidates=tuple(batch),
                 model=model,
-                schema_version=prompt_version,
+                schema_version=(
+                    extractor_config.schema_version
+                    if extractor_config is not None
+                    else prompt_version
+                ),
                 error_detail=(
                     "no eligible readable pages"
                     if doc.id in unreadable
@@ -152,6 +195,9 @@ def extract_documents(
                     if errors[doc.id]
                     else None
                 ),
+                extractor_config=extractor_config,
+                token_usage=token_usage,
+                allow_unsealed_legacy=allow_unsealed_legacy,
             )
         session.flush()
         if commit:
@@ -187,8 +233,11 @@ def run_extraction(
     schema: dict,
     min_page_chars: int,
     to_candidate: Callable,
+    page_candidates: Callable | None = None,
     items_key: str,
     noun: Noun,
+    extractor_config: ExtractorConfig | None = None,
+    extractor_registry_key: str | None = None,
     client_factory: Callable | None = None,
     session_factory: Callable | None = None,
 ) -> int:
@@ -218,9 +267,15 @@ def run_extraction(
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 
-    slug, limit, document_ids = _parse_runner_args(argv, default_slug=default_slug)
+    slug, limit, document_ids, redo = _parse_runner_args(
+        argv, default_slug=default_slug
+    )
     if slug is None:
         return 1
+    if (extractor_config is None) == (extractor_registry_key is None):
+        raise TypeError(
+            "pass exactly one of extractor_config= or extractor_registry_key="
+        )
 
     with (session_factory or DefaultSessionFactory)() as session:
         project = session.scalars(
@@ -248,8 +303,9 @@ def run_extraction(
         # Resume: a killed run leaves whole documents done, so skip those and
         # pick up where it stopped instead of duplicating their candidates.
         done = already_extracted(session, project.id, prompt_version)
-        skipped = [d for d in documents if d.id in done]
-        documents = [d for d in documents if d.id not in done]
+        skipped = [] if redo else [d for d in documents if d.id in done]
+        if not redo:
+            documents = [d for d in documents if d.id not in done]
         if limit:
             documents = documents[:limit]
 
@@ -261,6 +317,21 @@ def run_extraction(
             return 0
 
         client = (client_factory or OpenAIClient)()
+        try:
+            sealed_config = extractor_config or deployed_extractor_config(
+                extractor_registry_key,
+                client=client,
+            )
+            validate_runtime_config(
+                sealed_config,
+                prompt_version=prompt_version,
+                model=getattr(client, "model", None),
+                prompt_bytes=system.encode("utf-8"),
+                schema=schema,
+            )
+        except BaseException:
+            client.close()
+            raise
         started = time.time()
         print(
             f"{len(documents)} {noun.plural} at {client.max_workers}-way "
@@ -292,9 +363,11 @@ def run_extraction(
                 schema=schema,
                 min_page_chars=min_page_chars,
                 to_candidate=to_candidate,
+                page_candidates=page_candidates,
                 items_key=items_key,
                 on_document=report,
                 prompt_version=prompt_version,
+                extractor_config=sealed_config,
             )
         finally:
             client.close()
@@ -318,23 +391,28 @@ def run_extraction(
 
 def _parse_runner_args(
     argv: list[str], *, default_slug: str
-) -> tuple[str | None, int | None, list[int]]:
+) -> tuple[str | None, int | None, list[int], bool]:
     import sys
 
     positional: list[str] = []
     document_ids: list[int] = []
+    redo = False
     index = 0
     while index < len(argv):
         token = argv[index]
+        if token == "--redo":
+            redo = True
+            index += 1
+            continue
         if token == "--document-id":
             if index + 1 >= len(argv):
                 print("--document-id requires an integer value", file=sys.stderr)
-                return None, None, []
+                return None, None, [], False
             try:
                 document_ids.append(int(argv[index + 1]))
             except ValueError:
                 print("--document-id must be an integer", file=sys.stderr)
-                return None, None, []
+                return None, None, [], False
             index += 2
             continue
         positional.append(token)
@@ -342,21 +420,21 @@ def _parse_runner_args(
 
     if len(positional) > 2:
         print("usage: <slug> [limit] [--document-id <id> ...]", file=sys.stderr)
-        return None, None, []
+        return None, None, [], False
 
     slug = positional[0] if positional else default_slug
     if document_ids and len(positional) == 2:
         print("limit cannot be combined with explicit document selection", file=sys.stderr)
-        return None, None, []
+        return None, None, [], False
     if len(positional) == 2:
         try:
             limit = int(positional[1])
         except ValueError:
             print("limit must be an integer", file=sys.stderr)
-            return None, None, []
+            return None, None, [], False
     else:
         limit = None
-    return slug, limit, document_ids
+    return slug, limit, document_ids, redo
 
 
 def _selected_documents(

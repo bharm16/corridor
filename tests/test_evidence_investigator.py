@@ -174,6 +174,7 @@ def _unplaced_statement(session, project, *, quote=None, page_text=None, kind="e
         page_errors=0,
         candidates=(candidate,),
         model="test-extractor",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(session, document.id, run.id, principal=RECORDER)
     admission = PolicyRun(

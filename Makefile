@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -72,6 +72,7 @@ agreements:
 # needs OPENAI_API_KEY:
 #   make extract ARGS="nhhip-3c2"
 #   make extract ARGS="nhhip-3c2 --redo"
+#   make extract ARGS="sh99-grand-parkway --document-sha256=8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30 --redo"
 extract:
 	uv run python -m corridor.extract_project $(ARGS)
 
@@ -169,6 +170,20 @@ event-admission-acceptance:
 sh99-coordinator-rehearsal:
 	uv run python -m corridor.sh99_coordinator_rehearsal_cli $(ARGS)
 
+# Publish only from two independently sealed live-frontend pass bundles and the
+# exact restored database baseline; arbitrary success capture JSON is not accepted:
+#   make product-proving ARGS="publish-observed --database-baseline-dir=<dir> --database-baseline-manifest-sha256=<sha> --pass-1-dir=<dir> --pass-1-manifest-sha256=<sha> --restore-1-dir=<dir> --restore-1-manifest-sha256=<sha> --pass-2-dir=<dir> --pass-2-manifest-sha256=<sha> --restore-2-dir=<dir> --restore-2-manifest-sha256=<sha> --source-database-url=<url> --output-dir=<new-dir>"
+#   make product-proving ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+# Capture and clone-verify the exact local development database before a pass;
+# restore requires an explicit exact-target opt-in and re-verifies every public
+# schema object, table, and sequence after replacing the database:
+#   make product-proving ARGS="database-capture --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-migration-head=<head> --output-dir=<new-dir>"
+#   make product-proving ARGS="database-restore <bundle-dir> --source-database-url=<url> --postgres-admin-url=<url> --expected-source-database-name=corridor --expected-clean-git-revision=<sha> --expected-migration-head=<head> --expected-manifest-sha256=<sha> --pass-bundle-dir=<dir> --pass-bundle-manifest-sha256=<sha> --restore-receipt-output-dir=<new-dir> --allow-shared-development-restore"
+# A terminal failure uses `publish-failure` and `verify-failure`; it can never
+# be read through the successful two-pass verifier.
+product-proving:
+	uv run python -m corridor.product_proving_run_cli $(ARGS)
+
 # Run one current Unplaced Statement Candidate through the hidden, read-only
 # Evidence Investigator and append a terminal local receipt. Needs OPENAI_API_KEY:
 #   make evidence-investigator ARGS="<candidate-id>"
@@ -188,10 +203,11 @@ evidence-shadow-eval:
 	uv run python -m corridor.evidence_investigator_evaluation_cli $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
-# Bound a run to exact registered notes by repeating --document-id:
-#   make minutes ARGS="sh99-grand-parkway --document-id 123 --document-id 456"
+# Bound a run to exact registered notes by repeating --document-id; --redo
+# appends a fresh attempt without changing the declared Active Run:
+#   make minutes ARGS="sh99-grand-parkway --document-id 1435 --document-id 1438 --redo"
 minutes:
-	uv run python -m corridor.extract_minutes $(ARGS)
+	uv run python -m corridor.extract_minutes_v5 $(ARGS)
 
 # Build the weekly report without re-running the pipeline:
 #   make report ARGS="nhhip-3c2"

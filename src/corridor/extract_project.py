@@ -36,13 +36,24 @@ from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
 from corridor.extraction_runs import record_extraction_run
+from corridor.extractor_lineage import (
+    token_usage_delta,
+    usage_snapshot,
+    zero_token_usage,
+)
 from corridor.extract_matrix import (
     ExtractionFailed,
     PROMPT_VERSION,
     SequencingSemanticsDetected,
 )
 from corridor.geometry import NoMatrixFound
-from corridor.models import Candidate, Document, DocumentQuarantine, Project
+from corridor.models import (
+    Candidate,
+    Document,
+    DocumentQuarantine,
+    ExtractionRun,
+    Project,
+)
 from corridor.pipeline import ExtractionRoute, extraction_route
 
 # An extractor reads one Document and returns the Candidates it produced,
@@ -95,6 +106,7 @@ def extract_project(
     redo: bool = False,
     commit: bool = True,
     document_registry_id: str | None = None,
+    document_sha256: str | None = None,
 ) -> list[Outcome]:
     """Extract every matrix in the project, one Outcome per document.
 
@@ -118,19 +130,28 @@ def extract_project(
                 effective_prompt_version=prompt_version,
                 schema_version=prompt_version,
                 extract=extract,
+                allow_unsealed_legacy=True,
             )
 
-    if document_registry_id is not None:
+    if document_registry_id is not None and document_sha256 is not None:
+        raise ValueError("pass exactly one Document selector")
+    if document_registry_id is not None or document_sha256 is not None:
+        criterion = (
+            Document.registry_id == document_registry_id
+            if document_registry_id is not None
+            else Document.sha256 == document_sha256
+        )
         named = session.scalars(
-            select(Document).where(
-                Document.project_id == project.id,
-                Document.registry_id == document_registry_id,
-            )
+            select(Document).where(Document.project_id == project.id, criterion)
         ).first()
         if named is None:
+            identity = (
+                repr(document_registry_id)
+                if document_registry_id is not None
+                else str(document_sha256)
+            )
             raise UnknownDocument(
-                f"no document in {project.slug!r} carries registry id "
-                f"{document_registry_id!r}"
+                f"no document in {project.slug!r} carries identity {identity}"
             )
         if named.doc_type != "matrix":
             raise UnextractableDocument(
@@ -150,6 +171,7 @@ def extract_project(
 
     for document in documents:
         route = select_route(document)
+        usage_before = usage_snapshot(route.usage_client)
         effective_prompt_version = route.effective_prompt_version
         done = done_by_version.get(effective_prompt_version)
         if done is None:
@@ -176,14 +198,15 @@ def extract_project(
 
         if document.parse_status != "parsed":
             detail = f"ingest parse_status is {document.parse_status!r}"
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="unreadable",
-                schema_version=route.schema_version,
+                model=route.model,
                 error_detail=detail,
             )
             if commit:
@@ -206,26 +229,26 @@ def extract_project(
             # on the next run depends on being impossible.
             with session.begin_nested():
                 candidates = route.extract(session, document)
-                run = record_extraction_run(
+                run = _record_routed_run(
                     session,
                     document,
-                    prompt_version=effective_prompt_version,
+                    route,
+                    usage_before,
                     candidate_count=len(candidates),
                     page_errors=0,
                     outcome="completed",
                     candidates=tuple(candidates),
                     model=_run_model(candidates, route.model),
-                    schema_version=route.schema_version,
                 )
         except SequencingSemanticsDetected as exc:
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="quarantined",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -247,14 +270,14 @@ def extract_project(
             )
             continue
         except NoMatrixFound as exc:
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="no_matrix",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -272,14 +295,14 @@ def extract_project(
             )
             continue
         except ExtractionFailed as exc:
-            run = record_extraction_run(
+            run = _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="failed",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=str(exc),
             )
@@ -297,14 +320,14 @@ def extract_project(
             )
             continue
         except Exception as exc:
-            record_extraction_run(
+            _record_routed_run(
                 session,
                 document,
-                prompt_version=effective_prompt_version,
+                route,
+                usage_before,
                 candidate_count=0,
                 page_errors=1,
                 outcome="failed",
-                schema_version=route.schema_version,
                 model=route.model,
                 error_detail=f"{type(exc).__name__}: {exc}",
             )
@@ -341,6 +364,40 @@ def _run_model(
     if configured_model is not None and models and models != {configured_model}:
         raise ValueError("Candidate model does not match the configured extraction model")
     return configured_model or next(iter(models), None)
+
+
+def _record_routed_run(
+    session: Session,
+    document: Document,
+    route: ExtractionRoute,
+    usage_before: dict[str, int] | None,
+    **values,
+) -> ExtractionRun:
+    """Persist the exact route seal and its per-document usage delta."""
+
+    if route.extractor_config is None:
+        # Explicit injected test routes created before configuration receipts
+        # remain available through the route seam. Deployed route selection
+        # always carries a seal.
+        token_usage = None
+    elif route.usage_client is None and route.extractor_config.model is None:
+        token_usage = zero_token_usage(document.id)
+    else:
+        token_usage = token_usage_delta(
+            usage_before,
+            usage_snapshot(route.usage_client),
+            document_ids=[document.id],
+        )
+    return record_extraction_run(
+        session,
+        document,
+        prompt_version=route.effective_prompt_version,
+        schema_version=route.schema_version,
+        extractor_config=route.extractor_config,
+        token_usage=token_usage,
+        allow_unsealed_legacy=route.allow_unsealed_legacy,
+        **values,
+    )
 
 
 def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> str:
@@ -431,15 +488,34 @@ def main(argv: list[str]) -> int:
     args = [a for a in argv if not a.startswith("-")]
     flags = {a for a in argv if a.startswith("-")}
     document_registry_id = None
+    document_sha256 = None
     for flag in sorted(flags):
         if flag.startswith("--document="):
             document_registry_id = flag.removeprefix("--document=")
             flags.discard(flag)
-            break
+        elif flag.startswith("--document-sha256="):
+            document_sha256 = flag.removeprefix("--document-sha256=")
+            flags.discard(flag)
     unknown = flags - {"--redo"}
-    if not args or unknown or document_registry_id == "":
+    if (
+        not args
+        or unknown
+        or document_registry_id == ""
+        or (
+            document_sha256 is not None
+            and (
+                len(document_sha256) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in document_sha256
+                )
+            )
+        )
+        or (document_registry_id is not None and document_sha256 is not None)
+    ):
         print(
-            "usage: extract <project-slug> [--document=<registry-id>] [--redo]"
+            "usage: extract <project-slug> "
+            "[--document=<registry-id>|--document-sha256=<sha256>] [--redo]"
             + (f"\nunknown flag(s): {', '.join(sorted(unknown))}" if unknown else ""),
             file=sys.stderr,
         )
@@ -468,6 +544,7 @@ def main(argv: list[str]) -> int:
                 select_route=lambda document: extraction_route(document, client=client),
                 redo="--redo" in flags,
                 document_registry_id=document_registry_id,
+                document_sha256=document_sha256,
             )
         finally:
             client.close()

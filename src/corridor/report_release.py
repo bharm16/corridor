@@ -14,6 +14,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
+import json
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from corridor.changes import record_run as record_report_run
+from corridor.changes import snapshot as report_snapshot
 from corridor.export import to_pdf_bytes
 from corridor.models import (
     DependencyEvent,
@@ -29,6 +32,7 @@ from corridor.models import (
     ExternalReportRelease,
     Project,
     ProjectRosterEntry,
+    ReportRun,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_reading import validate_frozen_reading
@@ -160,6 +164,7 @@ def prepare_external_report(
     *,
     project_id: int,
     rendered: RenderedExternalReport,
+    report_run: ReportRun | None = None,
 ) -> ExternalReportArtifact:
     """Store one fixed rendered PDF for a later, separate release decision.
 
@@ -173,7 +178,21 @@ def prepare_external_report(
     report = rendered.report
     evaluation = report.evaluation
     assert evaluation is not None
-    record_context = _record_context(report)
+    if report_run is not None:
+        expected_snapshot = report_snapshot(
+            session,
+            project_id,
+            evaluation=evaluation,
+            committed_dates=report.committed_dates,
+        )
+        if (
+            report_run.project_id != project_id
+            or report_run.ruleset_version != report.ruleset_version
+            or report_run.document_only != report.document_only
+            or report_run.snapshot_json != expected_snapshot
+        ):
+            raise ReleaseRefusal("Report Run does not match the rendered Report")
+    record_context = _record_context(report, report_run=report_run)
     _validate_party_statement_pdf_context(rendered.pdf_bytes, record_context)
     artifact = ExternalReportArtifact(
         project_id=project_id,
@@ -193,6 +212,37 @@ def prepare_external_report(
         session.add(artifact)
         session.flush()
     return artifact
+
+
+def render_and_prepare_external_report(
+    session: Session,
+    *,
+    project_id: int,
+) -> tuple[RenderedExternalReport, ReportRun, ExternalReportArtifact]:
+    """Render, snapshot, and retain one coherent Report reading.
+
+    Keeping these acts behind one boundary prevents a caller from pairing a
+    rendered PDF with a Report Run captured from another Ledger reading.
+    """
+
+    rendered = render_external_report_pdf(session, project_id)
+    report = rendered.report
+    if report.evaluation is None:
+        raise ReleaseRefusal("a prepared Report requires one Evaluation")
+    report_run = record_report_run(
+        session,
+        project_id,
+        evaluation=report.evaluation,
+        committed_dates=report.committed_dates,
+        document_only=report.document_only,
+    )
+    artifact = prepare_external_report(
+        session,
+        project_id=project_id,
+        rendered=rendered,
+        report_run=report_run,
+    )
+    return rendered, report_run, artifact
 
 
 def review_prepared_external_report(
@@ -439,7 +489,7 @@ def _validate_artifact_name(artifact_name: object) -> None:
         raise ReleaseRefusal("External Report release supports PDF only")
 
 
-def _record_context(report: Report) -> dict:
+def _record_context(report: Report, *, report_run: ReportRun | None) -> dict:
     """Serialize exact record and statement-version identities without rereading.
 
     The Report already carries its frozen StatementPublication.  Querying
@@ -473,11 +523,55 @@ def _record_context(report: Report) -> dict:
                 statement.event.id if statement.event is not None else None
             ),
             "scope_decision_id": statement.scope_decision.id,
+            "unsupported_current": statement.unsupported_current,
         }
         for statement in visible_party_statements
     ]
     report_fields = _party_statement_report_fields(report)
-    context = {"dependencies": dependencies, "party_statements": party_statements}
+    class_names = {
+        "Assertion": "Assertion",
+        "Derivation": "Derivation",
+        "WorkDecision": "Work Decision",
+        "Verbal": "Verbal",
+    }
+    provenance_classes = sorted(
+        {
+            class_names[type(cell.provenance).__name__]
+            for cell in report.cells
+            if cell.provenance is not None
+        }
+    )
+    context = {
+        "dependencies": dependencies,
+        "party_statements": party_statements,
+        "provenance_classes": provenance_classes,
+        "report_cells": [
+            {
+                "ordinal": ordinal,
+                "label": cell.label,
+                "value": cell.value,
+                    "provenance_class": class_names[type(cell.provenance).__name__],
+                    "provenance_marker": cell.provenance.marker,
+                    "provenance_drill": getattr(
+                        cell.provenance, "drill", cell.provenance.marker
+                    ),
+            }
+            for ordinal, cell in enumerate(report.cells, start=1)
+            if cell.provenance is not None
+        ],
+        "document_only": report.document_only,
+    }
+    if report_run is not None:
+        context["report_run"] = {
+            "id": report_run.id,
+            "snapshot_sha256": sha256(
+                json.dumps(
+                    report_run.snapshot_json,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        }
     if visible_party_statements:
         context["party_statement_display"] = [
             {

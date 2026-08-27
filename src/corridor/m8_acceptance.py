@@ -682,6 +682,7 @@ def _record_exact_extraction(
             candidates=candidates,
             model=model,
             schema_version=schema_version,
+            allow_unsealed_legacy=True,
         )
 
 

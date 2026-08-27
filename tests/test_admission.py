@@ -159,6 +159,7 @@ def _read(session, document, candidates, prompt_version="matrix_v1"):
         candidates=candidates,
         model="gpt-test",
         schema_version="matrix_candidate_shape_v1",
+        allow_unsealed_legacy=True,
     )
     session.flush()
     return run

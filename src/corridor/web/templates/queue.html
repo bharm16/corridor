@@ -386,6 +386,29 @@
         {%- if view.text_source %} · text from {{ view.text_source }}{% endif %}
       </p>
     </details>
+
+    {% if candidate_authority_gap %}
+      <section class="ordinary-work" aria-label="Unresolved authority gap">
+        <b>{{ candidate_authority_gap.title }}</b>
+        <p>{{ candidate_authority_gap.detail }}</p>
+        <small>This structured acknowledgment leaves the proposal pending and changes no Dependency.</small>
+        <form method="post" action="/candidates/{{ view.candidate.id }}/keep-unresolved">
+          <input type="hidden" name="slug" value="{{ project.slug }}">
+          <button type="submit">Keep unresolved in the Work List</button>
+        </form>
+        {% if unresolved_acknowledgments %}
+          <p><b>Kept unresolved in the Work List.</b></p>
+          <details>
+            <summary>Unresolved acknowledgment history</summary>
+            <ul>
+              {% for entry in unresolved_acknowledgments %}
+                <li>{{ entry.actor }} · {{ entry.ts }}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+      </section>
+    {% endif %}
    </div>
 
    <div class="sticky">

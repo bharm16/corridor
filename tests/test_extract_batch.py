@@ -16,7 +16,9 @@ from corridor.extraction_runs import (
     declare_active_run,
     record_extraction_run,
 )
-from corridor.extract_batch import Noun, run_extraction
+from corridor.extract_batch import Noun, extract_documents, run_extraction
+from corridor.extractor_lineage import injected_extractor_config
+from corridor.llm import Usage
 from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
 from corridor.principals import HumanPrincipal
 
@@ -106,6 +108,16 @@ def _to_candidate(document, page, item, model):
 
 
 def _run(session, project, client, argv=None, **kw):
+    config = kw.pop("extractor_config", None) or injected_extractor_config(
+        extractor="batch-fixture",
+        prompt_version=PROMPT_VERSION,
+        model=client.model,
+        schema_version=PROMPT_VERSION,
+        prompt_bytes=b"s",
+        schema=SCHEMA,
+        postprocessor_bytes=b"batch fixture rules",
+        request_controls={"strict": True},
+    )
     return run_extraction(
         argv if argv is not None else [project.slug],
         doc_type="minutes",
@@ -117,6 +129,7 @@ def _run(session, project, client, argv=None, **kw):
         to_candidate=_to_candidate,
         items_key="events",
         noun=Noun("notes", "events"),
+        extractor_config=config,
         client_factory=lambda: client,
         session_factory=lambda: _Scoped(session),
         **kw,
@@ -173,6 +186,97 @@ def test_the_runner_extracts_and_closes_its_client(session, project, capsys):
     assert "1 events, 1 verified (100.0%)" in out
 
 
+def test_pooled_run_records_one_exact_batch_usage_receipt_per_member(
+    session, project
+):
+    first = add_note(session, project, "notes-a.pdf", "a" * 64)
+    second = add_note(session, project, "notes-b.pdf", "b" * 64)
+
+    class MeteredClient(StubClient):
+        def __init__(self):
+            super().__init__()
+            self.usage = Usage()
+
+        def complete(self, **kwargs):
+            result = super().complete(**kwargs)
+            self.usage.prompt_tokens += 100
+            self.usage.completion_tokens += 20
+            self.usage.reasoning_tokens += 3
+            self.usage.cached_tokens += 40
+            return result
+
+    _run(session, project, MeteredClient())
+
+    runs = _runs(session, project)
+    assert [run.document_id for run in runs] == [first.id, second.id]
+    expected = {
+        "scope": "batch",
+        "document_ids": [first.id, second.id],
+        "measurement": "exact",
+        "prompt_tokens": 200,
+        "completion_tokens": 40,
+        "reasoning_tokens": 6,
+        "cached_tokens": 80,
+    }
+    assert [run.token_usage_json for run in runs] == [expected, expected]
+    assert all(run.extractor_config_sha256 for run in runs)
+
+
+def test_runner_refuses_when_the_seal_does_not_match_the_runtime_prompt(
+    session, project
+):
+    add_note(session, project, "notes-a.pdf", "a" * 64)
+    client = StubClient()
+    wrong = injected_extractor_config(
+        extractor="batch-fixture",
+        prompt_version=PROMPT_VERSION,
+        model=client.model,
+        schema_version=PROMPT_VERSION,
+        prompt_bytes=b"different prompt",
+        schema=SCHEMA,
+        postprocessor_bytes=b"batch fixture rules",
+        request_controls={"strict": True},
+    )
+
+    with pytest.raises(ValueError, match="prompt bytes"):
+        _run(session, project, client, extractor_config=wrong)
+
+    assert client.calls == 0
+    assert client.closed is True
+
+
+def test_direct_batch_seam_refuses_mismatched_runtime_sources(session, project):
+    document = add_note(session, project, "notes-a.pdf", "a" * 64)
+    client = StubClient()
+    wrong = injected_extractor_config(
+        extractor="batch-fixture",
+        prompt_version=PROMPT_VERSION,
+        model=client.model,
+        schema_version=PROMPT_VERSION,
+        prompt_bytes=b"not the runtime prompt",
+        schema=SCHEMA,
+        postprocessor_bytes=b"batch fixture rules",
+        request_controls={"strict": True},
+    )
+
+    with pytest.raises(ValueError, match="prompt bytes"):
+        extract_documents(
+            session,
+            [document],
+            client=client,
+            system="s",
+            schema=SCHEMA,
+            min_page_chars=1,
+            to_candidate=_to_candidate,
+            items_key="events",
+            prompt_version=PROMPT_VERSION,
+            extractor_config=wrong,
+            commit=False,
+        )
+
+    assert client.calls == 0
+
+
 def test_reading_a_document_once_declares_that_reading(session, project):
     """ADR-0029 puts the load in the pipeline, so a document with one
     completed reading no longer waits for someone to name it. Naming the
@@ -204,6 +308,7 @@ def test_a_later_reading_never_takes_the_declaration_by_being_newer(
         prompt_version=PROMPT_VERSION,
         candidate_count=0,
         page_errors=0,
+        allow_unsealed_legacy=True,
     )
     session.flush()
     load_project(session, project.id)
@@ -227,6 +332,31 @@ def test_a_resumed_run_skips_documents_already_extracted(
     assert second.calls == 0
     assert len(_candidates(session, project)) == 2
     assert "nothing to do: all 2 already extracted" in capsys.readouterr().out
+
+
+def test_redo_appends_a_fresh_exact_document_run_without_retargeting_active(
+    session, project
+):
+    document = add_note(session, project, "notes-a.pdf", "a" * 64)
+    _run(
+        session,
+        project,
+        StubClient(),
+        argv=[project.slug, "--document-id", str(document.id)],
+    )
+    [baseline] = _runs(session, project)
+
+    _run(
+        session,
+        project,
+        StubClient(),
+        argv=[project.slug, "--document-id", str(document.id), "--redo"],
+    )
+
+    runs = _runs(session, project)
+    assert len(runs) == 2
+    assert len(_candidates(session, project)) == 2
+    assert active_run_for_document(session, document.id).id == baseline.id
 
 
 def test_a_zero_row_document_is_still_marked_done_for_resume(
@@ -426,6 +556,7 @@ def test_new_prompt_version_appends_history_without_replacing_the_active_run(
         candidates=(historical,),
         model="historical-model",
         schema_version="minutes_v1",
+        allow_unsealed_legacy=True,
     )
     declare_active_run(
         session,

@@ -85,6 +85,10 @@ CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
 ADMIT_EVENT = "admit_event"
 ADMIT_DEPENDENCY = "admit_dependency"
+# An exact same-Document extraction replay disposes a Candidate but does not
+# admit another Dependency or add another claim.  Keeping the action distinct
+# stops Admission lineage readers from treating it as a second source act.
+REPLAY_DEPENDENCY_CANDIDATE = "replay_dependency_candidate"
 SETTLE_DISPUTE = "settle_dispute"
 ATTACH_STATEMENT = "attach_statement"
 RECORD_VERBAL = "record_verbal"
@@ -95,6 +99,17 @@ CORRECT_STATEMENT_SCOPE = "correct_statement_scope"
 CORRECT_STATEMENT_FACTS = "correct_statement_facts"
 MARK_STATEMENT_NOT_RELEVANT = "mark_statement_not_relevant"
 RESTORE_STATEMENT_NOT_RELEVANT = "restore_statement_not_relevant"
+KEEP_CANDIDATE_UNRESOLVED = "keep_candidate_unresolved"
+# Compatibility name for the first statement-only caller. The stored action is
+# candidate-generic because the same attributable receipt now covers Dependency
+# Admission residue.
+KEEP_STATEMENT_UNRESOLVED = KEEP_CANDIDATE_UNRESOLVED
+# Server-observed proof that an attributable human principal reached one
+# ordinary customer-facing HTTP route.  This is deliberately an AuditLog
+# action rather than a second mutable request-log table: Product Proving can
+# include it in the same transaction and the same protected write-set as the
+# Project Record act it caused.
+PRODUCT_PROVING_FRONTEND_REQUEST = "product_proving_frontend_request"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -131,6 +146,7 @@ ACTIONS = frozenset(
         ADMIT_EVENT,
         AUTHORIZE_EVENT_ADMISSION,
         ADMIT_DEPENDENCY,
+        REPLAY_DEPENDENCY_CANDIDATE,
         SETTLE_DISPUTE,
         ATTACH_STATEMENT,
         RECORD_VERBAL,
@@ -141,6 +157,8 @@ ACTIONS = frozenset(
         CORRECT_STATEMENT_FACTS,
         MARK_STATEMENT_NOT_RELEVANT,
         RESTORE_STATEMENT_NOT_RELEVANT,
+        KEEP_CANDIDATE_UNRESOLVED,
+        PRODUCT_PROVING_FRONTEND_REQUEST,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )
@@ -161,6 +179,7 @@ class AdmissionRecord:
     # names this exact (candidate, dependency) act. The machine identity is
     # honest only while its durable receipt exists (mirrors Carry-Forward).
     durable_receipt_present: bool = False
+    durable_outcome: str | None = None
 
     @property
     def candidate_link_valid(self) -> bool:
@@ -177,6 +196,7 @@ class AdmissionRecord:
                 self.actor == DEPENDENCY_ADMISSION_ACTOR
                 and self.human_principal is None
                 and self.durable_receipt_present
+                and self.durable_outcome in ("admitted", "merged")
             )
         return (
             _is_attributable_human_principal(self.human_principal)
@@ -421,19 +441,26 @@ def admission_records_for_dependencies(
         )
         .order_by(AuditLog.entity_id, AuditLog.id)
     ).all()
-    durable_pairs = {
-        (outcome.candidate_id, outcome.dependency_id)
-        for outcome in session.scalars(
-            select(DependencyAdmissionOutcome).where(
-                DependencyAdmissionOutcome.dependency_id.in_(ids),
-                DependencyAdmissionOutcome.outcome.in_(("admitted", "merged")),
-            )
+    outcomes_by_pair: dict[tuple[int, int], list[str]] = {}
+    for outcome in session.scalars(
+        select(DependencyAdmissionOutcome).where(
+            DependencyAdmissionOutcome.dependency_id.in_(ids),
+            DependencyAdmissionOutcome.outcome.in_(("admitted", "merged")),
         )
-    }
+    ):
+        outcomes_by_pair.setdefault(
+            (outcome.candidate_id, outcome.dependency_id), []
+        ).append(outcome.outcome)
     for entry in entries:
         after = entry.after_json if isinstance(entry.after_json, dict) else {}
         raw_fields = after.get("fields")
         candidate_id = _positive_id(after.get("candidate_id"))
+        durable_outcomes = outcomes_by_pair.get(
+            (candidate_id, entry.entity_id), []
+        )
+        durable_outcome = (
+            durable_outcomes[0] if len(durable_outcomes) == 1 else None
+        )
         grouped[entry.entity_id].append(
             AdmissionRecord(
                 audit_id=entry.id,
@@ -443,9 +470,8 @@ def admission_records_for_dependencies(
                 candidate_id=candidate_id,
                 fields=(deepcopy(raw_fields) if isinstance(raw_fields, dict) else None),
                 human_principal=entry.human_principal,
-                durable_receipt_present=(
-                    (candidate_id, entry.entity_id) in durable_pairs
-                ),
+                durable_receipt_present=durable_outcome is not None,
+                durable_outcome=durable_outcome,
             )
         )
     return {dependency_id: tuple(records) for dependency_id, records in grouped.items()}

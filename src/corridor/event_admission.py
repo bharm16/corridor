@@ -18,7 +18,8 @@ statement, so the actor boundary is a check rather than an afterthought.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 import subprocess
@@ -47,22 +48,26 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventScopeDecision,
     Document,
+    EvidenceLink,
     EventAdmissionAcceptanceReceipt,
     EventAdmissionActivation,
     EventAdmissionOutcome,
     ExternalOrg,
     PolicyRun,
     Project,
+    StatementEvidence,
+    StatementTimingRecord,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.verify import normalize
 
 EVENT_ADMISSION_POLICY_VERSION = "event-admission-v2"
 UNKNOWN_SCOPE_POLICY_VERSION = "event-admission-v3-unknown-scope"
 FAMILY = "event-admission"
 ABSTENTION_REASON_VERSION = "event-admission-abstentions-v3"
-UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v4"
+UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION = "event-admission-abstentions-v5"
 MACHINE_ACTOR = "corridor:event-admission"
 
 OUTCOME_ADMITTED = "admitted"
@@ -114,8 +119,22 @@ UNKNOWN_SCOPE_ABSTENTION_REASONS = frozenset(
         "stale_active_run_or_candidate",
         "cross_project_association",
         "write_integrity_failure",
+        "matching_open_commitment_exists",
+        "commitment_evidence_already_recorded",
+        "matching_closed_commitment_not_post_closure",
     }
 )
+
+type CommitmentSignature = tuple[
+    int,
+    int,
+    str,
+    str,
+    str,
+    date | None,
+    date | None,
+]
+type EvidenceSourceIdentity = tuple[str, int, str]
 
 
 @dataclass(frozen=True)
@@ -160,8 +179,137 @@ class UnknownScopeAdmission:
     input_receipt: dict
 
 
+@dataclass(frozen=True)
+class CommitmentMatch:
+    commitment_lineage_id: int
+    statement_event_id: int
+    basis: str
+    closure_event_id: int | None = None
+    closure_event_date: date | None = None
+
+    def receipt(self) -> dict:
+        return {
+            "basis": self.basis,
+            "commitment_lineage_id": self.commitment_lineage_id,
+            "statement_event_id": self.statement_event_id,
+            "closure_event_id": self.closure_event_id,
+            "closure_event_date": (
+                self.closure_event_date.isoformat()
+                if self.closure_event_date is not None
+                else None
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class UnknownScopeDuplicate:
+    reason: str
+    matches: tuple[CommitmentMatch, ...]
+
+
+@dataclass
+class CommitmentRegistry:
+    open_facts: dict[CommitmentSignature, list[CommitmentMatch]]
+    historical_evidence: dict[EvidenceSourceIdentity, list[CommitmentMatch]]
+    closed_facts: dict[CommitmentSignature, list[CommitmentMatch]]
+
+    def matches(
+        self, placement: UnknownScopeAdmission, document: Document
+    ) -> tuple[CommitmentMatch, ...]:
+        evidence_identity = _evidence_source_identity(
+            document.sha256, placement.evidence
+        )
+        historical_matches = list(
+            self.historical_evidence.get(evidence_identity, ())
+        )
+        if historical_matches:
+            return _distinct_commitment_matches(historical_matches)
+        signature = _unknown_scope_signature(placement)
+        open_matches = list(self.open_facts.get(signature, ()))
+        if open_matches:
+            return _distinct_commitment_matches(open_matches)
+        closed_matches: list[CommitmentMatch] = []
+        for closed_match in self.closed_facts.get(signature, ()):
+            if (
+                document.doc_date is None
+                or placement.event_date is None
+                or closed_match.closure_event_date is None
+                or document.doc_date <= closed_match.closure_event_date
+                or placement.event_date <= closed_match.closure_event_date
+            ):
+                closed_matches.append(closed_match)
+        return _distinct_commitment_matches(closed_matches)
+
+    def add_admission(
+        self,
+        placement: UnknownScopeAdmission,
+        event: DependencyEvent,
+        document_sha256: str,
+    ) -> None:
+        if event.commitment_lineage_id is None:
+            raise UnknownScopeWriteIntegrity(
+                "unknown-scope admission did not create a Commitment Lineage"
+            )
+        open_match = CommitmentMatch(
+            commitment_lineage_id=event.commitment_lineage_id,
+            statement_event_id=event.id,
+            basis="open_facts",
+        )
+        _append_commitment_match(
+            self.open_facts, _unknown_scope_signature(placement), open_match
+        )
+        evidence_match = CommitmentMatch(
+            commitment_lineage_id=event.commitment_lineage_id,
+            statement_event_id=event.id,
+            basis="historical_evidence",
+        )
+        _append_commitment_match(
+            self.historical_evidence,
+            _evidence_source_identity(document_sha256, placement.evidence),
+            evidence_match,
+        )
+
+    def sha256(self) -> str:
+        return policy.canonical_sha256(_commitment_registry_receipt(self))
+
+
 class UnknownScopeWriteIntegrity(RuntimeError):
     """An eligible row could not produce its exact protected write set."""
+
+
+def _validated_write_candidate_ids(
+    session: Session,
+    *,
+    project_id: int,
+    write_candidate_ids: Sequence[int] | None,
+) -> tuple[int, ...] | None:
+    """Normalize an optional exact event mutation boundary."""
+    if write_candidate_ids is None:
+        return None
+    values = tuple(write_candidate_ids)
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for value in values
+    ) or len(set(values)) != len(values):
+        raise ValueError(
+            "write_candidate_ids must name unique positive event Candidate ids"
+        )
+
+    from corridor.supersession import actionable_candidate_query
+
+    observed_ids = set(
+        session.scalars(
+            actionable_candidate_query(project_id)
+            .where(Candidate.kind == "event", Candidate.id.in_(values))
+            .with_only_columns(Candidate.id)
+        ).all()
+    )
+    if observed_ids != set(values):
+        raise ValueError(
+            "write_candidate_ids must name only current actionable pending "
+            f"event Candidates in project {project_id}"
+        )
+    return tuple(sorted(values))
 
 
 def run_event_admission(
@@ -169,6 +317,7 @@ def run_event_admission(
     project_id: int,
     *,
     policy_version: str | None = None,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> EventAdmissionResult:
     """Attach what the minutes say to the conflicts they name.
 
@@ -179,6 +328,12 @@ def run_event_admission(
     project = session.get(Project, project_id)
     if project is None:
         raise ValueError(f"project {project_id} does not exist")
+    lock_project(session, project_id)
+    write_scope = _validated_write_candidate_ids(
+        session,
+        project_id=project_id,
+        write_candidate_ids=write_candidate_ids,
+    )
     selected_version = policy_version or normal_event_admission_policy_version(
         session, project_id
     )
@@ -187,11 +342,28 @@ def run_event_admission(
             session,
             project_id,
             policy_version=EVENT_ADMISSION_POLICY_VERSION,
+            write_candidate_ids=write_scope,
         )
+        extension_scope = write_scope
+        if write_scope is not None:
+            from corridor.supersession import actionable_candidate_query
+
+            extension_scope = tuple(
+                session.scalars(
+                    actionable_candidate_query(project_id)
+                    .where(
+                        Candidate.kind == "event",
+                        Candidate.id.in_(write_scope),
+                    )
+                    .with_only_columns(Candidate.id)
+                    .order_by(Candidate.id)
+                ).all()
+            )
         extension = run_event_admission(
             session,
             project_id,
             policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+            write_candidate_ids=extension_scope,
         )
         return EventAdmissionResult(
             run_id=extension.run_id,
@@ -200,12 +372,17 @@ def run_event_admission(
             abstentions=extension.abstentions,
         )
     if selected_version == UNKNOWN_SCOPE_POLICY_VERSION:
-        return _run_unknown_scope_admission(session, project)
+        return _run_unknown_scope_admission(
+            session,
+            project,
+            write_candidate_ids=write_scope,
+        )
     if selected_version != EVENT_ADMISSION_POLICY_VERSION:
         raise ValueError(f"unsupported Event Admission policy {selected_version!r}")
-    lock_project(session, project_id)
     policy_json = canonical_event_admission_policy(
-        project, EVENT_ADMISSION_POLICY_VERSION
+        project,
+        EVENT_ADMISSION_POLICY_VERSION,
+        write_candidate_ids=write_scope,
     )
 
     # Only candidates from declared Active Runs of current documents —
@@ -221,6 +398,11 @@ def run_event_admission(
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    if write_scope is not None:
+        writable_ids = set(write_scope)
+        candidates = [
+            candidate for candidate in candidates if candidate.id in writable_ids
+        ]
     policy_sha256 = policy.canonical_sha256(policy_json)
     registry_sha256 = _predecessor_registry_sha256(session, project.id)
     prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
@@ -451,12 +633,17 @@ def _predecessor_input_receipt(
 
 
 def _run_unknown_scope_admission(
-    session: Session, project: Project
+    session: Session,
+    project: Project,
+    *,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> EventAdmissionResult:
     """Apply only ADR-0042's exact party-level Commitment class."""
     lock_project(session, project.id)
     policy_json = canonical_event_admission_policy(
-        project, UNKNOWN_SCOPE_POLICY_VERSION
+        project,
+        UNKNOWN_SCOPE_POLICY_VERSION,
+        write_candidate_ids=write_candidate_ids,
     )
     policy_sha256 = policy.canonical_sha256(policy_json)
 
@@ -467,6 +654,11 @@ def _run_unknown_scope_admission(
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    if write_candidate_ids is not None:
+        writable_ids = set(write_candidate_ids)
+        candidates = [
+            candidate for candidate in candidates if candidate.id in writable_ids
+        ]
     prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
     for outcome in session.scalars(
         select(EventAdmissionOutcome)
@@ -479,44 +671,15 @@ def _run_unknown_scope_admission(
         .order_by(EventAdmissionOutcome.id)
     ):
         prior_abstentions.setdefault(outcome.candidate_id, []).append(outcome)
-    registry_sha256 = policy.canonical_sha256(
+    external_org_registry_sha256 = policy.canonical_sha256(
         [
             {"id": org.id, "name": org.name, "aliases": sorted(org.aliases or [])}
             for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id))
         ]
     )
-
-    prepared: list[UnknownScopeAdmission] = []
+    commitment_registry = _commitment_registry(session, project.id)
     abstentions: list[EventAdmissionAbstention] = []
     abstention_inputs: dict[int, dict] = {}
-    for candidate in candidates:
-        input_receipt = _unknown_scope_input_receipt(
-            candidate,
-            policy_sha256=policy_sha256,
-            external_org_registry_sha256=registry_sha256,
-        )
-        verdict = _evaluate_unknown_scope(
-            session, project, candidate, input_receipt=input_receipt
-        )
-        if isinstance(verdict, str):
-            if policy.has_matching_abstention(
-                prior_abstentions.get(candidate.id, []),
-                input_receipt=input_receipt,
-                verdict=verdict,
-                reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
-            ):
-                continue
-            abstention_inputs[candidate.id] = input_receipt
-            abstentions.append(
-                EventAdmissionAbstention(
-                    candidate_id=candidate.id,
-                    reason=verdict,
-                    reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
-                )
-            )
-        else:
-            prepared.append(verdict)
-
     admitted: list[
         tuple[
             UnknownScopeAdmission,
@@ -526,7 +689,81 @@ def _run_unknown_scope_admission(
         ]
     ] = []
     with session.begin_nested():
-        for placement in prepared:
+        for candidate in candidates:
+            input_receipt = _unknown_scope_input_receipt(
+                candidate,
+                policy_sha256=policy_sha256,
+                external_org_registry_sha256=external_org_registry_sha256,
+            )
+            verdict = _evaluate_unknown_scope(
+                session,
+                project,
+                candidate,
+                input_receipt=input_receipt,
+                commitment_registry=commitment_registry,
+            )
+            if isinstance(verdict, UnknownScopeDuplicate):
+                input_receipt = _unknown_scope_input_receipt(
+                    candidate,
+                    policy_sha256=policy_sha256,
+                    external_org_registry_sha256=external_org_registry_sha256,
+                    matching_commitments=verdict.matches,
+                )
+                reason = verdict.reason
+                if policy.has_matching_abstention(
+                    prior_abstentions.get(candidate.id, []),
+                    input_receipt=input_receipt,
+                    verdict=reason,
+                    reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+                ):
+                    continue
+                abstention_inputs[candidate.id] = input_receipt
+                abstentions.append(
+                    EventAdmissionAbstention(
+                        candidate_id=candidate.id,
+                        reason=reason,
+                        reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+                    )
+                )
+                continue
+            if isinstance(verdict, str):
+                if policy.has_matching_abstention(
+                    prior_abstentions.get(candidate.id, []),
+                    input_receipt=input_receipt,
+                    verdict=verdict,
+                    reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+                ):
+                    continue
+                abstention_inputs[candidate.id] = input_receipt
+                abstentions.append(
+                    EventAdmissionAbstention(
+                        candidate_id=candidate.id,
+                        reason=verdict,
+                        reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+                    )
+                )
+                continue
+
+            placement = replace(
+                verdict,
+                input_receipt=_unknown_scope_input_receipt(
+                    candidate,
+                    policy_sha256=policy_sha256,
+                    external_org_registry_sha256=external_org_registry_sha256,
+                    commitment_registry_sha256=commitment_registry.sha256(),
+                ),
+            )
+            source_document = session.get(Document, placement.evidence.document_id)
+            if source_document is None or source_document.project_id != project.id:
+                abstention_inputs[placement.candidate.id] = placement.input_receipt
+                abstentions.append(
+                    EventAdmissionAbstention(
+                        candidate_id=placement.candidate.id,
+                        reason="write_integrity_failure",
+                        reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+                    )
+                )
+                continue
             try:
                 with session.begin_nested():
                     event = record_external_party_statement(
@@ -544,6 +781,10 @@ def _run_unknown_scope_admission(
                         created_by=MACHINE_ACTOR,
                         evidence=placement.evidence,
                     )
+                    if event.commitment_lineage_id is None:
+                        raise UnknownScopeWriteIntegrity(
+                            "unknown-scope admission did not create a Commitment Lineage"
+                        )
                     scope_decision = session.scalar(
                         select(DependencyEventScopeDecision).where(
                             DependencyEventScopeDecision.event_id == event.id
@@ -563,6 +804,9 @@ def _run_unknown_scope_admission(
                     placement.candidate.state = "accepted"
                     placement.candidate.adjudicated_at = datetime.now(timezone.utc)
                     session.flush([disposition, placement.candidate])
+                commitment_registry.add_admission(
+                    placement, event, source_document.sha256
+                )
                 admitted.append((placement, event, scope_decision, disposition))
             except (StatementRefusal, IntegrityError, UnknownScopeWriteIntegrity):
                 abstention_inputs[placement.candidate.id] = placement.input_receipt
@@ -782,7 +1026,8 @@ def _evaluate_unknown_scope(
     candidate: Candidate,
     *,
     input_receipt: dict,
-) -> str | UnknownScopeAdmission:
+    commitment_registry: CommitmentRegistry,
+) -> str | UnknownScopeAdmission | UnknownScopeDuplicate:
     """Prove ADR-0042's class without consulting model-derived confidence."""
     document = session.get(Document, candidate.source_document_id)
     if (
@@ -866,7 +1111,7 @@ def _evaluate_unknown_scope(
         if "timing" in message or "calendar bounds" in message:
             return "timing_invalid"
         return "statement_draft_invalid"
-    return UnknownScopeAdmission(
+    placement = UnknownScopeAdmission(
         candidate=candidate,
         fields=fields,
         event_date=event_date,
@@ -876,6 +1121,10 @@ def _evaluate_unknown_scope(
         evidence=evidence,
         input_receipt=input_receipt,
     )
+    matches = commitment_registry.matches(placement, document)
+    if matches:
+        return UnknownScopeDuplicate(_duplicate_reason(matches), matches)
+    return placement
 
 
 def _has_non_commitment_language(description: str) -> bool:
@@ -900,15 +1149,303 @@ def _has_non_commitment_language(description: str) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _commitment_registry(session: Session, project_id: int) -> CommitmentRegistry:
+    """Index current facts and full Evidence history by authoritative identity."""
+    commitment_rows = session.execute(
+        select(DependencyEvent, StatementTimingRecord)
+        .join(
+            StatementTimingRecord,
+            StatementTimingRecord.event_id == DependencyEvent.id,
+        )
+        .where(
+            DependencyEvent.project_id == project_id,
+            DependencyEvent.event_type.in_(dependency_events.COMMITTED_EVENT_TYPES),
+            DependencyEvent.commitment_lineage_id.is_not(None),
+            DependencyEvent.affected_external_org_id.is_not(None),
+            DependencyEvent.stated_external_org_id.is_not(None),
+            DependencyEvent.attribution_state == "resolved",
+            StatementTimingRecord.kind == "new",
+        )
+        .order_by(DependencyEvent.commitment_lineage_id, DependencyEvent.id)
+    ).all()
+    current_event_ids = frozenset(
+        session.scalars(
+            select(DependencyEvent.id).where(
+                DependencyEvent.project_id == project_id,
+                DependencyEvent.event_type.in_(
+                    dependency_events.COMMITTED_EVENT_TYPES
+                ),
+                current_statement_event_filter(DependencyEvent.id),
+            )
+        )
+    )
+    closures_by_lineage: dict[int, list[DependencyEvent]] = {}
+    for closure in _authoritative_closures(session, project_id):
+        if closure.closes_commitment_lineage_id is not None:
+            closures_by_lineage.setdefault(
+                closure.closes_commitment_lineage_id, []
+            ).append(closure)
+
+    registry = CommitmentRegistry(
+        open_facts={}, historical_evidence={}, closed_facts={}
+    )
+    open_lineage_ids = frozenset(
+        event.commitment_lineage_id
+        for event, _ in commitment_rows
+        if event.id in current_event_ids
+        and event.commitment_lineage_id is not None
+        and not closures_by_lineage.get(event.commitment_lineage_id)
+    )
+    events_by_id: dict[int, DependencyEvent] = {}
+    for event, timing in commitment_rows:
+        if (
+            event.commitment_lineage_id is None
+            or event.affected_external_org_id is None
+            or event.stated_external_org_id is None
+        ):
+            continue
+        events_by_id[event.id] = event
+        signature = _commitment_signature(
+            affected_external_org_id=event.affected_external_org_id,
+            stated_external_org_id=event.stated_external_org_id,
+            description=event.description,
+            timing=timing,
+        )
+        if event.commitment_lineage_id in open_lineage_ids:
+            _append_commitment_match(
+                registry.open_facts,
+                signature,
+                CommitmentMatch(
+                    commitment_lineage_id=event.commitment_lineage_id,
+                    statement_event_id=event.id,
+                    basis=(
+                        "open_facts"
+                        if event.id in current_event_ids
+                        else "open_lineage_history"
+                    ),
+                ),
+            )
+        for closure in closures_by_lineage.get(event.commitment_lineage_id, ()):
+            _append_commitment_match(
+                registry.closed_facts,
+                signature,
+                CommitmentMatch(
+                    commitment_lineage_id=event.commitment_lineage_id,
+                    statement_event_id=event.id,
+                    basis="closed_facts_not_post_closure",
+                    closure_event_id=closure.id,
+                    closure_event_date=closure.event_date,
+                ),
+            )
+
+    evidence_rows = session.execute(
+        select(StatementEvidence.event_id, EvidenceLink, Document)
+        .join(EvidenceLink, EvidenceLink.id == StatementEvidence.evidence_link_id)
+        .join(Document, Document.id == EvidenceLink.document_id)
+        .where(StatementEvidence.event_id.in_(tuple(events_by_id) or (0,)))
+        .order_by(StatementEvidence.event_id, EvidenceLink.id)
+    ).all()
+    for event_id, evidence, document in evidence_rows:
+        event = events_by_id.get(event_id)
+        if event is None or event.commitment_lineage_id is None:
+            continue
+        _append_commitment_match(
+            registry.historical_evidence,
+            _evidence_source_identity(
+                document.sha256,
+                CitedStatementEvidence(
+                    document_id=evidence.document_id,
+                    page_no=evidence.page_no,
+                    quote=evidence.quote,
+                ),
+            ),
+            CommitmentMatch(
+                commitment_lineage_id=event.commitment_lineage_id,
+                statement_event_id=event.id,
+                basis="historical_evidence",
+            ),
+        )
+    return registry
+
+
+def _authoritative_closures(
+    session: Session, project_id: int
+) -> tuple[DependencyEvent, ...]:
+    closures = session.scalars(
+        select(DependencyEvent)
+        .where(
+            DependencyEvent.project_id == project_id,
+            DependencyEvent.event_type == "closure",
+            DependencyEvent.closes_commitment_lineage_id.is_not(None),
+            DependencyEvent.attribution_state == "resolved",
+            DependencyEvent.stated_external_org_id.is_not(None),
+            current_statement_event_filter(DependencyEvent.id),
+        )
+        .order_by(DependencyEvent.id)
+    ).all()
+    cited = dependency_events._verified_party_statement_provenance(
+        session, (closure.id for closure in closures), project_id=project_id
+    )
+    return tuple(
+        closure
+        for closure in closures
+        if (closure.source_kind == "verbal" and closure.event_date is not None)
+        or (closure.source_kind == "cited" and closure.id in cited)
+    )
+
+
+def _unknown_scope_signature(placement: UnknownScopeAdmission) -> CommitmentSignature:
+    return _commitment_signature(
+        affected_external_org_id=placement.stated_external_org_id,
+        stated_external_org_id=placement.stated_external_org_id,
+        description=str(placement.fields.get("description") or ""),
+        timing=placement.new_timing,
+    )
+
+
+def _commitment_signature(
+    *,
+    affected_external_org_id: int,
+    stated_external_org_id: int,
+    description: str,
+    timing: StatementTiming | StatementTimingRecord,
+) -> CommitmentSignature:
+    return (
+        affected_external_org_id,
+        stated_external_org_id,
+        normalize(description),
+        timing.precision,
+        timing.text.strip(),
+        timing.start_date,
+        timing.end_date,
+    )
+
+
+def _evidence_source_identity(
+    document_sha256: str, evidence: CitedStatementEvidence
+) -> EvidenceSourceIdentity:
+    return (
+        document_sha256,
+        evidence.page_no,
+        policy.canonical_sha256(evidence.quote.strip()),
+    )
+
+
+def _append_commitment_match(registry: dict, key, match: CommitmentMatch) -> None:
+    matches = registry.setdefault(key, [])
+    if match not in matches:
+        matches.append(match)
+
+
+def _distinct_commitment_matches(
+    matches: list[CommitmentMatch],
+) -> tuple[CommitmentMatch, ...]:
+    distinct = {
+        (
+            match.commitment_lineage_id,
+            match.statement_event_id,
+            match.basis,
+            match.closure_event_id,
+            match.closure_event_date,
+        ): match
+        for match in matches
+    }
+    return tuple(
+        distinct[key]
+        for key in sorted(
+            distinct,
+            key=lambda value: (
+                value[0],
+                value[1],
+                value[2],
+                value[3] if value[3] is not None else -1,
+                value[4].isoformat() if value[4] is not None else "",
+            ),
+        )
+    )
+
+
+def _duplicate_reason(matches: tuple[CommitmentMatch, ...]) -> str:
+    bases = {match.basis for match in matches}
+    if "historical_evidence" in bases:
+        return "commitment_evidence_already_recorded"
+    if bases.intersection({"open_facts", "open_lineage_history"}):
+        return "matching_open_commitment_exists"
+    return "matching_closed_commitment_not_post_closure"
+
+
+def _commitment_registry_receipt(registry: CommitmentRegistry) -> dict:
+    def fact_rows(mapping: dict[CommitmentSignature, list[CommitmentMatch]]) -> list:
+        return [
+            {
+                "facts": _commitment_signature_receipt(signature),
+                "matches": [
+                    match.receipt()
+                    for match in _distinct_commitment_matches(matches)
+                ],
+            }
+            for signature, matches in sorted(
+                mapping.items(), key=lambda item: repr(item[0])
+            )
+        ]
+
+    evidence_rows = [
+        {
+            "source": {
+                "document_sha256": identity[0],
+                "page": identity[1],
+                "quote_sha256": identity[2],
+            },
+            "matches": [
+                match.receipt() for match in _distinct_commitment_matches(matches)
+            ],
+        }
+        for identity, matches in sorted(
+            registry.historical_evidence.items(), key=lambda item: repr(item[0])
+        )
+    ]
+    return {
+        "registry_version": "event-admission-commitment-registry-v2",
+        "open_facts": fact_rows(registry.open_facts),
+        "historical_evidence": evidence_rows,
+        "closed_facts": fact_rows(registry.closed_facts),
+    }
+
+
+def _commitment_signature_receipt(signature: CommitmentSignature) -> dict:
+    (
+        affected_external_org_id,
+        stated_external_org_id,
+        description,
+        precision,
+        timing_text,
+        start_date,
+        end_date,
+    ) = signature
+    return {
+        "affected_external_org_id": affected_external_org_id,
+        "stated_external_org_id": stated_external_org_id,
+        "normalized_description": description,
+        "timing": {
+            "precision": precision,
+            "text": timing_text,
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": end_date.isoformat() if end_date else None,
+        },
+    }
+
+
 def _unknown_scope_input_receipt(
     candidate: Candidate,
     *,
     policy_sha256: str,
     external_org_registry_sha256: str,
+    commitment_registry_sha256: str | None = None,
+    matching_commitments: tuple[CommitmentMatch, ...] = (),
 ) -> dict:
     """Exact deterministic inputs that make an unchanged Abstention idempotent."""
-    return {
-        "receipt_version": "event-admission-unknown-scope-input-v1",
+    receipt = {
+        "receipt_version": "event-admission-unknown-scope-input-v3",
         "project_id": candidate.project_id,
         "candidate_id": candidate.id,
         "source_document_id": candidate.source_document_id,
@@ -918,7 +1455,13 @@ def _unknown_scope_input_receipt(
         "candidate_state": candidate.state,
         "policy_sha256": policy_sha256,
         "external_org_registry_sha256": external_org_registry_sha256,
+        "matching_commitments": [
+            match.receipt() for match in matching_commitments
+        ],
     }
+    if commitment_registry_sha256 is not None:
+        receipt["commitment_registry_sha256"] = commitment_registry_sha256
+    return receipt
 
 
 def _unknown_scope_eligibility_receipt(
@@ -995,6 +1538,8 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     from corridor import models as models_module
     from corridor import principals as principals_module
     from corridor import external_statements as external_statements_module
+    from corridor import statement_lifecycle as statement_lifecycle_module
+    from corridor import verify as verify_module
 
     paths = (
         ("corridor.event_admission", Path(__file__)),
@@ -1005,6 +1550,11 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
         ("corridor.policy", Path(policy.__file__)),
         ("corridor.models", Path(models_module.__file__)),
         ("corridor.principals", Path(principals_module.__file__)),
+        (
+            "corridor.statement_lifecycle",
+            Path(statement_lifecycle_module.__file__),
+        ),
+        ("corridor.verify", Path(verify_module.__file__)),
         (
             "corridor.migrations.c7d2f5a83b46",
             Path(__file__).parent
@@ -1117,7 +1667,10 @@ def normal_event_admission_policy_version(
 
 
 def canonical_event_admission_policy(
-    project: Project, policy_version: str
+    project: Project,
+    policy_version: str,
+    *,
+    write_candidate_ids: Sequence[int] | None = None,
 ) -> dict:
     """The exact rules a real-state acceptance receipt proves.
 
@@ -1129,7 +1682,7 @@ def canonical_event_admission_policy(
     unknown_scope = policy_version == UNKNOWN_SCOPE_POLICY_VERSION
     if not unknown_scope and policy_version != EVENT_ADMISSION_POLICY_VERSION:
         raise ValueError(f"unsupported Event Admission policy {policy_version!r}")
-    return {
+    receipt = {
         "policy_version": policy_version,
         "abstention_reason_version": (
             UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION
@@ -1158,6 +1711,9 @@ def canonical_event_admission_policy(
                 "no_previous_timing",
                 "no_conflict_reference",
                 "ordinary_statement_validators",
+                "no_matching_open_commitment",
+                "no_historical_evidence_replay",
+                "closed_facts_require_distinct_post_closure_evidence",
             ]
             if unknown_scope
             else [
@@ -1173,6 +1729,9 @@ def canonical_event_admission_policy(
         "rules_digest_method": "sha256-rule-source-files-v1",
         "rules_digest": _rules_digest(),
     }
+    if write_candidate_ids is not None:
+        receipt["write_candidate_ids"] = sorted(write_candidate_ids)
+    return receipt
 
 
 

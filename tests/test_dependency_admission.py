@@ -14,7 +14,7 @@ import hashlib
 from copy import deepcopy
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
@@ -28,9 +28,12 @@ from corridor.extraction_runs import (
 )
 from corridor.models import (
     Assertion,
+    AuditLog,
     Candidate,
     Dependency,
     DependencyAdmissionOutcome,
+    EvidenceLink,
+    ExtractionRun,
     PolicyRun,
     DocPage,
     Document,
@@ -121,18 +124,29 @@ def _candidate(document, fields, *, verified=True):
     )
 
 
-def _run(session, document, candidates):
+def _run(
+    session,
+    document,
+    candidates,
+    *,
+    prompt_version="matrix_v1",
+    model="gpt-test",
+    schema_version="matrix_candidate_shape_v1",
+):
     for c in candidates:
+        c.prompt_version = prompt_version
+        c.model = model
         session.add(c)
     run = record_extraction_run(
         session,
         document,
-        prompt_version="matrix_v1",
+        prompt_version=prompt_version,
         candidate_count=len(candidates),
         page_errors=0,
         candidates=candidates,
-        model="gpt-test",
-        schema_version="matrix_candidate_shape_v1",
+        model=model,
+        schema_version=schema_version,
+        allow_unsealed_legacy=True,
     )
     session.flush()
     return run
@@ -335,6 +349,74 @@ def test_duplicate_rows_in_one_revision_abstain(session, project):
     }
 
 
+def test_explicit_write_scope_reads_unscoped_rows_but_mutates_only_scoped_rows(
+    session, project
+):
+    """A bounded run may read project context without widening its write set."""
+    document = _document(session, project, filename="scoped-matrix.pdf")
+    scoped = _candidate(document, _fields("PL1"))
+    duplicate_context = _candidate(document, _fields("PL1"))
+    unrelated_context = _candidate(document, _fields("PL2"))
+    _run(session, document, [scoped, duplicate_context, unrelated_context])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(
+        session,
+        project.id,
+        write_candidate_ids=(scoped.id,),
+    )
+
+    assert result.admitted_count == 0
+    assert result.abstained_count == 1
+    assert [(item.candidate_id, item.reason) for item in result.abstentions] == [
+        (scoped.id, "multiple_rows_in_agreement_document")
+    ]
+    outcomes = session.scalars(
+        select(DependencyAdmissionOutcome).where(
+            DependencyAdmissionOutcome.policy_run_id == result.run_id
+        )
+    ).all()
+    assert [outcome.candidate_id for outcome in outcomes] == [scoped.id]
+    session.refresh(duplicate_context)
+    session.refresh(unrelated_context)
+    assert duplicate_context.state == "pending"
+    assert unrelated_context.state == "pending"
+    assert session.scalar(
+        select(func.count(Dependency.id)).where(
+            Dependency.project_id == project.id
+        )
+    ) == 0
+
+    from corridor import dependency_admission as module
+    from corridor import policy
+
+    run = session.get(PolicyRun, result.run_id)
+    exact_policy = module._canonical_policy(
+        session,
+        project,
+        [document.id],
+        write_candidate_ids=(scoped.id,),
+    )
+    assert exact_policy["write_candidate_ids"] == [scoped.id]
+    assert run.policy_sha256 == policy.canonical_sha256(exact_policy)
+
+
+def test_explicit_dependency_write_scope_rejects_non_actionable_ids(
+    session, project
+):
+    document = _document(session, project, filename="invalid-scope.pdf")
+    candidate = _candidate(document, _fields("PL1"))
+    _run(session, document, [candidate])
+    # No Active Run declaration: the row is not currently actionable.
+
+    with pytest.raises(ValueError, match="current actionable pending dependency"):
+        run_dependency_admission(
+            session,
+            project.id,
+            write_candidate_ids=(candidate.id,),
+        )
+
+
 def test_an_already_admitted_reference_is_not_admitted_twice(session, project):
     feb, may, feb_c, may_c = _corpus(
         session, project, [_fields("PL1")], [_fields("PL1")]
@@ -421,6 +503,18 @@ def test_the_receipt_pins_the_documents_and_the_deployed_checks(
         feb.id: feb.sha256,
         may.id: may.sha256,
     }
+    assert {
+        "same_document_reextraction_requires_exact_fields_citations_and_one_current_dependency",
+        "same_document_collision_abstains_before_new_dependency",
+        "replay_candidate_matches_immutable_extraction_input",
+        "replay_predecessor_association_is_attributable_and_durable",
+    } <= set(expected["checks"])
+    source_names = {name for name, _ in module._rule_source_bytes()}
+    assert {
+        "corridor.extraction_runs",
+        "corridor.migrations.e6f2a9c7d481",
+        "corridor.migrations.b317c5d7e9f2",
+    } <= source_names
     assert run.policy_sha256 == policy.canonical_sha256(expected)
 
 
@@ -491,6 +585,9 @@ def test_policy_admitted_records_carry_attributable_lineage(session, project):
     )[dependency.id]
     assert len(records) == 2  # the primary and the merged sibling
     assert {r.candidate_id for r in records} == {feb_c[0].id, may_c[0].id}
+    assert {
+        record.candidate_id: record.durable_outcome for record in records
+    } == {feb_c[0].id: "merged", may_c[0].id: "admitted"}
     assert all(r.attributable for r in records)
 
 
@@ -947,3 +1044,626 @@ def test_a_placeholder_against_a_named_party_is_not_a_disagreement(
     result = run_dependency_admission(session, project.id)
     assert result.admitted_count == 1
     assert result.abstained_count == 0
+
+
+# ── Same-Document re-extraction replay ─────────────────────────────────
+
+
+def _declare_run(session, document, run):
+    from corridor.extraction_runs import declare_active_run
+
+    declare_active_run(session, document.id, run.id, principal=OPERATOR)
+
+
+def _reextracted_candidate(document, predecessor):
+    candidate = _candidate(document, deepcopy(predecessor.payload_json["fields"]))
+    candidate.payload_json = deepcopy(predecessor.payload_json)
+    return candidate
+
+
+def test_exact_reextraction_replays_453_rows_and_admits_only_the_new_row(
+    session, project
+):
+    """A proving re-extraction is not 453 new human decisions.
+
+    Exact rows from the same registered Document point back to the Dependency
+    their earlier Candidates already established.  A genuinely new row remains
+    ordinary Admission work and lands independently.
+    """
+    document = _document(session, project, filename="sh99-ucm.pdf")
+    original = [
+        _candidate(document, _fields(f"PL{number:03d}"))
+        for number in range(1, 454)
+    ]
+    _run(session, document, original)
+    declare_single_run_documents_by_policy(session, project.id)
+    assert run_dependency_admission(session, project.id).admitted_count == 453
+
+    replayed = [
+        _reextracted_candidate(document, candidate)
+        for candidate in original
+    ]
+    new_row = _candidate(document, _fields("C4", station="9999+00"))
+    fresh_run = _run(
+        session,
+        document,
+        [*replayed, new_row],
+        prompt_version="matrix_tiered_v3",
+        schema_version="matrix_candidate_shape_v3",
+    )
+    _declare_run(session, document, fresh_run)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == 1
+    assert result.abstained_count == 0
+    assert all(candidate.state == "merged" for candidate in replayed)
+    assert new_row.state == "accepted"
+    assert session.scalar(
+        select(func.count()).select_from(Dependency).where(
+            Dependency.project_id == project.id
+        )
+    ) == 454
+    outcomes = session.scalars(
+        select(DependencyAdmissionOutcome).where(
+            DependencyAdmissionOutcome.policy_run_id == result.run_id
+        )
+    ).all()
+    assert sum(outcome.outcome == "merged" for outcome in outcomes) == 453
+    assert sum(outcome.outcome == "admitted" for outcome in outcomes) == 1
+
+
+def test_exact_reextraction_replay_is_idempotent_and_changes_no_ledger_rows(
+    session, project
+):
+    document = _document(session, project, filename="stable-ucm.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    before = {
+        model: session.scalar(
+            select(func.count()).select_from(model)
+        )
+        for model in (Dependency, Assertion, EvidenceLink)
+    }
+    successor = _reextracted_candidate(document, predecessor)
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+
+    first = run_dependency_admission(session, project.id)
+    first_audit_count = session.scalar(
+        select(func.count()).select_from(AuditLog).where(
+            AuditLog.action == "replay_dependency_candidate",
+            AuditLog.after_json["candidate_id"].astext == str(successor.id),
+        )
+    )
+    second = run_dependency_admission(session, project.id)
+
+    after = {
+        model: session.scalar(
+            select(func.count()).select_from(model)
+        )
+        for model in (Dependency, Assertion, EvidenceLink)
+    }
+    assert after == before
+    assert successor.state == "merged"
+    assert successor.merged_into is not None
+    assert first.admitted_count == first.abstained_count == 0
+    assert second.admitted_count == second.abstained_count == 0
+    assert session.scalar(
+        select(func.count()).select_from(AuditLog).where(
+            AuditLog.action == "replay_dependency_candidate",
+            AuditLog.after_json["candidate_id"].astext == str(successor.id),
+        )
+    ) == first_audit_count == 1
+
+    [outcome] = session.scalars(
+        select(DependencyAdmissionOutcome).where(
+            DependencyAdmissionOutcome.policy_run_id == first.run_id,
+            DependencyAdmissionOutcome.candidate_id == successor.id,
+        )
+    ).all()
+    assert outcome.outcome == "merged"
+    assert outcome.dependency_id == successor.merged_into
+    [entry] = session.scalars(
+        select(AuditLog).where(
+            AuditLog.action == "replay_dependency_candidate",
+            AuditLog.after_json["candidate_id"].astext == str(successor.id),
+        )
+    ).all()
+    replay = entry.after_json["same_document_reextraction"]
+    from corridor import policy
+
+    assert entry.after_json["same_document_reextraction_sha256"] == (
+        policy.canonical_sha256(replay)
+    )
+    assert replay["successor_candidate_id"] == successor.id
+    assert replay["successor_configuration"] == {
+        "candidate_prompt_version": "matrix_v1",
+        "candidate_model": "gpt-test",
+        "run_prompt_version": "matrix_v1",
+        "run_model": "gpt-test",
+        "run_schema_version": "matrix_candidate_shape_v1",
+        "lineage_status": "historical_unsealed",
+        "prompt_sha256": None,
+        "schema_sha256": None,
+        "postprocessor_sha256": None,
+        "extractor_config_sha256": None,
+        "extractor_config_json": None,
+        "token_usage_json": None,
+    }
+    assert len(replay["predecessor_candidates"]) == 1
+    replayed_predecessor = replay["predecessor_candidates"][0]
+    assert replayed_predecessor["candidate_id"] == predecessor.id
+    assert replayed_predecessor["extraction_run_id"] == (
+        predecessor.extraction_run_id
+    )
+    assert replayed_predecessor["associated_dependency_ids"] == [
+        successor.merged_into
+    ]
+    assert replayed_predecessor["run_snapshot_matches_candidate"] is True
+    assert replay["supported_fields"] == successor.payload_json["fields"]
+    assert replay["citations"] == [
+        {
+            "document_id": document.id,
+            "page": 1,
+            "quote": successor.payload_json["citations"][0]["quote"],
+            "verified": True,
+            "whole_row": True,
+        }
+    ]
+    assert replay["source_quality"]["text_source"] == {
+        "present": True,
+        "value": "text_layer",
+    }
+
+    from corridor import audit
+    from corridor.support_transfer_lineage import admission_for_scope
+
+    dependency = session.get(Dependency, successor.merged_into)
+    admission_records = audit.admission_records_for_dependencies(
+        session, [dependency.id]
+    )[dependency.id]
+    lineage, candidate_ids, reason = admission_for_scope(
+        session,
+        dependency,
+        document.id,
+        admission_records,
+        (),
+    )
+    assert reason is None
+    assert candidate_ids == (predecessor.id,)
+    assert lineage is not None and lineage.candidate.id == predecessor.id
+
+
+def test_exact_reextraction_can_use_legacy_project_record_when_run_snapshot_is_absent(
+    session, project
+):
+    """A historical unsealed run is proved by its admitted facts and Evidence.
+
+    Legacy Extraction Runs predate immutable Candidate snapshots.  Requiring a
+    snapshot they could never contain would turn every exact extractor upgrade
+    into hundreds of fake human decisions even though the Project Record still
+    retains the exact asserted fields and verified citation.
+    """
+
+    document = _document(session, project, filename="legacy-unsnapshotted.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    legacy_run = _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    assert run_dependency_admission(session, project.id).admitted_count == 1
+    # New rows cannot be created in this legacy shape.  Temporarily bypass the
+    # immutability trigger only to reproduce a pre-migration row inside this
+    # rollback-scoped test transaction.
+    session.execute(
+        text(
+            "alter table extraction_runs disable trigger "
+            "extraction_run_receipts_are_immutable"
+        )
+    )
+    session.execute(
+        update(ExtractionRun)
+        .where(ExtractionRun.id == legacy_run.id)
+        .values(candidate_inputs_json=None)
+    )
+    session.execute(
+        text(
+            "alter table extraction_runs enable trigger "
+            "extraction_run_receipts_are_immutable"
+        )
+    )
+    session.expire(legacy_run)
+    successor = _reextracted_candidate(document, predecessor)
+    fresh_run = _run(
+        session,
+        document,
+        [successor],
+        prompt_version="matrix_tiered_v3",
+        schema_version="matrix_candidate_shape_v3",
+    )
+    _declare_run(session, document, fresh_run)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == result.abstained_count == 0
+    assert successor.state == "merged"
+    assert successor.merged_into is not None
+    entry = session.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "replay_dependency_candidate",
+            AuditLog.after_json["candidate_id"].astext == str(successor.id),
+        )
+    )
+    assert entry is not None
+    [proof] = entry.after_json["same_document_reextraction"][
+        "predecessor_candidates"
+    ]
+    assert proof["run_snapshot_matches_candidate"] is False
+    assert proof["legacy_project_record_matches_claim"] is True
+    project_record_proof = proof["legacy_project_record_proof"]
+    assert project_record_proof["proof_version"] == "legacy-project-record-replay-v1"
+    assert project_record_proof["evidence_links"]
+    assert project_record_proof["assertions"]
+    unretained = project_record_proof["historically_unretained_extractor_metadata"]
+    assert unretained["citation_whole_row"] == [True]
+    assert unretained["source_quality"]["text_source"] == {
+        "present": True,
+        "value": "text_layer",
+    }
+
+
+def test_replay_receipt_can_prove_a_later_exact_reextraction(session, project):
+    document = _document(session, project, filename="third-extraction.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    first_replay = _reextracted_candidate(document, predecessor)
+    first_run = _run(session, document, [first_replay])
+    _declare_run(session, document, first_run)
+    run_dependency_admission(session, project.id)
+
+    second_replay = _reextracted_candidate(document, first_replay)
+    second_run = _run(session, document, [second_replay])
+    _declare_run(session, document, second_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == result.abstained_count == 0
+    assert second_replay.state == "merged"
+    assert second_replay.merged_into == first_replay.merged_into
+    assert session.scalar(
+        select(func.count()).select_from(Dependency).where(
+            Dependency.project_id == project.id
+        )
+    ) == 1
+
+
+@pytest.mark.parametrize("changed_fact", ["field", "quote"])
+def test_changed_reextraction_fact_stays_pending(session, project, changed_fact):
+    document = _document(session, project, filename=f"changed-{changed_fact}.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    successor = _reextracted_candidate(document, predecessor)
+    if changed_fact == "field":
+        successor.payload_json["fields"]["station_to"] = "2200+00"
+    else:
+        successor.payload_json["citations"][0]["quote"] += " changed"
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+    repeated = run_dependency_admission(session, project.id)
+    assert repeated.abstained_count == 0
+    assert session.scalar(
+        select(func.count()).select_from(DependencyAdmissionOutcome).where(
+            DependencyAdmissionOutcome.candidate_id == successor.id,
+            DependencyAdmissionOutcome.reason == "same_document_replay_unproven",
+        )
+    ) == 1
+
+
+def test_changed_party_stays_pending_instead_of_replaying(session, project):
+    document = _document(session, project, filename="changed-party.pdf")
+    predecessor = _candidate(document, _fields("PL1", org=PIPELINE))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    successor = _candidate(
+        document, _fields("PL1", org="Someone Else Entirely")
+    )
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+
+
+def test_same_facts_from_a_different_document_do_not_replay(session, project):
+    predecessor_document = _document(session, project, filename="first-source.pdf")
+    predecessor = _candidate(predecessor_document, _fields("PL1"))
+    _run(session, predecessor_document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    successor_document = _document(session, project, filename="second-source.pdf")
+    successor = _candidate(
+        successor_document, deepcopy(predecessor.payload_json["fields"])
+    )
+    _run(session, successor_document, [successor])
+    declare_single_run_documents_by_policy(session, project.id)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {"already_admitted"}
+
+
+def test_missing_predecessor_association_refuses_replay(session, project):
+    carrier_document = _document(session, project, filename="carrier.pdf")
+    carrier = _candidate(carrier_document, _fields("PL1"))
+    _run(session, carrier_document, [carrier])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    replay_document = _document(session, project, filename="orphan-history.pdf")
+    orphan = _candidate(replay_document, _fields("PL1"))
+    _run(session, replay_document, [orphan])
+    orphan.state = "accepted"
+    session.flush()
+    successor = _reextracted_candidate(replay_document, orphan)
+    fresh_run = _run(session, replay_document, [successor])
+    _declare_run(session, replay_document, fresh_run)
+
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+
+
+def test_projected_identity_change_does_not_turn_exact_replay_into_duplicate(
+    session, project
+):
+    document = _document(session, project, filename="corrected-identity.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.source_ref = "CORRECTED-PL1"
+    session.flush()
+
+    successor = _reextracted_candidate(document, predecessor)
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert result.admitted_count == result.abstained_count == 0
+    assert successor.state == "merged"
+    assert successor.merged_into == dependency.id
+    assert dependency.source_ref == "CORRECTED-PL1"
+    assert session.scalar(
+        select(func.count()).select_from(Dependency).where(
+            Dependency.project_id == project.id
+        )
+    ) == 1
+
+
+def test_projected_identity_change_plus_changed_fact_abstains_without_duplicate(
+    session, project
+):
+    document = _document(session, project, filename="corrected-changed-row.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    dependency.source_ref = "CORRECTED-PL1"
+    session.flush()
+
+    successor = _reextracted_candidate(document, predecessor)
+    successor.payload_json["fields"]["station_to"] = "2200+00"
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+    assert session.scalar(
+        select(func.count()).select_from(Dependency).where(
+            Dependency.project_id == project.id
+        )
+    ) == 1
+
+
+def test_new_source_quality_metadata_prevents_replay(session, project):
+    document = _document(session, project, filename="new-source-quality.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    successor = _reextracted_candidate(document, predecessor)
+    successor.payload_json["unmapped_columns"] = ["Newly discovered column"]
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+
+
+def test_mutable_candidate_cannot_hide_changed_immutable_run_input(session, project):
+    document = _document(session, project, filename="snapshot-mismatch.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    successor = _reextracted_candidate(document, predecessor)
+    successor.payload_json["fields"]["station_to"] = "2200+00"
+    fresh_run = _run(session, document, [successor])
+    successor.payload_json = deepcopy(predecessor.payload_json)
+    session.flush()
+    _declare_run(session, document, fresh_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+
+
+def test_ambiguous_predecessor_association_refuses_replay(session, project):
+    from corridor import audit
+
+    document = _document(session, project, filename="ambiguous.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    other = _candidate(document, _fields("PL2", station="2200+00"))
+    _run(session, document, [predecessor, other])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+    dependencies = {
+        dependency.source_ref: dependency
+        for dependency in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    }
+    audit.record(
+        session,
+        principal=OPERATOR,
+        action=audit.ACCEPT_CANDIDATE,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependencies["PL2"].id,
+        after={
+            "candidate_id": predecessor.id,
+            "role": "synthetic_ambiguous_association",
+            "fields": predecessor.payload_json["fields"],
+        },
+    )
+
+    successor = _reextracted_candidate(document, predecessor)
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+
+
+def test_machine_outcome_must_match_predecessor_state(
+    session, project, monkeypatch
+):
+    from dataclasses import replace
+
+    from corridor import audit
+
+    document = _document(session, project, filename="outcome-state-mismatch.pdf")
+    predecessor = _candidate(document, _fields("PL1"))
+    _run(session, document, [predecessor])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+
+    real = audit.admission_records_for_dependencies
+
+    def mismatched_records(session_, dependency_ids):
+        return {
+            dependency_id: tuple(
+                replace(record, durable_outcome="merged")
+                for record in records
+            )
+            for dependency_id, records in real(
+                session_, dependency_ids
+            ).items()
+        }
+
+    monkeypatch.setattr(audit, "admission_records_for_dependencies", mismatched_records)
+    successor = _reextracted_candidate(document, predecessor)
+    fresh_run = _run(session, document, [successor])
+    _declare_run(session, document, fresh_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+
+
+def test_conflicting_exact_predecessors_with_corrected_carriers_never_add_row(
+    session, project
+):
+    from corridor import audit
+
+    document = _document(session, project, filename="conflicting-history.pdf")
+    first = _candidate(document, _fields("PL1"))
+    other_row = _candidate(document, _fields("PL2", station="2200+00"))
+    _run(session, document, [first, other_row])
+    declare_single_run_documents_by_policy(session, project.id)
+    run_dependency_admission(session, project.id)
+    dependencies = {
+        dependency.source_ref: dependency
+        for dependency in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    }
+
+    conflicting = _reextracted_candidate(document, first)
+    conflicting_run = _run(session, document, [conflicting])
+    conflicting.state = "accepted"
+    audit.record(
+        session,
+        principal=OPERATOR,
+        action=audit.ACCEPT_CANDIDATE,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependencies["PL2"].id,
+        after={
+            "candidate_id": conflicting.id,
+            "fields": conflicting.payload_json["fields"],
+        },
+    )
+    dependencies["PL1"].source_ref = "CORRECTED-A"
+    dependencies["PL2"].source_ref = "CORRECTED-B"
+    session.flush()
+
+    successor = _reextracted_candidate(document, first)
+    successor_run = _run(session, document, [successor])
+    _declare_run(session, document, successor_run)
+    result = run_dependency_admission(session, project.id)
+
+    assert conflicting_run.id != successor_run.id
+    assert successor.state == "pending"
+    assert {item.reason for item in result.abstentions} == {
+        "same_document_replay_unproven"
+    }
+    assert session.scalar(
+        select(func.count()).select_from(Dependency).where(
+            Dependency.project_id == project.id
+        )
+    ) == 2

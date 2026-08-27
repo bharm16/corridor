@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from corridor import audit
 from corridor.adjudicate import (
     AlreadyAdjudicated,
     AlreadyDismissed,
@@ -75,6 +76,7 @@ from corridor.ledger import (
 )
 from corridor.models import (
     RESOLUTION_STRATEGIES,
+    AuditLog,
     Candidate,
     CandidateDisposition,
     CommitmentLineage,
@@ -121,6 +123,10 @@ from corridor.event_admission import (
     attach_statement,
     waiting_statements,
 )
+from corridor.frontend_request_receipts import (
+    FrontendRequestSubject,
+    record_frontend_request,
+)
 from corridor.verbal import VerbalRefusal, record_verbal
 from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
@@ -129,10 +135,9 @@ from corridor.report_release import (
     ReleaseRefusal,
     ReleasedArtifactIntegrityError,
     external_report_release_history,
-    prepare_external_report,
+    render_and_prepare_external_report,
     review_prepared_external_report,
     release_external_report,
-    render_external_report_pdf,
     retrieve_prepared_external_report,
     retrieve_released_external_report,
 )
@@ -167,6 +172,7 @@ from corridor.models import (
 )
 from corridor.statement_coordination import (
     AdmittedStatementCoordination,
+    CLOSURE_TARGET_GAP,
     STATEMENT_NEXT_ACTION_CHOICES,
     StaleStatementCoordination,
     StatementCoordinationRefusal,
@@ -175,7 +181,11 @@ from corridor.statement_coordination import (
     coordinate_statement,
     correct_statement_facts,
     correct_statement_scope,
+    keep_candidate_unresolved,
+    keep_statement_unresolved,
     mark_statement_not_relevant,
+    pending_candidate_authority_gap,
+    pending_statement_authority_gap,
     read_admitted_statement_coordination,
     restore_statement_not_relevant,
     set_admitted_statement_next_action,
@@ -295,7 +305,7 @@ def _decision_location(
     event_cohort_receipt_id: int | None = None,
     coordinate_dependency_id: int | None = None,
 ) -> str:
-    """Where a decision lands next: the same lane it was made in.
+    """Where a decision lands next: cohort lane or ordinary Work List.
 
     In the rehearsal lane an accept flows into the coordination strip for
     the record it just admitted — one pass, not two."""
@@ -312,7 +322,9 @@ def _decision_location(
         if coordinate_dependency_id is not None:
             url += f"&coordinate={coordinate_dependency_id}"
         return url
-    return _queue_location(slug, historical_document_id)
+    if historical_document_id is not None:
+        return _queue_location(slug, historical_document_id)
+    return f"/work/{slug}"
 
 
 def _cohort_summary_location(lane_url: str) -> str:
@@ -551,6 +563,11 @@ REVIEW_REASONS = {
         "A record already carries this identifier.",
         "Merge into the existing record rather than admitting a second one.",
     ),
+    "same_document_replay_unproven": (
+        "This source row was previously handled, but safe replay is not proven.",
+        "Its extracted facts or current Dependency association no longer prove "
+        "an exact replay. Keep it pending and review the cited Evidence.",
+    ),
     "asserts_nothing": (
         "This row states nothing.",
         "An identifier with no values is bookkeeping, not a conflict.",
@@ -724,8 +741,22 @@ def coordinate_statement_screen(
     if candidate.state == "pending" and observe_shadow_review(
         session, candidate.id, boundary="start", principal=principal
     ) is not None:
-        session.commit()
-    return _statement_coordination_screen(request, session, project, candidate)
+        pass
+    response = _statement_coordination_screen(request, session, project, candidate)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="coordinate_statement_screen",
+        route_template="/statements/{slug}/{candidate_id}/coordinate",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/coordinate")
@@ -767,11 +798,27 @@ async def save_coordinated_statement(
             status_code=400,
         )
     observe_shadow_review(session, candidate.id, boundary="end", principal=principal)
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         f"/statements/{project.slug}/{candidate_id}/coordinate",
         status_code=303,
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="save_coordinated_statement",
+        route_template="/statements/{slug}/{candidate_id}/coordinate",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            commitment_lineage_id=result.event.commitment_lineage_id,
+            statement_event_id=result.event.id,
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/admitted/scope")
@@ -790,7 +837,7 @@ async def save_admitted_statement_scope(
     )
     if coordination is None:
         raise HTTPException(404, "no mechanically admitted statement in this project")
-    return _statement_coordination_screen(
+    response = _statement_coordination_screen(
         request,
         session,
         project,
@@ -798,6 +845,68 @@ async def save_admitted_statement_scope(
         error="Use Correct to change Commitment Scope after admission.",
         status_code=400,
     )
+    response.status_code = 400
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="save_admitted_statement_scope",
+        route_template="/statements/{slug}/{candidate_id}/admitted/scope",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields=(),
+    )
+    session.commit()
+    return response
+
+
+@app.post("/statements/{slug}/{candidate_id}/keep-unresolved")
+def keep_unresolved_statement(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Acknowledge a recomputed structured gap and retain pending work."""
+    project = _project(session, slug)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    try:
+        keep_statement_unresolved(
+            session,
+            project.id,
+            candidate.id,
+            principal=principal,
+        )
+    except (StatementCoordinationRefusal, StaleStatementCoordination) as exc:
+        return _statement_coordination_screen(
+            request,
+            session,
+            project,
+            candidate,
+            error=str(exc),
+            status_code=409,
+        )
+    response = RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate",
+        status_code=303,
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="keep_unresolved_statement",
+        route_template="/statements/{slug}/{candidate_id}/keep-unresolved",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/admitted/owner")
@@ -819,7 +928,7 @@ async def save_admitted_statement_owner(
     form = await request.form()
     try:
         roster_id = required_positive_form_id(form, "internal_owner_roster_entry_id")
-        assign_admitted_statement_owner(
+        decision = assign_admitted_statement_owner(
             session,
             project.id,
             candidate.id,
@@ -830,10 +939,31 @@ async def save_admitted_statement_owner(
         return _statement_coordination_screen(
             request, session, project, candidate, error=str(exc), status_code=400
         )
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="save_admitted_statement_owner",
+        route_template="/statements/{slug}/{candidate_id}/admitted/owner",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            dependency_id=(
+                coordination.scope_dependencies[0].id
+                if len(coordination.scope_dependencies) == 1
+                else None
+            ),
+            commitment_lineage_id=coordination.lineage.id,
+            work_decision_id=decision.id,
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/admitted/next-action")
@@ -855,7 +985,7 @@ async def save_admitted_statement_next_action(
     form = await request.form()
     try:
         action = str(form.get("next_action") or "").strip()
-        set_admitted_statement_next_action(
+        decision = set_admitted_statement_next_action(
             session,
             project.id,
             candidate.id,
@@ -871,10 +1001,31 @@ async def save_admitted_statement_next_action(
         return _statement_coordination_screen(
             request, session, project, candidate, error=str(exc), status_code=400
         )
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="save_admitted_statement_next_action",
+        route_template="/statements/{slug}/{candidate_id}/admitted/next-action",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            dependency_id=(
+                coordination.scope_dependencies[0].id
+                if len(coordination.scope_dependencies) == 1
+                else None
+            ),
+            commitment_lineage_id=coordination.lineage.id,
+            work_decision_id=decision.id,
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/coordination/{receipt_id}/undo")
@@ -929,10 +1080,23 @@ async def mark_waiting_statement_not_relevant(
             request, session, project, candidate, error=str(exc), status_code=400
         )
     observe_shadow_review(session, candidate.id, boundary="end", principal=principal)
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="mark_waiting_statement_not_relevant",
+        route_template="/statements/{slug}/{candidate_id}/not-relevant",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/not-relevant/{disposition_id}/restore")
@@ -967,6 +1131,7 @@ def correct_statement_screen(
     request: Request,
     slug: str,
     candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Show one supported scope or fact correction for the current statement."""
@@ -1000,7 +1165,7 @@ def correct_statement_screen(
     if scope_decision is None:
         raise HTTPException(409, "this statement has no current Commitment Scope")
     affected_party = session.get(ExternalOrg, event.affected_external_org_id)
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         request,
         "statement_correct.html",
         {
@@ -1054,6 +1219,20 @@ def correct_statement_screen(
             ).all(),
         },
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="correct_statement_screen",
+        route_template="/statements/{slug}/{candidate_id}/correct",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/correct/scope")
@@ -1081,14 +1260,62 @@ async def correct_statement_scope_from_screen(
             ),
             principal=principal,
         )
-    except StatementCoordinationRefusal as exc:
-        return _statement_coordination_screen(
+    except StaleStatementCoordination as exc:
+        response = _statement_coordination_screen(
             request, session, project, candidate, error=str(exc), status_code=409
         )
-    session.commit()
-    return RedirectResponse(
+        record_frontend_request(
+            session,
+            principal=principal,
+            route_name="correct_statement_scope_from_screen",
+            route_template="/statements/{slug}/{candidate_id}/correct/scope",
+            method="POST",
+            response=response,
+            subject=FrontendRequestSubject(
+                project_id=project.id, candidate_id=candidate.id
+            ),
+            request_fields=form,
+        )
+        session.commit()
+        return response
+    except (StatementCoordinationRefusal, ValueError) as exc:
+        # The refusal receipt is the sole durable write for this request.  The
+        # domain command validates before mutation, so committing it cannot
+        # preserve a partial scope correction.
+        response = _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+        record_frontend_request(
+            session,
+            principal=principal,
+            route_name="correct_statement_scope_from_screen",
+            route_template="/statements/{slug}/{candidate_id}/correct/scope",
+            method="POST",
+            response=response,
+            subject=FrontendRequestSubject(
+                project_id=project.id, candidate_id=candidate.id
+            ),
+            request_fields=form,
+        )
+        session.commit()
+        return response
+    response = RedirectResponse(
         f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="correct_statement_scope_from_screen",
+        route_template="/statements/{slug}/{candidate_id}/correct/scope",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/statements/{slug}/{candidate_id}/correct/facts")
@@ -1104,7 +1331,7 @@ async def correct_statement_facts_from_screen(
     candidate = _project_statement_candidate(session, project, candidate_id)
     form = await request.form()
     try:
-        correct_statement_facts(
+        successor = correct_statement_facts(
             session,
             statement_fact_correction_draft(form, candidate.id),
             principal=principal,
@@ -1113,10 +1340,27 @@ async def correct_statement_facts_from_screen(
         return _statement_coordination_screen(
             request, session, project, candidate, error=str(exc), status_code=409
         )
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="correct_statement_facts_from_screen",
+        route_template="/statements/{slug}/{candidate_id}/correct/facts",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            commitment_lineage_id=successor.commitment_lineage_id,
+            predecessor_statement_event_id=successor.supersedes_event_id,
+            successor_statement_event_id=successor.id,
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
 
 
 def _project_statement_candidate(
@@ -1252,6 +1496,21 @@ def _statement_coordination_screen(
         else None
     )
     history = _statement_coordination_history(session, candidate.id)
+    pending_authority_gap = pending_statement_authority_gap(
+        session,
+        project.id,
+        candidate.id,
+    )
+    unresolved_acknowledgment = session.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_type == audit.CANDIDATE,
+            AuditLog.entity_id == candidate.id,
+            AuditLog.action == audit.KEEP_STATEMENT_UNRESOLVED,
+        )
+        .order_by(AuditLog.id.desc())
+        .limit(1)
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "statement_coordinate.html",
@@ -1297,6 +1556,13 @@ def _statement_coordination_screen(
             "line": line,
             "not_relevant": not_relevant,
             "history": history,
+            "pending_authority_gap": pending_authority_gap,
+            "pending_authority_gap_label": (
+                _authority_gap_label(pending_authority_gap.code)
+                if pending_authority_gap is not None
+                else None
+            ),
+            "unresolved_acknowledgment": unresolved_acknowledgment,
             "error": error,
         },
         status_code=status_code,
@@ -1342,6 +1608,15 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
         .where(StatementCoordinationReversal.candidate_id == candidate_id)
         .order_by(StatementCoordinationReversal.id)
     ).all()
+    unresolved = session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_type == audit.CANDIDATE,
+            AuditLog.entity_id == candidate_id,
+            AuditLog.action == audit.KEEP_STATEMENT_UNRESOLVED,
+        )
+        .order_by(AuditLog.id)
+    ).all()
     rows = [
         {
             "created_at": receipt.created_at,
@@ -1378,7 +1653,23 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
         }
         for reversal in reversals
     )
+    rows.extend(
+        {
+            "created_at": entry.ts,
+            "label": "Recorded unresolved authority gap",
+            "detail": _authority_gap_label(
+                str((entry.after_json or {}).get("authority_gap") or "")
+            ),
+        }
+        for entry in unresolved
+    )
     return tuple(sorted(rows, key=lambda row: (row["created_at"], row["label"])))
+
+
+def _authority_gap_label(code: str) -> str:
+    if code == "closure_target_commitment_not_established":
+        return "Closure target Commitment not established"
+    return code.replace("_", " ")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1390,11 +1681,12 @@ def root():
 def reports(
     request: Request,
     slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Ordinary project-person entry point for fixed PDF release."""
     project = _project(session, slug)
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         request,
         "report_release.html",
         {
@@ -1402,6 +1694,18 @@ def reports(
             "history": external_report_release_history(session, project.id),
         },
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="reports",
+        route_template="/reports/{slug}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.get("/reports/{slug}/prepared/{artifact_id}", response_class=HTMLResponse)
@@ -1409,6 +1713,7 @@ def review_report(
     request: Request,
     slug: str,
     artifact_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Review one retained PDF and only its frozen context."""
@@ -1417,17 +1722,33 @@ def review_report(
         review = review_prepared_external_report(session, project.id, artifact_id)
     except ReleaseRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         request,
         "report_review.html",
         {"project": project, "review": review},
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="review_report",
+        route_template="/reports/{slug}/prepared/{artifact_id}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, artifact_id=artifact_id
+        ),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.get("/reports/{slug}/prepared/{artifact_id}/download")
 def download_prepared_report(
+    request: Request,
     slug: str,
     artifact_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Download exactly the retained bytes awaiting a release decision."""
@@ -1438,13 +1759,29 @@ def download_prepared_report(
         )
     except ReleaseRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
-    return _pdf_download(bytes(artifact.pdf_bytes), artifact.artifact_name)
+    response = _pdf_download(bytes(artifact.pdf_bytes), artifact.artifact_name)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="download_prepared_report",
+        route_template="/reports/{slug}/prepared/{artifact_id}/download",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, artifact_id=artifact.id
+        ),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.get("/reports/{slug}/prepared/{artifact_id}/preview")
 def preview_prepared_report(
+    request: Request,
     slug: str,
     artifact_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Display exactly the retained bytes awaiting a release decision."""
@@ -1455,9 +1792,23 @@ def preview_prepared_report(
         )
     except ReleaseRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
-    return _pdf_response(
+    response = _pdf_response(
         bytes(artifact.pdf_bytes), artifact.artifact_name, disposition="inline"
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="preview_prepared_report",
+        route_template="/reports/{slug}/prepared/{artifact_id}/preview",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, artifact_id=artifact.id
+        ),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.post(
@@ -1473,23 +1824,39 @@ def release_prepared_report(
     """Authorize the artifact bound to the review control, without rerendering."""
     project = _project(session, slug)
     try:
-        receipt = release_external_report(
-            session,
-            project_id=project.id,
-            artifact_id=artifact_id,
-            principal=principal,
-        )
+        with session.begin_nested():
+            receipt = release_external_report(
+                session,
+                project_id=project.id,
+                artifact_id=artifact_id,
+                principal=principal,
+            )
+            history = external_report_release_history(session, project.id)
+            released = next(item for item in history if item.release_id == receipt.id)
+            response = TEMPLATES.TemplateResponse(
+                request,
+                "report_release.html",
+                {"project": project, "history": history, "released": released},
+                status_code=201,
+            )
+            record_frontend_request(
+                session,
+                principal=principal,
+                route_name="release_prepared_report",
+                route_template="/reports/{slug}/prepared/{artifact_id}/release",
+                method="POST",
+                response=response,
+                subject=FrontendRequestSubject(
+                    project_id=project.id,
+                    artifact_id=artifact_id,
+                    release_id=receipt.id,
+                ),
+                request_fields={},
+            )
     except ReleaseRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
     session.commit()
-    history = external_report_release_history(session, project.id)
-    released = next(item for item in history if item.release_id == receipt.id)
-    return TEMPLATES.TemplateResponse(
-        request,
-        "report_release.html",
-        {"project": project, "history": history, "released": released},
-        status_code=201,
-    )
+    return response
 
 
 @app.get("/reports/{slug}/releases/{release_id}/download")
@@ -1535,35 +1902,53 @@ def render_report(
     request: Request,
     slug: str,
     ordinary: str | None = Form(None),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Render and retain one fixed PDF; this does not release it externally."""
     project = _project(session, slug)
     try:
-        artifact = prepare_external_report(
-            session,
-            project_id=project.id,
-            rendered=render_external_report_pdf(session, project.id),
-        )
+        with session.begin_nested():
+            _rendered, report_run, artifact = render_and_prepare_external_report(
+                session, project_id=project.id
+            )
+            if ordinary is not None:
+                review = review_prepared_external_report(
+                    session, project.id, artifact.id
+                )
+                response = TEMPLATES.TemplateResponse(
+                    request,
+                    "report_review.html",
+                    {"project": project, "review": review},
+                    status_code=201,
+                )
+            else:
+                response = JSONResponse(
+                    status_code=201,
+                    content={
+                        "artifact_id": artifact.id,
+                        "artifact_name": artifact.artifact_name,
+                        "pdf_sha256": artifact.pdf_sha256,
+                    },
+                )
+            record_frontend_request(
+                session,
+                principal=principal,
+                route_name="render_report",
+                route_template="/reports/{slug}/render",
+                method="POST",
+                response=response,
+                subject=FrontendRequestSubject(
+                    project_id=project.id,
+                    artifact_id=artifact.id,
+                    report_run_id=report_run.id,
+                ),
+                request_fields={"ordinary": ordinary},
+            )
     except ReleaseRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
     session.commit()
-    if ordinary is not None:
-        review = review_prepared_external_report(session, project.id, artifact.id)
-        return TEMPLATES.TemplateResponse(
-            request,
-            "report_review.html",
-            {"project": project, "review": review},
-            status_code=201,
-        )
-    return JSONResponse(
-        status_code=201,
-        content={
-            "artifact_id": artifact.id,
-            "artifact_name": artifact.artifact_name,
-            "pdf_sha256": artifact.pdf_sha256,
-        },
-    )
+    return response
 
 
 @app.post("/reports/{slug}/release")
@@ -1584,8 +1969,7 @@ def release_report(
         )
     except ReleaseRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
-    session.commit()
-    return JSONResponse(
+    response = JSONResponse(
         status_code=201,
         content={
             "release_id": release.id,
@@ -1593,6 +1977,22 @@ def release_report(
             "pdf_sha256": release.pdf_sha256,
         },
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="release_report",
+        route_template="/reports/{slug}/release",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            artifact_id=artifact_id,
+            release_id=release.id,
+        ),
+        request_fields={"artifact_id": artifact_id},
+    )
+    session.commit()
+    return response
 
 
 @app.get("/work/{slug}", response_class=HTMLResponse)
@@ -1603,6 +2003,7 @@ def coordinator_home(
     work_page: int = 1,
     statement_search: str = "",
     statement_page: int = 1,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """The coordinator's short, project-language entry point."""
@@ -1618,8 +2019,17 @@ def coordinator_home(
 
     def view(item):
         if item.kind == "candidate":
-            action_url = f"/statements/{project.slug}/{item.candidate_id}/coordinate"
-            action_label = "Review extracted statement"
+            if item.candidate_kind == "dependency":
+                action_url = (
+                    f"/queue/{project.slug}?lane=candidate&mode=review"
+                    f"&candidate_id={item.candidate_id}"
+                )
+                action_label = "Review extracted Dependency"
+            else:
+                action_url = (
+                    f"/statements/{project.slug}/{item.candidate_id}/coordinate"
+                )
+                action_label = "Review extracted statement"
         elif item.kind == "dependency":
             action_url = f"/ledger/{project.slug}/{item.dependency_id}"
             action_label = "Open Dependency"
@@ -1638,7 +2048,7 @@ def coordinator_home(
             "action_label": action_label,
         }
 
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         request,
         "work_list.html",
         {
@@ -1656,8 +2066,22 @@ def coordinator_home(
             "candidate_backlog_page": work_list.candidate_backlog_page,
             "candidate_backlog_pages": work_list.candidate_backlog_pages,
             "candidate_search": work_list.candidate_search,
+            "event_candidate_total": work_list.event_candidate_total,
+            "dependency_candidate_total": work_list.dependency_candidate_total,
         },
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="coordinator_home",
+        route_template="/work/{slug}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.get("/queue/{slug}", response_class=HTMLResponse)
@@ -1672,6 +2096,7 @@ def queue(
     candidate_id: int | None = None,
     coordinate: int | None = None,
     summary: int = 0,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug)
@@ -1861,8 +2286,29 @@ def queue(
             },
         )
 
+    if candidate.state == "pending" and observe_shadow_review(
+        session, candidate.id, boundary="start", principal=principal
+    ) is not None:
+        pass
+
     reason = _review_reason(session, project, candidate)
     headline, guidance = REVIEW_REASONS.get(reason or "", (None, None))
+    candidate_authority_gap = pending_candidate_authority_gap(
+        session,
+        project.id,
+        candidate.id,
+    )
+    unresolved_acknowledgments = tuple(
+        session.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == audit.CANDIDATE,
+                AuditLog.entity_id == candidate.id,
+                AuditLog.action == audit.KEEP_CANDIDATE_UNRESOLVED,
+            )
+            .order_by(AuditLog.id)
+        ).all()
+    )
     siblings, differences = (
         _revision_panels(session, project, candidate)
         if reason == "revisions_disagree"
@@ -1877,13 +2323,15 @@ def queue(
         for other in siblings
     ]
 
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         request,
         "queue.html",
         {
             "project": project,
             "review_headline": headline,
             "review_guidance": guidance,
+            "candidate_authority_gap": candidate_authority_gap,
+            "unresolved_acknowledgments": unresolved_acknowledgments,
             "differences": differences,
             "evidence_panels": evidence_panels,
             "view": build_view(
@@ -1918,6 +2366,26 @@ def queue(
             **lane_context,
         },
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="queue",
+        route_template="/queue/{slug}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            dependency_id=(
+                coordinate_dependency.id
+                if coordinate_dependency is not None
+                else None
+            ),
+        ),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/supersession-review/{dependency_id}/reconfirm")
@@ -2167,14 +2635,32 @@ def assign_owner(
         redirect_to, f"/ledger/{slug}/{dependency_id}"
     )
     try:
-        assign_internal_owner(session, dependency_id, owner, principal=principal)
+        decision = assign_internal_owner(
+            session, dependency_id, owner, principal=principal
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    session.commit()
-    return RedirectResponse(
-        return_location,
-        status_code=303,
+    response = RedirectResponse(return_location, status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="assign_owner",
+        route_template="/dependencies/{dependency_id}/owner",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            dependency_id=dependency_id,
+            work_decision_id=decision.id,
+        ),
+        request_fields={
+            "slug": slug,
+            "owner": owner,
+            "redirect_to": redirect_to,
+        },
     )
+    session.commit()
+    return response
 
 
 @app.post("/dependencies/{dependency_id}/action")
@@ -2201,7 +2687,7 @@ def record_next_action(
         except ValueError:
             raise HTTPException(400, "an Action Due Date must be a date")
     try:
-        set_next_action(
+        decision = set_next_action(
             session,
             dependency_id,
             action,
@@ -2211,11 +2697,29 @@ def record_next_action(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    session.commit()
-    return RedirectResponse(
-        return_location,
-        status_code=303,
+    response = RedirectResponse(return_location, status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="record_next_action",
+        route_template="/dependencies/{dependency_id}/action",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            dependency_id=dependency_id,
+            work_decision_id=decision.id,
+        ),
+        request_fields={
+            "slug": slug,
+            "action": action,
+            "due_date": due_date,
+            "due_date_unknown_reason": due_date_unknown_reason,
+            "redirect_to": redirect_to,
+        },
     )
+    session.commit()
+    return response
 
 
 @app.post("/dependencies/{dependency_id}/action/{outcome}")
@@ -2298,6 +2802,46 @@ def page_image(document_id: int, page_no: int, session: Session = Depends(get_se
     return FileResponse(page.image_path, media_type="image/png")
 
 
+@app.post("/candidates/{candidate_id}/keep-unresolved")
+def keep_unresolved_candidate(
+    candidate_id: int,
+    slug: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Acknowledge the latest structured gap and retain the pending proposal."""
+    project = _project(session, slug)
+    candidate = _project_candidate(session, project, candidate_id)
+    try:
+        keep_candidate_unresolved(
+            session,
+            project.id,
+            candidate.id,
+            principal=principal,
+        )
+    except (StatementCoordinationRefusal, StaleStatementCoordination) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(
+        f"/queue/{project.slug}?lane=candidate&mode=review"
+        f"&candidate_id={candidate.id}",
+        status_code=303,
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="keep_unresolved_candidate",
+        route_template="/candidates/{candidate_id}/keep-unresolved",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields={"slug": slug},
+    )
+    session.commit()
+    return response
+
+
 @app.post("/candidates/{candidate_id}/accept")
 def accept(
     candidate_id: int,
@@ -2369,8 +2913,7 @@ def accept(
             raise HTTPException(409, str(exc))
         except InvalidCandidateProvenance as exc:
             raise HTTPException(400, str(exc))
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         _decision_location(
             slug,
             historical_document_id,
@@ -2380,6 +2923,28 @@ def accept(
         ),
         status_code=303,
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="accept",
+        route_template="/candidates/{candidate_id}/accept",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            dependency_id=dependency.id,
+        ),
+        request_fields={
+            "slug": slug,
+            "historical_document_id": historical_document_id,
+            "cohort_receipt_id": cohort_receipt_id,
+            "event_cohort_receipt_id": event_cohort_receipt_id,
+            "merge_sibling_ids": merge_sibling_ids,
+        },
+    )
+    session.commit()
+    return response
 
 
 def _accept(
@@ -2477,8 +3042,7 @@ async def edit_accept(
         principal,
         historical_document_id=historical_document_id,
     )
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         _decision_location(
             slug,
             historical_document_id,
@@ -2488,6 +3052,22 @@ async def edit_accept(
         ),
         status_code=303,
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="edit_accept",
+        route_template="/candidates/{candidate_id}/edit-accept",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            dependency_id=dependency.id,
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
 
 
 @app.post("/candidates/{candidate_id}/merge")
@@ -2530,8 +3110,7 @@ def merge(
         raise HTTPException(409, str(exc))
     except InvalidCandidateProvenance as exc:
         raise HTTPException(400, str(exc))
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         _decision_location(
             slug,
             historical_document_id,
@@ -2541,6 +3120,28 @@ def merge(
         ),
         status_code=303,
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="merge",
+        route_template="/candidates/{candidate_id}/merge",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            candidate_id=candidate.id,
+            dependency_id=dependency.id,
+        ),
+        request_fields={
+            "slug": slug,
+            "dependency_id": dependency_id,
+            "historical_document_id": historical_document_id,
+            "cohort_receipt_id": cohort_receipt_id,
+            "event_cohort_receipt_id": event_cohort_receipt_id,
+        },
+    )
+    session.commit()
+    return response
 
 
 @app.post("/candidates/{candidate_id}/reject")
@@ -2582,8 +3183,7 @@ def reject(
         raise HTTPException(409, str(exc))
     except InvalidRejectReason as exc:
         raise HTTPException(400, str(exc))
-    session.commit()
-    return RedirectResponse(
+    response = RedirectResponse(
         _safe_return(
             redirect_to,
             _decision_location(
@@ -2595,6 +3195,27 @@ def reject(
         ),
         status_code=303,
     )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="reject",
+        route_template="/candidates/{candidate_id}/reject",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, candidate_id=candidate.id
+        ),
+        request_fields={
+            "slug": slug,
+            "reason": reason,
+            "historical_document_id": historical_document_id,
+            "cohort_receipt_id": cohort_receipt_id,
+            "event_cohort_receipt_id": event_cohort_receipt_id,
+            "redirect_to": redirect_to,
+        },
+    )
+    session.commit()
+    return response
 
 
 def _candidate(session: Session, candidate_id: int) -> Candidate:
