@@ -4,6 +4,8 @@ status: superseded by ADR-0009
 
 # Criticality is asserted by the document, not assigned by a reviewer
 
+> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** This superseded decision retains its original language and reasoning. Dependency now means Constraint, Evidence means Supporting Documentation, and the former Ready label concerns a Documentation Review. The accepted successor, ADR-0009, derives a work-type filter from Resolution Strategy; it does not establish critical-path status or urgency. Do not implement the historical Criticality scale below.
+
 > **Superseded by [ADR-0009](0009-the-document-records-a-resolution-strategy-not-a-criticality.md).**
 > The premise below — that TxDOT spells the signal `Potential Conflict = Y` — describes
 > Project A's local form, not TxDOT's published template, which records a

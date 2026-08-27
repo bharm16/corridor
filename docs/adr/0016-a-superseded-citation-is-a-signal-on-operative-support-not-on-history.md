@@ -2,17 +2,19 @@
 status: accepted
 ---
 
-# A superseded citation is a signal on operative support, not on history — and readiness stands on the current revision
+# A superseded citation is a signal on operative support; documentation sufficiency needs the current revision
 
-> ADR-0022 adds policy-authorized Automatic Carry-Forward for exact unchanged support. Human Reconfirmation remains the path for reviewer judgment; the signal may also clear through a valid carry-forward receipt.
+> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses Constraint, Supporting Documentation, and Documentation Review. The former Ready condition means the documentation requirement is met; loss of current support does not establish that physical work became unfinished. Stored rule names remain unchanged.
 
-When a supersession is registered (ADR-0015), the Ledger may hold records whose proof cites the replaced revision. Corridor computes `SUPERSEDED_CITATION` for every Dependency whose **operative support** — the Evidence currently making it Ready or backing what a report would print — relies on a non-current document. The signal exists the moment the registry knows: extraction and comparison results annotate it (`awaiting_extraction`, `unmatched`, `unchanged`, `changed`, `dropped`) but never gate its existence. It clears only when operative support references the current revision through human Reconfirmation or valid Automatic Carry-Forward.
+> ADR-0022 introduced Automatic Carry-Forward for exact unchanged support; ADR-0034 made it normal processing without project authorization. Human Reconfirmation remains the path for reviewer judgment; the signal may also clear through a valid carry-forward receipt.
 
-The predicate is operative support, never "any old link exists." Corridor preserves superseded Assertions and Evidence by design; a blanket predicate would fire on history that is doing no work, could never clear without deleting that history, and would quietly pressure users to erase provenance to silence it.
+When a Supersession is registered (ADR-0015), the Ledger may hold records whose supporting sources cite the replaced revision. Corridor computes `SUPERSEDED_CITATION` for every Constraint whose **Operative Support** — the Supporting Documentation currently meeting its stated requirement or backing what a Report would print — relies on a non-current Document. The signal exists the moment the registry knows: extraction and comparison results annotate it (`awaiting_extraction`, `unmatched`, `unchanged`, `changed`, `dropped`) but never gate its existence. It clears only when Operative Support references the current revision through human Reconfirmation or valid Automatic Carry-Forward.
 
-Readiness follows the same line: when a Dependency's only satisfying proof cites a superseded document, it no longer evaluates Ready until existing sufficiency moves to current Evidence through Reconfirmation or Automatic Carry-Forward. The old Evidence stays verified and preserved; only present readiness changes. This extends ADR-0002's derivation and is why readiness can lapse on a registry event with no edit to the record.
+The predicate is Operative Support, never "any old link exists." Corridor preserves superseded Assertions and Supporting Documentation by design; a blanket predicate would fire on history that is doing no work, could never clear without deleting that history, and would quietly pressure users to erase provenance to silence it.
 
-The name is `SUPERSEDED_CITATION`, not `SUPERSEDED_EVIDENCE`: the Evidence remains verified — the quote is still on the page — and what lapsed is its currency as support.
+Documentation sufficiency follows the same line: when a Constraint's only satisfying source is superseded, the documentation requirement is no longer met until the established human judgment has current support through Reconfirmation or Automatic Carry-Forward. The old Supporting Documentation stays verified and preserved; only its applicability to the current conclusion changes. This extends ADR-0002's derivation and is why a registry event can change that conclusion without an edit to the Constraint.
+
+The name is `SUPERSEDED_CITATION`, not `SUPERSEDED_EVIDENCE`: the Supporting Documentation remains verified — the quote is still on the page — and what lapsed is its currency as support.
 
 ## Consequences
 

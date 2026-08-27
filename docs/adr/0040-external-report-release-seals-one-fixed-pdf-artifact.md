@@ -4,6 +4,8 @@ status: accepted
 
 # External Report release seals one fixed PDF artifact
 
+> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
+
 An internal Report and an externally released artifact are different products of
 the Ledger. The working Report must stay current without a sign-off gate. An
 external recipient, however, must receive the exact artifact a named project person
@@ -18,8 +20,8 @@ decisions about their rendering and integrity; they are not implied by PDF relea
 ## The party-level section tells the unresolved truth
 
 The Report contains an **External Party commitments** section. Every open,
-attributable party-level Commitment whose Dependency scope is not yet known appears,
-not merely the past-due ones. Closed statements remain available in history rather
+attributable party-level Commitment whose Constraint scope is not yet known appears,
+not merely the past-due ones. Commitments with Completion Reported remain available in history rather
 than occupying the open coordination section.
 
 Each entry carries:
@@ -29,11 +31,11 @@ Each entry carries:
 - Commitment Scope status;
 - the current statement-level Coordination Plan;
 - open and past-due status; and
-- exact Evidence or Verbal provenance.
+- exact Supporting Documentation or Verbal provenance.
 
-Unknown scope remains party-level. It does not create a Dependency Committed Date,
-closure answer, or Exception. Known-scope statement rendering stays with the linked
-Dependency views; it is not part of this unknown-scope section contract.
+Unknown scope remains party-level. It does not supply a Promised For value, a
+completion finding, or an Exception for a Constraint. Known-scope statement rendering stays with the linked
+Constraint views; it is not part of this unknown-scope section contract.
 
 ## Release binds exact content and context
 

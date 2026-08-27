@@ -4,6 +4,8 @@ status: accepted
 
 # The queue fails closed on a registered successor, and the Active Run is declared, not latest
 
+> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Constraint replaces Dependency in current domain explanations. Active Run, Supersession Review, and stored routing identifiers retain their meanings.
+
 > ADR-0022 adds Automatic Carry-Forward before reviewer presentation for the exact policy-eligible subset. Rows that are not carried retain the two-lane routing decided here.
 
 Once Extraction Runs and Candidates become append-preserving (ADR-0018), the default review queue is computed scope: pending Candidates of the current revision's **Active Run**, derived at query time from registry and run lineage. Stored retirement states would duplicate what the lineage already answers; Candidate deletion is incompatible with the Comparison's receipt. Both stay rejected.
@@ -12,7 +14,7 @@ The scope **fails closed**. The moment revision C is registered, revision B's pe
 
 The **Active Run is declared in run lineage, never inferred** as `MAX(id)` or `MAX(completed_at)` — otherwise an experimental prompt run or a backfilled receipt silently becomes reviewer work. The resolver returns exact run ids, which requires ADR-0018's prerequisite that every Candidate identify its `ExtractionRun`. The three readers share the completion and lineage definitions but select explicitly: the queue reads the active actionable run, a Revision Comparison pins its two run ids, and an Extraction Measurement explicitly names its exact Extraction Runs. None inherits another's default — a measurement population that tracked "latest" would change silently under a new run.
 
-The reviewer surface is **two lanes behind one interface**, which is what actually prevents the two-queue incident from recurring one layer up: an unchanged successor row whose predecessor is already linked to a Dependency routes through Supersession Review, where a valid policy may carry it automatically and otherwise it remains human Reconfirmation work; a new, changed, ambiguous, or never-adjudicated row routes to Candidate Adjudication; historical rows route to neither. Raw run scoping without routing would list every unchanged row in both lanes.
+The reviewer surface is **two lanes behind one interface**, which is what actually prevents the two-queue incident from recurring one layer up: an unchanged successor row whose predecessor is already linked to a Constraint routes through Supersession Review, where a valid policy may carry it automatically and otherwise it remains human Reconfirmation work; a new, changed, ambiguous, or never-adjudicated row routes to Candidate Adjudication; historical rows route to neither. Raw run scoping without routing would list every unchanged row in both lanes.
 
 ## Consequences
 

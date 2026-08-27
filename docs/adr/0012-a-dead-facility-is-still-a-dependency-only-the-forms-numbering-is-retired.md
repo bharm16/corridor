@@ -2,7 +2,9 @@
 status: accepted
 ---
 
-# A dead facility is still a Dependency; only the form's numbering is retired
+# A dead facility can still be a Utility Conflict; only the form's numbering is retired
+
+> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** The populated utility condition formerly called a Dependency is a Utility Conflict within the broader set of Constraints. ADR-0009's retained filter concerns the work type, not critical-path status. Printed phrases and historical measurements below are unchanged.
 
 Settles #128, raised by the labelling preparation for the M7 gate (#88) and decided before WSDOT 9540 — the same form — is fetched (ADR-0008).
 
@@ -19,7 +21,7 @@ Spelling does not discriminate: both spellings appear on retired rows — `Not U
 
 **A populated conflict row carrying the phrase is a conflict.** The phrase describes the facility, not the row, and it reaches the record verbatim in `notes` for Adjudication to judge. Nobody selects a resolution strategy for a number that was never used: row 210 was analysed, resolved `Retain and Protect`, and marked for a city permit. The reading has a home in the document's own lineage — TxDOT's published template, verified in `corpus/` since #60, carries `Out of service` in its `Operational Status` controlled vocabulary. Describing a facility, the phrase maps to a value the industry defines; describing a row, it maps to nothing.
 
-The domain already committed to this side of the line. ADR-0009 puts **abandonment on the critical side** — *"an abandoned facility is scheduled utility-owner work, not a facility that stays"* — because this industry does not treat dead facilities as gone. A rule that read `Not used` as "row does not exist" would sit one column away from a rule that reads `Abandon / Deactivate` as "critical, someone must act", about the same pipe.
+The domain already committed to this side of the line. ADR-0009 puts **abandonment in the work-type subset** — *"an abandoned facility is scheduled utility-owner work, not a facility that stays"* — because this industry does not treat dead facilities as gone. A rule that read `Not used` as "row does not exist" would sit one column away from a rule that reads `Abandon / Deactivate` as planned Utility Owner work, about the same pipe.
 
 ## Why the rule had to be stated rather than inherited
 

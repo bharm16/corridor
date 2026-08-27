@@ -4,6 +4,8 @@ status: accepted
 
 # Product proving runs start from bounded raw Documents
 
+> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
+
 Corridor has no external users yet, and the registered project data is development
 test data rather than operational project truth. Product proving therefore uses the
 real Corridor application and frontend with an autonomous simulated practitioner.
@@ -22,19 +24,19 @@ project work only through the frontend.
 The first packet uses one SH99 Utility Conflict Matrix, the two `minutes_v5`
 Equistar Meeting Minutes Documents, and the SH99 Milestone input. Meeting Minutes
 are one Stream source, not the center or starting point of the product. The proving
-path continues through the Project Record, Dependency Ledger, Milestone
-Registrations, Need Dates, Ready, Exceptions, Evaluation, Coordination Plans,
+path continues through the Project Record, Constraint log, Milestone Revisions,
+Required By dates, Documentation Review, Exceptions, Evaluation, Coordination Plans,
 Report review, and one Approved Export.
 
 Extraction is fresh. Existing Active Runs are pinned comparison inputs, not reused
 as the proving run's output. A baseline must use the same extractor version, model,
 schema version, and prompt digest; incompatible lineage refuses before semantic
 comparison even when both runs produced zero Candidates. The new Extraction Runs
-must match the baseline's canonical Candidate facts and Evidence. Candidate
+must match the baseline's canonical Candidate facts and Supporting Documentation. Candidate
 identities and ordering may differ; an External Party Statement, External Party,
 timing, or citation that appears, disappears, or changes meaning is a repeatability
 failure and stops the run before Admission. Baseline equality proves repeatability,
-not correctness; Evidence validation, deterministic Admission, and
+not correctness; Supporting Documentation validation, deterministic Admission, and
 simulated-practitioner decisions remain separate checks.
 
 For numbered Meeting Minutes Action Items, repeatability includes Candidate
@@ -49,7 +51,7 @@ on the page.
 
 Some historical Matrix runs predate immutable Candidate snapshots. An exact
 same-Document replay may use the original attributable Admission plus the current
-Dependency's exact verified Evidence and Assertions as its legacy proof. That
+Constraint's exact verified Supporting Documentation and Assertions as its legacy proof. That
 receipt names every supporting EvidenceLink and Assertion, explicitly identifies
 extractor-only metadata that was not historically retained, and changes only the
 duplicate Candidate disposition. It never reapplies an old field or overrides a
@@ -59,13 +61,13 @@ missing support, ambiguous association, or dismissed target still abstains.
 Every residual Candidate produced by the exact packet is inspected. There is no
 arbitrary Work Item count limit. The simulated practitioner records a supported
 decision, marks the Candidate Not Relevant when appropriate, or leaves it explicitly
-unresolved with the exact Evidence or authority gap. The run fails when the frontend
+unresolved with the exact Supporting Documentation or authority gap. The run fails when the frontend
 cannot represent the honest outcome. It also exercises one refused invalid action
 and one Work Decision change before the final Report. A factual correction, Not
-Relevant disposition, closure, or Verbal is exercised only when the bounded packet
+Relevant disposition, report of completion, or Verbal is exercised only when the bounded packet
 supports that act. The simulated practitioner never fabricates a fact to satisfy a
 test checklist. When no correction is exercised, the receipt records only that no
-exact structured correction was observed; it does not claim that raw Evidence could
+exact structured correction was observed; it does not claim that raw Supporting Documentation could
 not support one.
 Report verification requires correct provenance on every published value, not the
 presence of a provenance class for which the bounded Project Record has no source.
@@ -116,7 +118,7 @@ Report.
   leaves membership under probabilistic control and cannot support repeatability.
 - Sampling residual Candidates can hide unsupported outcomes; grinding through an
   arbitrary fixed cap turns an extraction failure into unmeasured human labor.
-- Requiring a correction, Not Relevant decision, closure, or Verbal when the exact
+- Requiring a correction, Not Relevant decision, report of completion, or Verbal when the exact
   packet supplies no support for it turns an acceptance checklist into false Project
   Record data.
 - Combining revision processing with the first weekly workflow makes failures harder

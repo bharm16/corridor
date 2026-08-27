@@ -1,207 +1,233 @@
 # Corridor Project Record
 
-Corridor records the Dependencies in front of a highway project, the External Party facts and project decisions around them, and the provenance for every published value.
+Corridor records the external conditions that affect highway construction, the commitments and project decisions around them, and the sources supporting each published value.
 
 ## Language
 
-### Dependencies and commitments
+### Constraints and commitments
 
-**Dependency**:
-A precondition owned by an External Party that must be satisfied before construction can proceed.
-_Avoid_: conflict, issue, item, task, blocker
+**Constraint**:
+An external condition that must be addressed for a specified construction activity to start, progress, or finish as planned.
+_Avoid_: scheduled activity, schedule dependency, generic task
+
+**Utility Conflict**:
+Actual or potential interference between utility facilities and proposed construction.
+_Avoid_: disagreement between people, every permit or agreement, relocation already required
 
 **External Party**:
-An organization outside the project team that owns a Dependency or makes an attributable statement recorded by Corridor.
-_Avoid_: stakeholder, third party, vendor, utility
+An organization outside the project team that is responsible for a Constraint or makes an attributable statement recorded by Corridor.
+_Avoid_: project-team assignee, automatically the speaker of every statement mentioning it
+
+**Utility Owner**:
+The External Party that owns the utility facilities involved in a project.
+_Avoid_: assigned project person, project owner
 
 **Project Record**:
-The authoritative set of Dependencies, accepted External Party Statements, Evidence, Verbals, Work Decisions, and publication receipts for one project.
-_Avoid_: database, source of truth, master record
+The authoritative set of Constraints, accepted External Party Statements, Supporting Documentation, Verbals, Work Decisions, Milestone Revisions, and publication receipts for one project.
+_Avoid_: only the Constraint log, only the Ledger
 
 **Ledger**:
-The working set of Dependencies within the Project Record.
-_Avoid_: Project Record, registry, tracker, list
+The working set of Constraints within the Project Record.
+_Avoid_: the entire Project Record, all party-level Commitments
+
+**Constraint Log**:
+A view of the Constraints being coordinated, the people assigned to their next actions, and the relevant dates.
+_Avoid_: a schedule's date restrictions, a complete construction schedule
 
 **Stationing**:
-A linear coordinate along the project alignment, such as `245+00`.
-_Avoid_: chainage, milepost, location when a station range is meant
+A position along the project alignment, such as `245+00`.
+_Avoid_: a station range without its alignment context
 
 **Milestone**:
-A dated event in the project schedule that Dependencies must be Ready for.
-_Avoid_: deadline, gate, phase
+A named event in the project schedule with no duration, such as the start of a construction phase.
+_Avoid_: a duration-bearing activity, a promise from an External Party
 
-**Milestone Registration**:
-An immutable record of one Milestone revision with its exact source row and source digest.
-_Avoid_: schedule import, mutable milestone, bare date
+**Milestone Revision**:
+An immutable record of one version of a Milestone with its exact source row and source digest.
+_Avoid_: mutable milestone, bare date, automatically an approved baseline
 
-**Milestone Impact**:
-A Work Decision that states whether a Committed Date Change affects exact registered Milestones, does not affect them, or is not yet known.
-_Avoid_: impact note, free-text milestone, schedule impact without a state
+**Effect on Milestone**:
+A Work Decision that states whether a Committed Date Change affects named Milestones, does not affect them, or has an effect that is not yet known.
+_Avoid_: a free-text milestone, an inferred project delay, a critical-path calculation
 
 **Resolution Strategy**:
-The source-supported way a utility conflict will be resolved, such as relocation, removal, protection in place, or a highway design change.
-_Avoid_: disposition, treatment, remedy, fix
+The recorded way a Utility Conflict will be addressed, such as relocation, removal, protection in place, or a highway design change, supported by its source or attributable human conclusion.
+_Avoid_: proof the work is complete, Criticality, critical-path status
 
-**Criticality**:
-The derived reading that a Resolution Strategy requires substantial External Party work: relocation, removal, or abandonment in place.
-_Avoid_: priority, severity, importance, urgency, high
-
-**Need Date**:
-The date by which a Dependency must be Ready, derived from the Milestone Registration it serves.
-_Avoid_: required date, due date, deadline
+**Required By**:
+The date by which a Constraint's stated requirement must be met, derived from the Milestone Revision it serves.
+_Avoid_: Promised For, the internal action's due date, actual completion
 
 **External Party Statement**:
-An attributable Commitment, Committed Date Change, or Commitment Closure preserved with its timing, source, and Commitment Scope.
-_Avoid_: Dependency Event, mention, action item
+An attributable Commitment, Committed Date Change, or report of completion preserved with its timing, source, and Commitment Scope.
+_Avoid_: every mention of an organization, an internal project action
 
 **Commitment**:
 An attributable External Party Statement about what that party will deliver and when.
-_Avoid_: mention, invitation, project action item
+_Avoid_: a planning estimate, an invitation, a project action item
 
-**Committed Date**:
+**Promised For**:
 The timing an External Party stated it would deliver, preserved at the precision the statement supports.
-_Avoid_: promise date, agreed date, target date
+_Avoid_: Required By, estimated completion, actual completion
 
 **Committed Date Change**:
-An External Party Statement in which attributable timing for the same Commitment moves earlier or later.
-_Avoid_: slip, delay, pushback, reschedule
+An External Party Statement replacing one attributable timing with another for the same Commitment, with direction retained when supported.
+_Avoid_: a change to Required By, an invented direction, a new unrelated deliverable
 
-**Commitment Closure**:
-Verified Evidence or an attributable Verbal that states one exact Commitment is complete.
-_Avoid_: completion click, closed status, finished action
+**Completion Reported**:
+An attributable External Party Statement that one exact Commitment is complete, supported by verified source records or preserved as a Verbal.
+_Avoid_: all Constraints satisfied, internal action complete, general construction authorization
 
 **Commitment Scope**:
-The one, selected, all-active, or not-yet-known Dependencies to which an External Party Statement applies.
-_Avoid_: blanket assignment, affected conflicts, inferred scope
+The explicit set of Constraints to which an External Party Statement applies, or the statement that scope is not yet known; all-active records the set at the time of the decision.
+_Avoid_: inferred scope, a set that silently expands later
 
 **Commitment Lineage**:
 One External Party Commitment across append-only factual corrections and statement versions.
-_Avoid_: mutable commitment, latest event, copied statement
+_Avoid_: every promise by the same party, a copied statement per Constraint
 
 ### Project coordination
 
 **Coordination Subject**:
-The one Dependency or accepted Commitment Lineage that a Work Decision concerns.
-_Avoid_: mixed subject, affected records, polymorphic owner
+The one Constraint or accepted Commitment Lineage that a Work Decision concerns.
+_Avoid_: one decision silently applied to several subjects
 
-**Internal Owner**:
-The project-team member accountable for the current Next Action on one Coordination Subject.
-_Avoid_: owner, assignee, responsible party
+**Assigned To**:
+The named project-team member accountable for the current Next Action on one Coordination Subject.
+_Avoid_: Utility Owner, automatically the person performing the external work
 
 **Next Action**:
 The project-controlled step that must happen next for one Coordination Subject.
-_Avoid_: action item, task, todo, follow-up
+_Avoid_: the External Party's Commitment
 
 **Action Due Date**:
 The date the project set for its own Next Action.
-_Avoid_: due date, Need Date, Committed Date
+_Avoid_: Required By, Promised For
 
 **Work Decision**:
 An attributable project-team decision that changes project-controlled coordination state for one Coordination Subject.
-_Avoid_: workflow state, direction, audit entry
+_Avoid_: proof of what an External Party said or did
 
 **Coordination Plan**:
-The current Internal Owner, Next Action, and Action Due Date for one Coordination Subject, plus Milestone Impact when the subject is a Committed Date Change.
-_Avoid_: plan record, copied assignment, External Party commitment
+The current assigned person, Next Action, and Action Due Date for one Coordination Subject, plus Effect on Milestone when the subject is a Committed Date Change.
+_Avoid_: an External Party Commitment, a plan copied to every linked Constraint
 
-### Claims and provenance
+### Claims and supporting records
 
 **Assertion**:
-One source Document's claim about one field of one Dependency.
-_Avoid_: fact, value, conclusion, statement
+One source Document's claim about one field of one Constraint.
+_Avoid_: the project's settled conclusion, an independently verified physical fact
 
 **Dispute**:
-Current verified Assertions that disagree about one Dependency field.
-_Avoid_: conflict, mismatch, stored flag
+An unsettled disagreement among retained verified Assertions about one Constraint field.
+_Avoid_: Utility Conflict, automatically a contractual dispute, a stored flag
 
 **Settlement**:
 An attributable human conclusion about one disputed field that preserves every Assertion it considered.
-_Avoid_: override, correction, resolution
+_Avoid_: deletion of the losing claim, a conclusion about unseen later claims
 
-**Evidence**:
-A verified quote from a specific page of a registered Document that supports a document-sourced fact.
-_Avoid_: proof, backup, source, reference
+**Supporting Documentation**:
+Verified source passages from registered Documents that support a recorded fact, with exact document and page references.
+_Avoid_: a document title alone, proof that every related condition is satisfied
 
 **Operative Support**:
-The current Evidence that supports publication or an established readiness judgment for one Dependency.
-_Avoid_: active evidence, current evidence, live citation
+The current Supporting Documentation used to publish a Constraint's facts or support an established Documentation Review.
+_Avoid_: every historical citation, the most recently inserted document
 
 **Derivation**:
 A value computed from exact Project Record inputs under a stated ruleset and Evaluation date.
-_Avoid_: assertion, aggregate, bare rollup
+_Avoid_: a source Assertion, an unexplained aggregate
 
 **Verbal**:
 An External Party Statement heard by a named project person on a stated date and preserved as an append-only source.
-_Avoid_: phone citation, undocumented evidence, inferred commitment
+_Avoid_: a document citation, an inferred Commitment
 
 **Document of Record**:
-The rendition Evidence cites when one Document is published in several formats; a structured original outranks its printed rendering.
-_Avoid_: source of truth, master copy, canonical version
+The rendition that Supporting Documentation cites when one Document is published in several formats; a structured original outranks its printed rendering.
+_Avoid_: every rendition treated as an independent source
 
 **Supersession**:
 The registered relation that one Document replaced another as the current revision.
-_Avoid_: versioning, obsolete, archived
+_Avoid_: an inference from filename or recency
 
 **Numbering Scheme**:
 The registered rule that gives matrix rows project-unique or per-party identity.
-_Avoid_: id format, key strategy, numbering style
+_Avoid_: an identity rule guessed from a row number
 
 **Utility Conflict Matrix**:
-A Document that lists utility conflicts and how each conflict will be resolved.
-_Avoid_: UCM, conflict list, utility matrix
+A Document that lists Utility Conflicts and how they will be addressed.
+_Avoid_: Utility Inventory, a complete utility schedule
 
 **Utility Inventory**:
-A Document that lists utility features and may identify conflicts but does not state their Resolution Strategies.
-_Avoid_: matrix, inventory matrix
+A Document that lists utility features and may identify interference but does not state Resolution Strategies.
+_Avoid_: Utility Conflict Matrix
 
 **Retired Row**:
-A Utility Conflict Matrix row whose only content is an identifier and a retirement phrase, rather than a Dependency.
-_Avoid_: blank row, skipped row, empty slot
+A Utility Conflict Matrix row whose only content is an identifier and a retirement phrase, rather than a Constraint.
+_Avoid_: every abandoned utility facility, a deleted source row
+
+### Documentation review and supported outcomes
+
+**Required Documentation**:
+The stated source records and content needed to demonstrate that one specified construction condition has been met.
+_Avoid_: readiness to begin the external work, a universal completion checklist
+
+**Documentation Review**:
+A named person's judgment of whether exact current Supporting Documentation meets the Required Documentation for one specified condition.
+_Avoid_: quote verification alone, contractual acceptance, permission to start unrelated work
+
+**Relocation Complete**:
+The supported conclusion that the specified relocation work is complete for the named utility facilities and location.
+_Avoid_: relocation design complete, relocation promised, the whole project complete
+
+**Permit Issued**:
+The identified permit has been issued by its issuing authority for its stated scope and conditions.
+_Avoid_: every required permit obtained, the permitted work complete
+
+**Agreement Executed**:
+The identified agreement has been signed by its required parties for its stated scope.
+_Avoid_: the agreement's required work complete, an unsigned draft
+
+**No Conflict Confirmed**:
+The supported conclusion that the identified utility facilities do not interfere with the specified construction.
+_Avoid_: relocation completed, every utility on the project cleared
 
 ### Decisions and signals
 
-**Ready**:
-The derived condition that current verified Evidence satisfies a Dependency's Readiness Requirement after an attributable human sufficiency judgment.
-_Avoid_: complete, done, cleared, resolved
-
-**Readiness Requirement**:
-The stated Evidence bar that a Dependency must satisfy to become Ready.
-_Avoid_: ready flag, closure toggle, completion status
-
 **Not Relevant**:
 The reversible human disposition of a Candidate that does not belong in the Project Record.
-_Avoid_: delete, reject, ignore, toss
+_Avoid_: delete, erase
 
 **Dismissal**:
-The reversible human act that removes an admitted junk Dependency from current work while preserving its history.
-_Avoid_: delete, archive, close
+The reversible human act that removes an admitted junk Constraint from current work while preserving its history.
+_Avoid_: work completed, Constraint satisfied
 
 **Attention Reason**:
 A current derived reason that one Work Item needs human attention.
-_Avoid_: alert, score, queue row, party-level Exception
+_Avoid_: a stored status, a party-level Exception
 
 **Work Item**:
 One current project question anchored to a Candidate or Coordination Subject and presented with all of its Attention Reasons.
-_Avoid_: duplicate task, queue record, Ledger record
+_Avoid_: one duplicate card per reason, automatically a construction activity
 
 **Exception**:
-A derived fact that a Dependency needs attention, grouped by its rule and ordered only by that rule's own quantity.
-_Avoid_: alert, flag, issue, risk, warning, severity
+A derived fact that a Constraint needs attention, grouped by its rule and ordered only by that rule's own quantity.
+_Avoid_: an urgency score, a critical-path finding
 
 **Evaluation**:
 One project's Exceptions computed for one date, ruleset, threshold set, and Project Record input.
-_Avoid_: run, scan, pass, snapshot
+_Avoid_: an extraction measurement, an unbound list of results
 
 ### Publication
 
 **Report**:
 A structured publication view of one Evaluation and the Project Record values it presents.
-_Avoid_: Briefing, live record, export
+_Avoid_: a released artifact that can change in place
 
 **Approved Export**:
 The immutable external Report artifact that a designated project person released.
-_Avoid_: live report approval, sent report, mutable export
+_Avoid_: approval of a live page, proof of delivery to a recipient
 
 **Briefing**:
 A cited model-drafted narrative view of the Project Record that cannot change it or omit its Exceptions.
-_Avoid_: summary, assessment, AI insights
+_Avoid_: an independent authority to change the record

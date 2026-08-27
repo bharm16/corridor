@@ -2,7 +2,9 @@
 status: accepted
 ---
 
-# Admission is mechanical on verified evidence, and no sign-off gates the product
+# Admission is mechanical on verified Supporting Documentation, and no sign-off gates the product
+
+> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
 
 > **Amended by ADR-0034.** The Carry-Forward authorization carve-out below no
 > longer applies. Automatic Carry-Forward now runs as normal fail-closed processing
@@ -25,4 +27,4 @@ This supersedes the accountable-human authorization at the center of ADR-0026 an
 
 ## Consequences
 
-The load screen is deleted; admission policies run as pipeline stages under a system actor when documents land. The PolicyApproval requirement drops; PolicyRun receipts and outcome tables stay. CONTEXT.md is rewritten alongside this decision: the product line, Ledger, Admission, Adjudication, and a new Dispute entry. The queue becomes a working list whose row actions are settle, verify, attach, and dismiss; the follow-up screens — Internal Owner, Next Action, Committed Date tracking — are the next build.
+The load screen is deleted; admission policies run as pipeline stages under a system actor when documents land. The PolicyApproval requirement drops; PolicyRun receipts and outcome tables stay. CONTEXT.md is rewritten alongside this decision: the product line, Ledger, Admission, Adjudication, and a new Dispute entry. The queue becomes a working list whose row actions are settle, verify, attach, and dismiss; the follow-up screens — assignment, Next Action, and Promised For tracking — are the next build.

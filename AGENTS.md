@@ -41,11 +41,12 @@ saying why it exists and what was tried before — read it before changing one.
   incomparable.
 - A policy-recorded `Commitment Scope not yet known` is current Ledger state,
   not a confirmation question. Show known facts read-only, continue with the
-  Internal Owner and Next Action, and keep unknown scope as an Attention Reason.
+  assigned project person and Next Action, and keep unknown scope as an
+  Attention Reason.
   Do not keep a generic scope picker on that Work Item. A later scope correction
-  belongs only in an explicit Evidence-bound Correct flow with human-readable
-  Dependency context; never render a scope-mode quiz or save an attributable
-  no-op confirmation (ADR-0035, ADR-0036, ADR-0039, ADR-0042).
+  belongs only in an explicit Correct flow bound to verified source passages,
+  with human-readable Constraint context; never render a scope-mode quiz or save
+  an attributable no-op confirmation (ADR-0035, ADR-0036, ADR-0039, ADR-0042).
 - Keep the branch boundary clear: the pending Candidate screen may still ask for
   explicit scope when scope is the actual unresolved human decision; the
   mechanically admitted unknown-scope screen may not.
@@ -65,4 +66,8 @@ The five canonical triage roles, each label string equal to its name. See `docs/
 
 ### Domain docs
 
-Multi-context — start with `CONTEXT-MAP.md`, then read the mapped Project Record or Corridor Operations glossary and the relevant `docs/adr/`. See `docs/agents/domain.md`.
+Multi-context — start with `CONTEXT-MAP.md`, then read the mapped Project Record or Corridor Operations glossary and the relevant `docs/adr/`. See [the domain guide](docs/agents/domain.md).
+
+### Research before terminology
+
+Before **suggesting, adding, renaming, or redefining a domain term**, including a customer label, complete [Research before proposing terminology](docs/agents/domain.md#research-before-proposing-terminology). This applies in conversation and plans before any file edit: research primary industry sources, record their meaning and scope, then propose the term. Use the accepted glossary and [ADR-0047's legacy mapping](docs/adr/0047-domain-language-follows-researched-construction-practice.md); preserve existing code identifiers until a separately scoped implementation changes them.

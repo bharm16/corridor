@@ -4,6 +4,8 @@ status: superseded by ADR-0021 and ADR-0029
 
 # Admission is a human act distinct from Reconfirmation, and the development Ledger is rebuilt, not ratified
 
+> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** This superseded decision retains historical Dependency wording, counts, and actor labels. Current language is Constraint. Its Admission and rebuild policies are not current; only the distinction between Admission and Reconfirmation remains, as noted below.
+
 > The development-Ledger rebuild in this decision is superseded by ADR-0021, and human-only Admission by ADR-0029. The distinction between Admission and Reconfirmation remains in force.
 
 The Ledger's constitution — nothing enters except by a human decision — stands as written. The live database does not: all 141 Dependencies were admitted by `accept_candidate` under actors `agent` (96) and `demo` (45), zero by a human. The machinery rule held — only Adjudication ever wrote, extractors never did — but the actor claim failed. The records yield, not the definition.
@@ -12,7 +14,7 @@ Two enforcement holes made the drift possible, and they close first. The audit l
 
 The 141 current rows are development artifacts, not compliant Ledger contents. They are archived as a legacy snapshot — never relabeled human — and rebuilt through ordinary, attributable human Adjudication from their uniquely matching pending Candidates: each of the 141 has exactly one, from the `matrix_tiered_v2` generation. No Active Run has been declared and the code now carries `matrix_tiered_v3`, so the rebuild names the run it draws from rather than assuming a current one. The rebuild also waits for operative-support designation (ADR-0017) to exist, so the human pass captures publication support once instead of requiring a second pass. The pending Candidates (6,685 as of 2026-08-05) stay pending: workload, not violation. The rebuild pays the constitutional debt only — 141 rows of one project's matrix are not the held-out, multi-document human slice M7's triage still owes.
 
-**Admission and Reconfirmation are separate acts.** Reconfirmation (ADR-0016) re-points operative support at the current revision; it never revisits whether the Dependency should exist, how it was merged, or what its fields conclude — those are Adjudication's questions. A future UI gesture may perform both in one motion, but it records two distinct decisions.
+**Admission and Reconfirmation are separate acts.** Reconfirmation (ADR-0016) re-points Operative Support at the current revision; it never revisits whether the Constraint should exist, how it was merged, or what its fields conclude — those are Adjudication's questions. A future UI gesture may perform both in one motion, but it records two distinct decisions.
 
 ## Considered options
 

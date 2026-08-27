@@ -17,11 +17,11 @@ The one production Extraction Run declared for current work on a Document.
 _Avoid_: latest run, newest run, current extraction
 
 **Candidate**:
-A cited Dependency or External Party Statement proposed by an extractor and not yet in the Project Record.
+A cited extraction proposal for a Constraint or External Party Statement, preserved alongside the outcome of its handling.
 _Avoid_: suggestion, draft, proposal
 
 **Admission**:
-The entry of a Candidate into the Project Record through human Adjudication or an exact deterministic policy.
+The recording of a Candidate's supported fact through human Adjudication or an exact deterministic policy, while preserving the extraction proposal.
 _Avoid_: import, promotion, insertion
 
 **Adjudication**:
@@ -45,11 +45,11 @@ The current operations work needed because Operative Support still uses a supers
 _Avoid_: stale list, migration list
 
 **Reconfirmation**:
-The human act that moves established Operative Support to current Evidence without changing the admitted conclusion.
+The human act that moves established Operative Support to current Supporting Documentation without changing the admitted conclusion.
 _Avoid_: re-adjudication, approval, ratification
 
 **Automatic Carry-Forward**:
-The fail-closed policy act that moves established Operative Support to exact unchanged current Evidence.
+The fail-closed policy act that moves established Operative Support to exact unchanged current Supporting Documentation.
 _Avoid_: automatic Reconfirmation, auto-approval, automatic Adjudication
 
 **Carry-Forward Policy**:

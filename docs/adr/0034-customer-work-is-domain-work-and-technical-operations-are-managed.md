@@ -4,20 +4,22 @@ status: accepted
 
 # Customer work is domain work, and technical operations are managed
 
+> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
+
 Corridor's first users are construction workers and project coordinators. The
 current operating path asks a person to understand an Active Run id, inspect a
 Carry-Forward Policy digest, and use terminal commands before the product can do
 ordinary work. Those are system-maintenance choices, not project decisions. A
 customer cannot give meaningful authorization to rules they cannot inspect, and a
 project coordinator should not have to understand extraction lineage to use the
-Ledger.
+Constraint Log.
 
 Decision: **customer users do domain work; Corridor manages technical operations.**
 A customer-facing workflow never requires a command line, a database query, an
 internal id, an Active Run choice, a policy digest, or knowledge of Automatic
-Carry-Forward. Customer screens name the project question: assign an Internal
-Owner, record a Next Action, say what an External Party stated, settle a Dispute,
-or judge whether Evidence meets the stated readiness requirement. Technical
+Carry-Forward. Customer screens name the project question: choose the assigned
+person, record a Next Action, say what an External Party stated, settle a Dispute,
+or judge whether Supporting Documentation meets the stated requirement. Technical
 failures become work for Corridor operations, not disguised work for the customer.
 
 Corridor operations owns first-release project setup. It creates the project,
@@ -26,8 +28,8 @@ location, and loads the project team. The customer confirms that setup; the
 customer does not configure extraction rules or safety policies. After setup,
 Corridor monitors the connected location and processes new revisions. Manual upload
 is a fallback for a Document received elsewhere. Supersession still requires
-authority Evidence; neither automation nor an operator may infer it from a filename
-or date.
+Supporting Documentation that establishes the replacement; neither automation nor
+an operator may infer it from a filename or date.
 
 When an incoming Document uses an unfamiliar External Party name, the coordinator
 confirms a suggested existing party or creates a new one; Corridor records a
@@ -41,9 +43,9 @@ Documents and attributable Verbals.
 Automatic Carry-Forward no longer requires project authorization. When Revision
 Processing proves an exact, unique, mechanically verified, unchanged successor row,
 Corridor moves only the Operative Support roles that already carry a human judgment.
-It does not perform Admission, change a Dependency's conclusion, or originate
-Ready. Changed, ambiguous, incomplete, or unverifiable input produces Abstention and
-leaves the Ledger unchanged. A successful transfer appears in plain project history
+It does not perform Admission, change a Constraint's conclusion, or originate
+a Documentation Review. Changed, ambiguous, incomplete, or unverifiable input
+produces Abstention and leaves the Ledger unchanged. A successful transfer appears in plain project history
 and does not interrupt a user. A material change creates a plain-language task about
 what changed; the user never sees a Reconfirmation lane.
 
@@ -51,8 +53,8 @@ This decision **supersedes ADR-0022's project-authorization requirement**, inclu
 its rule that the absence of an active authorization sends exact unchanged rows to
 human Reconfirmation. ADR-0022's eligibility proof, separation of roles,
 fail-closed behavior, immutable Carry-Forward Run and outcome receipts, and ban on
-originating readiness remain in force. Rule versions and source digests remain in
-the receipts for replay and audit. Changes to those rules pass through Corridor's
+judging that a documentation requirement is met remain in force. Rule versions and
+source digests remain in the receipts for replay and audit. Changes to those rules pass through Corridor's
 engineering and release controls; asking a project coordinator to sign a digest is
 not a safety control.
 
@@ -69,11 +71,11 @@ If production processing does not yield one safe choice, Corridor selects nothin
 new. If a prior valid Active Run exists, it remains declared; if none exists, the
 Document remains without one. Corridor operations receives the technical detail and
 resolves it. The customer sees only the consequence in project language, such as
-"A newer document needs attention. Some Evidence is not current." The existing
-Ledger and Work Decisions remain usable. Provenance still fails closed: a
-superseded Document cannot regain actionable Candidates, and Ready lapses when all
-of its satisfying support cites superseded Evidence. This refines ADR-0019's
-explicit-declaration rule; it does not permit an implicit latest-run rule or weaken
+"A newer document needs attention. Some supporting documents are no longer current."
+The existing Ledger and Work Decisions remain usable. Provenance still fails closed: a
+superseded Document cannot regain actionable Candidates. A documentation requirement
+is no longer treated as met when all applicable support cites superseded Documents.
+This refines ADR-0019's explicit-declaration rule; it does not permit an implicit latest-run rule or weaken
 its successor fail-closed behavior. Acceptance captures remain outside production
 lineage under ADR-0024.
 
@@ -97,8 +99,9 @@ rehearsal shortcut, not the production sign-in contract.
 A processing failure does not lock the Ledger or erase coordination state. Corridor
 operations receives an actionable alert. Affected users receive a plain consequence
 only when current project work is affected. Exact Carry-Forward succeeds quietly in
-history; changed Evidence, loss of Ready, or a current commitment affected by a new
-Document becomes prioritized domain work. The system never guesses, silently
+history; changed Supporting Documentation, a documentation requirement no longer
+met, or a current commitment affected by a new Document becomes prioritized domain
+work. The system never guesses, silently
 publishes stale support, or asks a customer to repair lineage.
 
 ## #196 sequencing
@@ -114,8 +117,8 @@ Corridor operations then rehearses the SH 99 mechanical Admission backfill again
 an isolated clone of a pinned current database and current source. The receipt audit
 compares exact before and after Ledger rows, Candidate states, Policy Runs, outcomes,
 and reason codes; it never substitutes guessed totals. Candidate 7587 abstains, and
-Candidates 7129 and 7296 remain pending for Evidence-bound guided Adjudication. A
-second run may append an immutable run receipt but creates no duplicate Ledger fact.
+Candidates 7129 and 7296 remain pending for guided Adjudication bound to Supporting
+Documentation. A second run may append an immutable run receipt but creates no duplicate Ledger fact.
 Only after that proof and a separate explicit approval may operations mutate the
 shared SH 99 database.
 
@@ -136,8 +139,8 @@ Changing the shape of the same technical ceremony does not turn run lineage or a
 policy digest into project work.
 
 **Keep customer authorization for Automatic Carry-Forward.** Rejected. Exact
-unchanged Evidence adds no new judgment, and a signature from someone who cannot
-evaluate the rules creates false assurance. The eligibility proof, Abstention, and
+unchanged Supporting Documentation adds no new judgment, and a signature from
+someone who cannot evaluate the rules creates false assurance. The eligibility proof, Abstention, and
 receipts are the safety controls.
 
 **Select the latest completed Extraction Run.** Rejected. An experiment, evaluation,
@@ -145,8 +148,9 @@ or backfill could silently change the Ledger. Production purpose and explicit
 lineage, not time or id order, determine eligibility.
 
 **Block the entire Ledger while technical processing needs attention.** Rejected.
-Existing Dependencies and Work Decisions remain useful. Only conclusions that need
-current Evidence, including Ready, must fail closed.
+Existing Constraints and Work Decisions remain useful. Only conclusions that need
+current Supporting Documentation, including conclusions from Documentation Review,
+must fail closed.
 
 ## Consequences
 
@@ -164,7 +168,10 @@ release. That is intentional: the company owns technical complexity until a safe
 plain self-service workflow exists. The permission boundary for construction workers
 remains explicitly deferred; this ADR grants them no Ledger-write authority.
 
-## Interview decision inventory
+## Historical interview decision inventory
+
+Terminology in the interview inventories below is preserved as recorded. Read the current decisions with the vocabulary in [ADR-0047](0047-domain-language-follows-researched-construction-practice.md); these historical uses of Ready, Dependency, and Evidence are not current product labels.
+
 
 The inventories below are historical loss-prevention records. The normative current decisions live in the focused ADR sections above and ADR-0035 through ADR-0045; issue numbers, branch names, hashes, and delivery order below are not product architecture.
 

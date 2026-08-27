@@ -4,9 +4,11 @@ status: accepted
 
 # A model may brief on the record, never be it
 
+> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Constraint and Supporting Documentation replace Dependency and Evidence in current explanations. A Report names supported outcomes and their review basis; it does not give a general Ready status or permission to start work.
+
 The exception engine is deterministic by construction and blind by measurement.
 
-Deterministic is the moat: this ledger's output is ammunition — utility-relocation delays end in claims, and the readiness report is the artifact a program manager puts in front of an auditor or opposing counsel. Its standing rests on three properties the rules provide for free. Asked twice, it answers the same. Asked *why*, it answers with a stored fact. And because it recomputes identically, "what changed since last week" is computable — the diff layer diffs the record, not a mood.
+Deterministic is the moat: this Ledger's output is ammunition — utility-relocation delays end in claims, and the Report is the artifact a program manager puts in front of an auditor or opposing counsel. Its standing rests on three properties the rules provide for free. Asked twice, it answers the same. Asked *why*, it answers with a stored fact. And because it recomputes identically, "what changed since last week" is computable — the diff layer diffs the record, not a mood.
 
 Blind is the cost, and the blindness is measurable in the stored data. WSDOT 9424's matrix prints, under `Relocation Schedule Status`, the sentence `NTP July or August 2019. Work will be coordinated with ST contractor.` — a schedule coupling to a second agency's contractor. No rule will ever fire on it, and the extraction pipeline holds it at three removes from anything a rule reads: the column is deliberately unmapped (the vocabulary declined it in writing), so the sentence survives only inside the citation's quote string, on a Candidate still pending review. The minutes corpus holds 1,629 pending events of the same character — commitments hedged, permits waited on, mobilization promised only after another party acts. A reader who saw all of it would worry about things the exception list cannot name.
 
@@ -14,11 +16,11 @@ A model can read all of it. The question this ADR settles is what the model's re
 
 ## Decision
 
-A model may produce the **Briefing**: a narrative reading of one Dependency or one project — the record, its Exceptions, and its evidence trail, rendered as the paragraph a program manager would want a sharp deputy to write. For a relocation record it might read: *this is the one to watch — the relocation is committed for September, the owner has not appeared in a document in six weeks, and the July minutes say its contractor is waiting on a city franchise permit.* Every clause of which would carry a citation.
+A model may produce the **Briefing**: a narrative reading of one Constraint or one project — the record, its Exceptions, and its Supporting Documentation, rendered as the paragraph a program manager would want a sharp deputy to write. For a relocation record it might read: *this is the one to watch — the relocation is promised for September, the Utility Owner has not appeared in a document in six weeks, and the July minutes say its contractor is waiting on a city franchise permit.* Every clause of which would carry a citation.
 
 Four constraints, each inherited from a boundary this system already enforces:
 
-1. **Every sentence carries a citation** — to an Evidence page, a named Assertion, or a named computed fact (an Exception, a Derivation). The report already holds this bar for cells (*no cell is bare*, ADR-0003); prose gets no exemption for being prose. A sentence that cannot cite is a sentence the Briefing may not contain.
+1. **Every sentence carries a citation** — to a page of Supporting Documentation, a named Assertion, or a named computed fact (an Exception, a Derivation). The Report already holds this bar for cells (*no cell is bare*, ADR-0003); prose gets no exemption for being prose. A sentence that cannot cite is a sentence the Briefing may not contain.
 
 2. **The Briefing is a view, never the record.** It is regenerable, labelled as model-drafted, and stamped with the prompt version and model that produced it (the provenance every Candidate already carries, v0-build-spec §7) **plus the evaluation time and ruleset version of the Exceptions it cites** — because Exceptions are computed at read time and stored nowhere, a citation to one is only re-checkable against the moment and ruleset that computed it. That is ADR-0003's own discipline for Derivations, applied to prose. Deleting every Briefing loses no fact. It is never stored as record, never diffed as record, never cited as record.
 
@@ -30,17 +32,17 @@ Four constraints, each inherited from a boundary this system already enforces:
    the rule buckets from the Evaluation's shared facet view, each with its
    count and exact individual Exception refs underneath, so citing a bucket
    covers every instance while individual instances remain citable when their
-   detail matters and a one-Dependency Briefing keeps its instance-level
+   detail matters and a single-Constraint Briefing keeps its instance-level
    floor — the unit of coverage changes, but every fired Exception remains in
    or under the Briefing.
 
 ## Considered options
 
-**Let the model replace the rule engine** — hand it the evidence, let it decide what is concerning. Rejected on all three moat properties at once: the same record on two days would brief two ways, which turns the week-over-week diff into noise; "why is this flagged" would answer with plausible prose instead of a checkable fact; and the standing of the output in a dispute would rest on a system that cannot show its work. The objection is not that models are careless — it is that this corpus has *measured* the failure class: the validation gate (#68) caught transcribed values that were not on the page at self-reported confidences of 0.98 and 0.99, which is why ADR-0006 lets code do everything a lookup can do and confines the model to what code cannot. This ADR draws the identical line one layer up: arithmetic and set membership are lookups over the record — code's; reading prose across 1,629 events and saying what it amounts to is not — the model's.
+**Let the model replace the rule engine** — hand it the Supporting Documentation, let it decide what is concerning. Rejected on all three moat properties at once: the same record on two days would brief two ways, which turns the week-over-week diff into noise; "why is this flagged" would answer with plausible prose instead of a checkable fact; and the standing of the output in a dispute would rest on a system that cannot show its work. The objection is not that models are careless — it is that this corpus has *measured* the failure class: the validation gate (#68) caught transcribed values that were not on the page at self-reported confidences of 0.98 and 0.99, which is why ADR-0006 lets code do everything a lookup can do and confines the model to what code cannot. This ADR draws the identical line one layer up: arithmetic and set membership are lookups over the record — code's; reading prose across 1,629 events and saying what it amounts to is not — the model's.
 
 **Rules only** — extend the engine until it catches everything. Rejected as unfalsifiable in the wrong direction: a new rule can be written for any prose pattern *after* someone notices it, which means the rules encode last year's surprises. The Briefing exists to surface this year's.
 
-**A stochastic score** — the model rates concern 1–10 from the evidence. Rejected as ADR-0010's weights with worse provenance: an unsourced constant at least sits still; an unsourced sample moves between runs.
+**A stochastic score** — the model rates concern 1–10 from the Supporting Documentation. Rejected as ADR-0010's weights with worse provenance: an unsourced constant at least sits still; an unsourced sample moves between runs.
 
 ## Consequences
 

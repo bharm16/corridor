@@ -4,9 +4,11 @@ status: accepted
 
 # Assertions are stored separately from ledger values
 
-Source documents routinely disagree about a Dependency's committed date or status — the conflict matrix says one date, the minutes say another, the utility's email says a third. The original schema stored a single value per field on `dependencies`, and `evidence_links` recorded no asserted value, so there was nowhere to represent the disagreement and the `CONTRADICTION` exception rule was uncomputable as written.
+> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Constraint and Supporting Documentation replace the earlier domain labels Dependency and Evidence. Stored identifiers below retain their original names; the historical mutable status is retired by ADR-0044.
 
-Every source claim is now stored as an **Assertion** — `(dependency_id, field_name, asserted_value, evidence_link_id, doc_date)` — and the Dependency's own field values are the *adjudicated conclusion* drawn from them.
+Source documents routinely disagree about a Constraint's Promised For date or other fields — the Utility Conflict Matrix says one date, the minutes say another, the Utility Owner's email says a third. The original schema stored a single value per field on `dependencies`, and `evidence_links` recorded no asserted value, so there was nowhere to represent the disagreement and the `CONTRADICTION` exception rule was uncomputable as written.
+
+Every source claim is stored as an **Assertion** — `(dependency_id, field_name, asserted_value, evidence_link_id, doc_date)` — and the Constraint's own field values are the *adjudicated conclusion* drawn from them.
 
 ## Considered options
 
@@ -16,4 +18,4 @@ Every source claim is now stored as an **Assertion** — `(dependency_id, field_
 
 ## Consequences
 
-A ledger field value is a conclusion, not a record of what any document said. Reading a field alone loses the disagreement beneath it, so the Dependency detail view must surface its assertions — otherwise the tool reproduces the silent-overwrite behavior it exists to replace.
+A Ledger field value is a conclusion, not a record of what any document said. Reading a field alone loses the disagreement beneath it, so the Constraint detail view must surface its Assertions — otherwise the tool reproduces the silent-overwrite behavior it exists to replace.
