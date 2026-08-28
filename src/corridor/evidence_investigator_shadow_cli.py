@@ -1,4 +1,4 @@
-"""Operator commands for the prospective hidden investigator cohort.
+"""Operator commands for prospective hidden Statement Review Assistant testing.
 
 Retrospective replay was rejected because it can expose later answers. These
 commands allow only prospective batch freezing and exact later label capture.
@@ -29,14 +29,22 @@ from corridor.models import Project
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run hidden Statement Review Assistant cases prospectively, or capture "
+            "a later independent human outcome."
+        ),
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run")
+    run = commands.add_parser("run", help="freeze exact cases and run the hidden assistant")
     run.add_argument("project_slug")
-    run.add_argument("--candidate-id", type=int, action="append", required=True)
+    run.add_argument(
+        "--candidate-id", type=int, action="append", required=True,
+        help="Extracted Proposal id; repeat for each Statement Needing Clarification",
+    )
     run.add_argument("--selection-rule", required=True)
     run.add_argument("--manifest-path", type=Path, required=True)
-    capture = commands.add_parser("capture")
+    capture = commands.add_parser("capture", help="record the later independent human outcome")
     capture.add_argument("shadow_case_id")
     args = parser.parse_args()
     with Session.begin() as session:

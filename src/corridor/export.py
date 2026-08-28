@@ -16,24 +16,31 @@ from corridor.exceptions import Evaluation, format_exception_label
 from corridor.ledger import primary_evidence
 from corridor.models import Project
 from corridor.project_reading import freeze_project_reading
+from corridor.presentation import (
+    documentation_review_label,
+    label,
+    provenance_label,
+    resolution_strategy_label,
+)
 
 COLUMNS = [
     "Ref",
     "Source ID",
-    "External party",
+    label("organization"),
     "Type",
     "Title",
     "Station from",
     "Station to",
-    "Resolution strategy",
-    "Committed date",
-    "Committed date source",
-    "Need date",
-    "Ready",
-    "Exceptions",
-    "Evidence document",
-    "Evidence page",
-    "Evidence quote",
+    label("resolution_strategy"),
+    label("promised_for"),
+    "Promised timing source",
+    label("required_by"),
+    label("documentation_review"),
+    label("required_documents"),
+    label("constraint_alerts"),
+    "Supporting document",
+    "Source page",
+    label("cited_passage"),
 ]
 
 
@@ -104,7 +111,7 @@ def to_xlsx(
 
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Ledger"
+    sheet.title = label("constraint_log")
 
     sheet.append(COLUMNS)
     for cell in sheet[1]:
@@ -124,17 +131,29 @@ def to_xlsx(
                 dependency.title,
                 dependency.station_from,
                 dependency.station_to,
-                dependency.resolution_strategy,
+                (
+                    resolution_strategy_label(dependency.resolution_strategy)
+                    if dependency.resolution_strategy is not None
+                    else None
+                ),
                 statement.committed_date,
                 (
                     f"Cited statement — {statement.cited_provenance.filename} "
                     f"p.{statement.cited_provenance.page_no}: “"
                     f"{statement.cited_provenance.quote}”"
                     if statement.cited_provenance is not None
-                    else statement.source_attribution
+                    else (
+                        f"{provenance_label('verbal')} — {statement.event.stated_party} "
+                        f"told {statement.event.created_by} on {statement.event.event_date}"
+                        if statement.event is not None
+                        and statement.event.source_kind == "verbal"
+                        and statement.committed_date is not None
+                        else statement.source_attribution
+                    )
                 ),
                 dependency.need_date,
-                "yes" if row.is_ready else "no",
+                documentation_review_label(row.is_ready),
+                dependency.evidence_required or "Not specified",
                 ", ".join(sorted(by_dependency.get(dependency.id, ()))),
                 evidence.filename if evidence else None,
                 evidence.page_no if evidence else None,
@@ -142,15 +161,15 @@ def to_xlsx(
             ]
         )
 
-    widths = {"A": 12, "B": 12, "C": 24, "D": 18, "E": 30, "H": 12, "I": 11,
-              "J": 14, "K": 58, "L": 12, "N": 34, "O": 40, "Q": 60}
+    widths = {"A": 12, "B": 12, "C": 24, "D": 18, "E": 30, "H": 22, "I": 15,
+              "J": 58, "K": 15, "L": 32, "M": 58, "N": 40, "O": 40, "Q": 60}
     for column, width in widths.items():
         sheet.column_dimensions[column].width = width
     sheet.freeze_panes = "A2"
 
     # A second sheet naming what produced these numbers. Without it the
     # export is a snapshot with no way to reproduce or date it.
-    meta = workbook.create_sheet("Provenance")
+    meta = workbook.create_sheet(label("provenance"))
     meta.append(["Project", project.name if project else str(project_id)])
     meta.append(["Ruleset version", evaluation.ruleset_version])
     meta.append(["Evaluated on", evaluation.today.isoformat()])
@@ -164,7 +183,7 @@ def to_xlsx(
     )
     meta.append(["Records", len(rows)])
     meta.append(
-        ["Note", "Exception columns are derived from the passed evaluation, not stored."]
+        ["Note", "Constraint alerts are calculated from the stated check, not stored."]
     )
     meta.column_dimensions["A"].width = 18
     meta.column_dimensions["B"].width = 60

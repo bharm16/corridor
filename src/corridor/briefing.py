@@ -52,6 +52,7 @@ from corridor.models import (
     EvidenceLink,
 )
 from corridor.project_reading import freeze_project_reading
+from corridor.presentation import label, provenance_label
 from corridor.verify import quote_appears_on, threshold_for
 
 # Versioned like every extractor, and for the same reason (ADR-0003's
@@ -544,19 +545,19 @@ def _check(
 def render(briefing: Briefing) -> str:
     """The Briefing as text, stamps first — provenance before prose."""
     lines = [
-        f"Briefing — {briefing.ref_code}",
+        f"{label('coordination_summary')} — {briefing.ref_code}",
         f"  drafted by {briefing.model or '—'} at {briefing.prompt_version}; "
-        f"exceptions evaluated {briefing.evaluated_at} under ruleset "
+        f"constraint alerts checked {briefing.evaluated_at} under ruleset "
         f"{briefing.ruleset_version}",
-        "  model-drafted; a view of the record, not the record",
+        "  AI draft from the project record; no new project decisions",
         "",
     ]
 
     if briefing.refused:
         lines.append(f"REFUSED: {briefing.refusal_reason}")
         lines.append(
-            "The deterministic floor is mandatory (ADR-0011); a draft that "
-            "buries an Exception or project bucket is not shown at all."
+            "The required constraint-alert coverage floor is mandatory (ADR-0011); "
+            "a draft that omits an alert or its complete group is not shown."
         )
     else:
         for sentence in briefing.sentences:
@@ -568,9 +569,11 @@ def render(briefing: Briefing) -> str:
         lines.append(f"{count} {plural} withheld: {reason}")
 
     lines.append("")
-    lines.append("cited objects:")
+    lines.append("Source references:")
     for citable in briefing.citables:
-        lines.append(f"  [{citable.ref}] {citable.text}")
+        lines.append(
+            f"  [{citable.ref}] {provenance_label(citable.kind)}: {citable.text}"
+        )
     return "\n".join(lines)
 
 

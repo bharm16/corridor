@@ -2,13 +2,13 @@
 status: accepted
 ---
 
-# Assertions are stored separately from ledger values
+# Source field values are stored separately from the project's conclusions
 
-> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Constraint and Supporting Documentation replace the earlier domain labels Dependency and Evidence. Stored identifiers below retain their original names; the historical mutable status is retired by ADR-0044.
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 
-Source documents routinely disagree about a Constraint's Promised For date or other fields — the Utility Conflict Matrix says one date, the minutes say another, the Utility Owner's email says a third. The original schema stored a single value per field on `dependencies`, and `evidence_links` recorded no asserted value, so there was nowhere to represent the disagreement and the `CONTRADICTION` exception rule was uncomputable as written.
+Source documents routinely disagree about a Constraint's Promised For date or other fields — the Utility Conflict Matrix says one date, the minutes say another, the Utility Owner's email says a third. The original schema stored a single value per field on `dependencies`, and `evidence_links` recorded no asserted value, so there was nowhere to represent the disagreement and the `CONTRADICTION` constraint alert rule was uncomputable as written.
 
-Every source claim is stored as an **Assertion** — `(dependency_id, field_name, asserted_value, evidence_link_id, doc_date)` — and the Constraint's own field values are the *adjudicated conclusion* drawn from them.
+A document's value for one Constraint field is a **source field value**, retained internally as an **Assertion** — `(dependency_id, field_name, asserted_value, evidence_link_id, doc_date)`. The Constraint's own field value is the project's recorded conclusion drawn from those sources. A normalized field value and its source's exact wording remain distinct; neither alone proves a physical fact.
 
 ## Considered options
 
@@ -18,4 +18,4 @@ Every source claim is stored as an **Assertion** — `(dependency_id, field_name
 
 ## Consequences
 
-A Ledger field value is a conclusion, not a record of what any document said. Reading a field alone loses the disagreement beneath it, so the Constraint detail view must surface its Assertions — otherwise the tool reproduces the silent-overwrite behavior it exists to replace.
+A Constraint Record's field value is a conclusion, not a record of what any document said. Reading a field alone loses the disagreement beneath it, so the Constraint detail view must surface its source field values and citations — otherwise the tool reproduces the silent-overwrite behavior it exists to replace. `Assertion` remains the internal provenance identity; the customer label does not rename it.

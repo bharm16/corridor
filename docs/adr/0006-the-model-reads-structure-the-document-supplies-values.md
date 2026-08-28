@@ -4,17 +4,19 @@ status: accepted
 
 # The model reads the structure; the document supplies the values
 
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
+
 Amends ADR-0004.
 
-The validation gate (#68, `docs/m6-validation-gate.md`) measured both extraction paths on the layout the deterministic parser handles best, and the two halves of the result point in opposite directions. On recall and precision they are a wash — 99.2%/97.7% parser, 98.9%/97.4% vision, over 3,235 and 3,240 rows. On transcription accuracy they are not: **3 of 3,235** parser rows carry a field value that is not on the cited page, against **164 of 3,240** vision rows — digits dropped and transposed (`1143+77.787` for `1143+17.787`), concentrated in the stationing fields merge ranking discriminates on, invisible to the model's own confidence (96 of the failures sat at 0.98, 62 at 0.99). Meanwhile the vision path did the one thing the parser structurally cannot: FDOT SR 789 went from zero rows to 66 across 9 owners, because its External Party lives in a page header and its printed headers (`Conflict #`, `Station Begin`) match no synonym table — PyMuPDF finds that table, and the parser maps none of its columns.
+The validation gate (#68, `docs/m6-validation-gate.md`) measured both extraction paths on the layout the deterministic parser handles best, and the two halves of the result point in opposite directions. On recall and precision they are a wash — 99.2%/97.7% parser, 98.9%/97.4% vision, over 3,235 and 3,240 rows. On transcription accuracy they are not: **3 of 3,235** parser rows carry a field value that is not on the cited page, against **164 of 3,240** vision rows — digits dropped and transposed (`1143+77.787` for `1143+17.787`), concentrated in the stationing fields merge ranking discriminates on, invisible to the model's own confidence (96 of the failures sat at 0.98, 62 at 0.99). Meanwhile the vision path did the one thing the parser structurally cannot: FDOT SR 789 went from zero rows to 66 across 9 owners, because its External Organization lives in a page header and its printed headers (`Conflict #`, `Station Begin`) match no synonym table — PyMuPDF finds that table, and the parser maps none of its columns.
 
 So each path is best at exactly what the other is worst at. Vision generalizes and mistranscribes; geometry transcribes and cannot generalize. The requirements are the highest success rate *and* zero per-document engineering, which is not a compromise between the two paths — it is a division of labor:
 
 **Extraction is one path with three tiers, every tier ending at the same verification gate.**
 
-- **Tier 0 — structured original.** Where a document is published as a spreadsheet, it is the Document of Record and is read natively (ADR-0005). No model.
+- **Tier 0 — structured original.** Where a document is published as a spreadsheet, it is the Preferred Source File and is read natively (ADR-0005). No model.
 - **Tier 1 — PDF with a text layer, the default.** The model reads the rendered page image and answers only three questions: *is there a matrix here* (`is_utility_matrix`, so `NoMatrixFound` keeps its meaning), *what does the page state for all its rows* (page attributes — the SR 789 owner), and *which printed column is which canonical field*. Code then reads every cell value out of the page's word boxes using the existing geometry machinery. **The model never writes a digit.** The 5.1% error class is not reduced; it is removed by construction, because no transcription surface exists.
-- **Tier 2 — no text layer.** Scanned documents fall back to model transcription, token-verified against OCR text, with output logprobs recorded so low-confidence digits sink rows. The fallback is loud: the tier is recorded on every Candidate, so "how often do we fall back" is a measured number rather than a surprise.
+- **Tier 2 — no text layer.** Scanned documents fall back to model transcription, token-verified against OCR text, with output logprobs recorded so low-confidence digits sink rows. The fallback is loud: the tier is recorded on every Extracted Proposal, so "how often do we fall back" is a measured number rather than a surprise.
 
 Field-token and quote verification run on every tier — the invariant, not a tier feature.
 
@@ -36,6 +38,6 @@ The model's output collapses from ~300 transcribed cells to a small mapping, and
 
 Tier 1 leans on PyMuPDF finding table geometry. It found it on all 11 corpus matrices, including both the parser could not map — but a document will eventually appear where geometry fails, and it must fall to Tier 2 loudly rather than degrade silently.
 
-Project A's existing Candidates and Ledger records are unaffected. Tier 1 reads the same word boxes the parser read, so re-extraction buys nothing; the forward-only finding posted to #61 stands.
+Project A's existing Extracted Proposals and Ledger records are unaffected. Tier 1 reads the same word boxes the parser read, so re-extraction buys nothing; the forward-only finding posted to #61 stands.
 
 The gate that admitted the vision extractor admits this design the same way: A/B against the deterministic baseline on Project A and against the measured 66-row result on SR 789, before it replaces anything.

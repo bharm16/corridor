@@ -1,8 +1,8 @@
-"""Operate one exact revision-processing pair with no implicit authority.
+"""Operate one exact Document Revision Processing pair with no implicit authority.
 
 This CLI accepts only two explicit positive Extraction Run ids. It always
 creates one exact Revision Comparison, immediately reads it back to verify the
-sealed content, then routes the released Carry-Forward Policy for that exact
+sealed content, then applies the released Automatic Support Update Rules for that exact
 project. It never infers runs from recency and never accepts human
 identity or policy-mutation flags.
 """
@@ -34,8 +34,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="revision-process",
         description=(
-            "Create, verify, and route one exact predecessor-successor "
-            "revision pair without changing policy authority."
+            "Document Revision Processing: compare and verify one exact "
+            "predecessor-successor run pair, then apply the released Automatic "
+            "Support Update Rules without changing policy authority."
         ),
     )
     parser.add_argument(

@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>External Report release — {{ project.name }}</title>
+<title>Approve coordination report for sharing — {{ project.name }}</title>
 <style>
   :root { --line:#e2e2e2; --muted:#666; --ok:#067647; }
   * { box-sizing:border-box; }
@@ -33,30 +33,30 @@
 </header>
 
 <main>
-  <h1>External Report release</h1>
+  <h1>Approve coordination report for sharing</h1>
   <p class="lead">
-    Render one fixed PDF, review those exact bytes, then explicitly release them.
-    Release does not send the PDF by email or document control.
+    Prepare one fixed PDF, review that exact file, then approve it for sharing.
+    Approval does not send the PDF by email or document control.
   </p>
   {% if released %}
-    <p class="empty"><b>This exact PDF is now released and retained.</b></p>
+    <p class="empty"><b>This exact PDF is approved to share and retained.</b></p>
   {% endif %}
   <form method="post" action="/reports/{{ project.slug }}/render">
     <input type="hidden" name="ordinary" value="1">
-    <button type="submit">Render fixed PDF for review</button>
+    <button type="submit">Prepare fixed PDF for review</button>
   </form>
 
-  <h2>Immutable release history</h2>
+  <h2>Approval history (fixed PDFs)</h2>
   {% for release in history %}
     <section class="release">
       <h3>{{ release.artifact_name }}</h3>
       <dl>
-        <dt>Released by</dt><dd>{{ release.released_by_display }}</dd>
-        <dt>Released at</dt><dd>{{ release.released_at }}</dd>
-        <dt>Evaluation</dt><dd>{{ release.evaluated_on }} · {{ release.ruleset_version }}</dd>
-        <dt>Provenance</dt>
+        <dt>Approved to share by</dt><dd>{{ release.released_by_display }}</dd>
+        <dt>Approved to share at</dt><dd>{{ release.released_at }}</dd>
+        <dt>Checks as of</dt><dd>{{ release.evaluated_on }} · {{ release.ruleset_version }}</dd>
+        <dt>{{ label('provenance') }}</dt>
         <dd>{{ "All supported sources" if release.provenance_mode == "all-supported-sources" else "Documents only" }}</dd>
-        <dt>Covered Dependencies</dt>
+        <dt>Covered constraints</dt>
         <dd>{{ release.covered_records|join(", ") if release.covered_records else "None" }}</dd>
         <dt>Covered statement versions</dt>
         <dd>
@@ -75,9 +75,9 @@
         </dd>
         <dt>SHA-256 digest</dt><dd><code>{{ release.pdf_sha256 }}</code></dd>
       </dl>
-      <a href="/reports/{{ project.slug }}/releases/{{ release.release_id }}/download">Download released PDF</a>
+      <a href="/reports/{{ project.slug }}/releases/{{ release.release_id }}/download">Download approved PDF</a>
     </section>
   {% else %}
-    <p class="empty">No External Report PDFs have been released.</p>
+    <p class="empty">No coordination report PDFs have been approved to share.</p>
   {% endfor %}
 </main>

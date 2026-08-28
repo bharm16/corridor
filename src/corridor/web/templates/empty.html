@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Extracted conflicts — {{ project.name }}</title>
+<title>Proposed constraints — {{ project.name }}</title>
 <style>
   body { font: 15px/1.6 system-ui, sans-serif; margin: 0; display:grid;
          place-items:center; height:100vh; color:#111; }
@@ -46,9 +46,9 @@
         border-bottom-width:2px; border-radius:3px; padding:0 .3rem; }
 </style>
 <div>
-  <nav aria-label="Review lanes">
-    <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Extracted conflicts ({{ candidate_count }})</a>
-    <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Changed Document Evidence ({{ reconfirmation_count }})</a>
+  <nav aria-label="Review categories">
+    <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Proposed constraints ({{ candidate_count }})</a>
+    <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Newer documents needing attention ({{ reconfirmation_count }})</a>
   </nav>
   {% include "_coordinate.html" %}
   {% if lane == "rehearsal" and rail %}
@@ -57,25 +57,25 @@
     {% set needs_coordination = active_admitted|selectattr("coordination_gaps")|list %}
     {% set unresolved = rail|selectattr("admission_refusal")|list %}
     <section class="cohort-progress" aria-labelledby="cohort-progress-heading">
-      <h1 id="cohort-progress-heading">Extracted conflict review complete</h1>
+      <h1 id="cohort-progress-heading">Proposed constraint review complete</h1>
       {% if needs_coordination %}
-        <p>{{ needs_coordination|length }} admitted Dependenc{{ 'y' if needs_coordination|length == 1 else 'ies' }} need{{ 's' if needs_coordination|length == 1 else '' }} coordination.</p>
+        <p>{{ needs_coordination|length }} recorded Constraint{{ '' if needs_coordination|length == 1 else 's' }} need{{ 's' if needs_coordination|length == 1 else '' }} coordination.</p>
       {% elif unresolved %}
-        <p>{{ unresolved|length }} cohort member{{ '' if unresolved|length == 1 else 's' }} {{ 'has' if unresolved|length == 1 else 'have' }} no trustworthy admitted Dependency link.</p>
+        <p>{{ unresolved|length }} test case{{ '' if unresolved|length == 1 else 's' }} {{ 'has' if unresolved|length == 1 else 'have' }} no trustworthy recorded Constraint link.</p>
       {% elif active_admitted %}
-        <p>Every admitted Dependency currently has a Coordination Plan.</p>
+        <p>Every recorded Constraint currently has a Follow-up plan.</p>
       {% elif admitted %}
-        <p>No admitted Dependencies remain open for coordination.</p>
+        <p>No recorded Constraints remain open for coordination.</p>
       {% else %}
-        <p>No Dependencies were admitted from this cohort.</p>
+        <p>No Constraints were recorded from these test cases.</p>
       {% endif %}
-      <p>Cohort receipt #{{ cohort_receipt.id }} remains the exact scope.
-        Candidate outcomes and admitted records stay preserved.</p>
+      <p>Test input manifest #{{ cohort_receipt.id }} fixes the exact cases.
+        Proposal outcomes and recorded facts stay preserved.</p>
       {% if not coordinate_dependency %}
         <p><a class="report" href="/reports/{{ project.slug }}" target="_blank"
-              rel="noopener">Prepare Report (opens in new tab)</a></p>
+              rel="noopener">Prepare coordination report (opens in new tab)</a></p>
       {% endif %}
-      <h2>Cohort records</h2>
+      <h2>Test case records</h2>
       <ol>
         {% for entry in rail %}
           <li>
@@ -89,7 +89,7 @@
                 {{ entry.dependency_ref }} · {{ entry.dependency_title }}
               </p>
               {% if entry.dismissed %}
-                <p class="context">Dismissed by a recorded act; no Coordination Plan can be changed.</p>
+                <p class="context">Removed from the active log by a recorded decision; its Follow-up plan cannot be changed.</p>
               {% else %}
                 {% if entry.coordination_gaps %}
                   <p class="gaps">Needs {{ entry.coordination_gaps|join(", ") }}</p>
@@ -101,7 +101,7 @@
             {% elif entry.admission_refusal and entry.state in ["accepted", "merged"] %}
               <p class="refusal">{{ entry.admission_refusal }}</p>
             {% else %}
-              <p class="context">{{ entry.state|capitalize }}; no admitted Dependency to coordinate.</p>
+              <p class="context">{{ entry.state|capitalize }}; no recorded Constraint to coordinate.</p>
             {% endif %}
           </li>
         {% endfor %}
@@ -111,28 +111,28 @@
     <h1>Ordinary review</h1>
     {% for view in ordinary_reviews %}
       <section class="review">
-        <h2>{{ view.dependency.ref_code if view.dependency else "Dependency unavailable" }}</h2>
+        <h2>{{ view.dependency.ref_code if view.dependency else "Constraint unavailable" }}</h2>
         <div class="status">{{ view.status_label }}</div>
         <p>{{ view.status_detail }}</p>
         <p class="documents">
           {{ view.predecessor.filename if view.predecessor else "unknown predecessor" }}
           → {{ view.successor.filename if view.successor else "unknown successor" }}
         </p>
-        <p class="refusal"><b>Current Evidence is unavailable.</b> {{ view.refusal_detail }}</p>
+        <p class="refusal"><b>Current supporting documents are unavailable.</b> Technical detail: {{ view.refusal_detail }}</p>
       </section>
     {% endfor %}
   {% else %}
     <h1>Queue empty</h1>
-    <p>No work is actionable for <b>{{ project.name }}</b> in this lane.</p>
+    <p>No work is actionable for <b>{{ project.name }}</b> in this review category.</p>
     {% if waiting_statements %}
       {# An empty queue is not an empty desk: statements the machine could
          not place are still waiting, and this is where a reviewer looks. #}
-      <p><a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to place</a></p>
+      <p><a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to review</a></p>
     {% endif %}
     {% if lane == "candidate" and reconfirmation_count %}
-      <p>{{ reconfirmation_count }} item(s) have changed Document Evidence.</p>
+      <p>{{ reconfirmation_count }} item(s) have newer supporting documents.</p>
     {% elif lane == "reconfirmation" and candidate_count %}
-      <p>{{ candidate_count }} extracted conflict item(s) remain.</p>
+      <p>{{ candidate_count }} proposed constraint item(s) remain.</p>
     {% endif %}
     <p>Historical extracted sources remain preserved and never return by fallback.</p>
   {% endif %}

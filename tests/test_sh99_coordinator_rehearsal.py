@@ -1523,7 +1523,8 @@ def test_verify_refuses_tampered_fixed_pdf_bytes(tmp_path):
         raise AssertionError("tampered PDF passed bundle verification")
 
 
-def test_retained_pdf_check_requires_each_party_report_field():
+@pytest.mark.parametrize("label_version", ["legacy", "current"])
+def test_retained_pdf_check_requires_each_party_report_field(label_version):
     """The byte-pinned PDF must also retain the fields named by its receipt."""
 
     statement = SimpleNamespace(
@@ -1573,6 +1574,19 @@ def test_retained_pdf_check_requires_each_party_report_field():
             "Not yet known",
         )
     )
+    if label_version == "current":
+        current_labels = {
+            "External Party commitments": "Organization commitments",
+            "External Party": "Organization",
+            "Commitment Scope": "Applies to",
+            "Internal Owner": "Assigned to",
+            "Next Action": "Next action",
+            "Action Due": "Action due date",
+            "Milestone Impact": "Effect on key dates",
+            "Scope not yet known": "Not yet known",
+            "Committed Date Change · later": "Change to promised timing · later",
+        }
+        text = "\n".join(current_labels.get(line, line) for line in text.splitlines())
     document = fitz.open()
     page = document.new_page()
     page.insert_textbox(fitz.Rect(36, 36, 559, 806), text, fontsize=9)
@@ -1587,3 +1601,26 @@ def test_retained_pdf_check_requires_each_party_report_field():
     incomplete.close()
     with pytest.raises(ValueError, match="omits required Report fields"):
         _require_report_pdf_contents(incomplete_bytes, (statement,))
+
+    # A partial terminology migration cannot mix columns from different profiles.
+    old, new = "Milestone Impact", "Effect on key dates"
+    mixed_text = text.replace(old, new) if label_version == "legacy" else text.replace(new, old)
+    mixed = fitz.open()
+    mixed_page = mixed.new_page()
+    mixed_page.insert_textbox(fitz.Rect(36, 36, 559, 806), mixed_text, fontsize=9)
+    mixed_bytes = mixed.tobytes()
+    mixed.close()
+    with pytest.raises(ValueError, match="omits required Report fields"):
+        _require_report_pdf_contents(mixed_bytes, (statement,))
+
+    # Both label profiles still require the source statement and project action.
+    for missing_fact in (statement.event.description, statement.plan.next_action):
+        missing = fitz.open()
+        missing_page = missing.new_page()
+        missing_page.insert_textbox(
+            fitz.Rect(36, 36, 559, 806), text.replace(missing_fact, ""), fontsize=9
+        )
+        missing_bytes = missing.tobytes()
+        missing.close()
+        with pytest.raises(ValueError, match="omits required Report fields"):
+            _require_report_pdf_contents(missing_bytes, (statement,))

@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Extracted conflicts — {{ project.name }}</title>
+<title>Proposed constraints — {{ project.name }}</title>
 <style>
   :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; --warn:#b54708; }
   * { box-sizing: border-box; }
@@ -179,7 +179,7 @@
   <span class="counts">
     {{ view.remaining }} waiting for you
     {%- if waiting_statements %}
-      · <a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to place</a>
+      · <a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to review</a>
     {%- endif %}
     · <a href="/ledger/{{ project.slug }}">the record</a>
   </span>
@@ -187,27 +187,27 @@
 
 {% if event_cohort_receipt %}
   <p class="scope">
-    <b>Event cohort receipt #{{ event_cohort_receipt.id }}</b> ·
-    {{ event_cohort_receipt.member_count }} conflicts ·
-    anything outside this set refuses
+    <b>Statement test input manifest #{{ event_cohort_receipt.id }}</b> ·
+    {{ event_cohort_receipt.member_count }} utility conflicts ·
+    changes outside this set are not permitted
   </p>
 {% endif %}
 <main{% if rail %} class="with-rail"{% endif %}>
   {% if rail %}
-  <section class="rail" aria-label="Cohort">
+  <section class="rail" aria-label="Cases included in this test">
     {% set decided = rail|rejectattr("state", "equalto", "pending")|list %}
     <div class="railhead">
-      <b>Cohort receipt #{{ cohort_receipt.id }}</b>
+      <b>Test input manifest #{{ cohort_receipt.id }}</b>
       <span class="muted">{{ cohort_receipt.external_org }} ·
         {{ decided|length }} of {{ rail|length }} decided ·
-        mutations outside this pinned set refuse</span>
+        changes outside this fixed set are not permitted</span>
     </div>
-    {% for key, label in [("conflict_flag_n_to_y", "Flipped N → Y"),
+    {% for key, group_label in [("conflict_flag_n_to_y", "Flipped N → Y"),
                           ("verification_blocked", "Verification blocked"),
                           ("newly_added", "Newly added")] %}
       {% set group = rail|selectattr("classification", "equalto", key)|list %}
       {% if group %}
-        <h3>{{ label }} ({{ group|length }})</h3>
+        <h3>{{ group_label }} ({{ group|length }})</h3>
         <ol>
           {% for entry in group %}
             <li>
@@ -238,11 +238,11 @@
     {% include "_coordinate.html" %}
     {% if ordinary_reviews %}
       <aside class="ordinary-work">
-        <b>Dependency-only work also remains in this lane.</b>
+        <b>Recorded constraints also need attention in this review.</b>
         <ul>
           {% for item in ordinary_reviews %}
             <li>
-              <b>{{ item.dependency.ref_code if item.dependency else "Dependency unavailable" }}</b>
+              <b>{{ item.dependency.ref_code if item.dependency else "Constraint unavailable" }}</b>
               · {{ item.status_label }}<br>
               <small>{{ item.status_detail }}</small>
             </li>
@@ -267,7 +267,7 @@
         </tr>
         {% for d in differences %}
           <tr>
-            <td>{{ d.field }}</td>
+            <td>{{ field_label(d.field) }}</td>
             <td class="a">{{ d.mine }}</td>
             <td class="b">{{ d.theirs }}</td>
           </tr>
@@ -280,8 +280,8 @@
         <span class="uid">{{ fieldmap.get("utility_id") or "row" }}</span>
         <span>{{ fieldmap.get("external_org") or "—" }}</span>
         {% if classification %}
-          {% set css, label = badge_labels.get(classification, ("new", classification)) %}
-          <span class="badge {{ css }}">{{ label }}</span>
+          {% set css, badge_text = badge_labels.get(classification, ("new", classification)) %}
+          <span class="badge {{ css }}">{{ badge_text }}</span>
         {% endif %}
       </div>
       <div class="facts">
@@ -310,7 +310,7 @@
         <table>
           {% for change in changes %}
             <tr>
-              <td>{{ change.field }}</td>
+              <td>{{ field_label(change.field) }}</td>
               <td class="before">{{ change.before }}</td>
               <td>→</td>
               <td class="after">{{ change.after }}</td>
@@ -322,7 +322,7 @@
 
     {% if not view.citations_verified %}
       <div class="banner bad">
-        <b>Citation unverified.</b> The quote could not be found on the cited page.
+        <b>Source passage check failed.</b> The quote could not be found on the cited page.
         Not dropped, and sorted last — treat the extracted values as unsupported.
       </div>
     {% endif %}
@@ -351,7 +351,7 @@
       <summary>All {{ view.fields|length }} extracted fields</summary>
       <dl class="readfields">
         {% for name, value in view.fields %}
-          <dt>{{ name }}</dt><dd>{{ value }}</dd>
+          <dt>{{ field_label(name) }}</dt><dd>{{ value }}</dd>
         {% endfor %}
       </dl>
     </details>
@@ -368,7 +368,7 @@
         <table class="fields">
           {% for name, value in view.fields %}
             <tr>
-              <th>{{ name }}</th>
+              <th>{{ field_label(name) }}</th>
               <td><input name="field_{{ name }}" value="{{ value }}"></td>
             </tr>
           {% endfor %}
@@ -379,7 +379,7 @@
     <details class="allfields">
       <summary>How this row was read</summary>
       <p class="hint">
-        candidate #{{ view.candidate.id }} ·
+        extracted proposal #{{ view.candidate.id }} ·
         {{ view.candidate.prompt_version or 'n/a' }} ·
         model {{ view.candidate.model or 'deterministic' }}
         {%- if view.tier %} · read by <b>{{ view.tier }}</b>{% endif %}
@@ -388,10 +388,14 @@
     </details>
 
     {% if candidate_authority_gap %}
-      <section class="ordinary-work" aria-label="Unresolved authority gap">
-        <b>{{ candidate_authority_gap.title }}</b>
-        <p>{{ candidate_authority_gap.detail }}</p>
-        <small>This structured acknowledgment leaves the proposal pending and changes no Dependency.</small>
+      <section class="ordinary-work" aria-label="Unresolved record decision">
+        <b>This proposed constraint still needs a record decision.</b>
+        <details>
+          <summary>Technical details</summary>
+          <p>{{ candidate_authority_gap.title }}</p>
+          <p>{{ candidate_authority_gap.detail }}</p>
+        </details>
+        <small>This recorded acknowledgment leaves the proposal pending and changes no Constraint.</small>
         <form method="post" action="/candidates/{{ view.candidate.id }}/keep-unresolved">
           <input type="hidden" name="slug" value="{{ project.slug }}">
           <button type="submit">Keep unresolved in the Work List</button>
@@ -436,16 +440,16 @@
         {% endif %}
         <button class="primary" id="accept"
           {% if view.accept_refused %}disabled title="{{ view.accept_refused }}"{% endif %}>
-          <kbd>a</kbd> accept
+          <kbd>a</kbd> Add constraint
         </button>
       </form>
       <button form="candidate" id="edit"
         {% if view.accept_refused %}disabled title="{{ view.accept_refused }}"{% endif %}>
-        <kbd>e</kbd> edit &amp; accept
+        <kbd>e</kbd> Edit &amp; add constraint
       </button>
-      <button id="reject-toggle"><kbd>r</kbd> reject</button>
+      <button id="reject-toggle"><kbd>r</kbd> {{ label('do_not_add') }}</button>
       <button id="merge-toggle" {% if not view.matches %}disabled
-        title="No existing dependency for this external party. Nothing to merge into."{% endif %}>
+        title="No existing constraint for this organization. Nothing to merge into."{% endif %}>
         <kbd>m</kbd> merge{% if view.matches %} ({{ view.matches|length }}){% endif %}
       </button>
       {% if rail %}
@@ -455,7 +459,7 @@
 
     <div id="merges" hidden>
       <p class="hint" style="margin:.6rem 0 .3rem">
-        Same external party, ranked. Signals are shown so a wrong suggestion
+        Same organization, ranked. Signals are shown so a wrong suggestion
         can be diagnosed rather than just distrusted.
       </p>
       {% for m in view.matches %}
@@ -533,7 +537,7 @@
   const editOrSubmit = () => {
     if (editwrap.hidden) {
       editwrap.hidden = false;
-      editButton.innerHTML = '<kbd>e</kbd> save &amp; accept';
+      editButton.innerHTML = '<kbd>e</kbd> Save &amp; add constraint';
       const first = editwrap.querySelector('input[name^="field_"]');
       if (first) { first.focus(); first.select(); }
     } else {

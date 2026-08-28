@@ -130,8 +130,37 @@ def _statement_publication(session, project_id):
     )
 
 
-def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
+@pytest.mark.parametrize(
+    ("strategy", "strategy_label"),
+    [
+        ("protect_in_place", "Protect in place"),
+        ("policy_exception", "Exception to policy"),
+    ],
+)
+def test_the_xlsx_keeps_the_citation_columns(
+    session, project, tmp_path, strategy, strategy_label
+):
     """A spreadsheet that drops the provenance is just the matrix they had."""
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    link = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).one()
+    source_text = "Ready Milestone Road: Evidence, Assertion and Verbal"
+    document = session.get(Document, link.document_id)
+    document.filename = "Ready_Milestone_Evidence.pdf"
+    dependency.title = source_text
+    dependency.evidence_required = source_text
+    dependency.resolution_strategy = strategy
+    link.quote = source_text
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == link.document_id,
+            DocPage.page_no == link.page_no,
+        )
+    )
+    page.text = source_text
     path = to_xlsx(
         session,
         project.id,
@@ -139,20 +168,29 @@ def test_the_xlsx_keeps_the_citation_columns(session, project, tmp_path):
         evaluation=evaluate_project(session, project.id),
         statement_publication=_statement_publication(session, project.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
 
     headers = [c.value for c in sheet[1]]
     assert headers == COLUMNS
-    assert "Evidence document" in headers
-    assert "Evidence page" in headers
-    assert "Evidence quote" in headers
+    assert "Supporting document" in headers
+    assert "Source page" in headers
+    assert "Cited passage" in headers
+    assert "Required by" in headers
+    assert "Promised for" in headers
+    assert "Ready" not in headers
 
     row = {h: c.value for h, c in zip(headers, sheet[2])}
     assert row["Ref"].startswith("DEP-")
     assert row["Source ID"] == "FOC1-1"
-    assert row["External party"] == "Export Test Utility"
-    assert row["Evidence page"] == 4
-    assert "FOC1-1" in row["Evidence quote"]
+    assert row["Organization"] == "Export Test Utility"
+    assert row["Title"] == source_text
+    assert row["Source page"] == 4
+    assert row["Supporting document"] == "Ready_Milestone_Evidence.pdf"
+    assert row["Cited passage"] == source_text
+    assert row["Documents required for this condition"] == source_text
+    assert row["Documentation review"] == "Not confirmed"
+    assert row["Resolution method"] == strategy_label
+    assert dependency.resolution_strategy == strategy
 
 
 def test_the_xlsx_records_what_produced_it(session, project, tmp_path):
@@ -171,9 +209,9 @@ def test_the_xlsx_records_what_produced_it(session, project, tmp_path):
         statement_publication=_statement_publication(session, project.id),
     )
     workbook = load_workbook(path)
-    assert "Provenance" in workbook.sheetnames
+    assert "Source traceability" in workbook.sheetnames
 
-    meta = {row[0]: row[1] for row in workbook["Provenance"].values}
+    meta = {row[0]: row[1] for row in workbook["Source traceability"].values}
     assert meta["Project"] == "Export Test"
     assert meta["Ruleset version"]
     assert meta["Evaluated on"] == "2026-08-01"
@@ -348,15 +386,15 @@ def test_the_xlsx_carries_computed_exceptions(session, project, tmp_path):
         evaluation=evaluation,
         statement_publication=_statement_publication(session, project.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [c.value for c in sheet[1]]
     row = {h: c.value for h, c in zip(headers, sheet[2])}
     by_rule = {
         e.rule: e
         for e in evaluation.for_dependency(dep.id)
     }
-    assert format_exception_label(by_rule["OVERDUE"]) in (row["Exceptions"] or "")
-    assert format_exception_label(by_rule["DUE_SOON"]) in (row["Exceptions"] or "")
+    assert format_exception_label(by_rule["OVERDUE"]) in (row["Constraint alerts"] or "")
+    assert format_exception_label(by_rule["DUE_SOON"]) in (row["Constraint alerts"] or "")
 
 
 def test_the_xlsx_attributes_a_verbal_backed_committed_date(
@@ -382,13 +420,13 @@ def test_the_xlsx_attributes_a_verbal_backed_committed_date(
         evaluation=evaluate_project(session, project.id),
         statement_publication=_statement_publication(session, project.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
-    assert "Committed date source" in headers
-    assert row["Committed date source"] == (
-        "Verbal — Export Test Utility told local:tester on 2026-05-08"
+    assert "Promised timing source" in headers
+    assert row["Promised timing source"] == (
+        "Recorded verbal statement — Export Test Utility told local:tester on 2026-05-08"
     )
 
 
@@ -438,12 +476,12 @@ def test_the_xlsx_uses_an_exact_day_statement_over_a_stale_scalar(
         evaluation=evaluate_project(session, project.id),
         statement_publication=_statement_publication(session, project.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
-    assert row["Committed date"].date() == date(2026, 8, 15)
-    assert row["Committed date source"] == (
+    assert row["Promised for"].date() == date(2026, 8, 15)
+    assert row["Promised timing source"] == (
         "Cited statement — nhhip-seg3c2-utilities-inventory-2-13-2026.pdf "
         "p.4: “Export Test Utility will finish relocation on August 15.”"
     )
@@ -497,12 +535,14 @@ def test_the_xlsx_suppresses_a_stale_scalar_after_a_month_statement(
         evaluation=evaluate_project(session, project.id),
         statement_publication=_statement_publication(session, project.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
-    assert row["Committed date"] is None
-    assert row["Committed date source"] is None
+    assert row["Promised for"] is None
+    assert row["Promised timing source"] is None
+    assert "No exact promised date for this check" in row["Constraint alerts"]
+    assert "No promised timing" not in row["Constraint alerts"]
 
 
 def test_the_xlsx_withholds_an_unverified_cited_statement_date(
@@ -549,14 +589,14 @@ def test_the_xlsx_withholds_an_unverified_cited_statement_date(
         evaluation=evaluate_project(session, project.id, today=date(2026, 8, 4)),
         statement_publication=publication,
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
-    assert row["Committed date"] is None
-    assert row["Committed date source"] is None
-    assert "DUE_SOON" not in (row["Exceptions"] or "")
-    assert "OVERDUE" not in (row["Exceptions"] or "")
+    assert row["Promised for"] is None
+    assert row["Promised timing source"] is None
+    assert "DUE_SOON" not in (row["Constraint alerts"] or "")
+    assert "OVERDUE" not in (row["Constraint alerts"] or "")
 
 
 def test_the_xlsx_does_not_treat_a_scalar_only_date_as_statement_authority(
@@ -580,12 +620,12 @@ def test_the_xlsx_does_not_treat_a_scalar_only_date_as_statement_authority(
         ),
         statement_publication=_statement_publication(session, project.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
-    assert row["Committed date"] is None
-    assert row["Committed date source"] is None
+    assert row["Promised for"] is None
+    assert row["Promised timing source"] is None
 
 
 def test_the_pdf_renders(session, project, tmp_path):
@@ -607,7 +647,7 @@ def test_an_empty_ledger_still_exports(session, tmp_path):
         evaluation=evaluate_project(session, empty.id),
         statement_publication=_statement_publication(session, empty.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     assert [c.value for c in sheet[1]] == COLUMNS
     assert sheet.max_row == 1
 
@@ -657,10 +697,10 @@ def test_xlsx_uses_publication_support_while_readiness_stays_independent(
         evaluation=evaluate_project(session, project.id),
         statement_publication=_statement_publication(session, project.id),
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [cell.value for cell in sheet[1]]
     row = {header: cell.value for header, cell in zip(headers, sheet[2])}
 
-    assert row["Ready"] == "yes"
-    assert row["Evidence quote"] == "explicit publication evidence"
-    assert row["Evidence quote"] != "completion evidence only"
+    assert row["Documentation review"] == "Documents marked sufficient"
+    assert row["Cited passage"] == "explicit publication evidence"
+    assert row["Cited passage"] != "completion evidence only"

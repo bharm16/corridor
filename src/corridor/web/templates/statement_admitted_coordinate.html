@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Coordinate accepted Commitment — {{ project.name }}</title>
+<title>Coordinate recorded Commitment — {{ project.name }}</title>
 <style>
   :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; }
   * { box-sizing:border-box; }
@@ -34,52 +34,52 @@
 </header>
 
 <main>
-  <h1>Accepted External Party Commitment</h1>
-  <p class="accepted">The statement is already in the Ledger. Its accepted facts are read only.</p>
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <h1>Recorded Commitment from {{ event.stated_party }}</h1>
+  <p class="accepted">The statement is already in the project record. Its recorded facts are read only.</p>
+  {% if error %}<p class="error"><b>Could not save.</b> Technical detail: {{ error }}</p>{% endif %}
 
-  <section aria-label="Accepted facts">
-    <h2>Accepted facts — read only</h2>
+  <section aria-label="Recorded facts">
+    <h2>Recorded facts — read only</h2>
     <dl>
       <dt>Statement</dt><dd>{{ event.description }}</dd>
-      <dt>External Party who spoke</dt><dd>{{ event.stated_party }}</dd>
-      <dt>External Party affected</dt><dd>{{ affected_party_name }}</dd>
-      <dt>Timing</dt><dd>{{ event.new_timing.text }} — {{ event.new_timing.precision }} precision</dd>
+      <dt>Organization that made the statement</dt><dd>{{ event.stated_party }}</dd>
+      <dt>Organization affected</dt><dd>{{ affected_party_name }}</dd>
+      <dt>{{ label('promised_for') }}</dt><dd>{{ event.new_timing.text }} — {{ event.new_timing.precision }} precision</dd>
       <dt>Statement date</dt><dd>{{ event.event_date or "Not stated" }}</dd>
-      <dt>Commitment Scope</dt>
+      <dt>{{ label('applies_to') }}</dt>
       <dd>
-        {% if scope.scope_mode == "unknown" %}Commitment Scope not yet known
-        {% elif scope.scope_mode == "all_active" %}All Dependencies active for this External Party at the decision time:
+        {% if scope.scope_mode == "unknown" %}Applies to: not yet known
+        {% elif scope.scope_mode == "all_active" %}All constraints active for this organization at the decision time:
           <ul class="compact">{% for dependency in scope_dependencies %}<li>{{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }}</li>{% endfor %}</ul>
-        {% else %}Selected Dependencies:
+        {% else %}Selected constraints:
           <ul class="compact">{% for dependency in scope_dependencies %}<li>{{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }}</li>{% endfor %}</ul>
         {% endif %}
       </dd>
-      <dt>Admission path</dt><dd>{{ policy_run.policy_version }}</dd>
-      <dt>Policy receipt</dt><dd>{{ policy_run.policy_sha256 }}</dd>
+      <dt>Recorded by exact rule</dt><dd>{{ policy_run.policy_version }}</dd>
+      <dt>Technical rule fingerprint</dt><dd>{{ policy_run.policy_sha256 }}</dd>
     </dl>
   </section>
-  <p><a href="/statements/{{ project.slug }}/{{ candidate.id }}/correct">Correct accepted facts or Commitment Scope</a></p>
+  <p><a href="/statements/{{ project.slug }}/{{ candidate.id }}/correct">Correct recorded facts or which constraints this applies to</a></p>
 
-  <h2>Verified Evidence</h2>
+  <h2>{{ label('supporting_documents') }}</h2>
   {% for item in evidence %}
     <section class="evidence">
       <span class="muted">{{ item.filename }} · registered page {{ item.page_no }}</span>
       <blockquote>{{ item.quote }}</blockquote>
     </section>
   {% else %}
-    <p class="gap">Verified statement Evidence is unavailable; residual decisions remain pending.</p>
+    <p class="gap">Verified source passages are unavailable; the remaining decisions stay pending.</p>
   {% endfor %}
 
-  {% if authority_gap %}<p class="gap">{{ authority_gap }}</p>{% endif %}
+  {% if authority_gap %}<p class="gap"><b>The remaining decision cannot be recorded.</b> Technical detail: {{ authority_gap }}</p>{% endif %}
 
-  <section class="scope-status" aria-label="Current Commitment Scope">
-    <h2>Current Commitment Scope</h2>
+  <section class="scope-status" aria-label="Applies to">
+    <h2>{{ label('applies_to') }}</h2>
     {% if scope.scope_mode == "unknown" %}
-      <p><b>Not yet known.</b> The accepted Evidence does not identify an affected Dependency.</p>
-      <p class="muted">Corridor keeps this Commitment at party level. No confirmation is required, and no individual Dependency changes.</p>
+      <p><b>Not yet known.</b> The supporting passages do not identify an affected Constraint.</p>
+      <p class="muted">Corridor keeps this Commitment with the organization. No confirmation is required, and no individual Constraint changes.</p>
     {% else %}
-      <p><b>Recorded.</b> The exact Dependencies are shown with the accepted facts above.</p>
+      <p><b>Recorded.</b> The exact constraints are shown with the recorded facts above.</p>
     {% endif %}
   </section>
 
@@ -87,12 +87,12 @@
     {% if not authority_gap %}
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/owner">
         <fieldset>
-          <legend>Choose the Internal Owner</legend>
+          <legend>Choose the assigned project person</legend>
           <select name="internal_owner_roster_entry_id" required>
             <option value="">Choose a project-team member</option>
             {% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}
           </select>
-          <button type="submit"{% if not roster %} disabled{% endif %}>Save Internal Owner</button>
+          <button type="submit"{% if not roster %} disabled{% endif %}>Save assigned person</button>
         </fieldset>
       </form>
     {% endif %}
@@ -117,11 +117,11 @@
       </fieldset>
     </form>
   {% elif decision == "blocked" %}
-    <p class="gap">No residual decision can be recorded until the stated authority gap is repaired.</p>
+    <p class="gap">The remaining decision cannot be recorded until the stated missing information is supplied.</p>
   {% else %}
-    <p class="accepted">The Coordination Plan is recorded.</p>
+    <p class="accepted">The Follow-up plan is recorded.</p>
     <dl>
-      <dt>Internal Owner</dt><dd>{{ lineage.internal_owner }}</dd>
+      <dt>{{ label('assigned_to') }}</dt><dd>{{ lineage.internal_owner }}</dd>
       <dt>Next Action</dt><dd>{{ lineage.next_action }}</dd>
       <dt>Action Due Date</dt><dd>{{ lineage.action_due_date or lineage.action_due_date_reason.replace('_', ' ').capitalize() }}</dd>
     </dl>

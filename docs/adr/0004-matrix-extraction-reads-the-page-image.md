@@ -4,6 +4,8 @@ status: accepted
 
 # Matrix extraction reads the page image, not the table structure
 
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
+
 Amended by ADR-0006: the validation gate this ADR called for was run, and what the model is trusted to produce narrowed from transcribed values to page structure. The reasoning below stands.
 
 The expiry date this ADR set on the deterministic parser has passed. #63 deleted the half that mapped column headings by synonym; the half that reads cells off word boxes survives as `corridor.geometry`, and Tier 1 depends on it for every value it stores.

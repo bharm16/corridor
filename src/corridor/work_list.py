@@ -798,7 +798,7 @@ def _candidate_items(
                     attention_reason_codes=("unplaced_statement",),
                     past_due=None,
                     candidate_source=_candidate_source(candidate, document, fields),
-                    candidate_decision="Review this extracted Dependency.",
+                    candidate_decision="Review this proposed constraint.",
                 ),
             )
         )

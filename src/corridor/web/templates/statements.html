@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Statements waiting — {{ project.name }}</title>
+<title>Statements to review — {{ project.name }}</title>
 <style>
   :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; }
   * { box-sizing: border-box; }
@@ -38,17 +38,17 @@
 <header>
   <b>{{ project.name }}</b>
   <span>
-    <a href="/queue/{{ project.slug }}">the queue</a> ·
-    <a href="/ledger/{{ project.slug }}">the record</a>
+    <a href="/queue/{{ project.slug }}">proposed constraints</a> ·
+    <a href="/ledger/{{ project.slug }}">constraint log</a>
   </span>
 </header>
 
 <main>
-  <h1>Statements waiting</h1>
+  <h1>Statements to review</h1>
   <p class="lead">
-    What people said in the minutes attaches to its conflict by itself when
-    it clearly names one. These are the ones it could not place — kept,
-    because a dated promise is exactly what this is for.
+    Statements are recorded automatically when an exact rule establishes their
+    source and applicable constraints. These proposed statements still need
+    clarification about the speaker, timing, or affected constraints.
   </p>
 
   {% for item in waiting %}
@@ -60,7 +60,7 @@
         <span class="who">{{ item.external_org or 'someone unnamed' }}</span>
         <span class="when">
           {%- if item.event_date %} on {{ item.event_date }}{% endif %}
-          {%- if item.committed_date %} · promised {{ item.committed_date }}{% endif %}
+          {%- if item.committed_date %} · promised for {{ item.committed_date }}{% endif %}
           {%- if item.conflict_ref %} · about {{ item.conflict_ref }}{% endif %}
         </span>
         <span class="quote">{{ item.description or '—' }}</span>

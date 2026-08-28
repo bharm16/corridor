@@ -1,4 +1,8 @@
-"""Publish or independently verify a bounded Product Proving Run receipt."""
+"""Publish or independently verify a bounded Product Test Run receipt.
+
+The existing product-proving command and receipt identities remain unchanged.
+This is a software exercise, not Contract Acceptance of construction work.
+"""
 
 from __future__ import annotations
 
@@ -45,9 +49,14 @@ def _sha256(value: str) -> str:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="product-proving-run")
+    parser = argparse.ArgumentParser(
+        prog="product-proving-run",
+        description="Publish or verify a bounded Product Test Run and its exact receipts.",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-    publish = commands.add_parser("publish-observed")
+    publish = commands.add_parser(
+        "publish-observed", help="publish two observed test passes and exact restoration receipts"
+    )
     publish.add_argument("--database-baseline-dir", type=Path, required=True)
     publish.add_argument("--database-baseline-manifest-sha256", type=_sha256, required=True)
     publish.add_argument("--pass-1-dir", type=Path, required=True)
@@ -61,13 +70,17 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--source-database-url", required=True)
     publish.add_argument("--repo-root", type=Path, default=Path.cwd())
     publish.add_argument("--output-dir", type=Path, required=True)
-    publish_failure = commands.add_parser("publish-failure")
+    publish_failure = commands.add_parser(
+        "publish-failure", help="publish a terminal failed Product Test Run receipt"
+    )
     publish_failure.add_argument("--capture-json", type=Path, required=True)
     publish_failure.add_argument("--output-dir", type=Path, required=True)
-    verify = commands.add_parser("verify")
+    verify = commands.add_parser("verify", help="verify a successful Product Test Run bundle")
     verify.add_argument("bundle_dir", type=Path)
     verify.add_argument("--expected-manifest-sha256", type=_sha256, required=True)
-    verify_failure = commands.add_parser("verify-failure")
+    verify_failure = commands.add_parser(
+        "verify-failure", help="verify a failed Product Test Run bundle"
+    )
     verify_failure.add_argument("bundle_dir", type=Path)
     verify_failure.add_argument(
         "--expected-manifest-sha256", type=_sha256, required=True

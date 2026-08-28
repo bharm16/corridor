@@ -1029,8 +1029,8 @@ def test_coordinator_home_labels_candidate_source_context_without_inventing_a_da
     response = client.get(f"/work/{project.slug}")
 
     assert response.status_code == 200
-    assert "Extracted for review — not yet in the Ledger." in response.text
-    assert "Extracted context / affected party: Equistar" in response.text
+    assert "Extracted for review — not yet in the project record." in response.text
+    assert "Extracted context / affected organization: Equistar" in response.text
     assert quote in response.text
     assert "meeting-notes/bounded-work-list.pdf" in response.text
     assert "2025-01-15" in response.text
@@ -1089,8 +1089,8 @@ def test_candidate_backlog_is_searchable_and_paginated_on_the_coordinator_home(
     first_page = client.get(f"/work/{project.slug}")
 
     assert first_page.status_code == 200
-    assert "All extracted work" in first_page.text
-    assert "28 extracted items" in first_page.text
+    assert "All proposed entries" in first_page.text
+    assert "28 proposed items" in first_page.text
     assert "Page 1 of 2" in first_page.text
     assert "Air Products will be invited to a May workshop." in first_page.text
     assert "General extracted statement 27." in first_page.text
@@ -1108,7 +1108,7 @@ def test_candidate_backlog_is_searchable_and_paginated_on_the_coordinator_home(
     searched = client.get(f"/work/{project.slug}?statement_search=Air+Products")
 
     assert searched.status_code == 200
-    assert "1 extracted item" in searched.text
+    assert "1 proposed item" in searched.text
     assert "Air Products will be invited to a May workshop." in searched.text
     assert "General extracted statement 01." not in searched.text
 
@@ -1151,13 +1151,19 @@ def test_work_list_includes_every_active_run_dependency_proposal_with_ordinary_q
     assert {item.candidate_id for item in work_list.candidate_backlog}.issubset(
         {statement.id, *(candidate.id for candidate in dependencies)}
     )
+    dependency_proposal_ids = {candidate.id for candidate in dependencies}
+    assert all(
+        item.candidate_decision == "Review this proposed constraint."
+        for item in work_list.candidate_backlog
+        if item.candidate_id in dependency_proposal_ids
+    )
 
     first_page = client.get(f"/work/{project.slug}")
 
     assert first_page.status_code == 200
-    assert "1 extracted External Party statement" in first_page.text
-    assert "27 extracted Dependencies" in first_page.text
-    assert "28 extracted items" in first_page.text
+    assert "1 proposed statement" in first_page.text
+    assert "27 proposed constraints" in first_page.text
+    assert "28 proposed items" in first_page.text
     assert "Page 1 of 2" in first_page.text
     assert "PL24 Equistar crossing at station 24+00." in first_page.text
     assert "PL27 Equistar crossing at station 27+00." not in first_page.text
@@ -1171,7 +1177,7 @@ def test_work_list_includes_every_active_run_dependency_proposal_with_ordinary_q
         f"/work/{project.slug}?statement_search=PL23+Equistar+crossing"
     )
     assert searched.status_code == 200
-    assert "1 extracted item" in searched.text
+    assert "1 proposed item" in searched.text
     assert "PL23 Equistar crossing at station 23+00." in searched.text
     assert (
         f'href="/queue/{project.slug}?lane=candidate&amp;mode=review&amp;candidate_id={exact.id}"'
@@ -1281,7 +1287,7 @@ def test_authoritative_overflow_is_searchable_and_paginated_in_project_language(
     first_page = client.get(f"/work/{project.slug}")
 
     assert first_page.status_code == 200
-    assert "28 more work items" in first_page.text
+    assert "28 more coordination items" in first_page.text
     assert "Page 1 of 2" in first_page.text
     assert "Overflow Utility work-list-test" in first_page.text
     assert "North corridor relocation 21" in first_page.text
@@ -1303,7 +1309,7 @@ def test_authoritative_overflow_is_searchable_and_paginated_in_project_language(
     )
 
     assert searched.status_code == 200
-    assert "1 more work item" in searched.text
+    assert "1 more coordination item" in searched.text
     assert "North corridor relocation 48" in searched.text
     assert "North corridor relocation 21" not in searched.text
 
@@ -1323,7 +1329,7 @@ def test_deferred_statement_is_searchable_by_party_and_supported_wording(
     response = client.get(f"/work/{project.slug}?work_search=chain+of+title")
 
     assert response.status_code == 200
-    assert "1 more work item" in response.text
+    assert "1 more coordination item" in response.text
     assert party.name in response.text
     assert "provide chain of title" in response.text
     assert "commitment_lineage_id" not in response.text
@@ -1442,7 +1448,7 @@ def test_coordinator_home_renders_the_public_work_list_and_guided_statement_link
 
     assert response.status_code == 200
     assert "Work needing attention now" in response.text
-    assert "The External Party commitment passed its stated date" in response.text
+    assert "The organization&#39;s commitment passed its stated date" in response.text
     assert "past_due" not in response.text
     assert f'href="/statements/{project.slug}/{candidate.id}/coordinate"' in response.text
     assert f'href="/ledger/{project.slug}"' in response.text
@@ -1596,16 +1602,16 @@ def test_mechanical_commitment_shows_known_unknown_scope_and_owner_first(
 
     assert response.status_code == 200
     body = response.text
-    assert "Accepted External Party Commitment" in body
+    assert "Recorded Commitment from" in body
     assert party.name in body
     assert "June 2025" in body
     assert "month precision" in body
-    assert "Commitment Scope not yet known" in body
+    assert "Applies to: not yet known" in body
     assert UNKNOWN_SCOPE_POLICY_VERSION in body
-    assert "Verified Evidence" in body
+    assert "Supporting documents" in body
     assert f"{party.name} will provide the chain of title in June 2025." in body
-    assert "The accepted Evidence does not identify an affected Dependency." in body
-    assert "Corridor keeps this Commitment at party level." in body
+    assert "The supporting passages do not identify an affected Constraint." in body
+    assert "Corridor keeps this Commitment with the organization." in body
     assert "Choose the Commitment Scope" not in body
     assert "Keep Commitment Scope not yet known" not in body
     assert 'name="scope_mode"' not in body
@@ -1662,8 +1668,8 @@ def test_unknown_scope_with_no_dependency_choices_does_not_block_the_plan(
     )
     assert planned.status_code == 303
     final_page = client.get(planned.headers["location"]).text
-    assert "The Coordination Plan is recorded." in final_page
-    assert "Corridor keeps this Commitment at party level." in final_page
+    assert "The Follow-up plan is recorded." in final_page
+    assert "Corridor keeps this Commitment with the organization." in final_page
     assert "Change Commitment Scope" not in final_page
     assert 'name="scope_mode"' not in final_page
 
@@ -1689,12 +1695,16 @@ def test_mechanical_commitment_keeps_malformed_owner_identity_on_the_guided_scre
 
     assert response.status_code == 400
     assert response.headers["content-type"].startswith("text/html")
-    assert "Choose the Internal Owner" in response.text
+    assert "Choose the assigned project person" in response.text
     assert "internal_owner_roster_entry_id must be a positive identity" in response.text
 
 
+@pytest.mark.parametrize("next_action", [
+    "Confirm the organization and which constraints the statement applies to",
+    "Confirm the External Party and Commitment Scope",
+])
 def test_mechanical_commitment_asks_owner_then_structured_next_action(
-    client, session, project, party
+    client, session, project, party, next_action
 ):
     candidate = _mechanically_admit_unknown_scope(session, project, party)
     dependency = Dependency(
@@ -1718,7 +1728,7 @@ def test_mechanical_commitment_asks_owner_then_structured_next_action(
     owner_page = client.get(
         f"/statements/{project.slug}/{candidate.id}/coordinate"
     ).text
-    assert "Choose the Internal Owner" in owner_page
+    assert "Choose the assigned project person" in owner_page
     assert 'name="internal_owner_roster_entry_id"' in owner_page
     assert 'name="scope_mode"' not in owner_page
     assert 'name="next_action"' not in owner_page
@@ -1736,21 +1746,25 @@ def test_mechanical_commitment_asks_owner_then_structured_next_action(
     assert 'name="action_due_date_unknown_reason"' in action_page
     assert 'name="internal_owner_roster_entry_id"' not in action_page
     assert 'name="scope_mode"' not in action_page
+    preferred_action = "Confirm the organization and which constraints the statement applies to"
+    assert f'<option value="{preferred_action}">{preferred_action}</option>' in action_page
+    assert '<option value="Confirm the External Party and Commitment Scope">' not in action_page
 
     planned = client.post(
         f"/statements/{project.slug}/{candidate.id}/admitted/next-action",
         data={
-            "next_action": "Confirm the External Party and Commitment Scope",
+            "next_action": next_action,
             "action_due_date_unknown_reason": "date_not_yet_known",
         },
         follow_redirects=False,
     )
     assert planned.status_code == 303
     final_page = client.get(planned.headers["location"]).text
-    assert "The Coordination Plan is recorded." in final_page
-    assert "Current Commitment Scope" in final_page
+    assert "The Follow-up plan is recorded." in final_page
+    assert next_action in final_page
+    assert "<h2>Applies to</h2>" in final_page
     assert "Not yet known." in final_page
-    assert "Corridor keeps this Commitment at party level." in final_page
+    assert "Corridor keeps this Commitment with the organization." in final_page
     assert "Change Commitment Scope" not in final_page
     assert 'name="scope_mode"' not in final_page
     assert 'name="dependency_id"' not in final_page
@@ -1796,8 +1810,8 @@ def test_machine_unknown_scope_is_not_saved_again_as_a_human_decision(
 
     assert response.status_code == 400
     page = response.text
-    assert "Use Correct to change Commitment Scope after admission." in page
-    assert "Commitment Scope not yet known" in page
+    assert "Use Correct to change which constraints an already recorded statement applies to." in page
+    assert "Applies to: not yet known" in page
     outcome = session.scalar(
         select(EventAdmissionOutcome).where(
             EventAdmissionOutcome.candidate_id == candidate.id,
@@ -1849,7 +1863,7 @@ def test_scope_can_be_identified_after_the_coordination_plan(
     )
     admitted_page = client.get(f"/statements/{project.slug}/{candidate.id}/coordinate")
     assert admitted_page.status_code == 200
-    assert "Correct accepted facts or Commitment Scope" in admitted_page.text
+    assert "Correct recorded facts or which constraints this applies to" in admitted_page.text
     assert (
         f'href="/statements/{project.slug}/{candidate.id}/correct"'
         in admitted_page.text
@@ -1860,7 +1874,7 @@ def test_scope_can_be_identified_after_the_coordination_plan(
         follow_redirects=False,
     )
     assert refused.status_code == 400
-    assert "Use Correct to change Commitment Scope after admission." in refused.text
+    assert "Use Correct to change which constraints an already recorded statement applies to." in refused.text
     current_scope = session.scalar(
         select(DependencyEventScopeDecision)
         .where(
@@ -1929,4 +1943,4 @@ def test_admitted_scope_route_refuses_even_when_selected_dependencies_are_missin
     )
     assert response.status_code == 400
     body = response.text
-    assert "Use Correct to change Commitment Scope after admission." in body
+    assert "Use Correct to change which constraints an already recorded statement applies to." in body

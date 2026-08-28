@@ -562,7 +562,9 @@ def test_the_prompt_withholds_an_unverified_cited_statement_date(
 
 
 def test_the_render_shows_sentences_with_their_markers(session, dependency):
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    source_text = "Ready Milestone Road: Evidence and Verbal remain the source wording."
+    refs = floor_refs(session, dependency)
+    client = StubClient([drafted((source_text, refs))])
 
     out = render(brief(session, dependency.id, client=client, today=TODAY))
 
@@ -570,6 +572,10 @@ def test_the_render_shows_sentences_with_their_markers(session, dependency):
     assert PROMPT_VERSION in out
     assert RULESET_VERSION in out
     assert "[X1" in out
+    assert "Coordination summary — AI draft" in out
+    assert "constraint alerts checked" in out
+    assert source_text in out
+    assert "Briefing —" not in out
 
 
 def test_withheld_counts_are_visible_in_the_render(session, dependency):

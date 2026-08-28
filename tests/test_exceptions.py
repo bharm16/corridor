@@ -659,7 +659,7 @@ def test_registering_a_successor_immediately_creates_provenance_review_work(
     assert "re-confirmation" in exception.detail
     assert "overdue" not in exception.detail.lower()
     assert format_exception_label(exception) == (
-        "Evidence is not current · re-confirmation 11d"
+        "Supporting document replaced 11d"
     )
 
 
@@ -950,9 +950,9 @@ def test_exception_labels_include_the_rule_s_own_days_when_present(
 
     by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
 
-    assert format_exception_label(by_rule["OVERDUE"]) == "Committed Date passed 8d"
-    assert format_exception_label(by_rule["DUE_SOON"]) == "Need Date is near 3d"
-    assert format_exception_label(by_rule["STALE"]) == "Evidence is stale 21d"
+    assert format_exception_label(by_rule["OVERDUE"]) == "Promised timing passed 8d"
+    assert format_exception_label(by_rule["DUE_SOON"]) == "Required by date is near 3d"
+    assert format_exception_label(by_rule["STALE"]) == "No recent supporting documents 21d"
 
 
 def test_a_rule_whose_fact_is_an_absence_carries_no_quantity(
@@ -976,8 +976,8 @@ def test_exception_labels_omit_days_for_absence_rules(session, project, document
 
     by_rule = {e.rule: e for e in exceptions_for(session, dep.id, today=TODAY)}
 
-    assert format_exception_label(by_rule["MISSING_OWNER"]) == "No Internal Owner"
-    assert format_exception_label(by_rule["MISSING_DATE"]) == "No Committed Date"
+    assert format_exception_label(by_rule["MISSING_OWNER"]) == "No person assigned"
+    assert format_exception_label(by_rule["MISSING_DATE"]) == "No exact promised date for this check"
 
 
 def test_stale_with_no_dated_evidence_at_all_has_no_quantity(

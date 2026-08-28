@@ -58,30 +58,29 @@
   <b>{{ view.dependency.ref_code }}
     {%- if view.dependency.source_ref %} · {{ view.dependency.source_ref }}{% endif %}</b>
   {% if return_to %}
-    <span><a href="{{ return_to }}">Back to cohort coordination</a></span>
+    <span><a href="{{ return_to }}">Back to test coordination</a></span>
   {% else %}
-    <span><a href="/ledger/{{ project.slug }}">← ledger</a></span>
+    <span><a href="/ledger/{{ project.slug }}">← constraints</a></span>
   {% endif %}
 </header>
 
 <main>
   <p>
     <b>{{ view.dependency.title }}</b><br>
-    {{ view.org_name or 'no external party' }} ·
+    {{ view.org_name or 'no organization identified' }} ·
     {{ view.dependency.station_from or '—' }}{% if view.dependency.station_to %} → {{ view.dependency.station_to }}{% endif %} ·
-    {% if view.dependency.resolution_strategy %}{{ view.dependency.resolution_strategy.replace('_', ' ') }}{% if view.is_critical %} <span class="pill contra">critical</span>{% endif %}{% else %}no resolution strategy asserted{% endif %}
-    {% if view.is_ready %}<span class="pill ready">ready</span>
-    {% else %}<span class="pill notready">not ready</span>{% endif %}
-    {% if view.contradictions %}<span class="pill contra">{{ view.contradictions|length }} field(s) contradicted</span>{% endif %}
+    {% if view.dependency.resolution_strategy %}{{ resolution_strategy_label(view.dependency.resolution_strategy) }}{% else %}no resolution method recorded{% endif %}
+    <span class="pill {{ 'ready' if view.is_ready else 'notready' }}">{{ documentation_review_label(view.is_ready) }}</span>
+    {% if view.contradictions %}<span class="pill contra">Sources disagree on {{ view.contradictions|length }} field(s)</span>{% endif %}
   </p>
   <p class="muted" style="font-size:.85rem">
-    Last evidenced {{ view.last_evidenced_at or 'never' }} ·
-    {{ view.dependency.evidence_required or 'no closure bar recorded' }}
+    Most recent supporting document {{ view.last_evidenced_at or 'not available' }} ·
+    {{ label('required_documents') }}: {{ view.dependency.evidence_required or 'Not specified' }}
   </p>
 
-  <h2>Coordination</h2>
+  <h2>{{ label('follow_up_plan') }}</h2>
   <p>
-    Internal Owner:
+    {{ label('assigned_to') }}:
     {% if view.dependency.internal_owner %}
       <b>{{ view.dependency.internal_owner }}</b>
       {% if owner_decision %}
@@ -101,7 +100,7 @@
     {% endif %}
     <input name="owner" placeholder="named person"
            value="{{ view.dependency.internal_owner or '' }}">
-    <button type="submit">assign owner</button>
+    <button type="submit">assign person</button>
   </form>
   <p style="margin-top:.7rem">
     Next Action:
@@ -175,7 +174,7 @@
     </form>
   {% endif %}
 
-  <h2>Needs attention</h2>
+  <h2>{{ label('constraint_alerts') }}</h2>
   {% if view.exceptions %}
     <table>
       <thead><tr><th>Reason</th><th>Why</th></tr></thead>
@@ -183,7 +182,7 @@
         {% for e in view.exceptions %}
           <tr>
             <td><span class="pill contra">{{ e.label }}</span></td>
-            <td>{{ e.detail }}</td>
+            <td>Technical detail: {{ e.detail }}</td>
           </tr>
         {% endfor %}
       </tbody>
@@ -193,7 +192,7 @@
   {% endif %}
   {% if view.evaluation %}
     <p class="muted">
-      Evaluated {{ view.evaluation.today }} · ruleset {{ view.evaluation.ruleset_version }}
+      Checks as of {{ view.evaluation.today }} · ruleset {{ view.evaluation.ruleset_version }}
     </p>
   {% endif %}
 
@@ -201,10 +200,10 @@
   {% for f in view.fields %}
     <div class="field">
       <div class="head">
-        <span class="name">{{ f.name }}</span>
+        <span class="name">{{ field_label(f.name) }}</span>
         <span class="value">{{ f.values|join('  ·  ') or '—' }}</span>
         {% if f.contradicted %}<span class="pill contra">sources disagree</span>{% endif %}
-        {% if f.settled %}<span class="pill settled">settled</span>{% endif %}
+        {% if f.settled %}<span class="pill settled">Conclusion recorded</span>{% endif %}
       </div>
       {% for a in f.assertions %}
         <div class="claim">
@@ -222,8 +221,8 @@
            keeps its form because a mistaken settlement is corrected by
            settling again (ADR-0031), never by editing history. #}
         <div class="settle">
-          <span class="lead">{% if f.settled %}Settled — change the
-            conclusion?{% else %}Which is right?{% endif %}</span>
+          <span class="lead">{% if f.settled %}Change the recorded
+            conclusion?{% else %}Record the conclusion for this field{% endif %}</span>
           {% for value in disputes[f.name].values %}
             <form method="post"
                   action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">
@@ -240,18 +239,18 @@
             <input type="hidden" name="saw_claim_id"
                    value="{{ disputes[f.name].newest_claim_id }}">
             <input type="text" name="value" placeholder="or type the right value">
-            <button>settle</button>
+            <button>{{ label('record_conclusion') }}</button>
           </form>
         </div>
       {% endif %}
     </div>
   {% else %}
-    <p class="muted">No assertions recorded.</p>
+    <p class="muted">No source field values recorded.</p>
   {% endfor %}
 
-  <h2>Not a real conflict?</h2>
+  <h2>Incorrect entry?</h2>
   <p class="muted">
-    Dismissing takes this off the working list. Nothing is deleted — the
+    Remove an incorrect entry from the active log. Nothing is deleted — the
     page, the claims and the history stay, and this record keeps saying
     why it left.
   </p>
@@ -260,34 +259,34 @@
       <form method="post"
             action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/dismiss">
         <input type="hidden" name="reason" value="{{ reason }}">
-        <button>dismiss: {{ reason }}</button>
+        <button>Remove incorrect entry: {{ reason }}</button>
       </form>
     {% endfor %}
   </div>
 
-  <h2>Events</h2>
+  <h2>{{ label('statement_history') }}</h2>
   <form method="post" action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/verbal">
     <p class="muted" style="font-size:.85rem">
-      Record a verbal — what the party told you on a call. It is appended under your identity,
+      Record what the organization told you by phone or in conversation. It is appended under your identity,
       never cited as a document.
     </p>
-    <input name="stated_party" value="{{ view.org_name or '' }}" placeholder="party you spoke to" required>
+    <input name="stated_party" value="{{ view.org_name or '' }}" placeholder="organization you spoke to" required>
     <input name="conversation_date" type="date" required>
     <input name="committed_date" type="date" required>
     <input name="description" placeholder="what they said" required>
-    <button type="submit">record verbal</button>
+    <button type="submit">Record verbal statement</button>
   </form>
   {% if view.events %}
     <table>
-      <thead><tr><th>Said</th><th>Type</th><th>Source</th><th>Party</th><th>Description</th><th>By</th></tr></thead>
+      <thead><tr><th>Said</th><th>Type</th><th>Source</th><th>{{ label('organization') }}</th><th>Description</th><th>By</th></tr></thead>
       <tbody>
         {% for e in view.events %}
           <tr>
             <td>{{ e.event_date or '—' }}</td>
-            <td>{% if e.event_type == 'committed_date_change' %}Committed Date Change{% else %}{{ e.event_type.replace('_', ' ').title() }}{% endif %}</td>
+            <td>{{ statement_type_label(e.event_type) }}</td>
             <td>
               {% if e.source_kind == 'verbal' %}
-                <span class="pill contra">Verbal</span>
+                <span class="pill contra">{{ provenance_label('verbal') }}</span>
                 <span class="muted">heard by {{ e.created_by }} on {{ e.event_date }}</span>
               {% else %}
                 <span class="muted">Cited statement</span>
@@ -301,16 +300,16 @@
       </tbody>
     </table>
   {% else %}
-    <p class="muted">No events yet. Commitments and Committed Date Changes are appended here, never edited.</p>
+    <p class="muted">No statements yet. Commitments and changes to promised timing are appended here; earlier statements remain in history.</p>
   {% endif %}
 
-  <h2>Evidence</h2>
+  <h2>Supporting documents</h2>
   <table>
-    <thead><tr><th>Document</th><th>Page</th><th>Quote</th><th>Verified</th><th>Closes this?</th></tr></thead>
+    <thead><tr><th>Source document</th><th>Page</th><th>Cited passage</th><th>Source passage check</th><th>Documentation review</th></tr></thead>
     <tbody>
       {% for link, doc in view.evidence %}
         <tr>
-          <td>{{ doc.filename }}</td>
+          <td>{{ doc.filename }}{% if doc.superseded_by %}<br><span class="pill contra">Replaced source</span>{% endif %}</td>
           <td class="muted">{{ link.page_no }}</td>
           <td class="q" style="font-family:ui-monospace,monospace;font-size:.76rem">{{ link.quote[:110] }}</td>
           <td>{% if link.verified %}<span class="pill ready">yes</span>
@@ -320,19 +319,19 @@
                   action="/dependencies/{{ view.dependency.id }}/evidence/{{ link.id }}/satisfies">
               <input type="hidden" name="slug" value="{{ project.slug }}">
               <button {% if not link.verified %}disabled
-                title="Readiness cannot rest on a quote that is not on the page."{% endif %}>
-                {% if link.satisfies_requirement %}✓ closes it{% else %}mark as closing{% endif %}
+                title="The cited passage must be found in the source before these documents can be marked sufficient."{% endif %}>
+                {% if link.id in sufficient_evidence_ids %}Remove sufficiency mark{% else %}Mark documents sufficient{% endif %}
               </button>
             </form>
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="5" class="muted">No evidence linked.</td></tr>
+        <tr><td colspan="5" class="muted">No supporting documents linked.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 
-  <h2>Audit</h2>
+  <h2>Audit trail</h2>
   <table>
     <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead>
     <tbody>

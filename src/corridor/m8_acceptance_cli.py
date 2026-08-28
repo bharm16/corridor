@@ -41,7 +41,13 @@ def _sha256(value: str) -> str:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="m8-acceptance")
+    parser = argparse.ArgumentParser(
+        prog="m8-acceptance",
+        description=(
+            "Capture, replay, or verify the M8 software acceptance test. This is not Contract "
+            "Acceptance of construction work."
+        ),
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
     capture = commands.add_parser(

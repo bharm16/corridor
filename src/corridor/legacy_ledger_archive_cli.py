@@ -1,9 +1,10 @@
-"""Operate the one-time Development Ledger retirement compare-and-swap.
+"""Retire legacy development constraint records with exact compare-and-swap.
 
 The destructive command deliberately has no shorthand: an operator first
-captures ``plan`` output, then repeats both its digest and Dependency count to
+captures ``plan`` output, then repeats both its digest and constraint count to
 ``retire``.  ``verify`` and ``export`` always cross the archive verification
-seam before reporting success.
+seam before reporting success. Ledger, Dependency, and their JSON names remain
+technical identities in archived bytes and the command contract.
 """
 
 from __future__ import annotations
@@ -50,7 +51,10 @@ def _sha256(value: str) -> str:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="legacy-ledger-archive")
+    parser = argparse.ArgumentParser(
+        prog="legacy-ledger-archive",
+        description="Archive and retire legacy development constraint records.",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
     plan = commands.add_parser(
@@ -60,7 +64,7 @@ def _parser() -> argparse.ArgumentParser:
 
     retire = commands.add_parser(
         "retire",
-        help="seal and retire only an exactly planned Ledger (maintenance DB role required)",
+        help="seal and retire exactly planned constraint records (maintenance DB role required)",
     )
     retire.add_argument("project_slug")
     retire.add_argument(
@@ -73,7 +77,7 @@ def _parser() -> argparse.ArgumentParser:
         "--expected-dependency-count",
         required=True,
         type=_positive_int,
-        help="Dependency count printed by plan",
+        help="constraint count printed by plan as counts.dependencies",
     )
 
     verify = commands.add_parser(

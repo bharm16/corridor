@@ -1457,7 +1457,7 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
             assert correct_screen.status_code == 200
             assert "Current accepted statement — read only" in correct_screen.text
             assert correct_quote in correct_screen.text
-            assert "Current verified Evidence" in correct_screen.text
+            assert "Supporting documents" in correct_screen.text
             assert "http-correct.pdf" in correct_screen.text
             assert 'name="scope_mode" value="selected"' in correct_screen.text
             assert 'name="scope_mode" value="all_active"' in correct_screen.text
@@ -1562,7 +1562,7 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
                 )
             )
             marked_page = client.get(marked.headers["location"])
-            assert "Marked Not Relevant" in marked_page.text
+            assert "Not added to project record" in marked_page.text
             restored = client.post(
                 f"/statements/{project.slug}/{irrelevant_candidate.id}/not-relevant/{disposition.id}/restore",
                 follow_redirects=False,
@@ -1670,7 +1670,7 @@ def test_pending_closure_screen_names_the_authority_gap_without_timing_or_scope_
 
             assert screen.status_code == 200
             assert quote in screen.text
-            assert "Closure Evidence" in screen.text
+            assert "Documents reporting completion" in screen.text
             assert "Exact target Commitment not established" in screen.text
             assert (
                 "The Evidence establishes a closure statement, but it does not "
@@ -1680,7 +1680,7 @@ def test_pending_closure_screen_names_the_authority_gap_without_timing_or_scope_
             assert "No structured timing is available" not in screen.text
             assert "Commitment Scope" not in screen.text
             assert 'name="scope_mode"' not in screen.text
-            assert "Mark Not Relevant" not in screen.text
+            assert "Do not add" not in screen.text
             assert (
                 f'action="/statements/{project.slug}/{candidate.id}/keep-unresolved"'
                 in screen.text
@@ -1698,7 +1698,7 @@ def test_pending_closure_screen_names_the_authority_gap_without_timing_or_scope_
             assert acknowledged.status_code == 200
             assert "Kept unresolved in the Work List" in acknowledged.text
             assert "Recorded unresolved authority gap" in acknowledged.text
-            assert "Closure target Commitment not established" in acknowledged.text
+            assert "Commitment covered by the completion report is not established" in acknowledged.text
     finally:
         app.dependency_overrides.clear()
 
@@ -1818,7 +1818,7 @@ def test_http_screen_uses_supported_affected_party_without_inventing_the_speaker
         assert "Kinder Morgan Management Meeting Highlights" in screen.text
         assert "Relocation schedule discussion" in screen.text
         assert "Propose extending completion to May 16th." in screen.text
-        assert "supported by the visible Evidence" in screen.text
+        assert "supported by the visible source passages" in screen.text
         assert 'id="affected-party"' not in screen.text
         assert (
             f'name="affected_external_org_id" value="{party.id}"'
@@ -1950,7 +1950,7 @@ def test_http_save_refuses_original_pdf_evidence_without_a_rendered_image(
         assert screen.status_code == 200
         assert "Save unavailable until every registered source page for this extracted statement" in screen.text
         assert (
-            '<button type="submit" disabled>Save statement and Coordination Plan</button>'
+            '<button type="submit" disabled>Save statement and Follow-up plan</button>'
             in screen.text
         )
         assert response.status_code == 400
@@ -2109,7 +2109,7 @@ def test_http_guided_save_binds_source_party_words_to_the_selected_party_without
             )
 
         assert screen.status_code == 200
-        assert "does not register a name for future Documents" in screen.text
+        assert "does not register a name for future documents" in screen.text
         assert response.status_code == 303, response.text
         event = session.scalar(
             select(DependencyEvent).where(DependencyEvent.project_id == project.id)
@@ -2407,6 +2407,7 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
     session, project, party, roster_entry
 ):
     quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    next_action = "Confirm the organization and which constraints the statement applies to"
     document = _document(session, project, "http-guided-flow.xlsx", quote)
     page = session.scalar(
         select(DocPage).where(
@@ -2443,11 +2444,12 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
             )
             assert screen.status_code == 200
             assert quote in screen.text
-            assert "Scope not yet known" in screen.text
+            assert "Applies to: not yet known" in screen.text
             assert "Dana Fields" in screen.text
             assert "read from registered cells" in screen.text
+            assert f'<option value="{next_action}">{next_action}</option>' in screen.text
             assert (
-                '<button type="submit">Save statement and Coordination Plan</button>'
+                '<button type="submit">Save statement and Follow-up plan</button>'
                 in screen.text
             )
             assert 'name="scope_mode" value="unknown" required' in screen.text
@@ -2481,17 +2483,18 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
                     "new_timing_end_date": "2026-06-01",
                     "scope_mode": "unknown",
                     "internal_owner_roster_entry_id": str(roster_entry.id),
-                    "next_action": "Confirm the June plan",
+                    "next_action": next_action,
                     "action_due_date": "2026-02-01",
                 },
                 follow_redirects=False,
             )
             assert response.status_code == 303
             saved = client.get(response.headers["location"])
-            assert "Coordination Plan saved" in saved.text
+            assert "Follow-up plan saved" in saved.text
             assert "Commitment" in saved.text
             assert "Dana Fields" in saved.text
-            assert "Attention Reason" in saved.text
+            assert next_action in saved.text
+            assert "Why this needs attention" in saved.text
             stale = client.post(
                 f"/statements/{project.slug}/{candidate.id}/coordinate",
                 data={
@@ -2505,11 +2508,11 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
                     "new_timing_end_date": "2026-06-01",
                     "scope_mode": "unknown",
                     "internal_owner_roster_entry_id": str(roster_entry.id),
-                    "next_action": "Confirm the June plan",
+                    "next_action": next_action,
                     "action_due_date": "2026-02-01",
                 },
             )
             assert stale.status_code == 409
-            assert "Coordination Plan saved" in stale.text
+            assert "Follow-up plan saved" in stale.text
     finally:
         app.dependency_overrides.clear()

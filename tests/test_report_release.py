@@ -337,9 +337,9 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(session, p
     with pymupdf.open(stream=rendered.pdf_bytes, filetype="pdf") as pdf:
         pdf_text = " ".join("\n".join(page.get_text() for page in pdf).split())
     for expected in (
-        "Internal Owner Dana Fields",
-        "Next Action Confirm the cable-reel delivery",
-        "Action Due Date not yet known (awaiting external information)",
+        "Assigned to Dana Fields",
+        "Next action Confirm the cable-reel delivery",
+        "Action due date Date not yet known (awaiting external information)",
     ):
         assert expected in pdf_text
     artifact = _prepare(session, project, rendered=rendered)
@@ -353,7 +353,7 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(session, p
         "timing": "September 2026",
         "timing_precision": "month",
         "statement_type": "Commitment",
-        "commitment_scope": "Scope not yet known",
+        "commitment_scope": "Not yet known",
         "open_status": "Open · not past due",
         "internal_owner": "Dana Fields",
         "next_action": "Confirm the cable-reel delivery",
@@ -533,14 +533,14 @@ def test_new_and_legacy_verbal_source_context_hide_the_recorder_identity(
     for review in reviews:
         [covered_statement] = review.covered_party_statements
         assert covered_statement.source_context == (
-            "Verbal statement · conversation 2026-08-13"
+            "Recorded verbal statement · conversation 2026-08-13"
         )
         assert recorder_subject not in covered_statement.source_context
 
     _release(session, project, artifact=prepared)
     history_page = client.get(f"/reports/{project.slug}")
     assert history_page.status_code == 200
-    assert "Verbal statement · conversation 2026-08-13" in history_page.text
+    assert "Recorded verbal statement · conversation 2026-08-13" in history_page.text
     assert recorder_subject not in history_page.text
 
 
@@ -596,7 +596,9 @@ def test_legacy_document_only_context_does_not_publish_current_event_wording(
 def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_changes(
     session, project
 ):
-    release = _release(session, project)
+    historical_bytes = b"%PDF-1.7\nReadiness: Ready 1, Milestone, Evidence\n%%EOF"
+    historical = replace(_rendered(session, project), pdf_bytes=historical_bytes)
+    release = _release(session, project, artifact=_prepare(session, project, rendered=historical))
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == project.id)
     ).one()
@@ -607,7 +609,7 @@ def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_change
     stored = retrieve_released_external_report(session, project.id, release.id)
 
     assert stored.id == release.id
-    assert stored.pdf_bytes == PDF_A
+    assert stored.pdf_bytes == historical_bytes
     assert stored.digest_is_valid is True
     assert stored.record_context_json == release.record_context_json
 
@@ -786,7 +788,7 @@ def test_release_history_uses_roster_name_while_retaining_principal_for_audit(
     assert entry.released_by_display == "Dana Fields"
     assert entry.released_by == TEST_PRINCIPAL.subject
     assert page.status_code == 200
-    assert "Released by</dt><dd>Dana Fields</dd>" in page.text
+    assert "Approved to share by</dt><dd>Dana Fields</dd>" in page.text
     assert "Audit identity" not in page.text
     assert TEST_PRINCIPAL.subject not in page.text
     assert release.released_by == TEST_PRINCIPAL.subject
@@ -901,9 +903,9 @@ def test_honestly_adverse_content_does_not_block_release(session, project):
     commitments = next(
         section
         for section in rendered.report.sections
-        if section.title == "External Party commitments"
+        if section.title == "Organization commitments"
     )
-    assert commitments.rows[0][5].value == "Scope not yet known"
+    assert commitments.rows[0][5].value == "Not yet known"
     assert commitments.rows[0][6].value == "Open · past due"
     assert commitments.rows[0][7].value == "—"
 
@@ -1030,25 +1032,25 @@ def test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an
     coordinator_home = client.get(f"/work/{project.slug}")
     assert coordinator_home.status_code == 200
     assert f'href="/reports/{project.slug}"' in coordinator_home.text
-    assert "Prepare External Report" in coordinator_home.text
+    assert "Prepare coordination report" in coordinator_home.text
 
     workspace = client.get(f"/reports/{project.slug}")
 
     assert workspace.status_code == 200
-    assert "Render fixed PDF for review" in workspace.text
+    assert "Prepare fixed PDF for review" in workspace.text
 
     response = client.post(f"/reports/{project.slug}/render", data={"ordinary": "1"})
 
     assert response.status_code == 201
     assert "Review this fixed PDF" in response.text
-    assert "Evaluation" in response.text
+    assert "Checks as of" in response.text
     assert "All supported sources" in response.text
     assert "DEP-RELEASE-1" in response.text
     assert "Covered statement versions" in response.text
     assert "SHA-256 digest" in response.text
-    assert "Fixed External Report PDF preview" in response.text
+    assert "Fixed coordination report PDF preview" in response.text
     assert "Download this exact PDF" in response.text
-    assert "Release this exact PDF" in response.text
+    assert "Approve this exact PDF to share" in response.text
     assert "Artifact ID" not in response.text
     assert 'name="artifact_id"' not in response.text
     assert re.search(
@@ -1119,14 +1121,14 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     released = client.post(f"/reports/{project.slug}/prepared/{artifact.id}/release")
 
     assert released.status_code == 201
-    assert "This exact PDF is now released and retained." in released.text
+    assert "This exact PDF is approved to share and retained." in released.text
     assert artifact.artifact_name in released.text
     assert "Project person (display name not recorded)" in released.text
     assert TEST_PRINCIPAL.subject not in released.text
     assert "DEP-RELEASE-1" in released.text
     assert artifact.pdf_sha256 in released.text
     assert (
-        "Release does not send the PDF by email or document control." in released.text
+        "Approval does not send the PDF by email or document control." in released.text
     )
     download = re.search(
         rf'href="(/reports/{project.slug}/releases/\d+/download)"', released.text
@@ -1353,7 +1355,7 @@ def test_ordinary_release_control_delegates_its_bound_artifact_without_rerenderi
     response = client.post(f"/reports/{project.slug}/prepared/{artifact.id}/release")
 
     assert response.status_code == 201
-    assert "This exact PDF is now released and retained." in response.text
+    assert "This exact PDF is approved to share and retained." in response.text
     assert calls == [("release", project.id, artifact.id, TEST_PRINCIPAL)]
 
 

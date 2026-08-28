@@ -37,6 +37,8 @@ from corridor.report import (
     Cell,
     Derivation,
     Report,
+    Section,
+    Verbal,
     assert_no_bare_cells,
     build_report,
     render,
@@ -238,7 +240,7 @@ def test_summary_figures_are_derivations_carrying_their_records(
     session, project_with_two_dependencies
 ):
     report = build_report(session, project_with_two_dependencies.id)
-    total = next(c for c in report.summary if c.label == "Dependencies")
+    total = next(c for c in report.summary if c.label == "Constraints")
 
     assert total.value == "2"
     assert isinstance(total.provenance, Derivation)
@@ -257,7 +259,7 @@ def test_row_figures_are_assertions_carrying_a_page_and_quote(
     """Per-record facts cite a document, page and quote."""
     make_critical(session, project_with_two_dependencies)
     report = build_report(session, project_with_two_dependencies.id)
-    ref = section(report, "Critical items").rows[0][0]
+    ref = section(report, "Relocation / removal / abandonment").rows[0][0]
 
     assert isinstance(ref.provenance, Assertion)
     assert ref.provenance.page_no == 1
@@ -325,7 +327,7 @@ def test_a_critical_record_with_no_verified_evidence_is_still_published(
     report = build_report(session, project_with_two_dependencies.id)
     assert_no_bare_cells(report)
 
-    rows = section(report, "Critical items").rows
+    rows = section(report, "Relocation / removal / abandonment").rows
     assert len(rows) == len(records) > 1
     by_ref = {record.ref_code: record for record in records}
     for row in rows:
@@ -361,7 +363,7 @@ def test_an_unverified_quote_is_never_published_as_the_citation(
 
     report = build_report(session, project_with_two_dependencies.id)
     markup = render(report)
-    row = section(report, "Critical items").rows[0]
+    row = section(report, "Relocation / removal / abandonment").rows[0]
 
     assert not isinstance(row[0].provenance, Assertion)
     assert quotes and all(escape_html(quote) not in markup for quote in quotes)
@@ -381,13 +383,13 @@ def test_striking_a_records_verification_removes_no_row_from_the_report(
     before = [
         row[0].value
         for row in section(
-            build_report(session, project_with_two_dependencies.id), "Critical items"
+            build_report(session, project_with_two_dependencies.id), "Relocation / removal / abandonment"
         ).rows
     ]
 
     _unverify_evidence_of(session, critical)
     report = build_report(session, project_with_two_dependencies.id)
-    after = [row[0].value for row in section(report, "Critical items").rows]
+    after = [row[0].value for row in section(report, "Relocation / removal / abandonment").rows]
 
     assert before == after
     assert critical.ref_code in after
@@ -398,25 +400,25 @@ def test_the_report_has_the_documented_sections(session, project_with_two_depend
     report = build_report(session, project_with_two_dependencies.id)
     titles = [s.title for s in report.sections]
     assert titles == [
-        "Milestone readiness",
-        "Critical items",
-        "Coordination",
-        "External Party commitments",
-        "Exceptions",
+        "Constraints by key date",
+        "Relocation / removal / abandonment",
+        "Follow-up plan",
+        "Organization commitments",
+        "Constraint alerts",
         "Changes since last report",
         "Aging",
-        "Appendix — full ledger",
+        "Appendix — constraint log",
     ]
 
 
 def test_an_empty_section_says_why_rather_than_showing_nothing(
     session, project_with_two_dependencies
 ):
-    """ "No milestones imported" and "nothing is overdue" are different
+    """ "No key dates imported" and "nothing is overdue" are different
     facts, and a blank table conveys neither."""
     report = build_report(session, project_with_two_dependencies.id)
-    milestones = section(report, "Milestone readiness")
-    assert milestones.rows or "No milestones imported" in milestones.empty_message
+    milestones = section(report, "Constraints by key date")
+    assert milestones.rows or "No key dates imported" in milestones.empty_message
     assert "overdue" in section(report, "Aging").empty_message
 
 
@@ -461,7 +463,12 @@ def test_a_new_report_calls_a_later_date_a_committed_date_change(
     report = build_report(session, project.id, today=date(2026, 8, 1))
     changes = section(report, "Changes since last report")
 
-    assert "Committed Date Change" in [row[1].value for row in changes.rows]
+    assert "Change to promised timing" in [row[1].value for row in changes.rows]
+    assert changes.columns == ["Ref", "Change", "Technical detail"]
+    timing_change = next(
+        row for row in changes.rows if row[1].value == "Change to promised timing"
+    )
+    assert timing_change[2].value == "committed date moved 2026-06-03 → 2026-08-15"
     assert "slipped" not in render(report).lower()
 
 
@@ -490,14 +497,14 @@ def test_the_report_states_what_it_does_not_cover(
     session.flush()
 
     report = build_report(session, project_with_two_dependencies.id)
-    assert "awaiting adjudication" in report.coverage_note
-    assert "awaiting adjudication" in render(report)
+    assert "awaiting review" in report.coverage_note
+    assert "awaiting review" in render(report)
 
 
 def test_the_exceptions_section_counts_by_rule(session, project_with_two_dependencies):
     report = build_report(session, project_with_two_dependencies.id)
-    rules = {row[0].value for row in section(report, "Exceptions").rows}
-    assert "No Milestone" in rules
+    rules = {row[0].value for row in section(report, "Constraint alerts").rows}
+    assert "No key date linked" in rules
 
 
 def test_report_names_superseded_citations_as_reconfirmation_work(
@@ -542,9 +549,9 @@ def test_report_names_superseded_citations_as_reconfirmation_work(
         project_with_two_dependencies.id,
         today=date(2026, 8, 5),
     )
-    rules = {row[0].value for row in section(report, "Exceptions").rows}
+    rules = {row[0].value for row in section(report, "Constraint alerts").rows}
 
-    assert "Evidence is not current · re-confirmation" in rules
+    assert "Supporting document replaced" in rules
 
 
 def test_the_appendix_lists_every_ledger_record(session, project_with_two_dependencies):
@@ -552,16 +559,21 @@ def test_the_appendix_lists_every_ledger_record(session, project_with_two_depend
     assert len(section(report, "Appendix").rows) == 2
 
 
-def test_readiness_in_the_report_is_computed_not_stored(
+def test_report_names_the_documentation_marker_without_claiming_completion(
     session, project_with_two_dependencies
 ):
     report = build_report(session, project_with_two_dependencies.id)
-    ready_summary = next(c for c in report.summary if c.label == "Ready")
+    ready_summary = next(
+        c for c in report.summary if c.label == "Documents marked sufficient"
+    )
     assert ready_summary.value == "0"
 
     link = _a_link_of(session, project_with_two_dependencies.id)
     dependency = session.get(Dependency, link.dependency_id)
     assert dependency is not None
+    dependency.evidence_required = (
+        "Ready utility: completion record for the Milestone Road poles"
+    )
     mark_satisfies(
         session,
         dependency.id,
@@ -570,7 +582,23 @@ def test_readiness_in_the_report_is_computed_not_stored(
     )
 
     after = build_report(session, project_with_two_dependencies.id)
-    assert next(c for c in after.summary if c.label == "Ready").value == "1"
+    assert next(
+        c for c in after.summary if c.label == "Documents marked sufficient"
+    ).value == "1"
+    appendix = section(after, "Appendix")
+    row = next(row for row in appendix.rows if row[0].value == dependency.ref_code)
+    assert row[appendix.columns.index("Documentation review")].value == (
+        "Documents marked sufficient"
+    )
+    assert row[appendix.columns.index("Documents required for this condition")].value == (
+        dependency.evidence_required
+    )
+    markup = render(after)
+    assert "Coordination report" in markup
+    assert "Constraints by key date" in markup
+    assert dependency.evidence_required in markup
+    assert "Relocation Complete" not in markup
+    assert "Permit Issued" not in markup
 
 
 def test_percentage_is_a_derivation_not_an_assertion(
@@ -594,6 +622,45 @@ def test_rendered_html_shows_a_marker_for_every_value(
     # One marker per published cell, no more and no fewer.
     assert out.count('class="marker"') == len(report.cells)
     assert f"ruleset {RULESET_VERSION}" in out
+
+
+def test_current_report_labels_preserve_source_words_and_reference_identity():
+    source_text = 'Ready Milestone Road: Evidence, Assertion and Verbal <utility>'
+    provenance = Derivation(
+        RULESET_VERSION,
+        (12,),
+        input_refs=("Milestone Registration MR37", "Milestone Registration Road"),
+    )
+    report = Report(
+        project_name=source_text,
+        generated_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        summary=[Cell("Total", "1", provenance)],
+        sections=[
+            Section(
+                "Sources",
+                columns=["Statement"],
+                rows=[
+                    [Cell(source_text, source_text, Assertion(8, source_text, 2, source_text))],
+                    [Cell("Statement", source_text, Verbal(9, source_text, date(2026, 8, 27), source_text))],
+                ],
+            )
+        ],
+    )
+
+    markup = render(report)
+
+    assert f"Coordination report — {escape_html(source_text)}" in markup
+    assert f'title="{escape_html(source_text)}"' in markup
+    assert escape_html(source_text) in markup
+    assert "Key date version MR37" in markup
+    assert "Milestone Registration Road" in markup
+    assert provenance.input_refs == (
+        "Milestone Registration MR37", "Milestone Registration Road"
+    )
+    assert "Source field value" in markup
+    assert "Calculated result" in markup
+    assert "Coordination decision" in markup
+    assert "Recorded verbal statement" in markup
 
 
 def test_quotes_are_escaped_into_the_markup(session, project_with_two_dependencies):
@@ -644,7 +711,7 @@ def test_critical_items_is_a_filter_not_a_weighting(
     critical = make_critical(session, project)
 
     report = build_report(session, project.id)
-    refs = {row[0].value for row in section(report, "Critical items").rows}
+    refs = {row[0].value for row in section(report, "Relocation / removal / abandonment").rows}
 
     assert refs == {critical.ref_code}
 
@@ -669,7 +736,7 @@ def test_critical_items_orders_by_need_date_proximity(
     session.flush()
 
     report = build_report(session, project.id)
-    rows = section(report, "Critical items").rows
+    rows = section(report, "Relocation / removal / abandonment").rows
 
     assert [row[0].value for row in rows] == [deps[1].ref_code, deps[0].ref_code]
 
@@ -682,7 +749,7 @@ def test_critical_items_with_no_dates_says_so(session, project_with_two_dependen
     make_critical(session, project, need_days_out=None)
 
     report = build_report(session, project.id)
-    found = section(report, "Critical items")
+    found = section(report, "Relocation / removal / abandonment")
 
     assert len(found.rows) == 1
     assert "No dates known" in found.note
@@ -697,9 +764,10 @@ def test_the_critical_items_note_declares_the_ordering_and_never_a_weight(
     make_critical(session, project, need_days_out=30)
 
     report = build_report(session, project.id)
-    note = section(report, "Critical items").note
+    note = section(report, "Relocation / removal / abandonment").note
 
-    assert "earliest need first" in note
+    assert "earliest required-by date first" in note
+    assert "not a measurement or critical-path finding" in note
     assert "undated records follow" in note
     assert "×" not in note
     assert "weighted" not in note
@@ -722,11 +790,11 @@ def test_a_critical_row_lists_its_exceptions_as_facts(
     session.flush()
 
     report = build_report(session, project.id, today=date(2026, 8, 5))
-    found = section(report, "Critical items")
-    exceptions_cell = found.rows[0][found.columns.index("Exceptions")]
+    found = section(report, "Relocation / removal / abandonment")
+    exceptions_cell = found.rows[0][found.columns.index("Constraint alerts")]
     by_rule = {e.rule: e for e in report.evaluation.for_dependency(critical.id)}
 
-    assert "No Milestone" in exceptions_cell.value
+    assert "No key date linked" in exceptions_cell.value
     assert format_exception_label(by_rule["OVERDUE"]) in exceptions_cell.value
     assert format_exception_label(by_rule["DUE_SOON"]) in exceptions_cell.value
 
@@ -739,16 +807,18 @@ def test_the_exceptions_summary_exemplar_is_the_largest_quantity_or_nothing(
     is the same finding, and electing one would be an arbitrary pick
     wearing a superlative."""
     report = build_report(session, project_with_two_dependencies.id)
-    found = section(report, "Exceptions")
+    found = section(report, "Constraint alerts")
     by_rule = {row[0].value: row for row in found.rows}
+    detail = found.columns.index("Technical detail")
+    assert by_rule["No key date linked"][detail].value == "not linked to any milestone"
 
     most_days = found.columns.index("Most days")
-    assert by_rule["No Milestone"][most_days].value == "—"
+    assert by_rule["No key date linked"][most_days].value == "—"
     # The fixture's document is undated, so STALE is the absence case —
     # "no dated evidence at all" has no age, and no exemplar either. The
     # largest-quantity path is pinned at the engine seam and in the
     # critical row's exception listing.
-    assert by_rule["Evidence is stale"][most_days].value == "—"
+    assert by_rule["No recent supporting documents"][most_days].value == "—"
 
 
 def _overdue_by(session, project_id, days):
@@ -879,9 +949,9 @@ def test_the_export_and_the_recorded_run_read_the_report_s_evaluation(
         evaluation=report.evaluation,
         statement_publication=report.statement_publication,
     )
-    sheet = load_workbook(path)["Ledger"]
+    sheet = load_workbook(path)["Constraint log"]
     headers = [c.value for c in sheet[1]]
-    exceptions = headers.index("Exceptions")
+    exceptions = headers.index("Constraint alerts")
     for row in sheet.iter_rows(min_row=2, values_only=True):
         assert "OVERDUE" not in (row[exceptions] or "")
 
@@ -984,7 +1054,7 @@ def test_a_derivation_may_name_a_scope_where_no_record_can_answer(session):
         Report(
             project_name="x",
             generated_at=None,
-            summary=[Cell("Dependencies", "0", scoped)],
+            summary=[Cell("Constraints", "0", scoped)],
         )
     )
 
@@ -1017,7 +1087,10 @@ def test_a_change_cites_the_record_it_describes(session, project_with_two_depend
     for row in changes.rows:
         for cell in row:
             assert cell.provenance.resolves
-    ready = next(r for r in changes.rows if r[1].value == "became_ready")
+    ready = next(r for r in changes.rows if r[1].value == "Documents marked sufficient")
+    assert ready[2].label == "Technical detail"
+    assert ready[2].value == "evidence now meets the closure bar"
+    assert report.diff.of_kind("became_ready")
     assert ready[0].provenance.record_ids == (dependency.id,)
 
 
@@ -1030,8 +1103,8 @@ def test_the_verified_evidence_figures_count_only_evidence_that_holds(
 ):
     """The tile says "verified" and the count said "linked"."""
     before = build_report(session, project_with_two_dependencies.id)
-    assert _summary(before, "With verified evidence").value == "2"
-    assert _summary(before, "% with verified evidence").value == "100.0%"
+    assert _summary(before, "With checked source passages").value == "2"
+    assert _summary(before, "% with checked source passages").value == "100.0%"
 
     first = session.scalars(
         select(Dependency)
@@ -1041,8 +1114,8 @@ def test_the_verified_evidence_figures_count_only_evidence_that_holds(
     _unverify_evidence_of(session, first)
 
     after = build_report(session, project_with_two_dependencies.id)
-    assert _summary(after, "With verified evidence").value == "1"
-    assert _summary(after, "% with verified evidence").value == "50.0%"
+    assert _summary(after, "With checked source passages").value == "1"
+    assert _summary(after, "% with checked source passages").value == "50.0%"
 
 
 def test_the_report_never_claims_evidence_for_records_it_says_have_none(
@@ -1065,9 +1138,9 @@ def test_the_report_never_claims_evidence_for_records_it_says_have_none(
     report = build_report(session, project_with_two_dependencies.id)
     markup = render(report)
 
-    assert "No verified Evidence" in markup
-    assert _summary(report, "With verified evidence").value == "0"
-    assert _summary(report, "% with verified evidence").value == "0.0%"
+    assert "No verified supporting documents" in markup
+    assert _summary(report, "With checked source passages").value == "0"
+    assert _summary(report, "% with checked source passages").value == "0.0%"
 
 
 def test_percent_evidenced_on_a_milestone_counts_only_evidence_that_holds(
@@ -1096,9 +1169,9 @@ def test_percent_evidenced_on_a_milestone_counts_only_evidence_that_holds(
     def evidenced_cell():
         row = section(
             build_report(session, project_with_two_dependencies.id),
-            "Milestone readiness",
+            "Constraints by key date",
         ).rows[0]
-        return next(c for c in row if c.label == "% evidenced")
+        return next(c for c in row if c.label == "% with checked passages")
 
     assert evidenced_cell().value == "100%"
 
@@ -1128,7 +1201,7 @@ def test_a_milestone_nothing_is_linked_to_is_named_not_scored(
     session.flush()
 
     report = build_report(session, project_with_two_dependencies.id)
-    milestones = section(report, "Milestone readiness")
+    milestones = section(report, "Constraints by key date")
 
     assert "Nothing is linked to RELO-CONSTR" in milestones.note
     assert "RELO-CONSTR" not in {row[0].value for row in milestones.rows}
@@ -1163,7 +1236,7 @@ def test_report_cites_designated_publication_support_not_the_first_link(
     report = build_report(session, project_with_two_dependencies.id)
     row = next(
         row
-        for row in section(report, "Critical items").rows
+        for row in section(report, "Relocation / removal / abandonment").rows
         if row[0].value == dependency.ref_code
     )
 
@@ -1198,7 +1271,7 @@ def test_coordination_prints_project_decisions_as_project_decisions(
     )
 
     report = build_report(session, project.id)
-    coordination = section(report, "Coordination")
+    coordination = section(report, "Follow-up plan")
     [row] = coordination.rows
     ref, owner, action, due = row
 
@@ -1275,9 +1348,9 @@ def test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together(
     )
 
     report = build_report(session, project.id, today=date(2026, 8, 21))
-    coordination_action = section(report, "Coordination").rows[0][2]
-    milestone_at_risk = section(report, "Milestone readiness").rows[0][4]
-    exception_whys = [row[3] for row in section(report, "Exceptions").rows]
+    coordination_action = section(report, "Follow-up plan").rows[0][2]
+    milestone_at_risk = section(report, "Constraints by key date").rows[0][4]
+    exception_whys = [row[3] for row in section(report, "Constraint alerts").rows]
     exception_whys[0].value = (
         "The current coordination record cannot establish readiness because its "
         "facility-specific completion date, responsible handoff, and cited closure "
@@ -1317,6 +1390,14 @@ def test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together(
         for page in pdf:
             assert page.rect.width == pytest.approx(595.276, abs=0.1)
             assert page.rect.height == pytest.approx(841.89, abs=0.1)
+            words = page.get_text("words")
+            review_headers = [word for word in words if word[4] == "Documentation"]
+            requirement_headers = [word for word in words if word[4] == "required"]
+            for review_header in review_headers:
+                for requirement_header in requirement_headers:
+                    assert not pymupdf.Rect(review_header[:4]).intersects(
+                        pymupdf.Rect(requirement_header[:4])
+                    ), "documentation-review and required-document headings overlap"
             for x0, _y0, x1, _y1, text, *_rest in page.get_text("blocks"):
                 if not text.strip():
                     continue
@@ -1332,7 +1413,7 @@ def test_a_decision_cell_over_no_receipts_is_bare(session):
         generated_at=datetime.now(timezone.utc),
         summary=[
             Cell(
-                "Internal owner",
+                "Assigned to",
                 "Dana Fields",
                 WorkDecisionProvenance((), "local:x", date(2026, 8, 7)),
             )
@@ -1347,8 +1428,8 @@ def test_the_report_has_the_seven_documented_sections_now(
 ):
     report = build_report(session, project_with_two_dependencies.id)
     titles = [s.title for s in report.sections]
-    assert "Coordination" in titles
-    assert titles.index("Critical items") < titles.index("Coordination")
+    assert "Follow-up plan" in titles
+    assert titles.index("Relocation / removal / abandonment") < titles.index("Follow-up plan")
 
 
 # --- Open unknown-scope External Party commitments (#254) ------------------
@@ -1431,19 +1512,19 @@ def test_report_publishes_open_unknown_scope_party_commitments_with_their_plans(
     )
 
     report = build_report(session, project.id, today=date(2025, 2, 1))
-    commitments = section(report, "External Party commitments")
+    commitments = section(report, "Organization commitments")
     assert commitments.columns == [
-        "External Party",
+        "Organization",
         "Supported statement",
         "Timing",
         "Timing precision",
         "Statement type",
-        "Commitment Scope",
+        "Applies to",
         "Open / past-due status",
-        "Internal Owner",
-        "Next Action",
-        "Action Due",
-        "Milestone Impact",
+        "Assigned to",
+        "Next action",
+        "Action due date",
+        "Effect on key dates",
     ]
     assert len(commitments.rows) == 3
 
@@ -1457,8 +1538,8 @@ def test_report_publishes_open_unknown_scope_party_commitments_with_their_plans(
     assert due_soon_row[6].value == "Open · not past due"
     assert changed_row[2].value == "Previous: December 2024; Current: February 2025"
     assert changed_row[3].value == "Previous: month; Current: month"
-    assert changed_row[4].value == "Committed Date Change · later"
-    assert changed_row[5].value == "Scope not yet known"
+    assert changed_row[4].value == "Change to promised timing · later"
+    assert changed_row[5].value == "Not yet known"
     assert changed_row[7].value == "Dana Fields"
     assert changed_row[8].value == "Confirm the revised delivery plan"
     assert changed_row[9].value == "2025-02-15"
@@ -1488,17 +1569,17 @@ def test_report_publishes_open_unknown_scope_party_commitments_with_their_plans(
     normalized_pdf_text = " ".join(pdf_text.split())
     for expected in (
         "Statement type",
-        "Committed Date Change · later",
-        "Commitment Scope",
-        "Scope not yet known",
+        "Change to promised timing · later",
+        "Applies to",
+        "Not yet known",
         "Open / past-due status",
-        "Internal Owner",
+        "Assigned to",
         "Dana Fields",
-        "Next Action",
+        "Next action",
         "Confirm the revised delivery plan",
-        "Action Due",
+        "Action due date",
         "2025-02-15",
-        "Milestone Impact",
+        "Effect on key dates",
         "Not yet known",
     ):
         assert expected in normalized_pdf_text
@@ -1570,13 +1651,13 @@ def test_report_marks_a_superseded_statement_plan_for_review(
     )
 
     report = build_report(session, project.id, today=date(2025, 2, 1))
-    [row] = section(report, "External Party commitments").rows
+    [row] = section(report, "Organization commitments").rows
     assert row[1].value == revised.description
     assert [cell.value for cell in row[7:]] == [
-        "Plan needs review",
-        "Plan needs review",
-        "Plan needs review",
-        "Plan needs review",
+        "Follow-up plan needs review",
+        "Follow-up plan needs review",
+        "Follow-up plan needs review",
+        "Follow-up plan needs review",
     ]
     assert "Dana Fields" not in render(report)
     assert_no_bare_cells(report)
@@ -1630,10 +1711,16 @@ def test_party_commitments_leave_the_open_section_when_scoped_or_closed(
     )
 
     report = build_report(session, project.id, today=date(2025, 2, 1))
-    [row] = section(report, "External Party commitments").rows
+    [row] = section(report, "Organization commitments").rows
     assert row[1].value == unknown.description
     assert known.description not in render(report)
     assert dependency.committed_date is None
+    assert row[2].value == "January 2025"
+    published = report.statement_publication.by_dependency[dependency.id]
+    assert published.current_event.id == known.id
+    assert published.committed_date is None
+    assert "No exact promised date for this check" in render(report)
+    assert "No promised timing" not in render(report)
 
     closure_quote = (
         "AT&T Texas (SWBT) confirms the unknown-scope material is delivered."
@@ -1661,7 +1748,7 @@ def test_party_commitments_leave_the_open_section_when_scoped_or_closed(
     )
 
     after = build_report(session, project.id, today=date(2025, 2, 3))
-    assert section(after, "External Party commitments").rows == []
+    assert section(after, "Organization commitments").rows == []
     assert session.get(type(unknown), unknown.id) is unknown
     assert_no_bare_cells(after)
 
@@ -1712,7 +1799,7 @@ def test_document_only_report_withholds_an_unsupported_unknown_scope_statement(
         today=date(2025, 2, 1),
         document_only=True,
     )
-    [row] = section(report, "External Party commitments").rows
+    [row] = section(report, "Organization commitments").rows
     assert row[1].value == "Current statement unsupported in this provenance mode"
     assert row[2].value == "Current timing unsupported"
     assert "January 2025" not in row[2].value
@@ -1735,7 +1822,7 @@ def test_a_field_value_never_wears_the_record_quote(session):
     project, dependency = _critical_dependency(session)
 
     report = build_report(session, project.id)
-    critical = section(report, "Critical items")
+    critical = section(report, "Relocation / removal / abandonment")
     [row] = critical.rows
     ref, party, committed, need, exceptions = row
 
@@ -1773,7 +1860,7 @@ def test_a_designated_field_support_backs_exactly_its_own_cell(session):
     )
 
     report = build_report(session, project.id)
-    critical = section(report, "Critical items")
+    critical = section(report, "Relocation / removal / abandonment")
     [row] = critical.rows
     committed = row[2]
     party = row[1]

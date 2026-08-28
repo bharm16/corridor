@@ -1,4 +1,8 @@
-"""Inspect or run the released project-scoped Carry-Forward Policy."""
+"""Inspect or run the released project-scoped Automatic Support Update Rules.
+
+The command and JSON names retain their existing technical identities; this
+operation updates supporting documentation with the recorded conclusion unchanged.
+"""
 
 from __future__ import annotations
 
@@ -20,13 +24,24 @@ from corridor.models import Project
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="automatic-carry-forward")
+    parser = argparse.ArgumentParser(
+        prog="automatic-carry-forward",
+        description=(
+            "Inspect or run Automatic Support Update under the released rules: "
+            "supporting documentation updated; recorded conclusion unchanged."
+        ),
+        epilog="JSON fields and reason codes retain their existing names.",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    status = commands.add_parser("status", help="show the released policy status")
+    status = commands.add_parser(
+        "status", help="show the released Automatic Support Update Rules and results"
+    )
     status.add_argument("project_slug")
 
-    run = commands.add_parser("run", help="execute the released fail-closed policy")
+    run = commands.add_parser(
+        "run", help="apply supporting document updates only where the released rules permit"
+    )
     run.add_argument("project_slug")
     return parser
 

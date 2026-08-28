@@ -14,7 +14,7 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from corridor.admission import load_project
+from corridor.admission import load_and_report, load_project
 from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import (
@@ -283,6 +283,13 @@ def test_an_ambiguous_document_waits_while_the_rest_of_the_project_loads(
             select(Dependency).where(Dependency.project_id == project.id)
         )
     } == {"PL1"}
+
+    summary = load_and_report(session, project)
+    # The first line remains a legacy acceptance-receipt contract.
+    assert "0 conflicts and 0 statements on the record" in summary
+    assert "Current Production Run" in summary
+    assert "Extracted Proposals" in summary
+    assert "ucm-draft.pdf" in summary
 
 
 def test_a_project_with_nothing_read_yet_loads_to_an_honest_zero(

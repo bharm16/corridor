@@ -2713,7 +2713,7 @@ def _candidate_source_attribution_counts(
 
 
 def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> str:
-    """Check the retained rendered PDF names every required party-report field."""
+    """Require complete current or retained legacy report labels and source facts."""
 
     import fitz
 
@@ -2722,33 +2722,62 @@ def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> str:
             rendered_text = "\n".join(page.get_text() for page in document)
     except (RuntimeError, ValueError) as exc:
         raise ValueError("released PDF bytes are not readable") from exc
-    required = {
-        "External Party commitments",
-        "External Party",
-        "Supported statement",
-        "Timing",
-        "Timing precision",
-        "Statement type",
-        "Commitment Scope",
-        "Open / past-due status",
-        "Internal Owner",
-        "Next Action",
-        "Action Due",
-        "Milestone Impact",
-        "Scope not yet known",
-    }
+    # Keep exact label profiles here: a saved PDF is not rerendered through the
+    # current vocabulary, and a partial mix of column sets is not a valid report.
+    profiles = (
+        (
+            {
+                "Organization commitments",
+                "Organization",
+                "Supported statement",
+                "Timing",
+                "Timing precision",
+                "Statement type",
+                "Applies to",
+                "Open / past-due status",
+                "Assigned to",
+                "Next action",
+                "Action due date",
+                "Effect on key dates",
+                "Not yet known",
+            },
+            "Unstated organization",
+            "Change to promised timing · later",
+        ),
+        (
+            {
+                "External Party commitments",
+                "External Party",
+                "Supported statement",
+                "Timing",
+                "Timing precision",
+                "Statement type",
+                "Commitment Scope",
+                "Open / past-due status",
+                "Internal Owner",
+                "Next Action",
+                "Action Due",
+                "Milestone Impact",
+                "Scope not yet known",
+            },
+            "Unstated External Party",
+            "Committed Date Change · later",
+        ),
+    )
+    required = set()
     for statement in statements:
         event = statement.event
         _require(event is not None, "released Report has unsupported current statement")
-        required.update(
-            {
-                event.stated_party or "Unstated External Party",
-                event.description,
-                "Committed Date Change · later"
-                if event.event_type == "committed_date_change"
-                else "Commitment",
-            }
-        )
+        required.add(event.description)
+        for profile, unstated_label, changed_timing_label in profiles:
+            profile.update(
+                {
+                    event.stated_party or unstated_label,
+                    changed_timing_label
+                    if event.event_type == "committed_date_change"
+                    else "Commitment",
+                }
+            )
         required.update(timing.text for timing in statement.timings)
         required.update(timing.precision for timing in statement.timings)
         if statement.plan.internal_owner:
@@ -2760,11 +2789,15 @@ def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> str:
         if statement.plan.milestone_impact:
             required.add(statement.plan.milestone_impact.replace("_", " ").capitalize())
     normalized_rendered_text = _normalized_visible_text(rendered_text)
-    missing = sorted(
-        value
-        for value in required
-        if _normalized_visible_text(value) not in normalized_rendered_text
-    )
+    missing_profiles = [
+        sorted(
+            value
+            for value in required | profile
+            if _normalized_visible_text(value) not in normalized_rendered_text
+        )
+        for profile, _, _ in profiles
+    ]
+    missing = min(missing_profiles, key=len)
     _require(not missing, "released PDF omits required Report fields: " + ", ".join(missing))
     return rendered_text
 

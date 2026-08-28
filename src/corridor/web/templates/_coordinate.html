@@ -8,16 +8,16 @@
 {% if coordinate_dependency %}
 <div class="coordinate">
   <div class="coordinate-head">
-    <b>Admitted {{ coordinate_dependency.ref_code }}</b>
+    <b>Recorded {{ coordinate_dependency.ref_code }}</b>
     — {{ coordinate_dependency.title }}
     <a class="record"
-       href="/ledger/{{ project.slug }}/{{ coordinate_dependency.id }}?return_to={{ (lane_url ~ '&coordinate=' ~ coordinate_dependency.id)|urlencode }}">View record and Evidence</a>
+       href="/ledger/{{ project.slug }}/{{ coordinate_dependency.id }}?return_to={{ (lane_url ~ '&coordinate=' ~ coordinate_dependency.id)|urlencode }}">View record and supporting documents</a>
     {% if cohort_receipt %}
       <a class="report" href="/reports/{{ project.slug }}" target="_blank"
-         rel="noopener">Prepare Report (opens in new tab)</a>
+         rel="noopener">Prepare coordination report (opens in new tab)</a>
     {% endif %}
     <a class="skip" href="{{ next_coordinate_url }}">skip →
-      {% if next_coordinate_url != summary_url %}next item{% else %}cohort summary{% endif %}
+      {% if next_coordinate_url != summary_url %}next item{% else %}test summary{% endif %}
       <kbd>Esc</kbd></a>
   </div>
   <div class="coordinate-forms">
@@ -26,7 +26,7 @@
       <input type="hidden" name="slug" value="{{ project.slug }}">
       <input type="hidden" name="redirect_to"
              value="{{ lane_url }}&coordinate={{ coordinate_dependency.id }}">
-      <input name="owner" placeholder="internal owner (named person)"
+      <input name="owner" placeholder="assigned to (named project person)"
              value="{{ coordinate_dependency.internal_owner or '' }}"
              {% if not coordinate_dependency.internal_owner %}autofocus{% endif %}>
       <button type="submit">assign</button>

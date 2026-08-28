@@ -1,4 +1,4 @@
-"""Publish one explicit local Evidence Investigator shadow evaluation.
+"""Publish one explicit local Statement Review Assistant shadow evaluation.
 
 Ad-hoc notebooks were rejected because they cannot reproduce an exact selected
 run set or seal failed gates. This CLI delegates to the local deterministic
@@ -20,7 +20,12 @@ from corridor.evidence_investigator_evaluation import (
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Evaluate an exact set of hidden Statement Review Assistant runs and "
+            "write local success or failure receipts. This does not enable the assistant in the UI."
+        ),
+    )
     parser.add_argument("--run", action="append", required=True, dest="runs")
     parser.add_argument("--human-scores", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

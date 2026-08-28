@@ -30,23 +30,23 @@
 
 <header>
   <b>{{ project.name }}</b>
-  <span><a href="/reports/{{ project.slug }}">External Report releases</a></span>
+  <span><a href="/reports/{{ project.slug }}">Reports approved to share</a></span>
 </header>
 
 <main>
   <h1>Review this fixed PDF</h1>
   <p class="lead">
-    Download and review these exact retained bytes. Releasing will authorize this
-    PDF only; it will not regenerate the Report or send it anywhere.
+    Download and review this exact retained file. Approval permits sharing this
+    PDF only; it will not regenerate the report or send it anywhere.
   </p>
   <section class="artifact">
     <h2>{{ review.artifact_name }}</h2>
     <dl>
-      <dt>Evaluation</dt><dd>{{ review.evaluated_on }} · {{ review.ruleset_version }}</dd>
+      <dt>Checks as of</dt><dd>{{ review.evaluated_on }} · {{ review.ruleset_version }}</dd>
       <dt>Rendered at</dt><dd>{{ review.rendered_at }}</dd>
-      <dt>Provenance</dt>
+      <dt>{{ label('provenance') }}</dt>
       <dd>{{ "All supported sources" if review.provenance_mode == "all-supported-sources" else "Documents only" }}</dd>
-      <dt>Covered Dependencies</dt>
+      <dt>Covered constraints</dt>
       <dd>{{ review.covered_records|join(", ") if review.covered_records else "None" }}</dd>
       <dt>Covered statement versions</dt>
       <dd>
@@ -65,7 +65,7 @@
       </dd>
       <dt>SHA-256 digest</dt><dd><code>{{ review.pdf_sha256 }}</code></dd>
     </dl>
-    <h3>Fixed External Report PDF preview</h3>
+    <h3>Fixed coordination report PDF preview</h3>
     <object class="preview"
             data="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/preview"
             type="application/pdf">
@@ -74,7 +74,7 @@
     <div class="actions">
       <a class="download" href="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/download">Download this exact PDF</a>
       <form method="post" action="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/release">
-        <button type="submit">Release this exact PDF</button>
+        <button type="submit">Approve this exact PDF to share</button>
       </form>
     </div>
   </section>

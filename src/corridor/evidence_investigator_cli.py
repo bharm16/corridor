@@ -1,4 +1,4 @@
-"""Operator-only entry point for one hidden, receipted investigation.
+"""Operator-only entry point for one hidden Statement Review Assistant run.
 
 Calling the domain operation directly left transport identity and terminal
 receipts to operator convention. This narrow CLI pins both and deliberately
@@ -23,8 +23,16 @@ from corridor.evidence_investigator_runtime import (
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("candidate_id", type=int)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the read-only Statement Review Assistant for one Statement Needing "
+            "Clarification. It gathers supported options and cannot make the project decision."
+        ),
+    )
+    parser.add_argument(
+        "candidate_id", type=int,
+        help="Extracted Proposal id (retained technical argument: candidate_id)",
+    )
     args = parser.parse_args()
     runtime = configured_direct_runtime(
         model=settings.evidence_investigator_model,

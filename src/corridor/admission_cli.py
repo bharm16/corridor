@@ -1,10 +1,11 @@
-"""Backfill entry point for a project extracted before ADR-0029.
+"""Record Inclusion backfill for a project extracted before ADR-0029.
 
 There is nothing to authorize any more, and nothing an operator has to
 run in the ordinary course: extraction loads the project on its way out.
 This exists for the projects whose documents were read before that was
-true, and as the way to finish a load after a human declares the Active
-Run of a document that held several readings.
+true, and as the way to finish a load after a human declares the Current
+Production Run of a document that held several readings. The command remains
+``admission`` for compatibility with existing scripts and receipts.
 """
 
 from __future__ import annotations
@@ -16,6 +17,10 @@ from sqlalchemy import select
 
 def _usage() -> int:
     print("usage: admission load <project-slug>", file=sys.stderr)
+    print(
+        "Record Inclusion: add eligible Extracted Proposals under the applicable rules.",
+        file=sys.stderr,
+    )
     return 2
 
 

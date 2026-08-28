@@ -60,7 +60,7 @@ def statement_coordination_draft(
             form, "affected_external_org_id"
         ),
         stated_party=_required_form_text(
-            form, "stated_party", "a stated External Party"
+            form, "stated_party", "the organization that made the statement"
         ),
         stated_external_org_id=required_positive_form_id(
             form, "stated_external_org_id"
@@ -115,7 +115,7 @@ def statement_fact_correction_draft(
     evidence = CitedStatementEvidence(
         required_positive_form_id(form, "evidence_document_id"),
         required_positive_form_id(form, "evidence_page_no"),
-        _required_form_text(form, "evidence_quote", "a supporting Evidence quote"),
+        _required_form_text(form, "evidence_quote", "a supporting source passage"),
     )
     return StatementFactCorrectionDraft(
         candidate_id=candidate_id,
@@ -126,7 +126,7 @@ def statement_fact_correction_draft(
             form, "affected_external_org_id"
         ),
         stated_party=_required_form_text(
-            form, "stated_party", "a stated External Party"
+            form, "stated_party", "the organization that made the statement"
         ),
         stated_external_org_id=required_positive_form_id(
             form, "stated_external_org_id"
@@ -181,7 +181,7 @@ def supporting_statement_evidence(
         selected = visible_evidence[page_index]
         if not selected.supporting_quote_available:
             raise StatementCoordinationRefusal(
-                "the rendered source page is unavailable for supporting Evidence"
+                "the rendered source page is unavailable as supporting documentation"
             )
         document_id = selected.document_id
         page_no = selected.page_no
@@ -189,7 +189,7 @@ def supporting_statement_evidence(
         raise
     except (IndexError, TypeError, ValueError) as exc:
         raise StatementCoordinationRefusal(
-            "choose a visible registered source page for supporting Evidence"
+            "choose a visible registered source page for the supporting passage"
         ) from exc
     return (CitedStatementEvidence(document_id, page_no, quote),)
 
@@ -208,7 +208,7 @@ def statement_scope_from_form(form) -> StatementScope:
                 for value in form.getlist("dependency_id")
             )
         )
-    raise StatementCoordinationRefusal("choose an explicit Commitment Scope")
+    raise StatementCoordinationRefusal("choose which constraints this statement applies to, or keep the links unknown")
 
 
 def required_positive_form_id(form, name: str) -> int:

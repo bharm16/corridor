@@ -110,6 +110,16 @@ NOT_RELEVANT_REASONS = frozenset(
 )
 
 STATEMENT_NEXT_ACTION_CHOICES = (
+    "Confirm the organization and which constraints the statement applies to",
+    "Confirm the stated timing with the organization",
+    "Coordinate the selected constraints",
+    "Obtain additional supporting documents for this statement",
+)
+
+# Existing submitted forms and recorded decisions keep their exact wording.
+# New forms offer only the current terms above; accepting an old value must
+# never rewrite a historical action or its receipt (ADR-0048).
+_LEGACY_STATEMENT_NEXT_ACTION_CHOICES = (
     "Confirm the External Party and Commitment Scope",
     "Confirm the stated timing with the External Party",
     "Coordinate the selected Dependencies",
@@ -455,7 +465,10 @@ def set_admitted_statement_next_action(
             "Next Action is no longer the next unresolved decision"
         )
     normalized_action = str(action or "").strip()
-    if normalized_action not in STATEMENT_NEXT_ACTION_CHOICES:
+    if (
+        normalized_action not in STATEMENT_NEXT_ACTION_CHOICES
+        and normalized_action not in _LEGACY_STATEMENT_NEXT_ACTION_CHOICES
+    ):
         raise StatementCoordinationRefusal(
             "Next Action must be one structured project-language choice"
         )

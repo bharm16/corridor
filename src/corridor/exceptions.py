@@ -37,6 +37,10 @@ from corridor.operative_support import (
     SupersededOperativeScope,
     resolve_operative_support,
 )
+from corridor.presentation import (
+    exception_label as _display_exception_label,
+    exception_name as _display_exception_name,
+)
 
 # v0.4 adds the coordination rules (#176): MISSING_ACTION beside the
 # redefined MISSING_OWNER — both absences of a current Work Decision — and
@@ -81,20 +85,7 @@ RULES: tuple[str, ...] = (
     "ACTION_OVERDUE",
 )
 
-CUSTOMER_RULE_NAMES = {
-    "MISSING_EVIDENCE": "No verified Evidence",
-    "MISSING_DATE": "No Committed Date",
-    "MISSING_OWNER": "No Internal Owner",
-    "OVERDUE": "Committed Date passed",
-    "DUE_SOON": "Need Date is near",
-    "STALE": "Evidence is stale",
-    "CONTRADICTION": "Sources disagree",
-    "ORPHAN": "No Milestone",
-    "SUPERSEDED_CITATION": "Evidence is not current",
-    "MISSING_ACTION": "No Next Action",
-    "ACTION_DUE_SOON": "Next Action is due soon",
-    "ACTION_OVERDUE": "Next Action is overdue",
-}
+CUSTOMER_RULE_NAMES = {rule: _display_exception_name(rule) for rule in RULES}
 
 # The rules whose fact carries a number of days. The rest state absences,
 # and an absence has no quantity — inventing 0 or infinity for one would be
@@ -145,11 +136,7 @@ class Exception_:
 
 def format_exception_name(rule: str) -> str:
     """Name a rule without making provenance review look like lateness."""
-    return CUSTOMER_RULE_NAMES.get(rule, rule) + _exception_name_suffix(rule)
-
-
-def _exception_name_suffix(rule: str) -> str:
-    return " · re-confirmation" if rule == "SUPERSEDED_CITATION" else ""
+    return _display_exception_name(rule)
 
 
 def format_exception_label(exception: Exception_) -> str:
@@ -158,10 +145,7 @@ def format_exception_label(exception: Exception_) -> str:
     The rule name is the finding; the day count, when present, is that
     rule's own quantity rather than a derived or weighted score.
     """
-    quantity = (
-        f" {exception.quantity_days}d" if exception.quantity_days is not None else ""
-    )
-    return f"{format_exception_name(exception.rule)}{quantity}"
+    return _display_exception_label(exception)
 
 
 @dataclass(frozen=True)
@@ -707,8 +691,8 @@ def main(argv: list[str]) -> int:
         critical = len({e.dependency_id for e in found if e.critical})
         print(
             f"{project.name} — ruleset {RULESET_VERSION}: "
-            f"{len(found)} exceptions across {affected} dependencies "
-            f"({critical} critical)",
+            f"{len(found)} constraint alerts across {affected} constraints "
+            f"({critical} in the relocation/removal/abandonment group)",
             flush=True,
         )
         # The facet view, not a "worst 10": under v0.1 that list was ten
@@ -723,13 +707,22 @@ def main(argv: list[str]) -> int:
                     if facet.rule in QUANTITY_RULES
                     else "no quantity — the fact is the absence"
                 )
-                print(f"  {facet.count:>4}  {facet.rule:<16} {note}")
+                print(
+                    f"  {facet.count:>4}  {format_exception_name(facet.rule)} "
+                    f"[{facet.rule}] {note}"
+                )
                 continue
-            print(f"  {facet.count:>4}  {facet.rule}, by days:")
+            print(
+                f"  {facet.count:>4}  {format_exception_name(facet.rule)} "
+                f"[{facet.rule}], by days:"
+            )
             for e in facet.exceptions[:5]:
                 days = f"{e.quantity_days}d" if e.quantity_days is not None else "—"
-                mark = " critical" if e.critical else ""
-                print(f"        {days:>5}  {e.ref_code:<12}{mark}  {e.detail[:56]}")
+                mark = " [relocation/removal/abandonment]" if e.critical else ""
+                print(
+                    f"        {days:>5}  {e.ref_code:<12}{mark}  "
+                    f"technical detail: {e.detail[:56]}"
+                )
             if facet.count > 5:
                 print(f"        … and {facet.count - 5} more")
     return 0

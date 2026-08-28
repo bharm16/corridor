@@ -1,7 +1,7 @@
-"""CLI boundary for the isolated, digest-pinned SH 99 Admission rehearsal.
+"""CLI boundary for the isolated, digest-pinned SH 99 Record Inclusion rehearsal.
 
-The generic M8 CLI proves a captured NHHIP chain and controlled carry-forward
-policy; it cannot show the SH 99 Admission residue, exact outcomes, or separate
+The generic M8 CLI tests a captured NHHIP chain and Automatic Support Update
+Rules; it cannot show the SH 99 Record Inclusion residue, exact outcomes, or separate
 shared-database approval gate.  This thin command exposes that narrower
 operations proof and the later shared-operation seal without making a source
 database a verifier dependency. A separate seal CLI was rejected because both
@@ -49,11 +49,14 @@ def _active_run(value: str) -> tuple[int, int]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="sh99-admission-acceptance")
+    parser = argparse.ArgumentParser(
+        prog="sh99-admission-acceptance",
+        description="Replay and verify exact SH 99 Record Inclusion on disposable clones.",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     replay = commands.add_parser(
         "replay",
-        help="clone the pinned real SH 99 state and run its exact Admission command",
+        help="clone pinned SH 99 state and run its exact Record Inclusion command",
     )
     replay.add_argument("--project-slug", required=True)
     replay.add_argument("--source-database-url", required=True)
@@ -62,7 +65,7 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("--postgres-admin-url", required=True)
     seal = commands.add_parser(
         "seal",
-        help="seal the exact ordinary shared Admission path on a disposable clone",
+        help="seal the exact ordinary Record Inclusion path on a disposable clone",
     )
     seal.add_argument("--project-slug", required=True)
     seal.add_argument("--source-database-url", required=True)
@@ -75,9 +78,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     seal.add_argument("--expected-activation-id", required=True, type=int)
     seal.add_argument(
-        "--expected-active-run", required=True, action="append", type=_active_run
+        "--expected-active-run", required=True, action="append", type=_active_run,
+        help="Current Production Run pin as DOCUMENT_ID:EXTRACTION_RUN_ID",
     )
-    seal.add_argument("--expected-candidate-id", required=True, type=int)
+    seal.add_argument(
+        "--expected-candidate-id", required=True, type=int,
+        help="exact Extracted Proposal id",
+    )
     verify = commands.add_parser(
         "verify", help="verify a receipt export without a source database"
     )

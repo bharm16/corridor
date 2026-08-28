@@ -4,7 +4,7 @@ status: accepted
 
 # A holdout is spent once, on a complete measurement, with labelling blind to extraction
 
-> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Historical M7 labels and observations below retain their original spelling. The metric formerly called critical recall concerns ADR-0009's Resolution Strategy work-type subset, not critical-path activities or urgency. Constraint is the current domain term for Dependency.
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 
 > The hand-labelling method in this decision is superseded by ADR-0023. The one-shot holdout, predeclared criteria, no-retake rule, and requirement to publish limitations remain in force.
 
@@ -13,7 +13,7 @@ status: accepted
 That gate cannot be run today, for two reasons that have nothing to do with the extractor and everything to do with missing preconditions nobody had named:
 
 - **There is no hand-labeled gold set.** #59 recorded that the slice was "tracked separately"; it was not, and no issue existed for it.
-- **Nothing had been marked critical at that point.** ADR-0007 addressed the missing definition; ADR-0009 later replaced its interpretation with a Resolution Strategy work-type subset.
+- **Nothing had been marked critical at that point.** ADR-0007 addressed the missing definition; ADR-0009 later replaced its interpretation with a Utility Conflict Resolution Method work-type subset.
 
 M7 also contains a contradiction on its face: it asks for a *"gold set on a held-out project"*, but hand-labelling requires reading the document, and reading it is what spends the seal.
 
@@ -31,7 +31,7 @@ The success criteria — what recall counts as a pass, what field-token failure 
 
 M7 was blocked on a work-type subset definition per layout and a hand-labeled slice. ADR-0009 supplies the accepted subset; ADR-0023 later replaces hand labelling with a declared machine reference and its limits. Naming the missing preconditions was the point — they had been invisible, and an invisible blocker on an unskippable gate is how a project discovers in week eleven that week seven never finished.
 
-Each layout's Resolution Strategy fields for the work-type subset must be pinned from an **unsealed** document. For 9540 that is sibling contract 9424, which is what it was fetched for.
+Each layout's Utility Conflict Resolution Method fields for the work-type subset must be pinned from an **unsealed** document. For 9540 that is sibling contract 9424, which is what it was fetched for.
 
 The corpus needs a successor holdout ready before this one is spent, or the next quality question has nothing honest to measure against. `corpus-acquisition-spec.md` §7.2 records that WSDOT publishes 392 contracts this way, so the supply exists; what does not exist is the habit of sealing the next one early.
 

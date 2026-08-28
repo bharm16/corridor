@@ -16,6 +16,7 @@
     {%- if ev.page and ev.page.text_source == 'ocr' %} · <span style="color:var(--bad)">read by OCR</span>{% endif %}
     {%- if ev.page and ev.page.text_source == 'cells' %} · <span style="color:var(--ok)">read from cells</span>{% endif %}
   </div>
+  <span class="muted">{{ label('cited_passage') }}</span>
   <div class="quote">{{ ev.quote }}</div>
   {#
     A spreadsheet has no page to render, so the text generated from its

@@ -34,40 +34,40 @@
 
 <main>
   <h1>Coordinate this statement</h1>
-  <p class="lead">Save the External Party fact and the project response together. The extracted source stays unchanged.</p>
+  <p class="lead">Save the organization's statement and the project response together. The extracted source stays unchanged.</p>
 
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if error %}<p class="error"><b>Could not save.</b> Technical detail: {{ error }}</p>{% endif %}
 
   {% if receipt and event and line %}
     <section class="saved">
-      <b>Coordination Plan saved.</b> The current statement and its plan are shown below.
+      <b>Follow-up plan saved.</b> The current statement and its plan are shown below.
       <dl class="summary">
-        <dt>Statement</dt><dd>{{ event.event_type.replace('_', ' ').title() }}</dd>
-        <dt>Timing</dt><dd>{{ event.new_timing.text if event.new_timing else '—' }}</dd>
-        <dt>Scope</dt><dd>{{ event.scope_mode.replace('_', ' ') }}</dd>
-        {% if event.scope_mode == 'unknown' %}<dt>Attention Reason</dt><dd>Commitment Scope not yet known</dd>{% endif %}
-        <dt>Internal Owner</dt><dd>{{ line.internal_owner or '—' }}</dd>
+        <dt>Statement</dt><dd>{{ statement_type_label(event.event_type) }}</dd>
+        <dt>{{ label('promised_for') }}</dt><dd>{{ event.new_timing.text if event.new_timing else '—' }}</dd>
+        <dt>{{ label('applies_to') }}</dt><dd>{{ event.scope_mode.replace('_', ' ') }}</dd>
+        {% if event.scope_mode == 'unknown' %}<dt>{{ label('attention_reason') }}</dt><dd>Applies to: not yet known</dd>{% endif %}
+        <dt>{{ label('assigned_to') }}</dt><dd>{{ line.internal_owner or '—' }}</dd>
         <dt>Next Action</dt><dd>{{ line.next_action or '—' }}</dd>
       </dl>
-      <p><a href="/statements/{{ project.slug }}/{{ candidate.id }}/correct">Correct one supported fact or the Commitment Scope</a></p>
+      <p><a href="/statements/{{ project.slug }}/{{ candidate.id }}/correct">Correct one supported fact or which constraints this applies to</a></p>
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/coordination/{{ receipt.id }}/undo">
         <button type="submit">Undo this Save</button>
       </form>
     </section>
   {% elif not_relevant %}
     <section class="saved">
-      <b>Marked Not Relevant.</b> Reason: {{ not_relevant.reason.replace('_', ' ') }}.
-      The extracted source and its Evidence remain in append-only history.
+      <b>Not added to project record.</b> Reason: {{ not_relevant.reason.replace('_', ' ') }}.
+      The extracted source and its cited passages remain in history.
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant/{{ not_relevant.id }}/restore">
         <button type="submit">Restore this extracted statement to prioritized work</button>
       </form>
     </section>
   {% else %}
-    <h2>{% if pending_authority_gap %}Closure Evidence{% else %}Verified Evidence{% endif %}</h2>
+    <h2>{% if pending_authority_gap %}Documents reporting completion{% else %}Supporting documents{% endif %}</h2>
     {% for evidence in candidate_evidence %}
       <section class="evidence">
         <span class="muted">{{ evidence.filename }} · registered page {{ evidence.page_no }}</span>
-        <span class="quote"><b>Verified Evidence excerpt</b> — {{ evidence.quote }}</span>
+        <span class="quote"><b>{{ label('cited_passage') }}</b> — {{ evidence.quote }}</span>
         {% if evidence.supporting_quote_available %}
           <b>Complete registered page context</b>
           {% if evidence.has_page_image %}
@@ -78,23 +78,28 @@
           {% endif %}
           <pre class="page-context">{{ evidence.page_text }}</pre>
         {% elif evidence.page_text is not none %}
-          <p class="error"><b>Rendered source page unavailable.</b> Extracted text is retained for diagnosis only and cannot be selected as supporting Evidence.</p>
+          <p class="error"><b>Rendered source page unavailable.</b> Extracted text is retained for diagnosis only and cannot be selected as supporting documentation.</p>
           <pre class="page-context">{{ evidence.page_text }}</pre>
         {% else %}
-          <p class="error">This registered source page is unavailable. Save will remain fail closed.</p>
+          <p class="error">This registered source page is unavailable. The statement cannot be saved.</p>
         {% endif %}
       </section>
     {% else %}
-      <p class="error">This extracted statement has no complete registered Evidence and cannot be saved.</p>
+      <p class="error">This proposed statement has no complete registered source context and cannot be saved.</p>
     {% endfor %}
 
     {% if pending_authority_gap %}
       <section class="choice">
-        <h2>{{ pending_authority_gap.title }}</h2>
-        <p>{{ pending_authority_gap.detail }}</p>
-        <p><b>Closure statement:</b> {{ candidate_description }}</p>
-        {% if candidate_party %}<p><b>External Party context:</b> {{ candidate_party }}</p>{% endif %}
-        <p class="muted">This work remains pending. Recording the gap does not close a Commitment, choose scope, or change any Dependency.</p>
+        <h2>This completion report needs clarification</h2>
+        <p>{{ pending_authority_gap_label }}</p>
+        <details>
+          <summary>Technical details</summary>
+          <p>{{ pending_authority_gap.title }}</p>
+          <p>{{ pending_authority_gap.detail }}</p>
+        </details>
+        <p><b>Completion reported:</b> {{ candidate_description }}</p>
+        {% if candidate_party %}<p><b>Organization context:</b> {{ candidate_party }}</p>{% endif %}
+        <p class="muted">This work remains pending. Recording the missing information does not close a Commitment, choose which constraints it applies to, or change any Constraint.</p>
       </section>
       {% if unresolved_acknowledgment %}
         <section class="saved">
@@ -107,7 +112,7 @@
       </form>
     {% else %}
     {% if candidate_party and not candidate_affected_party_id %}
-      <p class="choice"><b>Extracted context suggestion — not yet supported as a fact:</b> {{ candidate_party }}. Resolve the affected External Party below.</p>
+      <p class="choice"><b>Extracted context suggestion — not yet supported as a fact:</b> {{ candidate_party }}. Identify the affected organization below.</p>
     {% endif %}
 
     {% if not candidate_evidence_available %}
@@ -126,32 +131,32 @@
       <fieldset>
         <legend>Supported statement facts</legend>
         <div class="grid">
-          <div><b>External Party affected</b>
+          <div><b>Organization affected</b>
             {% if candidate_affected_party_id %}
               <input type="hidden" name="affected_external_org_id" value="{{ candidate_affected_party_id }}">
-              <p>{{ candidate_party }} <span class="muted">— supported by the visible Evidence</span></p>
+              <p>{{ candidate_party }} <span class="muted">— supported by the visible source passages</span></p>
             {% else %}
-              <label for="affected-party">Resolve the affected External Party</label>
+              <label for="affected-party">Identify the affected organization</label>
               <select id="affected-party" name="affected_external_org_id" required>
-                <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
+                <option value="">Choose an organization</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
               </select>
             {% endif %}
           </div>
-          <div><b>External Party who spoke</b>
+          <div><b>Organization that made the statement</b>
             {% if candidate_stated_party_id %}
               <input type="hidden" name="stated_external_org_id" value="{{ candidate_stated_party_id }}">
               <input type="hidden" name="stated_party" value="{{ candidate_stated_party }}">
-              <p>{{ candidate_stated_party }} <span class="muted">— supported by the visible Evidence</span></p>
+              <p>{{ candidate_stated_party }} <span class="muted">— supported by the visible source passages</span></p>
             {% else %}
-              <label for="stated-party">Resolve the External Party who spoke</label>
+              <label for="stated-party">Identify the organization that made the statement</label>
               <select id="stated-party" name="stated_external_org_id" required>
-                <option value="">Choose an External Party</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
+                <option value="">Choose an organization</option>{% for party in parties %}<option value="{{ party.id }}">{{ party.name }}</option>{% endfor %}
               </select>
               <input type="hidden" name="stated_party" value="">
             {% endif %}
           </div>
         </div>
-        <p class="muted">When a party remains unresolved, the selected registered External Party supplies the stored wording. No name transcription is required, and this decision does not register a name for future Documents.</p>
+        <p class="muted">When an organization remains unresolved, the selected registered organization supplies the stored wording. No name transcription is required, and this decision does not register a name for future documents.</p>
         <input type="hidden" name="event_date" value="{{ candidate_event_date }}">
         <p><b>Statement date:</b> {{ candidate_event_date or 'not stated in the extracted statement' }}</p>
         <input type="hidden" name="description" value="{{ candidate_description }}">
@@ -159,17 +164,17 @@
       </fieldset>
 
       <fieldset>
-        <legend>Timing Evidence</legend>
-        <p class="muted">Corridor derives Commitment versus Committed Date Change and never asks you to choose the type.</p>
+        <legend>Timing in the source</legend>
+        <p class="muted">Corridor identifies a Commitment or a Change to promised timing from the source facts; no type selection is required.</p>
         {% if candidate_timing.available %}
           <input type="hidden" name="new_timing_text" value="{{ candidate_timing.text }}">
           <input type="hidden" name="new_timing_precision" value="{{ candidate_timing.precision }}">
           <input type="hidden" name="new_timing_start_date" value="{{ candidate_timing.start_date }}">
           <input type="hidden" name="new_timing_end_date" value="{{ candidate_timing.end_date }}">
-          <p><b>Evidence-supported timing:</b> <span class="quote">{{ candidate_timing.text }}</span></p>
+          <p><b>{{ label('promised_for') }}:</b> <span class="quote">{{ candidate_timing.text }}</span></p>
           <p><b>Precision:</b> {{ candidate_timing.precision }}{% if candidate_timing.start_date %} · {{ candidate_timing.start_date }}{% endif %}{% if candidate_timing.end_date and candidate_timing.end_date != candidate_timing.start_date %} to {{ candidate_timing.end_date }}{% endif %}</p>
         {% else %}
-          <p class="error">No structured timing is available. This extracted statement stays pending until Evidence supplies one.</p>
+          <p class="error">No structured timing is available. This proposed statement stays pending until the source supports one.</p>
           <input type="hidden" name="new_timing_text" value="">
           <input type="hidden" name="new_timing_precision" value="">
           <input type="hidden" name="new_timing_start_date" value="">
@@ -179,7 +184,7 @@
         <input type="hidden" name="previous_timing_precision" value="">
         <input type="hidden" name="previous_timing_start_date" value="">
         <input type="hidden" name="previous_timing_end_date" value="">
-        <label>Additional supporting Evidence, only when the extracted excerpt is incomplete</label>
+        <label>Additional supporting passage, only when the extracted excerpt is incomplete</label>
         {% for evidence in candidate_evidence %}
           <label class="check"><input type="radio" name="supporting_page_index" value="{{ loop.index0 }}" data-supporting-quote="{{ evidence.page_text or '' }}" {% if not evidence.supporting_quote_available %}disabled{% endif %}> Use complete registered context from {{ evidence.filename }}, page {{ evidence.page_no }}</label>
         {% endfor %}
@@ -187,51 +192,51 @@
       </fieldset>
 
       <fieldset>
-        <legend>Commitment Scope</legend>
-        <p class="muted">Record only the scope that the visible Evidence and project record support. Keeping scope not yet known preserves the party-level statement and changes no Dependency.</p>
-        <label class="check"><input type="radio" name="scope_mode" value="unknown" required> Keep this statement at party level: Commitment Scope not yet known</label>
-        <label class="check"><input type="radio" name="scope_mode" value="selected"> I can identify one or more affected Dependencies</label>
-        <label class="check"><input type="radio" name="scope_mode" value="all_active"> This statement applies to every active Dependency for the selected External Party</label>
+        <legend>{{ label('applies_to') }}</legend>
+        <p class="muted">Record only the constraints that the visible source passages and project record support. Keeping the links unknown preserves the organization's statement and changes no Constraint.</p>
+        <label class="check"><input type="radio" name="scope_mode" value="unknown" required> Keep this statement with the organization. Applies to: not yet known</label>
+        <label class="check"><input type="radio" name="scope_mode" value="selected"> I can identify one or more affected constraints</label>
+        <label class="check"><input type="radio" name="scope_mode" value="all_active"> This statement applies to every active constraint for the selected organization</label>
         <div class="choice" id="selected-scope-dependencies">
-          <b>Select the exact Dependencies</b>
+          <b>Select the exact constraints</b>
           {% for dependency in dependencies %}
-            <label class="check" data-dependency-party="{{ dependency.external_org_id or '' }}"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }} · {{ dependency.external_org_name }} · Ledger reference {{ dependency.ref_code }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or '?' }} to {{ dependency.station_to or '?' }}{% endif %}{% if dependency.location_desc %} · {{ dependency.location_desc }}{% endif %}</label>
-          {% else %}<span class="muted">No active Dependencies are available for selected scope.</span>{% endfor %}
+            <label class="check" data-dependency-party="{{ dependency.external_org_id or '' }}"><input type="checkbox" name="dependency_id" value="{{ dependency.id }}"> {{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }} · {{ dependency.external_org_name }} · Constraint reference {{ dependency.ref_code }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or '?' }} to {{ dependency.station_to or '?' }}{% endif %}{% if dependency.location_desc %} · {{ dependency.location_desc }}{% endif %}</label>
+          {% else %}<span class="muted">No active constraints are available to select.</span>{% endfor %}
         </div>
         <div class="choice" id="all-active-scope-dependencies">
-          <b>All-active snapshot to record</b>
+          <b>Exact active constraints to record</b>
           {% for dependency in dependencies %}
-            <p data-all-active-party="{{ dependency.external_org_id or '' }}">{{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }} · Ledger reference {{ dependency.ref_code }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or '?' }} to {{ dependency.station_to or '?' }}{% endif %}</p>
-          {% else %}<span class="muted">No active Dependencies are available for this snapshot.</span>{% endfor %}
+            <p data-all-active-party="{{ dependency.external_org_id or '' }}">{{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }} · Constraint reference {{ dependency.ref_code }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or '?' }} to {{ dependency.station_to or '?' }}{% endif %}</p>
+          {% else %}<span class="muted">No active constraints are available for this snapshot.</span>{% endfor %}
         </div>
       </fieldset>
 
       <fieldset>
-        <legend>Coordination Plan</legend>
-        <label for="owner">Internal Owner</label>
+        <legend>{{ label('follow_up_plan') }}</legend>
+        <label for="owner">{{ label('assigned_to') }}</label>
         <select id="owner" name="internal_owner_roster_entry_id" required><option value="">Choose a project-team member</option>{% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}</select>
         <label for="next-action">Next Action</label><select id="next-action" name="next_action" required><option value="">Choose the project response</option>{% for choice in next_action_choices %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}</select>
         <div class="grid"><div><label for="action-due">Action Due Date</label><input id="action-due" name="action_due_date" type="date"></div><div><label for="unknown-date-reason">If no date, why?</label><select id="unknown-date-reason" name="action_due_date_unknown_reason"><option value="">Choose only when no date is known</option><option value="awaiting_external_information">awaiting external information</option><option value="awaiting_schedule_information">awaiting schedule information</option><option value="date_not_yet_known">date not yet known</option></select></div></div>
-        <label for="milestone-impact">Milestone Impact (required only for a date change)</label><select id="milestone-impact" name="milestone_impact"><option value="">Not a date change</option><option value="affects">affects</option><option value="does_not_affect">does not affect</option><option value="not_yet_known">not yet known</option></select>
+        <label for="milestone-impact">Does this changed promise affect a key date? (required only for changed timing)</label><select id="milestone-impact" name="milestone_impact"><option value="">Not a change to promised timing</option><option value="affects">affects</option><option value="does_not_affect">does not affect</option><option value="not_yet_known">not yet known</option></select>
         {% for milestone in milestones %}<label class="check"><input type="checkbox" name="milestone_id" value="{{ milestone.id }}"> {{ milestone.code }} — {{ milestone.name }}</label>{% endfor %}
       </fieldset>
-      {% if not roster %}<p class="error">No project roster member is available for Internal Owner. This work stays pending.</p>{% endif %}
-      <button type="submit"{% if not guided_save_available or not roster %} disabled{% endif %}>Save statement and Coordination Plan</button>
+      {% if not roster %}<p class="error">No project-team member is available to assign. This work stays pending.</p>{% endif %}
+      <button type="submit"{% if not guided_save_available or not roster %} disabled{% endif %}>Save statement and Follow-up plan</button>
     </form>
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant">
       <fieldset>
-        <legend>Not Relevant</legend>
-        <p class="muted">Use only when this extracted statement does not belong in the Project Record. It creates no External Party Statement or Coordination Plan and can be reversed.</p>
+        <legend>Do not add to project record</legend>
+        <p class="muted">Use only when this proposed statement does not belong in the project record. It records no organization's statement or follow-up plan and can be reversed.</p>
         <label for="not-relevant-reason">Structured reason</label>
         <select id="not-relevant-reason" name="reason" required>
           <option value="">Choose a reason</option>
-          <option value="not_an_external_party_statement">not an External Party statement</option>
+          <option value="not_an_external_party_statement">not a statement from the organization</option>
           <option value="outside_project_scope">outside project scope</option>
           <option value="duplicate_statement">duplicate statement</option>
           <option value="insufficient_source_context">insufficient source context</option>
         </select>
-        <label class="check"><input type="checkbox" name="confirmed" value="yes" required> I confirm this extracted statement is Not Relevant.</label>
-        <button type="submit">Mark Not Relevant</button>
+        <label class="check"><input type="checkbox" name="confirmed" value="yes" required> Do not add this proposed statement to the project record.</label>
+        <button type="submit">{{ label('do_not_add') }}</button>
       </fieldset>
     </form>
     {% endif %}

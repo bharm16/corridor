@@ -4,52 +4,52 @@ status: accepted
 
 # Events enter by deterministic policy, and a model may only demote
 
-> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 
 > **Amended by ADR-0029 and ADR-0036.** The accountable-human authorization in
 > this decision is superseded: the policy runs as a pipeline stage without a
 > sign-off. Its single-Constraint, affected-party-equals-speaker, and exact-date
-> inputs are also superseded. Current statement admission preserves the stated
+> inputs are also superseded. Current statement record inclusion preserves the stated
 > party, source precision, and explicit one, selected, all-active, or unknown scope;
-> a later attributable timing is a Committed Date Change. Deterministic replayable
+> a later attributable timing is a Change to Promised Timing. Deterministic replayable
 > checks, receipts, the actor-masquerade boundary, and demote-only model participation
 > remain in force.
 >
-> **Amended by ADR-0042.** Event Admission may record an exact attributable
+> **Amended by ADR-0042.** Event Record Inclusion may record an exact attributable
 > Commitment at `Commitment Scope not yet known` when the absence of a conflict
 > reference is the only scope gap. Model assistance remains demote-only.
 
-The date half of the product needs External Party statements on the Ledger —
-Commitments, Committed Date Changes, and reports of completion extracted from meeting
+The date half of the product needs External Organization statements on the Ledger —
+Commitments, Changes to Promised Timing, and reports of completion extracted from meeting
 minutes — and they arrive in volume: SH 99 Grand Parkway alone holds 1,629 event
-Candidates, 267 of them dated commitment/change/closure Candidates referencing a
+Extracted Proposals, 267 of them dated commitment/change/closure Extracted Proposals referencing a
 known conflict. The City rehearsal's own record says the way back is never humans
-clearing thousands of Candidates; the operator refused per-row clicking of
-near-certain records outright. The retained decision is that an event Candidate
+clearing thousands of Extracted Proposals; the operator refused per-row clicking of
+near-certain records outright. The retained decision is that an event Extracted Proposal
 enters only through a **named, versioned, deterministic event-admission policy** or
-through Adjudication, and every policy check remains a replayable computation. Under
+through Human Record Decision, and every policy check remains a replayable computation. Under
 the current contract, that policy verifies Supporting Documentation without inventing speaker,
 precision, or scope; an event it cannot prove eligible remains pending for guided
-Adjudication. A rerun of the same policy version over the same inputs reaches the
+Human Record Decision. A rerun of the same policy version over the same inputs reaches the
 same outcomes or refuses.
 
-A model may participate on one side only. A model verdict may **demote** — flag an event out of the mechanical path into the human pile, order the queue, annotate suspicion — and may never **promote**: no event enters the Ledger because a model judged it correct. This is the same line ADR-0025 drew for coordination state (suggest, never decide) applied to admission, and it is what keeps the provenance story whole: every event on the Ledger traces to a human Adjudication or to a named deterministic rule under Corridor-managed engineering and release controls that anyone can re-run. "A model checked the model" is the story every competitor already tells.
+A model may participate on one side only. A model verdict may **demote** — flag an event out of the mechanical path into the human pile, order the queue, annotate suspicion — and may never **promote**: no event enters the Ledger because a model judged it correct. This is the same line ADR-0025 drew for coordination state (suggest, never decide) applied to record inclusion, and it is what keeps the provenance story whole: every event on the Ledger traces to a Human Record Decision or to a named deterministic rule under Corridor-managed engineering and release controls that anyone can re-run. "A model checked the model" is the story every competitor already tells.
 
-One boundary rides with the machinery because the SH 99 data forced it: the extractor's "commitment" type conflates an External Party promising delivery with the project's own engineer taking an action item — most SH 99 commitments are LJA's. An event whose actor is the project side can never supply an External Party's Promised For value; the masquerade rule the coordination lanes already enforce for dates extends to events' actors.
+One boundary rides with the machinery because the SH 99 data forced it: the extractor's "commitment" type conflates an External Organization promising delivery with the project's own engineer taking an action item — most SH 99 commitments are LJA's. An event whose actor is the project side can never supply an External Organization's Promised For value; the masquerade rule the coordination scopes already enforce for dates extends to events' actors.
 
 ## Considered options
 
-**Human Adjudication of every event, City-lane style.** Rejected: the bounded City cohort was 17 records; the event stream is an order of magnitude larger per party and recurs with every meeting cycle forever. The measured 140 decisions/hour makes a single party's backlog tractable once, not a workflow.
+**Human Record Decision of every event, City-lane style.** Rejected: the bounded City cohort was 17 records; the event stream is an order of magnitude larger per party and recurs with every meeting cycle forever. The measured 140 decisions/hour makes a single party's backlog tractable once, not a workflow.
 
 **A model as verifier that admits.** A second model pass reading each event against its source page and approving what checks out would clear more per pass, including the semantic cases. Rejected: a model verdict is not replayable — model versions drift, and the receipt could not promise that re-running it reproduces the outcome — and it moves the one claim that differentiates the record. Revisitable with eyes open if the human residue measures larger than the mechanical yield.
 
 ## Consequences
 
-New machinery mirrors the carry-forward family: a policy document with a version,
+New machinery mirrors the automatic support update family: a policy document with a version,
 per-event outcome receipts under one policy digest, and Abstention — an event the
 policy cannot prove eligible is left pending, never forced. Corridor engineering
 and release controls govern a changed policy version; neither a customer nor a
-project coordinator authorizes its execution. The Adjudication queue gains the
-residue, and any model assist writes ordering hints, never admission reasons. The
+project coordinator authorizes its execution. The Human Record Decision queue gains the
+residue, and any model assist writes ordering hints, never record inclusion reasons. The
 SH 99 date exercise is the first consumer; its glossary entries (the policy's name
 among them) land with the build.

@@ -1,77 +1,130 @@
 # Corridor Operations
 
-Corridor Operations turns registered Documents into reproducible Candidates and maintains current support without asking customer users to operate technical machinery.
+Corridor Operations turns registered Documents into reproducible Extracted Proposals and maintains supporting sources without asking customer users to operate technical machinery. Project decisions and their construction meaning belong to the [Project Record](../../CONTEXT.md).
 
 ## Language
 
+[ADR-0048](../adr/0048-complete-glossary-adoption-preserves-record-and-source-identity.md) records the adopted language and compatibility boundaries. Processing terms describe exact inputs, permitted changes, and retained outcomes; they do not confer construction authority.
+
+### Sources and extraction
+
 **Document**:
-A registered source artifact whose identity, type, date, and renditions are known to Corridor.
-_Avoid_: file, upload, source of truth
+Source material registered with an identity, type, date, and known renditions; a spreadsheet and its PDF can be renditions of one Document rather than independent sources.
+_Customer label_: Source document
+_Avoid_: every uploaded file as an independent source, every Document as Supporting Documentation
+
+**Document Revision**:
+An identifiable issued version of a Document, with its replacement relationship recorded separately.
+_Avoid_: a different file format, a newer upload automatically replacing an earlier source
+
+**Document Rendition**:
+A particular file representation of the same Document Revision, such as its issued spreadsheet or PDF representation, with its exact file identity retained.
+_Customer label_: File, with Format shown separately
+_Avoid_: format metadata alone, automatically an independent source or newer revision, unproven equivalence
 
 **Extraction Run**:
-One immutable attempt to read one Document with a stated extractor configuration.
-_Avoid_: extraction, pass, job
+One recorded attempt to extract information from one exact Document using an identified extractor configuration, with its input, configuration, outcome, and output identity preserved.
+_Customer label_: Document processing attempt, in technical history
+_Avoid_: proof of success or production eligibility, replacing one attempt with another
 
-**Active Run**:
-The one production Extraction Run declared for current work on a Document.
-_Avoid_: latest run, newest run, current extraction
+**Current Production Run**:
+The explicitly selected, eligible production Extraction Run whose outputs are used for a Document's current work, with the selection attributable.
+_Avoid_: latest attempt, still executing, a test or failed attempt selected by timestamp
 
-**Candidate**:
-A cited extraction proposal for a Constraint or External Party Statement, preserved alongside the outcome of its handling.
-_Avoid_: suggestion, draft, proposal
+**Extracted Proposal**:
+One source-cited extraction result proposed for inclusion as a Constraint or External Party Statement, preserved with its handling outcome even after recording or exclusion.
+_Customer label_: Proposed constraint or Proposed statement, with the actual handling outcome
+_Avoid_: an accepted fact, every proposal still pending review
 
-**Admission**:
-The recording of a Candidate's supported fact through human Adjudication or an exact deterministic policy, while preserving the extraction proposal.
-_Avoid_: import, promotion, insertion
+**Source Passage Check**:
+A check that a Cited Passage is present in the identified source page or row, under the stated matching method and its limits.
+_Avoid_: Documentation Review, physical inspection, proof the statement is true
 
-**Adjudication**:
-The human act that decides an unresolved Candidate, Dispute, or Dismissal.
-_Avoid_: review, triage, approval
+### Record decisions and outcomes
+
+**Record Inclusion**:
+Recording the supported fact from an Extracted Proposal in the Project Record through a person's permitted decision or an exact deterministic rule, while retaining the proposal and handling history.
+_Customer label_: Added to Project Record or Recorded by exact rule
+_Avoid_: extraction alone, a policy decision without the record change, universal human approval
+
+**Human Record Decision**:
+An attributable person's permitted decision on an unresolved Extracted Proposal, a Source Discrepancy, or removal of an incorrect entry from current work.
+_Customer label_: Add record, Record conclusion, or Remove incorrect entry from active log
+_Avoid_: contractual adjudication, unrestricted authority, every decision as Documentation Review
 
 **Abstention**:
-The result when an automation cannot prove that one exact write is allowed; it leaves the Project Record unchanged.
-_Avoid_: rejection, low confidence, automatic Adjudication
+A completed policy assessment that cannot establish that one exact record change is permitted, so that change is not made and its reason is retained.
+_Customer label_: Not applied automatically, with the specific reason
+_Avoid_: rejection of the underlying statement, Processing Failure, a hidden timeout or exhausted budget
 
-**Unplaced Statement**:
-An External Party Statement Candidate whose attribution, timing, or Commitment Scope still needs bounded human work.
-_Avoid_: orphan event, statement queue
+**Processing Failure**:
+An attempt that did not complete the required processing contract, including transport failure, exhausted resource budget, or invalid output, with its failure record preserved.
+_Avoid_: successful Abstention, successful processing because the Project Record did not change
+
+**Statement Needing Clarification**:
+An extracted External Party Statement whose attribution, timing, or affected Constraints still needs a permitted human decision before the relevant fact can be recorded.
+_Customer label_: Statement to review, naming the missing fact
+_Avoid_: missing geographic location, an already recorded statement with accepted unknown Applies To links
+
+**Statement Review Assistant**:
+A bounded, read-only assistant that gathers supported options for one unresolved statement without authority to make the project decision.
+_Avoid_: reviewer of record, autonomous record writer, unsupported options as established facts
+
+### Document revision work
 
 **Revision Comparison**:
-An immutable comparison of two exact Extraction Runs for predecessor and successor Documents.
-_Avoid_: revision diff, change report, delta
+A preserved comparison of exact Extraction Runs for a predecessor Document and its registered successor, retaining matched rows, differences, missing rows, and uncertain correspondences.
+_Customer label_: Compare document revisions
+_Avoid_: proof a row disappeared after failed extraction, today's worklist, implicit record changes
 
-**Supersession Review**:
-The current operations work needed because Operative Support still uses a superseded Document or revision processing is incomplete.
-_Avoid_: stale list, migration list
+**Document Revision Review**:
+The current work needed when recorded conclusions still rely on a replaced Document or processing its replacement has not finished.
+_Customer label_: Newer document needs attention, with the specific missing step
+_Avoid_: approval of the replacement, technical failure presented as awaiting review
 
-**Reconfirmation**:
-The human act that moves established Operative Support to current Supporting Documentation without changing the admitted conclusion.
-_Avoid_: re-adjudication, approval, ratification
+**Human Support Update**:
+A person's attributable replacement of the supporting source for an already accepted conclusion, without changing that conclusion or originating a Documentation Review judgment.
+_Customer label_: Confirm replacement supporting document
+_Avoid_: document reapproval, a changed conclusion, confirmation of field inspection
 
-**Automatic Carry-Forward**:
-The fail-closed policy act that moves established Operative Support to exact unchanged current Supporting Documentation.
-_Avoid_: automatic Reconfirmation, auto-approval, automatic Adjudication
+**Automatic Support Update**:
+A deterministic rule's update of an existing supporting-source link after proving an exact, unique, unchanged replacement, preserving the established conclusion and human judgment.
+_Customer label_: Supporting document updated; recorded conclusion unchanged
+_Avoid_: new facts, guessed equivalence, expanded Applies To links, a new Documentation Review judgment
 
-**Carry-Forward Policy**:
-The Corridor-released, named, and versioned rules for Automatic Carry-Forward.
-_Avoid_: customer authorization, blanket approval, reviewer bot
+**Automatic Support Update Rules**:
+The named, versioned rules released by Corridor that determine whether an Automatic Support Update is permitted, with their identity and refusal reasons preserved.
+_Avoid_: customer authorization, blanket approval, a reviewer bot
 
-**Carry-Forward Run**:
-The immutable receipt for one Carry-Forward Policy evaluation and its carried or abstained outcomes.
-_Avoid_: bot session, transient log
+**Support Update Run Record**:
+The immutable record of one support-update rule execution, including exact inputs, rule version, and every applied or abstained outcome; a later attempt creates another record.
+_Customer label_: Automatic update history, with applied and not-applied results
+_Avoid_: only successful updates, a transient log, a Processing Failure recast as Abstention
 
-**Revision Processing**:
-The ordered operation that verifies a Revision Comparison before it invokes the Carry-Forward Policy.
-_Avoid_: comparison write-back, implicit approval
+**Document Revision Processing**:
+The ordered operation that verifies the preserved Revision Comparison between exact document runs before applying Automatic Support Update Rules.
+_Customer label_: Processing newer document, or the specific unresolved consequence
+_Avoid_: comparison write-back, implicit approval, a completed comparison meaning all revision work is complete
+
+### Measurement and bounded testing
 
 **Extraction Measurement**:
-A scored comparison of exact Extraction Runs with a declared reference and its limits.
-_Avoid_: Evaluation, benchmark, eval result
+A scored comparison of exact extraction outputs with an identified Reference Dataset, including its coverage, origin, shared dependencies, and limits.
+_Avoid_: Constraint Check, independent completeness from machine agreement, unqualified recall, an industry benchmark
 
-**Cohort Receipt**:
-The immutable membership of one bounded rehearsal population.
-_Avoid_: cohort, sample, batch
+**Reference Dataset**:
+The identified comparison data used for an Extraction Measurement, with its origin, coverage, and whether expected values were independently established.
+_Avoid_: a machine-produced reference called independent truth, an assumed human gold standard
 
-**Lane**:
-A bounded operations path whose offered Candidates and allowed mutations share one scope.
-_Avoid_: tab, view, filter, mode
+**Rehearsal Input Manifest**:
+The immutable membership of one bounded rehearsal, with the selection rule, source identities, and digest fixing which items bound its permitted actions.
+_Customer label_: Cases included in this test, in technical history
+_Avoid_: a saved query with changing membership, a convenient filter without an authority boundary
+
+**Processing Scope**:
+The explicit set of items and permitted operations for one bounded processing or review path; the offered items and allowed record changes obey the same scope.
+_Avoid_: a second customer queue, a display filter, permission inferred from a tab
+
+**Product Test Run**:
+One bounded exercise from raw Documents to a published report through the actual application, with a stated simulated practitioner, exact inputs, retained success or failure record, restored starting state, and the required frontend and two-pass checks.
+_Avoid_: construction acceptance testing, proof of real practitioner performance, a failed gate called a pass

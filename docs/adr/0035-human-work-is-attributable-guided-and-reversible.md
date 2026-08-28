@@ -4,12 +4,12 @@ status: accepted
 
 # Human work is attributable, guided, and reversible
 
-> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 
 The first working screens exposed the shape of the database to the person doing
 the project work. A coordinator had to type the name of the person responsible,
 save a Next Action in a second form, know a `DEP-` reference to place a statement, and see
-Candidate, Adjudication, and Exception codes. Other controls required terminal
+Extracted Proposal, Human Record Decision, and Constraint Alert codes. Other controls required terminal
 commands and internal ids. That is not a workable contract for construction
 workers or project coordinators. ADR-0034 separates customer work from
 Corridor operations. This decision defines the customer side: **every human
@@ -44,10 +44,10 @@ backlog remain searchable.
 
 The list orders work by project consequence:
 
-1. past-due External Party commitments;
+1. past-due External Organization commitments;
 2. Constraints involving relocation, removal, or abandonment without an assigned
    person or Next Action;
-3. Committed Date Changes and disputed dates;
+3. Changes to Promised Timing and disputed dates;
 4. statements that Corridor could not place; and
 5. lower-risk cleanup.
 
@@ -57,25 +57,27 @@ third groups. This ADR decides only how the resulting human work is presented.
 A single statement appears once even when several Attention Reasons apply. Its
 highest-consequence reason controls its position, and the card names every current
 reason rather than hiding or duplicating them.
-A Dispute interrupts current work only when it affects a current date, a
-Documentation Review result, a Report, or the Next Action. Other Disputes stay visible. If the coordinator
+A Source Discrepancy interrupts current work only when it affects a current date, a
+Documentation Review result, a Coordination Report, or the Next Action. Other Source Discrepancies stay visible. If the coordinator
 cannot determine the correct conclusion, they choose **Needs clarification**,
-choose the assigned person and Next Action, and leave the Dispute open. Corridor
-never requires a false Settlement.
+choose the assigned person and Next Action, and leave the Source Discrepancy open. Corridor
+never requires a false Discrepancy Resolution.
 
-Candidate and Adjudication remain internal domain and implementation terms.
+Extracted Proposal and Human Record Decision describe the internal work. The retained
+implementation identifiers are `Candidate` and `Adjudication`; the customer does
+not need either identifier to take an action.
 The user sees actions such as **Add this conflict**, **Correct the extracted
-information**, **Link to an existing conflict**, and **Not relevant**. Internal
-Exception codes are also hidden. The UI says what happened: for example, "The
+information**, **Link to an existing conflict**, and **Do not add**. Internal
+Constraint Alert codes are also hidden. The UI says what happened: for example, "The
 promised period has ended, and no supported report of completion is recorded."
 Receipt ids, policy
 digests, and other technical details stay behind an optional audit view. A
 plain history shows what changed, who acted, when, why, and which Document or
-Verbal supports it.
+Recorded Verbal Statement supports it.
 
 Corridor verifies ordinary citations mechanically. A person checks a citation
 only when verification failed or the proposed conclusion changes a significant
-project date, a Documentation Review result, or an external Report proposed for
+project date, a Documentation Review result, or an external Coordination Report proposed for
 release. When a person must decide, the cited page appears beside the question.
 Missing stated-party or timing context must be supplied by verified Supporting
 Documentation, possibly another verified quote;
@@ -84,27 +86,26 @@ the coordinator's confirmation by itself is not factual support.
 ## Known facts are shown; only unresolved decisions are asked
 
 Corridor never asks a person to retype a fact already present in registered
-Supporting Documentation or the Candidate. Source wording, extracted descriptions,
+Supporting Documentation or the Extracted Proposal. Source wording, extracted descriptions,
 dates, and other existing values render as read-only context and remain bound to the Save
 server-side. A customer workflow must not present a blank text field for a known
 fact.
 
 Human work begins only at a real unresolved decision. The product presents that
-decision as a bounded, project-language choice: resolve an ambiguous External
-Party, choose Commitment Scope, choose an assigned person from the roster, choose
-a structured Next Action or date state, record the Effect on Milestone, request
-clarification, or mark the Candidate Not Relevant with a reason. Free text may be
-an optional note; it is never the required mechanism for supplying a fact or Work
-Decision that Corridor can already name as a structured choice.
+decision as a bounded, project-language choice: resolve an ambiguous External Organization,
+choose which Constraints the statement **Applies To**, choose an assigned person from the roster, choose
+a structured Next Action or date state, record the Effect on Key Dates, request
+clarification, or mark the Extracted Proposal Do Not Add with a reason. Free text may be
+an optional note; it is never the required mechanism for supplying a fact or Coordination Decision that Corridor can already name as a structured choice.
 
 If Corridor lacks supported facts or cannot offer a safe structured choice, the
-Candidate stays pending with the specific gap in Supporting Documentation or
+Extracted Proposal stays pending with the specific gap in Supporting Documentation or
 authority. The product does not turn that gap into an empty form and ask the user to reconstruct the
 record manually.
 
-## A Coordination Plan is one guided Save
+## A Follow-up Plan is one guided Save
 
-The coordinator creates or changes a **Coordination Plan** with one form and
+The coordinator creates or changes a **Follow-up Plan** with one form and
 one Save action:
 
 - Assigned To, selected from a searchable project-team roster;
@@ -118,51 +119,48 @@ effect at once and notifies the assigned person. The recipient may flag a wrong
 assignment, but a notification that has not been accepted cannot leave the
 Coordination Subject without an assignment. Notification delivery and production
 identity are deferred from #196; its seeded coordinator proves neither. Behind the form,
-Corridor preserves the distinct append-only Work Decisions and exactly-one-subject
+Corridor preserves the distinct append-only Coordination Decisions and exactly-one-subject
 rule in ADR-0025 and ADR-0038.
 
 Completing a Next Action is one click with an optional note. Cancelling one
 requires a structured reason: no longer needed, replaced by another action,
 subject changed, or entered by mistake. An optional note may explain more. After
-an action is completed or cancelled on an open Constraint, External Party
-Commitment, or Committed Date Change, the subject must receive a successor Next
+an action is completed or cancelled on an open Constraint, External Organization
+Commitment, or Change to Promised Timing, the subject must receive a successor Next
 Action or a structured reason that no immediate follow-up is needed. No follow-up
-changes only the project's immediate work; it does not close or hide an External
-Party fact.
+changes only the project's immediate work; it does not close or hide an External Organization fact.
 
 ## Guided and reversible judgment
 
-The Unplaced Statement workflow never asks a coordinator to type a Constraint
-identifier. It shows suggested matches and search results using the External
-Party, Stationing, facility details, and the currently assigned person. Suggestions order
+The Statement Needing Clarification workflow never asks a coordinator to type a Constraint
+identifier. It shows suggested matches and search results using the External Organization, Stationing, facility details, and the currently assigned person. Suggestions order
 but never select scope. The general control supports one Constraint, a selected
 set, all currently active Constraints for the party as an explicit snapshot, and
 scope not yet known. The cited page stays beside the statement. The coordinator may
 correct attribution or timing facts supported by Supporting Documentation. Corridor
-derives Commitment versus Committed Date Change and its direction from those supported timings.
-Corridor preserves the original Candidate and records the correction. **Not
-relevant** requires a reason, creates no statement or plan, and remains reversible.
-ADR-0036 owns the External Party facts and ADR-0039 owns the atomic Save.
+derives Commitment versus Change to Promised Timing and its direction from those supported timings.
+Corridor preserves the original Extracted Proposal and records the correction. **Do not add** requires a reason, creates no statement or plan, and remains reversible.
+ADR-0036 owns the External Organization facts and ADR-0039 owns the atomic Save.
 
 A statement decision has immediate **Undo** and a later **Correct** action in
-history. Undo reverses every result of that guided Save and returns the Candidate
+history. Undo reverses every result of that guided Save and returns the Extracted Proposal
 to work, unless a later act depends on one of those results; it never deletes or
 cascades through later work. Correct can then target one fact. The same rule applies
 across the product. Users do not directly edit or delete earlier Ledger history.
 They use Correct, Replace, Restore, or Cancel, and Corridor records the new act
 beside the old one (ADR-0039).
 
-Dismissal is therefore not a one-click removal. The coordinator selects a
+**Remove from Active Log** is therefore not a one-click removal. The coordinator selects a
 reason, reads a short statement of the consequence, and confirms. The
-Constraint stays in history and can be restored. A Settlement is likewise
+Constraint stays in history and can be restored. A Discrepancy Resolution is likewise
 made beside the competing Assertions, and a later correction does not erase
 what either Document said.
 
 ## Device, interruption, and continuity boundaries
 
-A phone supports reading urgent work, recording a Verbal, completing a Next
-Action, and receiving notifications. Comparing Documents, settling a Dispute,
-performing a Documentation Review, and releasing a Report require a tablet or
+A phone supports reading urgent work, recording a Recorded Verbal Statement, completing a Next
+Action, and receiving notifications. Comparing Documents, resolving a Source Discrepancy,
+performing a Documentation Review, and releasing a Coordination Report require a tablet or
 computer. Corridor does not compress a high-consequence document comparison into a phone flow.
 
 An offline device may keep a local draft. It may not change the Ledger until
@@ -179,13 +177,12 @@ Only four kinds of event interrupt a user:
 
 The first release uses in-app and email notifications, not text messages.
 Everything else stays in the work list or a daily summary. A coordinator may
-defer work with a reason: waiting for information, waiting for an External
-Party, or assigned to someone else. Every deferral has a return date. An
+defer work with a reason: waiting for information, waiting for an External Organization, or assigned to someone else. Every deferral has a return date. An
 unknown Action Due Date is not itself a deferral: without a return date the work
 stays immediate. Deferral does not hide the record or its Attention Reasons; the
 item returns to immediate work when the date arrives, the action is due, new
-Supporting Documentation or a Verbal arrives, statement timing or scope changes, or
-the Effect on Milestone changes. Each project has one named escalation contact.
+Supporting Documentation or a Recorded Verbal Statement arrives, statement timing or scope changes, or
+the Effect on Key Dates changes. Each project has one named escalation contact.
 Urgent overdue work notifies that
 contact and the assigned person, not the whole project team.
 
@@ -196,8 +193,8 @@ make terminal commands, database identifiers, free-text identities, and
 internal record types into project work. Technical operations belong behind
 the managed-service boundary in ADR-0034.
 
-**Use one shared account per project.** Rejected. It makes a Work Decision,
-Settlement, Dismissal, or correction unattributable and prevents useful
+**Use one shared account per project.** Rejected. It makes a Coordination Decision,
+Discrepancy Resolution, removal from the active log, or correction unattributable and prevents useful
 assignment notifications.
 
 **Put every unresolved record in one review queue.** Rejected. It makes low
@@ -217,7 +214,7 @@ write would make the device claim a Ledger state the server does not have.
 
 The current web UI does not satisfy this ADR. The customer release needs
 session identity, project membership and roster search, a prioritized work
-list, the combined Coordination Plan, structured cancellation and deferral,
+list, the combined Follow-up Plan, structured cancellation and deferral,
 recorded correction and restoration, notifications, and plain-language
 history. Existing append-only receipts remain the record beneath those
 workflows.
@@ -241,7 +238,7 @@ This ADR records decisions 5-7, 10-18, 21-26, 30, 32-33, 37-42, 47-48,
 50-51, 54, 60, 62, and 64 from the original product-workflow interview. It also
 records the interaction portions of the 2026-08-12 post-foundation decisions
 P9-P12, P20-P24, P28-P35, P43, and P54. Decisions whose
-domain meaning belongs to commitments, Documentation Review, Reports, or managed
+domain meaning belongs to commitments, Documentation Review, Coordination Reports, or managed
 operations
 are recorded in ADR-0036, ADR-0037, ADR-0038, ADR-0039, ADR-0040, or ADR-0034
 respectively; #196 records the rehearsal case and timing contract.

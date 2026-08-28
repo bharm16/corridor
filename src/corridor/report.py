@@ -44,6 +44,13 @@ from corridor.models import (
 )
 from corridor.dependency_events import current_scope_decision_filter
 from corridor.project_reading import freeze_project_reading
+from corridor.presentation import (
+    documentation_review_label,
+    input_reference_label,
+    label,
+    provenance_label,
+    statement_type_label,
+)
 from corridor.work_list import party_commitment_due_after
 
 # Enough to act on in a weekly meeting. More than this and nobody reads it.
@@ -110,7 +117,9 @@ class Derivation:
                     "records: " + ", ".join(str(i) for i in self.record_ids[:20])
                 )
             if self.input_refs:
-                parts.append("inputs: " + ", ".join(self.input_refs))
+                parts.append(
+                    "inputs: " + ", ".join(input_reference_label(ref) for ref in self.input_refs)
+                )
             return "; ".join(parts)
         return f"covers: {self.scope}"
 
@@ -159,12 +168,15 @@ class Verbal:
 
     @property
     def marker(self) -> str:
-        return f"[verbal: {self.stated_party} told {self.heard_by} {self.heard_on}]"
+        return (
+            f"[{provenance_label('verbal')}: {self.stated_party} told "
+            f"{self.heard_by} {self.heard_on}]"
+        )
 
     @property
     def drill(self) -> str:
         return (
-            f"verbal event {self.event_id}: {self.stated_party} told "
+            f"{provenance_label('verbal')} {self.event_id}: {self.stated_party} told "
             f"{self.heard_by} on {self.heard_on}"
         )
 
@@ -229,7 +241,7 @@ class Report:
         )
 
 
-EMPTY_LEDGER = "an empty ledger"
+EMPTY_LEDGER = "an empty constraint log"
 
 
 def _derived(
@@ -291,16 +303,21 @@ def build_report(
             # records where there are some, the population where there
             # are not, and the empty Ledger itself where there is no
             # population either (ADR-0003).
-            _derived("Dependencies", str(len(ids)), ids, scope=EMPTY_LEDGER),
-            _derived("Ready", str(len(ready)), ready or ids, scope=EMPTY_LEDGER),
+            _derived(label("constraints"), str(len(ids)), ids, scope=EMPTY_LEDGER),
             _derived(
-                "With verified evidence",
+                documentation_review_label(True),
+                str(len(ready)),
+                ready or ids,
+                scope=EMPTY_LEDGER,
+            ),
+            _derived(
+                "With checked source passages",
                 str(len(with_evidence)),
                 with_evidence or ids,
                 scope=EMPTY_LEDGER,
             ),
             _derived(
-                "% with verified evidence", f"{pct:.1f}%", ids, scope=EMPTY_LEDGER
+                "% with checked source passages", f"{pct:.1f}%", ids, scope=EMPTY_LEDGER
             ),
         ],
         diff=diff_since_last(
@@ -330,7 +347,7 @@ def build_report(
         ]
         report.summary.append(
             _derived(
-                "Verbal-backed dates",
+                "Dates from recorded verbal statements",
                 f"{len(verbal_rows)} of {len(dated_rows)} dates",
                 [r.dependency.id for r in verbal_rows]
                 or [r.dependency.id for r in dated_rows],
@@ -380,9 +397,9 @@ def _coverage_note(session: Session, project_id: int, in_ledger: int) -> str:
     if not pending:
         return ""
     return (
-        f"{pending} extracted candidate(s) are still awaiting adjudication and "
+        f"{pending} proposed record(s) are still awaiting review and "
         f"are not represented below. This report covers the {in_ledger} record(s) "
-        "in the ledger."
+        "in the constraint log."
     )
 
 
@@ -396,9 +413,12 @@ def _milestone_rollup(
     ).all()
 
     section = Section(
-        "Milestone readiness",
-        columns=["Milestone", "Need date", "Total", "Ready", "At risk", "% evidenced"],
-        empty_message="No milestones imported, so nothing is measured against a date.",
+        label("milestone_readiness"),
+        columns=[
+            label("key_date"), label("required_by"), "Total",
+            documentation_review_label(True), "At risk", "% with checked passages",
+        ],
+        empty_message="No key dates imported, so nothing is measured against a date.",
     )
 
     groups: list[tuple[str, str, list[LedgerRow], tuple[str, ...]]] = [
@@ -414,7 +434,7 @@ def _milestone_rollup(
     ]
     unlinked = [r for r in rows if r.dependency.milestone_id is None]
     if unlinked:
-        groups.append(("Not linked to a milestone", "—", unlinked, ()))
+        groups.append(("Not linked to a key date", "—", unlinked, ()))
 
     # A milestone nothing is linked to has no records to measure, and
     # publishing "Ready 0" for it reads as "none of your records are
@@ -448,16 +468,16 @@ def _milestone_rollup(
         pct = (100 * len(evidenced) / len(ids)) if ids else 0.0
         section.rows.append(
             [
-                _derived("Milestone", name, ids, input_refs=input_refs),
-                _derived("Need date", need_date, ids, input_refs=input_refs),
+                _derived(label("key_date"), name, ids, input_refs=input_refs),
+                _derived(label("required_by"), need_date, ids, input_refs=input_refs),
                 _derived("Total", str(len(ids)), ids),
                 # A count of none is still derived from the records it
                 # examined — the matching subset when there is one, the
                 # group itself when there is not. A Derivation over zero
                 # records drills through to nothing (ADR-0003).
-                _derived("Ready", str(len(ready)), ready or ids),
+                _derived(documentation_review_label(True), str(len(ready)), ready or ids),
                 _derived("At risk", str(len(at_risk)), at_risk or ids),
-                _derived("% evidenced", f"{pct:.0f}%", evidenced or ids),
+                _derived("% with checked passages", f"{pct:.0f}%", evidenced or ids),
             ]
         )
     return section
@@ -499,24 +519,28 @@ def _critical_items(
     dated = sum(1 for r in ranked if r.dependency.need_date)
 
     note = (
-        "The not-ready records whose document's resolution strategy is "
-        "relocation, removal or abandonment (ADR-0009), earliest need "
+        "Constraints without documents marked sufficient whose source's resolution "
+        "method is relocation, removal or abandonment (ADR-0009), earliest required-by date "
         "first; undated records follow the dated. The order is "
-        "presentation, not a measurement."
+        "presentation, not a measurement or critical-path finding."
     )
     if len(critical_rows) > len(ranked):
         # A cap nobody states is a selection wearing completeness — the
         # device this section exists to abolish.
         note += f" Showing the first {len(ranked)} of {len(critical_rows)}."
     if ranked and not dated:
-        note += " No dates known: nothing here carries a need date to order by."
+        note += " No dates known: nothing here carries a required-by date to order by."
 
     section = Section(
-        "Critical items",
+        label("critical_items"),
         note=note,
-        columns=["Ref", "External party", "Committed", "Need", "Exceptions"],
+        columns=[
+            "Ref", label("organization"), label("promised_for"),
+            label("required_by"), label("constraint_alerts"),
+        ],
         empty_message=(
-            "No not-ready record's document asserts a critical resolution strategy."
+            "No Constraint without documents marked sufficient has a source-stated "
+            "resolution method of relocation, removal, or abandonment."
         ),
     )
     resolved = resolve_operative_support(session, [r.dependency.id for r in ranked])
@@ -564,18 +588,18 @@ def _critical_items(
                     if document_only or statement.unsupported_current
                     else cited_field("committed_date")
                 )
-                return Cell("Committed", "—", provenance)
+                return Cell(label("promised_for"), "—", provenance)
             if committed_event is None:
                 return Cell(
-                    "Committed",
+                    label("promised_for"),
                     committed_date.isoformat(),
                     cited_field("committed_date"),
                 )
             provenance = _statement_provenance(statement)
             if provenance is None:
-                return Cell("Committed", "—", record_fallback)
+                return Cell(label("promised_for"), "—", record_fallback)
             return Cell(
-                "Committed",
+                label("promised_for"),
                 committed_date.isoformat(),
                 provenance,
             )
@@ -592,7 +616,7 @@ def _critical_items(
                 # publication support: the quote that names the row.
                 Cell("Ref", row.dependency.ref_code, cited_field(None)),
                 Cell(
-                    "External party",
+                    label("organization"),
                     row.org_name or "—",
                     cited_field("external_org"),
                 ),
@@ -601,7 +625,7 @@ def _critical_items(
                 # serves — a property of the project, never a document
                 # claim (CONTEXT.md) — so no quote may ever back it.
                 _derived(
-                    "Need",
+                    label("required_by"),
                     row.dependency.need_date.isoformat()
                     if row.dependency.need_date
                     else "—",
@@ -613,7 +637,7 @@ def _critical_items(
                     else (),
                 ),
                 _derived(
-                    "Exceptions",
+                    label("constraint_alerts"),
                     listed or "—",
                     (dependency_id,),
                 ),
@@ -624,9 +648,10 @@ def _critical_items(
 
 def _exceptions_summary(evaluation: Evaluation) -> Section:
     section = Section(
-        "Exceptions",
-        columns=["Rule", "Count", "Most days", "Why"],
-        empty_message="No exceptions.",
+        label("constraint_alerts"),
+        columns=["Rule", "Count", "Most days", "Technical detail"],
+        note="Technical details retain system identifiers and recorded wording.",
+        empty_message="No constraint alerts.",
     )
     # The engine's facet view, not a private regrouping (ADR-0010, #116):
     # buckets largest first, and within a bucket the rule's own quantity
@@ -640,7 +665,7 @@ def _exceptions_summary(evaluation: Evaluation) -> Section:
                 f"{top.ref_code} {top.quantity_days}d",
                 (top.dependency_id,),
             )
-            why = _derived("Why", top.detail, (top.dependency_id,))
+            why = _derived("Technical detail", top.detail, (top.dependency_id,))
         else:
             # An absence has no exemplar: every row is the same finding,
             # and electing one would be an arbitrary pick wearing a
@@ -651,7 +676,7 @@ def _exceptions_summary(evaluation: Evaluation) -> Section:
             details = {e.detail for e in facet.exceptions}
             most = _derived("Most days", "—", ids)
             why = _derived(
-                "Why",
+                "Technical detail",
                 details.pop() if len(details) == 1 else "varies by record",
                 ids,
             )
@@ -673,7 +698,7 @@ def _changes_since_last(
 ) -> Section:
     section = Section(
         "Changes since last report",
-        columns=["Ref", "Change", "Detail"],
+        columns=["Ref", "Change", "Technical detail"],
         empty_message="Nothing changed since the previous report.",
     )
     if diff is None:
@@ -692,7 +717,7 @@ def _changes_since_last(
     if diff.ruleset_changed:
         section.note += (
             f" The ruleset changed ({diff.previous_ruleset} → {RULESET_VERSION}), "
-            "so exception churn is suppressed — a rule appearing may mean the rule "
+            "so changes to constraint alerts are not compared — a rule appearing may mean the rule "
             "changed rather than the project moving."
         )
 
@@ -721,7 +746,7 @@ def _changes_since_last(
             [
                 Cell("Ref", change.ref_code, provenance),
                 Cell("Change", _customer_change_name(change.kind), provenance),
-                Cell("Detail", change.detail, provenance),
+                Cell("Technical detail", change.detail, provenance),
             ]
         )
     return section
@@ -729,7 +754,13 @@ def _changes_since_last(
 
 def _customer_change_name(kind: str) -> str:
     """Render the current domain term without rewriting historical records."""
-    return "Committed Date Change" if kind == "committed_date_change" else kind
+    return {
+        "new": "New information",
+        "closed": "No longer listed",
+        "dismissed": "Incorrect entry removed",
+        "became_ready": documentation_review_label(True),
+        "escalated": "Record changed",
+    }.get(kind, statement_type_label(kind))
 
 
 def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
@@ -749,12 +780,12 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
     )
 
     section = Section(
-        "Coordination",
+        label("follow_up_plan"),
         note=(
             "Project decisions (ADR-0025): decided by the project team, "
             "attributed and dated — never asserted by a document."
         ),
-        columns=["Ref", "Internal owner", "Next action", "Action due"],
+        columns=["Ref", label("assigned_to"), label("next_action"), label("action_due_date")],
         empty_message="No coordination decisions recorded.",
     )
     for row in rows:
@@ -780,10 +811,10 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
         section.rows.append(
             [
                 _derived("Ref", dependency.ref_code, (dependency.id,)),
-                decided("Internal owner", dependency.internal_owner, owner_tail),
+                decided(label("assigned_to"), dependency.internal_owner, owner_tail),
                 decided("Next action", dependency.next_action, action_tail),
                 decided(
-                    "Action due",
+                    label("action_due_date"),
                     dependency.action_due_date.isoformat()
                     if dependency.action_due_date
                     else None,
@@ -807,27 +838,27 @@ def _external_party_commitments(
     coherent report reading.
     """
     section = Section(
-        "External Party commitments",
+        label("organization_commitments"),
         note=(
-            "Open attributable External Party Commitments whose Dependency "
-            "scope is not yet known. They remain party-level facts; no "
-            "Dependency Committed Date, closure answer, or Exception is "
-            "created here."
+            "Open attributable commitments whose applicable Constraints are "
+            "not yet known. These statements belong to the named organization; "
+            "they do not establish promised timing, completion, or a constraint "
+            "alert for any individual Constraint."
         ),
         columns=[
-            "External Party",
+            label("organization"),
             "Supported statement",
             "Timing",
             "Timing precision",
             "Statement type",
-            "Commitment Scope",
+            label("applies_to"),
             "Open / past-due status",
-            "Internal Owner",
-            "Next Action",
-            "Action Due",
-            "Milestone Impact",
+            label("assigned_to"),
+            label("next_action"),
+            label("action_due_date"),
+            label("effect_on_key_dates"),
         ],
-        empty_message="No open unknown-scope External Party Commitments.",
+        empty_message="No open organization commitments with unknown applicability.",
     )
     for statement in statement_publication.party_statements:
         if statement.is_closed:
@@ -858,8 +889,8 @@ def _external_party_commitments(
         section.rows.append(
             [
                 Cell(
-                    "External Party",
-                    (event or current_event).stated_party or "Unstated External Party",
+                    label("organization"),
+                    (event or current_event).stated_party or "Unstated organization",
                     statement_provenance,
                 ),
                 Cell("Supported statement", statement_value, statement_provenance),
@@ -882,8 +913,8 @@ def _external_party_commitments(
                     Derivation(RULESET_VERSION, scope=derivation_scope),
                 ),
                 Cell(
-                    "Commitment Scope",
-                    "Scope not yet known",
+                    label("applies_to"),
+                    "Not yet known",
                     Derivation(
                         RULESET_VERSION,
                         scope=f"scope decision {statement.scope_decision.id}",
@@ -900,14 +931,14 @@ def _external_party_commitments(
                     ),
                 ),
                 _party_plan_cell(
-                    "Internal Owner",
+                    label("assigned_to"),
                     statement.plan.internal_owner,
                     statement.plan.internal_owner_decision,
                     current_event.id,
                     needs_review=statement.plan.needs_review,
                 ),
                 _party_plan_cell(
-                    "Next Action",
+                    label("next_action"),
                     statement.plan.next_action,
                     statement.plan.next_action_decision,
                     current_event.id,
@@ -975,8 +1006,8 @@ def _party_timing_field(event, previous, new, field: str) -> str:
 def _statement_kind(event) -> str:
     if event.event_type == "committed_date_change":
         direction = event.timing_direction or "direction not established"
-        return f"Committed Date Change · {direction}"
-    return "Commitment"
+        return f"{statement_type_label(event.event_type)} · {direction}"
+    return statement_type_label(event.event_type)
 
 
 def _party_open_status(timing, evaluated_on: date) -> str:
@@ -1017,7 +1048,7 @@ def _party_plan_cell(
 
 def _party_action_due_cell(statement: PublishedPartyStatement, event_id: int) -> Cell:
     if statement.plan.needs_review:
-        return _plan_needs_review_cell("Action Due", event_id)
+        return _plan_needs_review_cell(label("action_due_date"), event_id)
     action = statement.plan.next_action_decision
     if action is not None:
         value = (
@@ -1028,12 +1059,12 @@ def _party_action_due_cell(statement: PublishedPartyStatement, event_id: int) ->
         if statement.plan.action_due_date_reason:
             value += f" ({statement.plan.action_due_date_reason.replace('_', ' ')})"
         return Cell(
-            "Action Due",
+            label("action_due_date"),
             value,
             WorkDecision((action.id,), action.recorded_by, action.recorded_at.date()),
         )
     return Cell(
-        "Action Due",
+        label("action_due_date"),
         "—",
         Derivation(RULESET_VERSION, scope=f"Commitment statement {event_id} plan"),
     )
@@ -1043,11 +1074,11 @@ def _party_milestone_impact_cell(
     statement: PublishedPartyStatement, event_id: int
 ) -> Cell:
     if statement.plan.needs_review:
-        return _plan_needs_review_cell("Milestone Impact", event_id)
+        return _plan_needs_review_cell(label("effect_on_key_dates"), event_id)
     decision = statement.plan.milestone_impact_decision
     if decision is not None and statement.plan.milestone_impact is not None:
         return Cell(
-            "Milestone Impact",
+            label("effect_on_key_dates"),
             statement.plan.milestone_impact.replace("_", " ").capitalize(),
             WorkDecision(
                 (decision.id,), decision.recorded_by, decision.recorded_at.date()
@@ -1057,7 +1088,7 @@ def _party_milestone_impact_cell(
         "Not applicable" if statement.current_event.event_type == "commitment" else "—"
     )
     return Cell(
-        "Milestone Impact",
+        label("effect_on_key_dates"),
         value,
         Derivation(RULESET_VERSION, scope=f"Commitment statement {event_id} plan"),
     )
@@ -1067,7 +1098,7 @@ def _plan_needs_review_cell(label: str, event_id: int) -> Cell:
     """Refuse to publish a response as current after its fact changed."""
     return Cell(
         label,
-        "Plan needs review",
+        "Follow-up plan needs review",
         Derivation(
             RULESET_VERSION,
             scope=f"Commitment statement {event_id} changed after its plan",
@@ -1101,7 +1132,7 @@ def _aging(
 
     section = Section(
         "Aging",
-        columns=["Ref", "External party", "Committed", "Days overdue"],
+        columns=["Ref", label("organization"), label("promised_for"), "Days overdue"],
         empty_message="Nothing is overdue.",
     )
     for row, overdue_fact, committed_date in overdue:
@@ -1115,9 +1146,9 @@ def _aging(
         section.rows.append(
             [
                 _derived("Ref", row.dependency.ref_code, (row.dependency.id,)),
-                _derived("External party", row.org_name or "—", (row.dependency.id,)),
+                _derived(label("organization"), row.org_name or "—", (row.dependency.id,)),
                 Cell(
-                    "Committed",
+                    label("promised_for"),
                     committed_date.isoformat(),
                     provenance,
                 ),
@@ -1129,16 +1160,17 @@ def _aging(
 
 def _appendix(rows: list[LedgerRow]) -> Section:
     section = Section(
-        "Appendix — full ledger",
+        "Appendix — constraint log",
         columns=[
             "Ref",
             "Source ID",
-            "External party",
+            label("organization"),
             "Station",
-            "Ready",
-            "Exceptions",
+            label("documentation_review"),
+            label("required_documents"),
+            label("constraint_alerts"),
         ],
-        empty_message="The ledger is empty.",
+        empty_message="The constraint log is empty.",
     )
     for row in rows:
         ids = (row.dependency.id,)
@@ -1149,11 +1181,20 @@ def _appendix(rows: list[LedgerRow]) -> Section:
             [
                 _derived("Ref", row.dependency.ref_code, ids),
                 _derived("Source ID", row.dependency.source_ref or "—", ids),
-                _derived("External party", row.org_name or "—", ids),
+                _derived(label("organization"), row.org_name or "—", ids),
                 _derived("Station", station, ids),
-                _derived("Ready", "yes" if row.is_ready else "no", ids),
                 _derived(
-                    "Exceptions",
+                    label("documentation_review"),
+                    documentation_review_label(row.is_ready),
+                    ids,
+                ),
+                _derived(
+                    label("required_documents"),
+                    row.dependency.evidence_required or "Not specified",
+                    ids,
+                ),
+                _derived(
+                    label("constraint_alerts"),
                     ", ".join(
                         format_exception_label(e)
                         for e in sorted(row.exceptions, key=lambda e: e.rule)
@@ -1259,16 +1300,16 @@ def render(report: Report) -> str:
                 f"<h2>{html.escape(section.title)}</h2>{note}"
                 f'<p class="empty">{html.escape(section.empty_message)}</p>'
             )
-        is_party_statements = section.title == "External Party commitments"
+        is_party_statements = section.title == label("organization_commitments")
         table_classes = {
-            "Milestone readiness": "milestone-readiness",
-            "Critical items": "critical-items",
-            "Coordination": "coordination",
-            "External Party commitments": "party-statements",
-            "Exceptions": "exceptions",
+            label("milestone_readiness"): "milestone-readiness",
+            label("critical_items"): "critical-items",
+            label("follow_up_plan"): "coordination",
+            label("organization_commitments"): "party-statements",
+            label("constraint_alerts"): "exceptions",
             "Changes since last report": "changes",
             "Aging": "aging",
-            "Appendix — full ledger": "appendix",
+            "Appendix — constraint log": "appendix",
         }
         body = "".join(
             "<tr>"
@@ -1298,8 +1339,8 @@ def render(report: Report) -> str:
         else ""
     )
     document_only = (
-        '<p class="coverage">Document-only report: verbal statements are excluded; '
-        "Committed Dates and date-based exceptions use verified cited events only.</p>"
+        '<p class="coverage">Document-only report: recorded verbal statements are excluded; '
+        "promised timing and date-based constraint alerts use checked source passages only.</p>"
         if report.document_only
         else ""
     )
@@ -1313,7 +1354,7 @@ def render(report: Report) -> str:
 
     return f"""<!doctype html>
 <meta charset="utf-8">
-<title>Readiness — {html.escape(report.project_name)}</title>
+<title>{label('report')} — {html.escape(report.project_name)}</title>
 <style>
  :root {{ --line:#e2e2e2; --muted:#666; --warn:#b54708; }}
  * {{ box-sizing: border-box; }}
@@ -1363,13 +1404,14 @@ def render(report: Report) -> str:
  .aging th:nth-child(3), .aging th:nth-child(4) {{ width: 25%; }}
  .appendix {{ font-size: 9px; line-height: 1.35; }}
  .appendix th, .appendix td {{ padding: .25rem; }}
- .appendix th:nth-child(1) {{ width: 12%; }}
- .appendix th:nth-child(2) {{ width: 11%; }}
- .appendix th:nth-child(3) {{ width: 18%; }}
- .appendix th:nth-child(4) {{ width: 15%; }}
- .appendix th:nth-child(5) {{ width: 10%; }}
- .appendix th:nth-child(6) {{ width: 7%; }}
- .appendix th:nth-child(7) {{ width: 27%; }}
+ .appendix th {{ font-size: inherit; line-height: inherit; overflow-wrap: anywhere; }}
+ .appendix th:nth-child(1) {{ width: 10%; }}
+ .appendix th:nth-child(2) {{ width: 9%; }}
+ .appendix th:nth-child(3) {{ width: 15%; }}
+ .appendix th:nth-child(4) {{ width: 14%; }}
+ .appendix th:nth-child(5) {{ width: 15%; }}
+ .appendix th:nth-child(6) {{ width: 18%; }}
+ .appendix th:nth-child(7) {{ width: 19%; }}
  .appendix .marker {{ display: block; margin: .08rem 0 0; }}
  .party-statements thead {{ display: none; }}
  .party-statements tbody, .party-statements tr {{ display: block; }}
@@ -1391,16 +1433,16 @@ def render(report: Report) -> str:
  }}
  @page {{ size: A4; margin: 1.5cm 1.6cm; }}
 </style>
-<h1>Readiness — {html.escape(report.project_name)}</h1>
+<h1>{label('report')} — {html.escape(report.project_name)}</h1>
 <p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC{evaluated} · ruleset {report.ruleset_version}</p>
 {coverage}
 {document_only}
 {summary}
 {"".join(section_html(s) for s in report.sections)}
 <footer>
-Every figure is an Assertion (a quote on a cited page), a Derivation
-(a computation over cited records), a Work Decision, or a Verbal heard by a
-named recorder on a stated date. Hover any marker for its source.
+Every figure is a Source field value (with its cited passage), a Calculated result
+(from cited records), a Coordination decision, or a Recorded verbal statement
+heard by a named recorder on a stated date. Hover any marker for its source.
 No figure in this report is bare.
 </footer>
 """

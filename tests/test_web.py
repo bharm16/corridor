@@ -217,8 +217,8 @@ def test_queue_exposes_two_counted_exclusive_review_lanes(client, project):
     assert r.status_code == 200
     assert f'href="/queue/{project.slug}?lane=candidate" aria-current="page"' in r.text
     assert f'href="/queue/{project.slug}?lane=reconfirmation"' in r.text
-    assert "Extracted conflicts (0)" in r.text
-    assert "Changed Document Evidence (0)" in r.text
+    assert "Proposed constraints (0)" in r.text
+    assert "Newer documents needing attention (0)" in r.text
 
 
 def test_the_review_screen_states_what_is_left_and_reaches_the_record(
@@ -237,7 +237,30 @@ def test_the_review_screen_states_what_is_left_and_reaches_the_record(
     assert r.status_code == 200
     assert "1 waiting for you" in r.text
     assert f'href="/ledger/{project.slug}"' in r.text
-    assert "Extracted conflicts (" not in r.text
+    assert "Proposed constraints (" not in r.text
+
+
+def test_proposed_constraint_uses_current_labels_without_changing_source_fields(
+    client, session, project, document
+):
+    page = session.scalar(
+        select(DocPage).where(DocPage.document_id == document.id, DocPage.page_no == 1)
+    )
+    page.text = "Ready-Milestone-Evidence AT&T Texas (SWBT) 1149+00"
+    candidate = make_candidate(
+        session, project, document, uid="Ready-Milestone-Evidence"
+    )
+
+    page = client.get(f"/queue/{project.slug}")
+
+    assert page.status_code == 200
+    assert "Add constraint" in page.text
+    assert "Do not add" in page.text
+    assert "<dt>Organization</dt>" in page.text
+    assert "Ready-Milestone-Evidence AT&amp;T Texas (SWBT)" in page.text
+    assert 'name="field_utility_id" value="Ready-Milestone-Evidence"' in page.text
+    assert f'action="/candidates/{candidate.id}/accept"' in page.text
+    assert f'action="/candidates/{candidate.id}/reject"' in page.text
 
 
 def _seed_waiting_supersession_review(session, project, predecessor):
@@ -309,13 +332,13 @@ def test_candidate_lane_surfaces_dependency_work_while_extraction_is_pending(
 
     assert r.status_code == 200
     assert "Queue empty" not in r.text
-    assert "Extracted conflicts (1)" in r.text
+    assert "Proposed constraints (1)" in r.text
     assert dependency.ref_code in r.text
     assert document.filename in r.text
     assert successor.filename in r.text
     assert "Awaiting extraction" in r.text
     assert "No successor extraction attempt exists" in r.text
-    assert "Current Evidence is unavailable" in r.text
+    assert "Current supporting documents are unavailable" in r.text
     assert ">Reconfirm<" not in r.text
 
 
@@ -343,7 +366,7 @@ def test_candidate_lane_explains_a_durable_successor_extraction_failure(
     assert dependency.ref_code in r.text
     assert "Extraction failed" in r.text
     assert "completed current document reading is required" in r.text
-    assert "Current Evidence is unavailable" in r.text
+    assert "Current supporting documents are unavailable" in r.text
     assert ">Reconfirm<" not in r.text
 
 
@@ -390,12 +413,12 @@ def test_empty_reconfirmation_lane_points_to_remaining_candidate_work(
 
     assert r.status_code == 200
     assert "Queue empty" in r.text
-    assert "Extracted conflicts (1)" in r.text
+    assert "Proposed constraints (1)" in r.text
     assert (
         f'href="/queue/{project.slug}?lane=reconfirmation" '
         'aria-current="page"' in r.text
     )
-    assert "1 extracted conflict item(s) remain" in r.text
+    assert "1 proposed constraint item(s) remain" in r.text
     assert "AT&amp;T Texas (SWBT)" not in r.text
 
 
@@ -438,7 +461,7 @@ def test_unverified_candidates_sink_but_are_never_hidden(
     assert next_candidate(session, project.id).id == bad.id
 
     r = client.get(f"/queue/{project.slug}")
-    assert "Citation unverified" in r.text
+    assert "Source passage check failed" in r.text
 
 
 def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
@@ -512,13 +535,13 @@ def test_only_an_unverified_citation_is_announced(client, session, project, docu
     make_candidate(session, project, document)
     r = client.get(f"/queue/{project.slug}?mode=review")
     assert "Citation verified" not in r.text
-    assert "Citation unverified" not in r.text
+    assert "Source passage check failed" not in r.text
 
     unverified = make_candidate(
         session, project, document, uid="FOC2-2", verified=False
     )
     r = client.get(f"/queue/{project.slug}?mode=review&candidate_id={unverified.id}")
-    assert "Citation unverified" in r.text
+    assert "Source passage check failed" in r.text
 
 
 def test_merge_is_unavailable_when_there_is_nothing_to_merge_into(
@@ -847,15 +870,15 @@ def test_safe_unchanged_successor_moves_out_of_candidate_lane(client, session, p
     assert candidate_lane.status_code == 200
     assert "FOC1-1" not in candidate_lane.text
     assert "Queue empty" in candidate_lane.text
-    assert "Extracted conflicts (0)" in candidate_lane.text
-    assert "Changed Document Evidence (1)" in candidate_lane.text
+    assert "Proposed constraints (0)" in candidate_lane.text
+    assert "Newer documents needing attention (1)" in candidate_lane.text
     assert reconfirm_lane.status_code == 200
     body = reconfirm_lane.text
     assert chain["dependency"].ref_code in body
     assert chain["predecessor"].filename in body
     assert chain["successor"].filename in body
     assert "The source wording is unchanged" in body
-    assert "<kbd>c</kbd> Use current Evidence" in body
+    assert "<kbd>c</kbd> Confirm replacement supporting document" in body
     assert f'action="/supersession-review/{chain["dependency"].id}/reconfirm"' in body
     assert f'name="predecessor_document_id" value="{chain["predecessor"].id}"' in body
     assert (
@@ -910,7 +933,7 @@ def test_reconfirmation_post_moves_support_and_redirects_back_to_that_lane(
 ):
     chain = _seed_reconfirmation_ready_chain(session, project)
     before = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
-    assert "Evidence is not current" in before.text
+    assert "Supporting document replaced" in before.text
 
     response = client.post(
         f"/supersession-review/{chain['dependency'].id}/reconfirm",
@@ -933,10 +956,10 @@ def test_reconfirmation_post_moves_support_and_redirects_back_to_that_lane(
     assert "Queue empty" in refreshed.text
     ordinary_after = client.get(f"/queue/{project.slug}?lane=candidate")
     assert "Queue empty" in ordinary_after.text
-    assert "Extracted conflicts (0)" in ordinary_after.text
+    assert "Proposed constraints (0)" in ordinary_after.text
     assert "FOC1-1" not in ordinary_after.text
     detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
-    assert "Evidence is not current" not in detail.text
+    assert "Supporting document replaced" not in detail.text
     assert chain["predecessor"].filename in detail.text
     assert chain["successor"].filename in detail.text
     assert "reconfirm_operative_support" in detail.text
@@ -965,9 +988,9 @@ def test_stale_reconfirmation_form_is_409_and_leaves_review_work_open(
     assert response.status_code == 409
     assert "stale or no longer safe" in response.json()["detail"]
     review = client.get(f"/queue/{project.slug}?lane=reconfirmation")
-    assert "Use current Evidence" in review.text
+    assert "Confirm replacement supporting document" in review.text
     detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
-    assert "Evidence is not current" in detail.text
+    assert "Supporting document replaced" in detail.text
     assert chain["predecessor"].filename in detail.text
     assert chain["successor"].filename not in detail.text
 
@@ -2242,6 +2265,66 @@ def test_a_sheet_candidate_is_labelled_as_read_from_cells(client, session, proje
 # ----------------- exception pills read as facts (#117, ADR-0010)
 
 
+def test_documentation_review_labels_preserve_source_wording_and_current_mark(
+    client, session, project, document
+):
+    """A review mark describes documents, without rewriting the source's terms."""
+    source_wording = "Ready Dependency: Milestone Evidence required for closure."
+    document.filename = "Ready-Milestone-Evidence.pdf"
+    page = session.scalar(
+        select(DocPage).where(DocPage.document_id == document.id, DocPage.page_no == 1)
+    )
+    page.text = source_wording
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-DOCUMENT-REVIEW",
+        dep_type="utility_relocation",
+        title=source_wording,
+        evidence_required="Evidence Required: original completion record",
+    )
+    session.add(dependency)
+    session.flush()
+    evidence = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote=source_wording,
+        verified=True,
+    )
+    session.add(evidence)
+    session.flush()
+    detail_url = f"/ledger/{project.slug}/{dependency.id}"
+
+    before = client.get(detail_url)
+    assert before.status_code == 200
+    assert "Documents required for this condition" in before.text
+    assert "Source passage check" in before.text
+    assert "Not confirmed" in before.text
+    assert "Mark documents sufficient" in before.text
+
+    marked = client.post(
+        f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
+        data={"slug": project.slug},
+    )
+    assert marked.status_code == 200
+    assert "Documents marked sufficient" in marked.text
+    assert "Remove sufficiency mark" in marked.text
+    assert "Mark documents sufficient" not in marked.text
+
+    for response in (before, marked):
+        assert source_wording in unescape(response.text)
+        assert "Ready-Milestone-Evidence.pdf" in response.text
+        assert "Evidence Required: original completion record" in response.text
+        assert "Relocation complete" not in response.text
+        assert "mark as closing" not in response.text
+
+    listing = client.get(f"/ledger/{project.slug}?ready=yes")
+    assert "Constraints" in listing.text
+    assert "DEP-DOCUMENT-REVIEW" in listing.text
+    assert "Documents marked sufficient" in listing.text
+    assert 'name="ready"' in listing.text
+
+
 def two_overdue(session, project):
     """Two overdue records; one critical, one whose document said nothing."""
     from datetime import date, timedelta
@@ -2310,7 +2393,7 @@ def test_ledger_pills_carry_the_rules_own_days(client, session, project):
 
     body = client.get(f"/ledger/{project.slug}").text
 
-    assert "Committed Date passed 40d" in body
+    assert "Promised timing passed 40d" in body
 
 
 def test_no_severity_markup_survives_anywhere(client, session, project):
@@ -2344,7 +2427,7 @@ def test_the_dependency_view_states_days_beside_each_rule(client, session, proje
 
     body = client.get(f"/ledger/{project.slug}/{deps[0].id}").text
 
-    assert "Committed Date passed" in body
+    assert "Promised timing passed" in body
     assert "40d" in body
 
 
@@ -2367,7 +2450,7 @@ def test_a_zero_day_quantity_still_renders(client, session, project):
 
     body = client.get(f"/ledger/{project.slug}").text
 
-    assert "Need Date is near 0d" in body
+    assert "Required by date is near 0d" in body
 
 
 def test_superseded_citation_is_visible_as_reconfirmation_work(
@@ -2430,7 +2513,7 @@ def test_superseded_citation_is_visible_as_reconfirmation_work(
     detail = client.get(f"/ledger/{project.slug}/{dependency.id}").text
 
     for body in (ledger, detail):
-        assert "Evidence is not current · re-confirmation 0d" in body
+        assert "Supporting document replaced 0d" in body
         assert "needs human re-confirmation against the current revision" in body
 
 
@@ -2745,7 +2828,7 @@ def test_the_rehearsal_lane_reads_exactly_the_receipt(session, client, project):
     page = client.get(
         f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
     ).text
-    assert f"Cohort receipt #{receipt.id}" in page
+    assert f"Test input manifest #{receipt.id}" in page
     assert "0 of 1 decided" in page
     assert "W4" in page
     assert 'name="cohort_receipt_id"' in page
@@ -2833,8 +2916,8 @@ def test_accept_flows_into_the_coordination_strip_and_back(session, client, proj
     assert "coordinate=" in location
 
     page = client.get(location).text
-    assert "Admitted" in page
-    assert "internal owner" in page
+    assert "Recorded" in page
+    assert "assigned to" in page
 
     dependency_id = int(location.rsplit("coordinate=", 1)[1])
     assigned = client.post(
@@ -2886,17 +2969,17 @@ def test_decided_rehearsal_cohort_resumes_admitted_dependency_coordination(
 
     page = client.get(lane).text
 
-    assert "Extracted conflict review complete" in page
-    assert "1 admitted Dependency needs coordination" in page
-    assert "Admitted" in page
-    assert "internal owner" in page
+    assert "Proposed constraint review complete" in page
+    assert "1 recorded Constraint needs coordination" in page
+    assert "Recorded" in page
+    assert "assigned to" in page
     assert "Continue coordination" in page
     assert f"coordinate={dependency_id}" in page
     assert "Queue empty" not in page
 
     continued = client.get(f"{lane}&coordinate={dependency_id}").text
-    assert "Admitted" in continued
-    assert "internal owner" in continued
+    assert "Recorded" in continued
+    assert "assigned to" in continued
     assert 'name="owner"' in continued
     assert 'name="action"' in continued
 
@@ -2932,8 +3015,8 @@ def test_decided_rehearsal_cohort_keeps_coordinated_dependency_openable(
 
     page = client.get(lane).text
 
-    assert "Extracted conflict review complete" in page
-    assert "Every admitted Dependency currently has a Coordination Plan" in page
+    assert "Proposed constraint review complete" in page
+    assert "Every recorded Constraint currently has a Follow-up plan" in page
     assert "Review coordination" in page
     detail_url = _link_href(page, "Review coordination")
     assert detail_url.startswith(f"/ledger/{project.slug}/{dependency_id}?return_to=")
@@ -2941,7 +3024,7 @@ def test_decided_rehearsal_cohort_keeps_coordinated_dependency_openable(
     assert "Queue empty" not in page
 
     detail = client.get(detail_url).text
-    assert "Internal Owner" in detail
+    assert "Assigned to" in detail
     assert "completed" in detail
     assert "cancel action" in detail
 
@@ -2963,7 +3046,7 @@ def test_rehearsal_cohort_summary_flag_clears_default_coordinate_focus(
 
     page = client.get(f"{lane}&summary=1").text
 
-    assert "Extracted conflict review complete" in page
+    assert "Proposed constraint review complete" in page
     assert "Continue coordination" in page
     assert f"coordinate={dependency_id}" in page
     assert 'name="owner"' not in page
@@ -3006,9 +3089,9 @@ def test_decided_rehearsal_cohort_does_not_hide_a_mixed_unresolved_member(
         f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}&summary=1"
     ).text
 
-    assert "Every admitted Dependency currently has a Coordination Plan" not in page
-    assert "1 cohort member has no trustworthy admitted Dependency link" in page
-    assert "Admitted record unavailable" in page
+    assert "Every recorded Constraint currently has a Follow-up plan" not in page
+    assert "1 test case has no trustworthy recorded Constraint link" in page
+    assert "Recorded Constraint unavailable" in page
 
 
 def test_decided_rehearsal_cohort_orders_incomplete_before_coordinated(
@@ -3053,7 +3136,7 @@ def test_decided_rehearsal_cohort_orders_incomplete_before_coordinated(
     ).text
 
     assert page.index("W5") < page.index("W4")
-    assert "1 admitted Dependency needs coordination" in page
+    assert "1 recorded Constraint needs coordination" in page
 
 
 def test_rehearsal_cohort_focuses_the_first_missing_coordination_field(
@@ -3136,10 +3219,10 @@ def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
     lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
     record_url = _link_href(
         client.get(lane).text,
-        "View record and Evidence",
+        "View record and supporting documents",
     )
     detail = client.get(record_url).text
-    return_url = _link_href(detail, "Back to cohort coordination")
+    return_url = _link_href(detail, "Back to test coordination")
     action = f"/dependencies/{dependency_id}/owner"
     form = _rendered_form_data(detail, action)
 
@@ -3186,7 +3269,7 @@ def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
         "Review coordination",
     )
     detail = client.get(record_url).text
-    return_url = _link_href(detail, "Back to cohort coordination")
+    return_url = _link_href(detail, "Back to test coordination")
     assert return_url == f"{lane}&summary=1"
     action = f"/dependencies/{dependency_id}/action/complete"
     form = _rendered_form_data(detail, action)
@@ -3288,18 +3371,18 @@ def test_rehearsal_cohort_exposes_record_evidence_and_exact_return(
     before_candidate_state = member.state
 
     coordination = client.get(lane).text
-    record_url = _link_href(coordination, "View record and Evidence")
+    record_url = _link_href(coordination, "View record and supporting documents")
 
     assert record_url.startswith(f"/ledger/{project.slug}/{dependency_id}?return_to=")
     detail = client.get(record_url)
     assert detail.status_code == 200
-    assert "Back to cohort coordination" in detail.text
+    assert "Back to test coordination" in detail.text
     assert "feb.pdf" in detail.text
-    return_url = _link_href(detail.text, "Back to cohort coordination")
+    return_url = _link_href(detail.text, "Back to test coordination")
     assert return_url == f"{lane}&coordinate={dependency_id}"
 
     returned = client.get(return_url).text
-    assert "Admitted" in returned
+    assert "Recorded" in returned
     assert 'name="owner"' in returned
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
     assert (
@@ -3368,8 +3451,8 @@ def test_coordinated_cohort_record_returns_to_the_cohort_summary(
     detail_url = _link_href(summary, "Review coordination")
     detail = client.get(detail_url).text
 
-    assert "Back to cohort coordination" in detail
-    assert _link_href(detail, "Back to cohort coordination") == f"{lane}&summary=1"
+    assert "Back to test coordination" in detail
+    assert _link_href(detail, "Back to test coordination") == f"{lane}&summary=1"
 
 
 def test_dependency_detail_without_cohort_context_returns_to_ledger(
@@ -3386,8 +3469,8 @@ def test_dependency_detail_without_cohort_context_returns_to_ledger(
 
     page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
 
-    assert "Back to cohort coordination" not in page
-    assert f'href="/ledger/{project.slug}">← ledger</a>' in page
+    assert "Back to test coordination" not in page
+    assert f'href="/ledger/{project.slug}">← constraints</a>' in page
 
 
 def _anchor_before_label(page: str, label: str) -> str:
@@ -3416,14 +3499,14 @@ def test_rehearsal_coordination_opens_the_existing_report_workspace_in_a_new_tab
     before_state = member.state
 
     page = client.get(lane).text
-    anchor = _anchor_before_label(page, "Prepare Report (opens in new tab)")
+    anchor = _anchor_before_label(page, "Prepare coordination report (opens in new tab)")
 
     assert f'href="/reports/{project.slug}"' in anchor
     assert 'target="_blank"' in anchor
     assert 'rel="noopener"' in anchor
     workspace = client.get(f"/reports/{project.slug}")
     assert workspace.status_code == 200
-    assert "Render fixed PDF for review" in workspace.text
+    assert "Prepare fixed PDF for review" in workspace.text
     assert (
         session.scalar(select(func.count()).select_from(ExternalReportArtifact))
         == before_artifacts
@@ -3471,7 +3554,7 @@ def test_rehearsal_cohort_summary_keeps_report_navigation_available(
     page = client.get(
         f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}&summary=1"
     ).text
-    anchor = _anchor_before_label(page, "Prepare Report (opens in new tab)")
+    anchor = _anchor_before_label(page, "Prepare coordination report (opens in new tab)")
 
     assert f'href="/reports/{project.slug}"' in anchor
     assert 'target="_blank"' in anchor
@@ -3485,7 +3568,7 @@ def test_ordinary_candidate_lane_does_not_gain_cohort_report_navigation(
 
     page = client.get(f"/queue/{project.slug}?lane=candidate").text
 
-    assert "Prepare Report (opens in new tab)" not in page
+    assert "Prepare coordination report (opens in new tab)" not in page
 
 
 def test_decided_rehearsal_cohort_names_when_nothing_was_admitted(
@@ -3509,8 +3592,8 @@ def test_decided_rehearsal_cohort_names_when_nothing_was_admitted(
 
     page = client.get(lane).text
 
-    assert "Extracted conflict review complete" in page
-    assert "No Dependencies were admitted from this cohort" in page
+    assert "Proposed constraint review complete" in page
+    assert "No Constraints were recorded from these test cases" in page
     assert "W4" in page
     assert "rejected" in page
     assert "Queue empty" not in page
@@ -3530,9 +3613,9 @@ def test_decided_rehearsal_cohort_fails_closed_on_missing_admission_link(
         f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
     ).text
 
-    assert "Extracted conflict review complete" in page
+    assert "Proposed constraint review complete" in page
     assert "W4" in page
-    assert "Admitted record unavailable" in page
+    assert "Recorded Constraint unavailable" in page
     assert f'href="/ledger/{project.slug}/' not in page
     assert "Queue empty" not in page
 
@@ -3598,8 +3681,8 @@ def test_decided_rehearsal_cohort_preserves_a_dismissed_admission_outcome(
     ).text
 
     assert "W4" in page
-    assert "No admitted Dependencies remain open for coordination" in page
-    assert "Dismissed by a recorded act" in page
+    assert "No recorded Constraints remain open for coordination" in page
+    assert "Removed from the active log by a recorded decision" in page
     assert f'href="/ledger/{project.slug}/{dependency_id}"' not in page
     assert "Continue coordination" not in page
 
@@ -3626,8 +3709,8 @@ def test_rehearsal_cohort_does_not_open_a_dismissed_dependency(
 
     page = client.get(f"{lane}&coordinate={dependency_id}").text
 
-    assert "Dismissed by a recorded act" in page
-    assert "Admitted" not in page
+    assert "Removed from the active log by a recorded decision" in page
+    assert "Recorded" not in page
     assert 'name="owner"' not in page
 
 
@@ -3661,7 +3744,7 @@ def test_rehearsal_cohort_does_not_open_a_dependency_outside_its_receipt(
         f"&cohort_receipt_id={receipt.id}&coordinate={outsider.id}"
     ).text
 
-    assert "1 admitted Dependency needs coordination" in page
+    assert "1 recorded Constraint needs coordination" in page
     assert f"coordinate={admitted_id}" in page
     assert "DEP-OUTSIDE-COHORT" not in page
     assert "Outside the pinned receipt" not in page
@@ -3929,7 +4012,7 @@ def test_the_event_lane_reads_exactly_the_receipt(session, client, project):
         f"&event_cohort_receipt_id={receipt.id}"
         f"&candidate_id={c['pl7_b'].id}"
     ).text
-    assert f"Event cohort receipt #{receipt.id}" in page
+    assert f"Statement test input manifest #{receipt.id}" in page
     assert "PL7" in page
     # The other revision of the same conflict is offered as a pre-checked
     # merge inside the accept gesture, named by its document.
@@ -3955,10 +4038,10 @@ def test_event_lane_accept_still_opens_the_admitted_dependency(
     assert accepted.status_code == 303
     assert "coordinate=" in accepted.headers["location"]
     page = client.get(accepted.headers["location"]).text
-    assert "Admitted" in page
+    assert "Recorded" in page
     assert 'name="owner"' in page
     assert 'name="action"' in page
-    assert "Prepare Report (opens in new tab)" not in page
+    assert "Prepare coordination report (opens in new tab)" not in page
 
 
 def test_the_event_lane_boundary_refuses_a_non_member_mutation(
@@ -4358,7 +4441,7 @@ def test_settling_a_dispute_closes_it_and_is_attributable(session, client, proje
 
     page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
     assert "sources disagree" not in page
-    assert "settled" in page
+    assert "Conclusion recorded" in page
     # Both claims survive the settlement: nothing is erased.
     assert "1102+20" in page and "1105+00" in page
 
@@ -4440,7 +4523,7 @@ def test_an_unverifiable_row_is_offered_rather_than_withheld(
 
     page = client.get(f"/queue/{project.slug}").text
     assert "BAD-1" in page
-    assert "Citation unverified" in page
+    assert "Source passage check failed" in page
 
 
 def test_a_row_with_no_identifier_is_offered_with_its_reason(
@@ -4660,7 +4743,7 @@ def test_the_queue_points_at_the_pile_without_becoming_it(session, client, proje
 
     page = client.get(f"/queue/{project.slug}").text
     assert f"/statements/{project.slug}" in page
-    assert "1 statement to place" in page
+    assert "1 statement to review" in page
 
 
 def test_attaching_from_the_pile_puts_it_on_the_record(session, client, project):
@@ -5024,8 +5107,8 @@ def test_same_document_replay_residual_has_human_review_copy():
     assert headline == (
         "This source row was previously handled, but safe replay is not proven."
     )
-    assert "current Dependency association" in guidance
-    assert "review the cited Evidence" in guidance
+    assert "current Constraint association" in guidance
+    assert "review the cited passages" in guidance
 
 
 def test_frontend_request_receipt_uses_response_status_and_type_tagged_hashes(

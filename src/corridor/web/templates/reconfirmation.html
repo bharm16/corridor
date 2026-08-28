@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Changed Document Evidence — {{ project.name }}</title>
+<title>Newer document needs attention — {{ project.name }}</title>
 <style>
   :root { --line:#ddd; --muted:#666; --ok:#067647; }
   * { box-sizing:border-box; }
@@ -28,22 +28,22 @@
 </style>
 
 <header>
-  <nav aria-label="Review lanes">
-    <a href="/queue/{{ project.slug }}?lane=candidate">Extracted conflicts ({{ candidate_count }})</a>
-    <a href="/queue/{{ project.slug }}?lane=reconfirmation" aria-current="page">Changed Document Evidence ({{ reconfirmation_count }})</a>
+  <nav aria-label="Review categories">
+    <a href="/queue/{{ project.slug }}?lane=candidate">Proposed constraints ({{ candidate_count }})</a>
+    <a href="/queue/{{ project.slug }}?lane=reconfirmation" aria-current="page">Newer documents needing attention ({{ reconfirmation_count }})</a>
   </nav>
 </header>
 
 
 <main>
-  <p class="safe"><b>The source wording is unchanged.</b> This action moves only
-    Operative Support to current Evidence; it does not add or revise the Dependency.</p>
+  <p class="safe"><b>The source wording is unchanged.</b> This action replaces the
+    supporting source for the recorded conclusion. It does not add or change a Constraint.</p>
 
-  <h1>{{ view.dependency.ref_code if view.dependency else "Dependency unavailable" }}</h1>
+  <h1>{{ view.dependency.ref_code if view.dependency else "Constraint unavailable" }}</h1>
   {% if view.dependency %}<p>{{ view.dependency.title }}</p>{% endif %}
 
   <div class="documents">
-    <div class="document"><small>Superseded revision</small><br>
+    <div class="document"><small>Replaced revision</small><br>
       <b>{{ view.predecessor.filename if view.predecessor else "unknown" }}</b></div>
     <span aria-hidden="true">→</span>
     <div class="document"><small>Current revision</small><br>
@@ -53,14 +53,14 @@
   {% if view.successor_candidate %}
     <table>
       {% for name, value in (view.successor_candidate.payload_json.get("fields") or {})|dictsort %}
-        <tr><th>{{ name }}</th><td>{{ value }}</td></tr>
+        <tr><th>{{ field_label(name) }}</th><td>{{ value }}</td></tr>
       {% endfor %}
     </table>
   {% endif %}
 
   <p class="muted">Comparison #{{ view.review.comparison_id }} · finding
     #{{ view.review.finding_id }} · {{ view.review.superseded_scopes|length }}
-    operative scope(s) will move.</p>
+    supporting-source use(s) will move.</p>
 
   <form method="post" action="/supersession-review/{{ view.review.dependency_id }}/reconfirm" id="reconfirm">
     <input type="hidden" name="slug" value="{{ project.slug }}">
@@ -69,7 +69,7 @@
     <input type="hidden" name="comparison_id" value="{{ view.review.comparison_id }}">
     <input type="hidden" name="finding_id" value="{{ view.review.finding_id }}">
     <input type="hidden" name="scope_fingerprint" value='{{ view.review.scope_fingerprint|tojson }}'>
-    <button><kbd>c</kbd> Use current Evidence</button>
+    <button><kbd>c</kbd> Confirm replacement supporting document</button>
   </form>
 </main>
 

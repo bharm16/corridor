@@ -2,13 +2,13 @@
 status: accepted
 ---
 
-# The document records a Resolution Strategy, and the work-type filter is derived
+# The document records a Utility Conflict Resolution Method, and the work-type filter is derived
 
-> **Terminology amendment, 2026-08-27 — [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Display the actual Resolution Strategy. The retained internal filter formerly called Criticality selects relocation, removal, or abandonment; it is not critical-path status or urgency. Constraint replaces Dependency in current prose. Literal source language, metric fields, historical measurements, and rejected alternatives remain identifiable below.
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 
 **Supersedes [ADR-0007](0007-criticality-is-asserted-by-the-document.md).**
 
-Amended by [ADR-0010](0010-an-exception-is-a-fact-to-filter-not-a-score-to-rank.md): the consequence below that `severity = rule severity × criticality` "needs restating" was first answered by restating the multiplier as ×3, and later abolished — severity is retired entirely. The work-type subset may filter Exceptions; it never weights them.
+Amended by [ADR-0010](0010-an-exception-is-a-fact-to-filter-not-a-score-to-rank.md): the consequence below that `severity = rule severity × criticality` "needs restating" was first answered by restating the multiplier as ×3, and later abolished — severity is retired entirely. The work-type subset may filter Constraint Alerts; it never weights them.
 
 ADR-0007 used Dependency and critical for a utility condition whose document says the facility must move, and asserted that each agency spells that differently — *"TxDOT spells this `Potential Conflict = Y`"*. That sentence is wrong, and the way it is wrong changes the model rather than a value in it.
 
@@ -20,7 +20,7 @@ R15B enumerates four resolution alternatives, and they are worth quoting because
 
 > Relocation before construction · Protect in-place · Change highway design · Exception to policy
 
-The documents do not assert Corridor's former Criticality label. **They assert Resolution Strategy. The internal work-type filter derives from that strategy**, using the subset below.
+The documents do not assert Corridor's former Criticality label. **They assert Utility Conflict Resolution Method. The internal work-type filter derives from that strategy**, using the subset below.
 
 ## What the corpus actually carries
 
@@ -74,11 +74,13 @@ This decomposes R15B's single `Relocation before construction` alternative along
 
 **Adopt the federal definition.** Legally exact, defensible to an auditor, adopted verbatim by WSDOT, and — as FDOT's scheduling manual shows — used for scheduling rather than only for cost. It is the strongest of the rejected options and was rejected on consequence rather than on principle: it puts 64 of SR 789's 66 rows in the work-type subset and turns `Retain and Protect` into a relocation. ADR-0007 already named this failure — *"a gate whose critical set is most of the set may not catch the failure it was written for"* — and then accepted a 71% subset anyway. Taking the federal line would make it worse, not better.
 
-**Derive the former Criticality value and store nothing.** ADR-0007 rejected this because a reviewer can judge a different Resolution Strategy, whereas a reviewer cannot simply declare the documentation requirement met without supporting records. That distinction survives and is why `resolution_strategy` is stored and adjudicated: the reviewer judges *the strategy* — the matrix may say `Retain and Protect` about a duct bank under the only haul road — and the work-type filter follows from the conclusion. The human judgment moved fields; it did not disappear.
+**Derive the former Criticality value and store nothing.** ADR-0007 rejected this because a reviewer can judge a different Utility Conflict Resolution Method, whereas a reviewer cannot simply declare the documentation requirement met without supporting records. That distinction survives and is why `resolution_strategy` is stored and adjudicated: the reviewer judges *the strategy* — the matrix may say `Retain and Protect` about a duct bank under the only haul road — and the work-type filter follows from the conclusion. The human judgment moved fields; it did not disappear.
 
 ## Consequences
 
-**Projects A and C assert nothing.** 4,636 of 4,703 extracted rows carry no resolution strategy, because their documents record none. SR 789's 66 rows are the only measurable data until WSDOT 9424 is ingested — it is fetched (`corpus/wsdot-9424.lock.json`) but has never been through `make ingest`. This is a real loss of coverage and it is the honest reading: an inventory is not a conflict matrix.
+**Projects A and C did not state a resolution method in the measured fields.** At this decision's measurement, 4,636 of 4,703 extracted rows carried no resolution strategy because those documents recorded none. SR 789's 66 rows were the only measurable data until WSDOT 9424 was ingested — it had been fetched (`corpus/wsdot-9424.lock.json`) but had not been through `make ingest`. The missing field limits that measurement; it does not define the industry's document categories.
+
+**Terminology clarification under ADR-0048.** A Utility Conflict Matrix can include potential conflicts, no-conflict findings, and unresolved rows without a selected resolution method. A Utility Inventory can contain conflict notes or a resolution field. Corridor's historical extraction categories distinguish available source fields; they do not make these industry concepts mutually exclusive. Preserve an absent or undecided method as unknown rather than inventing a method or rejecting the source's matrix title. This clarification does not change extraction prompts or field-admission rules.
 
 **M7's gate is unaffected and better founded.** The gate scores WSDOT 9540, which carries the four resolution columns. It was never going to be scored on Project A.
 

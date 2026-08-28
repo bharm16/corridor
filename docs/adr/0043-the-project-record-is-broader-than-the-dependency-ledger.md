@@ -4,11 +4,17 @@ status: accepted
 
 # The Project Record is broader than the Constraint log
 
-> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 
-The **Ledger** remains the internal name for the working set of Constraints. Its
-customer view is a **Constraint Log**, or **Utility conflicts** when it contains
-only Utility Conflicts. The **Project Record** is the authoritative umbrella that
-also contains accepted External Party Statements, Supporting Documentation,
-Verbals, Work Decisions, and publication receipts. This preserves real party-level
+**Constraint Records** are the accepted Constraints within the Project Record;
+**Ledger** remains their internal implementation name. The customer view is a
+**Constraint Log**, or **Utility conflicts** when it contains only Utility
+Conflicts. The **Project Record** also contains accepted External Party Statements,
+Supporting Documentation, Recorded Verbal Statements, Coordination Decisions,
+schedule references, and publication receipts. This preserves real party-level
 Commitments without inventing Constraint scope.
+
+Project Record means the coordination records held by Corridor. It is not a claim
+to hold every construction contract, inspection, payment, or agency record. Its
+authority over recorded coordination facts confers no contractual authority over
+the whole project.

@@ -24,22 +24,22 @@
 <header><b>{{ project.name }}</b><a href="/statements/{{ project.slug }}/{{ candidate.id }}/coordinate">back to statement</a></header>
 <main>
   <h1>Correct this statement</h1>
-  <p class="lead">Correct Scope separately from an External Party fact. Both actions append history; neither rewrites the original Save.</p>
+  <p class="lead">Correct which constraints the statement applies to separately from what the organization said. Both actions append history; neither rewrites the original Save.</p>
 
   <section class="current" aria-label="Current accepted statement">
     <h2>Current accepted statement — read only</h2>
-    <p><b>External Party who spoke:</b> {{ event.stated_party }}</p>
-    <p><b>External Party affected:</b> {{ affected_party_name }}</p>
+    <p><b>Organization that made the statement:</b> {{ event.stated_party }}</p>
+    <p><b>Organization affected:</b> {{ affected_party_name }}</p>
     <p><b>Statement:</b> {{ event.description }}</p>
     <p><b>Timing:</b> {{ event.new_timing.text if event.new_timing else "Not stated" }}{% if event.new_timing %} — {{ event.new_timing.precision }} precision{% endif %}</p>
-    <p><b>Commitment Scope:</b>
+    <p><b>{{ label('applies_to') }}:</b>
       {% if scope_decision.scope_mode == "unknown" %}not yet known
-      {% elif scope_decision.scope_mode == "all_active" %}all active Dependencies in the recorded snapshot
-      {% else %}selected Dependencies{% endif %}
+      {% elif scope_decision.scope_mode == "all_active" %}all active constraints in the recorded snapshot
+      {% else %}selected constraints{% endif %}
     </p>
   </section>
 
-  <h2>Current verified Evidence</h2>
+  <h2>{{ label('supporting_documents') }}</h2>
   {% for link, document in current_evidence %}
     <section class="evidence">
       <span class="muted">{{ document.filename }} · registered page {{ link.page_no }}</span>
@@ -47,12 +47,12 @@
     </section>
   {% endfor %}
 
-  <section aria-label="Correct Commitment Scope">
-    <h2>Correct Commitment Scope</h2>
-    <p class="muted">Choose an action only when verified Evidence or the project record changes the current scope. Keeping the current state requires no Save.</p>
+  <section aria-label="Correct which constraints this applies to">
+    <h2>Correct which constraints this applies to</h2>
+    <p class="muted">Choose an action only when verified source passages or the project record support changing the linked constraints. Keeping the current state requires no Save.</p>
     {% if dependencies %}
       <details>
-        <summary>I can identify one or more affected Dependencies</summary>
+        <summary>I can identify one or more affected constraints</summary>
         <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/scope">
           <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
           <input type="hidden" name="expected_scope_decision_id" value="{{ scope_decision.id }}">
@@ -61,26 +61,26 @@
             <label class="dependency">
               <input type="checkbox" name="dependency_id" value="{{ dependency.id }}"{% if dependency.id in scope_dependency_ids %} checked{% endif %}>
               <b>{{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }}</b>
-              <span>Ledger reference {{ dependency.ref_code }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or "?" }} to {{ dependency.station_to or "?" }}{% endif %}{% if dependency.location_desc %} · {{ dependency.location_desc }}{% endif %}</span>
+              <span>Constraint reference {{ dependency.ref_code }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or "?" }} to {{ dependency.station_to or "?" }}{% endif %}{% if dependency.location_desc %} · {{ dependency.location_desc }}{% endif %}</span>
             </label>
           {% endfor %}
-          <button type="submit">Save selected Dependencies</button>
+          <button type="submit">Save selected constraints</button>
         </form>
       </details>
       <details>
-        <summary>The statement applies to every active {{ affected_party_name }} Dependency</summary>
+        <summary>The statement applies to every active {{ affected_party_name }} constraint</summary>
         <ul>{% for dependency, party_name in dependencies %}<li>{{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or "?" }} to {{ dependency.station_to or "?" }}{% endif %}</li>{% endfor %}</ul>
         <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/scope">
           <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
           <input type="hidden" name="expected_scope_decision_id" value="{{ scope_decision.id }}">
           <input type="hidden" name="scope_mode" value="all_active">
-          <button type="submit">Save all active {{ affected_party_name }} Dependencies</button>
+          <button type="submit">Save all active {{ affected_party_name }} constraints</button>
         </form>
       </details>
     {% endif %}
     {% if scope_decision.scope_mode != "unknown" %}
       <details>
-        <summary>The recorded Dependency scope is no longer supported</summary>
+        <summary>The recorded constraint links are no longer supported</summary>
         <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/scope">
           <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
           <input type="hidden" name="expected_scope_decision_id" value="{{ scope_decision.id }}">
@@ -94,14 +94,14 @@
   <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/facts">
     <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
     <fieldset>
-      <legend>Correct one supported External Party fact</legend>
+      <legend>Correct one supported fact from the organization</legend>
       <div class="grid">
-        <div><label for="affected-party">External Party affected</label><select id="affected-party" name="affected_external_org_id" required>{% for party in parties %}<option value="{{ party.id }}" {% if party.id == event.affected_external_org_id %}selected{% endif %}>{{ party.name }}</option>{% endfor %}</select></div>
-        <div><label for="stated-party">External Party who spoke</label><select id="stated-party" name="stated_external_org_id" required>{% for party in parties %}<option value="{{ party.id }}" {% if party.id == event.stated_external_org_id %}selected{% endif %}>{{ party.name }}</option>{% endfor %}</select></div>
+        <div><label for="affected-party">Organization affected</label><select id="affected-party" name="affected_external_org_id" required>{% for party in parties %}<option value="{{ party.id }}" {% if party.id == event.affected_external_org_id %}selected{% endif %}>{{ party.name }}</option>{% endfor %}</select></div>
+        <div><label for="stated-party">Organization that made the statement</label><select id="stated-party" name="stated_external_org_id" required>{% for party in parties %}<option value="{{ party.id }}" {% if party.id == event.stated_external_org_id %}selected{% endif %}>{{ party.name }}</option>{% endfor %}</select></div>
       </div>
-      <label for="stated-party-words">Party wording in the Evidence</label><input id="stated-party-words" name="stated_party" value="{{ event.stated_party or '' }}" required>
-      <label for="event-date">Statement date, if the Evidence says one</label><input id="event-date" name="event_date" type="date" value="{{ event.event_date or '' }}">
-      <label for="description">What the External Party said</label><textarea id="description" name="description" required>{{ event.description }}</textarea>
+      <label for="stated-party-words">Organization wording in the cited passage</label><input id="stated-party-words" name="stated_party" value="{{ event.stated_party or '' }}" required>
+      <label for="event-date">Statement date, if stated in the source</label><input id="event-date" name="event_date" type="date" value="{{ event.event_date or '' }}">
+      <label for="description">What the organization said</label><textarea id="description" name="description" required>{{ event.description }}</textarea>
       <div class="grid">
         <div><label for="new-timing-text">New timing, exactly as stated</label><input id="new-timing-text" name="new_timing_text" value="{{ event.new_timing.text if event.new_timing else '' }}" required></div>
         <div><label for="new-timing-precision">Precision</label><select id="new-timing-precision" name="new_timing_precision" required>{% for precision in ('day', 'month', 'approximate') %}<option value="{{ precision }}" {% if event.new_timing and event.new_timing.precision == precision %}selected{% endif %}>{{ precision }}</option>{% endfor %}</select></div>
@@ -112,8 +112,8 @@
         <div><label for="previous-timing-start">Earlier timing start</label><input id="previous-timing-start" name="previous_timing_start_date" type="date" value="{{ event.previous_timing.start_date if event.previous_timing and event.previous_timing.start_date else '' }}"></div>
         <div><label for="previous-timing-end">Earlier timing end</label><input id="previous-timing-end" name="previous_timing_end_date" type="date" value="{{ event.previous_timing.end_date if event.previous_timing and event.previous_timing.end_date else '' }}"></div>
       </div>
-      <label for="evidence-document">Verified Evidence document</label><select id="evidence-document" name="evidence_document_id" required><option value="">Choose document</option>{% for document in documents %}<option value="{{ document.id }}">{{ document.filename }}</option>{% endfor %}</select>
-      <label for="evidence-page">Verified Evidence page</label><input id="evidence-page" name="evidence_page_no" type="number" min="1" required>
+      <label for="evidence-document">Supporting document</label><select id="evidence-document" name="evidence_document_id" required><option value="">Choose document</option>{% for document in documents %}<option value="{{ document.id }}">{{ document.filename }}</option>{% endfor %}</select>
+      <label for="evidence-page">Source page</label><input id="evidence-page" name="evidence_page_no" type="number" min="1" required>
       <label for="evidence-quote">Exact quote supporting the correction</label><textarea id="evidence-quote" name="evidence_quote" required></textarea>
       <button type="submit">Save factual correction</button>
     </fieldset>

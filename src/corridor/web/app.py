@@ -130,6 +130,15 @@ from corridor.frontend_request_receipts import (
 from corridor.verbal import VerbalRefusal, record_verbal
 from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.presentation import (
+    documentation_review_label,
+    field_label,
+    input_reference_label,
+    label,
+    provenance_label,
+    resolution_strategy_label,
+    statement_type_label,
+)
 from corridor.report_release import (
     NoSuchReleasedReport,
     ReleaseRefusal,
@@ -149,6 +158,7 @@ from corridor.cohort import (
     require_event_cohort_member,
 )
 from corridor.models import CohortReceipt, EventCohortReceipt
+from corridor.operative_support import resolve_operative_support
 from corridor.work_decisions import (
     CoordinationSubject,
     assign_internal_owner,
@@ -208,22 +218,35 @@ from corridor.web.statement_forms import (
 )
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-app = FastAPI(title="Corridor — adjudication")
+TEMPLATES.env.globals.update(
+    label=label,
+    field_label=field_label,
+    documentation_review_label=documentation_review_label,
+    input_reference_label=input_reference_label,
+    provenance_label=provenance_label,
+    resolution_strategy_label=resolution_strategy_label,
+    statement_type_label=statement_type_label,
+)
+app = FastAPI(title="Corridor — coordination records")
 
 _WORK_REASON_COPY = {
-    "past_due": "The External Party commitment passed its stated date.",
-    "critical_missing_internal_owner": "A Critical Dependency has no Internal Owner.",
-    "critical_missing_next_action": "A Critical Dependency has no Next Action.",
-    "committed_date_change": "The External Party changed its Committed Date.",
-    "milestone_impact_unknown": "Its Milestone Impact is not yet known.",
+    "past_due": "The organization's commitment passed its stated date.",
+    "critical_missing_internal_owner": (
+        "No project person is assigned to this relocation, removal, or abandonment constraint."
+    ),
+    "critical_missing_next_action": (
+        "This relocation, removal, or abandonment constraint has no Next Action."
+    ),
+    "committed_date_change": "The organization changed its promised timing.",
+    "milestone_impact_unknown": "The effect on key dates is not yet known.",
     "disputed_date": "Sources disagree about a current date.",
-    "unknown_scope": "Commitment Scope is not yet known.",
-    "unplaced_statement": "Place this External Party statement with the right Dependency.",
-    "missing_internal_owner": "Assign the Internal Owner for this Commitment.",
+    "unknown_scope": "Applies to: not yet known.",
+    "unplaced_statement": "Clarify the organization's statement and which constraints it applies to.",
+    "missing_internal_owner": "Assign a project person for this Commitment.",
     "missing_next_action": "Set the Next Action for this Commitment.",
     "action_due": "The project Next Action is due now.",
     "action_due_date_unknown": "The Next Action needs a return date.",
-    "external_closure_follow_up": "Confirm the project Next Action after the External Party closure.",
+    "external_closure_follow_up": "Confirm the project Next Action after the organization reported completion.",
 }
 
 def get_session():
@@ -238,7 +261,7 @@ def get_human_principal() -> HumanPrincipal:
     except InvalidHumanPrincipal as exc:
         raise HTTPException(
             503,
-            "Admission is unavailable until CORRIDOR_HUMAN_PRINCIPAL names "
+            "Recording a human decision is unavailable until CORRIDOR_HUMAN_PRINCIPAL names "
             "a stable human subject",
         ) from exc
 
@@ -274,26 +297,26 @@ def _safe_cohort_return(
         or len(values.get("cohort_receipt_id", ())) != 1
         or (("coordinate" in values) == ("summary" in values))
     ):
-        raise HTTPException(400, "return_to must name this cohort context")
+        raise HTTPException(400, "return_to must name this test coordination context")
     try:
         receipt_id = int(values["cohort_receipt_id"][0])
     except (TypeError, ValueError):
-        raise HTTPException(400, "return_to must name this cohort context")
+        raise HTTPException(400, "return_to must name this test coordination context")
     receipt = session.get(CohortReceipt, receipt_id)
     if receipt is None or receipt.project_id != project.id:
-        raise HTTPException(400, "return_to must name this cohort context")
+        raise HTTPException(400, "return_to must name this test coordination context")
     rail = build_cohort_rail(session, receipt, None)
     if dependency_id not in cohort_openable_dependency_ids(rail):
-        raise HTTPException(400, "return_to must name this cohort context")
+        raise HTTPException(400, "return_to must name this test coordination context")
     if "coordinate" in values:
         try:
             coordinate_id = int(values["coordinate"][0])
         except (TypeError, ValueError):
-            raise HTTPException(400, "return_to must name this cohort context")
+            raise HTTPException(400, "return_to must name this test coordination context")
         if values["coordinate"] != [str(coordinate_id)] or coordinate_id != dependency_id:
-            raise HTTPException(400, "return_to must name this cohort context")
+            raise HTTPException(400, "return_to must name this test coordination context")
     elif values.get("summary") != ["1"]:
-        raise HTTPException(400, "return_to must name this cohort context")
+        raise HTTPException(400, "return_to must name this test coordination context")
     return candidate
 
 
@@ -493,28 +516,28 @@ STATEMENT_REASONS = {
     "reference_resolves_to_no_dependency": (
         "This statement names a conflict the record does not have.",
         "The number may be misread, or its conflict may not be loaded yet. "
-        "Name the right record, or toss it.",
+        "Identify the right constraint, or choose Do not add.",
     ),
     "reference_resolves_to_many": (
         "Several records carry this number.",
-        "Name which one the party was talking about.",
+        "Identify which one the organization was talking about.",
     ),
     "no_conflict_reference": (
         "This statement names no conflict.",
         "Read the quote and name the record it belongs to.",
     ),
     "party_mismatch": (
-        "The speaker is not the party that owns this conflict.",
+        "The speaker is not from the organization associated with this constraint.",
         "It may be an alias nobody has recorded, or the wrong record. "
         "Name the right one.",
     ),
     "party_unstated": (
-        "This statement names no party.",
+        "This statement names no organization.",
         "Read the quote and name the record it belongs to.",
     ),
     "project_side_actor": (
         "The speaker is the project's own side.",
-        "An internal action item, never an External Party's commitment. "
+        "An internal action item, not an outside organization's commitment. "
         "It cannot attach as a statement.",
     ),
     "citations_unverified": (
@@ -522,12 +545,12 @@ STATEMENT_REASONS = {
         "Check the page before placing it.",
     ),
     "event_type_outside_policy": (
-        "This is not a commitment or Committed Date Change.",
-        "Only those statement types carry an External Party timing.",
+        "This is not a Commitment or Change to promised timing.",
+        "Only those statement types carry promised timing from the organization.",
     ),
     "no_date": (
         "This statement carries no date.",
-        "Without one there is nothing to hold anyone to.",
+        "Check the source wording and preserve the timing precision it supports.",
     ),
     "unparseable_date": (
         "The stated date could not be read.",
@@ -542,31 +565,31 @@ STATEMENT_REASONS = {
 REVIEW_REASONS = {
     "revisions_disagree": (
         "The revisions disagree about this conflict.",
-        "Both pages are shown. Accept the revision that is right, or edit "
-        "the values before accepting.",
+        "Both pages are shown. Add the revision that is right, or edit "
+        "the values before adding the record.",
     ),
     "missing_from_agreement_document": (
         "Only one revision has this conflict.",
-        "It was added or dropped between revisions. Accept it if the "
+        "It was added or dropped between revisions. Add it if the "
         "record should carry it.",
     ),
     "multiple_rows_in_agreement_document": (
         "One revision lists this conflict twice.",
-        "Two rows share an identifier. Accept the one that is right and "
-        "reject the other.",
+        "Two rows share an identifier. Add the one that is right and "
+        "choose Do not add for the other.",
     ),
     "citations_unverified": (
         "The quote could not be found on the cited page.",
-        "Check the page before accepting anything from this row.",
+        "Check the page before adding anything from this row.",
     ),
     "already_admitted": (
         "A record already carries this identifier.",
-        "Merge into the existing record rather than admitting a second one.",
+        "Merge into the existing record to avoid adding a duplicate.",
     ),
     "same_document_replay_unproven": (
         "This source row was previously handled, but safe replay is not proven.",
-        "Its extracted facts or current Dependency association no longer prove "
-        "an exact replay. Keep it pending and review the cited Evidence.",
+        "Its extracted facts or current Constraint association no longer prove "
+        "an exact replay. Keep it pending and review the cited passages.",
     ),
     "asserts_nothing": (
         "This row states nothing.",
@@ -582,15 +605,15 @@ REVIEW_REASONS = {
         "Nothing can name it in the record as it stands.",
     ),
     "revisions_disagree_on_party": (
-        "The revisions name different parties for this conflict.",
+        "The revisions name different organizations for this conflict.",
         "That asks whether these are one conflict at all, which is not "
-        "something the machine may answer. Read both pages and accept the "
+        "something the machine may answer. Read both pages and add the "
         "one that is right.",
     ),
     "no_row_identity": (
-        "This row's number needs a party to name it.",
-        "This document numbers each party's conflicts separately, and the "
-        "row states no party — check the page and fill in what it shows.",
+        "This row's number needs an organization to identify it.",
+        "This document numbers each organization's conflicts separately, and the "
+        "row states no organization — check the page and fill in what it shows.",
     ),
 }
 
@@ -635,7 +658,7 @@ def _revision_panels(
             if (mine.get(name) or "") != (theirs.get(name) or ""):
                 differences.append(
                     {
-                        "field": name.replace("_", " "),
+                        "field": name,
                         "mine": mine.get(name) or "—",
                         "theirs": theirs.get(name) or "—",
                         "other_document": document.filename if document else "?",
@@ -687,7 +710,7 @@ def dismiss(
     project = _project(session, slug)
     dependency = session.get(Dependency, dependency_id)
     if dependency is None or dependency.project_id != project.id:
-        raise HTTPException(404, "no such dependency in this project")
+        raise HTTPException(404, "no such constraint in this project")
     try:
         dismiss_dependency(session, dependency, reason, principal=principal)
     except InvalidDismissReason as exc:
@@ -716,8 +739,8 @@ def statements(
         item["headline"], item["guidance"] = STATEMENT_REASONS.get(
             item["reason"],
             (
-                "This statement could not be placed.",
-                "Name the record it belongs to, or toss it.",
+                "This statement needs clarification.",
+                "Identify which constraints it applies to, or choose Do not add.",
             ),
         )
     return TEMPLATES.TemplateResponse(
@@ -836,13 +859,13 @@ async def save_admitted_statement_scope(
         session, project.id, candidate.id
     )
     if coordination is None:
-        raise HTTPException(404, "no mechanically admitted statement in this project")
+        raise HTTPException(404, "no statement recorded by an exact rule in this project")
     response = _statement_coordination_screen(
         request,
         session,
         project,
         candidate,
-        error="Use Correct to change Commitment Scope after admission.",
+        error="Use Correct to change which constraints an already recorded statement applies to.",
         status_code=400,
     )
     response.status_code = 400
@@ -924,7 +947,7 @@ async def save_admitted_statement_owner(
         session, project.id, candidate.id
     )
     if coordination is None:
-        raise HTTPException(404, "no mechanically admitted statement in this project")
+        raise HTTPException(404, "no statement recorded by an exact rule in this project")
     form = await request.form()
     try:
         roster_id = required_positive_form_id(form, "internal_owner_roster_entry_id")
@@ -981,7 +1004,7 @@ async def save_admitted_statement_next_action(
         session, project.id, candidate.id
     )
     if coordination is None:
-        raise HTTPException(404, "no mechanically admitted statement in this project")
+        raise HTTPException(404, "no statement recorded by an exact rule in this project")
     form = await request.form()
     try:
         action = str(form.get("next_action") or "").strip()
@@ -1113,7 +1136,7 @@ def restore_waiting_statement_not_relevant(
     candidate = _project_statement_candidate(session, project, candidate_id)
     disposition = session.get(CandidateDisposition, disposition_id)
     if disposition is None or disposition.candidate_id != candidate.id:
-        raise HTTPException(404, "no such Not Relevant disposition for this statement")
+        raise HTTPException(404, "no matching Do not add decision for this statement")
     try:
         restore_statement_not_relevant(session, disposition.id, principal=principal)
     except StatementCoordinationRefusal as exc:
@@ -1158,12 +1181,15 @@ def correct_statement_screen(
         )
         if admitted is None:
             raise HTTPException(
-                409, "this statement has no current accepted statement to correct"
+                409, "this proposal has no current recorded statement to correct"
             )
         event = admitted.event
         scope_decision = admitted.scope
     if scope_decision is None:
-        raise HTTPException(409, "this statement has no current Commitment Scope")
+        raise HTTPException(
+            409,
+            "this statement has no current record of which constraints it applies to",
+        )
     affected_party = session.get(ExternalOrg, event.affected_external_org_id)
     response = TEMPLATES.TemplateResponse(
         request,
@@ -1175,7 +1201,7 @@ def correct_statement_screen(
             "affected_party_name": (
                 affected_party.name
                 if affected_party is not None
-                else "External Party not resolved"
+                else "Organization not identified"
             ),
             "scope_decision": scope_decision,
             "scope_dependency_ids": tuple(
@@ -1368,7 +1394,7 @@ def _project_statement_candidate(
 ) -> Candidate:
     candidate = session.get(Candidate, candidate_id)
     if candidate is None or candidate.project_id != project.id or candidate.kind != "event":
-        raise HTTPException(404, "no such Unplaced Statement in this project")
+        raise HTTPException(404, "no such proposed statement in this project")
     return candidate
 
 
@@ -1544,7 +1570,7 @@ def _statement_coordination_screen(
                     "station_from": dependency.station_from,
                     "station_to": dependency.station_to,
                     "external_org_id": dependency.external_org_id,
-                    "external_org_name": external_org_name or "External Party not resolved",
+                    "external_org_name": external_org_name or "Organization not identified",
                 }
                 for dependency, external_org_name in dependencies
             ],
@@ -1620,7 +1646,7 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
     rows = [
         {
             "created_at": receipt.created_at,
-            "label": "Saved statement and Coordination Plan",
+            "label": "Saved statement and Follow-up plan",
             "detail": f"grouping receipt {receipt.id}",
         }
         for receipt in receipts
@@ -1629,9 +1655,9 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
         {
             "created_at": disposition.created_at,
             "label": (
-                "Marked Not Relevant"
+                "Not added to project record"
                 if disposition.disposition == "not_relevant"
-                else "Accepted extracted statement"
+                else "Recorded proposed statement"
             ),
             "detail": disposition.reason.replace("_", " ") if disposition.reason else "",
         }
@@ -1667,9 +1693,22 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
 
 
 def _authority_gap_label(code: str) -> str:
-    if code == "closure_target_commitment_not_established":
-        return "Closure target Commitment not established"
-    return code.replace("_", " ")
+    return {
+        "closure_target_commitment_not_established": (
+            "Commitment covered by the completion report is not established"
+        ),
+        "closure_target_relationship_not_established": (
+            "One open commitment is recorded, but the completion report does not "
+            "establish that it covers that commitment"
+        ),
+        "closure_target_commitment_ambiguous": (
+            "Several open commitments match; the completion report does not "
+            "identify which one"
+        ),
+        "closure_affected_party_not_established": (
+            "The organization that reported completion is not established"
+        ),
+    }.get(code, code.replace("_", " "))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2024,15 +2063,15 @@ def coordinator_home(
                     f"/queue/{project.slug}?lane=candidate&mode=review"
                     f"&candidate_id={item.candidate_id}"
                 )
-                action_label = "Review extracted Dependency"
+                action_label = "Review proposed constraint"
             else:
                 action_url = (
                     f"/statements/{project.slug}/{item.candidate_id}/coordinate"
                 )
-                action_label = "Review extracted statement"
+                action_label = "Review proposed statement"
         elif item.kind == "dependency":
             action_url = f"/ledger/{project.slug}/{item.dependency_id}"
-            action_label = "Open Dependency"
+            action_label = "Open constraint"
         elif item.source_candidate_id is not None:
             action_url = (
                 f"/statements/{project.slug}/{item.source_candidate_id}/coordinate"
@@ -2103,14 +2142,16 @@ def queue(
     cohort_receipt = None
     if lane == "rehearsal":
         if cohort_receipt_id is None:
-            raise HTTPException(400, "the rehearsal lane names its cohort receipt")
+            raise HTTPException(400, "test coordination requires its input manifest")
         cohort_receipt = session.get(CohortReceipt, cohort_receipt_id)
         if cohort_receipt is None or cohort_receipt.project_id != project.id:
-            raise HTTPException(404, "no such cohort receipt in this project")
+            raise HTTPException(404, "no such test input manifest in this project")
     event_cohort_receipt = None
     if lane == "events":
         if event_cohort_receipt_id is None:
-            raise HTTPException(400, "the event lane names its cohort receipt")
+            raise HTTPException(
+                400, "statement test coordination requires its input manifest"
+            )
         event_cohort_receipt = session.get(
             EventCohortReceipt, event_cohort_receipt_id
         )
@@ -2118,7 +2159,9 @@ def queue(
             event_cohort_receipt is None
             or event_cohort_receipt.project_id != project.id
         ):
-            raise HTTPException(404, "no such event cohort receipt in this project")
+            raise HTTPException(
+                404, "no such statement test input manifest in this project"
+            )
     worklist = build_reviewer_worklist(session, project.id)
     ordinary_candidate_ids = frozenset(
         candidate_id
@@ -2509,9 +2552,9 @@ def dependency_detail(
     try:
         view = load_dependency(session, dependency_id)
     except LookupError:
-        raise HTTPException(404, "no such dependency")
+        raise HTTPException(404, "no such constraint")
     if view.dependency.project_id != project.id:
-        raise HTTPException(404, "no such dependency in this project")
+        raise HTTPException(404, "no such constraint in this project")
     safe_return = (
         _safe_cohort_return(
             return_to,
@@ -2524,6 +2567,7 @@ def dependency_detail(
     )
     owner_decision = current_internal_owner_decision(session, dependency_id)
     action_decision = current_next_action_decision(session, dependency_id)
+    support = resolve_operative_support(session, (dependency_id,))[dependency_id]
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
@@ -2532,6 +2576,9 @@ def dependency_detail(
             "view": view,
             "owner_decision": owner_decision,
             "action_decision": action_decision,
+            "sufficient_evidence_ids": {
+                item.evidence_link_id for item in support.readiness
+            },
             "return_to": safe_return,
             "disputes": {
                 d.field_name: d
@@ -2595,7 +2642,7 @@ def settle(
     project = _project(session, slug)
     dependency = session.get(Dependency, dependency_id)
     if dependency is None or dependency.project_id != project.id:
-        raise HTTPException(404, "no such dependency in this project")
+        raise HTTPException(404, "no such constraint in this project")
     try:
         settle_dispute(
             session,
@@ -3306,7 +3353,7 @@ def _project_dependency(
 ) -> Dependency:
     dependency = session.get(Dependency, dependency_id)
     if dependency is None or dependency.project_id != project.id:
-        raise HTTPException(404, "no such dependency")
+        raise HTTPException(404, "no such constraint")
     return dependency
 
 
@@ -3318,5 +3365,5 @@ def _project_evidence(
         session, (dependency.id,)
     ).contains(dependency.id, link_id)
     if link is None or (link.dependency_id != dependency.id and not scoped_event):
-        raise HTTPException(404, "no such evidence")
+        raise HTTPException(404, "no such cited passage")
     return link

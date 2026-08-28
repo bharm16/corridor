@@ -1,7 +1,7 @@
-"""Operate real-state unknown-scope Event Admission activation and suspension.
+"""Activate or suspend statement Record Inclusion where Applies To is not yet known.
 
 These safety-critical writes live behind one explicit operator command so the
-ordinary Admission entry point cannot acquire activation authority by accident.
+ordinary Record Inclusion entry point cannot acquire activation authority by accident.
 Folding replay and suspension into normal processing was rejected because it
 would blur proof generation, policy selection, and rollback into one command.
 """
@@ -25,14 +25,24 @@ from corridor.models import Project
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="event-admission-acceptance")
+    parser = argparse.ArgumentParser(
+        prog="event-admission-acceptance",
+        description=(
+            "Test and control statement Record Inclusion rules where Applies To "
+            "is not yet known. Command and policy identifiers remain unchanged."
+        ),
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-    replay = commands.add_parser("replay")
+    replay = commands.add_parser(
+        "replay", help="test exact statement Record Inclusion on disposable clones"
+    )
     replay.add_argument("--project-slug", required=True)
     replay.add_argument("--source-database-url", required=True)
     replay.add_argument("--postgres-admin-url", required=True)
     replay.add_argument("--expected-clean-git-revision", required=True)
-    suspend = commands.add_parser("suspend")
+    suspend = commands.add_parser(
+        "suspend", help="record a suspension and restore the predecessor rules"
+    )
     suspend.add_argument("--project-slug", required=True)
     suspend.add_argument("--database-url", required=True)
     suspend.add_argument("--reason", required=True)

@@ -1,7 +1,7 @@
 [project]
 name = "corridor"
 version = "0.1.0"
-description = "A cited system of record for external-party readiness on highway projects"
+description = "Coordination records with cited sources for highway construction constraints and commitments"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.13",

@@ -1,4 +1,4 @@
-"""Operator CLI for the released Automatic Carry-Forward Policy."""
+"""Operator CLI for the released Automatic Support Update Rules."""
 
 from __future__ import annotations
 
@@ -63,6 +63,24 @@ def _json_output(capsys) -> dict:
     captured = capsys.readouterr()
     assert captured.err == ""
     return json.loads(captured.out)
+
+
+def test_help_explains_support_updates_without_changing_the_command_or_opening_db(
+    capsys,
+):
+    class MustNotConnect:
+        def __call__(self):
+            raise AssertionError("help must not open a database")
+
+    assert main(["--help"], session_factory=MustNotConnect()) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    help_text = " ".join(captured.out.split())
+    assert "automatic-carry-forward" in help_text
+    assert "Automatic Support Update" in help_text
+    assert "recorded conclusion unchanged" in help_text
+    assert "JSON fields and reason codes retain their existing names" in help_text
 
 
 def test_status_is_stable_read_only_released_policy_json(monkeypatch, capsys):

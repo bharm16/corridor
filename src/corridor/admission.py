@@ -82,6 +82,7 @@ def load_and_report(session: Session, project: Project) -> str:
     """
     result = load_project(session, project.id)
     session.commit()
+    # This first line is also consumed by retained SH 99 acceptance-seal checks.
     lines = [
         f"{result.dependencies.admitted_count} conflicts and "
         f"{result.events.admitted_count} statements on the record; "
@@ -89,8 +90,8 @@ def load_and_report(session: Session, project: Project) -> str:
     ]
     if result.ambiguous_documents:
         lines.append(
-            "these documents hold several completed readings and show "
-            "nothing until one is declared: "
+            "These documents have several completed Extraction Runs. Select a "
+            "Current Production Run before their Extracted Proposals can be added: "
             + ", ".join(result.ambiguous_documents)
         )
     return "\n".join(lines)

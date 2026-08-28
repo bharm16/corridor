@@ -1,4 +1,4 @@
-"""Raw files to a cited report, in one command.
+"""Raw files to a cited Coordination Report, in one command.
 
 The walking skeleton's exit criterion. Deliberately thin at every stage —
 one document, accept-everything instead of a review queue — but it exercises the whole spine, including both provenance
@@ -193,7 +193,7 @@ def main(limit: int | None = None) -> int:
 
         verified = sum(1 for c in candidates if c.citations_verified)
         print(
-            f"extracted  {len(candidates)} candidates  "
+            f"extracted  {len(candidates)} Extracted Proposals  "
             f"{verified}/{len(candidates)} citations verified"
         )
 
@@ -207,7 +207,7 @@ def main(limit: int | None = None) -> int:
             )
         for candidate in chosen:
             accept_candidate(session, candidate, principal=principal)
-        print(f"adjudicated {len(chosen)} accepted")
+        print(f"added      {len(chosen)} records to the Project Record")
 
         report = build_report(session, project.id)
         OUT.parent.mkdir(parents=True, exist_ok=True)

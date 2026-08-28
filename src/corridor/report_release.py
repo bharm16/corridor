@@ -36,6 +36,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_reading import validate_frozen_reading
+from corridor.presentation import label, provenance_label
 from corridor.report import Report, assert_no_bare_cells, build_report, render
 
 if TYPE_CHECKING:
@@ -47,17 +48,17 @@ _LEGACY_ACTOR_DISPLAY = (
     "Project person (display name not retained in this legacy release)"
 )
 _PARTY_STATEMENT_REPORT_FIELDS = (
-    ("external_party", "External Party"),
+    ("external_party", label("organization")),
     ("supported_statement", "Supported statement"),
     ("timing", "Timing"),
     ("timing_precision", "Timing precision"),
     ("statement_type", "Statement type"),
-    ("commitment_scope", "Commitment Scope"),
+    ("commitment_scope", label("applies_to")),
     ("open_status", "Open / past-due status"),
-    ("internal_owner", "Internal Owner"),
-    ("next_action", "Next Action"),
-    ("action_due", "Action Due"),
-    ("milestone_impact", "Milestone Impact"),
+    ("internal_owner", label("assigned_to")),
+    ("next_action", label("next_action")),
+    ("action_due", label("action_due_date")),
+    ("milestone_impact", label("effect_on_key_dates")),
 )
 
 
@@ -151,7 +152,7 @@ def render_external_report_pdf(
         raise ReleaseRefusal("a released Report requires one Evaluation")
     return RenderedExternalReport(
         artifact_name=(
-            f"{project.slug}-readiness-{evaluated_on.isoformat()}"
+            f"{project.slug}-coordination-{evaluated_on.isoformat()}"
             f"{'-document-only' if document_only else ''}.pdf"
         ),
         pdf_bytes=to_pdf_bytes(render(report)),
@@ -601,7 +602,7 @@ def _party_statement_report_fields(report: Report) -> dict[int, dict[str, str]]:
         (
             candidate
             for candidate in report.sections
-            if candidate.title == "External Party commitments"
+            if candidate.title == label("organization_commitments")
         ),
         None,
     )
@@ -722,7 +723,7 @@ def _covered_party_statements(
             return legacy_displays.get(
                 published_event_id,
                 (
-                    "External Party name not retained",
+                    "Organization name not retained",
                     "Statement wording not retained in this legacy release context",
                     "Source context not retained in this legacy release context",
                 ),
@@ -732,7 +733,7 @@ def _covered_party_statements(
             (
                 current_display[0]
                 if current_display is not None
-                else "External Party name not retained"
+                else "Organization name not retained"
             ),
             "Current statement unsupported in this provenance mode",
             "Not published; source context not retained in this legacy release context",
@@ -807,13 +808,13 @@ def _legacy_party_statement_displays(
                 if event.event_date
                 else "date not recorded"
             )
-            source_context = f"Verbal statement · conversation {heard_on}"
+            source_context = f"{provenance_label('verbal')} · conversation {heard_on}"
         else:
             source_context = (
                 "Cited source context not retained in this legacy release context"
             )
         displays[event_id] = (
-            event.stated_party or "Unstated External Party",
+            event.stated_party or "Unstated organization",
             event.description,
             source_context,
         )
@@ -826,7 +827,7 @@ def _party_statement_display_context(
     event = statement.event
     current_event = statement.current_event
     external_party = (
-        (event or current_event).stated_party or "Unstated External Party"
+        (event or current_event).stated_party or "Unstated organization"
     )
     if event is None:
         mode = "Documents only" if document_only else "selected provenance"
@@ -848,7 +849,7 @@ def _party_statement_display_context(
             if event.event_date is not None
             else "date not recorded"
         )
-        source_context = f"Verbal statement · conversation {heard_on}"
+        source_context = f"{provenance_label('verbal')} · conversation {heard_on}"
     return {
         "external_party": external_party,
         "supported_statement": event.description,

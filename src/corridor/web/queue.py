@@ -98,7 +98,7 @@ def build_supersession_review_view(
         "awaiting_extraction": "No successor extraction attempt exists.",
         "extraction_failed": (
             "The newer document could not be read; a completed current "
-            "document reading is required before this Dependency can be reviewed."
+            "document reading is required before this Constraint can be reviewed."
         ),
         "awaiting_active_run": (
             "A newer document was read, but Corridor has not declared the "
@@ -108,7 +108,7 @@ def build_supersession_review_view(
             "The current document reading is available, but the Revision "
             "Comparison is not ready."
         ),
-        "blocked": "This Dependency cannot be routed safely from the current lineage.",
+        "blocked": "This Constraint cannot be routed safely from the recorded source history.",
     }
     reason = getattr(review, "reason", None)
     successor_candidate_ids = tuple(getattr(review, "successor_candidate_ids", ()))
@@ -136,7 +136,7 @@ def build_supersession_review_view(
         status_label=status.replace("_", " ").capitalize(),
         status_detail=details.get(
             status,
-            "This revision needs a decision about the extracted conflict before current Evidence can move.",
+            "This revision needs a decision about the proposed constraint before its supporting source can be updated.",
         ),
         refusal_detail=refusal_detail,
     )
@@ -263,8 +263,8 @@ def build_view(
             ""
             if candidate.kind == "dependency"
             else (
-                f"This is a {candidate.kind}, not a dependency. Attach it to an "
-                "existing Dependency by merging; accepting would create one the "
+                f"This is a {candidate.kind}, not a constraint. Attach it to an "
+                "existing Constraint by merging; adding it would create one the "
                 "document never described."
             )
         ),
@@ -401,13 +401,13 @@ def build_cohort_rail(
         )
         admission_refusal = None
         if len(matching_candidates) > 1:
-            admission_refusal = "Cohort member resolves to multiple Candidates"
+            admission_refusal = "Test case resolves to multiple extracted proposals"
         elif candidate is None:
-            admission_refusal = "Cohort member Candidate unavailable"
+            admission_refusal = "Extracted proposal for this test case is unavailable"
         elif candidate.state in {"accepted", "merged"} and dependency is None:
-            admission_refusal = "Admitted record unavailable"
+            admission_refusal = "Recorded Constraint unavailable"
         if candidate is not None and candidate.id in invalid_admission_links:
-            admission_refusal = "Admitted record unavailable"
+            admission_refusal = "Recorded Constraint unavailable"
         entries.append(
             RailEntry(
                 candidate_id=candidate.id if candidate else None,
@@ -554,7 +554,7 @@ def _coordination_gaps(dependency: Dependency) -> tuple[str, ...]:
         return ()
     gaps = []
     if not dependency.internal_owner:
-        gaps.append("Internal Owner")
+        gaps.append("Assigned person")
     if not dependency.next_action:
         gaps.append("Next Action")
     elif not (dependency.action_due_date or dependency.action_due_date_reason):

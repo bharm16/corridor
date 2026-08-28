@@ -4,9 +4,9 @@ status: accepted
 
 # Documentation Review is an explicit human act
 
-> **Terminology amended 2026-08-27 by [ADR-0047](0047-domain-language-follows-researched-construction-practice.md).** Current prose uses the adopted construction terms. Historical quotations and implementation identifiers retain their original spelling; the authority boundaries are unchanged.
+> **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 
-Admission is mechanical (ADR-0029), and exact unchanged Operative Support may move
+Record Inclusion is mechanical (ADR-0029), and exact unchanged Supporting Documentation in Use may move
 without a reviewer adding judgment (ADR-0022, as amended by ADR-0034). A
 Documentation Review answers a separate question: whether exact current Supporting
 Documentation meets the stated requirement for one Constraint. Deterministic
@@ -16,7 +16,7 @@ Decision: a **Documentation Review** is a guided human act over one stated
 requirement and one exact set of Supporting Documentation: **does this documentation
 meet the stated requirement for this Constraint?** The implementation retains the
 `evidence_required` field name. The screen shows the Required Documentation, the
-source passages, and the Operative Support that a Yes answer would establish. The
+source passages, and the Supporting Documentation in Use that a Yes answer would establish. The
 available answers
 are **Yes**, **Not yet**, and **Needs clarification**. One designated project person
 is the default judge. Fine-grained construction-worker permission splits remain
@@ -36,23 +36,23 @@ construction constraint is satisfied. Missing documentation does not establish
 that physical work is unfinished. The retained `is_ready` identifier cannot by
 itself manufacture a specific outcome (ADR-0047).
 
-## Specific changed-record work replaces a Reconfirmation lane
+## Specific changed-record work replaces a generic support-update queue
 
-The user-facing Reconfirmation lane disappears. Exact unchanged support moves
+The generic customer support-update queue disappears. Exact unchanged support moves
 automatically under the fail-closed proof bar. Changed, ambiguous, dropped, or
 otherwise ineligible work becomes a specific question on the affected record:
-settle a Dispute, verify a citation, attach a statement, review new Supporting
-Documentation against the stated requirement, or dismiss junk. Durable receipts
+resolve a Source Discrepancy, verify a citation, attach a statement, review new Supporting
+Documentation against the stated requirement, or remove an incorrect entry from the active log. Durable receipts
 remain, but the user works the project question rather than transfer mechanics.
 
 Citation checking is exception-driven rather than blanket review. Corridor verifies
 quotes mechanically. Human citation work is reserved for failed verification,
-superseded Operative Support, contradictions that matter to a current conclusion,
+superseded Supporting Documentation in Use, contradictions that matter to a current conclusion,
 the Documentation Review itself, or an external release integrity blocker.
 
 User-facing history remains plain first and technical second. It names the
 Documentation Review, any later loss of applicable support, actor, time,
-requirement, and exact Supporting Documentation. Policy digests and carry-forward
+requirement, and exact Supporting Documentation. Policy digests and support-update
 receipts stay available behind technical details; they do
 not become customer tasks.
 
@@ -61,7 +61,7 @@ not become customer tasks.
 **Let verified source text satisfy the requirement automatically.** Rejected. Exact
 text presence does not prove that the text meets the project's stated requirement.
 
-**Keep a generic Reconfirmation queue.** Rejected. An exact unchanged transfer adds
+**Keep a generic Human Support Update queue.** Rejected. An exact unchanged transfer adds
 no judgment, while a changed record presents a more specific question than
 “reconfirm.”
 
@@ -74,8 +74,8 @@ contract justifies that control.
 Documentation Review needs a dedicated flow that shows the requirement and its
 Supporting Documentation, with one designated default human. Loss of applicable
 support creates visible work and preserves the earlier judgment. The supersession
-surface presents concrete record questions rather than a general Reconfirmation
-lane. This ADR does not govern internal Report generation or
+surface presents concrete record questions rather than a generic support-update
+queue. This ADR does not govern internal Coordination Report generation or
 external artifact release; ADR-0040 owns that separate lifecycle.
 
 ## Decision map

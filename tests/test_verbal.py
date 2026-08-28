@@ -429,10 +429,12 @@ def test_the_record_page_interleaves_cited_and_verbal_events_by_when_stated(
     )
 
     page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
-    event_history = page[page.index("<h2>Events"):page.index("<h2>Evidence")]
+    event_history = page[
+        page.index("<h2>Statement history"):page.index("<h2>Supporting documents")
+    ]
 
     assert page.index(cited_description) < page.index(verbal_description)
-    assert event_history.index("Cited statement") < event_history.index("Verbal")
+    assert event_history.index("Cited statement") < event_history.index("Recorded verbal statement")
 
 
 def test_reports_mark_a_verbal_and_can_fall_back_to_a_cited_commitment(
@@ -486,7 +488,7 @@ def test_reports_mark_a_verbal_and_can_fall_back_to_a_cited_commitment(
     committed = next(
         row[2]
         for section in report.sections
-        if section.title == "Critical items"
+        if section.title == "Relocation / removal / abandonment"
         for row in section.rows
     )
     assert committed.value == "2026-08-15"
@@ -499,7 +501,7 @@ def test_reports_mark_a_verbal_and_can_fall_back_to_a_cited_commitment(
     cited_committed = next(
         row[2]
         for section in document_only.sections
-        if section.title == "Critical items"
+        if section.title == "Relocation / removal / abandonment"
         for row in section.rows
     )
     assert cited_committed.value == "2026-06-15"
@@ -543,7 +545,7 @@ def test_reports_withhold_an_unverified_cited_event_date(session, dependency):
     committed = next(
         row[2]
         for section in report.sections
-        if section.title == "Critical items"
+        if section.title == "Relocation / removal / abandonment"
         for row in section.rows
     )
     assert committed.value == "—"
@@ -611,17 +613,27 @@ def test_reports_do_not_publish_a_stale_day_after_a_current_month_statement(
         committed = next(
             row[2]
             for report_section in report.sections
-            if report_section.title == "Critical items"
+            if report_section.title == "Relocation / removal / abandonment"
             for row in report_section.rows
         )
 
         assert report.committed_dates[dependency.id] is None
         assert committed.value == "—"
         assert "2026-06-15" not in render(report)
+        assert report.evaluation is not None
+        missing_date = next(
+            exception for exception in report.evaluation.for_dependency(dependency.id)
+            if exception.rule == "MISSING_DATE"
+        )
+        assert missing_date.label == "No exact promised date for this check"
+        assert "No promised timing" not in render(report)
         assert_no_bare_cells(report)
 
     ledger_page = client.get(f"/ledger/{project.slug}").text
     assert "2026-06-15" not in ledger_page
+    detail_page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+    assert "August 2026" in detail_page
+    assert "No exact promised date for this check" in detail_page
 
 
 def test_document_only_reports_keep_their_own_cited_history(
@@ -741,7 +753,7 @@ def test_normal_report_change_marks_a_new_verbal_date(session, dependency):
         for section in report.sections
         if section.title == "Changes since last report"
         for row in section.rows
-        if row[1].value == "Committed Date Change"
+        if row[1].value == "Change to promised timing"
     )
     assert isinstance(change[1].provenance, Verbal)
     assert isinstance(change[2].provenance, Verbal)

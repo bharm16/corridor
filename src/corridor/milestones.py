@@ -1,8 +1,8 @@
-"""Milestone import and need-date linkage.
+"""Import key dates and link them to a Constraint's Required By date.
 
-A Dependency's **need date** comes from the Milestone it serves — when the
-project needs it done. Its **committed date** is what the external party
-said it would do. Those are different claims by different parties, and the
+A Constraint's **Required By** date comes from the key date it serves — when
+the project needs its requirement met. **Promised For** is the timing stated
+by the external organization. Those are different claims by different parties, and the
 gap between them is the entire signal this tool exists to surface, so they
 are never merged into one field.
 
@@ -307,6 +307,10 @@ def main(argv: list[str]) -> int:
 
     if len(argv) < 2:
         print("usage: <project-slug> <csv> [milestone-code]", file=sys.stderr)
+        print(
+            "Import key dates from a schedule CSV; the optional code links constraints.",
+            file=sys.stderr,
+        )
         return 1
     slug, csv_path = argv[0], argv[1]
     link_code = argv[2] if len(argv) > 2 else None
@@ -337,7 +341,10 @@ def main(argv: list[str]) -> int:
                 milestone_code=link_code,
                 actor="import",
             )
-            print(f"linked {linked} unlinked dependencies to {link_code}", flush=True)
+            print(
+                f"linked {linked} previously unlinked constraints to key date {link_code}",
+                flush=True,
+            )
 
         session.commit()
     return 0

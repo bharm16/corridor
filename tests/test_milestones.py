@@ -9,6 +9,7 @@ from corridor.milestones import (
     import_csv,
     link_all,
     link_dependency,
+    main,
 )
 from corridor.models import Dependency, Milestone, MilestoneRegistration, Project
 from corridor.report import build_report
@@ -56,6 +57,16 @@ def make_dep(session, project, ref, **kw):
     session.add(d)
     session.flush()
     return d
+
+
+def test_command_usage_explains_key_dates_and_preserves_the_technical_argument(capsys):
+    assert main([]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[milestone-code]" in captured.err
+    assert "key dates" in captured.err
+    assert "constraints" in captured.err
 
 
 def test_import_creates_milestones(session, project, tmp_path):
@@ -169,7 +180,7 @@ def test_report_derivations_name_the_exact_milestone_registration(
 
     report = build_report(session, project.id)
     milestone_section = next(
-        section for section in report.sections if section.title == "Milestone readiness"
+        section for section in report.sections if section.title == "Constraints by key date"
     )
     [row] = milestone_section.rows
     expected = (f"Milestone Registration MR{dependency.milestone_registration_id}",)

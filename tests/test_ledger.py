@@ -449,7 +449,7 @@ def test_the_detail_page_shows_each_claim_with_its_source(client, project, depen
     assert r.status_code == 200
     assert "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf" in r.text
     assert "1149+00" in r.text
-    assert "not ready" in r.text
+    assert "Not confirmed" in r.text
 
 
 def test_marking_evidence_as_closing_makes_it_ready(
@@ -504,7 +504,7 @@ def test_the_ledger_can_be_filtered_to_one_rule(session, project, dependency):
 def test_the_ledger_page_shows_exception_pills(client, project, dependency):
     r = client.get(f"/ledger/{project.slug}")
     assert "ORPHAN" in r.text
-    assert "any exception" in r.text
+    assert "any constraint alert" in r.text
 
 
 def test_the_detail_page_explains_each_exception(client, project, dependency):
