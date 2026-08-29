@@ -2,9 +2,10 @@
 
 The proof runs on two disposable clones of one pinned real project state.  The
 predecessor and opt-in policies therefore read the same declared population,
-while the shared source database receives only the immutable acceptance receipt
-and, when every gate passes, one append-only activation act.  A failed gate is
-durable evidence and never changes normal processing.
+while the shared source database receives immutable acceptance receipts and an
+append-only policy-authority history: automatic activation after proof, explicit
+human suspension, and explicit human lift. A failed gate is durable evidence and
+never changes normal processing.
 
 A reduced synthetic fixture was rejected because it could not prove the real
 Active Run population, cross-project guards, or exact shared-operation path.
@@ -29,10 +30,13 @@ from sqlalchemy.pool import NullPool
 from corridor import audit, identity, policy
 from corridor.event_admission import (
     EVENT_ADMISSION_POLICY_VERSION,
+    EventAdmissionPolicyStatus,
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
+    acceptance_receipt_integrity_valid,
     acceptance_receipt_is_current,
     canonical_event_admission_policy,
+    read_event_admission_policy_status,
     run_event_admission,
 )
 from corridor.external_statements import (
@@ -67,6 +71,8 @@ from corridor.m8_acceptance_database import (
     read_migration_head,
 )
 from corridor.rehearsal_environment import SealedRehearsalEnvironment
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.project_lock import lock_project
 from corridor.sh99_admission_acceptance import (
     REPO_ROOT,
     provision_acceptance_database,
@@ -112,6 +118,61 @@ class EventAdmissionAcceptanceResult:
     source_revision: str
     migration_head: str
     clone_database_names: tuple[str, str]
+
+
+def _latest_activation(
+    session: Session, project_id: int
+) -> EventAdmissionActivation | None:
+    return session.scalar(
+        select(EventAdmissionActivation)
+        .where(EventAdmissionActivation.project_id == project_id)
+        .order_by(EventAdmissionActivation.id.desc())
+        .limit(1)
+    )
+
+
+def event_admission_status_payload(
+    status: EventAdmissionPolicyStatus,
+) -> dict[str, Any]:
+    return {
+        "status": status.status,
+        "proof_status": status.proof_status,
+        "effective_policy_version": status.effective_policy_version,
+        "latest_receipt": (
+            None
+            if status.latest_receipt_id is None
+            else {
+                "id": status.latest_receipt_id,
+                "status": status.latest_receipt_status,
+                "current": status.latest_receipt_current,
+                "integrity_valid": status.latest_receipt_integrity_valid,
+                "policy_version": status.latest_receipt_policy_version,
+                "policy_sha256": status.latest_receipt_policy_sha256,
+            }
+        ),
+        "latest_action": (
+            None
+            if status.latest_action_id is None
+            else {
+                "id": status.latest_action_id,
+                "action": status.latest_action,
+                "acceptance_receipt_id": status.latest_action_receipt_id,
+                "policy_version": status.latest_action_policy_version,
+                "reason": status.latest_action_reason,
+                "recorded_by": status.latest_action_recorded_by,
+            }
+        ),
+        "allowed_operations": list(status.allowed_operations),
+    }
+
+
+def _validated_human_actor(recorded_by: str) -> HumanPrincipal:
+    principal = HumanPrincipal(recorded_by)
+    if principal.subject.partition(":")[0] == "corridor":
+        raise InvalidHumanPrincipal(
+            "human principal cannot use the corridor machine namespace"
+        )
+    return principal
 
 
 def run_event_admission_acceptance(
@@ -219,6 +280,7 @@ def record_acceptance_receipt(
     receipt_json: dict,
 ) -> EventAdmissionAcceptanceReceipt:
     """Persist one immutable pass or failure without relabelling its gates."""
+    lock_project(session, project_id)
     project = session.get(Project, project_id)
     if project is None:
         raise ValueError(f"project {project_id} does not exist")
@@ -280,6 +342,16 @@ def activate_passing_acceptance(
         raise ValueError("Event Admission acceptance receipt does not exist")
     if receipt.status != "passed":
         return None
+    lock_project(session, receipt.project_id)
+    receipt = session.get(
+        EventAdmissionAcceptanceReceipt, receipt_id, populate_existing=True
+    )
+    if receipt is None:
+        raise ValueError("Event Admission acceptance receipt does not exist")
+    if receipt.status != "passed":
+        return None
+    if not acceptance_receipt_integrity_valid(receipt):
+        raise ValueError("Event Admission acceptance receipt integrity failed")
     newest_receipt_id = session.scalar(
         select(EventAdmissionAcceptanceReceipt.id)
         .where(EventAdmissionAcceptanceReceipt.project_id == receipt.project_id)
@@ -300,12 +372,9 @@ def activate_passing_acceptance(
         raise ValueError(
             "proved Event Admission source revision or migration head is stale"
         )
-    latest = session.scalar(
-        select(EventAdmissionActivation)
-        .where(EventAdmissionActivation.project_id == receipt.project_id)
-        .order_by(EventAdmissionActivation.id.desc())
-        .limit(1)
-    )
+    latest = _latest_activation(session, receipt.project_id)
+    if latest is not None and latest.action == "suspend":
+        return None
     if (
         latest is not None
         and latest.action == "activate"
@@ -333,14 +402,11 @@ def suspend_unknown_scope_admission(
     recorded_by: str,
 ) -> EventAdmissionActivation:
     """Append a suspension; the predecessor becomes normal immediately."""
-    if not reason.strip() or not recorded_by.strip():
+    if not reason.strip():
         raise ValueError("suspension requires a reason and attributable recorder")
-    latest = session.scalar(
-        select(EventAdmissionActivation)
-        .where(EventAdmissionActivation.project_id == project_id)
-        .order_by(EventAdmissionActivation.id.desc())
-        .limit(1)
-    )
+    recorder = _validated_human_actor(recorded_by)
+    lock_project(session, project_id)
+    latest = _latest_activation(session, project_id)
     if latest is None or latest.action != "activate":
         raise ValueError("unknown-scope Event Admission is not active")
     suspension = EventAdmissionActivation(
@@ -349,11 +415,40 @@ def suspend_unknown_scope_admission(
         action="suspend",
         policy_version=latest.policy_version,
         reason=reason.strip(),
-        recorded_by=recorded_by.strip(),
+        recorded_by=recorder.subject,
     )
     session.add(suspension)
     session.flush([suspension])
     return suspension
+
+
+def lift_unknown_scope_admission(
+    session: Session,
+    *,
+    project_id: int,
+    recorded_by: str,
+) -> EventAdmissionActivation:
+    """Lift a standing suspension only with a human principal and current proof."""
+
+    recorder = _validated_human_actor(recorded_by)
+    lock_project(session, project_id)
+    latest = _latest_activation(session, project_id)
+    if latest is None or latest.action != "suspend":
+        raise ValueError("unknown-scope Event Admission is not suspended")
+    status = read_event_admission_policy_status(session, project_id)
+    if status.proof_status != "passed_current" or status.latest_receipt_id is None:
+        raise ValueError("a current passing proof is required before suspension can lift")
+    activation = EventAdmissionActivation(
+        project_id=project_id,
+        acceptance_receipt_id=status.latest_receipt_id,
+        action="activate",
+        policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+        reason="human lift after current passing proof",
+        recorded_by=recorder.subject,
+    )
+    session.add(activation)
+    session.flush([activation])
+    return activation
 
 
 def _run_policy_clone(

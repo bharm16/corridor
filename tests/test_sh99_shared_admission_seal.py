@@ -19,14 +19,19 @@ pytestmark = pytest.mark.slow
 from corridor.admission import load_project
 from corridor.db import Session, engine
 from corridor.event_admission import (
-    EVENT_ADMISSION_POLICY_VERSION,
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
     canonical_event_admission_policy,
     _current_migration_head,
     _current_source_revision,
 )
-from corridor.event_admission_acceptance import activate_passing_acceptance
+from corridor.event_admission_acceptance import (
+    RECEIPT_VERSION,
+    SELECTION_RULE,
+    _receipt_promotion_gates,
+    activate_passing_acceptance,
+    record_acceptance_receipt,
+)
 from corridor.extraction_runs import (
     declare_single_run_documents_by_policy,
     record_extraction_run,
@@ -35,7 +40,6 @@ from corridor.models import (
     Candidate,
     DocPage,
     Document,
-    EventAdmissionAcceptanceReceipt,
     ExternalOrg,
     Project,
 )
@@ -177,21 +181,70 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
     policy_sha256 = policy.canonical_sha256(
         canonical_event_admission_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
     )
-    receipt = EventAdmissionAcceptanceReceipt(
+    source_revision = _current_source_revision()
+    migration_head = _current_migration_head(session)
+    receipt_json = {
+        "schema_version": RECEIPT_VERSION,
+        "source_revision": source_revision,
+        "migration_head": migration_head,
+        "selection_rule": SELECTION_RULE,
+        "policy_version": UNKNOWN_SCOPE_POLICY_VERSION,
+        "policy_sha256": policy_sha256,
+        "reason_version": UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        "opt_in": {
+            "metrics": {
+                "admission_count": 1,
+                "false_party_attribution": 0,
+                "false_dependency_scope": 0,
+                "project_side_masquerade": 0,
+                "cross_project_references": 0,
+                "unauthorized_work_decisions": 0,
+                "duplicates": 0,
+                "protected_dependency_delta": 0,
+                "protected_report_delta": 0,
+                "invalid_evidence_or_receipts": 0,
+            },
+            "admissions": [
+                {
+                    "candidate_id": candidate.id,
+                    "commitment_lineage_id": 1,
+                    "statement_event_id": 1,
+                }
+            ],
+            "work_items": [
+                {
+                    "commitment_lineage_id": 1,
+                    "statement_event_id": 1,
+                    "source_candidate_id": candidate.id,
+                    "dependency_id": None,
+                    "attention_reasons": [
+                        "unknown_scope",
+                        "missing_internal_owner",
+                        "missing_next_action",
+                    ],
+                }
+            ],
+        },
+        "migration_rehearsal": {
+            "predecessor": "a257c9e6f204",
+            "head": migration_head,
+            "status": "passed",
+            "fresh_head": migration_head,
+            "fresh_status": "passed",
+        },
+        "authority_statement": (
+            "Only the deterministic unknown-scope Commitment class is authorized; "
+            "models receive no write authority."
+        ),
+    }
+    receipt_json["gates"] = _receipt_promotion_gates(receipt_json)
+    receipt = record_acceptance_receipt(
+        session,
         project_id=project.id,
-        status="passed",
-        source_revision=_current_source_revision(),
-        migration_head=_current_migration_head(session),
-        predecessor_policy_version=EVENT_ADMISSION_POLICY_VERSION,
-        policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
-        policy_sha256=policy_sha256,
-        reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
-        selection_rule="current-active-run-pending-event-candidates-v1",
-        receipt_json={"test": "shared Admission seal"},
-        receipt_sha256="a" * 64,
+        source_revision=source_revision,
+        migration_head=migration_head,
+        receipt_json=receipt_json,
     )
-    session.add(receipt)
-    session.flush()
     assert activate_passing_acceptance(session, receipt.id) is not None
 
     before = _shared_seal_state(session, project.slug)
