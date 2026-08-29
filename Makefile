@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward due-work m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -136,6 +136,17 @@ ledger-archive:
 #   make carry-forward ARGS="run nhhip-3c2"
 carry-forward:
 	uv run python -m corridor.automatic_carry_forward_cli $(ARGS)
+
+# One supervised runtime owns production schedules and recovery. Configure every
+# gate-7 field explicitly, then run the supervisor separately from the web app:
+#   make due-work ARGS="configure-health <project-slug> --configuration-version=processing-health-v1 --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=60 --claim-ttl-seconds=300 --deadline-seconds=120 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
+#   make due-work ARGS="supervise --owner=runtime:<worker-id> --poll-seconds=5"
+# Bounded operational commands use the same durable interfaces:
+#   make due-work ARGS="run-once --owner=runtime:<worker-id>"
+#   make due-work ARGS="recover --owner=runtime:<worker-id>"
+#   make due-work ARGS="status --project-slug=<project-slug>"
+due-work:
+	uv run python -m corridor.due_work_cli $(ARGS)
 
 # Capture, replay, or verify the isolated mechanical M8 acceptance-test bundle.
 # This tests software behavior; it is not Contract Acceptance of construction.

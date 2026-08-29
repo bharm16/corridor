@@ -36,6 +36,10 @@ saying why it exists and what was tried before — read it before changing one.
 - A database test still defines its own rollback-scoped `session` fixture:
   `engine.connect()`, `begin()`, `Session(bind=connection)`. Follow that pattern;
   the session-level harness owns database isolation, not shared test data.
+- A public seam that requires independent committed transactions — durable
+  leases, competing workers, or restart recovery — uses only the harness-owned
+  `runtime_database` fixture in `tests/conftest.py`. Ordinary database tests
+  remain rollback-scoped; test modules do not provision their own databases.
 - `llm_model` and the prompt version in `prompts/` are recorded on every
   Extracted Proposal. Changing either without an eval run makes the numbers
   incomparable.
