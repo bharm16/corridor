@@ -90,6 +90,45 @@ def test_migration_head_is_read_from_the_disposable_database(monkeypatch):
         _drop_database_if_present(database_name)
 
 
+def test_disposable_provisioning_applies_the_production_database_guard(monkeypatch):
+    database_name = f"{DATABASE_PREFIX}{uuid4().hex}"
+    seen = []
+    monkeypatch.setattr(
+        acceptance_database,
+        "_disposable_database_name",
+        lambda _prefix: database_name,
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "_apply_schema_migrations",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "read_migration_head",
+        lambda *_args, **_kwargs: "test-head",
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "require_experimental_database",
+        lambda database_url, *, session=None: seen.append(
+            (make_url(str(database_url)).database, session is not None)
+        ),
+    )
+
+    try:
+        with acceptance_database.provision_disposable_postgres(
+            settings.database_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+            database_prefix=DATABASE_PREFIX,
+        ) as provisioned:
+            assert provisioned.name == database_name
+        assert seen == [(database_name, True)]
+    finally:
+        _drop_database_if_present(database_name)
+
+
 def test_guarded_upgrade_moves_only_the_named_disposable_database(monkeypatch):
     prefix = "corridor_sh99_coordinator_rehearsal_"
     provisioned = acceptance_database.ProvisionedDatabase(

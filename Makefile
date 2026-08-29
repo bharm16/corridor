@@ -108,8 +108,9 @@ milestones:
 
 # Extraction Measurement over exact completed run receipts. Repeat
 # --extraction-run once per matrix. A machine reference must travel with its
-# author-time scope manifest; prompt/document flags are assertions only:
-#   make eval ARGS="wsdot-9424 gold/wsdot-9424.machine.csv --reference-manifest=gold/wsdot-9424.machine.scope.json --extraction-run=123"
+# author-time scope manifest; prompt/document flags are assertions only. The
+# named database must be a disposable copy and is refused if it is production:
+#   make eval ARGS="wsdot-9424 gold/wsdot-9424.machine.csv --database-url=<disposable-url> --reference-manifest=gold/wsdot-9424.machine.scope.json --extraction-run=123"
 eval:
 	uv run python -m corridor.eval $(ARGS)
 
@@ -194,20 +195,22 @@ product-proving:
 	uv run python -m corridor.product_proving_run_cli $(ARGS)
 
 # Run one current Statement Needing Clarification through the hidden, read-only
-# Statement Review Assistant and append a terminal local receipt. Needs OPENAI_API_KEY:
-#   make evidence-investigator ARGS="<candidate-id>"
+# Statement Review Assistant and append a terminal receipt only in a disposable
+# database. Needs OPENAI_API_KEY:
+#   make evidence-investigator ARGS="<candidate-id> --database-url=<disposable-url>"
 evidence-investigator:
 	uv run python -m corridor.evidence_investigator_cli $(ARGS)
 
 # Freeze and invisibly run current Statements Needing Clarification, or capture one
-# later independent human outcome. Needs OPENAI_API_KEY for `run`:
-#   make evidence-shadow ARGS="run <project-slug> --candidate-id=<id> --selection-rule=operator-declared:<rule> --manifest-path=<new-json>"
-#   make evidence-shadow ARGS="capture <shadow-case-id>"
+# later independent human outcome. Both remain in one explicit disposable
+# database. Needs OPENAI_API_KEY for `run`:
+#   make evidence-shadow ARGS="--database-url=<disposable-url> run <project-slug> --candidate-id=<id> --selection-rule=operator-declared:<rule> --manifest-path=<new-json>"
+#   make evidence-shadow ARGS="--database-url=<disposable-url> capture <shadow-case-id>"
 evidence-shadow:
 	uv run python -m corridor.evidence_investigator_shadow_cli $(ARGS)
 
 # Grade an explicit shadow run set into immutable JSON and Markdown receipts:
-#   make evidence-shadow-eval ARGS="--run=<run-id> --human-scores=<json> --output-dir=<new-dir>"
+#   make evidence-shadow-eval ARGS="--database-url=<disposable-url> --run=<run-id> --human-scores=<json> --output-dir=<new-dir>"
 evidence-shadow-eval:
 	uv run python -m corridor.evidence_investigator_evaluation_cli $(ARGS)
 

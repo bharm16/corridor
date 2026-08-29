@@ -28,7 +28,12 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.db import Session as SessionFactory
+from corridor.experimental_database import (
+    DatabaseGuard,
+    ProductionDatabaseRefusal,
+    experimental_session,
+    require_experimental_database,
+)
 from corridor.extraction_runs import (
     completed_document_ids,
     completion_predicate,
@@ -1378,6 +1383,7 @@ def main(
     argv: list[str],
     *,
     session_factory=None,
+    database_guard: DatabaseGuard = require_experimental_database,
     output_dir: Path | str | None = None,
     ran_at: datetime | None = None,
 ) -> int:
@@ -1396,6 +1402,7 @@ def main(
         "--prompt-version=",
         "--document=",
         "--reference-manifest=",
+        "--database-url=",
     )
     flags = [a for a in argv if a.startswith("--")]
     args = [a for a in argv if not a.startswith("--")]
@@ -1413,6 +1420,11 @@ def main(
         for f in flags
         if f.startswith("--reference-manifest=")
     ]
+    database_urls = [
+        f.split("=", 1)[1]
+        for f in flags
+        if f.startswith("--database-url=")
+    ]
     if (
         not args
         or len(args) > 2
@@ -1422,6 +1434,7 @@ def main(
         print(
             "usage: eval <project-slug> [reference.csv] "
             "--extraction-run=N [--extraction-run=N ...] "
+            "--database-url=POSTGRESQL_URL "
             "[--reference-manifest=scope.json] "
             "[--prompt-version=X] [--document=N ...]",
             file=sys.stderr,
@@ -1450,14 +1463,24 @@ def main(
             file=sys.stderr,
         )
         return 2
+    if len(database_urls) != 1 or not database_urls[0]:
+        print(
+            "one explicit --database-url is required for Extraction Measurement",
+            file=sys.stderr,
+        )
+        return 2
 
     slug = args[0]
     gold_path = args[1] if len(args) > 1 else None
     reference_manifest_path = (
         reference_manifests[0] if reference_manifests else None
     )
-    with (session_factory or SessionFactory)() as session:
-        try:
+    try:
+        with experimental_session(
+            database_urls[0],
+            session_factory=session_factory,
+            database_guard=database_guard,
+        ) as session:
             measurement = measure(
                 session,
                 slug,
@@ -1467,9 +1490,9 @@ def main(
                 document_ids=document_ids,
                 extraction_run_ids=extraction_run_ids,
             )
-        except NothingToMeasure as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
+    except (NothingToMeasure, ProductionDatabaseRefusal) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     print(render(measurement.result))
     if gold_path is None and measurement.skipped:
