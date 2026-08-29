@@ -8,6 +8,7 @@ records a judgment beside the claims rather than erasing the losing one.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -22,13 +23,18 @@ from corridor.disputes import (
     settled_field_names,
 )
 from corridor.exceptions import contradicted_fields, exceptions_for
+from corridor.eval import EvalResult, artifact
+from corridor.extraction_runs import record_extraction_run
+from corridor.measurement_cases import CasePredictionSet, score_measurement_cases
 from corridor.models import (
     Assertion,
+    Candidate,
     Dependency,
     DisputeSettlement,
     DocPage,
     Document,
     EvidenceLink,
+    ExtractionMeasurementCaseState,
     Project,
 )
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
@@ -139,6 +145,29 @@ def test_settling_records_the_conclusion_and_closes_the_dispute(
     assert settled_field_names(session, [disputed.id]) == {
         disputed.id: {"station_from"}
     }
+    case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.ruling_type == "dispute_settlement",
+            ExtractionMeasurementCaseState.ruling_id == settlement.id,
+        )
+    ).one()
+    assert case.kind == "source_discrepancy_settlement"
+    assert case.case_key == f"dependency:{disputed.id}:dispute:station_from"
+    assert case.expected_json["scoring_rule"] == "disputed_claims_preserved"
+    assert case.expected_json["field_name"] == "station_from"
+    assert case.expected_json["settled_value"] == "1105+00"
+    assert {claim["asserted_value"] for claim in case.expected_json["claims"]} == {
+        "1102+20",
+        "1105+00",
+    }
+    assert {
+        document["sha256"] for document in case.source_identity_json["documents"]
+    } == {
+        document.sha256
+        for document in session.scalars(
+            select(Document).where(Document.project_id == disputed.project_id)
+        )
+    }
 
 
 def test_settling_never_erases_the_losing_claim(session, disputed):
@@ -153,6 +182,100 @@ def test_settling_never_erases_the_losing_claim(session, disputed):
         )
     }
     assert values == {"1102+20", "1105+00"}
+
+
+def test_a_settlement_prediction_is_scored_against_the_human_conclusion(
+    session, disputed
+):
+    settlement = settle_dispute(
+        session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
+    )
+    case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.ruling_type == "dispute_settlement",
+            ExtractionMeasurementCaseState.ruling_id == settlement.id,
+        )
+    ).one()
+    [source_dispute] = disputes_for(session, disputed.id, include_settled=True)
+    run_ids = set()
+    for index, claim in enumerate(source_dispute.claims, start=1):
+        candidate = Candidate(
+            project_id=disputed.project_id,
+            kind="dependency",
+            payload_json={
+                "kind": "dependency",
+                "fields": {
+                    "utility_id": "PL1",
+                    "station_from": claim.value,
+                },
+                "citations": [
+                    {
+                        "document_id": claim.document_id,
+                        "page": claim.page_no,
+                        "quote": claim.quote,
+                        "verified": True,
+                        "whole_row": True,
+                    }
+                ],
+            },
+            source_document_id=claim.document_id,
+            source_pages=[claim.page_no],
+            confidence=1.0,
+            prompt_version=f"settlement_case_v{index}",
+            citations_verified=True,
+        )
+        session.add(candidate)
+        session.flush([candidate])
+        document = session.get(Document, claim.document_id)
+        run = record_extraction_run(
+            session,
+            document,
+            prompt_version=candidate.prompt_version,
+            candidate_count=1,
+            page_errors=0,
+            candidates=(candidate,),
+            allow_unsealed_legacy=True,
+        )
+        run_ids.add(run.id)
+
+    correct = score_measurement_cases(
+        session,
+        project_id=disputed.project_id,
+        extraction_run_ids=run_ids,
+        predictions=CasePredictionSet(
+            outputs={case.public_id: {"settled_value": "1105+00"}},
+            source="settlement-predictions.json",
+            sha256="a" * 64,
+        ),
+    )
+    assert correct.matched == 1
+    assert correct.mismatched == 0
+    assert correct.prediction_receipt["case_state_public_ids"] == [case.public_id]
+    written = artifact(
+        EvalResult(project="dispute-test"),
+        reference_description="reference.csv",
+        ran_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+        case_measurement=correct,
+    )
+    assert written["human_ruling_cases"]["prediction_receipt"] == {
+        "schema_version": "corridor.extraction-measurement-case-predictions.v1",
+        "source": "settlement-predictions.json",
+        "sha256": "a" * 64,
+        "case_state_public_ids": [case.public_id],
+    }
+
+    wrong = score_measurement_cases(
+        session,
+        project_id=disputed.project_id,
+        extraction_run_ids=run_ids,
+        predictions=CasePredictionSet(
+            outputs={case.public_id: {"settled_value": "1102+20"}},
+            source="settlement-predictions.json",
+            sha256="b" * 64,
+        ),
+    )
+    assert wrong.matched == 0
+    assert wrong.mismatched == 1
 
 
 def test_a_reviewer_may_conclude_a_third_thing(session, disputed):
@@ -403,6 +526,20 @@ def test_a_mistaken_settlement_is_corrected_by_settling_again(
         .order_by(DisputeSettlement.id)
     ).all()
     assert [s.settled_value for s in settlements] == ["1102+20", "1105+00"]
+    case_states = session.scalars(
+        select(ExtractionMeasurementCaseState)
+        .where(
+            ExtractionMeasurementCaseState.case_key
+            == f"dependency:{disputed.id}:dispute:station_from"
+        )
+        .order_by(ExtractionMeasurementCaseState.id)
+    ).all()
+    assert [state.expected_json["settled_value"] for state in case_states] == [
+        "1102+20",
+        "1105+00",
+    ]
+    assert case_states[0].predecessor_state_id is None
+    assert case_states[1].predecessor_state_id == case_states[0].id
 
 
 def test_a_settled_field_still_shows_its_claims_when_asked(

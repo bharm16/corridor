@@ -43,6 +43,10 @@ from corridor.verify import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
+from corridor.measurement_cases import (
+    record_candidate_correction_case,
+    record_do_not_add_case,
+)
 from corridor.project_lock import lock_project
 from corridor.supersession_review import ordinary_candidate_for_update
 
@@ -501,7 +505,7 @@ def edit_candidate(
     original = dict(payload.get("fields") or {})
     if fields != original:
         updated = _edited_payload(session, payload, fields)
-        audit.record(
+        audit_entry = audit.record(
             session,
             principal=principal,
             action=audit.EDIT_CANDIDATE,
@@ -512,6 +516,12 @@ def edit_candidate(
         )
         candidate.payload_json = updated
         candidate.citations_verified = citations_verified(updated)
+        record_candidate_correction_case(
+            session,
+            candidate,
+            fields=fields,
+            audit_entry=audit_entry,
+        )
         session.flush()
     return candidate
 
@@ -537,13 +547,21 @@ def reject_candidate(
 
     candidate.state = "rejected"
     candidate.adjudicated_at = datetime.now(timezone.utc)
-    audit.record(
+    audit_entry = audit.record(
         session,
         principal=principal,
         action=audit.REJECT_CANDIDATE,
         entity_type=audit.CANDIDATE,
         entity_id=candidate.id,
         after={"reason": reason},
+    )
+    record_do_not_add_case(
+        session,
+        candidate,
+        reason=reason,
+        ruling_type="audit_log",
+        ruling_id=audit_entry.id,
+        recorded_by=principal.subject,
     )
     session.flush()
     return candidate

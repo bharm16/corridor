@@ -40,6 +40,12 @@ from corridor.extraction_runs import (
     is_completed_run,
 )
 from corridor.models import Candidate, Document, ExtractionRun, Project
+from corridor.measurement_cases import (
+    CasePredictionError,
+    HumanCaseMeasurement,
+    load_case_predictions,
+    score_measurement_cases,
+)
 from corridor.verify import unverified_fields
 
 REQUIRED_COLUMNS = ("source_ref",)
@@ -736,6 +742,7 @@ def artifact(
     ran_at: datetime,
     extraction_runs: tuple[ExtractionRunScope, ...] = (),
     reference_scope: ReferenceScope | None = None,
+    case_measurement: HumanCaseMeasurement | None = None,
 ) -> dict:
     """The machine-readable record of one measurement.
 
@@ -801,6 +808,8 @@ def artifact(
         "models": result.models,
         "coverage_note": result.coverage_note,
     }
+    if case_measurement is not None:
+        written["human_ruling_cases"] = case_measurement.as_dict()
     identity_material = dict(written)
     identity_material.pop("ran_at")
     identity_material.pop("reference_description")
@@ -818,13 +827,20 @@ def artifact(
     return written
 
 
-def exit_code(result: EvalResult) -> int:
+def exit_code(
+    result: EvalResult,
+    *,
+    case_measurement: HumanCaseMeasurement | None = None,
+) -> int:
     """A measurement that could not be made is not a pass.
 
     Exiting zero on an empty enumeration would let a broken measurement
     slide through `scripts/gate-run.sh` as a green run.
     """
-    return 1 if result.unmeasurable else 0
+    return 1 if (
+        result.unmeasurable
+        or (case_measurement is not None and case_measurement.mismatched > 0)
+    ) else 0
 
 
 class NothingToMeasure(Exception):
@@ -1081,6 +1097,7 @@ class Measurement:
     extraction_run_ids: tuple[int, ...] = ()
     extraction_runs: tuple[ExtractionRunScope, ...] = ()
     reference_scope: ReferenceScope | None = None
+    case_measurement: HumanCaseMeasurement | None = None
 
 
 def measure(
@@ -1092,6 +1109,7 @@ def measure(
     prompt_version: str | None = None,
     document_ids: set[int] | None = None,
     extraction_run_ids: set[int] | None = None,
+    case_predictions_path: str | Path | None = None,
 ) -> Measurement:
     """Score exactly the completed Extraction Runs the caller names.
 
@@ -1346,6 +1364,16 @@ def measure(
         extraction_run_ids=selected_run_ids,
         extraction_runs=run_scope,
         reference_scope=reference_scope,
+        case_measurement=score_measurement_cases(
+            session,
+            project_id=project.id,
+            extraction_run_ids=set(selected_run_ids),
+            predictions=(
+                load_case_predictions(case_predictions_path)
+                if case_predictions_path is not None
+                else None
+            ),
+        ),
     )
 
 
@@ -1402,6 +1430,7 @@ def main(
         "--prompt-version=",
         "--document=",
         "--reference-manifest=",
+        "--case-predictions=",
         "--database-url=",
     )
     flags = [a for a in argv if a.startswith("--")]
@@ -1420,6 +1449,11 @@ def main(
         for f in flags
         if f.startswith("--reference-manifest=")
     ]
+    case_prediction_paths = [
+        f.split("=", 1)[1]
+        for f in flags
+        if f.startswith("--case-predictions=")
+    ]
     database_urls = [
         f.split("=", 1)[1]
         for f in flags
@@ -1429,6 +1463,7 @@ def main(
         not args
         or len(args) > 2
         or len(reference_manifests) > 1
+        or len(case_prediction_paths) > 1
         or any(not f.startswith(known) for f in flags)
     ):
         print(
@@ -1436,6 +1471,7 @@ def main(
             "--extraction-run=N [--extraction-run=N ...] "
             "--database-url=POSTGRESQL_URL "
             "[--reference-manifest=scope.json] "
+            "[--case-predictions=outputs.json] "
             "[--prompt-version=X] [--document=N ...]",
             file=sys.stderr,
         )
@@ -1489,12 +1525,22 @@ def main(
                 prompt_version=prompt_version,
                 document_ids=document_ids,
                 extraction_run_ids=extraction_run_ids,
+                case_predictions_path=(
+                    case_prediction_paths[0] if case_prediction_paths else None
+                ),
             )
-    except (NothingToMeasure, ProductionDatabaseRefusal) as exc:
+    except (CasePredictionError, NothingToMeasure, ProductionDatabaseRefusal) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     print(render(measurement.result))
+    if measurement.case_measurement is not None:
+        cases = measurement.case_measurement
+        print(
+            "  human ruling cases  "
+            f"{cases.matched} matched, {cases.mismatched} mismatched, "
+            f"{cases.not_applicable} need another evaluator"
+        )
     if gold_path is None and measurement.skipped:
         print(
             f"  {len(measurement.skipped)} project matrix/matrices are outside the "
@@ -1509,6 +1555,7 @@ def main(
         ran_at=ran_at or datetime.now(timezone.utc),
         extraction_runs=measurement.extraction_runs,
         reference_scope=measurement.reference_scope,
+        case_measurement=measurement.case_measurement,
     )
     path = out / (
         f"extraction-measurement-{slug}-{written['artifact_identity'][:16]}.json"
@@ -1520,7 +1567,10 @@ def main(
         return 1
     suffix = "" if created else " (existing immutable artifact preserved)"
     print(f"\n{path}{suffix}")
-    return exit_code(measurement.result)
+    return exit_code(
+        measurement.result,
+        case_measurement=measurement.case_measurement,
+    )
 
 
 if __name__ == "__main__":

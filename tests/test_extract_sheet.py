@@ -165,6 +165,7 @@ def test_a_citation_quotes_the_row_and_verifies(session, project, tmp_path):
     assert citation["quote"].startswith("UC-1 CenterPoint Energy")
     assert citation["verified"] is True
     assert citation["page"] == 1
+    assert citation["table_row"] == 1
 
 
 def test_every_stored_value_is_on_the_page(session, project, tmp_path):

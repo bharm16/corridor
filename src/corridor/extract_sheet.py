@@ -142,7 +142,14 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
             continue
 
         candidate = _candidate(
-            document, page_no, fields, raw, page_text, unmapped, threshold
+            document,
+            page_no,
+            row_number,
+            fields,
+            raw,
+            page_text,
+            unmapped,
+            threshold,
         )
         candidates.append(candidate)
         accounting.account(
@@ -164,6 +171,7 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
 def _candidate(
     document: Document,
     page_no: int,
+    row_number: int,
     fields: dict[str, str],
     raw,
     page_text: str,
@@ -174,7 +182,7 @@ def _candidate(
     # is the line a reviewer reads rather than a reconstruction of one.
     quote = row_text(raw)
 
-    return propose(
+    candidate = propose(
         document,
         kind="dependency",
         fields=fields,
@@ -196,3 +204,5 @@ def _candidate(
         unverified=sorted(unverified_fields(fields, page_text)),
         unmapped=unmapped,
     )
+    candidate.payload_json["citations"][0]["table_row"] = row_number
+    return candidate

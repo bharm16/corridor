@@ -35,6 +35,7 @@ from corridor.models import (
     DocPage,
     Document,
     ExternalOrg,
+    ExtractionMeasurementCaseState,
     Milestone,
     Project,
     ProjectRosterEntry,
@@ -838,6 +839,22 @@ def test_correct_scope_appends_one_scope_decision_without_rewriting_the_statemen
             DependencyEventScope.scope_decision_id == correction.id
         )
     ) == dependency.id
+    case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.ruling_type
+            == "statement_scope_decision",
+            ExtractionMeasurementCaseState.ruling_id == correction.id,
+        )
+    ).one()
+    assert case.kind == "statement_scope_correction"
+    assert case.expected_json == {
+        "scoring_rule": "statement_scope",
+        "candidate_kind": "event",
+        "mode": "selected",
+        "dependency_ids": [dependency.id],
+        "dependency_refs": [dependency.ref_code],
+        "source_conflict_refs": [],
+    }
 
 
 def test_scope_correction_refuses_an_attributable_noop(
@@ -954,6 +971,46 @@ def test_correcting_statement_facts_appends_a_successor_and_marks_its_plan_for_r
     assert [(member.event_id, member.evidence_link.quote) for member in memberships] == [
         (successor.id, corrected_quote)
     ]
+    case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.ruling_type == "statement_event",
+            ExtractionMeasurementCaseState.ruling_id == successor.id,
+        )
+    ).one()
+    assert case.kind == "statement_fact_correction"
+    assert case.case_key == (
+        f"statement-lineage:{successor.commitment_lineage_id}:facts"
+    )
+    assert case.source_identity_json["documents"] == [
+        {
+            "document_id": document.id,
+            "sha256": document.sha256,
+            "locations": [
+                {
+                    "kind": "page_passage",
+                    "page": 1,
+                    "quote": corrected_quote,
+                }
+            ],
+        }
+    ]
+    assert case.expected_json == {
+        "scoring_rule": "candidate_fields_include",
+        "candidate_kind": "event",
+        "fields": {
+            "event_type": "commitment",
+            "description": corrected_quote,
+            "event_date": "2025-01-17",
+            "external_org": party.name,
+            "stated_party": party.name,
+            "committed_date": {
+                "text": "July 1, 2026",
+                "precision": "day",
+                "start_date": "2026-07-01",
+                "end_date": "2026-07-01",
+            },
+        },
+    }
 
 
 def test_http_fact_correction_receipt_binds_both_statement_versions(
@@ -1341,12 +1398,35 @@ def test_not_relevant_is_reasoned_reversible_and_never_creates_a_statement_or_pl
         .select_from(StatementCoordinationReceipt)
         .where(StatementCoordinationReceipt.candidate_id == candidate.id)
     ) == 0
+    active_case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.ruling_type == "candidate_disposition",
+            ExtractionMeasurementCaseState.ruling_id == disposition.id,
+        )
+    ).one()
+    assert active_case.kind == "do_not_add"
+    assert active_case.state == "active"
+    assert active_case.expected_json == {
+        "scoring_rule": "candidate_disposition",
+        "candidate_kind": "event",
+        "expected_disposition": "do_not_add",
+        "reason": "outside_project_scope",
+    }
     reversal = restore_statement_not_relevant(session, disposition.id, principal=RECORDER)
 
     session.refresh(candidate)
     assert candidate.state == "pending"
     assert reversal.candidate_disposition_id == disposition.id
     assert session.get(CandidateDisposition, disposition.id).reason == "outside_project_scope"
+    states = session.scalars(
+        select(ExtractionMeasurementCaseState)
+        .where(ExtractionMeasurementCaseState.case_key == active_case.case_key)
+        .order_by(ExtractionMeasurementCaseState.id)
+    ).all()
+    assert [state.state for state in states] == ["active", "reversed"]
+    assert states[1].predecessor_state_id == states[0].id
+    assert states[1].ruling_type == "statement_coordination_reversal"
+    assert states[1].ruling_id == reversal.id
 
 
 def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(

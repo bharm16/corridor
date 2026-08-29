@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
+from corridor.adjudicate import edit_candidate
 from corridor.db import Session, engine
 from corridor.eval import (
     ArtifactCollision,
@@ -1398,6 +1399,155 @@ def test_measurement_selects_one_exact_run_when_same_prompt_completed_twice(
     assert measured.result.spurious == []
     assert measured.extraction_run_ids == (first.id,)
     assert second.id not in measured.extraction_run_ids
+
+
+def test_a_human_correction_becomes_a_case_scored_beside_the_existing_reference(
+    session, project, document, tmp_path
+):
+    original = make_candidate(
+        session,
+        project,
+        document,
+        "FOC1-1",
+        prompt_version="measurement_case_v1",
+    )
+    original_run = record_extraction_run(
+        session,
+        document,
+        prompt_version="measurement_case_v1",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(original,),
+        allow_unsealed_legacy=True,
+    )
+    declare_active_run(
+        session,
+        document.id,
+        original_run.id,
+        principal=DECLARER,
+    )
+    corrected_fields = {
+        "utility_id": "FOC1-1",
+        "external_org": "MT AT&T",
+        "station_from": "1150+00",
+    }
+    edit_candidate(session, original, corrected_fields, principal=DECLARER)
+
+    replay = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": corrected_fields,
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": "FOC1-1",
+                    "verified": True,
+                    "whole_row": True,
+                }
+            ],
+            "confidence": 1.0,
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="measurement_case_v2",
+        citations_verified=True,
+    )
+    session.add(replay)
+    session.flush([replay])
+    replay_run = record_extraction_run(
+        session,
+        document,
+        prompt_version="measurement_case_v2",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(replay,),
+        allow_unsealed_legacy=True,
+    )
+    reference = tmp_path / "reference.csv"
+    reference.write_text("source_ref,page\nFOC1-1,1\n")
+
+    measured = measure(
+        session,
+        project.slug,
+        gold_path=reference,
+        extraction_run_ids={replay_run.id},
+    )
+
+    assert measured.result.matched == 1
+    assert measured.case_measurement.reference_kind == "human_ruling"
+    assert measured.case_measurement.matched == 1
+    assert measured.case_measurement.mismatched == 0
+    [score] = measured.case_measurement.scores
+    assert score.kind == "candidate_correction"
+    assert score.status == "matched"
+
+    written = artifact(
+        measured.result,
+        reference_description=measured.reference_description,
+        ran_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+        extraction_runs=measured.extraction_runs,
+        reference_scope=measured.reference_scope,
+        case_measurement=measured.case_measurement,
+    )
+    assert written["reference_scope"]["kind"] == "external_reference"
+    assert written["human_ruling_cases"]["reference_kind"] == "human_ruling"
+    assert written["human_ruling_cases"]["matched"] == 1
+    assert exit_code(
+        measured.result,
+        case_measurement=measured.case_measurement,
+    ) == 0
+
+    regressed = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={
+            **replay.payload_json,
+            "fields": {**corrected_fields, "station_from": "1149+00"},
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=1.0,
+        prompt_version="measurement_case_v3",
+        citations_verified=True,
+    )
+    session.add(regressed)
+    session.flush([regressed])
+    regressed_run = record_extraction_run(
+        session,
+        document,
+        prompt_version="measurement_case_v3",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(regressed,),
+        allow_unsealed_legacy=True,
+    )
+    regressed_measurement = measure(
+        session,
+        project.slug,
+        gold_path=reference,
+        extraction_run_ids={regressed_run.id},
+    )
+    assert regressed_measurement.result.matched == 1
+    assert regressed_measurement.case_measurement.mismatched == 1
+    assert exit_code(
+        regressed_measurement.result,
+        case_measurement=regressed_measurement.case_measurement,
+    ) == 1
+
+    document.sha256 = "e" * 64
+    session.flush([document])
+    wrong_source = measure(
+        session,
+        project.slug,
+        gold_path=reference,
+        extraction_run_ids={replay_run.id},
+    )
+    assert wrong_source.case_measurement.scores == ()
+    assert wrong_source.case_measurement.outside_scope == 1
 
 
 def test_artifact_identity_and_provenance_name_the_exact_run_set(

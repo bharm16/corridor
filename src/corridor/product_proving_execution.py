@@ -73,6 +73,7 @@ from corridor.models import (
     ExternalReportArtifact,
     ExternalReportRelease,
     ExtractionRun,
+    ExtractionMeasurementCaseState,
     LegacyLedgerArchive,
     Milestone,
     MilestoneRegistration,
@@ -658,6 +659,11 @@ def capture_project_write_set(
         CandidateDisposition.candidate_id.in_(candidate_ids),
     )
     disposition_ids = _ids(dispositions)
+    measurement_case_states = _rows(
+        session,
+        ExtractionMeasurementCaseState,
+        ExtractionMeasurementCaseState.project_id == project.id,
+    )
     work_decisions = _rows(
         session,
         WorkDecision,
@@ -759,6 +765,7 @@ def capture_project_write_set(
         ),
         (Candidate, candidates),
         (CandidateDisposition, dispositions),
+        (ExtractionMeasurementCaseState, measurement_case_states),
         (EvidenceInvestigationRun, investigation_runs),
         (
             EvidenceInvestigationStepReceipt,
