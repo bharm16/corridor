@@ -71,6 +71,7 @@ _MANDATORY_WRITE_FAMILIES = frozenset(
         "external_report_artifacts",
         "external_report_releases",
         "extraction_runs",
+        "extraction_measurement_case_states",
         "policy_runs",
         "report_runs",
         "work_decisions",

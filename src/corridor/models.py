@@ -1790,6 +1790,77 @@ class AuditLog(Base):
     )
 
 
+class ExtractionMeasurementCaseState(Base):
+    """One immutable state in a human-ruling measurement case.
+
+    The stable ``case_key`` groups corrections to the same ruling subject.
+    Each correction or reversal appends a successor row; no row here changes
+    the Project Record or rewrites an earlier human conclusion.
+    """
+
+    __tablename__ = "extraction_measurement_case_states"
+    __table_args__ = (
+        CheckConstraint(
+            "kind in ('candidate_correction', 'source_discrepancy_settlement', "
+            "'do_not_add', 'statement_fact_correction', "
+            "'statement_scope_correction')",
+            name="ck_extraction_measurement_case_states_kind",
+        ),
+        CheckConstraint(
+            "state in ('active', 'reversed')",
+            name="ck_extraction_measurement_case_states_state",
+        ),
+        CheckConstraint(
+            "length(trim(case_key)) > 0 and length(trim(recorded_by)) > 0 "
+            "and ruling_id > 0",
+            name="ck_extraction_measurement_case_states_identity",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(source_identity_json) = 'object' and "
+            "source_identity_json ?& array["
+            "'candidate_id', 'extraction_run_id', 'documents'] and "
+            "jsonb_typeof(source_identity_json -> 'documents') = 'array' and "
+            "jsonb_array_length(source_identity_json -> 'documents') > 0",
+            name="ck_extraction_measurement_case_states_source",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(expected_json) = 'object' and "
+            "jsonb_typeof(expected_json -> 'scoring_rule') = 'string' and "
+            "length(trim(expected_json ->> 'scoring_rule')) > 0",
+            name="ck_extraction_measurement_case_states_expected",
+        ),
+        UniqueConstraint(
+            "ruling_type",
+            "ruling_id",
+            name="uq_extraction_measurement_case_states_ruling",
+        ),
+        Index(
+            "uq_extraction_measurement_case_states_root",
+            "case_key",
+            unique=True,
+            postgresql_where=text("predecessor_state_id is null"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    case_key: Mapped[str] = mapped_column(String(160), index=True)
+    predecessor_state_id: Mapped[int | None] = mapped_column(
+        ForeignKey("extraction_measurement_case_states.id"), unique=True
+    )
+    kind: Mapped[str] = mapped_column(String(48))
+    state: Mapped[str] = mapped_column(String(16))
+    ruling_type: Mapped[str] = mapped_column(String(64))
+    ruling_id: Mapped[int] = mapped_column(BigInteger)
+    source_identity_json: Mapped[dict] = mapped_column(JSONB)
+    expected_json: Mapped[dict] = mapped_column(JSONB)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DocPage(Base):
     __tablename__ = "doc_pages"
     __table_args__ = (UniqueConstraint("document_id", "page_no"),)

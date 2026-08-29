@@ -66,6 +66,12 @@ from corridor.principals import (
     InvalidHumanPrincipal,
     require_human_principal,
 )
+from corridor.measurement_cases import (
+    record_do_not_add_case,
+    record_do_not_add_reversal_case,
+    record_statement_fact_correction_case,
+    record_statement_scope_correction_case,
+)
 from corridor.project_lock import lock_project
 from corridor.supersession import actionable_candidate_query
 from corridor.supersession_review import ordinary_candidate_ids
@@ -993,6 +999,15 @@ def correct_statement_scope(
                     "scope_decision_id": decision.id,
                 },
             )
+            candidate = session.get(Candidate, correction.candidate_id)
+            assert candidate is not None  # required by _require_candidate_owns_lineage
+            record_statement_scope_correction_case(
+                session,
+                candidate,
+                event,
+                decision,
+                recorded_by=recorder.subject,
+            )
     except StaleStatementCoordination:
         raise
     except (StatementRefusal, ValueError, IntegrityError) as exc:
@@ -1115,6 +1130,15 @@ def correct_statement_facts(
                     "statement_event_id": successor.id,
                     **_party_resolution_audit(party_resolution),
                 },
+            )
+            candidate = session.get(Candidate, draft.candidate_id)
+            assert candidate is not None  # required by _require_candidate_owns_lineage
+            record_statement_fact_correction_case(
+                session,
+                candidate,
+                successor,
+                evidence=evidence,
+                recorded_by=recorder.subject,
             )
     except StaleStatementCoordination:
         raise
@@ -1496,6 +1520,14 @@ def mark_statement_not_relevant(
                     "confirmed": True,
                 },
             )
+            record_do_not_add_case(
+                session,
+                candidate,
+                reason=reason,
+                ruling_type="candidate_disposition",
+                ruling_id=disposition.id,
+                recorded_by=recorder.subject,
+            )
             session.flush()
     except StaleStatementCoordination:
         raise
@@ -1554,6 +1586,14 @@ def restore_statement_not_relevant(
             )
             session.add(reversal)
             session.flush([reversal])
+            record_do_not_add_reversal_case(
+                session,
+                candidate,
+                reversal,
+                original_ruling_type="candidate_disposition",
+                original_ruling_id=disposition.id,
+                reason=disposition.reason,
+            )
             session.add_all(
                 (
                     StatementCoordinationReversalEffect(

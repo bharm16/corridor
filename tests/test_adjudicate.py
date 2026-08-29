@@ -35,6 +35,7 @@ from corridor.models import (
     DocPage,
     EvidenceLink,
     ExternalOrg,
+    ExtractionMeasurementCaseState,
     Project,
 )
 from corridor.principals import HumanPrincipal
@@ -779,6 +780,38 @@ def test_editing_replaces_the_payload_fields_and_writes_an_audit_entry(
     ).one()
     assert entry.before_json == {"fields": FIELDS}
     assert entry.after_json == {"fields": edited}
+    case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.project_id == document.project_id
+        )
+    ).one()
+    assert case.kind == "candidate_correction"
+    assert case.state == "active"
+    assert case.ruling_type == "audit_log"
+    assert case.ruling_id == entry.id
+    assert case.recorded_by == REVIEWER.subject
+    assert case.source_identity_json == {
+        "candidate_id": candidate.id,
+        "extraction_run_id": candidate.extraction_run_id,
+        "documents": [
+            {
+                "document_id": document.id,
+                "sha256": document.sha256,
+                "locations": [
+                    {
+                        "kind": "page_passage",
+                        "page": 1,
+                        "quote": "FOC1-1 AT&T",
+                    }
+                ],
+            }
+        ],
+    }
+    assert case.expected_json == {
+        "scoring_rule": "candidate_fields_include",
+        "candidate_kind": "dependency",
+        "fields": edited,
+    }
 
 
 def test_editing_a_whole_row_candidate_revalidates_and_clears_resolved_diagnostics(
@@ -799,6 +832,44 @@ def test_editing_a_whole_row_candidate_revalidates_and_clears_resolved_diagnosti
     assert candidate.payload_json["unverified_fields"] == []
     assert candidate.payload_json["low_confidence_tokens"] == []
     assert candidate.citations_verified is True
+
+
+def test_a_spreadsheet_correction_case_keeps_the_exact_table_row(
+    session, document
+):
+    candidate = make_candidate(session, document)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "text_source": "cells",
+        "citations": [
+            {
+                **candidate.payload_json["citations"][0],
+                "table_row": 7,
+            }
+        ],
+    }
+
+    edit_candidate(
+        session,
+        candidate,
+        {**FIELDS, "station_from": "1150+00"},
+        principal=REVIEWER,
+    )
+
+    case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.case_key
+            == f"candidate:{candidate.id}:correction"
+        )
+    ).one()
+    assert case.source_identity_json["documents"][0]["locations"] == [
+        {
+            "kind": "worksheet_row",
+            "page": 1,
+            "quote": "FOC1-1 AT&T",
+            "table_row": 7,
+        }
+    ]
 
 
 def test_editing_a_whole_row_candidate_to_an_unsupported_value_stays_unverified(
@@ -987,6 +1058,20 @@ def test_rejecting_sets_the_decision_timestamp_and_records_the_reason(
         )
     ).one()
     assert entry.after_json == {"reason": "duplicate"}
+    case = session.scalars(
+        select(ExtractionMeasurementCaseState).where(
+            ExtractionMeasurementCaseState.case_key
+            == f"candidate:{candidate.id}:do-not-add"
+        )
+    ).one()
+    assert case.kind == "do_not_add"
+    assert case.ruling_id == entry.id
+    assert case.expected_json == {
+        "scoring_rule": "candidate_disposition",
+        "candidate_kind": "dependency",
+        "expected_disposition": "do_not_add",
+        "reason": "duplicate",
+    }
 
 
 def test_rejecting_refuses_an_unknown_reason(session, document):

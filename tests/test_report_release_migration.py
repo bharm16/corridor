@@ -24,7 +24,7 @@ pytestmark = pytest.mark.slow
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f253a7c4d9e2"
 RELEASE_PREDECESSOR = "e255a7c4d9e2"
-HEAD = "e319f8a0b2c5"
+HEAD = "f367a8c1d2e4"
 RELEASE_COLUMNS = [
     "id",
     "project_id",

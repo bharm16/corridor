@@ -32,6 +32,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.measurement_cases import record_dispute_settlement_case
 
 
 class NoSuchDispute(ValueError):
@@ -310,6 +311,11 @@ def settle_dispute(
             f"{field_name!r} is not in dispute on this record — nothing to "
             "settle"
         )
+    source_dispute = next(
+        dispute
+        for dispute in disputes_for(session, dependency_id, include_settled=True)
+        if dispute.field_name == field_name
+    )
 
     newest = session.scalar(
         select(func.max(Assertion.id))
@@ -335,6 +341,12 @@ def settle_dispute(
     )
     session.add(settlement)
     session.flush([settlement])
+    record_dispute_settlement_case(
+        session,
+        dependency,
+        settlement,
+        claims=source_dispute.claims,
+    )
 
     # Where the record carries a column for the field, the conclusion is
     # projected onto it — the same shape the Committed Date projection
