@@ -1201,10 +1201,25 @@ def test_a_scoped_zero_row_run_still_reports_its_prompt_version(
 
 # --------------------------------------------------------------- measurement
 
+TEST_EXPERIMENTAL_DATABASE_URL = (
+    "postgresql+psycopg://corridor:corridor@localhost:5433/"
+    "corridor_eval_disposable"
+)
+
+
+def allow_test_experimental_database(database_url, *, session=None):
+    assert database_url == TEST_EXPERIMENTAL_DATABASE_URL
+    assert session is not None
+
 
 def test_command_requires_at_least_one_exact_run(capsys):
     assert main(["eval-test"]) == 2
     assert "--extraction-run" in capsys.readouterr().err
+
+
+def test_command_requires_an_explicit_experimental_database(capsys):
+    assert main(["eval-test", "--extraction-run=1"]) == 2
+    assert "--database-url" in capsys.readouterr().err
 
 
 def test_command_accepts_repeatable_exact_runs_and_writes_an_identity_artifact(
@@ -1228,11 +1243,13 @@ def test_command_accepts_repeatable_exact_runs_and_writes_an_identity_artifact(
         [
             project.slug,
             str(reference),
+            f"--database-url={TEST_EXPERIMENTAL_DATABASE_URL}",
             f"--reference-manifest={scope}",
             f"--extraction-run={second.id}",
             f"--extraction-run={first.id}",
         ],
         session_factory=OpenSession,
+        database_guard=allow_test_experimental_database,
         output_dir=tmp_path,
         ran_at=datetime(2026, 8, 6, tzinfo=timezone.utc),
     )
@@ -1267,10 +1284,12 @@ def test_command_rejects_duplicate_exact_run_flags(
         [
             project.slug,
             str(reference),
+            f"--database-url={TEST_EXPERIMENTAL_DATABASE_URL}",
             f"--extraction-run={run.id}",
             f"--extraction-run={run.id}",
         ],
         session_factory=OpenSession,
+        database_guard=allow_test_experimental_database,
         output_dir=tmp_path,
     )
 
@@ -1293,13 +1312,19 @@ def test_repeating_an_identical_command_preserves_the_first_artifact(
         def __exit__(self, *_):
             return False
 
-    argv = [project.slug, str(reference), f"--extraction-run={run.id}"]
+    argv = [
+        project.slug,
+        str(reference),
+        f"--database-url={TEST_EXPERIMENTAL_DATABASE_URL}",
+        f"--extraction-run={run.id}",
+    ]
     first_ran_at = datetime(2026, 8, 6, tzinfo=timezone.utc)
     later_ran_at = datetime(2026, 8, 7, tzinfo=timezone.utc)
 
     assert main(
         argv,
         session_factory=OpenSession,
+        database_guard=allow_test_experimental_database,
         output_dir=tmp_path,
         ran_at=first_ran_at,
     ) == 0
@@ -1311,6 +1336,7 @@ def test_repeating_an_identical_command_preserves_the_first_artifact(
     assert main(
         argv,
         session_factory=OpenSession,
+        database_guard=allow_test_experimental_database,
         output_dir=tmp_path,
         ran_at=later_ran_at,
     ) == 0

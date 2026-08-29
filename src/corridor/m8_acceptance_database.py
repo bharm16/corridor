@@ -1,4 +1,10 @@
-"""Disposable PostgreSQL provisioning for M8 acceptance runs."""
+"""Provision guarded disposable PostgreSQL for acceptance and rehearsal runs.
+
+Ad-hoc database creation was rejected because cleanup, migration identity, and
+production separation then depended on each caller. This module owns that
+lifecycle and applies ADR-0049's server-observed production-database refusal
+before any provisioned database reaches an experimental workflow.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +23,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+
+from corridor.experimental_database import (
+    ProductionDatabaseRefusal,
+    require_experimental_database,
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +106,14 @@ def provision_disposable_postgres(
             repo_root=repo_root,
             error_cls=error_cls,
         )
+        try:
+            with factory() as guard_session:
+                require_experimental_database(
+                    database_url.render_as_string(hide_password=False),
+                    session=guard_session,
+                )
+        except ProductionDatabaseRefusal as exc:
+            raise error_cls(str(exc)) from exc
         yield ProvisionedDatabase(
             name=database_name,
             session_factory=factory,
