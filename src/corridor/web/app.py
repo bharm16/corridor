@@ -90,10 +90,17 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
     Milestone,
+    MilestoneRegistration,
     Project,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
+)
+from corridor.milestones import (
+    MalformedMilestoneCsv,
+    StaleMilestoneImport,
+    confirm_import,
+    preview_import,
 )
 from corridor.dependency_events import (
     current_scope_decision_filter,
@@ -2032,6 +2039,177 @@ def release_report(
     )
     session.commit()
     return response
+
+
+def _key_dates_rows(session: Session, project: Project) -> list[dict]:
+    """Current Key dates with their live Key Date Version, undated ones last."""
+    milestones = session.scalars(
+        select(Milestone)
+        .where(Milestone.project_id == project.id)
+        .order_by(
+            Milestone.need_date.is_(None),
+            Milestone.need_date,
+            Milestone.code,
+        )
+    ).all()
+    rows = []
+    for milestone in milestones:
+        registration = (
+            session.get(MilestoneRegistration, milestone.current_registration_id)
+            if milestone.current_registration_id is not None
+            else None
+        )
+        rows.append(
+            {
+                "code": milestone.code,
+                "name": milestone.name,
+                "need_date": milestone.need_date,
+                "source_name": registration.source_name if registration else milestone.source,
+                "recorded_by": registration.recorded_by if registration else None,
+                "version_id": milestone.current_registration_id,
+            }
+        )
+    return rows
+
+
+def _key_dates_context(session: Session, project: Project, **overrides) -> dict:
+    context = {
+        "project": project,
+        "rows": _key_dates_rows(session, project),
+        "preview": None,
+        "content": "",
+        "source_name": "",
+        "predecessors_json": "",
+        "message": None,
+        "error": None,
+        "stale": None,
+    }
+    context.update(overrides)
+    return context
+
+
+@app.get("/key-dates/{slug}", response_class=HTMLResponse)
+def key_dates(
+    request: Request,
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """Read-only view of a project's registered Key dates and the import form."""
+    project = _project(session, slug)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "key_dates.html",
+        _key_dates_context(
+            session, project, message=request.query_params.get("imported")
+        ),
+    )
+
+
+@app.post("/key-dates/{slug}/preview", response_class=HTMLResponse)
+def key_dates_preview(
+    request: Request,
+    slug: str,
+    source_name: str = Form(""),
+    content: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Dry-run a hand-typed CSV: show its source, fingerprint, and row effects.
+
+    Nothing is written; malformed input refuses without a partial import.
+    """
+    project = _project(session, slug)
+    resolved_source = source_name.strip() or "pasted-key-dates.csv"
+    try:
+        preview = preview_import(
+            session,
+            project_id=project.id,
+            content=content.encode("utf-8"),
+            source_name=resolved_source,
+        )
+    except MalformedMilestoneCsv as exc:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(
+                session,
+                project,
+                content=content,
+                source_name=source_name,
+                error=str(exc),
+            ),
+            status_code=422,
+        )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "key_dates.html",
+        _key_dates_context(
+            session,
+            project,
+            preview=preview,
+            content=content,
+            source_name=preview.source_name,
+            predecessors_json=json.dumps(preview.predecessors),
+        ),
+    )
+
+
+@app.post("/key-dates/{slug}/confirm")
+def key_dates_confirm(
+    request: Request,
+    slug: str,
+    source_name: str = Form(...),
+    content: str = Form(...),
+    expected_sha256: str = Form(...),
+    expected_predecessors: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Commit the previewed CSV under the acting person's stable identity.
+
+    Bound to the previewed bytes and the Key Date Versions the preview showed:
+    changed content or a moved project state refuses and re-presents the current
+    state rather than importing against a stale review.
+    """
+    project = _project(session, slug)
+    try:
+        predecessors = json.loads(expected_predecessors) if expected_predecessors else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "expected_predecessors must be JSON") from exc
+    if not isinstance(predecessors, dict):
+        raise HTTPException(400, "expected_predecessors must be a JSON object")
+    try:
+        with session.begin_nested():
+            result = confirm_import(
+                session,
+                project_id=project.id,
+                content=content.encode("utf-8"),
+                source_name=source_name,
+                expected_sha256=expected_sha256,
+                expected_predecessors=predecessors,
+                principal=principal,
+            )
+    except MalformedMilestoneCsv as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except StaleMilestoneImport as exc:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(
+                session,
+                project,
+                preview=exc.preview,
+                content=content,
+                source_name=exc.preview.source_name,
+                predecessors_json=json.dumps(exc.preview.predecessors),
+                stale=str(exc),
+            ),
+            status_code=409,
+        )
+    session.commit()
+    summary = f"{len(result.created)} added, {len(result.updated)} updated"
+    return RedirectResponse(
+        f"/key-dates/{project.slug}?imported={quote(summary)}", status_code=303
+    )
 
 
 @app.get("/work/{slug}", response_class=HTMLResponse)

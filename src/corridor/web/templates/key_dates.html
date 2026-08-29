@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Key dates — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#8a5a00; --warnbg:#fff6e6;
+          --bad:#8a1f1f; --badbg:#fdecec; --ok:#1f6f3f; --okbg:#ecf7f0; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:60rem; margin:2.2rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h2 { font-size:1.15rem; margin:2rem 0 .5rem; }
+  .muted { color:var(--muted); }
+  table { border-collapse:collapse; width:100%; margin:.5rem 0; }
+  th, td { text-align:left; padding:.4rem .6rem; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { font-size:.8rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+  code { font-size:.82rem; overflow-wrap:anywhere; }
+  form.import { margin:.5rem 0 0; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:.6rem 0 .2rem; }
+  input[type=text] { width:100%; font:inherit; padding:.4rem .5rem;
+                     border:1px solid var(--line); border-radius:4px; }
+  textarea.csv { width:100%; min-height:9rem; font:13px/1.45 ui-monospace,monospace;
+                 padding:.5rem; border:1px solid var(--line); border-radius:4px; }
+  button { font:inherit; color:#fff; background:#111; border:1px solid #111;
+           border-radius:4px; padding:.45rem .8rem; cursor:pointer; margin-top:.7rem; }
+  .banner { border-radius:6px; padding:.6rem .8rem; margin:.8rem 0; }
+  .banner.error { color:var(--bad); background:var(--badbg); }
+  .banner.stale { color:var(--warn); background:var(--warnbg); }
+  .banner.ok { color:var(--ok); background:var(--okbg); }
+  .preview { border:1px solid var(--line); border-radius:7px; padding:1rem 1.2rem; margin-top:.6rem; }
+  dl { display:grid; grid-template-columns:9rem 1fr; gap:.25rem .8rem; margin:.3rem 0 .8rem; }
+  dt { color:var(--muted); }
+  dd { margin:0; overflow-wrap:anywhere; }
+  .tag { display:inline-block; font-size:.75rem; padding:.05rem .4rem; border-radius:3px;
+         border:1px solid var(--line); white-space:nowrap; }
+  .tag.new { color:var(--ok); border-color:#bfe3cc; }
+  .tag.changed { color:var(--warn); border-color:#e6d0a8; }
+  .tag.newver { color:#334; }
+  .tag.unchanged { color:var(--muted); }
+  .counts { font-size:.9rem; margin:.4rem 0 .2rem; }
+  .was { color:var(--muted); }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span><a href="/work/{{ project.slug }}">Back to coordination</a></span>
+</header>
+
+<main>
+  <h1>Key dates</h1>
+  <p class="muted">
+    Each Key date is one registered schedule milestone — its event name and its
+    scheduled date. A structured schedule (P6 XER) registers itself; a hand-typed
+    CSV is previewed here first, because a person typed it.
+  </p>
+
+  {% if message %}
+    <div class="banner ok">Imported: {{ message }}. Each row now has a Key Date Version recorded under your name.</div>
+  {% endif %}
+
+  <h2>Registered Key dates</h2>
+  {% if rows %}
+    <table>
+      <thead>
+        <tr><th>Code</th><th>Event</th><th>Scheduled date</th><th>Source</th><th>Key Date Version</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td><code>{{ row.code }}</code></td>
+            <td>{{ row.name }}</td>
+            <td>{% if row.need_date %}{{ row.need_date }}{% else %}<span class="muted">date not set</span>{% endif %}</td>
+            <td>{{ row.source_name or "—" }}{% if row.recorded_by %} <span class="muted">· {{ row.recorded_by }}</span>{% endif %}</td>
+            <td>{% if row.version_id %}<code>MR{{ row.version_id }}</code>{% else %}<span class="muted">—</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No Key dates registered yet.</p>
+  {% endif %}
+
+  <h2>Preview a hand-typed CSV</h2>
+  {% if error %}
+    <div class="banner error">Not imported — {{ error }}</div>
+  {% endif %}
+  <form class="import" method="post" action="/key-dates/{{ project.slug }}/preview">
+    <label for="source_name">Source name (what you typed this from)</label>
+    <input type="text" id="source_name" name="source_name" value="{{ source_name }}"
+           placeholder="e.g. seg3c2-utility-milestones-typed.csv">
+    <label for="content">CSV rows — columns <code>code,name,need_date</code></label>
+    <textarea class="csv" id="content" name="content"
+              placeholder="code,name,need_date&#10;UTIL-CLEAR,Utility clearance,2026-11-01">{{ content }}</textarea>
+    <button type="submit">Preview</button>
+  </form>
+
+  {% if preview %}
+    <div class="preview">
+      {% if stale %}
+        <div class="banner stale">
+          Refused — {{ stale }}. Nothing was imported. Below is the current state; review it, then confirm again.
+        </div>
+      {% endif %}
+      <h2 style="margin-top:.2rem">Preview of {{ preview.source_name }}</h2>
+      <dl>
+        <dt>Source</dt><dd>{{ preview.source_name }}</dd>
+        <dt>Fingerprint</dt><dd><code>{{ preview.source_sha256 }}</code></dd>
+      </dl>
+      <p class="counts">
+        {{ preview.new_count }} new ·
+        {{ preview.changed_count }} changed ·
+        {{ preview.new_version_count }} new source version, date unchanged ·
+        {{ preview.unchanged_count }} unchanged{% if preview.skipped_blank %} · {{ preview.skipped_blank }} blank row(s) skipped{% endif %}
+      </p>
+      <table>
+        <thead>
+          <tr><th>Code</th><th>Event</th><th>Scheduled date</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          {% for row in preview.rows %}
+            <tr>
+              <td><code>{{ row.code }}</code></td>
+              <td>{{ row.name }}</td>
+              <td>
+                {% if row.need_date %}{{ row.need_date }}{% else %}<span class="muted">date not set</span>{% endif %}
+                {% if row.classification == "changed" and row.prior_need_date != row.need_date %}
+                  <span class="was">— was {{ row.prior_need_date or "date not set" }}</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if row.classification == "new" %}<span class="tag new">New key date</span>
+                {% elif row.classification == "changed" %}<span class="tag changed">Changed</span>
+                {% elif row.classification == "new_source_version" %}<span class="tag newver">New source version, date unchanged</span>
+                {% else %}<span class="tag unchanged">No change</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form method="post" action="/key-dates/{{ project.slug }}/confirm">
+        <input type="hidden" name="source_name" value="{{ preview.source_name }}">
+        <input type="hidden" name="expected_sha256" value="{{ preview.source_sha256 }}">
+        <input type="hidden" name="expected_predecessors" value="{{ predecessors_json }}">
+        <textarea name="content" hidden>{{ content }}</textarea>
+        <button type="submit">Confirm import — record under my name</button>
+      </form>
+      <p class="muted" style="font-size:.85rem">
+        Confirming records each row as an immutable Key Date Version under your identity.
+        It does not relink constraints or move any Required By date.
+      </p>
+    </div>
+  {% endif %}
+</main>
