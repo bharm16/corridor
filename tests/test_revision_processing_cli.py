@@ -24,7 +24,10 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
-from corridor.revision_comparison import CorruptRevisionComparison
+from corridor.revision_comparison import (
+    CorruptRevisionComparison,
+    list_revision_comparisons,
+)
 from corridor.revision_processing_cli import main
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
@@ -308,6 +311,29 @@ def test_revision_process_cli_runs_exact_pair_and_reports_compact_json(session, 
         )
         == 1
     )
+
+
+def test_revision_process_cli_retry_reports_the_same_comparison(session, capsys):
+    scenario = _seed_transition(session)
+    argv = [
+        str(scenario["predecessor_run"].id),
+        str(scenario["successor_run"].id),
+    ]
+
+    assert main(argv, session_factory=_OpenSession(session)) == 0
+    first = _json_output(capsys)
+    assert main(argv, session_factory=_OpenSession(session)) == 0
+    retried = _json_output(capsys)
+
+    assert retried["comparison"] == first["comparison"]
+    assert [
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session,
+            scenario["predecessor_run"].id,
+            scenario["successor_run"].id,
+        )
+    ] == [first["comparison"]["id"]]
 
 
 def test_revision_process_cli_runs_released_policy_without_project_authorization(

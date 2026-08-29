@@ -106,6 +106,10 @@ class CorruptRevisionComparison(RevisionComparisonError):
     """Persisted receipt content no longer agrees with its sealed digest."""
 
 
+class AmbiguousRevisionComparison(RevisionComparisonError):
+    """More than one retained receipt claims the same execution identity."""
+
+
 class InexactExtractionInputs(RevisionComparisonError):
     """A legacy run has no provably extractor-time Candidate snapshot."""
 
@@ -185,13 +189,16 @@ def create_revision_comparison(
     *,
     matcher_version: str = DEFAULT_MATCHER_VERSION,
     matcher_config: dict[str, Any] | None = None,
+    require_unambiguous_pair_history: bool = False,
 ) -> RevisionComparisonRun:
-    """Append one completed Revision Comparison from two explicit run ids.
+    """Create or reuse one completed Comparison from two explicit run ids.
 
     The successor must be the registry-declared successor and both runs must
     satisfy the extraction completion predicate.  In particular, no receipt
     is written for an absent or failed successor, because an empty failed run
-    is not evidence that predecessor rows were dropped.
+    is not evidence that predecessor rows were dropped. An identical execution
+    returns its retained receipt only after integrity readback; a deliberately
+    changed matcher identity remains distinct append-only history.
     """
 
     if not isinstance(matcher_version, str) or not matcher_version.strip():
@@ -292,6 +299,19 @@ def create_revision_comparison(
             matcher_version=effective_matcher_version,
         )
 
+        retained = _read_identical_execution(
+            session,
+            predecessor_extraction_run_id=predecessor_run.id,
+            successor_extraction_run_id=successor_run.id,
+            matcher_version=effective_matcher_version,
+            matcher_config=config,
+            predecessor_inputs=locked_predecessor_inputs,
+            successor_inputs=locked_successor_inputs,
+            require_unambiguous_pair_history=require_unambiguous_pair_history,
+        )
+        if retained is not None:
+            return retained.comparison
+
         content = _receipt_content(
             project_id=predecessor_document.project_id,
             predecessor_document_id=predecessor_document.id,
@@ -342,6 +362,78 @@ def create_revision_comparison(
         comparison.sealed_at = datetime.now(timezone.utc)
         session.flush([comparison])
         return comparison
+
+
+def _read_identical_execution(
+    session: Session,
+    *,
+    predecessor_extraction_run_id: int,
+    successor_extraction_run_id: int,
+    matcher_version: str,
+    matcher_config: dict[str, Any],
+    predecessor_inputs: list[dict[str, Any]],
+    successor_inputs: list[dict[str, Any]],
+    require_unambiguous_pair_history: bool,
+) -> RevisionComparisonReadback | None:
+    """Return one integrity-checked receipt for this exact execution, if any."""
+
+    history = session.scalars(
+        select(RevisionComparisonRun)
+        .where(
+            RevisionComparisonRun.predecessor_extraction_run_id
+            == predecessor_extraction_run_id,
+            RevisionComparisonRun.successor_extraction_run_id
+            == successor_extraction_run_id,
+        )
+        .order_by(
+            RevisionComparisonRun.generated_at,
+            RevisionComparisonRun.id,
+        )
+        .execution_options(populate_existing=True)
+    ).all()
+    config_identity = _content_sha256({"matcher_config": matcher_config})
+    matching = [
+        comparison
+        for comparison in history
+        if comparison.matcher_version == matcher_version
+        and _content_sha256({"matcher_config": comparison.matcher_config})
+        == config_identity
+    ]
+    if require_unambiguous_pair_history and len(history) > 1:
+        raise AmbiguousRevisionComparison(
+            "routine revision processing found multiple retained comparisons"
+        )
+    if require_unambiguous_pair_history and history and not matching:
+        raise RevisionComparisonError(
+            "retained Revision Comparison matcher identity does not match the "
+            "requested routine execution"
+        )
+    if not matching:
+        return None
+    if len(matching) != 1:
+        raise AmbiguousRevisionComparison(
+            "multiple Revision Comparisons claim the identical execution"
+        )
+
+    [comparison] = matching
+    requested_input_identity = _content_sha256(
+        {
+            "predecessor_inputs": predecessor_inputs,
+            "successor_inputs": successor_inputs,
+        }
+    )
+    retained_input_identity = _content_sha256(
+        {
+            "predecessor_inputs": comparison.predecessor_inputs_json,
+            "successor_inputs": comparison.successor_inputs_json,
+        }
+    )
+    if retained_input_identity != requested_input_identity:
+        raise RevisionComparisonError(
+            "retained Revision Comparison input identity does not match the "
+            "exact Extraction Run inputs"
+        )
+    return read_revision_comparison(session, comparison.id)
 
 
 def read_revision_comparison(

@@ -1,4 +1,4 @@
-"""Create an exact Revision Comparison, verify it, then route automation.
+"""Converge on an exact Revision Comparison, verify it, then route automation.
 
 This service owns the production ordering. A Revision Comparison remains an
 immutable, Ledger-write-free receipt. Only after that receipt can be read back
@@ -43,7 +43,7 @@ def process_revision_pair(
     matcher_config: dict[str, Any] | None = None,
     automatic_carry_forward_runtime: AutomaticCarryForwardRuntime | None = None,
 ) -> RevisionProcessingResult:
-    """Create, read-verify, then route Carry-Forward for one exact pair."""
+    """Create or reuse, read-verify, then route Carry-Forward for one pair."""
 
     comparison = create_revision_comparison(
         session,
@@ -53,6 +53,7 @@ def process_revision_pair(
         matcher_config=(
             matcher_config if matcher_config is not None else DEFAULT_MATCHER_CONFIG
         ),
+        require_unambiguous_pair_history=True,
     )
     readback = read_revision_comparison(session, comparison.id)
     carry_forward = run_automatic_carry_forward(
