@@ -375,3 +375,151 @@ def test_the_page_number_is_the_one_ingest_gave_the_same_sheet(tmp_path):
 
     assert chosen.page_no == 3
     assert chosen.page_no in ingested
+
+
+# --------- a second published TxDOT form: "UCM - Utility Conflict List" (#365)
+
+# I-35 NEX South's workbook, header for header. A title, five rows of project
+# identification, a blank, then the column header on row 8 (index 7) — deeper
+# than the template's row 2, and named by the form's own data dictionary
+# rather than by the Utility Conflict Analysis Template.
+UCM_LIST_HEADINGS = [
+    "Utility Company",
+    "Utility Company Contact",
+    "Utility Conflict ID",
+    "Drawing or Sheet No.",
+    "Line Style",
+    "Utility Type",
+    "Size and/or Material",
+    "Base or Ultimate",
+    "Utility Conflict Description",
+    "Longitudinal or Crossing",
+    "Utility Placement in Relation to Existing TxDOT Right of Way",
+    "Highway\nAlignment",
+    "Station Origin",
+    "Start Station",
+    "Start Offset",
+    "End Station",
+    "End Offset",
+    "Level of Utility Investigation  Needed",
+    "Test Hole No.",
+    "Test Hole Depth",
+    "Recommended Action or Resolution",
+    "Estimated Resolution Date",
+    "Resolution Status",
+    "Comments",
+]
+
+# The 15 columns the vocabulary rules on, mapped by this form's exact names.
+UCM_LIST_MAPPING = {
+    0: "external_org",
+    1: "external_org_contact",
+    2: "utility_id",
+    5: "utility_type",
+    8: "conflict_description",
+    9: "orientation",
+    10: "row_placement",
+    12: "baseline",
+    13: "station_from",
+    14: "offset_from",
+    15: "station_to",
+    16: "offset_to",
+    17: "sue_level",
+    20: "resolution_strategy",
+    23: "notes",
+}
+
+
+def ucm_list_rows(extra=()):
+    return [
+        ["TxDOT Utility Conflict Management (UCM) - Utility Conflict List"],
+        [""],
+        ["Project Owner:", "TxDOT"],
+        ["CCSJ/RCSJ.:", "0016-05-111"],
+        ["Project Description:", "I-35 NEX South"],
+        ["Highway or Route:", "I-35 From FM 1103 to AT&T Center Drive"],
+        [""],
+        UCM_LIST_HEADINGS,
+        [
+            "CPS Electric", "John Offer", "41", "N/A", "N/A", "Electric",
+            "Pullbox (2B)", "I-35 NEX South",
+            "In conflict with proposed sidewalk improvements", "Longitudinal",
+            "Inside", "IH-35", "RT", "327869.22", "131.97", "-", "-", "QLC",
+            "N/A", "N/A", "Accommodate - Relocation", "", "", "IH 35 E ROW",
+        ],
+        *extra,
+    ]
+
+
+def test_the_ucm_conflict_list_header_is_found_beneath_the_project_preamble(
+    tmp_path,
+):
+    """The template's header is on row 2; this form's is five rows deeper.
+
+    A reader bounded at six rows (the template's depth) reports the whole
+    structured original unreadable, which is the failure this exists to
+    prevent (#365, ADR-0005).
+    """
+    path = write_workbook(tmp_path / "ucm.xlsx", {"UCM-Conflict List": ucm_list_rows()})
+
+    assert header_row(read_workbook(path)[0]) == 7
+
+
+def test_the_ucm_conflict_list_form_headings_map_to_canonical_fields(tmp_path):
+    """The form's own names, read straight from its `Field_Column
+    Descriptions` sheet — an exact published-form column name, never a
+    synonym."""
+    path = write_workbook(tmp_path / "ucm.xlsx", {"UCM-Conflict List": ucm_list_rows()})
+    conflicts = read_workbook(path)[0]
+
+    assert column_mapping(conflicts.rows[header_row(conflicts)]) == UCM_LIST_MAPPING
+
+
+def test_the_ucm_conflict_list_extra_columns_stay_unmapped(tmp_path):
+    """Nine columns this form carries have no canonical field, and are
+    reported rather than guessed — including the two the vocabulary
+    deliberately declines: a document's `Resolution Status` (workflow state,
+    ADR-0002) and its `Estimated Resolution Date` (the project's own
+    estimate, not a committed date)."""
+    path = write_workbook(tmp_path / "ucm.xlsx", {"UCM-Conflict List": ucm_list_rows()})
+    conflicts = read_workbook(path)[0]
+    header = conflicts.rows[header_row(conflicts)]
+    mapping = column_mapping(header)
+
+    unmapped = [
+        " ".join(header[i].split())
+        for i in range(len(header))
+        if header[i].strip() and i not in mapping
+    ]
+
+    assert unmapped == [
+        "Drawing or Sheet No.",
+        "Line Style",
+        "Size and/or Material",
+        "Base or Ultimate",
+        "Highway Alignment",
+        "Test Hole No.",
+        "Test Hole Depth",
+        "Estimated Resolution Date",
+        "Resolution Status",
+    ]
+
+
+def test_conflict_sheet_reads_the_ucm_conflict_list_form(tmp_path):
+    """The whole workbook: the conflict sheet is chosen over the form's data
+    dictionary and dropdown sheets, and read on its own exact terms."""
+    path = write_workbook(
+        tmp_path / "ucm.xlsx",
+        {
+            "UCM-Conflict List": ucm_list_rows(),
+            "Field_Column Descriptions": [["Field", "Description"]],
+            "Drop-Down Lists": [["Drop Down Lists"]],
+        },
+    )
+
+    chosen = conflict_sheet(read_workbook(path))
+
+    assert chosen.sheet.name == "UCM-Conflict List"
+    assert chosen.header_index == 7
+    assert chosen.mapping == UCM_LIST_MAPPING
+    assert [row[2] for row in chosen.rows] == ["41"]
