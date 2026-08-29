@@ -36,7 +36,8 @@ from corridor.extract_matrix import (
     TIER_TRANSCRIBE,
     extract_document,
 )
-from corridor.models import Candidate, DocPage, Document, Project
+from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
+from corridor.row_accounting import RowAccounting, RowAccountingFailure
 
 # A TxDOT-shaped page: the owner is a column, every row states its own.
 TXDOT_ROWS = [
@@ -79,6 +80,9 @@ class StubClient:
     def __init__(self, responses, model="gpt-5.6-luna"):
         self.responses = list(responses)
         self.model = model
+        self.effort = "low"
+        self.flex = True
+        self.base_url = "https://provider.example/v1"
         self.max_workers = 2
         self.calls = []
 
@@ -385,6 +389,72 @@ def test_a_matrix_with_no_conflict_rows_returns_empty(session, project, tmp_path
     assert extract_document(session, doc, client=StubClient([structure()])) == []
 
 
+def test_structure_rows_are_all_visible_in_accounting(session, project, tmp_path):
+    rows = [
+        TXDOT_ROWS[0],
+        TXDOT_ROWS[1],
+        ["", "", "", "", "", ""],
+        ["FOC1-200", "", "Telecom", "1+00", "2+00", "3"],
+    ]
+    doc = make_document(session, project, tmp_path, rows, sha="q")
+
+    candidates = extract_document(session, doc, client=StubClient([structure()]))
+
+    assert len(candidates) == 1
+    assert candidates.row_accounting["detected_row_count"] == 3
+    assert [item["reason"] for item in candidates.row_accounting["rows"]] == [
+        "candidate_recorded",
+        "blank_source_row",
+        "missing_required_fields",
+    ]
+
+
+def test_page_reader_fails_when_a_detected_row_is_unaccounted(
+    session, project, tmp_path, monkeypatch
+):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS, sha="z")
+    real_account = RowAccounting.account
+    dropped = False
+
+    def drop_one(self, *args, **kwargs):
+        nonlocal dropped
+        if not dropped:
+            dropped = True
+            return None
+        return real_account(self, *args, **kwargs)
+
+    monkeypatch.setattr(RowAccounting, "account", drop_one)
+
+    with pytest.raises(RowAccountingFailure, match="unaccounted"):
+        extract_document(session, doc, client=StubClient([structure()]))
+
+
+def test_page_pipeline_persists_blank_and_skip_reasons(
+    session, project, tmp_path
+):
+    from corridor.pipeline import extract_any
+
+    rows = [
+        TXDOT_ROWS[0],
+        TXDOT_ROWS[1],
+        ["", "", "", "", "", ""],
+        ["FOC1-200", "", "Telecom", "1+00", "2+00", "3"],
+    ]
+    document = make_document(session, project, tmp_path, rows, sha="y")
+
+    extract_any(session, document, client=StubClient([structure()]))
+
+    run = session.scalar(
+        select(ExtractionRun).where(ExtractionRun.document_id == document.id)
+    )
+    assert run.outcome == "completed"
+    assert [item["reason"] for item in run.row_accounting_json["rows"]] == [
+        "candidate_recorded",
+        "blank_source_row",
+        "missing_required_fields",
+    ]
+
+
 def test_a_document_with_no_matrix_page_raises(session, project, tmp_path):
     """`NoMatrixFound` keeps its meaning: unreadable is not the same as empty."""
     doc = make_document(session, project, tmp_path, TXDOT_ROWS)
@@ -622,6 +692,45 @@ def test_a_transcribed_value_absent_from_the_ocr_text_is_kept_and_flagged(
     assert candidates[0].citations_verified is False
     assert candidates[0].payload_json["unverified_fields"] == ["station_from"]
     assert candidates[0].payload_json["fields"]["station_from"] == "1140+00"
+
+
+def test_transcribed_rows_without_required_fields_are_skipped_and_accounted(
+    session, project, tmp_path
+):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    blind(session, doc)
+
+    candidates = extract_document(
+        session,
+        doc,
+        client=StubClient(
+            [
+                transcribed(
+                    [
+                        {
+                            "utility_id": "FOC1-133",
+                            "external_org": "AT&T Texas (SWBT)",
+                            "station_from": "1092+92",
+                            "quote": "FOC1-133 AT&T Texas (SWBT)",
+                            "confidence": 0.9,
+                        },
+                        {
+                            "utility_id": "FOC1-134",
+                            "quote": "FOC1-134",
+                            "confidence": 0.9,
+                        },
+                    ]
+                )
+            ]
+        ),
+    )
+
+    assert len(candidates) == 1
+    assert candidates.row_accounting["detected_row_count"] == 2
+    assert [item["reason"] for item in candidates.row_accounting["rows"]] == [
+        "candidate_recorded",
+        "insufficient_mapped_fields",
+    ]
 
 
 def test_a_low_logprob_numeric_token_sinks_its_row(session, project, tmp_path):

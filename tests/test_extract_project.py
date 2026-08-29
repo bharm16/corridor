@@ -12,7 +12,7 @@ from sqlalchemy import select
 from corridor.db import Session, engine
 from corridor.extract_matrix import ExtractionFailed
 from corridor.extract_sheet import PROMPT_VERSION as SHEET_PROMPT_VERSION
-from corridor.extraction_runs import active_run_for_document
+from corridor.extraction_runs import active_run_for_document, record_extraction_run
 from corridor.geometry import NoMatrixFound
 from corridor.extract_project import (
     Outcome,
@@ -32,8 +32,14 @@ from corridor.models import (
     Project,
 )
 from corridor.pipeline import ExtractionRoute
+from corridor.row_accounting import (
+    AccountedCandidates,
+    RowAccounting,
+    RowAccountingFailure,
+)
 
 PROMPT_VERSION = "test_v1"
+ACCOUNTED_PROMPT_VERSION = "matrix_tiered_v4"
 
 
 @pytest.fixture
@@ -100,6 +106,57 @@ def extractor(*, prompt_version=PROMPT_VERSION, **by_filename):
     return extract
 
 
+def accounted_route(*, fail: bool = False):
+    def select_route(document):
+        def extract(session, target):
+            accounting = RowAccounting(
+                reader_version=ACCOUNTED_PROMPT_VERSION,
+                reader_path="page_geometry_and_transcription",
+            )
+            accounting.detect("structure:1:table:0:row:1", page=1, row_number=1)
+            if fail:
+                accounting.detect(
+                    "structure:1:table:0:row:2",
+                    page=1,
+                    row_number=2,
+                )
+                accounting.account(
+                    "structure:1:table:0:row:1",
+                    disposition="blank",
+                    reason="blank_source_row",
+                )
+                accounting.finish([])
+            made = candidate(target)
+            made.prompt_version = ACCOUNTED_PROMPT_VERSION
+            session.add(made)
+            session.flush([made])
+            accounting.account(
+                "structure:1:table:0:row:1",
+                disposition="extracted",
+                reason="candidate_recorded",
+            )
+            return accounting.finish([made])
+
+        return ExtractionRoute(
+            effective_prompt_version=ACCOUNTED_PROMPT_VERSION,
+            schema_version="matrix_candidate_shape_v1",
+            extract=extract,
+            model=None,
+            extractor_config=injected_extractor_config(
+                extractor="accounted-matrix-fixture",
+                prompt_version=ACCOUNTED_PROMPT_VERSION,
+                model=None,
+                schema_version="matrix_candidate_shape_v1",
+                prompt_bytes=b"accounted matrix fixture",
+                schema={"type": "object"},
+                postprocessor_bytes=b"accounted matrix fixture rules",
+                request_controls={"strict": True},
+            ),
+        )
+
+    return select_route
+
+
 def route_selector(**by_filename):
     """An injected production-like route seam: version first, then extractor."""
 
@@ -124,6 +181,28 @@ def route_selector(**by_filename):
                 c.prompt_version = prompt_version
                 session.add(c)
             session.flush()
+            if prompt_version in {"sheet_native_v2", "matrix_tiered_v4"}:
+                accounting = RowAccounting(
+                    reader_version=prompt_version,
+                    reader_path=(
+                        "spreadsheet_cells"
+                        if prompt_version.startswith("sheet_")
+                        else "page_geometry_and_transcription"
+                    ),
+                )
+                for row_number, _candidate in enumerate(candidates, start=1):
+                    row_id = f"fixture:1:row:{row_number}"
+                    accounting.detect(
+                        row_id,
+                        page=1,
+                        row_number=row_number,
+                    )
+                    accounting.account(
+                        row_id,
+                        disposition="extracted",
+                        reason="candidate_recorded",
+                    )
+                return accounting.finish(candidates)
             return candidates
 
         return ExtractionRoute(
@@ -251,6 +330,106 @@ def test_terminal_outcomes_name_the_exact_extraction_run_receipt(session, projec
         session, completed
     )[0].id
     assert by_name["failed.pdf"].extraction_run_id == _runs(session, failed)[0].id
+
+
+def test_completed_accounted_reader_retains_every_row_disposition(
+    session, project
+):
+    document = add_matrix(session, project, "accounted.pdf", "3" * 64)
+
+    [outcome] = extract_project(
+        session,
+        project,
+        select_route=accounted_route(),
+        commit=False,
+    )
+
+    assert outcome.status == "extracted"
+    [run] = _runs(session, document)
+    assert run.prompt_version == ACCOUNTED_PROMPT_VERSION
+    assert run.row_accounting_json["detected_row_count"] == 1
+    assert run.row_accounting_json["rows"][0]["reason"] == "candidate_recorded"
+
+
+def test_unaccounted_reader_failure_retains_discrepancy_and_no_candidates(
+    session, project
+):
+    document = add_matrix(session, project, "dropped.pdf", "4" * 64)
+
+    [outcome] = extract_project(
+        session,
+        project,
+        select_route=accounted_route(fail=True),
+        commit=False,
+    )
+
+    assert outcome.status == "failed"
+    assert "unaccounted" in outcome.detail
+    [run] = _runs(session, document)
+    assert run.outcome == "failed"
+    assert run.candidate_count == 0
+    assert run.row_accounting_json["detected_row_count"] == 2
+    assert run.row_accounting_json["accounted_row_count"] == 1
+    assert run.row_accounting_json["unaccounted_rows"] == [
+        "structure:1:table:0:row:2"
+    ]
+    assert _count(session, document) == 0
+
+
+def test_bumped_accounted_reader_never_pools_with_historical_reading(
+    session, project
+):
+    document = add_matrix(session, project, "versioned.pdf", "5" * 64)
+    record_extraction_run(
+        session,
+        document,
+        prompt_version="matrix_tiered_v3",
+        candidate_count=0,
+        page_errors=0,
+        allow_unsealed_legacy=True,
+    )
+
+    [outcome] = extract_project(
+        session,
+        project,
+        select_route=accounted_route(),
+        commit=False,
+    )
+
+    assert outcome.status == "extracted"
+    assert [run.prompt_version for run in _runs(session, document)] == [
+        "matrix_tiered_v3",
+        "matrix_tiered_v4",
+    ]
+
+
+def test_bumped_sheet_reader_never_pools_with_historical_reading(
+    session, project
+):
+    document = add_matrix(session, project, "versioned.xlsx", "6" * 64)
+    record_extraction_run(
+        session,
+        document,
+        prompt_version="sheet_native_v1",
+        candidate_count=0,
+        page_errors=0,
+        allow_unsealed_legacy=True,
+    )
+
+    [outcome] = extract_project(
+        session,
+        project,
+        select_route=route_selector(
+            **{"versioned.xlsx": (SHEET_PROMPT_VERSION, [])}
+        ),
+        commit=False,
+    )
+
+    assert outcome.status == "extracted"
+    assert [run.prompt_version for run in _runs(session, document)] == [
+        "sheet_native_v1",
+        "sheet_native_v2",
+    ]
 
 
 def test_a_second_run_does_not_double_the_candidates(session, project):

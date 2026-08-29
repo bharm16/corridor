@@ -15,7 +15,8 @@ from corridor.db import Session, engine
 from corridor.extract_sheet import PROMPT_VERSION, TIER_NATIVE, extract_document
 from corridor.geometry import NoMatrixFound
 from corridor.ingest import ingest_document
-from corridor.models import Candidate, Document, Project
+from corridor.models import Candidate, Document, ExtractionRun, Project
+from corridor.row_accounting import RowAccounting, RowAccountingFailure
 
 HEADINGS = [
     "Utility Conflict ID",
@@ -233,6 +234,122 @@ def test_a_row_missing_an_owner_is_not_a_dependency(session, project, tmp_path):
     assert [c.payload_json["fields"]["utility_id"] for c in candidates] == ["UC-2"]
 
 
+def test_blank_and_skipped_spreadsheet_rows_are_visible_in_accounting(
+    session, project, tmp_path
+):
+    rows = [
+        HEADINGS,
+        ["UC-1", "CenterPoint", "Electric", "1+00", "2+00", "Pole", ""],
+        ["", "", "", "", "", "", ""],
+        ["UC-2", "", "Telecom", "3+00", "4+00", "Duct", ""],
+    ]
+    document = ingest(session, project, tmp_path, rows)
+
+    candidates = extract_document(session, document)
+
+    assert len(candidates) == 1
+    assert candidates.row_accounting["detected_row_count"] == 3
+    assert candidates.row_accounting["accounted_row_count"] == 3
+    assert candidates.row_accounting["extracted_row_count"] == 1
+    assert candidates.row_accounting["blank_row_count"] == 1
+    assert candidates.row_accounting["skipped_row_count"] == 1
+    assert [item["reason"] for item in candidates.row_accounting["rows"]] == [
+        "candidate_recorded",
+        "blank_source_row",
+        "missing_required_fields",
+    ]
+
+
+def test_spreadsheet_reader_fails_when_a_detected_row_is_unaccounted(
+    session, project, tmp_path, monkeypatch
+):
+    document = ingest(session, project, tmp_path, ROWS)
+    real_account = RowAccounting.account
+    dropped = False
+
+    def drop_one(self, *args, **kwargs):
+        nonlocal dropped
+        if not dropped:
+            dropped = True
+            return None
+        return real_account(self, *args, **kwargs)
+
+    monkeypatch.setattr(RowAccounting, "account", drop_one)
+
+    with pytest.raises(RowAccountingFailure, match="unaccounted"):
+        extract_document(session, document)
+
+
+def test_spreadsheet_pipeline_persists_dropped_row_failure_without_candidates(
+    session, project, tmp_path, monkeypatch
+):
+    from corridor import pipeline
+
+    document = ingest(session, project, tmp_path, ROWS)
+    monkeypatch.setattr(
+        pipeline,
+        "stored_file",
+        lambda value: getattr(value, "_stored_path", None),
+    )
+    real_account = RowAccounting.account
+    dropped = False
+
+    def drop_one(self, *args, **kwargs):
+        nonlocal dropped
+        if not dropped:
+            dropped = True
+            return None
+        return real_account(self, *args, **kwargs)
+
+    monkeypatch.setattr(RowAccounting, "account", drop_one)
+
+    with pytest.raises(RowAccountingFailure, match="unaccounted"):
+        pipeline.extract_any(session, document, client=object())
+
+    run = session.scalar(
+        select(ExtractionRun).where(ExtractionRun.document_id == document.id)
+    )
+    assert run.outcome == "failed"
+    assert run.candidate_count == 0
+    assert run.row_accounting_json["detected_row_count"] == 2
+    assert run.row_accounting_json["accounted_row_count"] == 1
+    assert run.row_accounting_json["unaccounted_rows"] == ["sheet:1:row:1"]
+    assert session.scalar(
+        select(Candidate).where(Candidate.source_document_id == document.id)
+    ) is None
+
+
+def test_spreadsheet_pipeline_persists_blank_and_skip_reasons(
+    session, project, tmp_path, monkeypatch
+):
+    from corridor import pipeline
+
+    rows = [
+        HEADINGS,
+        ["UC-1", "CenterPoint", "Electric", "1+00", "2+00", "Pole", ""],
+        ["", "", "", "", "", "", ""],
+        ["UC-2", "", "Telecom", "3+00", "4+00", "Duct", ""],
+    ]
+    document = ingest(session, project, tmp_path, rows)
+    monkeypatch.setattr(
+        pipeline,
+        "stored_file",
+        lambda value: getattr(value, "_stored_path", None),
+    )
+
+    pipeline.extract_any(session, document, client=object())
+
+    run = session.scalar(
+        select(ExtractionRun).where(ExtractionRun.document_id == document.id)
+    )
+    assert run.outcome == "completed"
+    assert [item["reason"] for item in run.row_accounting_json["rows"]] == [
+        "candidate_recorded",
+        "blank_source_row",
+        "missing_required_fields",
+    ]
+
+
 def test_a_workbook_with_no_conflict_sheet_is_unreadable_not_empty(
     session, project, tmp_path
 ):
@@ -323,7 +440,11 @@ def test_the_router_sends_a_pdf_to_the_page_extractor(session, project, monkeypa
     monkeypatch.setattr(pipeline, "stored_file", lambda d: Path("x.pdf"))
     def extract_pdf(session, target, client=None, **_runtime):
         seen["client"] = client
-        return []
+        accounting = RowAccounting(
+            reader_version="matrix_tiered_v4",
+            reader_path="page_geometry_and_transcription",
+        )
+        return accounting.finish([])
 
     monkeypatch.setattr("corridor.extract_matrix.extract_document", extract_pdf)
 

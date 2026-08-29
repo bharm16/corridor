@@ -681,6 +681,61 @@ class ExtractionRun(Base):
             """,
             name="ck_extraction_runs_config_receipt_shape",
         ),
+        CheckConstraint(
+            """
+            row_accounting_json is null or (
+                jsonb_typeof(row_accounting_json) = 'object'
+                and row_accounting_json ?& array[
+                    'schema_version', 'reader_version', 'reader_path',
+                    'detected_row_count', 'accounted_row_count',
+                    'extracted_row_count', 'blank_row_count',
+                    'skipped_row_count', 'unaccounted_rows', 'rows'
+                ]
+                and row_accounting_json ->> 'schema_version' =
+                    'matrix-row-accounting-v1'
+                and row_accounting_json ->> 'reader_version' = prompt_version
+                and jsonb_typeof(row_accounting_json -> 'rows') = 'array'
+                and jsonb_typeof(
+                    row_accounting_json -> 'unaccounted_rows'
+                ) = 'array'
+                and row_accounting_json ->> 'detected_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'accounted_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'extracted_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'blank_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'skipped_row_count' ~ '^[0-9]+$'
+                and jsonb_array_length(row_accounting_json -> 'rows') =
+                    (row_accounting_json ->> 'detected_row_count')::integer
+                and (row_accounting_json ->> 'accounted_row_count')::integer =
+                    (row_accounting_json ->> 'extracted_row_count')::integer +
+                    (row_accounting_json ->> 'blank_row_count')::integer +
+                    (row_accounting_json ->> 'skipped_row_count')::integer
+                and jsonb_array_length(
+                    row_accounting_json -> 'unaccounted_rows'
+                ) =
+                    (row_accounting_json ->> 'detected_row_count')::integer -
+                    (row_accounting_json ->> 'accounted_row_count')::integer
+            )
+            """,
+            name="ck_extraction_runs_row_accounting_shape",
+        ),
+        CheckConstraint(
+            """
+            not (
+                outcome = 'completed'
+                and prompt_version in ('sheet_native_v2', 'matrix_tiered_v4')
+            ) or (
+                row_accounting_json is not null
+                and jsonb_array_length(
+                    row_accounting_json -> 'unaccounted_rows'
+                ) = 0
+                and (row_accounting_json ->> 'accounted_row_count')::integer =
+                    (row_accounting_json ->> 'detected_row_count')::integer
+                and (row_accounting_json ->> 'extracted_row_count')::integer =
+                    candidate_count
+            )
+            """,
+            name="ck_extraction_runs_completed_row_accounting",
+        ),
         Index(
             "ix_extraction_runs_completed_prompt_document",
             "prompt_version",
@@ -714,6 +769,9 @@ class ExtractionRun(Base):
     extractor_config_json: Mapped[dict | None] = mapped_column(JSONB)
     extractor_config_sha256: Mapped[str | None] = mapped_column(String(64))
     token_usage_json: Mapped[dict | None] = mapped_column(JSONB)
+    row_accounting_json: Mapped[dict | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
     completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
