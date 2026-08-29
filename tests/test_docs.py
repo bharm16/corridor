@@ -9,7 +9,12 @@ from sqlalchemy.orm import sessionmaker
 
 from corridor.db import Session, engine
 from corridor.docs import get_page, list_documents
-from corridor.models import Document, DocumentQuarantine, Project
+from corridor.models import (
+    Document,
+    DocumentQuarantine,
+    DocumentRenditionDerivation,
+    Project,
+)
 from corridor.pipeline import ingest_manifest
 
 
@@ -103,6 +108,96 @@ def test_ingesting_a_manifest_loads_every_fetched_source(
     )
     assert len(documents) == 2
     assert all(d.parse_status == "parsed" for d in documents)
+
+
+def test_ingest_registers_original_and_converted_rendition_once(
+    session, project, tmp_path
+):
+    from openpyxl import Workbook
+
+    original = tmp_path / "test-hole-index.xls"
+    original.write_bytes(b"retained legacy XLS bytes")
+    converted = tmp_path / "test-hole-index.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.append(["TEST HOLE #", "UTILITY OWNER", "STATION"])
+    sheet.append(["169-A", "VERIZON", "147+64.72"])
+    book.save(converted)
+    source_sha = file_sha256(original)
+    derived_sha = file_sha256(converted)
+    lock = {
+        "project": project.slug,
+        "sources": {
+            "https://example.gov/archive.zip::test-hole-index.xls": {
+                "sha256": source_sha,
+                "local_path": str(original),
+                "member": "test-hole-index.xls",
+                "archive_url": "https://example.gov/archive.zip",
+                "doc_type": "plan",
+                "registry_id": "test-hole-index-xls",
+                "curation_status": "proposed",
+            },
+            "derived:test-hole-index:xlsx": {
+                "sha256": derived_sha,
+                "local_path": str(converted),
+                "member": "test-hole-index.xlsx",
+                "doc_type": "plan",
+                "registry_id": "test-hole-index-xlsx",
+                "curation_status": "proposed",
+                "derivation": {
+                    "kind": "format_conversion",
+                    "source_registry_id": "test-hole-index-xls",
+                    "source_sha256": source_sha,
+                    "tool": "corridor.xls-to-xlsx",
+                    "tool_version": "1",
+                },
+            },
+        },
+    }
+    lock_path = tmp_path / "renditions.lock.json"
+    lock_path.write_text(json.dumps(lock))
+
+    assert ingest_manifest(
+        session,
+        project_id=project.id,
+        lock_path=lock_path,
+        images_dir=tmp_path / "images",
+    ) == []
+    first = ingest_manifest(
+        session,
+        project_id=project.id,
+        lock_path=lock_path,
+        images_dir=tmp_path / "images",
+        include_proposed=True,
+    )
+    second = ingest_manifest(
+        session,
+        project_id=project.id,
+        lock_path=lock_path,
+        images_dir=tmp_path / "images",
+        include_proposed=True,
+    )
+
+    assert len(first) == len(second) == 2
+    source = session.scalar(
+        select(Document).where(Document.registry_id == "test-hole-index-xls")
+    )
+    derived = session.scalar(
+        select(Document).where(Document.registry_id == "test-hole-index-xlsx")
+    )
+    assert source.parse_status == "failed"
+    assert derived.parse_status == "parsed"
+    assert source.superseded_by is None and derived.superseded_by is None
+    [receipt] = session.scalars(
+        select(DocumentRenditionDerivation).where(
+            DocumentRenditionDerivation.project_id == project.id
+        )
+    ).all()
+    assert receipt.source_document_id == source.id
+    assert receipt.derived_document_id == derived.id
+    assert receipt.source_sha256 == source_sha
+    assert receipt.derived_sha256 == derived_sha
+    assert receipt.tool == "corridor.xls-to-xlsx"
 
 
 def test_ingest_rejects_lockfile_hash_mismatch_before_binding_registry_id(

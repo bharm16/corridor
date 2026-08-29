@@ -66,6 +66,30 @@ sources:
     role: evidence
     title: "SUE Level A (October 2024)"
 
+  - url: *utilities
+    member: "Utility Strip Map/SUE Level A - Test Hole Data/SH99_PROBE_DEPTH_SUMMARY_TABLE_1-15-2025.xlsx"
+    registry_id: sh99-sue-probe-depth-summary-2025-01-15
+    doc_type: plan
+    role: evidence
+    title: "SUE probe depth summary table (1/15/2025)"
+    curation_status: proposed
+    doc_date: 2025-01-15
+    notes: "Structured archive member verified in docs/research/spreadsheet-source-availability-2026-08-28.md. Registration does not imply equivalence or Supersession."
+
+  - url: *utilities
+    member: "Utility Strip Map/SUE Level A - Test Hole Data/SH99_TEST_HOLE_INDEX_1-15-2025.xls"
+    registry_id: sh99-sue-test-hole-index-2025-01-15-xls
+    doc_type: plan
+    role: evidence
+    title: "SUE test hole index (original XLS, 1/15/2025)"
+    curation_status: proposed
+    doc_date: 2025-01-15
+    notes: "Original binary workbook retained exactly; converted rendition is derived for native reading only."
+    conversion:
+      to: xlsx
+      registry_id: sh99-sue-test-hole-index-2025-01-15-xlsx
+      title: "SUE test hole index (converted XLSX rendition, 1/15/2025)"
+
   # --- Generated from the archive listing below this line -------------
   - url: *utilities
     member: "Utility Owner Coordination/Utility Owner Meeting Notes and Exhibits.zip::Exhibits/CenterPoint Elec Transmission/2024-06-20 - CNPE Max Sag Steele Road.pdf"

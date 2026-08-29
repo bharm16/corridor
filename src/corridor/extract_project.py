@@ -1,4 +1,4 @@
-"""Extraction over every matrix in a project, from one command.
+"""Extraction over every matrix and registered plan spreadsheet in a project.
 
 Extraction was reachable only through the scripted demo path, so a project
 could be fully ingested and produce no Candidates at all with nothing in
@@ -30,6 +30,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,6 +48,7 @@ from corridor.extract_matrix import (
     SequencingSemanticsDetected,
 )
 from corridor.geometry import NoMatrixFound
+from corridor.ingest import SPREADSHEET_SUFFIXES
 from corridor.models import (
     Candidate,
     Document,
@@ -109,7 +111,7 @@ def extract_project(
     document_registry_id: str | None = None,
     document_sha256: str | None = None,
 ) -> list[Outcome]:
-    """Extract every matrix in the project, one Outcome per document.
+    """Extract every supported document in the project, one Outcome each.
 
     ``document_registry_id`` names one document — by registry identity,
     never database id — and extracts it alone: a two-document rehearsal
@@ -154,18 +156,19 @@ def extract_project(
             raise UnknownDocument(
                 f"no document in {project.slug!r} carries identity {identity}"
             )
-        if named.doc_type != "matrix":
+        if not _extractable_document(named):
             raise UnextractableDocument(
                 f"{document_registry_id!r} is {named.doc_type!r}; extraction "
-                "reads matrices"
+                "reads matrices and registered plan spreadsheets"
             )
         documents = [named]
     else:
-        documents = session.scalars(
+        registered = session.scalars(
             select(Document)
-            .where(Document.project_id == project.id, Document.doc_type == "matrix")
+            .where(Document.project_id == project.id)
             .order_by(Document.doc_date, Document.id)
         ).all()
+        documents = [document for document in registered if _extractable_document(document)]
 
     done_by_version: dict[str, set[int]] = {}
     outcomes = []
@@ -384,6 +387,13 @@ def extract_project(
     return outcomes
 
 
+def _extractable_document(document: Document) -> bool:
+    return document.doc_type == "matrix" or (
+        document.doc_type == "plan"
+        and Path(document.filename).suffix.lower() in SPREADSHEET_SUFFIXES
+    )
+
+
 def _run_model(
     candidates: list[Candidate], configured_model: str | None
 ) -> str | None:
@@ -464,7 +474,7 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
     skipped = [o for o in outcomes if o.status == "skipped"]
     quarantined = [o for o in outcomes if o.status == "quarantined"]
     lines.append(
-        f"{len(outcomes)} matrices: {len(extracted)} extracted "
+        f"{len(outcomes)} documents: {len(extracted)} extracted "
         f"({sum(o.rows for o in extracted):,} rows, "
         f"{sum(o.unverified for o in extracted):,} unverified), "
         f"{len(failed)} failed, {len(unreadable)} unreadable, "

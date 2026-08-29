@@ -243,6 +243,26 @@ def test_it_reports_rows_and_unverified_citations_per_document(session, project)
     assert (by_name["b.pdf"].rows, by_name["b.pdf"].unverified) == (1, 0)
 
 
+def test_project_extraction_includes_registered_plan_spreadsheets(
+    session, project
+):
+    table = add_matrix(session, project, "sue-table.xlsx", "7" * 64)
+    table.doc_type = "plan"
+    session.flush([table])
+
+    [outcome] = extract_project(
+        session,
+        project,
+        select_route=route_selector(
+            **{"sue-table.xlsx": (SHEET_PROMPT_VERSION, [])}
+        ),
+        commit=False,
+    )
+
+    assert outcome.status == "extracted"
+    assert outcome.effective_prompt_version == SHEET_PROMPT_VERSION
+
+
 def test_unreadable_is_a_different_outcome_from_no_rows(session, project):
     """The distinction the whole ticket exists for.
 
@@ -647,7 +667,7 @@ def test_a_document_ingest_could_not_parse_is_reported_not_skipped(session, proj
     assert [run.outcome for run in _runs(session, doc)] == ["unreadable"]
 
 
-def test_only_matrices_are_eligible(session, project):
+def test_non_spreadsheet_non_matrix_documents_are_ineligible(session, project):
     add_matrix(session, project, "a.pdf", "a" * 64)
     session.add(
         Document(

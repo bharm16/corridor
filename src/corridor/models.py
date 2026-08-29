@@ -141,7 +141,7 @@ CRITICAL_STRATEGIES = frozenset({"relocate", "remove", "abandon_in_place"})
 # and it is here rather than at the join so that one constant governs both.
 ANSWER_SEPARATOR = "; "
 
-CANDIDATE_KINDS = ("dependency", "event")
+CANDIDATE_KINDS = ("dependency", "event", "evidence")
 CANDIDATE_STATES = ("pending", "accepted", "merged", "rejected")
 ORG_TYPES = ("utility", "railroad", "agency", "consultant", "other")
 EVENT_TYPES = (
@@ -492,6 +492,57 @@ class Document(Base):
     superseded_on: Mapped[date | None] = mapped_column(Date)
     supersession_source_document_id: Mapped[int | None] = mapped_column(BigInteger)
     supersession_source_page: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DocumentRenditionDerivation(Base):
+    """One retained format conversion, without equivalence or Supersession."""
+
+    __tablename__ = "document_rendition_derivations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "source_document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_rendition_derivation_source_same_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "derived_document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_rendition_derivation_derived_same_project",
+        ),
+        CheckConstraint(
+            "source_document_id <> derived_document_id",
+            name="ck_rendition_derivation_distinct_documents",
+        ),
+        CheckConstraint(
+            "kind = 'format_conversion' and source_format = 'xls' "
+            "and derived_format = 'xlsx'",
+            name="ck_rendition_derivation_kind",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$' and "
+            "derived_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_rendition_derivation_hashes",
+        ),
+        CheckConstraint(
+            "length(trim(tool)) > 0 and length(trim(tool_version)) > 0",
+            name="ck_rendition_derivation_tool",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    source_document_id: Mapped[int] = mapped_column(BigInteger)
+    derived_document_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    source_format: Mapped[str] = mapped_column(String(16))
+    derived_format: Mapped[str] = mapped_column(String(16))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    derived_sha256: Mapped[str] = mapped_column(String(64))
+    tool: Mapped[str] = mapped_column(String(64))
+    tool_version: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -2488,8 +2539,11 @@ class WorkDecisionMilestoneImpact(Base):
 class Candidate(Base):
     """An extractor's proposal, not yet part of the Project Record.
 
-    Extractors write only here. Admission requires either human Adjudication or
-    one exact deterministic policy outcome with an immutable receipt.
+    Extractors write only here. Dependency and event Admission requires either
+    human Adjudication or one exact deterministic policy outcome with an
+    immutable receipt. Evidence Candidates are technical source-row proposals;
+    they remain outside both Admission families until an explicit later linker
+    uses them.
     """
 
     __tablename__ = "candidates"

@@ -19,6 +19,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "uvicorn>=0.52.1",
     "weasyprint>=69.0",
+    "python-calamine>=0.5.3",
 ]
 
 [dependency-groups]

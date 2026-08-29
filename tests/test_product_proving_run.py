@@ -265,6 +265,7 @@ _WRITE_FAMILIES = (
     "candidate_dispositions",
     "candidates",
     "dependencies",
+    "document_rendition_derivations",
     "dependency_admission_outcomes",
     "event_admission_outcomes",
     "evidence_investigation_candidate_review_starts",

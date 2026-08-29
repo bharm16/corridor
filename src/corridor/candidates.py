@@ -1,7 +1,9 @@
 """What a Candidate carries.
 
 A Candidate is an extractor's proposal with its citations, not yet part of
-the Ledger. Four extractors produce them and four readers consume them, and
+the Project Record. Dependency and event Candidates may reach their explicit
+Admission paths; structured Evidence rows remain technical proposals only.
+Four extractors produce Candidates and four readers consume them, and
 the payload was four hand-written dict literals that did not agree: the two
 matrix paths carried `unverified_fields`, `unmapped_columns`,
 `low_confidence_tokens` and `tier`; the two prose paths carried none of

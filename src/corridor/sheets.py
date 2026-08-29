@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 from corridor.geometry import NoMatrixFound
 from corridor.vocabulary import REQUIRED, TEMPLATE_FIELDS
@@ -164,6 +165,115 @@ class ConflictSheet:
     def rows(self) -> list[list[str]]:
         """The conflict rows: everything under the header."""
         return self.sheet.rows[self.header_index + 1 :]
+
+
+@dataclass(frozen=True)
+class NativeEvidenceTable:
+    """One known structured SUE table, mapped only by exact source headings."""
+
+    sheet: Sheet
+    header_index: int
+    page_no: int
+    kind: str
+    mapping: dict[int, str]
+    required_fields: tuple[str, ...]
+
+    @property
+    def headings(self) -> tuple[str, ...]:
+        return self.sheet.rows[self.header_index]
+
+    @property
+    def rows(self) -> tuple[tuple[str, ...], ...]:
+        return self.sheet.rows[self.header_index + 1 :]
+
+    @property
+    def unmapped_columns(self) -> tuple[tuple[int, str], ...]:
+        return tuple(
+            (index, _reported_heading(index, heading))
+            for index, heading in enumerate(self.headings)
+            if index not in self.mapping
+        )
+
+    @property
+    def unmapped_headings(self) -> tuple[str, ...]:
+        return tuple(heading for _, heading in self.unmapped_columns)
+
+
+_SUE_TABLE_SCHEMAS = (
+    (
+        "sue_probe_depth",
+        {
+            "probe #": "probe_number",
+            "utility name": "external_org",
+            "diameter": "diameter",
+            "northing": "northing",
+            "easting": "easting",
+            "natural ground elevation": "natural_ground_elevation",
+            "top of utility elevation": "top_of_utility_elevation",
+        },
+        ("probe_number", "external_org"),
+    ),
+    (
+        "sue_test_hole_index",
+        {
+            "csj": "csj",
+            "northing": "northing",
+            "easting": "easting",
+            "station": "station",
+            "offset": "offset",
+            "test hole #": "test_hole_number",
+            "utility owner": "external_org",
+            "diameter": "diameter",
+            "test hole depth (feet)": "test_hole_depth_feet",
+            "elevation natural ground (ng)": "natural_ground_elevation",
+            "elevation top of utility (tou)": "top_of_utility_elevation",
+            "date": "observation_date",
+        },
+        ("test_hole_number", "external_org"),
+    ),
+)
+
+
+def native_evidence_table(sheets: list[Sheet]) -> NativeEvidenceTable:
+    """Find one exact known SUE schema; never infer a meaning for a heading."""
+
+    found: list[NativeEvidenceTable] = []
+    for page_no, sheet in enumerate(sheets, start=1):
+        for header_index, headings in enumerate(sheet.rows[:HEADER_SEARCH_ROWS]):
+            normalized = [_normalized_heading(value) for value in headings]
+            for kind, schema, required in _SUE_TABLE_SCHEMAS:
+                mapping = {
+                    index: schema[heading]
+                    for index, heading in enumerate(normalized)
+                    if heading in schema
+                }
+                if len(mapping) >= 5 and all(
+                    field in mapping.values() for field in required
+                ):
+                    found.append(
+                        NativeEvidenceTable(
+                            sheet=sheet,
+                            header_index=header_index,
+                            page_no=page_no,
+                            kind=kind,
+                            mapping=mapping,
+                            required_fields=required,
+                        )
+                    )
+    if len(found) != 1:
+        raise NoConflictSheet(
+            "workbook does not contain exactly one recognized conflict or SUE table"
+        )
+    return found[0]
+
+
+def _normalized_heading(value: str) -> str:
+    return " ".join((value or "").split()).casefold()
+
+
+def _reported_heading(index: int, value: str) -> str:
+    cleaned = " ".join((value or "").split())
+    return cleaned or f"Column {get_column_letter(index + 1)} (blank heading)"
 
 
 def conflict_sheet(sheets: list[Sheet]) -> ConflictSheet:
