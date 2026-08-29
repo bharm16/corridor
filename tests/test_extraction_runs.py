@@ -8,6 +8,7 @@ from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import injected_extractor_config
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.row_accounting import RowAccounting, RowAccountingFailure
 from corridor.models import (
     ActiveExtractionRun,
     ActiveRunDeclaration,
@@ -22,6 +23,28 @@ extraction_runs = __import__("corridor.extraction_runs", fromlist=["*"])
 PROMPT_VERSION = "test_v1"
 DECLARER = HumanPrincipal("local:run-lineage-declarer")
 RELIEF_DECLARER = HumanPrincipal("local:run-lineage-relief")
+
+
+def _row_accounting(prompt_version: str, *, unaccounted: bool = False):
+    accounting = RowAccounting(
+        reader_version=prompt_version,
+        reader_path=(
+            "spreadsheet_cells"
+            if prompt_version.startswith("sheet_")
+            else "page_geometry_and_transcription"
+        ),
+    )
+    accounting.detect("row:1", page=1, row_number=1)
+    if unaccounted:
+        with pytest.raises(RowAccountingFailure) as failure:
+            accounting.finish([])
+        return failure.value.receipt
+    accounting.account(
+        "row:1",
+        disposition="blank",
+        reason="blank_source_row",
+    )
+    return accounting.finish([]).row_accounting
 
 
 def _run_id(run):
@@ -59,6 +82,53 @@ def add_matrix(session, project, name, sha):
     session.add(doc)
     session.flush()
     return doc
+
+
+def test_completed_current_matrix_reader_requires_row_accounting(session, project):
+    document = add_matrix(session, project, "accounted.xlsx", "r" * 64)
+
+    with pytest.raises(ValueError, match="requires row accounting"):
+        record_extraction_run(
+            session,
+            document,
+            prompt_version="sheet_native_v2",
+            candidate_count=0,
+            page_errors=0,
+            allow_unsealed_legacy=True,
+        )
+
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="sheet_native_v2",
+        candidate_count=0,
+        page_errors=0,
+        row_accounting_json=_row_accounting("sheet_native_v2"),
+        allow_unsealed_legacy=True,
+    )
+    assert run.row_accounting_json["blank_row_count"] == 1
+
+
+def test_failed_current_matrix_reader_retains_unaccounted_rows(session, project):
+    document = add_matrix(session, project, "dropped.pdf", "s" * 64)
+
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="matrix_tiered_v4",
+        candidate_count=0,
+        page_errors=1,
+        outcome="failed",
+        error_detail="one detected row was unaccounted",
+        row_accounting_json=_row_accounting(
+            "matrix_tiered_v4",
+            unaccounted=True,
+        ),
+        allow_unsealed_legacy=True,
+    )
+
+    assert run.outcome == "failed"
+    assert run.row_accounting_json["unaccounted_rows"] == ["row:1"]
 
 
 def test_active_run_helpers_are_explicit_contracts():

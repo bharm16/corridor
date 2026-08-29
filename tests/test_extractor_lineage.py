@@ -147,10 +147,10 @@ def test_usage_receipt_refuses_a_counter_that_moves_backwards():
 @pytest.mark.parametrize(
     ("extractor", "prompt_version", "schema_version", "uses_images"),
     [
-        ("matrix", "matrix_tiered_v3", "matrix_candidate_shape_v1", True),
+        ("matrix", "matrix_tiered_v4", "matrix_candidate_shape_v1", True),
         ("minutes", "minutes_v5", "minutes_v5", False),
         ("agreement", "agreement_v3", "agreement_v3", False),
-        ("sheet", "sheet_native_v1", "sheet_candidate_shape_v1", False),
+        ("sheet", "sheet_native_v2", "sheet_candidate_shape_v1", False),
     ],
 )
 def test_deployed_registry_seals_each_current_extractor(

@@ -55,6 +55,7 @@ from corridor.models import (
     Project,
 )
 from corridor.pipeline import ExtractionRoute, extraction_route
+from corridor.row_accounting import RowAccountingFailure
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
@@ -239,7 +240,36 @@ def extract_project(
                     outcome="completed",
                     candidates=tuple(candidates),
                     model=_run_model(candidates, route.model),
+                    row_accounting_json=getattr(
+                        candidates, "row_accounting", None
+                    ),
                 )
+        except RowAccountingFailure as exc:
+            run = _record_routed_run(
+                session,
+                document,
+                route,
+                usage_before,
+                candidate_count=0,
+                page_errors=1,
+                outcome="failed",
+                model=route.model,
+                error_detail=str(exc),
+                row_accounting_json=exc.receipt,
+            )
+            if commit:
+                session.commit()
+            outcomes.append(
+                Outcome(
+                    document.id,
+                    document.filename,
+                    "failed",
+                    effective_prompt_version=effective_prompt_version,
+                    detail=str(exc),
+                    extraction_run_id=run.id,
+                )
+            )
+            continue
         except SequencingSemanticsDetected as exc:
             run = _record_routed_run(
                 session,

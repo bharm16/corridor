@@ -30,6 +30,7 @@ from corridor.extract_matrix import ExtractionFailed
 from corridor.geometry import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.models import Candidate, DocPage, Document, ExtractionRun
+from corridor.row_accounting import RowAccountingFailure
 from corridor.storage import stored_file
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
@@ -300,7 +301,22 @@ def extract_any(
                 outcome="completed",
                 candidates=tuple(candidates),
                 model=_run_model(candidates, route.model),
+                row_accounting_json=getattr(candidates, "row_accounting", None),
             )
+    except RowAccountingFailure as exc:
+        _record_route_run(
+            session,
+            document,
+            route,
+            usage_before,
+            candidate_count=0,
+            page_errors=1,
+            outcome="failed",
+            model=route.model,
+            error_detail=str(exc),
+            row_accounting_json=exc.receipt,
+        )
+        raise
     except NoMatrixFound as exc:
         _record_route_run(
             session,

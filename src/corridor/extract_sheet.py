@@ -22,6 +22,10 @@ from the source rather than from effort:
   happen to a value read out of a cell.
 - **The mapping is not a judgement.** A heading either is a template column
   or is not.
+
+Every detected data row is also sealed on the Extraction Run as extracted,
+blank, or skipped with a reason. Candidate count alone was rejected because
+it cannot reveal a row dropped before proposal creation (#366).
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from sqlalchemy.orm import Session
 from corridor.candidates import propose
 from corridor.geometry import dedupe_hint
 from corridor.models import Candidate, DocPage, Document
+from corridor.row_accounting import RowAccounting
 from corridor.sheets import (
     NoConflictSheet,
     conflict_sheet,
@@ -48,7 +53,7 @@ from corridor.verify import quote_appears_on, threshold_for, unverified_fields
 # reason the column exists (ADR-0003). A version bump here means the same
 # thing it means there: rows read before and after are different readings
 # of one document and must not be pooled.
-PROMPT_VERSION = "sheet_native_v1"
+PROMPT_VERSION = "sheet_native_v2"
 SCHEMA_VERSION = "sheet_candidate_shape_v1"
 
 # Not a tier in ADR-0006's sense — those name how the model was used, and
@@ -93,7 +98,20 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
     ]
 
     candidates = []
-    for raw in chosen.rows:
+    accounting = RowAccounting(
+        reader_version=PROMPT_VERSION,
+        reader_path="spreadsheet_cells",
+    )
+    for row_number, raw in enumerate(chosen.rows, start=1):
+        row_id = f"sheet:{page_no}:row:{row_number}"
+        accounting.detect(row_id, page=page_no, row_number=row_number)
+        if not any(str(value or "").strip() for value in raw):
+            accounting.account(
+                row_id,
+                disposition="blank",
+                reason="blank_source_row",
+            )
+            continue
         fields = {
             field: raw[position].strip()
             for position, field in sorted(mapping.items())
@@ -102,24 +120,45 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
         if is_retired_row(fields):
             # The form's retired numbering, excluded by the same stated
             # rule as the page path (ADR-0012).
+            accounting.account(
+                row_id,
+                disposition="skipped",
+                reason="retired_row",
+            )
             continue
         if len(fields) < MIN_ROW_FIELDS:
+            accounting.account(
+                row_id,
+                disposition="skipped",
+                reason="insufficient_mapped_fields",
+            )
             continue
         if not all(fields.get(name) for name in REQUIRED):
+            accounting.account(
+                row_id,
+                disposition="skipped",
+                reason="missing_required_fields",
+            )
             continue
 
         candidate = _candidate(
             document, page_no, fields, raw, page_text, unmapped, threshold
         )
-        session.add(candidate)
         candidates.append(candidate)
+        accounting.account(
+            row_id,
+            disposition="extracted",
+            reason="candidate_recorded",
+        )
 
     document.extraction_tiers = {TIER_NATIVE: 1}
     # The structured original states its own headers; there is no printed
     # header to read two ways.
     document.header_disagreements = 0
+    accounted = accounting.finish(candidates)
+    session.add_all(candidates)
     session.flush()
-    return candidates
+    return accounted
 
 
 def _candidate(

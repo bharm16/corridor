@@ -28,6 +28,10 @@ Two tiers, chosen per page:
 Both tiers end at the same gate: the quote must appear on the page and
 every token of every stored value must too. Nothing here writes to the
 Ledger — extractors produce Candidates only.
+
+Every row detected by the selected geometry table or transcription result is
+also sealed as extracted, blank, or skipped with a reason. A missing disposition
+fails the whole attempt before Candidates are attached (#366).
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ from corridor.geometry import (
 )
 from corridor.llm import OpenAIClient, StructuredClient, complete_many
 from corridor.models import ANSWER_SEPARATOR, Candidate, DocPage, Document
+from corridor.row_accounting import RowAccounting
 from corridor.storage import stored_pdf
 from corridor.verify import quote_appears_on, unverified_fields
 
@@ -77,7 +82,7 @@ from corridor.vocabulary import (  # noqa: F401
 # resolution columns move out of `unmapped_columns` and the fourth stops
 # being a bare `X` — so v2 and v3 candidates are different readings of the
 # same page and pooling them would make every eval number meaningless.
-PROMPT_VERSION = "matrix_tiered_v3"
+PROMPT_VERSION = "matrix_tiered_v4"
 SCHEMA_VERSION = "matrix_candidate_shape_v1"
 # Superseded prompts are kept beside the current one rather than edited:
 # their Candidates are still in the database, and a prompt that has been
@@ -315,6 +320,10 @@ def extract_document(
 
     model = getattr(client, "model", None)
     candidates: list[Candidate] = []
+    accounting = RowAccounting(
+        reader_version=PROMPT_VERSION,
+        reader_path="page_geometry_and_transcription",
+    )
     recognized = 0
     errors = 0
     # Buffered until the document attempt is known complete. A mixed
@@ -352,7 +361,7 @@ def extract_document(
                 recognized += 1
             made, carried = _structure_candidates(
                 document, page, grids[page.page_no], result, model,
-                carried, resolved=resolved,
+                carried, resolved=resolved, accounting=accounting,
             )
             candidates.extend(made)
 
@@ -376,12 +385,31 @@ def extract_document(
                 recognized += 1
             inherited = _page_attributes(result)
             unsure = _low_confidence_tokens(completion)
-            for item in result.get("rows") or []:
-                candidate = _transcribed_candidate(
+            for row_number, item in enumerate(result.get("rows") or [], start=1):
+                row_id = f"transcribe:{page.page_no}:row:{row_number}"
+                accounting.detect(
+                    row_id,
+                    page=page.page_no,
+                    row_number=row_number,
+                )
+                candidate, reason = _transcribed_candidate(
                     document, page, item, model, inherited, unsure
                 )
                 if candidate is not None:
                     candidates.append(candidate)
+                    accounting.account(
+                        row_id,
+                        disposition="extracted",
+                        reason="candidate_recorded",
+                    )
+                else:
+                    accounting.account(
+                        row_id,
+                        disposition=(
+                            "blank" if reason == "blank_source_row" else "skipped"
+                        ),
+                        reason=reason,
+                    )
 
     if errors:
         raise ExtractionFailed(
@@ -412,9 +440,10 @@ def extract_document(
     # no printed header to disagree about, which is a different fact from
     # one nobody has read.
     document.header_disagreements = header_disagreements
+    accounted = accounting.finish(candidates)
     session.add_all(candidates)
     session.flush()
-    return candidates
+    return accounted
 
 
 def _read_geometry(
@@ -531,6 +560,7 @@ def _structure_candidates(
     model: str | None,
     carried: tuple[ColumnMapping, int] | None = None,
     resolved: dict | None = None,
+    accounting: RowAccounting | None = None,
 ) -> tuple[list[Candidate], tuple[ColumnMapping, int] | None]:
     table_index = result.get("matrix_table")
     if table_index is None or not (0 <= table_index < len(grids)):
@@ -564,7 +594,22 @@ def _structure_candidates(
     page_text = page.text or ""
 
     candidates = []
-    for raw in body:
+    for row_number, raw in enumerate(body, start=1):
+        row_id = f"structure:{page.page_no}:table:{table_index}:row:{row_number}"
+        if accounting is not None:
+            accounting.detect(
+                row_id,
+                page=page.page_no,
+                row_number=row_number,
+            )
+        if not any(str(value or "").strip() for value in raw):
+            if accounting is not None:
+                accounting.account(
+                    row_id,
+                    disposition="blank",
+                    reason="blank_source_row",
+                )
+            continue
         own = row_to_fields(raw, mapping.fields)
         _settle_strategy(own, raw, mapping)
         if is_retired_row(own):
@@ -572,11 +617,29 @@ def _structure_candidates(
             # content says the number is not in use (ADR-0012). Skipped by
             # rule, not by luck: page-inherited owners would otherwise
             # carry these past REQUIRED as phantom conflicts.
+            if accounting is not None:
+                accounting.account(
+                    row_id,
+                    disposition="skipped",
+                    reason="retired_row",
+                )
             continue
         if len(own) < MIN_ROW_FIELDS:
+            if accounting is not None:
+                accounting.account(
+                    row_id,
+                    disposition="skipped",
+                    reason="insufficient_mapped_fields",
+                )
             continue
         fields = {**inherited, **own}
         if not all(fields.get(name) for name in REQUIRED):
+            if accounting is not None:
+                accounting.account(
+                    row_id,
+                    disposition="skipped",
+                    reason="missing_required_fields",
+                )
             continue
         row = MatrixRow(fields, page.page_no, row_quote(raw), tuple(raw))
         quote, whole_row = best_verifiable_quote(row, page_text)
@@ -592,6 +655,12 @@ def _structure_candidates(
             unmapped=mapping.unmapped,
         )
         candidates.append(candidate)
+        if accounting is not None:
+            accounting.account(
+                row_id,
+                disposition="extracted",
+                reason="candidate_recorded",
+            )
     return candidates, carried
 
 
@@ -740,10 +809,10 @@ def _transcribed_candidate(
     model: str | None,
     inherited: dict[str, str],
     unsure: list[str],
-) -> Candidate | None:
+) -> tuple[Candidate | None, str]:
     quote = (item.get("quote") or "").strip()
     if not quote:
-        return None
+        return None, "blank_source_row"
 
     row = {
         name: value.strip()
@@ -756,13 +825,17 @@ def _transcribed_candidate(
     # under a heading nobody kept is not a strategy however it was read.
     _drop_bare_mark(row)
     if not row:
-        return None
+        return None, "blank_source_row"
     if is_retired_row(row):
         # The same rule as the structure tier (ADR-0012): a transcribed
         # `Not Used` row is still the form's bookkeeping.
-        return None
+        return None, "retired_row"
+    if len(row) < MIN_ROW_FIELDS:
+        return None, "insufficient_mapped_fields"
 
     fields = {**inherited, **row}
+    if not all(fields.get(name) for name in REQUIRED):
+        return None, "missing_required_fields"
     # Only tokens this row actually used: one shaky digit on a page must
     # not sink every other row on it.
     #
@@ -776,17 +849,20 @@ def _transcribed_candidate(
         {t for t in unsure if any(t in value for value in fields.values())}
     )
 
-    return _candidate(
-        document,
-        page,
-        fields,
-        quote=quote,
-        whole_row=True,
-        confidence=item.get("confidence"),
-        model=model,
-        tier=TIER_TRANSCRIBE,
-        unmapped=[],
-        low_confidence=mine,
+    return (
+        _candidate(
+            document,
+            page,
+            fields,
+            quote=quote,
+            whole_row=True,
+            confidence=item.get("confidence"),
+            model=model,
+            tier=TIER_TRANSCRIBE,
+            unmapped=[],
+            low_confidence=mine,
+        ),
+        "candidate_recorded",
     )
 
 

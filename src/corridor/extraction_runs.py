@@ -32,6 +32,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.row_accounting import validate_row_accounting
 
 
 def completion_predicate():
@@ -80,6 +81,7 @@ def record_extraction_run(
     error_detail: str | None = None,
     extractor_config: ExtractorConfig | None = None,
     token_usage: Mapping[str, object] | None = None,
+    row_accounting_json: dict | None = None,
     allow_unsealed_legacy: bool = False,
 ) -> ExtractionRun:
     """Append one terminal attempt and attach every Candidate it produced."""
@@ -99,6 +101,12 @@ def record_extraction_run(
         raise ValueError("candidate_count does not match the attached candidates")
     if len({id(candidate) for candidate in candidates}) != len(candidates):
         raise ValueError("an Extraction Run cannot repeat a Candidate")
+    row_accounting = validate_row_accounting(
+        deepcopy(row_accounting_json),
+        prompt_version=prompt_version,
+        outcome=outcome,
+        candidate_count=candidate_count,
+    )
     lineage = _validated_lineage(
         document=document,
         prompt_version=prompt_version,
@@ -146,6 +154,7 @@ def record_extraction_run(
         schema_version=schema_version,
         error_detail=error_detail,
         candidate_inputs_json=candidate_inputs,
+        row_accounting_json=row_accounting,
         **lineage,
     )
     session.add(run)

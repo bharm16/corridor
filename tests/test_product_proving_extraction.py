@@ -18,6 +18,7 @@ from corridor.product_proving_extraction import (
     ProductProvingExtractionError,
     extract_product_proving_document,
 )
+from corridor.row_accounting import RowAccounting
 
 
 class StubClient:
@@ -102,6 +103,12 @@ def _record(
             allow_unsealed_legacy=True,
         )
     config = deployed_extractor_config(extractor_name, client=client)
+    row_accounting_json = None
+    if extractor_name == "matrix" and outcome == "completed":
+        row_accounting_json = RowAccounting(
+            reader_version=config.prompt_version,
+            reader_path="page_geometry_and_transcription",
+        ).finish([]).row_accounting
     return record_extraction_run(
         session,
         document,
@@ -112,6 +119,7 @@ def _record(
         model=config.model,
         schema_version=config.schema_version,
         extractor_config=config,
+        row_accounting_json=row_accounting_json,
         token_usage={
             "scope": "run",
             "document_ids": [document.id],
