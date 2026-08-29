@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval gold ledger-archive carry-forward due-work m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -113,6 +113,17 @@ milestones:
 #   make eval ARGS="wsdot-9424 gold/wsdot-9424.machine.csv --database-url=<disposable-url> --reference-manifest=gold/wsdot-9424.machine.scope.json --extraction-run=123"
 eval:
 	uv run python -m corridor.eval $(ARGS)
+
+# Measure a named candidate model against the current one, repeatably. Runs the
+# candidate reader over exactly the documents the current runs read, scores both
+# against one Reference Dataset, and writes one comparison receipt (current vs
+# candidate, per reference). Name the current reading with --current-extraction-run
+# once per matrix; the named database must be a disposable copy and is refused if
+# it is production. Adoption on a measured win is a human read of the receipt
+# (docs/operations/candidate-model-comparison.md):
+#   make candidate-model ARGS="wsdot-9424 gold/wsdot-9424.machine.csv --candidate-model=gpt-5.1-vision --database-url=<disposable-url> --reference-manifest=gold/wsdot-9424.machine.scope.json --current-extraction-run=123"
+candidate-model:
+	uv run python -m corridor.candidate_model $(ARGS)
 
 # Compute dated Constraint Alerts; JSON and diagnostic identifiers stay unchanged.
 exceptions:

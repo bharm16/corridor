@@ -4,9 +4,9 @@ ADR-0049 separates production and experimental work by PostgreSQL database,
 not by an Extraction Run purpose label. Existing production runs remain
 unchanged. There is no purpose migration or automatic reclassification.
 
-Extraction Measurement, direct and shadow Statement Review Assistant runs,
-shadow labels, and shadow evaluation require an explicit `--database-url`. That
-URL must name a disposable database copy. The command observes PostgreSQL's
+Extraction Measurement, candidate-model comparison, direct and shadow Statement
+Review Assistant runs, shadow labels, and shadow evaluation require an explicit
+`--database-url`. That URL must name a disposable database copy. The command observes PostgreSQL's
 cluster identifier, database name, and role; changing hostname spelling or
 credentials does not make the production database experimental.
 
