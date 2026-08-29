@@ -1914,6 +1914,42 @@ def test_accepting_an_event_is_refused_rather_than_faked(session, document):
     )
 
 
+def test_accepting_a_sue_evidence_proposal_is_refused(session, document):
+    candidate = Candidate(
+        project_id=document.project_id,
+        kind="evidence",
+        payload_json={
+            "kind": "evidence",
+            "fields": {"test_hole_number": "169-A", "external_org": "VERIZON"},
+            "citations": [
+                {
+                    "document_id": document.id,
+                    "page": 1,
+                    "quote": "FOC1-1 AT&T",
+                    "verified": True,
+                }
+            ],
+            "tier": "native",
+        },
+        source_document_id=document.id,
+        source_pages=[1],
+        confidence=None,
+        prompt_version="evidence_fixture_v1",
+        citations_verified=True,
+    )
+    session.add(candidate)
+    session.flush([candidate])
+    _activate_fixture_candidate(session, document, candidate)
+
+    with pytest.raises(UnadjudicableKind, match="evidence"):
+        accept_candidate(session, candidate, principal=BRYCE)
+
+    assert candidate.state == "pending"
+    assert session.scalars(
+        select(Dependency).where(Dependency.project_id == document.project_id)
+    ).all() == []
+
+
 # --- The agreement materializer (#170) --------------------------------------
 
 AGREEMENT_FIELDS = {

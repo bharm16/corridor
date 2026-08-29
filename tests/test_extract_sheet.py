@@ -6,6 +6,7 @@ judgement, and the values are cells rather than a reading of a layout.
 """
 
 from pathlib import Path
+from datetime import datetime
 
 import pytest
 from openpyxl import Workbook
@@ -77,6 +78,25 @@ def ingest(session, project, tmp_path, rows, **kwargs):
     return document
 
 
+def ingest_native_table(session, project, tmp_path, headings, row, *, sheet_name):
+    book = Workbook()
+    sheet = book.active
+    sheet.title = sheet_name
+    sheet.append(headings)
+    sheet.append(row)
+    path = tmp_path / f"{sheet_name}.xlsx"
+    book.save(path)
+    document = ingest_document(
+        session,
+        project_id=project.id,
+        path=path,
+        doc_type="plan",
+        images_dir=tmp_path / "images",
+    )
+    document._stored_path = str(path)
+    return document
+
+
 @pytest.fixture(autouse=True)
 def stored_file_points_at_the_fixture(monkeypatch):
     """The content-addressed store is not populated in tests."""
@@ -92,6 +112,171 @@ ROWS = [
     ["UC-1", "CenterPoint Energy", "Electric", "1149+00", "1150+00", "Pole in ROW", "U-4"],
     ["UC-2", "AT&T Texas", "Communications", "1151+00", "1152+00", "Duct bank", "U-9"],
 ]
+
+
+def test_sue_probe_rows_become_cited_evidence_proposals_without_heading_guesses(
+    session, project, tmp_path
+):
+    document = ingest_native_table(
+        session,
+        project,
+        tmp_path,
+        [
+            "PROBE #",
+            "UTILITY NAME",
+            "DIAMETER",
+            "NORTHING",
+            "EASTING",
+            "NATURAL GROUND ELEVATION",
+            "PD",
+            "DOC",
+            "TOP OF UTILITY ELEVATION",
+            "MYSTERY HEADING",
+        ],
+        ["46-A", "ENERGY TRANSFER", '18"', 13735576.02, 3195793.33, 21.02, 3.92, 4.1, 17.1, "retained"],
+        sheet_name="PROBES (WITH COORD)",
+    )
+
+    proposals = extract_document(session, document)
+
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.kind == "evidence"
+    assert proposal.payload_json["fields"] == {
+        "probe_number": "46-A",
+        "external_org": "ENERGY TRANSFER",
+        "diameter": '18"',
+        "northing": "13735576.02",
+        "easting": "3195793.33",
+        "natural_ground_elevation": "21.02",
+        "top_of_utility_elevation": "17.1",
+        "unmapped:PD": "3.92",
+        "unmapped:DOC": "4.1",
+        "unmapped:MYSTERY HEADING": "retained",
+    }
+    assert proposal.payload_json["unmapped_columns"] == [
+        "PD",
+        "DOC",
+        "MYSTERY HEADING",
+    ]
+    assert proposal.payload_json["citations"] == [
+        {
+            "document_id": document.id,
+            "page": 1,
+            "quote": (
+                '46-A ENERGY TRANSFER 18" 13735576.02 3195793.33 '
+                "21.02 3.92 4.1 17.1 retained"
+            ),
+            "verified": True,
+            "whole_row": True,
+            "table_row": 1,
+        }
+    ]
+    assert proposal.citations_verified is True
+    assert proposals.row_accounting["detected_row_count"] == 1
+
+
+def test_converted_test_hole_rows_preserve_blank_heading_values_as_unmapped(
+    session, project, tmp_path
+):
+    document = ingest_native_table(
+        session,
+        project,
+        tmp_path,
+        [
+            "CSJ",
+            "NORTHING",
+            "EASTING",
+            "STATION",
+            "OFFSET",
+            "",
+            "TEST  \nHOLE #",
+            "UTILITY OWNER",
+            "DIAMETER",
+            "TEST HOLE\nDEPTH\n(FEET)",
+            "ELEVATION NATURAL GROUND\n(NG)",
+            "ELEVATION TOP OF UTILITY (TOU)",
+            "DATE",
+        ],
+        [
+            "3510-01-003",
+            13739979.81,
+            3212072.81,
+            "147+64.72",
+            162.34,
+            "RT",
+            "169-A",
+            "VERIZON FIBER OPTIC",
+            '2" DIA',
+            4.54,
+            18.16,
+            13.78,
+            datetime(2024, 11, 13),
+        ],
+        sheet_name="THDS INDEX (WITH COORD)",
+    )
+
+    [proposal] = extract_document(session, document)
+
+    assert proposal.kind == "evidence"
+    assert proposal.payload_json["tier"] == "native:sue_test_hole_index"
+    assert proposal.payload_json["fields"]["test_hole_number"] == "169-A"
+    assert proposal.payload_json["fields"]["station"] == "147+64.72"
+    assert proposal.payload_json["fields"]["observation_date"] == (
+        "2024-11-13 00:00:00"
+    )
+    assert proposal.payload_json["unmapped_columns"] == [
+        "Column F (blank heading)"
+    ]
+    assert proposal.payload_json["fields"][
+        "unmapped:Column F (blank heading)"
+    ] == "RT"
+
+
+def test_sue_table_pipeline_records_exact_zero_model_usage(
+    session, project, tmp_path, monkeypatch
+):
+    from corridor import pipeline
+
+    document = ingest_native_table(
+        session,
+        project,
+        tmp_path,
+        ["PROBE #", "UTILITY NAME", "DIAMETER", "NORTHING", "EASTING"],
+        ["1", "INEOS", '8"', 13730631.63, 3168635.19],
+        sheet_name="PROBES (WITH COORD)",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "stored_file",
+        lambda value: getattr(value, "_stored_path", None),
+    )
+
+    class ModelMustNotRun:
+        def complete(self, **_):
+            raise AssertionError("native SUE extraction must not call a model")
+
+    [proposal] = pipeline.extract_any(
+        session,
+        document,
+        client=ModelMustNotRun(),
+    )
+
+    assert proposal.kind == "evidence"
+    run = session.scalar(
+        select(ExtractionRun).where(ExtractionRun.document_id == document.id)
+    )
+    assert run.model is None
+    assert run.candidate_count == 1
+    assert run.token_usage_json == {
+        "scope": "run",
+        "document_ids": [document.id],
+        "measurement": "exact",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+    }
 
 
 # ------------------------------------------------------- values from cells

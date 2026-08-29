@@ -37,6 +37,7 @@ from corridor.models import DOC_TYPES, NUMBERING_SCHEMES
 from corridor.supersession import SupersessionDeclaration
 
 ROLES = ("spine", "stream", "schedule", "evidence")
+CURATION_STATUSES = ("confirmed", "proposed")
 
 USER_AGENT = (
     "corridor-corpus/0.1 (research prototype; +https://github.com/bharm16/corridor)"
@@ -52,11 +53,21 @@ BROWSER_UA = (
 
 
 @dataclass(frozen=True)
+class XlsConversion:
+    """One curated derived XLSX registration for a retained binary XLS."""
+
+    registry_id: str
+    title: str
+    to: str = "xlsx"
+
+
+@dataclass(frozen=True)
 class Source:
     url: str
     doc_type: str
     role: str
     title: str
+    curation_status: str = "confirmed"
     doc_date: date | None = None
     notes: str | None = None
     # When set, `url` names an archive and this names the document inside it.
@@ -71,6 +82,7 @@ class Source:
     # How a matrix names its rows (ADR-0030). None means the manifest is
     # silent and the document keeps its default, project-unique.
     numbering_scheme: str | None = None
+    conversion: XlsConversion | None = None
 
 
 @dataclass(frozen=True)
@@ -150,12 +162,20 @@ def load_manifest(path: Path | str) -> Manifest:
                 doc_type=doc_type,
                 role=role,
                 title=entry.get("title", ""),
+                curation_status=_load_curation_status(entry, index=i, url=url),
                 doc_date=doc_date if isinstance(doc_date, date) else None,
                 notes=entry.get("notes"),
                 member=entry.get("member"),
                 registry_id=registry_id,
                 supersession=supersession,
                 numbering_scheme=numbering_scheme,
+                conversion=_load_conversion(
+                    entry.get("conversion"),
+                    source_registry_id=registry_id,
+                    member=entry.get("member"),
+                    url=url,
+                    index=i,
+                ),
             )
         )
     _validate_manifest_registry(tuple(sources), path=manifest_path)
@@ -169,6 +189,16 @@ def load_manifest(path: Path | str) -> Manifest:
         ),
         sealed=_load_bool_field(raw, path=manifest_path, field="sealed", default=False),
     )
+
+
+def _load_curation_status(entry: dict, *, index: int, url: str | None) -> str:
+    value = entry.get("curation_status", "confirmed")
+    if value not in CURATION_STATUSES:
+        raise ValueError(
+            f"source {index} ({url}): unknown curation_status {value!r}; "
+            f"expected one of {', '.join(CURATION_STATUSES)}"
+        )
+    return value
 
 
 def _load_supersession(
@@ -212,8 +242,49 @@ def _load_supersession(
     )
 
 
+def _load_conversion(
+    raw,
+    *,
+    source_registry_id: str | None,
+    member: str | None,
+    url: str | None,
+    index: int,
+) -> XlsConversion | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"to", "registry_id", "title"}:
+        raise ValueError(
+            f"source {index} ({url}): conversion requires to, registry_id, title"
+        )
+    source_name = member or url or ""
+    registry_id = raw.get("registry_id")
+    title = raw.get("title")
+    if Path(source_name).suffix.lower() != ".xls" or raw.get("to") != "xlsx":
+        raise ValueError(
+            f"source {index} ({url}): only explicit .xls to xlsx conversion is supported"
+        )
+    if not source_registry_id:
+        raise ValueError(f"source {index} ({url}): conversion requires registry_id")
+    if (
+        not isinstance(registry_id, str)
+        or not registry_id.strip()
+        or registry_id == source_registry_id
+        or not isinstance(title, str)
+        or not title.strip()
+    ):
+        raise ValueError(
+            f"source {index} ({url}): converted rendition identity is invalid"
+        )
+    return XlsConversion(registry_id=registry_id, title=title)
+
+
 def _validate_manifest_registry(sources: tuple[Source, ...], *, path: Path) -> None:
     identifiers = [source.registry_id for source in sources if source.registry_id]
+    identifiers.extend(
+        source.conversion.registry_id
+        for source in sources
+        if source.conversion is not None
+    )
     if len(identifiers) != len(set(identifiers)):
         raise ValueError(f"{path}: registry_id values must be unique")
     known = set(identifiers)
@@ -256,6 +327,7 @@ def fetch_all(
     lock_path: Path | str,
     client: httpx.Client | None = None,
     delay: float = 1.0,
+    xls_converter=None,
 ) -> Summary:
     store, lock_path = Path(store), Path(lock_path)
     lock = _read_lock(lock_path, manifest)
@@ -274,6 +346,18 @@ def fetch_all(
             record = lock["sources"].get(_source_key(source))
             if record is not None:
                 _sync_registry_metadata(record, source)
+            if source.conversion is not None:
+                if xls_converter is None:
+                    from corridor.spreadsheet_conversion import convert_xls_bytes
+
+                    xls_converter = convert_xls_bytes
+                _derive_xlsx(
+                    source,
+                    store=store,
+                    lock=lock,
+                    summary=summary,
+                    converter=xls_converter,
+                )
     finally:
         if owns_client:
             client.close()
@@ -294,6 +378,73 @@ def _fetch_one(
         _fetch_member(source, store, lock, summary, client, archives)
     else:
         _fetch_document(source, store, lock, summary, client)
+
+
+def _derive_xlsx(source, *, store, lock, summary, converter) -> None:
+    """Derive one deterministic XLSX without relabeling it as fetched."""
+
+    assert source.conversion is not None
+    source_key = _source_key(source)
+    key = _derived_source_key(source)
+    original = lock["sources"].get(source_key)
+    prior = lock["sources"].get(key)
+    if not original or not original.get("sha256") or not original.get("local_path"):
+        lock["sources"][key] = _failure(
+            prior,
+            status=None,
+            error="source XLS is unavailable for conversion",
+        )
+        summary.failed.append(key)
+        return
+    source_sha256 = original["sha256"]
+    from corridor.spreadsheet_conversion import CONVERTER_NAME, CONVERTER_VERSION
+
+    if (
+        prior
+        and prior.get("derivation", {}).get("source_sha256") == source_sha256
+        and prior.get("derivation", {}).get("tool") == CONVERTER_NAME
+        and prior.get("derivation", {}).get("tool_version") == CONVERTER_VERSION
+        and prior.get("local_path")
+        and Path(prior["local_path"]).exists()
+    ):
+        summary.skipped.append(key)
+        return
+
+    derived = _converted_source(source)
+    try:
+        body = converter(Path(original["local_path"]).read_bytes())
+    except Exception as exc:
+        lock["sources"][key] = _failure(
+            prior,
+            status=None,
+            error=f"XLS conversion failed: {type(exc).__name__}: {exc}",
+        )
+        summary.failed.append(key)
+        return
+    _store_and_record(
+        derived,
+        key,
+        prior,
+        body,
+        store,
+        lock,
+        summary,
+        status=200,
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        name=derived.member,
+        extra={
+            "member": derived.member,
+            "derivation": {
+                "kind": "format_conversion",
+                "source_registry_id": source.registry_id,
+                "source_sha256": source_sha256,
+                "tool": CONVERTER_NAME,
+                "tool_version": CONVERTER_VERSION,
+            },
+        },
+    )
 
 
 def _fetch_document(source, store, lock, summary, client) -> None:
@@ -689,11 +840,33 @@ def _source_key(source: Source) -> str:
     return f"{source.url}::{source.member}" if source.member else source.url
 
 
+def _derived_source_key(source: Source) -> str:
+    return f"derived:{_source_key(source)}:xlsx"
+
+
+def _converted_source(source: Source) -> Source:
+    assert source.conversion is not None
+    source_name = source.member or Path(urlparse(source.url).path).name
+    converted_name = str(Path(source_name).with_suffix(".xlsx"))
+    return Source(
+        url=f"derived:{_source_key(source)}",
+        member=converted_name,
+        doc_type=source.doc_type,
+        role=source.role,
+        title=source.conversion.title,
+        curation_status=source.curation_status,
+        doc_date=source.doc_date,
+        registry_id=source.conversion.registry_id,
+    )
+
+
 def _sync_registry_metadata(record: dict, source: Source) -> None:
     """Mirror curated declarations without making fetch recency meaningful."""
     record.pop("registry_id", None)
     record.pop("supersession", None)
     record.pop("numbering_scheme", None)
+    record.pop("curation_status", None)
+    record["curation_status"] = source.curation_status
     if source.registry_id is not None:
         record["registry_id"] = source.registry_id
     if source.numbering_scheme is not None:
@@ -724,6 +897,10 @@ def _read_lock(path: Path, manifest: Manifest) -> dict:
         record = lock["sources"].get(_source_key(source))
         if record is not None:
             _sync_registry_metadata(record, source)
+        if source.conversion is not None:
+            derived = lock["sources"].get(_derived_source_key(source))
+            if derived is not None:
+                _sync_registry_metadata(derived, _converted_source(source))
     return lock
 
 

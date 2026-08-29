@@ -54,6 +54,7 @@ from corridor.models import (
     DocPage,
     Document,
     DocumentQuarantine,
+    DocumentRenditionDerivation,
     EventAdmissionAcceptanceReceipt,
     EventAdmissionActivation,
     EventAdmissionOutcome,
@@ -744,6 +745,14 @@ def capture_project_write_set(
                 session,
                 DocumentQuarantine,
                 DocumentQuarantine.document_id.in_(document_ids),
+            ),
+        ),
+        (
+            DocumentRenditionDerivation,
+            _rows(
+                session,
+                DocumentRenditionDerivation,
+                DocumentRenditionDerivation.project_id == project.id,
             ),
         ),
         (ExtractionRun, extraction_runs),

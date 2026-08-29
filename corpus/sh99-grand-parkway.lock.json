@@ -1,8 +1,43 @@
 {
   "agency": "TxDOT",
+  "ingest_by_default": true,
   "name": "SH 99 Grand Parkway Segment B-1",
   "project": "sh99-grand-parkway",
   "sources": {
+    "derived:https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449::Utility Strip Map/SUE Level A - Test Hole Data/SH99_TEST_HOLE_INDEX_1-15-2025.xls:xlsx": {
+      "bytes": 9913,
+      "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "curation_status": "proposed",
+      "derivation": {
+        "kind": "format_conversion",
+        "source_registry_id": "sh99-sue-test-hole-index-2025-01-15-xls",
+        "source_sha256": "07d6399a314cd492509a8286503b4f686aec2de993415dddf9124c2510dff889",
+        "tool": "corridor.xls-to-xlsx",
+        "tool_version": "3"
+      },
+      "doc_date": "2025-01-15",
+      "doc_type": "plan",
+      "history": [
+        {
+          "local_path": "corpus/files/ee/ee64e040991a444817ac069e26a4561b281fa60780ab07a9945256c572147efa.xlsx",
+          "retrieved_at": "2026-08-29T22:19:56.659940+00:00",
+          "sha256": "ee64e040991a444817ac069e26a4561b281fa60780ab07a9945256c572147efa"
+        },
+        {
+          "local_path": "corpus/files/f6/f6c2ae4d4cc176bd0ec10fbecc7856bb18c2d6e095c0f14ee30db328eb46476d.xlsx",
+          "retrieved_at": "2026-08-29T22:22:49.873956+00:00",
+          "sha256": "f6c2ae4d4cc176bd0ec10fbecc7856bb18c2d6e095c0f14ee30db328eb46476d"
+        }
+      ],
+      "http_status": 200,
+      "local_path": "corpus/files/13/1382f5f55a8d4e2862bccef1d3a2b9878fd643e5f027cbba79477e31cb966751.xlsx",
+      "member": "Utility Strip Map/SUE Level A - Test Hole Data/SH99_TEST_HOLE_INDEX_1-15-2025.xlsx",
+      "registry_id": "sh99-sue-test-hole-index-2025-01-15-xlsx",
+      "retrieved_at": "2026-08-29T22:24:23.731204+00:00",
+      "role": "evidence",
+      "sha256": "1382f5f55a8d4e2862bccef1d3a2b9878fd643e5f027cbba79477e31cb966751",
+      "title": "SUE test hole index (converted XLSX rendition, 1/15/2025)"
+    },
     "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449::SH 99 Seg B_UCM_to_RIDs_2.23.25.pdf": {
       "archive_url": "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449",
       "bytes": 428005,
@@ -2482,6 +2517,42 @@
       "role": "evidence",
       "sha256": "140475ef8ad8f1069d10065fef23e1c4e480f8b43a1e3bd07ffe79907780db48",
       "title": "SUE Level A test hole data sheets"
+    },
+    "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449::Utility Strip Map/SUE Level A - Test Hole Data/SH99_PROBE_DEPTH_SUMMARY_TABLE_1-15-2025.xlsx": {
+      "archive_url": "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449",
+      "bytes": 55338,
+      "content_type": "application/zip",
+      "curation_status": "proposed",
+      "doc_date": "2025-01-15",
+      "doc_type": "plan",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/15/1536fd83b2c81d7d2e35cd36e18d66ef059c49b7b4d7eda440de5446b511b8c1.xlsx",
+      "member": "Utility Strip Map/SUE Level A - Test Hole Data/SH99_PROBE_DEPTH_SUMMARY_TABLE_1-15-2025.xlsx",
+      "member_crc32": 2599493802,
+      "registry_id": "sh99-sue-probe-depth-summary-2025-01-15",
+      "retrieved_at": "2026-08-29T22:16:57.653033+00:00",
+      "role": "evidence",
+      "sha256": "1536fd83b2c81d7d2e35cd36e18d66ef059c49b7b4d7eda440de5446b511b8c1",
+      "title": "SUE probe depth summary table (1/15/2025)"
+    },
+    "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449::Utility Strip Map/SUE Level A - Test Hole Data/SH99_TEST_HOLE_INDEX_1-15-2025.xls": {
+      "archive_url": "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449",
+      "bytes": 81920,
+      "content_type": "application/zip",
+      "curation_status": "proposed",
+      "doc_date": "2025-01-15",
+      "doc_type": "plan",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/07/07d6399a314cd492509a8286503b4f686aec2de993415dddf9124c2510dff889.xls",
+      "member": "Utility Strip Map/SUE Level A - Test Hole Data/SH99_TEST_HOLE_INDEX_1-15-2025.xls",
+      "member_crc32": 1519995448,
+      "registry_id": "sh99-sue-test-hole-index-2025-01-15-xls",
+      "retrieved_at": "2026-08-29T22:17:00.559098+00:00",
+      "role": "evidence",
+      "sha256": "07d6399a314cd492509a8286503b4f686aec2de993415dddf9124c2510dff889",
+      "title": "SUE test hole index (original XLS, 1/15/2025)"
     },
     "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449::Utility Strip Map/SUE Level A - Test Hole Data/sue-level-a-oct2024.pdf": {
       "archive_url": "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=jkzv2q7ozm0opqkhjrkcicbwvvwc9ugn&file_id=f_1864505972449",

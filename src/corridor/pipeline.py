@@ -29,7 +29,13 @@ from corridor.extractor_lineage import (
 from corridor.extract_matrix import ExtractionFailed
 from corridor.geometry import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
-from corridor.models import Candidate, DocPage, Document, ExtractionRun
+from corridor.models import (
+    Candidate,
+    DocPage,
+    Document,
+    DocumentRenditionDerivation,
+    ExtractionRun,
+)
 from corridor.row_accounting import RowAccountingFailure
 from corridor.storage import stored_file
 from corridor.supersession import SupersessionDeclaration, register_supersessions
@@ -66,6 +72,7 @@ def ingest_manifest(
     project_id: int,
     lock_path: Path | str,
     images_dir: Path | str,
+    include_proposed: bool = False,
 ) -> list[Document]:
     """Ingest every successfully fetched source in the manifest lockfile.
 
@@ -78,6 +85,11 @@ def ingest_manifest(
     declarations: list[SupersessionDeclaration] = []
 
     for key, record in sorted(lock.get("sources", {}).items()):
+        curation_status = record.get("curation_status", "confirmed")
+        if curation_status not in {"confirmed", "proposed"}:
+            raise ValueError("lockfile curation_status is invalid")
+        if curation_status == "proposed" and not include_proposed:
+            continue
         if record.get("supersession") is not None:
             declarations.append(_lock_supersession(record["supersession"]))
         # A failed fetch has a null sha256 and nothing on disk. It stays
@@ -106,12 +118,90 @@ def ingest_manifest(
             )
         )
 
+    _register_rendition_derivations(
+        session,
+        lock,
+        project_id=project_id,
+        include_proposed=include_proposed,
+    )
     _register_complete_supersession_set(
         session,
         declarations,
         project_id=project_id,
     )
     return documents
+
+
+def _register_rendition_derivations(
+    session: Session,
+    lock: dict,
+    *,
+    project_id: int,
+    include_proposed: bool,
+) -> None:
+    """Bind converted Documents to retained originals, idempotently."""
+
+    for record in lock.get("sources", {}).values():
+        if record.get("curation_status", "confirmed") == "proposed" and not (
+            include_proposed
+        ):
+            continue
+        raw = record.get("derivation")
+        if raw is None or not record.get("sha256"):
+            continue
+        if not isinstance(raw, dict) or set(raw) != {
+            "kind",
+            "source_registry_id",
+            "source_sha256",
+            "tool",
+            "tool_version",
+        }:
+            raise ValueError("lockfile rendition derivation is malformed")
+        derived_registry_id = record.get("registry_id")
+        source_registry_id = raw.get("source_registry_id")
+        source = session.scalar(
+            select(Document).where(
+                Document.project_id == project_id,
+                Document.registry_id == source_registry_id,
+            )
+        )
+        derived = session.scalar(
+            select(Document).where(
+                Document.project_id == project_id,
+                Document.registry_id == derived_registry_id,
+            )
+        )
+        if (
+            source is None
+            or derived is None
+            or raw.get("kind") != "format_conversion"
+            or source.sha256 != raw.get("source_sha256")
+            or derived.sha256 != record.get("sha256")
+        ):
+            raise ValueError("lockfile rendition derivation identity is inconsistent")
+        existing = session.scalar(
+            select(DocumentRenditionDerivation).where(
+                DocumentRenditionDerivation.derived_document_id == derived.id
+            )
+        )
+        expected = {
+            "project_id": project_id,
+            "source_document_id": source.id,
+            "derived_document_id": derived.id,
+            "kind": "format_conversion",
+            "source_format": "xls",
+            "derived_format": "xlsx",
+            "source_sha256": source.sha256,
+            "derived_sha256": derived.sha256,
+            "tool": raw.get("tool"),
+            "tool_version": raw.get("tool_version"),
+        }
+        if existing is not None:
+            if any(getattr(existing, key) != value for key, value in expected.items()):
+                raise ValueError("registered rendition derivation does not match lockfile")
+            continue
+        session.add(DocumentRenditionDerivation(**expected))
+        session.flush()
 
 
 def _lock_supersession(raw) -> SupersessionDeclaration:

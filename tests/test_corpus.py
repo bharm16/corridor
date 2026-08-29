@@ -213,6 +213,74 @@ def test_a_manifest_is_unsealed_unless_it_says_otherwise():
     assert load_manifest("corpus/sh99-grand-parkway.yaml").sealed is False
 
 
+def test_sh99_structured_sue_tables_are_curated_and_locked_with_derivation():
+    manifest = load_manifest("corpus/sh99-grand-parkway.yaml")
+    registered = {
+        source.registry_id: source
+        for source in manifest.sources
+        if source.registry_id and source.registry_id.startswith("sh99-sue-")
+    }
+    assert set(registered) == {
+        "sh99-sue-probe-depth-summary-2025-01-15",
+        "sh99-sue-test-hole-index-2025-01-15-xls",
+    }
+    assert all(source.curation_status == "proposed" for source in registered.values())
+    assert {
+        key: (value.doc_type, value.role, value.title, value.doc_date)
+        for key, value in registered.items()
+    } == {
+        "sh99-sue-probe-depth-summary-2025-01-15": (
+            "plan",
+            "evidence",
+            "SUE probe depth summary table (1/15/2025)",
+            date(2025, 1, 15),
+        ),
+        "sh99-sue-test-hole-index-2025-01-15-xls": (
+            "plan",
+            "evidence",
+            "SUE test hole index (original XLS, 1/15/2025)",
+            date(2025, 1, 15),
+        ),
+    }
+    assert registered[
+        "sh99-sue-test-hole-index-2025-01-15-xls"
+    ].conversion.registry_id == "sh99-sue-test-hole-index-2025-01-15-xlsx"
+
+    lock = json.loads(Path("corpus/sh99-grand-parkway.lock.json").read_text())
+    values = list(lock["sources"].values())
+    native = next(
+        value
+        for value in values
+        if value.get("registry_id")
+        == "sh99-sue-probe-depth-summary-2025-01-15"
+    )
+    original = next(
+        value
+        for value in values
+        if value.get("registry_id")
+        == "sh99-sue-test-hole-index-2025-01-15-xls"
+    )
+    derived = next(value for value in values if value.get("derivation"))
+    assert native["sha256"] == (
+        "1536fd83b2c81d7d2e35cd36e18d66ef059c49b7b4d7eda440de5446b511b8c1"
+    )
+    assert original["sha256"] == (
+        "07d6399a314cd492509a8286503b4f686aec2de993415dddf9124c2510dff889"
+    )
+    assert derived["derivation"] == {
+        "kind": "format_conversion",
+        "source_registry_id": "sh99-sue-test-hole-index-2025-01-15-xls",
+        "source_sha256": original["sha256"],
+        "tool": "corridor.xls-to-xlsx",
+        "tool_version": "3",
+    }
+    assert native["curation_status"] == "proposed"
+    assert original["curation_status"] == "proposed"
+    assert derived["curation_status"] == "proposed"
+    assert "supersession" not in derived
+    assert "equivalent_to" not in derived
+
+
 def test_the_spent_holdout_stays_unsealed():
     """FDOT SR 789 was the eval holdout until the M7 cold run (#52).
 
@@ -590,6 +658,84 @@ def test_unchanged_archive_member_is_skipped_via_crc(tmp_path):
     second = run_with(tmp_path, ARCHIVE_MANIFEST, ranged_transport(bodies))
     assert second.fetched == []
     assert len(second.skipped) == 1
+
+
+def test_an_xls_member_retains_original_bytes_and_derives_one_stable_xlsx(
+    tmp_path
+):
+    manifest = """
+project: sh99-grand-parkway
+agency: TxDOT
+sources:
+  - registry_id: sh99-test-hole-index-2025-01-15-xls
+    url: https://example.gov/utilities.zip
+    member: data/SH99_TEST_HOLE_INDEX_1-15-2025.xls
+    doc_type: plan
+    role: evidence
+    title: SUE test hole index (original XLS)
+    doc_date: 2025-01-15
+    conversion:
+      to: xlsx
+      registry_id: sh99-test-hole-index-2025-01-15-xlsx
+      title: SUE test hole index (converted XLSX rendition)
+"""
+    original = b"legacy-binary-workbook"
+    converted = b"PK\x03\x04deterministic-xlsx"
+    archive = make_zip({"data/SH99_TEST_HOLE_INDEX_1-15-2025.xls": original})
+    calls = []
+
+    def convert(value):
+        calls.append(value)
+        return converted
+
+    parsed = load_manifest(write_manifest(tmp_path, manifest))
+    assert parsed.sources[0].conversion.registry_id == (
+        "sh99-test-hole-index-2025-01-15-xlsx"
+    )
+    first = fetch_all(
+        parsed,
+        store=tmp_path / "files",
+        lock_path=tmp_path / "manifest.lock.json",
+        client=httpx.Client(
+            transport=ranged_transport(
+                {"https://example.gov/utilities.zip": archive}
+            )
+        ),
+        delay=0.0,
+        xls_converter=convert,
+    )
+    second = fetch_all(
+        parsed,
+        store=tmp_path / "files",
+        lock_path=tmp_path / "manifest.lock.json",
+        client=httpx.Client(
+            transport=ranged_transport(
+                {"https://example.gov/utilities.zip": archive}
+            )
+        ),
+        delay=0.0,
+        xls_converter=convert,
+    )
+
+    assert len(first.fetched) == 2
+    assert len(second.skipped) == 2
+    assert calls == [original]
+    lock = json.loads((tmp_path / "manifest.lock.json").read_text())
+    records = list(lock["sources"].values())
+    original_record = next(record for record in records if record.get("member", "").endswith(".xls"))
+    derived_record = next(record for record in records if record.get("derivation"))
+    assert Path(original_record["local_path"]).read_bytes() == original
+    assert Path(derived_record["local_path"]).read_bytes() == converted
+    assert derived_record["registry_id"] == "sh99-test-hole-index-2025-01-15-xlsx"
+    assert derived_record["derivation"] == {
+        "kind": "format_conversion",
+        "source_registry_id": "sh99-test-hole-index-2025-01-15-xls",
+        "source_sha256": hashlib.sha256(original).hexdigest(),
+        "tool": "corridor.xls-to-xlsx",
+        "tool_version": "3",
+    }
+    assert "supersession" not in derived_record
+    assert "equivalent_to" not in derived_record
 
 
 def test_a_missing_archive_member_is_reported(tmp_path):

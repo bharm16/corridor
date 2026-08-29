@@ -40,6 +40,7 @@ from corridor.row_accounting import RowAccounting
 from corridor.sheets import (
     NoConflictSheet,
     conflict_sheet,
+    native_evidence_table,
     read_workbook,
     row_text,
 )
@@ -76,7 +77,15 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
             "read. Re-ingest before treating this as an empty workbook."
         )
 
-    chosen = conflict_sheet(read_workbook(path))
+    sheets = read_workbook(path)
+    try:
+        chosen = conflict_sheet(sheets)
+    except NoConflictSheet:
+        return _extract_evidence_table(
+            session,
+            document,
+            native_evidence_table(sheets),
+        )
     page_no = chosen.page_no
     page = session.scalars(
         select(DocPage).where(
@@ -161,6 +170,100 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
     document.extraction_tiers = {TIER_NATIVE: 1}
     # The structured original states its own headers; there is no printed
     # header to read two ways.
+    document.header_disagreements = 0
+    accounted = accounting.finish(candidates)
+    session.add_all(candidates)
+    session.flush()
+    return accounted
+
+
+def _extract_evidence_table(session: Session, document: Document, chosen):
+    """Exact rows from one recognized SUE table, never Constraint proposals."""
+
+    page = session.scalars(
+        select(DocPage).where(
+            DocPage.document_id == document.id,
+            DocPage.page_no == chosen.page_no,
+        )
+    ).first()
+    page_text = (page.text if page else "") or ""
+    threshold = threshold_for(page.text_source if page else None)
+    candidates = []
+    accounting = RowAccounting(
+        reader_version=PROMPT_VERSION,
+        reader_path="spreadsheet_cells",
+    )
+    for row_number, raw in enumerate(chosen.rows, start=1):
+        row_id = f"sheet:{chosen.page_no}:row:{row_number}"
+        accounting.detect(
+            row_id,
+            page=chosen.page_no,
+            row_number=row_number,
+        )
+        if not any(str(value or "").strip() for value in raw):
+            accounting.account(
+                row_id,
+                disposition="blank",
+                reason="blank_source_row",
+            )
+            continue
+        fields = {
+            field: raw[index].strip()
+            for index, field in sorted(chosen.mapping.items())
+            if index < len(raw) and raw[index].strip()
+        }
+        if not all(fields.get(name) for name in chosen.required_fields):
+            accounting.account(
+                row_id,
+                disposition="skipped",
+                reason="missing_required_fields",
+            )
+            continue
+        unmapped_values = {
+            heading: raw[index].strip()
+            for index, heading in chosen.unmapped_columns
+            if index < len(raw) and raw[index].strip()
+        }
+        fields = {
+            **fields,
+            **{
+                f"unmapped:{heading}": value
+                for heading, value in unmapped_values.items()
+            },
+        }
+        quote = row_text(raw)
+        candidate = propose(
+            document,
+            kind="evidence",
+            fields=fields,
+            page_no=chosen.page_no,
+            quote=quote,
+            quote_verified=quote_appears_on(quote, page_text, threshold),
+            whole_row=True,
+            confidence=None,
+            prompt_version=PROMPT_VERSION,
+            tier=f"{TIER_NATIVE}:{chosen.kind}",
+            dedupe=dedupe_hint(
+                {
+                    "external_org": fields.get("external_org", ""),
+                    "utility_type": chosen.kind,
+                    "station_from": fields.get("probe_number")
+                    or fields.get("test_hole_number", ""),
+                    "station_to": "",
+                }
+            ),
+            text_source="cells",
+            unverified=sorted(unverified_fields(fields, page_text)),
+            unmapped=chosen.unmapped_headings,
+        )
+        candidate.payload_json["citations"][0]["table_row"] = row_number
+        candidates.append(candidate)
+        accounting.account(
+            row_id,
+            disposition="extracted",
+            reason="candidate_recorded",
+        )
+    document.extraction_tiers = {TIER_NATIVE: 1}
     document.header_disagreements = 0
     accounted = accounting.finish(candidates)
     session.add_all(candidates)

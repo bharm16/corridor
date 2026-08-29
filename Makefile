@@ -53,7 +53,7 @@ demo:
 # Load every lockfile opted into bulk project materialization. Pass
 # `ARGS="<slug>"` to ingest one explicit project, including opted-out ones.
 ingest:
-	uv run python -m corridor.docs ingest
+	uv run python -m corridor.docs ingest $(ARGS)
 
 # Browse source documents: `make docs` or `make docs ARGS="page 167 1"`.
 docs:
