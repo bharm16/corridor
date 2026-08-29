@@ -161,8 +161,12 @@ sh99-admission-acceptance:
 # known, on two disposable clones.
 # A failed receipt never activates; a passing receipt activates normal processing.
 #   make event-admission-acceptance ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha>"
+# Read the effective proof, policy, authority, and permitted operations:
+#   make event-admission-acceptance ARGS="status --project-slug=sh99-grand-parkway --database-url=<url>"
 # Suspension is append-only and restores the predecessor policy:
 #   make event-admission-acceptance ARGS="suspend --project-slug=sh99-grand-parkway --database-url=<url> --reason=<reason> --recorded-by=local:<subject>"
+# A lift is a separate attributable human act and still requires current proof:
+#   make event-admission-acceptance ARGS="lift --project-slug=sh99-grand-parkway --database-url=<url> --recorded-by=local:<subject>"
 event-admission-acceptance:
 	uv run python -m corridor.event_admission_acceptance_cli $(ARGS)
 

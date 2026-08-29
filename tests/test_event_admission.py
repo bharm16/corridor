@@ -15,10 +15,14 @@ Adjudication rather than forced onto the record.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from copy import deepcopy
 from datetime import date
+from pathlib import Path
+from threading import Event
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, text
@@ -26,6 +30,7 @@ from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.orm import object_session
 
 from corridor.adjudicate import accept_candidate
+from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.event_admission import (
     ABSTENTION_REASON_VERSION,
@@ -37,6 +42,7 @@ from corridor.event_admission import (
     canonical_event_admission_policy,
     _current_migration_head,
     _current_source_revision,
+    read_event_admission_policy_status,
 )
 from corridor.event_admission_acceptance import (
     RECEIPT_VERSION,
@@ -44,8 +50,12 @@ from corridor.event_admission_acceptance import (
     _promotion_gates,
     _receipt_promotion_gates,
     activate_passing_acceptance,
+    lift_unknown_scope_admission,
     record_acceptance_receipt,
     suspend_unknown_scope_admission,
+)
+from corridor.event_admission_acceptance_cli import (
+    main as event_admission_acceptance_cli_main,
 )
 from corridor.external_statements import (
     CitedStatementEvidence,
@@ -69,6 +79,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    EventAdmissionAcceptanceReceipt,
     EventAdmissionOutcome,
     EventAdmissionActivation,
     ExternalOrg,
@@ -78,6 +89,7 @@ from corridor.models import (
     PolicyRun,
     Project,
 )
+from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 OPERATOR = HumanPrincipal("local:event-admission-operator")
@@ -94,6 +106,19 @@ def session():
     s.close()
     trans.rollback()
     connection.close()
+
+
+@pytest.fixture(scope="module")
+def event_admission_isolated_database():
+    """One migrated disposable database for cross-session and replay proofs."""
+
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=Path(__file__).resolve().parents[1],
+        error_cls=RuntimeError,
+        database_prefix="corridor_event_admission_race_",
+    ) as database:
+        yield database
 
 
 @pytest.fixture
@@ -1366,6 +1391,77 @@ def _activation_receipt(
     return receipt
 
 
+def _committed_event_admission_race_project(
+    session_factory, *, activate: bool, retry: bool
+):
+    """Commit only UUID-scoped setup required by independent transactions."""
+
+    with session_factory() as setup:
+        project = Project(
+            slug=f"event-admission-suspension-race-{uuid4().hex}",
+            name="Event Admission Suspension Race",
+            is_synthetic=True,
+            project_side_parties=[PROJECT_SIDE],
+        )
+        setup.add(project)
+        setup.flush([project])
+        first = record_acceptance_receipt(
+            setup,
+            project_id=project.id,
+            source_revision=_current_source_revision(),
+            migration_head=_database_migration_head(project),
+            receipt_json=_activation_receipt(
+                project,
+                gates={"eligible_case_observed": True},
+            ),
+        )
+        if activate:
+            assert activate_passing_acceptance(setup, first.id) is not None
+        receipt = first
+        if retry:
+            receipt = record_acceptance_receipt(
+                setup,
+                project_id=project.id,
+                source_revision=_current_source_revision(),
+                migration_head=_database_migration_head(project),
+                receipt_json=_activation_receipt(
+                    project,
+                    gates={"eligible_case_observed": True},
+                ),
+            )
+        ids = (project.id, receipt.id)
+        setup.commit()
+        return ids
+
+
+def _delete_committed_event_admission_project(
+    session_factory, project_id: int
+) -> None:
+    """Remove the exact immutable graph committed for a race test."""
+
+    with session_factory() as cleanup:
+        cleanup.execute(text("set local session_replication_role = replica"))
+        cleanup.execute(
+            text(
+                "delete from event_admission_activations "
+                "where project_id = :project_id"
+            ),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text(
+                "delete from event_admission_acceptance_receipts "
+                "where project_id = :project_id"
+            ),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text("delete from projects where id = :project_id"),
+            {"project_id": project_id},
+        )
+        cleanup.commit()
+
+
 def test_failed_acceptance_receipt_cannot_activate_normal_processing(
     session, project
 ):
@@ -1394,6 +1490,123 @@ def test_failed_acceptance_receipt_cannot_activate_normal_processing(
     assert result.admitted_count == 0
     assert result.abstentions[0].reason == "no_conflict_reference"
     assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def test_event_admission_status_reports_no_applicable_proof(session, project):
+    status = read_event_admission_policy_status(session, project.id)
+
+    assert status.status == "no_applicable_proof"
+    assert status.proof_status == "no_applicable_proof"
+    assert status.effective_policy_version == EVENT_ADMISSION_POLICY_VERSION
+    assert status.latest_receipt_id is None
+    assert status.allowed_operations == ("replay",)
+
+
+def test_event_admission_status_reports_failed_newest_proof(session, project):
+    failed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": False},
+        ),
+    )
+
+    status = read_event_admission_policy_status(session, project.id)
+
+    assert failed.status == "failed"
+    assert status.status == "failed_newest_proof"
+    assert status.proof_status == "failed_newest_proof"
+    assert status.latest_receipt_id == failed.id
+    assert status.allowed_operations == ("replay",)
+
+
+def test_event_admission_status_reports_current_proof_before_activation(
+    session, project
+):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+
+    status = read_event_admission_policy_status(session, project.id)
+
+    assert status.status == "passed_current_not_active"
+    assert status.proof_status == "passed_current"
+    assert status.latest_receipt_id == passed.id
+    assert status.latest_receipt_current is True
+    assert status.effective_policy_version == EVENT_ADMISSION_POLICY_VERSION
+    assert status.allowed_operations == ("replay",)
+
+
+def test_event_admission_status_reports_stale_bound_identities(
+    session, project, monkeypatch
+):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+    monkeypatch.setattr(
+        "corridor.event_admission._current_source_revision", lambda: "b" * 40
+    )
+
+    status = read_event_admission_policy_status(session, project.id)
+
+    assert status.status == "stale_bound_identities"
+    assert status.proof_status == "stale_bound_identities"
+    assert status.latest_receipt_id == passed.id
+    assert status.latest_receipt_current is False
+    assert status.effective_policy_version == EVENT_ADMISSION_POLICY_VERSION
+    assert status.allowed_operations == ("replay",)
+
+
+def test_corrupt_passing_proof_cannot_activate_or_appear_current(session, project):
+    receipt_json = {
+        **_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+        "status": "passed",
+    }
+    corrupt = EventAdmissionAcceptanceReceipt(
+        project_id=project.id,
+        status="passed",
+        source_revision=receipt_json["source_revision"],
+        migration_head=receipt_json["migration_head"],
+        predecessor_policy_version=EVENT_ADMISSION_POLICY_VERSION,
+        policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+        policy_sha256=receipt_json["policy_sha256"],
+        reason_version=UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
+        selection_rule=SELECTION_RULE,
+        receipt_json=receipt_json,
+        receipt_sha256="f" * 64,
+    )
+    session.add(corrupt)
+    session.flush([corrupt])
+
+    with pytest.raises(ValueError, match="integrity"):
+        activate_passing_acceptance(session, corrupt.id)
+
+    status = read_event_admission_policy_status(session, project.id)
+    assert status.status == "corrupt_newest_proof"
+    assert status.proof_status == "corrupt_newest_proof"
+    assert status.latest_receipt_integrity_valid is False
+    assert status.effective_policy_version == EVENT_ADMISSION_POLICY_VERSION
+    assert status.allowed_operations == ("replay",)
 
 
 def test_database_rejects_activation_for_a_failed_receipt(session, project):
@@ -1468,6 +1681,69 @@ def test_passing_receipt_activates_normal_processing_and_suspension_restores_v2(
     assert session.get(Candidate, pending_candidate.id).state == "pending"
 
 
+def test_event_admission_status_reports_standing_suspension_separately(
+    session, project
+):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    suspension = suspend_unknown_scope_admission(
+        session,
+        project_id=project.id,
+        reason="receipt reproduction paused",
+        recorded_by="local:operations",
+    )
+
+    status = read_event_admission_policy_status(session, project.id)
+
+    assert status.status == "suspended"
+    assert status.proof_status == "passed_current"
+    assert status.effective_policy_version == EVENT_ADMISSION_POLICY_VERSION
+    assert status.latest_receipt_id == passed.id
+    assert status.latest_action == "suspend"
+    assert status.latest_action_id == suspension.id
+    assert status.latest_action_receipt_id == passed.id
+    assert status.latest_action_policy_version == UNKNOWN_SCOPE_POLICY_VERSION
+    assert status.latest_action_recorded_by == "local:operations"
+    assert status.allowed_operations == ("lift", "replay")
+
+
+def test_repeating_identical_activation_finalization_reuses_one_history_entry(
+    session, project
+):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+
+    first = activate_passing_acceptance(session, passed.id)
+    retried = activate_passing_acceptance(session, passed.id)
+
+    assert first is not None
+    assert retried is not None
+    assert retried.id == first.id
+    assert session.scalars(
+        select(EventAdmissionActivation).where(
+            EventAdmissionActivation.project_id == project.id,
+            EventAdmissionActivation.action == "activate",
+        )
+    ).all() == [first]
+
+
 def test_activated_normal_processing_does_not_repeat_identical_abstention_outcomes(
     session, project
 ):
@@ -1507,6 +1783,292 @@ def test_activated_normal_processing_does_not_repeat_identical_abstention_outcom
     assert second.abstained_count == 0
     assert len(after_first) == 2
     assert len(after_second) == 2
+
+
+def test_automatic_activation_respects_a_standing_human_suspension(
+    session, project
+):
+    original = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+    assert activate_passing_acceptance(session, original.id) is not None
+    suspension = suspend_unknown_scope_admission(
+        session,
+        project_id=project.id,
+        reason="receipt reproduction paused",
+        recorded_by="local:operations",
+    )
+    retried = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+
+    assert activate_passing_acceptance(session, retried.id) is None
+    status = read_event_admission_policy_status(session, project.id)
+
+    assert status.status == "suspended"
+    assert status.latest_receipt_id == retried.id
+    assert status.latest_action == "suspend"
+    assert status.latest_action_id == suspension.id
+
+
+def test_competing_suspension_blocks_later_automatic_activation(
+    event_admission_isolated_database,
+):
+    session_factory = event_admission_isolated_database.session_factory
+    project_id, retried_receipt_id = _committed_event_admission_race_project(
+        session_factory,
+        activate=True,
+        retry=True,
+    )
+    suspension_written = Event()
+    allow_commit = Event()
+
+    def suspend_then_commit():
+        with session_factory() as competing:
+            suspend_unknown_scope_admission(
+                competing,
+                project_id=project_id,
+                reason="receipt reproduction paused",
+                recorded_by="local:operations",
+            )
+            suspension_written.set()
+            assert allow_commit.wait(timeout=2)
+            competing.commit()
+
+    def activate_after_suspension():
+        assert suspension_written.wait(timeout=2)
+        with session_factory() as competing:
+            activation = activate_passing_acceptance(competing, retried_receipt_id)
+            competing.commit()
+            return activation
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            suspension_future = pool.submit(suspend_then_commit)
+            activation_future = pool.submit(activate_after_suspension)
+            assert suspension_written.wait(timeout=2)
+            allow_commit.set()
+            suspension_future.result()
+            assert activation_future.result() is None
+
+        with session_factory() as verification:
+            status = read_event_admission_policy_status(verification, project_id)
+            assert status.status == "suspended"
+            assert status.latest_receipt_id == retried_receipt_id
+            assert status.latest_action == "suspend"
+    finally:
+        _delete_committed_event_admission_project(session_factory, project_id)
+
+
+def test_competing_activation_then_suspension_leaves_policy_suspended(
+    event_admission_isolated_database,
+):
+    session_factory = event_admission_isolated_database.session_factory
+    project_id, receipt_id = _committed_event_admission_race_project(
+        session_factory,
+        activate=False,
+        retry=False,
+    )
+    activation_written = Event()
+    allow_activation_commit = Event()
+
+    def activate_then_commit():
+        with session_factory() as competing:
+            activation = activate_passing_acceptance(competing, receipt_id)
+            assert activation is not None
+            activation_written.set()
+            assert allow_activation_commit.wait(timeout=2)
+            competing.commit()
+            return activation.id
+
+    def suspend_after_activation():
+        assert activation_written.wait(timeout=2)
+        with session_factory() as competing:
+            suspension = suspend_unknown_scope_admission(
+                competing,
+                project_id=project_id,
+                reason="receipt reproduction paused",
+                recorded_by="local:operations",
+            )
+            competing.commit()
+            return suspension.id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            activation_future = pool.submit(activate_then_commit)
+            suspension_future = pool.submit(suspend_after_activation)
+            assert activation_written.wait(timeout=2)
+            allow_activation_commit.set()
+            assert activation_future.result() > 0
+            assert suspension_future.result() > 0
+
+        with session_factory() as verification:
+            status = read_event_admission_policy_status(verification, project_id)
+            assert status.status == "suspended"
+            assert status.latest_action == "suspend"
+            assert (
+                status.effective_policy_version
+                == EVENT_ADMISSION_POLICY_VERSION
+            )
+    finally:
+        _delete_committed_event_admission_project(session_factory, project_id)
+
+
+@pytest.mark.slow
+def test_replay_cli_keeps_passing_proof_when_suspension_vetoes_activation(
+    event_admission_isolated_database, capsys
+):
+    database = event_admission_isolated_database
+    session_factory = database.session_factory
+    project_slug = f"event-admission-replay-veto-{uuid4().hex}"
+    with session_factory() as setup:
+        project = Project(
+            slug=project_slug,
+            name="Event Admission Replay Veto",
+            is_synthetic=True,
+            project_side_parties=[PROJECT_SIDE],
+        )
+        setup.add_all(
+            (project, ExternalOrg(name=PIPELINE, aliases=["Tejas Pipeline"]))
+        )
+        setup.flush([project])
+        [candidate] = _minutes_with(
+            setup,
+            project,
+            [_unknown_scope_commitment()],
+            filename="replay-veto-minutes.pdf",
+        )
+        historical = record_acceptance_receipt(
+            setup,
+            project_id=project.id,
+            source_revision=_current_source_revision(),
+            migration_head=_database_migration_head(project),
+            receipt_json=_activation_receipt(
+                project,
+                gates={"eligible_case_observed": True},
+            ),
+        )
+        assert activate_passing_acceptance(setup, historical.id) is not None
+        suspension = suspend_unknown_scope_admission(
+            setup,
+            project_id=project.id,
+            reason="receipt reproduction paused",
+            recorded_by="local:operations",
+        )
+        candidate_id = candidate.id
+        project_id = project.id
+        setup.commit()
+
+    source_engine = session_factory.kw.get("bind")
+    assert source_engine is not None
+    source_database_url = source_engine.url.render_as_string(hide_password=False)
+    expected_revision = _current_source_revision()
+    assert expected_revision is not None
+
+    assert (
+        event_admission_acceptance_cli_main(
+            [
+                "replay",
+                "--project-slug",
+                project_slug,
+                "--source-database-url",
+                source_database_url,
+                "--postgres-admin-url",
+                settings.database_url,
+                "--expected-clean-git-revision",
+                expected_revision,
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "passed"
+    assert payload["activated"] is False
+
+    with session_factory() as verification:
+        status = read_event_admission_policy_status(verification, project_id)
+        assert status.status == "suspended"
+        assert status.proof_status == "passed_current"
+        assert status.latest_receipt_id == payload["receipt_id"]
+        assert status.latest_action_id == suspension.id
+        assert verification.get(Candidate, candidate_id).state == "pending"
+
+
+def test_lifting_suspension_requires_a_human_principal_and_current_passing_proof(
+    session, project
+):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": True},
+        ),
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+
+    with pytest.raises(InvalidHumanPrincipal):
+        suspend_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            reason="receipt reproduction paused",
+            recorded_by="corridor:event-admission-activation",
+        )
+    with pytest.raises(InvalidHumanPrincipal):
+        suspend_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            reason="receipt reproduction paused",
+            recorded_by=" local:operations ",
+        )
+    suspend_unknown_scope_admission(
+        session,
+        project_id=project.id,
+        reason="receipt reproduction paused",
+        recorded_by="local:operations",
+    )
+
+    with pytest.raises(InvalidHumanPrincipal):
+        lift_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            recorded_by="corridor:event-admission-activation",
+        )
+    with pytest.raises(InvalidHumanPrincipal):
+        lift_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            recorded_by=" local:human-lift ",
+        )
+
+    lifted = lift_unknown_scope_admission(
+        session,
+        project_id=project.id,
+        recorded_by="local:human-lift",
+    )
+    status = read_event_admission_policy_status(session, project.id)
+
+    assert lifted.action == "activate"
+    assert lifted.recorded_by == "local:human-lift"
+    assert lifted.acceptance_receipt_id == passed.id
+    assert status.status == "active"
+    assert status.allowed_operations == ("replay", "suspend")
 
 
 def test_activated_extension_preserves_predecessor_selected_scope_behavior(
@@ -1626,6 +2188,55 @@ def test_source_revision_drift_suspends_activation(
     assert result.admitted_count == 0
     assert result.abstentions[0].reason == "no_conflict_reference"
     assert session.get(Candidate, candidate.id).state == "pending"
+
+
+def test_lift_refuses_stale_or_failed_newest_proof(session, project, monkeypatch):
+    passed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision=_current_source_revision(),
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project, gates={"eligible_case_observed": True}
+        ),
+    )
+    assert activate_passing_acceptance(session, passed.id) is not None
+    suspend_unknown_scope_admission(
+        session,
+        project_id=project.id,
+        reason="receipt reproduction paused",
+        recorded_by="local:operations",
+    )
+    monkeypatch.setattr(
+        "corridor.event_admission._current_source_revision", lambda: "b" * 40
+    )
+
+    with pytest.raises(ValueError, match="current passing proof"):
+        lift_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            recorded_by="local:human-lift",
+        )
+
+    failed = record_acceptance_receipt(
+        session,
+        project_id=project.id,
+        source_revision="c" * 40,
+        migration_head=_database_migration_head(project),
+        receipt_json=_activation_receipt(
+            project,
+            gates={"eligible_case_observed": False},
+            source_revision="c" * 40,
+        ),
+    )
+
+    assert failed.status == "failed"
+    with pytest.raises(ValueError, match="current passing proof"):
+        lift_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            recorded_by="local:human-lift",
+        )
 
 
 def test_migration_head_drift_suspends_activation(

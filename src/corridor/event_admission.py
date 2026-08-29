@@ -153,6 +153,26 @@ class EventAdmissionResult:
 
 
 @dataclass(frozen=True)
+class EventAdmissionPolicyStatus:
+    status: str
+    proof_status: str
+    effective_policy_version: str
+    latest_receipt_id: int | None
+    latest_receipt_status: str | None
+    latest_receipt_current: bool | None
+    latest_receipt_integrity_valid: bool | None
+    latest_receipt_policy_version: str | None
+    latest_receipt_policy_sha256: str | None
+    latest_action_id: int | None
+    latest_action: str | None
+    latest_action_receipt_id: int | None
+    latest_action_policy_version: str | None
+    latest_action_reason: str | None
+    latest_action_recorded_by: str | None
+    allowed_operations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PreparedStatementPlacement:
     """Target-independent facts proved before one Unplaced Statement attaches."""
 
@@ -1623,47 +1643,144 @@ def acceptance_receipt_is_current(
     )
 
 
+def acceptance_receipt_integrity_valid(
+    receipt: EventAdmissionAcceptanceReceipt,
+) -> bool:
+    """Verify the immutable receipt bytes and their indexed identity envelope."""
+
+    canonical = receipt.receipt_json
+    if not isinstance(canonical, dict):
+        return False
+    envelope = {
+        "status": receipt.status,
+        "source_revision": receipt.source_revision,
+        "migration_head": receipt.migration_head,
+        "policy_version": receipt.policy_version,
+        "policy_sha256": receipt.policy_sha256,
+        "reason_version": receipt.reason_version,
+        "selection_rule": receipt.selection_rule,
+    }
+    return (
+        receipt.predecessor_policy_version == EVENT_ADMISSION_POLICY_VERSION
+        and all(canonical.get(key) == value for key, value in envelope.items())
+        and receipt.receipt_sha256 == policy.canonical_sha256(canonical)
+    )
+
+
 def normal_event_admission_policy_version(
     session: Session, project_id: int
 ) -> str:
-    """Read the latest append-only activation act; suspension restores v2."""
-    row = session.execute(
-        select(EventAdmissionActivation, EventAdmissionAcceptanceReceipt)
-        .join(
-            EventAdmissionAcceptanceReceipt,
-            EventAdmissionAcceptanceReceipt.id
-            == EventAdmissionActivation.acceptance_receipt_id,
-        )
-        .where(EventAdmissionActivation.project_id == project_id)
-        .order_by(EventAdmissionActivation.id.desc())
-        .limit(1)
-    ).first()
-    if row is None:
-        return EVENT_ADMISSION_POLICY_VERSION
-    latest, receipt = row
-    newest_receipt_id = session.scalar(
-        select(EventAdmissionAcceptanceReceipt.id)
+    """Read the same effective policy selection ordinary processing applies."""
+    if read_event_admission_policy_status(session, project_id).status == "active":
+        return UNKNOWN_SCOPE_POLICY_VERSION
+    return EVENT_ADMISSION_POLICY_VERSION
+
+
+def read_event_admission_policy_status(
+    session: Session, project_id: int
+) -> EventAdmissionPolicyStatus:
+    """Report proof and authority state from the same selection logic."""
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise ValueError(f"project {project_id} does not exist")
+    latest_receipt = session.scalar(
+        select(EventAdmissionAcceptanceReceipt)
         .where(EventAdmissionAcceptanceReceipt.project_id == project_id)
         .order_by(EventAdmissionAcceptanceReceipt.id.desc())
         .limit(1)
     )
-    project = session.get(Project, project_id)
-    if (
-        project is not None
-        and latest.action == "activate"
-        and latest.policy_version == UNKNOWN_SCOPE_POLICY_VERSION
-        and receipt.id == newest_receipt_id
-        and receipt.status == "passed"
-        and acceptance_receipt_is_current(session, receipt)
-        and receipt.policy_sha256
-        == policy.canonical_sha256(
-            canonical_event_admission_policy(
-                project, UNKNOWN_SCOPE_POLICY_VERSION
-            )
+    latest_action = session.scalar(
+        select(EventAdmissionActivation)
+        .where(EventAdmissionActivation.project_id == project_id)
+        .order_by(EventAdmissionActivation.id.desc())
+        .limit(1)
+    )
+
+    proof_status = "no_applicable_proof"
+    latest_receipt_current: bool | None = None
+    latest_receipt_integrity_valid: bool | None = None
+    if latest_receipt is not None:
+        latest_receipt_integrity_valid = acceptance_receipt_integrity_valid(
+            latest_receipt
         )
+        current_policy_sha256 = policy.canonical_sha256(
+            canonical_event_admission_policy(project, UNKNOWN_SCOPE_POLICY_VERSION)
+        )
+        latest_receipt_current = (
+            latest_receipt_integrity_valid
+            and latest_receipt.status == "passed"
+            and acceptance_receipt_is_current(session, latest_receipt)
+            and latest_receipt.policy_sha256 == current_policy_sha256
+        )
+        if not latest_receipt_integrity_valid:
+            proof_status = "corrupt_newest_proof"
+        elif latest_receipt.status != "passed":
+            proof_status = "failed_newest_proof"
+        elif latest_receipt_current:
+            proof_status = "passed_current"
+        else:
+            proof_status = "stale_bound_identities"
+
+    status = proof_status
+    effective_policy_version = EVENT_ADMISSION_POLICY_VERSION
+    allowed_operations: tuple[str, ...] = ("replay",)
+    if latest_action is not None and latest_action.action == "suspend":
+        status = "suspended"
+        if proof_status == "passed_current":
+            allowed_operations = ("lift", "replay")
+    elif (
+        latest_action is not None
+        and latest_action.action == "activate"
+        and latest_action.policy_version == UNKNOWN_SCOPE_POLICY_VERSION
+        and latest_receipt is not None
+        and latest_action.acceptance_receipt_id == latest_receipt.id
+        and proof_status == "passed_current"
     ):
-        return UNKNOWN_SCOPE_POLICY_VERSION
-    return EVENT_ADMISSION_POLICY_VERSION
+        status = "active"
+        effective_policy_version = UNKNOWN_SCOPE_POLICY_VERSION
+        allowed_operations = ("replay", "suspend")
+    elif proof_status == "passed_current":
+        status = "passed_current_not_active"
+
+    return EventAdmissionPolicyStatus(
+        status=status,
+        proof_status=proof_status,
+        effective_policy_version=effective_policy_version,
+        latest_receipt_id=(
+            None if latest_receipt is None else latest_receipt.id
+        ),
+        latest_receipt_status=(
+            None if latest_receipt is None else latest_receipt.status
+        ),
+        latest_receipt_current=latest_receipt_current,
+        latest_receipt_integrity_valid=latest_receipt_integrity_valid,
+        latest_receipt_policy_version=(
+            None if latest_receipt is None else latest_receipt.policy_version
+        ),
+        latest_receipt_policy_sha256=(
+            None if latest_receipt is None else latest_receipt.policy_sha256
+        ),
+        latest_action_id=(
+            None if latest_action is None else latest_action.id
+        ),
+        latest_action=(
+            None if latest_action is None else latest_action.action
+        ),
+        latest_action_receipt_id=(
+            None if latest_action is None else latest_action.acceptance_receipt_id
+        ),
+        latest_action_policy_version=(
+            None if latest_action is None else latest_action.policy_version
+        ),
+        latest_action_reason=(
+            None if latest_action is None else latest_action.reason
+        ),
+        latest_action_recorded_by=(
+            None if latest_action is None else latest_action.recorded_by
+        ),
+        allowed_operations=allowed_operations,
+    )
 
 
 def canonical_event_admission_policy(
