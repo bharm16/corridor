@@ -42,7 +42,7 @@ from corridor.product_proving_database import (
 
 
 REVISION = "a" * 40
-MIGRATION_HEAD = "c318d6e8f0a3"
+MIGRATION_HEAD = "d319e7f9a1b4"
 SOURCE_URL = "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
 ADMIN_URL = SOURCE_URL
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -179,8 +179,8 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         engine.dispose()
 
     assert transaction_read_only == "on"
-    assert fingerprint.table_count == 62
-    assert fingerprint.sequence_count == 53
+    assert fingerprint.table_count == 65
+    assert fingerprint.sequence_count == 56
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
@@ -193,6 +193,9 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "alembic_version",
         "candidates",
         "dependency_events",
+        "due_work_occurrences",
+        "due_work_receipts",
+        "due_work_schedules",
         "statement_coordination_receipts",
     }
     assert {item.kind for item in fingerprint.schema_objects} == {

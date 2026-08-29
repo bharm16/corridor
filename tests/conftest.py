@@ -91,6 +91,22 @@ def shared_source_database_url() -> str:
     return os.environ.get(SOURCE_DATABASE_URL_ENV) or _configured_database_url()
 
 
+@pytest.fixture
+def runtime_database():
+    """Harness-owned migrated database for real competing Due Work transactions."""
+
+    from corridor.config import settings
+    from corridor.m8_acceptance_database import provision_disposable_postgres
+
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_due_work_test_",
+    ) as database:
+        yield database
+
+
 def _xdist_is_enabled(config) -> bool:
     workers = config.getoption("numprocesses")
     return workers not in (None, 0, "0")
