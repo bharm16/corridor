@@ -21,6 +21,7 @@ import json
 from copy import deepcopy
 from datetime import date
 from pathlib import Path
+import subprocess
 from threading import Event
 from uuid import uuid4
 
@@ -1932,6 +1933,27 @@ def test_competing_activation_then_suspension_leaves_policy_suspended(
 def test_replay_cli_keeps_passing_proof_when_suspension_vetoes_activation(
     event_admission_isolated_database, capsys
 ):
+    try:
+        compose_postgres = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "ps",
+                "--status",
+                "running",
+                "--quiet",
+                "postgres",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        pytest.skip("real replay requires the local Docker Compose Postgres service")
+    if compose_postgres.returncode or not compose_postgres.stdout.strip():
+        pytest.skip("real replay requires the local Docker Compose Postgres service")
+
     database = event_admission_isolated_database
     session_factory = database.session_factory
     project_slug = f"event-admission-replay-veto-{uuid4().hex}"
