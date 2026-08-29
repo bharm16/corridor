@@ -22,7 +22,12 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
-from corridor.revision_comparison import CorruptRevisionComparison
+from corridor.revision_comparison import (
+    CorruptRevisionComparison,
+    RevisionComparisonError,
+    create_revision_comparison,
+    list_revision_comparisons,
+)
 from corridor.revision_processing import process_revision_pair
 from corridor.supersession import (
     SupersessionDeclaration,
@@ -226,6 +231,66 @@ def test_process_revision_pair_creates_verifies_then_routes_carry_forward(
     assert len(result.carry_forward.carried) == 1
     assert result.carry_forward.abstentions == ()
     assert build_reviewer_worklist(session, scenario["project"].id).reviews == ()
+
+
+def test_process_revision_pair_reuses_one_identical_verified_comparison(session):
+    scenario = _seed_transition(session)
+    first = process_revision_pair(
+        session,
+        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        successor_extraction_run_id=scenario["successor_run"].id,
+    )
+
+    retried = process_revision_pair(
+        session,
+        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        successor_extraction_run_id=scenario["successor_run"].id,
+    )
+
+    assert retried.comparison.comparison.id == first.comparison.comparison.id
+    assert [
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session,
+            scenario["predecessor_run"].id,
+            scenario["successor_run"].id,
+        )
+    ] == [first.comparison.comparison.id]
+
+
+@pytest.mark.parametrize(
+    "retained_kwargs",
+    [
+        {"matcher_config": {"minimum_score": 0.75}},
+        {"matcher_version": "revision-correspondence-v3"},
+    ],
+)
+def test_process_revision_pair_refuses_mismatched_retained_matcher_identity(
+    session, retained_kwargs
+):
+    scenario = _seed_transition(session)
+    retained = create_revision_comparison(
+        session,
+        scenario["predecessor_run"].id,
+        scenario["successor_run"].id,
+        **retained_kwargs,
+    )
+
+    with pytest.raises(RevisionComparisonError, match="matcher identity"):
+        process_revision_pair(
+            session,
+            predecessor_extraction_run_id=scenario["predecessor_run"].id,
+            successor_extraction_run_id=scenario["successor_run"].id,
+        )
+
+    assert [
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session,
+            scenario["predecessor_run"].id,
+            scenario["successor_run"].id,
+        )
+    ] == [retained.id]
 
 
 def test_process_revision_pair_does_not_route_carry_forward_when_readback_fails(

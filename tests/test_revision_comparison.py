@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from collections import Counter
 from datetime import date, datetime, timezone
+from threading import Barrier
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, select, text, update
@@ -23,6 +26,8 @@ from corridor.models import (
     RevisionComparisonRun,
 )
 from corridor.revision_comparison import (
+    AmbiguousRevisionComparison,
+    CorruptRevisionComparison,
     DEFAULT_MATCHER_CONFIG,
     DEFAULT_MATCHER_VERSION,
     IncompleteSuccessorExtraction,
@@ -178,6 +183,200 @@ def _run(
     )
     session.flush()
     return run, candidates
+
+
+def _clone_comparison_receipt(session, comparison):
+    readback = read_revision_comparison(session, comparison.id)
+    duplicate = RevisionComparisonRun(
+        project_id=comparison.project_id,
+        predecessor_document_id=comparison.predecessor_document_id,
+        successor_document_id=comparison.successor_document_id,
+        predecessor_extraction_run_id=comparison.predecessor_extraction_run_id,
+        successor_extraction_run_id=comparison.successor_extraction_run_id,
+        predecessor_schema_version=comparison.predecessor_schema_version,
+        successor_schema_version=comparison.successor_schema_version,
+        predecessor_prompt_version=comparison.predecessor_prompt_version,
+        successor_prompt_version=comparison.successor_prompt_version,
+        predecessor_model=comparison.predecessor_model,
+        successor_model=comparison.successor_model,
+        matcher_version=comparison.matcher_version,
+        matcher_config=dict(comparison.matcher_config),
+        predecessor_inputs_json=list(comparison.predecessor_inputs_json),
+        successor_inputs_json=list(comparison.successor_inputs_json),
+        finding_count=comparison.finding_count,
+        content_sha256=comparison.content_sha256,
+    )
+    session.add(duplicate)
+    session.flush([duplicate])
+    for finding in readback.findings:
+        session.add(
+            RevisionComparisonFinding(
+                revision_comparison_run_id=duplicate.id,
+                ordinal=finding.ordinal,
+                state=finding.state,
+                predecessor_candidate_ids=list(
+                    finding.predecessor_candidate_ids
+                ),
+                successor_candidate_ids=list(finding.successor_candidate_ids),
+                match_score=finding.match_score,
+                field_changes=list(finding.field_changes),
+                matcher_detail=dict(finding.matcher_detail),
+            )
+        )
+    session.flush()
+    duplicate.sealed_at = datetime.now(timezone.utc)
+    session.flush([duplicate])
+    return duplicate
+
+
+def _insert_unsealed_comparison_fixture(
+    session,
+    project,
+    predecessor,
+    successor,
+    predecessor_run,
+    successor_run,
+    *,
+    predecessor_inputs=None,
+    successor_inputs=None,
+):
+    comparison = RevisionComparisonRun(
+        project_id=project.id,
+        predecessor_document_id=predecessor.id,
+        successor_document_id=successor.id,
+        predecessor_extraction_run_id=predecessor_run.id,
+        successor_extraction_run_id=successor_run.id,
+        predecessor_schema_version=predecessor_run.schema_version,
+        successor_schema_version=successor_run.schema_version,
+        predecessor_prompt_version=predecessor_run.prompt_version,
+        successor_prompt_version=successor_run.prompt_version,
+        predecessor_model=predecessor_run.model,
+        successor_model=successor_run.model,
+        matcher_version=DEFAULT_MATCHER_VERSION,
+        matcher_config=dict(DEFAULT_MATCHER_CONFIG),
+        predecessor_inputs_json=(
+            [] if predecessor_inputs is None else predecessor_inputs
+        ),
+        successor_inputs_json=(
+            [] if successor_inputs is None else successor_inputs
+        ),
+        finding_count=0,
+        content_sha256="0" * 64,
+    )
+    session.add(comparison)
+    session.flush([comparison])
+    return comparison
+
+
+def _committed_comparison_pair():
+    with Session() as setup:
+        project = Project(
+            slug=f"revision-comparison-race-{uuid4().hex}",
+            name="Revision Comparison Race",
+            is_synthetic=True,
+        )
+        setup.add(project)
+        setup.flush([project])
+        source = _document(
+            setup,
+            project,
+            registry_id="race-index",
+            filename="race-index.pdf",
+            doc_type="other",
+        )
+        setup.add(DocPage(document_id=source.id, page_no=1, text="revision index"))
+        predecessor = _document(
+            setup,
+            project,
+            registry_id="race-predecessor",
+            filename="race-predecessor.pdf",
+        )
+        successor = _document(
+            setup,
+            project,
+            registry_id="race-successor",
+            filename="race-successor.pdf",
+        )
+        setup.flush()
+        register_supersessions(
+            setup,
+            [
+                SupersessionDeclaration(
+                    predecessor_registry_id=predecessor.registry_id,
+                    successor_registry_id=successor.registry_id,
+                    replacement_date=date(2026, 8, 28),
+                    source_registry_id=source.registry_id,
+                    source_page=1,
+                )
+            ],
+            project_id=project.id,
+        )
+        predecessor_run, _ = _run(
+            setup,
+            predecessor,
+            [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+            prompt_version="matrix_tiered_v2",
+            model="gpt-test",
+            schema_version="matrix-schema-v2",
+        )
+        successor_run, _ = _run(
+            setup,
+            successor,
+            [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+            prompt_version="matrix_tiered_v3",
+            model="gpt-test",
+            schema_version="matrix-schema-v3",
+        )
+        ids = (project.id, predecessor_run.id, successor_run.id)
+        setup.commit()
+        return ids
+
+
+def _delete_committed_comparison_project(project_id):
+    with engine.begin() as cleanup:
+        cleanup.execute(text("set local session_replication_role = replica"))
+        cleanup.execute(
+            text(
+                "delete from revision_comparison_findings where "
+                "revision_comparison_run_id in "
+                "(select id from revision_comparison_runs "
+                "where project_id = :project_id)"
+            ),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text(
+                "delete from revision_comparison_runs "
+                "where project_id = :project_id"
+            ),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text("delete from candidates where project_id = :project_id"),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text(
+                "delete from extraction_runs where document_id in "
+                "(select id from documents where project_id = :project_id)"
+            ),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text(
+                "delete from doc_pages where document_id in "
+                "(select id from documents where project_id = :project_id)"
+            ),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text("delete from documents where project_id = :project_id"),
+            {"project_id": project_id},
+        )
+        cleanup.execute(
+            text("delete from projects where id = :project_id"),
+            {"project_id": project_id},
+        )
 
 
 @pytest.mark.parametrize(
@@ -2015,6 +2214,252 @@ def test_new_matcher_version_or_configuration_appends_without_rewriting(
             session, predecessor_run.id, successor_run.id
         )
     ] == [original.id, rerun.id]
+
+
+def test_identical_execution_returns_the_verified_retained_comparison(
+    session, consecutive_nhhip_documents
+):
+    _, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    original = create_revision_comparison(
+        session, predecessor_run.id, successor_run.id
+    )
+    original_readback = read_revision_comparison(session, original.id)
+
+    retained = create_revision_comparison(
+        session,
+        predecessor_run.id,
+        successor_run.id,
+        matcher_config=dict(DEFAULT_MATCHER_CONFIG),
+    )
+    retained_readback = read_revision_comparison(session, retained.id)
+
+    assert retained.id == original.id
+    assert retained.content_sha256 == original.content_sha256
+    assert retained_readback.findings == original_readback.findings
+    assert [
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session, predecessor_run.id, successor_run.id
+        )
+    ] == [original.id]
+
+
+def test_identical_execution_refuses_preexisting_ambiguous_history(
+    session, consecutive_nhhip_documents
+):
+    _, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    original = create_revision_comparison(
+        session, predecessor_run.id, successor_run.id
+    )
+    duplicate = _clone_comparison_receipt(session, original)
+
+    with pytest.raises(AmbiguousRevisionComparison, match="identical execution"):
+        create_revision_comparison(
+            session, predecessor_run.id, successor_run.id
+        )
+
+    assert [
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session, predecessor_run.id, successor_run.id
+        )
+    ] == [original.id, duplicate.id]
+
+
+def test_identical_execution_refuses_an_unsealed_retained_receipt(
+    session, consecutive_nhhip_documents
+):
+    project, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    unsealed = _insert_unsealed_comparison_fixture(
+        session,
+        project,
+        predecessor,
+        successor,
+        predecessor_run,
+        successor_run,
+    )
+
+    with pytest.raises(CorruptRevisionComparison, match="not sealed"):
+        create_revision_comparison(
+            session, predecessor_run.id, successor_run.id
+        )
+
+    assert session.scalars(
+        select(RevisionComparisonRun).where(
+            RevisionComparisonRun.predecessor_extraction_run_id
+            == predecessor_run.id,
+            RevisionComparisonRun.successor_extraction_run_id
+            == successor_run.id,
+        )
+    ).all() == [unsealed]
+
+
+def test_identical_execution_refuses_a_corrupt_retained_receipt(
+    session, consecutive_nhhip_documents
+):
+    project, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    corrupt = _insert_unsealed_comparison_fixture(
+        session,
+        project,
+        predecessor,
+        successor,
+        predecessor_run,
+        successor_run,
+    )
+    corrupt.sealed_at = datetime.now(timezone.utc)
+    session.flush([corrupt])
+
+    with pytest.raises(CorruptRevisionComparison, match="digest"):
+        create_revision_comparison(
+            session, predecessor_run.id, successor_run.id
+        )
+
+    assert [
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session, predecessor_run.id, successor_run.id
+        )
+    ] == [corrupt.id]
+
+
+def test_identical_execution_refuses_changed_retained_input_identity(
+    session, consecutive_nhhip_documents
+):
+    project, predecessor, successor = consecutive_nhhip_documents
+    predecessor_run, _ = _run(
+        session,
+        predecessor,
+        [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2",
+        model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session,
+        successor,
+        [],
+        prompt_version="matrix_tiered_v3",
+        model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    mismatched = _insert_unsealed_comparison_fixture(
+        session,
+        project,
+        predecessor,
+        successor,
+        predecessor_run,
+        successor_run,
+        predecessor_inputs=[],
+        successor_inputs=[],
+    )
+
+    with pytest.raises(RevisionComparisonError, match="input identity"):
+        create_revision_comparison(
+            session, predecessor_run.id, successor_run.id
+        )
+
+    assert session.scalars(
+        select(RevisionComparisonRun).where(
+            RevisionComparisonRun.predecessor_extraction_run_id
+            == predecessor_run.id,
+            RevisionComparisonRun.successor_extraction_run_id
+            == successor_run.id,
+        )
+    ).all() == [mismatched]
+
+
+def test_concurrent_identical_executions_converge_on_one_comparison():
+    project_id, predecessor_run_id, successor_run_id = _committed_comparison_pair()
+    ready = Barrier(2)
+
+    def compare_in_own_transaction():
+        with Session() as competing:
+            ready.wait(timeout=2)
+            comparison = create_revision_comparison(
+                competing, predecessor_run_id, successor_run_id
+            )
+            comparison_id = comparison.id
+            competing.commit()
+            return comparison_id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            comparison_ids = tuple(pool.map(lambda _: compare_in_own_transaction(), range(2)))
+
+        assert comparison_ids[0] == comparison_ids[1]
+        with Session() as verification:
+            assert [
+                comparison.id
+                for comparison in list_revision_comparisons(
+                    verification, predecessor_run_id, successor_run_id
+                )
+            ] == [comparison_ids[0]]
+    finally:
+        _delete_committed_comparison_project(project_id)
 
 
 def test_readback_uses_input_snapshots_after_candidate_state_or_payload_changes(

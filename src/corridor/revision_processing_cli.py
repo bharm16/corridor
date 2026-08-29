@@ -1,9 +1,9 @@
 """Operate one exact Document Revision Processing pair with no implicit authority.
 
 This CLI accepts only two explicit positive Extraction Run ids. It always
-creates one exact Revision Comparison, immediately reads it back to verify the
-sealed content, then applies the released Automatic Support Update Rules for that exact
-project. It never infers runs from recency and never accepts human
+converges on one exact Revision Comparison, immediately reads it back to verify
+the sealed content, then applies the released Automatic Support Update Rules
+for that exact project. It never infers runs from recency and never accepts human
 identity or policy-mutation flags.
 """
 
