@@ -23,6 +23,7 @@
   <div class="coordinate-forms">
     <form method="post"
           action="/dependencies/{{ coordinate_dependency.id }}/owner">
+    {{ csrf_field() }}
       <input type="hidden" name="slug" value="{{ project.slug }}">
       <input type="hidden" name="redirect_to"
              value="{{ lane_url }}&coordinate={{ coordinate_dependency.id }}">
@@ -33,6 +34,7 @@
     </form>
     <form method="post"
           action="/dependencies/{{ coordinate_dependency.id }}/action">
+    {{ csrf_field() }}
       <input type="hidden" name="slug" value="{{ project.slug }}">
       <input type="hidden" name="redirect_to" value="{{ lane_url }}">
       <input name="action" placeholder="next action"

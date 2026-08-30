@@ -94,6 +94,7 @@
   </p>
   <form class="inline" method="post"
         action="/dependencies/{{ view.dependency.id }}/owner">
+    {{ csrf_field() }}
     <input type="hidden" name="slug" value="{{ project.slug }}">
     {% if return_to %}
       <input type="hidden" name="redirect_to" value="{{ return_to }}">
@@ -121,6 +122,7 @@
   </p>
   <form class="inline" method="post"
         action="/dependencies/{{ view.dependency.id }}/action">
+    {{ csrf_field() }}
     <input type="hidden" name="slug" value="{{ project.slug }}">
     {% if return_to %}
       <input type="hidden" name="redirect_to" value="{{ return_to }}">
@@ -140,6 +142,7 @@
   {% if view.dependency.next_action %}
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/complete">
+    {{ csrf_field() }}
       <input type="hidden" name="slug" value="{{ project.slug }}">
       {% if return_to %}
         <input type="hidden" name="redirect_to" value="{{ return_to }}">
@@ -154,6 +157,7 @@
     </form>
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/cancel">
+    {{ csrf_field() }}
       <input type="hidden" name="slug" value="{{ project.slug }}">
       {% if return_to %}
         <input type="hidden" name="redirect_to" value="{{ return_to }}">
@@ -226,6 +230,7 @@
           {% for value in disputes[f.name].values %}
             <form method="post"
                   action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">
+    {{ csrf_field() }}
               <input type="hidden" name="field_name" value="{{ f.name }}">
               <input type="hidden" name="saw_claim_id"
                      value="{{ disputes[f.name].newest_claim_id }}">
@@ -235,6 +240,7 @@
           {% endfor %}
           <form method="post"
                 action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/settle">
+    {{ csrf_field() }}
             <input type="hidden" name="field_name" value="{{ f.name }}">
             <input type="hidden" name="saw_claim_id"
                    value="{{ disputes[f.name].newest_claim_id }}">
@@ -258,6 +264,7 @@
     {% for reason in dismiss_reasons %}
       <form method="post"
             action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/dismiss">
+    {{ csrf_field() }}
         <input type="hidden" name="reason" value="{{ reason }}">
         <button>Remove incorrect entry: {{ reason }}</button>
       </form>
@@ -266,6 +273,7 @@
 
   <h2>{{ label('statement_history') }}</h2>
   <form method="post" action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/verbal">
+    {{ csrf_field() }}
     <p class="muted" style="font-size:.85rem">
       Record what the organization told you by phone or in conversation. It is appended under your identity,
       never cited as a document.
@@ -317,6 +325,7 @@
           <td>
             <form class="inline" method="post"
                   action="/dependencies/{{ view.dependency.id }}/evidence/{{ link.id }}/satisfies">
+    {{ csrf_field() }}
               <input type="hidden" name="slug" value="{{ project.slug }}">
               <button {% if not link.verified %}disabled
                 title="The cited passage must be found in the source before these documents can be marked sufficient."{% endif %}>
