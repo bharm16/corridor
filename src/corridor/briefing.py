@@ -40,6 +40,7 @@ from corridor.dependency_events import (
     current_statement_evidence_memberships,
     published_dependency_statements,
 )
+from corridor.check_configuration import effective_thresholds
 from corridor.exceptions import (
     Evaluation,
     Thresholds,
@@ -164,6 +165,7 @@ def brief(
             session,
             dependency_id,
             today=today,
+            thresholds=effective_thresholds(session, dependency.project_id),
             statement_publication=publication,
         ),
         publication=publication,

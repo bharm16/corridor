@@ -720,6 +720,18 @@ def _changes_since_last(
             "so changes to constraint alerts are not compared — a rule appearing may mean the rule "
             "changed rather than the project moving."
         )
+    if diff.configuration_changed:
+        section.note += (
+            " The check thresholds changed between the two reports, so changes to "
+            "constraint alerts are not compared — an alert appearing may mean a "
+            "threshold changed rather than the project moving."
+        )
+    elif diff.configuration_unknown:
+        section.note += (
+            " The earlier report did not record its check thresholds, so whether "
+            "they changed is unknown; changes to constraint alerts are not compared "
+            "rather than assuming the earlier counts used the current thresholds."
+        )
 
     for change in diff.changes:
         # A change cites the record it describes. Where that record has

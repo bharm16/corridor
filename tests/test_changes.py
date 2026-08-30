@@ -1,9 +1,10 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import select
 
 from corridor.changes import diff_since_last, record_run, snapshot
+from corridor.check_configuration import effective_thresholds, save_configuration
 from corridor.db import Session, engine
 from corridor.external_statements import (
     CitedStatementEvidence,
@@ -511,3 +512,147 @@ def test_the_diff_reads_the_most_recent_run(session, project, document):
     # Diffed against the July snapshot, not the June one.
     [change] = _diff(session, project).of_kind("committed_date_change")
     assert "2026-07-01" in change.detail
+
+
+# ------------------------------------------- the configuration guard (#339)
+
+
+def _declare(session, project, **thresholds):
+    """Declare a full per-project check configuration."""
+    proposed = {"stale_days": 14, "due_soon_days": 30, "action_due_soon_days": 7}
+    proposed.update(thresholds)
+    return save_configuration(
+        session, project.id, proposed, principal=TEST_PRINCIPAL
+    )
+
+
+def _effective_evaluation(session, project):
+    """The reading a report publishes: under the project's declared thresholds.
+
+    The real path resolves the effective configuration and hands the bound
+    Evaluation to the snapshot writers; these mirror that so a snapshot records
+    the thresholds a report was actually published against.
+    """
+    return evaluate_project(
+        session, project.id, thresholds=effective_thresholds(session, project.id)
+    )
+
+
+def _record_eff(session, project):
+    return record_run(
+        session, project.id, evaluation=_effective_evaluation(session, project)
+    )
+
+
+def _diff_eff(session, project):
+    return diff_since_last(
+        session, project.id, evaluation=_effective_evaluation(session, project)
+    )
+
+
+def test_a_snapshot_records_its_thresholds(session, project, document):
+    dep = make_dep(session, project, "DEP-1")
+    add_evidence(session, dep, document)
+    snap = _snapshot(session, project)
+    assert snap["thresholds"] == {
+        "stale_days": 14,
+        "due_soon_days": 30,
+        "action_due_soon_days": 7,
+    }
+
+
+def test_a_threshold_configuration_change_is_flagged(session, project, document):
+    """A count that moved must be attributable to a setting or to data."""
+    dep = make_dep(
+        session, project, "DUE-1", need_date=date.today() + timedelta(days=20)
+    )
+    add_evidence(session, dep, document)
+    _declare(session, project, due_soon_days=10)  # DUE_SOON silent at 10d
+    _record_eff(session, project)
+
+    _declare(session, project, due_soon_days=30)  # loosened; DUE_SOON now fires
+    diff = _diff_eff(session, project)
+    assert diff.configuration_changed is True
+    assert diff.configuration_unknown is False
+    assert diff.calculation_inputs_changed is True
+
+
+def test_configuration_driven_alert_churn_is_not_project_movement(
+    session, project, document
+):
+    """DUE_SOON appearing only because the horizon widened is not deterioration."""
+    dep = make_dep(
+        session, project, "DUE-1", need_date=date.today() + timedelta(days=20)
+    )
+    add_evidence(session, dep, document)
+    _declare(session, project, due_soon_days=10)
+    _record_eff(session, project)
+    # Confirm the baseline really had no DUE_SOON.
+    assert "DUE_SOON" not in latest_run(session, project).snapshot_json[
+        "dependencies"
+    ]["DUE-1"]["exceptions"]
+
+    _declare(session, project, due_soon_days=30)
+    diff = _diff_eff(session, project)
+    assert not any("DUE_SOON" in c.detail for c in diff.changes)
+
+
+def test_real_movement_still_reports_across_a_configuration_change(
+    session, project, document
+):
+    """A Committed Date Change is a project fact regardless of the thresholds."""
+    dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 6, 3))
+    add_evidence(session, dep, document)
+    _declare(session, project, due_soon_days=10)
+    _record_eff(session, project)
+
+    _declare(session, project, due_soon_days=30)  # a configuration change …
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 7, 1),
+        committed_date=date(2026, 9, 9),
+    )
+    # … does not hide the real Committed Date Change.
+    diff = _diff_eff(session, project)
+    assert diff.configuration_changed is True
+    assert diff.of_kind("committed_date_change")
+
+
+def test_a_snapshot_without_recorded_thresholds_is_unknown_not_default(
+    session, project, document
+):
+    """A pre-#339 snapshot lacks the key; that is unknown, never the defaults."""
+    dep = make_dep(session, project, "DEP-1")
+    add_evidence(session, dep, document)
+    run = _record(session, project)
+
+    snap = dict(run.snapshot_json)
+    snap.pop("thresholds", None)
+    run.snapshot_json = snap
+    dep.internal_owner = None  # would normally add MISSING_OWNER
+    session.flush()
+
+    diff = _diff(session, project)
+    assert diff.configuration_unknown is True
+    assert diff.previous_thresholds is None
+    # Not backfilled from current defaults, and churn is not project movement.
+    assert not any("MISSING_OWNER" in c.detail for c in diff.changes)
+
+
+def test_no_configuration_boundary_when_thresholds_are_unchanged(
+    session, project, document
+):
+    """The ordinary case: same thresholds across two reports is no boundary."""
+    dep = make_dep(session, project, "DEP-1")
+    add_evidence(session, dep, document)
+    _record(session, project)
+
+    dep.internal_owner = None
+    session.flush()
+    diff = _diff(session, project)
+    assert diff.configuration_changed is False
+    assert diff.configuration_unknown is False
+    # A genuine new exception within one configuration still reports.
+    assert any("MISSING_OWNER" in c.detail for c in diff.changes)

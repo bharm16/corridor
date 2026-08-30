@@ -5,11 +5,18 @@ section is only trustworthy if it can distinguish two things that look
 identical in the numbers:
 
 - the **project** changed — a Committed Date moved, a record became Ready
-- the **rules** changed — STALE tightened from 14 days to 10
+- the **rules** changed — the ruleset version, or a per-project threshold,
+  tightened STALE from 14 days to 10
 
 Those call for opposite responses, so every snapshot records the ruleset
-version that produced it, and a diff across a ruleset boundary says so
-rather than reporting rule-driven movement as project movement.
+version *and* the effective thresholds that produced it, and a diff across a
+ruleset or configuration boundary says so rather than reporting rule-driven
+alert churn as project movement.  A boundary suppresses only the threshold-
+sensitive exception churn; real source-backed changes — a new record, a
+Committed Date Change, a record becoming Ready, a strategy escalation — stay
+reported across it.  A historical snapshot that never recorded its thresholds
+is treated as an unknown boundary rather than being backfilled from the
+current default (ADR-0044).
 """
 
 from __future__ import annotations
@@ -49,14 +56,44 @@ class Diff:
     previous_ts: datetime | None
     ruleset_changed: bool = False
     previous_ruleset: str | None = None
+    # A threshold configuration change within one ruleset moves alert counts
+    # exactly the way a ruleset change does; `configuration_unknown` is the
+    # honest case where the baseline never recorded its thresholds, so a
+    # comparison cannot rule a change in or out.
+    configuration_changed: bool = False
+    configuration_unknown: bool = False
+    previous_thresholds: dict | None = None
     changes: list[Change] = field(default_factory=list)
 
     @property
     def is_first_report(self) -> bool:
         return self.previous_run_id is None
 
+    @property
+    def calculation_inputs_changed(self) -> bool:
+        """Whether the ruleset or thresholds differ across the baseline.
+
+        The one predicate the exception-churn gate reads: across any such
+        boundary a rule appearing may only mean the calculation changed, so it
+        is not reported as project movement.
+        """
+        return (
+            self.ruleset_changed
+            or self.configuration_changed
+            or self.configuration_unknown
+        )
+
     def of_kind(self, kind: str) -> list[Change]:
         return [c for c in self.changes if c.kind == kind]
+
+
+def _thresholds_snapshot(thresholds) -> dict:
+    """The three configured day-counts, in the shape the snapshot stores."""
+    return {
+        "stale_days": thresholds.stale_days,
+        "due_soon_days": thresholds.due_soon_days,
+        "action_due_soon_days": thresholds.action_due_soon_days,
+    }
 
 
 def snapshot(
@@ -98,6 +135,10 @@ def snapshot(
     party_statements = () if publication is None else publication.party_statements
     return {
         "ruleset_version": evaluation.ruleset_version,
+        # The exact thresholds this reading used, so the next report can tell a
+        # settings change apart from project movement. An older snapshot has no
+        # such key; that absence is read as unknown, never as the defaults.
+        "thresholds": _thresholds_snapshot(evaluation.thresholds),
         "dependencies": {
             row.dependency.ref_code: {
                 "id": row.dependency.id,
@@ -185,12 +226,23 @@ def diff_since_last(
     before = (previous.snapshot_json or {}).get("dependencies", {})
     after = current["dependencies"]
     previous_ruleset = previous.ruleset_version
+    # A snapshot written before thresholds were recorded has no such key. That
+    # is unknown, not "the current defaults": backfilling it would claim an old
+    # report was computed under a configuration it never saw (ADR-0044).
+    previous_thresholds = (previous.snapshot_json or {}).get("thresholds")
+    current_thresholds = current["thresholds"]
 
     diff = Diff(
         previous_run_id=previous.id,
         previous_ts=previous.ts,
         ruleset_changed=previous_ruleset != RULESET_VERSION,
         previous_ruleset=previous_ruleset,
+        configuration_unknown=previous_thresholds is None,
+        configuration_changed=(
+            previous_thresholds is not None
+            and previous_thresholds != current_thresholds
+        ),
+        previous_thresholds=previous_thresholds,
     )
 
     for ref, now in after.items():
@@ -260,9 +312,11 @@ def diff_since_last(
                 )
             )
 
-        # Exception churn is only meaningful within one ruleset. Across a
-        # version change, a rule appearing may just mean the rule changed.
-        if not diff.ruleset_changed:
+        # Exception churn is only meaningful within one set of calculation
+        # inputs. Across a ruleset or threshold-configuration boundary — or one
+        # whose thresholds the baseline never recorded — a rule appearing may
+        # just mean the calculation changed, so it is not project movement.
+        if not diff.calculation_inputs_changed:
             appeared = set(now["exceptions"]) - set(was["exceptions"])
             for rule in sorted(appeared):
                 diff.changes.append(

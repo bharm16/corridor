@@ -1,0 +1,207 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Check configuration — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; --accent:#06c; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:56rem; margin:2rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h2 { font-size:1.05rem; margin:2rem 0 .5rem; }
+  .muted { color:var(--muted); }
+  .reading { border:1px solid var(--line); border-radius:7px; padding:.85rem 1rem;
+             margin:1rem 0; }
+  .reading dl { display:grid; grid-template-columns:14rem 1fr; gap:.2rem .8rem; margin:0; }
+  .reading dt { color:var(--muted); }
+  .reading dd { margin:0; overflow-wrap:anywhere; }
+  .badge { display:inline-block; font-size:.72rem; padding:.1rem .45rem; border-radius:3px;
+           border:1px solid var(--line); color:var(--muted); vertical-align:middle; }
+  .badge.declared { color:var(--accent); border-color:#bcd8ff; background:#f2f8ff; }
+  .badge.default { color:var(--muted); }
+  .badge.effective { color:var(--ok); border-color:#b7e4c7; background:#f0fbf4; }
+  table { border-collapse:collapse; width:100%; margin:.4rem 0 1rem; }
+  th,td { text-align:left; padding:.4rem .55rem; border-bottom:1px solid #f2f2f2;
+          vertical-align:top; }
+  th { font-size:.82rem; color:var(--muted); border-bottom:1px solid var(--line); }
+  td.num { font-variant-numeric:tabular-nums; }
+  form.checks { border:1px solid var(--line); border-radius:7px; padding:1rem 1.1rem; margin:1rem 0; }
+  form.checks label { display:block; margin:.6rem 0 .15rem; font-weight:600; }
+  form.checks .hint { font-weight:400; color:var(--muted); font-size:.85rem; }
+  form.checks input[type=number] { width:9rem; padding:.35rem .5rem; font:inherit; }
+  .buttons { display:flex; gap:.7rem; margin-top:1rem; flex-wrap:wrap; }
+  button { font:inherit; padding:.45rem .9rem; border-radius:4px; cursor:pointer; }
+  button.primary { color:#fff; background:#111; border:1px solid #111; }
+  button.secondary { color:#111; background:#fff; border:1px solid var(--line); }
+  .error { background:#fef3f2; border:1px solid #fecdca; color:#b42318;
+           padding:.6rem .8rem; border-radius:5px; margin:1rem 0; }
+  .saved { background:#f0fbf4; border:1px solid #b7e4c7; color:var(--ok);
+           padding:.6rem .8rem; border-radius:5px; margin:1rem 0; }
+  .note { background:#fffaeb; border:1px solid #fedf89; color:var(--warn);
+          padding:.55rem .8rem; border-radius:5px; margin:1rem 0; }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span>
+    <a href="/work/{{ project.slug }}">Coordination work</a> ·
+    <a href="/internal-report/{{ project.slug }}">Internal working report</a> ·
+    <a href="/ledger/{{ project.slug }}">Search all constraints</a>
+  </span>
+</header>
+
+<main>
+  <h1>Check configuration</h1>
+  <p class="muted">
+    These are the existing check thresholds this project's Evaluation uses. Changing
+    one re-parameterizes the same rules for the next reading; it adds no new rule,
+    urgency, schedule, or model behavior, and it never rewrites a past Evaluation or a
+    released report.
+  </p>
+
+  {% if saved_id %}
+    <p class="saved" role="status">Saved configuration #{{ saved_id }}. It is now the effective declaration for this project's next reading.</p>
+  {% endif %}
+
+  <section class="reading">
+    <dl>
+      <dt>Effective configuration</dt>
+      <dd>
+        {% if effective.is_declared %}
+          Declaration #{{ effective.configuration_id }}
+          <span class="badge declared">effective declaration</span><br>
+          declared by <b>{{ effective.declared_by }}</b>
+          on {{ effective.declared_at.strftime('%Y-%m-%d %H:%M UTC') }}
+        {% else %}
+          No declaration
+          <span class="badge default">supported defaults</span><br>
+          this project runs on the supported default thresholds, unchanged.
+        {% endif %}
+      </dd>
+      <dt>Ruleset</dt>
+      <dd>{{ ruleset_version }}</dd>
+      <dt>Project scope</dt>
+      <dd>Applies to this project only.</dd>
+    </dl>
+  </section>
+
+  <h2>Supported thresholds</h2>
+  <table>
+    <thead>
+      <tr><th>Threshold</th><th>Effective value</th><th>Supported default</th><th>Range</th><th>Checks it parameterizes</th></tr>
+    </thead>
+    <tbody>
+      {% for row in supported %}
+        <tr>
+          <td>{{ row.label }} <span class="muted">({{ row.unit }})</span></td>
+          <td class="num">
+            {{ row.effective_value }} {{ row.unit }}
+            {% if effective.is_declared %}
+              <span class="badge declared">declared</span>
+            {% else %}
+              <span class="badge default">default</span>
+            {% endif %}
+          </td>
+          <td class="num">{{ row.default }} {{ row.unit }}</td>
+          <td class="num">{{ row.minimum }}–{{ row.maximum }} {{ row.unit }}</td>
+          <td>{{ row.rules | join(', ') }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="note" role="note">
+    Evaluations, snapshots, and released reports produced before a declaration keep the
+    inputs they recorded. Where an older reading did not record its thresholds, that
+    identity stays unknown — it is not backfilled from the values above.
+  </p>
+
+  {% if error %}
+    <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  {% if preview %}
+    <section class="reading">
+      <h2 style="margin-top:0">Preview — proposed configuration</h2>
+      <p class="muted">
+        This reading is computed under the proposed thresholds only. Nothing is saved:
+        no declaration is activated, no report run is retained, and the comparison
+        baseline does not move.
+      </p>
+      <dl>
+        <dt>Reading</dt>
+        <dd>{{ project.name }} · evaluated {{ preview.evaluated_on }} · ruleset {{ preview.ruleset_version }}</dd>
+        <dt>Proposed thresholds</dt>
+        <dd>
+          No document in {{ preview.proposed.stale_days }}d ·
+          Need Date within {{ preview.proposed.due_soon_days }}d ·
+          Next Action within {{ preview.proposed.action_due_soon_days }}d
+        </dd>
+        <dt>Effective now</dt>
+        <dd>
+          No document in {{ preview.effective.stale_days }}d ·
+          Need Date within {{ preview.effective.due_soon_days }}d ·
+          Next Action within {{ preview.effective.action_due_soon_days }}d
+        </dd>
+        <dt>Constraints with alerts</dt>
+        <dd>{{ preview.affected_constraint_count }}</dd>
+      </dl>
+      <table>
+        <thead><tr><th>Alert (under proposed)</th><th>Constraints</th></tr></thead>
+        <tbody>
+          {% for facet in preview.facets %}
+            <tr><td>{{ facet.name }}</td><td class="num">{{ facet.count }}</td></tr>
+          {% else %}
+            <tr><td colspan="2" class="muted">No constraint alerts under the proposed thresholds.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
+  <h2>Propose a change</h2>
+  <form class="checks" method="post" action="/operations/{{ project.slug }}/checks">
+    {{ csrf_field() }}
+    {% for row in supported %}
+      <label for="f-{{ row.key }}">
+        {{ row.label }} <span class="hint">({{ row.unit }}; {{ row.minimum }}–{{ row.maximum }})</span>
+      </label>
+      <input id="f-{{ row.key }}" name="{{ row.key }}" type="number"
+             min="{{ row.minimum }}" max="{{ row.maximum }}" step="1"
+             value="{{ row.form_value }}" inputmode="numeric">
+    {% endfor %}
+    <div class="buttons">
+      <button class="secondary" type="submit" formaction="/operations/{{ project.slug }}/checks/preview">Preview without saving</button>
+      <button class="primary" type="submit">Save as new configuration</button>
+    </div>
+    <p class="muted" style="margin-bottom:0">
+      Saving records a new retained configuration attributed to the signed-in operations
+      identity. The earlier configuration and the reports published under it stay available.
+    </p>
+  </form>
+
+  <h2>Configuration history</h2>
+  {% if history %}
+    <table>
+      <thead>
+        <tr><th>#</th><th>No document in</th><th>Need Date within</th><th>Next Action within</th><th>Ruleset</th><th>Declared by</th><th>When</th></tr>
+      </thead>
+      <tbody>
+        {% for row in history %}
+          <tr>
+            <td class="num">{{ row.id }}{% if row.is_effective %} <span class="badge effective">effective</span>{% endif %}</td>
+            <td class="num">{{ row.stale_days }}d</td>
+            <td class="num">{{ row.due_soon_days }}d</td>
+            <td class="num">{{ row.action_due_soon_days }}d</td>
+            <td>{{ row.ruleset_version }}</td>
+            <td>{{ row.declared_by }}</td>
+            <td>{{ row.declared_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No configuration has been declared for this project. It runs on the supported defaults.</p>
+  {% endif %}
+</main>

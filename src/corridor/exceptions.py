@@ -291,8 +291,11 @@ class Evaluation:
     ruleset version travel with the facts instead.
 
     `thresholds` reaches a caller here for the first time: it is the
-    configuration ADR-0010 kept when it abolished the weights, and until
-    now only a test could vary it.
+    configuration ADR-0010 kept when it abolished the weights. The engine
+    stays foundational and applies the supported defaults when a caller
+    states none; a reader that wants a project's declared configuration
+    resolves it (`check_configuration.effective_thresholds`) and passes it
+    in, so a configured value cannot be one the reader ignores.
     """
 
     project_id: int

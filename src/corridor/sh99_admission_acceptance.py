@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from corridor import audit
+from corridor.check_configuration import effective_thresholds
 from corridor.exceptions import evaluate
 from corridor.m8_acceptance_bundle import VerificationResult, publish_verified_bundle, verify_bundle
 from corridor.m8_acceptance_database import (
@@ -866,7 +867,11 @@ def _project_state(session: Session, project_slug: str) -> dict[str, Any]:
     )
     overdue_dependency_ids = sorted(
         exception.dependency_id
-        for exception in evaluate(session, project.id)
+        for exception in evaluate(
+            session,
+            project.id,
+            thresholds=effective_thresholds(session, project.id),
+        )
         if exception.rule == "OVERDUE"
     )
     return {

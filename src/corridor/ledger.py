@@ -17,6 +17,7 @@ from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.check_configuration import effective_thresholds
 from corridor.dependency_events import (
     CurrentDependencyStatement,
     PublishedDependencyStatement,
@@ -354,7 +355,13 @@ def load_dependency(
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise LookupError(f"no dependency {dependency_id}")
-    evaluation = evaluation or evaluate_dependency(session, dependency_id)
+    # The record page reads under the project's effective declared thresholds,
+    # so it agrees with the list and report a reader arrived from.
+    evaluation = evaluation or evaluate_dependency(
+        session,
+        dependency_id,
+        thresholds=effective_thresholds(session, dependency.project_id),
+    )
 
     org_name = None
     if dependency.external_org_id:
