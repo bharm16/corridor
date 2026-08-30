@@ -6201,3 +6201,236 @@ class DueActionNotificationAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class DocumentNotification(Base):
+    """One immutable document-related interruption occurrence (#353, ADR-0037).
+
+    This carries the two remaining #196 immediate-notification categories
+    (ADR-0034 decision 39): a previously affirmative Documentation Review whose
+    applicable current support lapsed (``documentation_loss``), and an authentic
+    registered source transition that affects a current Commitment or a
+    relocation/removal/abandonment Constraint (``document_change``).  It shares
+    the delivery adapter seam and the single supervised runtime with the
+    new-assignment occurrence (#351) but never reuses its assignment-shaped row:
+    a loss preserves the earlier review *and its author*, and one of its
+    recipients (the original reviewer) may hold no current roster entry.
+
+    The occurrence is bound to exact identities — the affirmative review, the
+    reviewed supporting citation, and the proven source transition — so a
+    persistent condition or a repeated processing pass converges on one row and
+    never resends the same event.  Registration is a derived system act: Corridor
+    stops showing the requirement as met and records visible high-priority work
+    (ADR-0037); the earlier human judgment is preserved, never reversed here.
+    """
+
+    __tablename__ = "document_notifications"
+    __table_args__ = (
+        UniqueConstraint("occurrence_key", name="uq_document_notification_key"),
+        CheckConstraint(
+            "category in ('documentation_loss', 'document_change')",
+            name="ck_document_notification_category",
+        ),
+        CheckConstraint(
+            "subject_kind in ('constraint', 'statement')",
+            name="ck_document_notification_subject_kind",
+        ),
+        CheckConstraint(
+            "(subject_kind = 'constraint' and dependency_id is not null "
+            "and commitment_lineage_id is null) or "
+            "(subject_kind = 'statement' and commitment_lineage_id is not null "
+            "and dependency_id is null)",
+            name="ck_document_notification_subject_shape",
+        ),
+        CheckConstraint(
+            "recipient_role in "
+            "('current_assignee', 'original_reviewer', "
+            "'current_assignee_and_original_reviewer')",
+            name="ck_document_notification_recipient_role",
+        ),
+        # A loss names the affirmative review it preserves; a change names an
+        # authentic registered source transition (a proven revision comparison
+        # or a superseding statement event).  Neither is inferred from a
+        # filename, a date, or an unproven replacement.
+        CheckConstraint(
+            "(category = 'documentation_loss' and review_confirmation_id is not null) "
+            "or (category = 'document_change' and "
+            "(comparison_id is not null or statement_event_id is not null))",
+            name="ck_document_notification_authentic_source",
+        ),
+        CheckConstraint(
+            "occurrence_key ~ '^[0-9a-f]{64}$'",
+            name="ck_document_notification_key_hex",
+        ),
+        CheckConstraint(
+            "length(trim(registered_by)) > 0",
+            name="ck_document_notification_actor",
+        ),
+        CheckConstraint(
+            "length(trim(recipient_principal_subject)) > 0",
+            name="ck_document_notification_recipient",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    subject_kind: Mapped[str] = mapped_column(String(16))
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    commitment_lineage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("commitment_lineages.id")
+    )
+    recipient_principal_subject: Mapped[str] = mapped_column(String(128))
+    recipient_role: Mapped[str] = mapped_column(String(48))
+    # Category A (documentation_loss): the earlier affirmative Documentation
+    # Review, its stated requirement, and the exact reviewed supporting citation.
+    review_confirmation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documentation_field_confirmations.id")
+    )
+    requirement_field: Mapped[str | None] = mapped_column(String(64))
+    reviewed_evidence_link_id: Mapped[int | None] = mapped_column(BigInteger)
+    original_reviewer_subject: Mapped[str | None] = mapped_column(String(128))
+    # The proven source transition (both categories where one applies): the
+    # superseded and superseding documents, the immutable Revision Comparison
+    # and finding, or the superseding statement event.
+    predecessor_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id")
+    )
+    successor_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id")
+    )
+    comparison_id: Mapped[int | None] = mapped_column(BigInteger)
+    finding_id: Mapped[int | None] = mapped_column(BigInteger)
+    statement_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_events.id")
+    )
+    # A stable code for the current supported reason a review lost support, or
+    # the change class a document transition produced; plain project language is
+    # rendered from it, never shown as a raw code.
+    reason_code: Mapped[str] = mapped_column(String(64))
+    # An ambiguous or otherwise uncertain correspondence is retained honestly:
+    # the message preserves the uncertainty and never presents it as proved.
+    change_uncertain: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    # Exact source context the message links (requirement label, reviewed
+    # citation, before/after, document names, page references).  Display only;
+    # it never becomes a project decision and never leaves the project.
+    source_context_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    occurrence_key: Mapped[str] = mapped_column(String(64))
+    registered_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DocumentNotificationDispatch(Base):
+    """Mutable delivery standing for one document-notification occurrence (#353).
+
+    The occurrence is immutable; this row carries the queued / completed /
+    retry-due / failed / uncertain state, the resolved verified contact (or a
+    visible delivery limitation when the recipient has no current membership or
+    typed contact, or the underlying condition resolved before dispatch),
+    retained provider result and idempotency evidence, and bounded retry state.
+    Its identity is immutable; only the delivery standing changes.
+    """
+
+    __tablename__ = "document_notification_dispatches"
+    __table_args__ = (
+        UniqueConstraint(
+            "notification_id", name="uq_document_dispatch_notification"
+        ),
+        CheckConstraint("channel = 'email'", name="ck_document_dispatch_channel"),
+        CheckConstraint(
+            "delivery_state in "
+            "('queued', 'completed', 'retry_due', 'failed', 'uncertain')",
+            name="ck_document_dispatch_state",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0", name="ck_document_dispatch_attempt_count"
+        ),
+        CheckConstraint(
+            "(delivery_state = 'retry_due' and next_attempt_at is not null) or "
+            "(delivery_state <> 'retry_due' and next_attempt_at is null)",
+            name="ck_document_dispatch_retry_shape",
+        ),
+        CheckConstraint(
+            "idempotency_key ~ '^[0-9a-f]{64}$'",
+            name="ck_document_dispatch_idempotency_hex",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    notification_id: Mapped[int] = mapped_column(
+        ForeignKey("document_notifications.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(16))
+    delivery_state: Mapped[str] = mapped_column(String(16))
+    recipient_contact: Mapped[str | None] = mapped_column(Text)
+    delivery_limitation: Mapped[str | None] = mapped_column(String(64))
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    provider_message_id: Mapped[str | None] = mapped_column(String(200))
+    provider_result_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DocumentNotificationAttempt(Base):
+    """Append-only record of one document-notification delivery attempt (#353).
+
+    Every sweep of a dispatch appends one row: what was attempted, the retained
+    provider result and idempotency evidence, and the explicit outcome —
+    including an ``uncertain`` outcome when an acknowledgment is unavailable and
+    a ``skipped`` outcome when a re-checked membership, contact, or underlying
+    condition made the interruption no longer current.  Nothing here is mutated.
+    """
+
+    __tablename__ = "document_notification_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "dispatch_id", "attempt_number", name="uq_document_attempt_number"
+        ),
+        CheckConstraint(
+            "outcome in "
+            "('completed', 'retry_due', 'failed', 'uncertain', 'skipped')",
+            name="ck_document_attempt_outcome",
+        ),
+        CheckConstraint(
+            "attempt_number > 0", name="ck_document_attempt_positive"
+        ),
+        CheckConstraint(
+            "length(trim(runtime_owner)) > 0",
+            name="ck_document_attempt_owner",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    dispatch_id: Mapped[int] = mapped_column(
+        ForeignKey("document_notification_dispatches.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(24))
+    recipient_contact: Mapped[str | None] = mapped_column(Text)
+    delivery_limitation: Mapped[str | None] = mapped_column(String(64))
+    provider_message_id: Mapped[str | None] = mapped_column(String(200))
+    provider_result_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    runtime_owner: Mapped[str] = mapped_column(String(128))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
