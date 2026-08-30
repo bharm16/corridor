@@ -203,6 +203,9 @@ def test_confirm_refuses_a_cross_project_binding(client, session, project, store
     other = Project(slug=f"other-{uuid4().hex[:8]}", name="Other", is_synthetic=True)
     session.add(other)
     session.flush()
+    # A member of `other` still cannot confirm a source previewed for `project`
+    # into it: the binding mismatch is refused after the access gate passes.
+    seed_membership(session, other, TEST_PRINCIPAL)
 
     body = _matrix_pdf()
     client.post(
