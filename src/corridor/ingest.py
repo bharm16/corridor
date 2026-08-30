@@ -182,6 +182,65 @@ def ingest_document(
     return document
 
 
+def reparse_document(
+    session: Session,
+    *,
+    document: Document,
+    path: Path | str,
+    images_dir: Path | str,
+) -> bool:
+    """Re-run parsing for one document whose earlier parse failed (#350).
+
+    Ordinary re-ingest returns the existing document untouched when the bytes are
+    identical, which is correct for provenance but leaves a document that failed to
+    parse permanently unread even after the reader is fixed. This is the explicit,
+    bounded recovery for exactly that case. It re-extracts from the original file —
+    which is never modified — and, only on success, writes the freshly parsed pages
+    and flips the status. It refuses to touch a document that already parsed, so a
+    successfully parsed history is never rewritten as a retry; the caller is
+    responsible for the attributable receipt and for excluding held inputs.
+
+    Returns ``True`` when the document is now parsed, ``False`` when it failed
+    again. Either way the prior state is preserved rather than corrupted: a second
+    failure leaves the status ``failed`` and no partial pages.
+    """
+
+    if document.parse_status == "parsed":
+        raise ValueError("a successfully parsed document is never re-parsed as a retry")
+    path = Path(path)
+    try:
+        pages = _extract(path, Path(images_dir) / document.sha256)
+    except Exception:
+        document.parse_status = "failed"
+        document.pages = 0
+        session.flush()
+        return False
+
+    # A failed parse left no pages; guard the invariant rather than assume it, so a
+    # partial earlier attempt could never leave duplicated page numbers behind.
+    existing = session.scalars(
+        select(DocPage).where(DocPage.document_id == document.id)
+    ).all()
+    for page in existing:
+        session.delete(page)
+    session.flush()
+
+    for page_no, text, image_path, text_source in pages:
+        session.add(
+            DocPage(
+                document_id=document.id,
+                page_no=page_no,
+                text=text,
+                image_path=str(image_path) if image_path else None,
+                text_source=text_source,
+            )
+        )
+    document.pages = len(pages)
+    document.parse_status = "parsed"
+    session.flush()
+    return True
+
+
 def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path | None, str]]:
     if path.suffix.lower() in SPREADSHEET_SUFFIXES:
         return _extract_sheets(path)
