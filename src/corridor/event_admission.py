@@ -297,6 +297,32 @@ class UnknownScopeWriteIntegrity(RuntimeError):
     """An eligible row could not produce its exact protected write set."""
 
 
+def unknown_scope_candidate_preparer(
+    session: Session, project: Project
+):
+    """Return the public read-and-validate seam for sibling scope rules.
+
+    The unknown-scope policy owns statement facts, duplicate history, and its
+    validation boundary.  A newer deterministic scope rule may reuse that
+    expensive preparation, but receives only a callable verdict seam rather
+    than this module's private registries or evaluators.  The closure shares
+    one pre-write registry across its batch, preserving the normal policy's
+    duplicate discipline without creating an import cycle.
+    """
+    registry = _commitment_registry(session, project.id)
+
+    def prepare(candidate: Candidate) -> str | UnknownScopeAdmission | UnknownScopeDuplicate:
+        return _evaluate_unknown_scope(
+            session,
+            project,
+            candidate,
+            input_receipt={},
+            commitment_registry=registry,
+        )
+
+    return prepare
+
+
 def _validated_write_candidate_ids(
     session: Session,
     *,
@@ -354,6 +380,27 @@ def run_event_admission(
         project_id=project_id,
         write_candidate_ids=write_candidate_ids,
     )
+    # ADR-0054's newer exact scope tier is intentionally ahead of the
+    # unknown-scope extension: once it has a passing ADR-0050 replay it claims
+    # only its sole-survivor cases, and the existing policies retain every
+    # remaining Candidate.  The matcher itself is inert on zero history or a
+    # contradiction, so this ordinary entry point cannot silently enable it.
+    if policy_version is None and write_scope is None:
+        from corridor.statement_scope_matching import run_identifying_language_admission
+
+        scoped = run_identifying_language_admission(
+            session,
+            project,
+            prepare_candidate=unknown_scope_candidate_preparer(session, project),
+        )
+        if scoped.admitted_count:
+            remainder = run_event_admission(session, project_id)
+            return EventAdmissionResult(
+                run_id=remainder.run_id,
+                admitted_count=scoped.admitted_count + remainder.admitted_count,
+                abstained_count=remainder.abstained_count,
+                abstentions=remainder.abstentions,
+            )
     selected_version = policy_version or normal_event_admission_policy_version(
         session, project_id
     )
