@@ -222,6 +222,15 @@ def _declare_fingerprint(body):
     return match.group(1)
 
 
+def _receipt_count(session, project) -> int:
+    """Receipts scoped to one project: the shared worker database holds others."""
+    return session.scalar(
+        select(func.count(ProductionRunExplanationRequest.id)).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    )
+
+
 def _request_explanation(client, project, document, adapter_box):
     """Drive the ordinary GET-then-explain flow, returning the stored receipt."""
     body = client.get(f"/operations/{project.slug}").text
@@ -261,7 +270,11 @@ def test_explanation_reads_immutable_snapshots_and_marks_unsealed_unknown(
     response = _request_explanation(client, project, document, adapter_box)
     assert response.status_code == 303
 
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "completed"
     assert receipt.non_authoritative is True
     assert sorted(receipt.competing_run_ids_json) == sorted([sealed.id, unsealed.id])
@@ -318,7 +331,7 @@ def test_repeated_request_reuses_receipt_and_spends_once(
     second = _request_explanation(client, project, document, adapter_box)
 
     assert first.headers["location"] == second.headers["location"]
-    assert session.scalar(select(func.count(ProductionRunExplanationRequest.id))) == 1
+    assert _receipt_count(session, project) == 1
     assert len(adapter_box["adapter"].calls) == 1
 
 
@@ -334,7 +347,7 @@ def test_missing_configuration_refuses_before_any_model_call(
 
     assert response.status_code == 409
     assert adapter_box["adapter"].calls == []
-    assert session.scalar(select(func.count(ProductionRunExplanationRequest.id))) == 0
+    assert _receipt_count(session, project) == 0
 
 
 def test_configuration_route_declares_and_rejects_invalid_bounds(
@@ -359,7 +372,11 @@ def test_over_budget_request_refuses_before_the_model_and_records_a_receipt(
     response = _request_explanation(client, project, document, adapter_box)
 
     assert response.status_code == 303
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "budget_exhausted"
     assert receipt.explanation_json is None
     assert "no model call was made" in receipt.reason
@@ -392,7 +409,11 @@ def test_fabricated_value_is_refused(client, session, project, adapter_box):
     response = _request_explanation(client, project, document, adapter_box)
 
     assert response.status_code == 303
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "validation_refused"
     assert receipt.explanation_json is None
     assert "does not match the frozen run snapshot" in receipt.reason
@@ -407,7 +428,11 @@ def test_structured_authority_field_is_refused(client, session, project, adapter
 
     _request_explanation(client, project, document, adapter_box)
 
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "validation_refused"
     assert "authority-shaped" in receipt.reason
 
@@ -421,7 +446,11 @@ def test_authority_shaped_prose_is_refused(client, session, project, adapter_box
 
     _request_explanation(client, project, document, adapter_box)
 
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "validation_refused"
     assert "recommends a choice" in receipt.reason
 
@@ -440,7 +469,11 @@ def test_unknown_marker_on_a_sealed_field_is_refused(
 
     _request_explanation(client, project, document, adapter_box)
 
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "validation_refused"
     assert "sealed" in receipt.reason
 
@@ -454,7 +487,11 @@ def test_model_text_is_sanitized_before_storage(client, session, project, adapte
 
     _request_explanation(client, project, document, adapter_box)
 
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "completed"
     stored = receipt.explanation_json["differences"][0]["explanation"]
     assert "\x07" not in stored and "\x00" not in stored
@@ -471,7 +508,11 @@ def test_transport_failure_is_a_receipt_not_an_escape(
     response = _request_explanation(client, project, document, adapter_box)
 
     assert response.status_code == 303
-    receipt = session.scalars(select(ProductionRunExplanationRequest)).one()
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.project_id == project.id
+        )
+    ).one()
     assert receipt.status == "transport_failure"
     assert receipt.explanation_json is None
 
@@ -498,7 +539,7 @@ def test_stale_competing_set_refuses_without_a_model_call(
 
     assert response.status_code == 409
     assert adapter_box["adapter"].calls == []
-    assert session.scalar(select(func.count(ProductionRunExplanationRequest.id))) == 0
+    assert _receipt_count(session, project) == 0
 
 
 def test_cross_project_document_is_refused(client, session, project, adapter_box):
@@ -518,7 +559,7 @@ def test_cross_project_document_is_refused(client, session, project, adapter_box
 
     assert response.status_code == 404
     assert adapter_box["adapter"].calls == []
-    assert session.scalar(select(func.count(ProductionRunExplanationRequest.id))) == 0
+    assert _receipt_count(session, project) == 0
 
 
 # --- authoritative state is untouched; controls stay live --------------------
@@ -548,7 +589,14 @@ def test_explanation_declares_nothing_and_leaves_declaration_to_the_operator(
     _request_explanation(client, project, document, adapter_box)
 
     # No declaration, no active run, no candidate change: nothing authoritative moved.
-    assert session.scalar(select(func.count(ActiveRunDeclaration.id))) == 0
+    assert (
+        session.scalar(
+            select(func.count(ActiveRunDeclaration.id)).where(
+                ActiveRunDeclaration.document_id == document.id
+            )
+        )
+        == 0
+    )
     session.refresh(candidate)
     assert candidate.state == candidate_state
 
