@@ -2700,7 +2700,7 @@ class DocumentationFieldConfirmation(Base):
             name="ck_documentation_confirmation_known_field",
         ),
         CheckConstraint(
-            "classification = 'approved'",
+            "classification in ('approved', 'conditional')",
             name="ck_documentation_confirmation_known_classification",
         ),
         CheckConstraint(

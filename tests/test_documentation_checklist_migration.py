@@ -129,6 +129,35 @@ def test_predecessor_upgrade_preserves_legacy_marks_and_guards_new_confirmations
                         )
                     )
 
+            # The ADR-0060 override row is a lawful stored answer; any other
+            # classification or a non-approved conclusion never reaches disk.
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "insert into documentation_field_confirmations "
+                        "(id, dependency_id, evidence_link_id, field_name, "
+                        "classification, conclusion, confirmed_by) values "
+                        "(350, 347, 347, 'approval_interpretation', 'conditional', "
+                        "'approved', 'local:reviewer')"
+                    )
+                )
+            for rejected in (
+                "(351, 347, 347, 'approval_interpretation', 'rejected', "
+                "'approved', 'local:reviewer')",
+                "(352, 347, 347, 'approval_interpretation', 'conditional', "
+                "'conditional', 'local:reviewer')",
+            ):
+                with pytest.raises(Exception):
+                    with engine.begin() as connection:
+                        connection.execute(
+                            text(
+                                "insert into documentation_field_confirmations "
+                                "(id, dependency_id, evidence_link_id, field_name, "
+                                "classification, conclusion, confirmed_by) values "
+                                + rejected
+                            )
+                        )
+
             for statement in (
                 "update documentation_field_confirmations set conclusion = 'approved'",
                 "delete from documentation_field_confirmations",

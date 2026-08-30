@@ -49,7 +49,7 @@ def upgrade() -> None:
             name="ck_documentation_confirmation_known_field",
         ),
         sa.CheckConstraint(
-            "classification = 'approved'",
+            "classification in ('approved', 'conditional')",
             name="ck_documentation_confirmation_known_classification",
         ),
         sa.CheckConstraint(

@@ -236,6 +236,119 @@ def test_unverified_or_conditional_letters_cannot_be_confirmed_as_approval(sessi
     assert read_checklist(session, dependency.id).is_ready is False
 
 
+def test_a_conditional_letter_records_as_conditional_with_no_human_act(
+    session, project
+):
+    """ADR-0060: the fail-closed conditional answer derives itself at read."""
+
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-6",
+        dep_type="utility_relocation",
+        title="Hedged approval",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="hedged",
+        text="The as-built package is on file. "
+        "The relocation is approved pending final inspection of segment B.",
+    )
+    _support(session, dependency, document, "The as-built package is on file.")
+    hedged = _support(
+        session,
+        dependency,
+        document,
+        "The relocation is approved pending final inspection of segment B.",
+    )
+
+    checklist = read_checklist(session, dependency.id)
+
+    field = checklist.field("approval_interpretation")
+    assert checklist.is_ready is False
+    assert field.complete is False
+    assert field.candidate_conclusion == "conditional"
+    assert field.conditional_evidence_link_ids == (hedged.id,)
+    # No stored answer exists: the conditional reading is a read-time
+    # predicate over the quoted sentence, never a written row.
+    assert session.scalars(select(DocumentationFieldConfirmation)).all() == []
+
+
+def test_the_optional_override_records_a_hedged_letter_as_approval(session, project):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-7",
+        dep_type="utility_relocation",
+        title="Immaterial hedge",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="immaterial",
+        text="The as-built package is on file. "
+        "The relocation is approved subject to updating our records.",
+    )
+    _support(session, dependency, document, "The as-built package is on file.")
+    hedged = _support(
+        session,
+        dependency,
+        document,
+        "The relocation is approved subject to updating our records.",
+    )
+
+    confirmation = confirm_interpretation(
+        session,
+        dependency.id,
+        hedged.id,
+        principal=REVIEWER,
+        condition_immaterial=True,
+    )
+
+    assert (confirmation.classification, confirmation.conclusion) == (
+        "conditional",
+        "approved",
+    )
+    after = read_checklist(session, dependency.id)
+    assert after.is_ready is True
+    assert after.field("approval_interpretation").complete is True
+    audit = session.scalars(select(AuditLog).order_by(AuditLog.id.desc())).first()
+    assert audit is not None
+    assert audit.after_json["condition_immaterial"] is True
+    assert audit.after_json["classification"] == "conditional"
+
+
+def test_the_override_refuses_a_letter_without_a_condition(session, project):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-8",
+        dep_type="utility_relocation",
+        title="Clean approval",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session, project, name="clean", text="The relocation is approved."
+    )
+    clean = _support(session, dependency, document, "The relocation is approved.")
+
+    with pytest.raises(DocumentationConfirmationRefusal, match="no\\s+condition"):
+        confirm_interpretation(
+            session,
+            dependency.id,
+            clean.id,
+            principal=REVIEWER,
+            condition_immaterial=True,
+        )
+    assert session.scalars(select(DocumentationFieldConfirmation)).all() == []
+
+
 def test_confirmation_stops_binding_when_its_exact_document_is_superseded(
     session, project
 ):

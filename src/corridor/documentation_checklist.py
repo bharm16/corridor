@@ -5,8 +5,11 @@ That made every record ask a person to repeat a comparison the system could
 already make, while retaining neither a stable requirement nor the source set
 for the answer.  ADR-0052 replaces it with one small agency-neutral standard:
 the resolution method and cost responsibility select fields, machine fields
-are predicates over current cited passages, and the only stored human act is a
-cited confirmation of an approval-letter interpretation.
+are predicates over current cited passages, and the only stored human acts are
+cited confirmations of an approval-letter interpretation: the clean-letter
+confirm and ADR-0060's optional condition-immaterial override.  A hedged
+letter records as conditional by itself at read time — staying not ready
+costs no click.
 
 This module deliberately does not decide whether a document is authentic,
 whether work happened in the field, or whether a contract was accepted.  It
@@ -78,6 +81,11 @@ class ChecklistField:
     candidate_evidence_link_ids: tuple[int, ...] = ()
     candidate_conclusion: str | None = None
     confirmation_ids: tuple[int, ...] = ()
+    # Letters whose own sentence hedges the approval.  ADR-0060: these record
+    # as conditional automatically at read time — no human act — and keep the
+    # field empty until the condition is handled or a person records the
+    # optional condition-immaterial override.
+    conditional_evidence_link_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -177,14 +185,18 @@ def confirm_interpretation(
     evidence_link_id: int,
     *,
     principal: HumanPrincipal,
+    condition_immaterial: bool = False,
 ) -> DocumentationFieldConfirmation:
-    """Append one person's confirmation of a clean, cited approval reading.
+    """Append one person's confirmation of a cited approval reading.
 
     The caller supplies only the exact cited source.  The classification is
     recomputed under the project lock and the route cannot substitute a
     conclusion, so a model output or a crafted form never becomes authority.
-    Conditional letters fail closed; ADR-0060 gives their later tracked
-    condition behavior a separate implementation boundary.
+    A conditional letter records as conditional automatically at read time
+    and needs no click to stay not ready (ADR-0060); the only stored acts are
+    the clean-letter confirm and the optional ``condition_immaterial``
+    override that counts the quoted hedge as immaterial.  Tracking the
+    condition itself is #373's boundary.
     """
 
     principal = require_human_principal(principal)
@@ -205,11 +217,18 @@ def confirm_interpretation(
             raise DocumentationConfirmationRefusal("the cited passage must be verified")
         raise DocumentationConfirmationRefusal("the cited passage is not current support")
     classification = _approval_classification(selected.quote)
-    if classification == "conditional":
+    if classification == "conditional" and not condition_immaterial:
         raise DocumentationConfirmationRefusal(
-            "conditional approval remains not ready until its condition is handled"
+            "a conditional letter already records as conditional and stays "
+            "not ready with no click; only the explicit condition-immaterial "
+            "override records it as approval"
         )
-    if classification != "approved":
+    if classification == "approved" and condition_immaterial:
+        raise DocumentationConfirmationRefusal(
+            "the cited passage states a clean approval; there is no "
+            "condition to override"
+        )
+    if classification not in {"approved", "conditional"}:
         raise DocumentationConfirmationRefusal(
             "the cited passage does not state an approval"
         )
@@ -232,6 +251,7 @@ def confirm_interpretation(
             "field_name": APPROVAL_INTERPRETATION,
             "classification": classification,
             "conclusion": "approved",
+            "condition_immaterial": condition_immaterial,
             "evidence_link_id": evidence_link_id,
         },
     )
@@ -307,17 +327,32 @@ def _field_state(
         candidates = tuple(
             link_id for link_id, classification in classifications.items() if classification == "approved"
         )
+        # ADR-0060: hedged letters record as conditional here, at read time,
+        # with the quoted sentence as their basis.  No stored row, no click —
+        # the field simply stays empty until the condition is handled or a
+        # person records the explicit override.
+        conditional = tuple(
+            link_id
+            for link_id, classification in classifications.items()
+            if classification == "conditional"
+        )
+        # A confirmation binds only while its exact cited letter still reads
+        # the way the person was shown: a clean-letter confirm to a letter
+        # still classified approved, an override to one still conditional.
         confirmed = tuple(
             confirmation
             for confirmation in confirmations
             if confirmation.field_name == APPROVAL_INTERPRETATION
             and confirmation.conclusion == "approved"
-            and classifications.get(confirmation.evidence_link_id) == "approved"
+            and classifications.get(confirmation.evidence_link_id)
+            == confirmation.classification
         )
         confirmation_ids = tuple(item.id for item in confirmed)
         evidence_ids = tuple(item.evidence_link_id for item in confirmed)
-        candidate_conclusion = "approved" if candidates else None
-        if any(value == "conditional" for value in classifications.values()):
+        candidate_conclusion = None
+        if candidates:
+            candidate_conclusion = "approved"
+        elif conditional:
             candidate_conclusion = "conditional"
         return ChecklistField(
             name,
@@ -328,6 +363,7 @@ def _field_state(
             candidates,
             candidate_conclusion,
             confirmation_ids,
+            conditional,
         )
     raise AssertionError(f"unknown standard checklist field {name!r}")
 

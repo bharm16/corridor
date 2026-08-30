@@ -325,8 +325,9 @@
           <tr>
             <td>{{ field.label }}</td>
             <td>
-              {% for link, doc in view.evidence if link.id in field.evidence_link_ids or link.id in field.candidate_evidence_link_ids %}
-                <div>{{ doc.filename }} p.{{ link.page_no }} — <span class="q">{{ link.quote[:160] }}</span></div>
+              {% for link, doc in view.evidence if link.id in field.evidence_link_ids or link.id in field.candidate_evidence_link_ids or link.id in field.conditional_evidence_link_ids %}
+                <div>{{ doc.filename }} p.{{ link.page_no }} — <span class="q">{{ link.quote[:160] }}</span>
+                  <a href="/page-image/{{ doc.id }}/{{ link.page_no }}">open the letter</a></div>
               {% else %}
                 <span class="muted">No current cited passage fills this field.</span>
               {% endfor %}
@@ -336,19 +337,29 @@
                 <span class="pill ready">complete</span>
               {% elif field.machine %}
                 <span class="pill contra">not yet</span>
-              {% elif field.candidate_conclusion == 'approved' %}
-                {% for evidence_link_id in field.candidate_evidence_link_ids %}
+              {% else %}
+                {% for link, doc in view.evidence if link.id in field.candidate_evidence_link_ids %}
                   <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/documentation/confirm-approval">
     {{ csrf_field() }}
                     <input type="hidden" name="slug" value="{{ project.slug }}">
-                    <input type="hidden" name="evidence_link_id" value="{{ evidence_link_id }}">
-                    <button type="submit">Confirm: this letter approves the relocation</button>
+                    <input type="hidden" name="evidence_link_id" value="{{ link.id }}">
+                    <button type="submit">Confirm: this letter approves the relocation — “{{ link.quote[:120] }}”</button>
                   </form>
                 {% endfor %}
-              {% elif field.candidate_conclusion == 'conditional' %}
-                <span class="pill contra">conditional approval remains not ready</span>
-              {% else %}
-                <span class="pill contra">not yet</span>
+                {% for link, doc in view.evidence if link.id in field.conditional_evidence_link_ids %}
+                  <div><span class="pill contra">recorded as conditional</span>
+                    waiting on: <span class="q">“{{ link.quote[:160] }}”</span></div>
+                  <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/documentation/confirm-approval">
+    {{ csrf_field() }}
+                    <input type="hidden" name="slug" value="{{ project.slug }}">
+                    <input type="hidden" name="evidence_link_id" value="{{ link.id }}">
+                    <input type="hidden" name="condition_immaterial" value="true">
+                    <button type="submit">Record as approval — the quoted condition is immaterial</button>
+                  </form>
+                {% endfor %}
+                {% if not field.candidate_evidence_link_ids and not field.conditional_evidence_link_ids %}
+                  <span class="pill contra">not yet</span>
+                {% endif %}
               {% endif %}
             </td>
           </tr>

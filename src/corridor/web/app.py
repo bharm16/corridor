@@ -3801,15 +3801,18 @@ def confirm_documentation_approval(
     dependency_id: int,
     slug: str = Form(...),
     evidence_link_id: int = Form(...),
+    condition_immaterial: bool = Form(False),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Append a Documentation Reviewer's cited clean-letter confirmation.
+    """Append a Documentation Reviewer's cited approval confirmation.
 
     The route intentionally accepts no conclusion.  The checklist recomputes
     the displayed classification from the cited current source under the
     project lock, and only a Documentation Reviewer may make that thin human
-    confirmation (#347, ADR-0052/0056).
+    confirmation (#347, ADR-0052/0056).  A conditional letter needs no click
+    to stay not ready; ``condition_immaterial`` is the one optional override
+    that records a quoted hedge as approval (ADR-0060).
     """
 
     project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
@@ -3820,6 +3823,7 @@ def confirm_documentation_approval(
             dependency_id,
             evidence_link_id,
             principal=principal,
+            condition_immaterial=condition_immaterial,
         )
     except DocumentationConfirmationRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -3838,6 +3842,7 @@ def confirm_documentation_approval(
         request_fields={
             "slug": slug,
             "evidence_link_id": evidence_link_id,
+            "condition_immaterial": condition_immaterial,
             "documentation_confirmation_id": confirmation.id,
         },
     )
