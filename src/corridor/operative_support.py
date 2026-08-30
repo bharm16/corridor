@@ -136,6 +136,9 @@ class ResolvedSupport:
     superseded_scopes: tuple[SupersededOperativeScope, ...]
     verified_evidence_count: int
     last_evidenced_at: date | None
+    # ADR-0060 open conditions blocking Ready, surfaced on the list in the
+    # company's own words with the letter one tap away (#373).
+    open_conditions: tuple = ()
 
     @property
     def superseded_roles(self) -> frozenset[str]:
@@ -594,6 +597,7 @@ def resolve_operative_support(
             superseded_scopes=tuple(superseded_scopes),
             verified_evidence_count=len(verified),
             last_evidenced_at=max(dates) if dates else None,
+            open_conditions=checklist.open_conditions,
         )
     return resolved
 

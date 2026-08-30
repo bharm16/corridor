@@ -143,6 +143,9 @@ class LedgerRow:
     contradicted: bool
     committed_statement: PublishedDependencyStatement | None = None
     exceptions: list = field(default_factory=list)
+    # ADR-0060 open conditions keeping this row not Ready, shown verbatim with
+    # the letter one tap away (#373).
+    open_conditions: tuple = ()
 
     @property
     def committed_date(self) -> date | None:
@@ -292,6 +295,7 @@ def browse(
             contradicted=d.id in contradicted,
             committed_statement=publication.by_dependency[d.id],
             exceptions=by_dependency.get(d.id, []),
+            open_conditions=support_by_dependency[d.id].open_conditions,
         )
         for d in dependencies
     ]
