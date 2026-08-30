@@ -463,3 +463,36 @@ def test_a_silent_reingest_keeps_the_declared_scheme(
     ingest(session, project, pdf, tmp_path / "img", numbering_scheme="per-party")
     again = ingest(session, project, pdf, tmp_path / "img")
     assert again.numbering_scheme == "per-party"
+
+
+def test_a_missing_store_file_registers_the_document_visibly_failed(
+    session, project, pdf, tmp_path
+):
+    import hashlib
+
+    sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    # The lockfile recorded a successful fetch; the store lost the bytes.
+    doc = ingest_document(
+        session,
+        project_id=project.id,
+        path=tmp_path / "wiped" / pdf.name,
+        doc_type="matrix",
+        images_dir=tmp_path / "images",
+        expected_sha256=sha,
+    )
+    assert doc.sha256 == sha
+    assert doc.parse_status == "failed"
+    assert doc.pages == 0
+
+
+def test_a_missing_store_file_without_a_recorded_sha_still_raises(
+    session, project, tmp_path
+):
+    with pytest.raises(FileNotFoundError):
+        ingest_document(
+            session,
+            project_id=project.id,
+            path=tmp_path / "nowhere.pdf",
+            doc_type="matrix",
+            images_dir=tmp_path / "images",
+        )

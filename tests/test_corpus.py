@@ -1058,3 +1058,45 @@ def test_i35_nex_south_archive_members_refetch_as_a_no_op(tmp_path):
     assert first.failed == []
     assert second.fetched == []
     assert len(second.skipped) == 2
+
+
+# --------------------------------------------------------------------------
+# Store self-healing (a wiped or partial content-addressed store)
+# --------------------------------------------------------------------------
+
+
+def test_missing_store_file_is_restored_on_refetch_of_unchanged_bytes(tmp_path):
+    import hashlib
+
+    run(tmp_path, dict(BODIES))
+    sha = hashlib.sha256(b"matrix rev c").hexdigest()
+    stored = tmp_path / "files" / sha[:2] / f"{sha}.pdf"
+    stored.unlink()
+
+    second = run(tmp_path, dict(BODIES))
+
+    # The lock is unchanged — the bytes did not drift — but the store healed.
+    assert second.fetched == []
+    assert len(second.skipped) == 2
+    assert stored.read_bytes() == b"matrix rev c"
+
+
+def test_missing_store_file_is_reextracted_despite_matching_member_crc(tmp_path):
+    from pathlib import Path
+
+    archive = make_zip({"ucm-2-13-2026.pdf": UCM_BYTES})
+    bodies = {"https://example.gov/utilities.zip": archive}
+    run_with(tmp_path, ARCHIVE_MANIFEST, ranged_transport(bodies))
+
+    lock = json.loads((tmp_path / "manifest.lock.json").read_text())
+    rec = lock["sources"]["https://example.gov/utilities.zip::ucm-2-13-2026.pdf"]
+    stored = Path(rec["local_path"])
+    stored.unlink()
+
+    second = run_with(tmp_path, ARCHIVE_MANIFEST, ranged_transport(bodies))
+
+    # The CRC still matches, so the lock records no drift — but the member is
+    # re-read from the archive and the store file comes back.
+    assert second.failed == []
+    assert len(second.skipped) == 1
+    assert stored.read_bytes() == UCM_BYTES

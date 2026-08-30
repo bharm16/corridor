@@ -535,10 +535,15 @@ def _fetch_member(source, store, lock, summary, client, archives) -> None:
 
     # The zip central directory carries a CRC32 per member, so an unchanged
     # member is detectable from a few hundred bytes — no extraction, and
-    # certainly no downloading the archive.
+    # certainly no downloading the archive. The skip additionally requires
+    # the stored file to still exist: a lock record describes bytes on disk,
+    # and a wiped or partial store must heal on the next fetch rather than
+    # being trusted into a hole ingest then falls into.
     if prior and prior.get("member_crc32") == info.CRC:
-        summary.skipped.append(key)
-        return
+        prior_path = prior.get("local_path")
+        if prior_path and Path(prior_path).exists():
+            summary.skipped.append(key)
+            return
 
     _store_and_record(
         source,
@@ -675,6 +680,13 @@ def _store_and_record(
     sha = hashlib.sha256(body).hexdigest()
 
     if prior and prior.get("sha256") == sha:
+        # Unchanged bytes never rewrite the lock — but the store file the
+        # record points at must exist. If it was wiped, put the bytes we
+        # just fetched back where the record says they live.
+        prior_path = Path(prior.get("local_path") or _store_path(store, sha, name))
+        if not prior_path.exists():
+            prior_path.parent.mkdir(parents=True, exist_ok=True)
+            prior_path.write_bytes(body)
         summary.skipped.append(key)
         return
 

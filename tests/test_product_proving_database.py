@@ -179,12 +179,16 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         engine.dispose()
 
     assert transaction_read_only == "on"
-    # #345 adds two organization-identity evidence tables and their sequences, on top
-    # of Follow-up Plans (#333), statement suggestions (#340), documentation checklists
-    # (#347), dispute-history (#346), key-date drafts (#363), inbound intake (#372), and
-    # Coordination Summary (#355).
-    assert fingerprint.table_count == 95
-    assert fingerprint.sequence_count == 84
+    # The full delivery wave's tables: organization-identity evidence (#345),
+    # Follow-up Plans (#333), statement suggestions (#340), documentation
+    # checklists (#347), dispute history (#346), key-date drafts (#363),
+    # inbound intake (#372), Coordination Summary (#355), the due-work
+    # runtime and its occurrences (#332), assignment/due-action/document
+    # notifications (#351-#353), scheduled publication (#354), outcome
+    # capture (#356), scheduled reproof (#358), conditions (#373), and the
+    # operations assists (#359-#362).
+    assert fingerprint.table_count == 124
+    assert fingerprint.sequence_count == 113
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
