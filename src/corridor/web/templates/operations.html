@@ -49,6 +49,29 @@
 
   <h2>Current Production Runs</h2>
   {% if record_inclusion_pending %}<p class="notice">Record Inclusion is pending through the shared durable load handoff.</p>{% else %}<p class="muted">No Record Inclusion load is pending.</p>{% endif %}
+
+  <details>
+    <summary>Run-explanation model authority{% if run_explanation_configuration %} — declared{% else %} — not declared{% endif %}</summary>
+    {% if run_explanation_configuration %}
+      <p class="muted">Explaining competing runs may spend the declared bounded budget: model <code>{{ run_explanation_configuration.model }}</code> · prompt <code>{{ run_explanation_configuration.prompt_version }}</code> · at most {{ run_explanation_configuration.max_input_tokens }} input / {{ run_explanation_configuration.max_output_tokens }} output tokens · {{ run_explanation_configuration.timeout_seconds }}s · one request, no retry. Declared by {{ run_explanation_configuration.created_by }}.</p>
+    {% else %}
+      <p class="warning">No run-explanation authority is declared. Until one is, requesting an explanation refuses before any model call.</p>
+    {% endif %}
+    <form method="post" action="/operations/{{ project.slug }}/run-explanation/configuration">
+      {{ csrf_field() }}
+      <p><label>Model <input name="model" required></label></p>
+      <input type="hidden" name="prompt_version" value="{{ run_explanation_prompt_version }}">
+      <p><label>Max input tokens <input name="max_input_tokens" type="number" min="1" max="200000" required></label>
+         <label>Max output tokens <input name="max_output_tokens" type="number" min="1" max="20000" required></label>
+         <label>Timeout seconds <input name="timeout_seconds" type="number" min="1" max="600" required></label></p>
+      <input type="hidden" name="max_requests" value="1">
+      <input type="hidden" name="retry_policy" value="none">
+      <input type="hidden" name="retention_policy" value="retained_indefinitely">
+      <input type="hidden" name="observation_context" value="internal_working_view">
+      <button>Declare run-explanation authority</button>
+    </form>
+  </details>
+
   {% for row in documents %}
     <section class="card">
       <h3>{{ row.document.filename }}</h3>
@@ -64,6 +87,15 @@
           <td>{% if run.outcome == 'completed' and not run.page_errors and row.active_run_id != run.id %}<form method="post" action="/operations/{{ project.slug }}/runs/{{ row.document.id }}/declare">{{ csrf_field() }}<input type="hidden" name="extraction_run_id" value="{{ run.id }}"><input type="hidden" name="state_fingerprint" value="{{ row.offer_state }}"><button>Declare current</button></form>{% endif %}</td>
         </tr>{% endfor %}</tbody></table>
       {% else %}<p class="muted">No processing attempt has been retained for this source document.</p>{% endif %}
+      {% if row.explanation_offered %}
+        <form method="post" action="/operations/{{ project.slug }}/runs/{{ row.document.id }}/explain">
+          {{ csrf_field() }}
+          <input type="hidden" name="competing_run_ids" value="{{ row.competing_run_ids | join(',') }}">
+          <input type="hidden" name="state_token" value="{{ row.explain_state }}">
+          <button>Explain what differs (does not choose one)</button>
+        </form>
+        <p class="muted">Optional, read-only. It reads the immutable run snapshots and never declares a run.</p>
+      {% endif %}
       {% if row.history %}<details><summary>Declaration history ({{ row.history | length }})</summary><ul>{% for declaration in row.history %}<li>Run #{{ declaration.extraction_run_id }} declared by {{ declaration.declared_by }} at {{ declaration.declared_at }}</li>{% endfor %}</ul></details>{% endif %}
     </section>
   {% else %}<p class="muted">No source documents are registered for this project.</p>{% endfor %}

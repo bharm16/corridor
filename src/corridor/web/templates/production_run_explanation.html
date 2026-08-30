@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Explain competing production runs — {{ document.filename }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#9a4d00; --ok:#067647; --bad:#b42318; }
+  * { box-sizing:border-box; } body { margin:0; color:#111; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:72rem; margin:2rem auto; padding:0 1.2rem 3rem; } h1 { margin:0; font-size:1.5rem; }
+  h2 { margin:2rem 0 .5rem; font-size:1.1rem; } .muted { color:var(--muted); }
+  .card { border:1px solid var(--line); border-radius:7px; padding:1rem; margin:.8rem 0; }
+  .banner { background:#eef2ff; border:1px solid #c7d2fe; padding:.6rem .8rem; border-radius:5px; }
+  .warning { color:var(--warn); background:#fffaeb; padding:.6rem .8rem; border-radius:5px; }
+  .failure { color:var(--bad); background:#fef3f2; padding:.6rem .8rem; border-radius:5px; }
+  table { border-collapse:collapse; width:100%; } th,td { text-align:left; border-bottom:1px solid #eee; padding:.45rem; vertical-align:top; }
+  th { color:var(--muted); font-size:.82rem; } button { font:inherit; padding:.4rem .75rem; }
+  code { overflow-wrap:anywhere; } ul { margin:.3rem 0; }
+</style>
+<header><b>{{ project.name }}</b><span><a href="/operations/{{ project.slug }}">Back to processing operations</a></span></header>
+<main>
+  <h1>Explaining competing production runs</h1>
+  <p class="muted">{{ document.filename }} · {{ document.doc_type }}{% if document.registry_id %} · {{ document.registry_id }}{% endif %}</p>
+
+  <p class="banner" role="note">
+    This explanation is a model-drafted reading of immutable run snapshots. It is
+    <b>not the record</b> and <b>does not choose a run</b>. Every claim below cites
+    a snapshot value you can check against the run details. The declaration stays
+    yours — no run is preselected.
+  </p>
+  <p class="muted">
+    Model <code>{{ receipt.model }}</code> · prompt <code>{{ receipt.prompt_version }}</code>
+    · validator <code>{{ receipt.validator_version }}</code> · requested by {{ receipt.requested_by }}
+  </p>
+
+  {% if receipt.status == 'completed' and receipt.explanation_json %}
+    <h2>What differs</h2>
+    {% if receipt.explanation_json.differences %}
+      {% for diff in receipt.explanation_json.differences %}
+        <section class="card">
+          <p><b>{{ diff.aspect }}</b> — {{ diff.explanation }}</p>
+          <p class="muted">Runs: {{ diff.run_refs | join(', ') }}</p>
+          <table><thead><tr><th>Run</th><th>Field</th><th>Value cited from snapshot</th></tr></thead><tbody>
+          {% for cite in diff.cited_values %}<tr><td>{{ cite.run_ref }}</td><td>{{ cite.field }}</td><td><code>{{ cite.value }}</code></td></tr>{% endfor %}
+          </tbody></table>
+        </section>
+      {% endfor %}
+    {% else %}<p class="muted">No differences were reported.</p>{% endif %}
+
+    {% if receipt.explanation_json.ambiguities %}
+      <h2>Preserved as ambiguous</h2>
+      <ul>{% for item in receipt.explanation_json.ambiguities %}<li>{{ item.note }} <span class="muted">({{ item.run_refs | join(', ') }})</span></li>{% endfor %}</ul>
+    {% endif %}
+
+    {% if receipt.explanation_json.unknowns %}
+      <h2>Unknown, unsealed lineage</h2>
+      <p class="muted">These fields were never sealed for the named run; the snapshots cannot tell you their value.</p>
+      <ul>{% for item in receipt.explanation_json.unknowns %}<li>{{ item.run_ref }} · <code>{{ item.field }}</code> — {{ item.note }}</li>{% endfor %}</ul>
+    {% endif %}
+  {% else %}
+    <h2>No explanation was shown</h2>
+    <p class="warning">The bounded request ended as <b>{{ receipt.status | replace('_', ' ') }}</b>{% if receipt.reason %}: {{ receipt.reason }}{% endif %}. The run details and declaration controls below are unaffected.</p>
+  {% endif %}
+
+  <h2>Run details these explanations were checked against</h2>
+  <p class="muted">The immutable snapshot each explanation cites. A field shown as <code>unknown</code> was never sealed (legacy lineage), not sealed-and-hidden.</p>
+  {% for run in runs %}
+    <section class="card">
+      <h3>Run {{ run.run_ref }} · #{{ run.run_id }}</h3>
+      <table><tbody>
+      {% for field, value in run.fields.items() %}<tr><th>{{ field }}</th><td><code>{{ value }}</code></td></tr>{% endfor %}
+      </tbody></table>
+    </section>
+  {% endfor %}
+
+  <h2>Declare the Current Production Run</h2>
+  <p class="muted">The explanation changes nothing here. Choose a run to declare, or leave it undeclared.</p>
+  {% if current_active_run_id %}<p><b>Current Production Run:</b> #{{ current_active_run_id }}</p>{% else %}<p class="warning">No Current Production Run has been declared.</p>{% endif %}
+  <table><thead><tr><th>Run</th><th>Prompt / model</th><th>Action</th></tr></thead><tbody>
+  {% for run in competing_runs %}<tr>
+    <td>#{{ run.id }}</td>
+    <td>{{ run.prompt_version }}{% if run.model %} · {{ run.model }}{% endif %}</td>
+    <td>{% if current_active_run_id != run.id %}<form method="post" action="/operations/{{ project.slug }}/runs/{{ document.id }}/declare">{{ csrf_field() }}<input type="hidden" name="extraction_run_id" value="{{ run.id }}"><input type="hidden" name="state_fingerprint" value="{{ offer_state }}"><button>Declare current</button></form>{% else %}<span class="muted">Already current</span>{% endif %}</td>
+  </tr>{% endfor %}
+  </tbody></table>
+</main>
