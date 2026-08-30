@@ -79,13 +79,19 @@ def provision_disposable_postgres(
     if parsed.get_backend_name() != "postgresql":
         raise error_cls("M8 acceptance requires PostgreSQL")
     require_local_postgres_host(parsed.host, error_cls=error_cls)
+    maintenance_url = parsed.set(database="postgres")
     admin_engine = create_engine(
-        parsed,
+        maintenance_url,
         isolation_level="AUTOCOMMIT",
         poolclass=NullPool,
         future=True,
     )
-    database_name = _disposable_database_name(database_prefix)
+    uses_template = reuse_migrated_template and migration_revision == "head"
+    database_name = (
+        process_owned_database_name(database_prefix)
+        if uses_template
+        else _disposable_database_name(database_prefix)
+    )
     database_created = False
     database_engine = None
     primary_error: BaseException | None = None
@@ -94,12 +100,13 @@ def provision_disposable_postgres(
             version = connection.scalar(text("show server_version"))
         require_postgres_16(version, error_cls=error_cls)
         template_name: str | None = None
-        if reuse_migrated_template and migration_revision == "head":
+        if uses_template:
             template_name = _ensure_migrated_template(
                 admin_engine,
-                parsed,
+                maintenance_url,
                 repo_root=repo_root,
                 error_cls=error_cls,
+                database_prefix=database_prefix,
             )
         with admin_engine.connect() as connection:
             if template_name is None:
@@ -240,13 +247,14 @@ def _ensure_migrated_template(
     *,
     repo_root: Path,
     error_cls: type[Exception],
+    database_prefix: str,
 ) -> str:
     """Migrate one reusable template per process and reuse it for every copy.
 
     Replaying the whole chain per disposable database dominated the runtime
-    suite. PostgreSQL copies an already-migrated template in constant time, and
-    the template is still built by the real chain, so a copied database is
-    indistinguishable from a migrated one.
+    suite. PostgreSQL copies an already-migrated template without replaying the
+    chain, and the template is still built by the real chain, so a copied
+    database is indistinguishable from a migrated one.
     """
 
     cache_key = admin_url.render_as_string(hide_password=False)
@@ -257,6 +265,7 @@ def _ensure_migrated_template(
     template_name = f"{_TEMPLATE_PREFIX}{os.getpid()}_{uuid4().hex[:8]}"
     with admin_engine.connect() as connection:
         _drop_abandoned_templates(connection)
+        reclaim_abandoned_database_copies(connection, database_prefix)
         connection.execute(text(f'drop database if exists "{template_name}"'))
         connection.execute(text(f'create database "{template_name}"'))
     try:
@@ -288,7 +297,7 @@ def _drop_abandoned_templates(connection) -> None:
     ).all()
     for name in names:
         owner_pid = _template_owner_pid(str(name))
-        if owner_pid is None or _process_is_running(owner_pid):
+        if owner_pid is None or process_is_running(owner_pid):
             continue
         try:
             connection.execute(text(f'drop database if exists "{name}"'))
@@ -301,7 +310,46 @@ def _template_owner_pid(template_name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _process_is_running(pid: int) -> bool:
+def process_owned_database_name(database_prefix: str) -> str:
+    """Name a disposable database so a later process can prove it is abandoned."""
+
+    database_name = f"{database_prefix}{os.getpid()}_{uuid4().hex[:12]}"
+    if len(database_name) > 63:
+        raise ValueError(
+            "process-owned disposable database name exceeds PostgreSQL limit"
+        )
+    return database_name
+
+
+def reclaim_abandoned_database_copies(connection, database_prefix: str) -> None:
+    """Drop reusable-template copies only after their owning process has exited."""
+
+    pattern = re.compile(
+        rf"^{re.escape(database_prefix)}([1-9][0-9]*)_[0-9a-f]{{12}}$"
+    )
+    names = connection.scalars(
+        text("select datname from pg_database where datname like :prefix"),
+        {"prefix": f"{database_prefix}%"},
+    )
+    for raw_name in names:
+        database_name = str(raw_name)
+        match = pattern.fullmatch(database_name)
+        if match is None or process_is_running(int(match.group(1))):
+            continue
+        try:
+            connection.execute(
+                text(
+                    "select pg_terminate_backend(pid) from pg_stat_activity "
+                    "where datname = :name and pid <> pg_backend_pid()"
+                ),
+                {"name": database_name},
+            )
+            connection.execute(text(f'drop database if exists "{database_name}"'))
+        except Exception:
+            continue
+
+
+def process_is_running(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

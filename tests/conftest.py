@@ -29,16 +29,20 @@ DEFAULT_DATABASE_URL = (
 DATABASE_PREFIX = "corridor_pytest_"
 RUN_ID_ENV = "CORRIDOR_PYTEST_RUN_ID"
 SOURCE_DATABASE_URL_ENV = "CORRIDOR_PYTEST_SOURCE_DATABASE_URL"
-_RUN_ID = re.compile(r"^[0-9a-f]{12}$")
+_RUN_ID = re.compile(r"^([1-9][0-9]*)_[0-9a-f]{8}$")
 _WORKER_ID = re.compile(r"^gw[0-9]+$")
-_DATABASE_NAME = re.compile(r"^corridor_pytest_[0-9a-f]{12}_gw[0-9]+$")
+_DATABASE_NAME = re.compile(
+    r"^corridor_pytest_([1-9][0-9]*)_[0-9a-f]{8}_gw[0-9]+$"
+)
 
 
 def pytest_configure(config) -> None:
     worker_id = os.environ.get("PYTEST_XDIST_WORKER")
     if worker_id is None:
         if _xdist_is_enabled(config):
-            run_id = uuid4().hex[:12]
+            parsed = _validated_admin_url(_configured_database_url())
+            reap_abandoned_worker_databases(parsed)
+            run_id = new_worker_run_id()
             os.environ[RUN_ID_ENV] = run_id
             config._corridor_pytest_run_id = run_id
         return
@@ -113,6 +117,12 @@ def _xdist_is_enabled(config) -> bool:
     return workers not in (None, 0, "0")
 
 
+def new_worker_run_id() -> str:
+    """Return a run identity whose owner can be checked after an interrupted run."""
+
+    return f"{os.getpid()}_{uuid4().hex[:8]}"
+
+
 def _configured_database_url() -> str:
     dotenv = dotenv_values(ROOT / ".env")
     return str(
@@ -181,8 +191,7 @@ def _migrate_database(database_url: URL) -> None:
         raise RuntimeError("parallel test worker database migration failed")
 
 
-def _run_database_names(admin_url: URL, run_id: str) -> tuple[str, ...]:
-    prefix = f"{DATABASE_PREFIX}{run_id}_"
+def _worker_database_names(admin_url: URL) -> tuple[str, ...]:
     engine = create_engine(
         admin_url,
         isolation_level="AUTOCOMMIT",
@@ -190,18 +199,49 @@ def _run_database_names(admin_url: URL, run_id: str) -> tuple[str, ...]:
     )
     try:
         with engine.connect() as connection:
-            names = tuple(
+            return tuple(
                 connection.scalars(
                     text(
                         "select datname from pg_database "
                         "where datname like :prefix order by datname"
                     ),
-                    {"prefix": f"{prefix}%"},
+                    {"prefix": f"{DATABASE_PREFIX}%"},
                 ).all()
             )
     finally:
         engine.dispose()
-    return tuple(name for name in names if _DATABASE_NAME.fullmatch(name))
+
+
+def _run_database_names(admin_url: URL, run_id: str) -> tuple[str, ...]:
+    prefix = f"{DATABASE_PREFIX}{run_id}_"
+    names = _worker_database_names(admin_url)
+    return tuple(
+        name
+        for name in names
+        if str(name).startswith(prefix) and _DATABASE_NAME.fullmatch(str(name))
+    )
+
+
+def reap_abandoned_worker_databases(admin_url: URL) -> None:
+    """Drop worker databases only when their controller process no longer exists."""
+
+    abandoned = []
+    for database_name in _worker_database_names(admin_url):
+        match = _DATABASE_NAME.fullmatch(str(database_name))
+        if match is None or _process_is_running(int(match.group(1))):
+            continue
+        abandoned.append(str(database_name))
+    _drop_databases(admin_url, tuple(abandoned))
+
+
+def _process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _drop_databases(admin_url: URL, database_names: tuple[str, ...]) -> None:

@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test-focused test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -23,15 +23,23 @@ check:
 	uv run python -m compileall -q src/corridor
 	uv run pytest tests/test_architecture.py -q
 
-# Fast PostgreSQL-backed developer loop. Exhaustive rehearsals stay in test-full.
+# Tight PostgreSQL-backed loop for the exact seam being changed.
+# Example: make test-focused ARGS="tests/test_work_list.py::test_name"
+test-focused:
+	@if [ -z "$(strip $(ARGS))" ]; then echo 'ARGS must name at least one test seam' >&2; exit 2; fi
+	uv run pytest -n 1 --dist loadfile $(ARGS)
+
+# Broad developer gate. Run after a broad change, not after every edit.
+# This is the non-slow subset of test-full; do not run both on one revision.
 test:
 	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "not slow"
 
-# Release/CI gate: behavior, real-corpus geometry, acceptance, and migrations.
+# One complete release/CI gate for behavior, corpus, acceptance, and migrations.
+# This includes test; use it instead of test, never immediately after it.
 test-full:
 	uv run pytest -n $(TEST_WORKERS) --dist loadfile
 
-# Exhaustive tests only, for changes inside those seams.
+# Exhaustive complement to test. Use after test only when the revision is unchanged.
 test-slow:
 	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m slow
 

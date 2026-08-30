@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 from uuid import uuid4
 
 import pytest
@@ -21,6 +23,87 @@ from corridor.m8_acceptance_bundle import verify_bundle
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATABASE_PREFIX = "corridor_m8_acceptance_"
+
+
+def test_reusable_database_name_carries_its_process_owner():
+    database_name = acceptance_database.process_owned_database_name(
+        "corridor_due_work_test_"
+    )
+
+    assert re.fullmatch(
+        rf"corridor_due_work_test_{os.getpid()}_[0-9a-f]{{12}}",
+        database_name,
+    )
+
+
+def test_abandoned_copy_reclamation_keeps_live_process_databases(monkeypatch):
+    dropped = []
+    connection = _DatabaseCatalogConnection(
+        (
+            "corridor_due_work_test_101_deadbeefcafe",
+            "corridor_due_work_test_202_feedfacecafe",
+            "corridor_due_work_test_legacy",
+        ),
+        dropped,
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "process_is_running",
+        lambda pid: pid == 202,
+    )
+
+    acceptance_database.reclaim_abandoned_database_copies(
+        connection,
+        "corridor_due_work_test_",
+    )
+
+    assert dropped == ["corridor_due_work_test_101_deadbeefcafe"]
+
+
+class _DatabaseCatalogConnection:
+    def __init__(self, names, dropped):
+        self._names = names
+        self._dropped = dropped
+
+    def scalars(self, _statement, _parameters):
+        return self._names
+
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        if sql.startswith("select pg_terminate_backend"):
+            return None
+        match = re.search(r'drop database if exists "([^"]+)"', sql)
+        if match:
+            self._dropped.append(match.group(1))
+        return None
+
+
+def test_reusable_template_lifecycle_uses_the_stable_maintenance_database(
+    monkeypatch,
+):
+    seen_databases = []
+
+    def stop_after_observing_admin_url(_engine, admin_url, **_kwargs):
+        seen_databases.append(admin_url.database)
+        raise AcceptanceError("observed template admin URL")
+
+    monkeypatch.setattr(
+        acceptance_database,
+        "_ensure_migrated_template",
+        stop_after_observing_admin_url,
+    )
+
+    with pytest.raises(AcceptanceError, match="observed template admin URL"):
+        with acceptance_database.provision_disposable_postgres(
+            settings.database_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+            database_prefix="corridor_due_work_test_",
+            reuse_migrated_template=True,
+        ):
+            raise AssertionError("template setup must precede yield")
+
+    assert seen_databases == ["postgres"]
 
 
 def test_disposable_database_is_dropped_when_migration_fails(monkeypatch):
