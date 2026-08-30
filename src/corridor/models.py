@@ -2142,7 +2142,11 @@ class Dependency(Base):
     # resolution method to select the standard documentation fields that are
     # required at read time.  ``reimbursable`` is the one currently modeled
     # value; unknown or absent source wording deliberately selects nothing.
-    cost_responsibility: Mapped[str | None] = mapped_column(String(64))
+    # Deferred like milestone_registration_id: migration rehearsals load
+    # Dependency rows on databases pinned before this column existed.
+    cost_responsibility: Mapped[str | None] = mapped_column(
+        String(64), deferred=True
+    )
     # Free text in v0: what closes this. A reviewer judges whether a given
     # piece of evidence meets it. Promoting this to a typed taxonomy waits
     # until real adjudications show what closure documents look like
