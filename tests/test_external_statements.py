@@ -725,39 +725,39 @@ def test_scope_decision_database_has_one_root_and_attributable_actors(
             session.flush()
 
 
-def test_database_preserves_verbal_exact_day_shape(session, statement_record):
-    """Raw writers cannot create a month-only or broad-scope Verbal."""
-    project, party, _, dependency = statement_record
-    with pytest.raises(IntegrityError, match="exact-day commitment timing"):
+def test_database_still_requires_a_verbal_conversation_date(session, statement_record):
+    """The extended guard keeps the one verbal-specific requirement (#335).
+
+    A Verbal now obeys the same precision and scope rules as any statement, so
+    the trigger no longer forces exact-day, single-Constraint shapes.  It still
+    refuses a Verbal that omits when the conversation happened, even by a raw
+    writer that forces the deferred constraint triggers to check.
+    """
+    project, party, _, _ = statement_record
+    with pytest.raises(IntegrityError, match="conversation date"):
         with session.begin_nested():
             event = DependencyEvent(
                 project_id=project.id,
                 affected_external_org_id=party.id,
                 stated_external_org_id=party.id,
-                scope_mode="selected",
+                scope_mode="unknown",
                 event_type="commitment",
                 source_kind="verbal",
                 stated_party="Equistar",
-                event_date=date(2025, 1, 16),
-                description="Equistar said completion would be in January.",
+                event_date=None,
+                description="A Verbal that never says when it was heard.",
                 created_by="local:statement-recorder",
             )
             session.add(event)
             session.flush()
-            session.add_all(
-                (
-                    DependencyEventTiming(
-                        event_id=event.id,
-                        kind="new",
-                        text="January 2025",
-                        precision="month",
-                        start_date=date(2025, 1, 1),
-                        end_date=date(2025, 1, 31),
-                    ),
-                    DependencyEventScope(
-                        event_id=event.id,
-                        dependency_id=dependency.id,
-                    ),
+            session.add(
+                DependencyEventTiming(
+                    event_id=event.id,
+                    kind="new",
+                    text="2025-08-15",
+                    precision="day",
+                    start_date=date(2025, 8, 15),
+                    end_date=date(2025, 8, 15),
                 )
             )
             session.flush()
@@ -1367,7 +1367,10 @@ def test_month_timing_must_cover_that_calendar_month_exactly(
         )
 
 
-def test_shared_seam_refuses_incomplete_or_non_day_verbals(session, statement_record):
+def test_shared_seam_requires_a_verbal_date_but_keeps_its_precision(
+    session, statement_record
+):
+    """A Verbal still needs its conversation date, but keeps month precision (#335)."""
     from corridor.external_statements import (
         StatementRefusal,
         StatementScope,
@@ -1390,20 +1393,23 @@ def test_shared_seam_refuses_incomplete_or_non_day_verbals(session, statement_re
             scope=StatementScope.selected((dependency.id,)),
             created_by="local:recorder",
         )
-    with pytest.raises(StatementRefusal, match="exact-day commitment"):
-        record_external_party_statement(
-            session,
-            project_id=project.id,
-            affected_external_org_id=party.id,
-            stated_party="Equistar",
-            stated_external_org_id=party.id,
-            source_kind="verbal",
-            event_date=date(2025, 1, 16),
-            description="Equistar said it will complete in January.",
-            new_timing=StatementTiming.month("January 2025", 2025, 1),
-            scope=StatementScope.selected((dependency.id,)),
-            created_by="local:recorder",
-        )
+    # A month-precision, party-level Verbal is now accepted at the shared seam.
+    event = record_external_party_statement(
+        session,
+        project_id=project.id,
+        affected_external_org_id=party.id,
+        stated_party="Equistar",
+        stated_external_org_id=party.id,
+        source_kind="verbal",
+        event_date=date(2025, 1, 16),
+        description="Equistar said it will complete in January.",
+        new_timing=StatementTiming.month("January 2025", 2025, 1),
+        scope=StatementScope.unknown(),
+        created_by="local:recorder",
+    )
+    assert event.new_timing.precision == "month"
+    assert event.new_timing.start_date == date(2025, 1, 1)
+    assert event.scope_mode == "unknown"
 
 
 def test_event_evidence_requires_an_explicit_dependency_sufficiency_judgment(

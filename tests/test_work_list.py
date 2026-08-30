@@ -56,7 +56,8 @@ from corridor.statement_suggestions import (
     declare_statement_suggestion_protection,
     read_statement_suggestions,
 )
-from corridor.work_list import build_work_list
+from corridor.verbal import record_verbal_statement
+from corridor.work_list import build_work_list, party_commitment_due_after
 from corridor.work_decisions import (
     CoordinationSubject,
     assign_internal_owner,
@@ -2177,3 +2178,127 @@ def test_http_deferring_an_admitted_commitment_returns_on_its_date(
         item.commitment_lineage_id == lineage_id
         for item in on_return.immediate
     )
+
+
+# --- Recorded Verbal Statements at stated precision and scope (#335) ----------
+
+
+def _org_constraint(session, project, party, ref_code):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code=ref_code,
+        dep_type="utility_relocation",
+        title=f"Conflict {ref_code}",
+        external_org_id=party.id,
+    )
+    session.add(dependency)
+    session.flush()
+    return dependency
+
+
+def test_verbal_party_level_month_is_past_due_only_after_month_end(
+    session, project, party
+):
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=party.id,
+        stated_party=party.name,
+        description="Equistar said it will deliver in January 2025.",
+        conversation_date=date(2024, 12, 10),
+        new_timing=StatementTiming.month("01/2025", 2025, 1),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    lineage_id = event.commitment_lineage_id
+
+    within = build_work_list(session, project.id, today=date(2025, 1, 20))
+    within_item = next(
+        item for item in within.immediate if item.commitment_lineage_id == lineage_id
+    )
+    assert within_item.past_due is None
+    assert "unknown_scope" in within_item.attention_reason_codes
+    # Party-level: the work item names no Constraint.
+    assert within_item.dependency_id is None
+
+    after = build_work_list(session, project.id, today=date(2025, 2, 1))
+    after_item = next(
+        item for item in after.immediate if item.commitment_lineage_id == lineage_id
+    )
+    assert after_item.past_due is not None
+    assert after_item.past_due.due_after == date(2025, 1, 31)
+    assert after_item.past_due.commitment_lineage_id == lineage_id
+
+
+def test_verbal_approximate_commitment_never_becomes_overdue(session, project, party):
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=party.id,
+        stated_party=party.name,
+        description="Equistar said roughly the end of spring.",
+        conversation_date=date(2025, 1, 10),
+        new_timing=StatementTiming.approximate("end of spring"),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    assert party_commitment_due_after(event.new_timing) is None
+
+    far_future = build_work_list(session, project.id, today=date(2030, 1, 1))
+    item = next(
+        it for it in far_future.immediate
+        if it.commitment_lineage_id == event.commitment_lineage_id
+    )
+    assert item.past_due is None
+    assert item.timing_text == "end of spring"
+
+
+def test_verbal_day_commitment_scoped_to_a_constraint_overdue_after_the_day(
+    session, project, party
+):
+    dependency = _org_constraint(session, project, party, "EQ-1")
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=party.id,
+        stated_party=party.name,
+        description="Equistar committed to August 15, 2026.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+    lineage_id = event.commitment_lineage_id
+
+    on_day = build_work_list(session, project.id, today=date(2026, 8, 15))
+    on_day_item = next(
+        item for item in on_day.immediate if item.commitment_lineage_id == lineage_id
+    )
+    assert on_day_item.past_due is None
+
+    after = build_work_list(session, project.id, today=date(2026, 8, 16))
+    after_item = next(
+        item for item in after.immediate if item.commitment_lineage_id == lineage_id
+    )
+    assert after_item.past_due is not None
+    assert after_item.past_due.due_after == date(2026, 8, 15)
+    assert after_item.past_due.source_kind == "verbal"
+
+
+def test_verbal_unknown_scope_projects_no_constraint_committed_date(
+    session, project, party
+):
+    dependency = _org_constraint(session, project, party, "EQ-2")
+    record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=party.id,
+        stated_party=party.name,
+        description="Equistar made a party-level promise.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    session.refresh(dependency)
+    assert dependency.committed_date is None
