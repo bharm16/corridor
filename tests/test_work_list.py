@@ -2067,3 +2067,113 @@ def test_suggestion_reads_never_change_the_review_order_of_pending_statements(
 
     after = build_work_list(session, project.id, today=date(2025, 2, 1))
     assert after == before
+
+
+# --- Complete and defer an accepted commitment from its work surface (#334) ---
+
+
+def _admitted_owner(session, project):
+    owner = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject="local:admitted-close-owner",
+        display_name="Admitted Close Owner",
+    )
+    session.add(owner)
+    session.flush()
+    return owner
+
+
+def test_http_completing_admitted_internal_work_keeps_the_party_past_due_fact(
+    client, session, project, party
+):
+    """Completing internal work never closes the External Organization fact."""
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    owner = _admitted_owner(session, project)
+    _complete_mechanical_commitment_plan(client, project, candidate, owner)
+    coordination = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+    lineage_id = coordination.lineage.id
+
+    before = build_work_list(session, project.id, today=date(2025, 7, 1))
+    before_item = next(
+        item for item in before.immediate
+        if item.commitment_lineage_id == lineage_id
+    )
+    assert before_item.past_due is not None
+
+    completed = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/complete",
+        data={
+            "expected_next_action_decision_id": str(
+                coordination.next_action_decision.id
+            ),
+            "no_follow_up_reason": "return_condition_recorded",
+        },
+        follow_redirects=False,
+    )
+    assert completed.status_code == 303
+
+    after = build_work_list(session, project.id, today=date(2025, 7, 1))
+    matches = [
+        item for item in after.immediate
+        if item.commitment_lineage_id == lineage_id
+    ]
+    # The open past-due party fact remains and the entry appears exactly once
+    # with every current Attention Reason (never duplicated per reason).
+    assert len(matches) == 1
+    assert matches[0].past_due is not None
+    reasons = matches[0].attention_reason_codes
+    assert "past_due" in reasons and "unknown_scope" in reasons
+    # Closing internal work returns the item to needing a Next Action; the
+    # external fact was not marked complete.
+    assert "missing_next_action" in reasons
+    assert len(reasons) == len(set(reasons))
+
+
+def test_http_deferring_an_admitted_commitment_returns_on_its_date(
+    client, session, project, party
+):
+    """A deferral moves work to the backlog and returns it on the return date."""
+    candidate = _mechanically_admit_unknown_scope(session, project, party)
+    owner = _admitted_owner(session, project)
+    _complete_mechanical_commitment_plan(client, project, candidate, owner)
+    coordination = read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    )
+    lineage_id = coordination.lineage.id
+
+    deferred = client.post(
+        f"/statements/{project.slug}/{candidate.id}/admitted/defer",
+        data={
+            "expected_next_action_decision_id": str(
+                coordination.next_action_decision.id
+            ),
+            "deferral_reason": "waiting_for_external_party",
+            "return_date": "2025-08-15",
+        },
+        follow_redirects=False,
+    )
+    assert deferred.status_code == 303
+
+    before_return = build_work_list(session, project.id, today=date(2025, 7, 1))
+    assert all(
+        item.commitment_lineage_id != lineage_id
+        for item in before_return.immediate
+    )
+    backlog_ids = {item.commitment_lineage_id for item in before_return.backlog}
+    assert lineage_id in backlog_ids
+    # Deferred work stays searchable by its supported wording.
+    searchable = build_work_list(
+        session, project.id, today=date(2025, 7, 1), backlog_search="chain of title"
+    )
+    assert any(
+        item.commitment_lineage_id == lineage_id
+        for item in searchable.backlog
+    )
+
+    on_return = build_work_list(session, project.id, today=date(2025, 8, 15))
+    assert any(
+        item.commitment_lineage_id == lineage_id
+        for item in on_return.immediate
+    )
