@@ -198,6 +198,17 @@
       <fieldset>
         <legend>{{ label('applies_to') }}</legend>
         <p class="muted">Record only the constraints that the visible source passages and project record support. Keeping the links unknown preserves the organization's statement and changes no Constraint.</p>
+        {% if statement_suggestions %}
+          <section class="choice" id="statement-suggestions">
+            <b>Possible matching constraints</b>
+            <p class="muted">These similarities only order the list. They do not establish Applies To or choose a constraint for you.</p>
+            <ul>
+              {% for suggestion in statement_suggestions %}
+                <li>{{ suggestion.source_ref or suggestion.ref_code }} — {{ suggestion.title }}{% if suggestion.location_desc %} · {{ suggestion.location_desc }}{% endif %} <span class="muted">({{ suggestion.signals | join(', ') | replace('_', ' ') }})</span></li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endif %}
         <label class="check"><input type="radio" name="scope_mode" value="unknown" required> Keep this statement with the organization. Applies to: not yet known</label>
         <label class="check"><input type="radio" name="scope_mode" value="selected"> I can identify one or more affected constraints</label>
         <label class="check"><input type="radio" name="scope_mode" value="all_active"> This statement applies to every active constraint for the selected organization</label>

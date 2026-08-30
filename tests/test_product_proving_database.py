@@ -42,7 +42,7 @@ from corridor.product_proving_database import (
 
 
 REVISION = "a" * 40
-MIGRATION_HEAD = "c347a5c6d7e8"
+MIGRATION_HEAD = "b5d1e2f3a5c6"
 SOURCE_URL = "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
 ADMIN_URL = SOURCE_URL
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -179,11 +179,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         engine.dispose()
 
     assert transaction_read_only == "on"
-    # #347 adds one standard-documentation-checklists table and its sequence, on top
-    # of dispute-history (#346), key-date drafts (#363), inbound intake (#372), and
-    # Coordination Summary (#355).
-    assert fingerprint.table_count == 88
-    assert fingerprint.sequence_count == 77
+    # #340 adds three statement-suggestion protection/eligibility tables and their
+    # sequences, on top of documentation checklists (#347), dispute-history (#346),
+    # key-date drafts (#363), inbound intake (#372), and Coordination Summary (#355).
+    assert fingerprint.table_count == 91
+    assert fingerprint.sequence_count == 80
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
