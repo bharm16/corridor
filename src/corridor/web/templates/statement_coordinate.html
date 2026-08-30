@@ -198,6 +198,7 @@
       <fieldset>
         <legend>{{ label('applies_to') }}</legend>
         <p class="muted">Record only the constraints that the visible source passages and project record support. Keeping the links unknown preserves the organization's statement and changes no Constraint.</p>
+        {% if scope_match_card %}{% include "statement_scope_match_card.html" %}{% endif %}
         {% if statement_suggestions %}
           <section class="choice" id="statement-suggestions">
             <b>Possible matching constraints</b>

@@ -21,15 +21,25 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
 
+from sqlalchemy.exc import IntegrityError
+
 from corridor import audit
 from corridor.models import (
+    AuditLog,
     CommitmentLineage,
     Dependency,
+    FollowUpPlanReceipt,
+    FollowUpPlanReversal,
     Milestone,
+    ProjectRosterEntry,
     WorkDecision,
     WorkDecisionMilestoneImpact,
 )
-from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.principals import (
+    HumanPrincipal,
+    InvalidHumanPrincipal,
+    require_human_principal,
+)
 from corridor.project_lock import lock_project
 from corridor.statement_lifecycle import (
     CurrentStatementObservation,
@@ -826,3 +836,442 @@ def _subject_label(subject: CoordinationSubject) -> str:
     if subject.dependency_id is not None:
         return f"dependency {subject.dependency_id}"
     return f"Commitment Lineage {subject.commitment_lineage_id}"
+
+
+# --- The grouped Constraint Follow-up Plan (#333, ADR-0035/0038) ------------
+#
+# The Constraint page used to save Assigned To and Next Action as two
+# independent free-text submits.  One roster-backed Save now commits the
+# affected Coordination Decisions and their grouping receipt atomically, or
+# nothing.  The writers above remain the only plan authority; this command
+# only composes them under one optimistic predecessor check and one receipt.
+
+UNDO_FOLLOW_UP_PLAN = "undo_follow_up_plan"
+
+# The bounded project-language Next Action choices for a Constraint subject.
+# They reuse the sentence shapes of the guided statement flow's structured
+# choices with the adopted customer label "constraint" as the subject
+# (ADR-0048); free text is never the mechanism for a structured choice.
+FOLLOW_UP_NEXT_ACTION_CHOICES = (
+    "Confirm the stated timing with the organization",
+    "Coordinate this constraint with the organization",
+    "Obtain additional supporting documents for this constraint",
+)
+
+
+class FollowUpPlanRefusal(ValueError):
+    """The grouped Save or Undo refused; nothing was written."""
+
+
+class StaleFollowUpPlan(FollowUpPlanRefusal):
+    """A predecessor the screen showed is no longer current."""
+
+
+class FollowUpPlanUndoRefusal(FollowUpPlanRefusal):
+    """The grouped Undo refused; the original decisions stand."""
+
+
+@dataclass(frozen=True)
+class FollowUpPlanPredecessors:
+    """The exact plan chain tails the coordinator read before pressing Save."""
+
+    internal_owner_decision_id: int | None = None
+    next_action_decision_id: int | None = None
+
+    def as_json(self) -> dict[str, int | None]:
+        return {
+            "internal_owner_decision_id": self.internal_owner_decision_id,
+            "next_action_decision_id": self.next_action_decision_id,
+        }
+
+
+@dataclass(frozen=True)
+class FollowUpPlanDraft:
+    """The one public command input for a Constraint Follow-up Plan Save."""
+
+    dependency_id: int
+    internal_owner_roster_entry_id: int
+    next_action: str
+    action_due_date: date | None
+    action_due_date_unknown_reason: str | None
+    expected: FollowUpPlanPredecessors = FollowUpPlanPredecessors()
+
+
+@dataclass(frozen=True)
+class FollowUpPlanResult:
+    """The separately attributable rows created by one grouped plan Save.
+
+    A decision is ``None`` when that chain already recorded the same choice;
+    the receipt then names only the decisions this Save actually appended.
+    """
+
+    receipt: FollowUpPlanReceipt
+    internal_owner_decision: WorkDecision | None
+    next_action_decision: WorkDecision | None
+
+
+def save_follow_up_plan(
+    session: Session,
+    draft: FollowUpPlanDraft,
+    *,
+    principal: HumanPrincipal,
+) -> FollowUpPlanResult:
+    """Record one Constraint's Follow-up Plan as one atomic, stale-checked act."""
+    recorder = require_human_principal(principal)
+    try:
+        with session.begin_nested():
+            subject, dependency = _locked_subject(session, draft.dependency_id)
+            assert isinstance(dependency, Dependency)
+            roster_entry = _require_active_roster_entry(
+                session, dependency.project_id, draft.internal_owner_roster_entry_id
+            )
+            action = str(draft.next_action or "").strip()
+            if action not in FOLLOW_UP_NEXT_ACTION_CHOICES:
+                raise FollowUpPlanRefusal(
+                    "Next Action must be one structured project-language choice"
+                )
+            owner_tail = _tail(session, subject, INTERNAL_OWNER)
+            action_tail = _tail(session, subject, NEXT_ACTION)
+            _require_current_plan_predecessors(
+                dependency, owner_tail, action_tail, draft.expected
+            )
+            deferral_tail_before = _tail(session, subject, DEFERRAL)
+
+            owner_decision = assign_internal_owner(
+                session, subject, roster_entry.display_name, principal=recorder
+            )
+            action_decision = set_next_action(
+                session,
+                subject,
+                action,
+                due_date=draft.action_due_date,
+                due_date_unknown_reason=draft.action_due_date_unknown_reason,
+                principal=recorder,
+            )
+            owner_changed = owner_decision.id != _decision_row_id(owner_tail)
+            action_changed = action_decision.id != _decision_row_id(action_tail)
+            deferral_tail_after = _tail(session, subject, DEFERRAL)
+            resumed_deferral = (
+                deferral_tail_after
+                if deferral_tail_after is not None
+                and _decision_row_id(deferral_tail_after)
+                != _decision_row_id(deferral_tail_before)
+                and deferral_tail_after.decision_type == RESUME_WORK
+                else None
+            )
+            if not owner_changed and not action_changed and resumed_deferral is None:
+                raise FollowUpPlanRefusal(
+                    "this Follow-up Plan already records these exact choices; "
+                    "nothing would change"
+                )
+
+            audit_entry = audit.record(
+                session,
+                principal=recorder,
+                action=audit.SAVE_FOLLOW_UP_PLAN,
+                entity_type=audit.DEPENDENCY,
+                entity_id=dependency.id,
+                after={
+                    "internal_owner_decision_id": (
+                        owner_decision.id if owner_changed else None
+                    ),
+                    "next_action_decision_id": (
+                        action_decision.id if action_changed else None
+                    ),
+                    "resumed_deferral_decision_id": (
+                        resumed_deferral.id if resumed_deferral is not None else None
+                    ),
+                    "internal_owner_roster_entry_id": roster_entry.id,
+                },
+            )
+            receipt = FollowUpPlanReceipt(
+                dependency_id=dependency.id,
+                internal_owner_roster_entry_id=roster_entry.id,
+                internal_owner_decision_id=(
+                    owner_decision.id if owner_changed else None
+                ),
+                next_action_decision_id=(
+                    action_decision.id if action_changed else None
+                ),
+                resumed_deferral_decision_id=(
+                    resumed_deferral.id if resumed_deferral is not None else None
+                ),
+                audit_log_id=audit_entry.id,
+                expected_predecessors_json=draft.expected.as_json(),
+                recorded_by=recorder.subject,
+            )
+            session.add(receipt)
+            session.flush([receipt])
+    except FollowUpPlanRefusal:
+        raise
+    except (ValueError, IntegrityError) as exc:
+        raise FollowUpPlanRefusal(str(exc)) from exc
+    return FollowUpPlanResult(
+        receipt=receipt,
+        internal_owner_decision=owner_decision if owner_changed else None,
+        next_action_decision=action_decision if action_changed else None,
+    )
+
+
+def undo_follow_up_plan(
+    session: Session,
+    receipt_id: int,
+    *,
+    principal: HumanPrincipal,
+) -> FollowUpPlanReversal:
+    """Append the exact compensation for one immediately undoable plan Save.
+
+    The original decisions are preserved; the reversal appends one successor
+    decision per grouped chain restoring the value each chain held before the
+    Save.  It refuses atomically once any later act depends on a result of
+    the Save, and it never cascades through later work.
+    """
+    recorder = require_human_principal(principal)
+    receipt = session.get(FollowUpPlanReceipt, receipt_id)
+    if receipt is None:
+        raise FollowUpPlanUndoRefusal("the grouped plan Save receipt no longer exists")
+    try:
+        with session.begin_nested():
+            subject, dependency = _locked_subject(session, receipt.dependency_id)
+            assert isinstance(dependency, Dependency)
+            if (
+                session.scalar(
+                    select(FollowUpPlanReversal.id).where(
+                        FollowUpPlanReversal.receipt_id == receipt.id
+                    )
+                )
+                is not None
+            ):
+                raise FollowUpPlanUndoRefusal("this grouped Save was already undone")
+            undone = {
+                INTERNAL_OWNER: receipt.internal_owner_decision_id,
+                NEXT_ACTION: receipt.next_action_decision_id,
+                DEFERRAL: receipt.resumed_deferral_decision_id,
+            }
+            tails: dict[str, WorkDecision] = {}
+            for field_name, decision_id in undone.items():
+                if decision_id is None:
+                    continue
+                tail = _tail(session, subject, field_name)
+                if tail is None or tail.id != decision_id:
+                    raise FollowUpPlanUndoRefusal(
+                        "later Follow-up Plan work depends on this Save; "
+                        "use a targeted correction instead"
+                    )
+                tails[field_name] = tail
+            _require_no_later_plan_reference(session, receipt)
+
+            reversal_decisions: dict[str, WorkDecision] = {}
+            if INTERNAL_OWNER in tails:
+                tail = tails[INTERNAL_OWNER]
+                restored = tail.before_value
+                dependency.internal_owner = restored
+                reversal_decisions[INTERNAL_OWNER] = _append(
+                    session,
+                    subject,
+                    field=INTERNAL_OWNER,
+                    decision_type=UNDO_FOLLOW_UP_PLAN,
+                    after_value=restored,
+                    tail=tail,
+                    recorder=recorder,
+                    audit_action=audit.UNDO_FOLLOW_UP_PLAN,
+                )
+            if NEXT_ACTION in tails:
+                tail = tails[NEXT_ACTION]
+                restored = tail.before_value
+                predecessor = (
+                    session.get(WorkDecision, tail.predecessor_decision_id)
+                    if tail.predecessor_decision_id is not None
+                    else None
+                )
+                restored_reason = (
+                    predecessor.action_due_date_reason
+                    if predecessor is not None
+                    else None
+                )
+                if restored is None:
+                    dependency.next_action = None
+                    dependency.action_due_date = None
+                    dependency.action_due_date_reason = None
+                else:
+                    composite = json.loads(restored)
+                    dependency.next_action = composite["action"]
+                    dependency.action_due_date = (
+                        date.fromisoformat(composite["due_date"])
+                        if composite["due_date"]
+                        else None
+                    )
+                    dependency.action_due_date_reason = restored_reason
+                reversal_decisions[NEXT_ACTION] = _append(
+                    session,
+                    subject,
+                    field=NEXT_ACTION,
+                    decision_type=UNDO_FOLLOW_UP_PLAN,
+                    after_value=restored,
+                    tail=tail,
+                    recorder=recorder,
+                    audit_action=audit.UNDO_FOLLOW_UP_PLAN,
+                    action_due_date_reason=(
+                        restored_reason if restored is not None else None
+                    ),
+                )
+            if DEFERRAL in tails:
+                tail = tails[DEFERRAL]
+                restored = tail.before_value
+                if restored is not None:
+                    composite = json.loads(restored)
+                    dependency.deferral_reason = composite["reason"]
+                    dependency.deferral_return_date = date.fromisoformat(
+                        composite["return_date"]
+                    )
+                    reversal_decisions[DEFERRAL] = _append(
+                        session,
+                        subject,
+                        field=DEFERRAL,
+                        decision_type=UNDO_FOLLOW_UP_PLAN,
+                        after_value=restored,
+                        tail=tail,
+                        recorder=recorder,
+                        audit_action=audit.UNDO_FOLLOW_UP_PLAN,
+                        deferral_reason=composite["reason"],
+                        deferral_return_date=date.fromisoformat(
+                            composite["return_date"]
+                        ),
+                    )
+
+            audit_entry = audit.record(
+                session,
+                principal=recorder,
+                action=audit.UNDO_FOLLOW_UP_PLAN,
+                entity_type=audit.DEPENDENCY,
+                entity_id=dependency.id,
+                before={"follow_up_plan_receipt_id": receipt.id},
+                after={
+                    "follow_up_plan_receipt_id": receipt.id,
+                    "reversal_decision_ids": sorted(
+                        decision.id for decision in reversal_decisions.values()
+                    ),
+                },
+            )
+            reversal = FollowUpPlanReversal(
+                receipt_id=receipt.id,
+                internal_owner_reversal_decision_id=_decision_row_id(
+                    reversal_decisions.get(INTERNAL_OWNER)
+                ),
+                next_action_reversal_decision_id=_decision_row_id(
+                    reversal_decisions.get(NEXT_ACTION)
+                ),
+                deferral_reversal_decision_id=_decision_row_id(
+                    reversal_decisions.get(DEFERRAL)
+                ),
+                audit_log_id=audit_entry.id,
+                recorded_by=recorder.subject,
+            )
+            session.add(reversal)
+            session.flush([reversal])
+    except FollowUpPlanUndoRefusal:
+        raise
+    except (ValueError, IntegrityError) as exc:
+        raise FollowUpPlanUndoRefusal(str(exc)) from exc
+    return reversal
+
+
+def current_follow_up_plan_receipt(
+    session: Session, dependency_id: int
+) -> FollowUpPlanReceipt | None:
+    """The newest grouped plan Save for this Constraint that was not undone."""
+    return session.scalar(
+        select(FollowUpPlanReceipt)
+        .where(
+            FollowUpPlanReceipt.dependency_id == dependency_id,
+            ~select(FollowUpPlanReversal.id)
+            .where(FollowUpPlanReversal.receipt_id == FollowUpPlanReceipt.id)
+            .exists(),
+        )
+        .order_by(FollowUpPlanReceipt.id.desc())
+        .limit(1)
+    )
+
+
+def _require_active_roster_entry(
+    session: Session, project_id: int, roster_entry_id: int
+) -> ProjectRosterEntry:
+    """Assigned To is a stable roster identity, never a caller-supplied string."""
+    if isinstance(roster_entry_id, bool) or not isinstance(roster_entry_id, int):
+        raise FollowUpPlanRefusal(
+            "Assigned To must be selected from this project's active roster"
+        )
+    entry = session.get(ProjectRosterEntry, roster_entry_id)
+    if entry is None or entry.project_id != project_id or not entry.active:
+        raise FollowUpPlanRefusal(
+            "Assigned To must be selected from this project's active roster"
+        )
+    try:
+        HumanPrincipal(entry.principal_subject)
+    except InvalidHumanPrincipal as exc:
+        raise FollowUpPlanRefusal(
+            "the selected project roster entry has no valid human identity"
+        ) from exc
+    return entry
+
+
+def _require_current_plan_predecessors(
+    dependency: Dependency,
+    owner_tail: WorkDecision | None,
+    action_tail: WorkDecision | None,
+    expected: FollowUpPlanPredecessors,
+) -> None:
+    if (
+        _decision_row_id(owner_tail) == expected.internal_owner_decision_id
+        and _decision_row_id(action_tail) == expected.next_action_decision_id
+    ):
+        return
+    current = []
+    current.append(
+        f"Assigned To is now {dependency.internal_owner}"
+        if dependency.internal_owner
+        else "Assigned To is now unassigned"
+    )
+    current.append(
+        f"Next Action is now {dependency.next_action}"
+        if dependency.next_action
+        else "no Next Action is recorded"
+    )
+    raise StaleFollowUpPlan(
+        "someone changed this Follow-up Plan after this screen was read; "
+        "nothing was saved. " + "; ".join(current) + "."
+    )
+
+
+def _require_no_later_plan_reference(
+    session: Session, receipt: FollowUpPlanReceipt
+) -> None:
+    """Refuse Undo once a later recorded act names an exact result of this Save."""
+    referenced_ids = {
+        "follow_up_plan_receipt_id": {receipt.id},
+        "work_decision_id": {
+            receipt.internal_owner_decision_id,
+            receipt.next_action_decision_id,
+            receipt.resumed_deferral_decision_id,
+        }
+        - {None},
+    }
+    later_audits = session.scalars(
+        select(AuditLog).where(
+            AuditLog.id > receipt.audit_log_id,
+            AuditLog.action != audit.PRODUCT_PROVING_FRONTEND_REQUEST,
+        )
+    )
+    if any(
+        audit.references_typed_ids(entry.after_json, referenced_ids)
+        or audit.references_typed_ids(entry.before_json, referenced_ids)
+        for entry in later_audits
+    ):
+        raise FollowUpPlanUndoRefusal(
+            "a later recorded act depends on this Save; "
+            "use a targeted correction instead"
+        )
+
+
+def _decision_row_id(decision: WorkDecision | None) -> int | None:
+    return decision.id if decision is not None else None

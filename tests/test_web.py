@@ -56,9 +56,71 @@ from corridor.supersession import SupersessionDeclaration, register_supersession
 from corridor.supersession_review import build_reviewer_worklist
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.queue import build_view, next_candidate, pending_counts
+from corridor.work_decisions import (
+    FOLLOW_UP_NEXT_ACTION_CHOICES,
+    current_internal_owner_decision,
+    current_next_action_decision,
+)
+from corridor.models import ProjectRosterEntry
 from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
+PLAN_ACTION = FOLLOW_UP_NEXT_ACTION_CHOICES[0]
+
+
+def _plan_assignee(session, project, name="Dana Fields"):
+    """One active roster identity behind the displayed assignee name."""
+    entry = session.scalars(
+        select(ProjectRosterEntry).where(
+            ProjectRosterEntry.project_id == project.id,
+            ProjectRosterEntry.display_name == name,
+        )
+    ).first()
+    if entry is None:
+        entry = ProjectRosterEntry(
+            project_id=project.id,
+            principal_subject=f"local:{name.lower().replace(' ', '-')}",
+            display_name=name,
+        )
+        session.add(entry)
+        session.flush()
+    return entry
+
+
+def _save_plan(
+    client,
+    session,
+    project,
+    dependency_id,
+    *,
+    owner="Dana Fields",
+    next_action=PLAN_ACTION,
+    due_date="",
+    due_date_unknown_reason="",
+    redirect_to="",
+):
+    """Save the whole roster-backed Follow-up Plan the way the form does."""
+    entry = _plan_assignee(session, project, owner)
+    owner_tail = current_internal_owner_decision(session, dependency_id)
+    action_tail = current_next_action_decision(session, dependency_id)
+    return client.post(
+        f"/dependencies/{dependency_id}/plan",
+        data={
+            "slug": project.slug,
+            "internal_owner_roster_entry_id": str(entry.id),
+            "next_action": next_action,
+            "action_due_date": due_date,
+            "action_due_date_unknown_reason": due_date_unknown_reason,
+            "expected_internal_owner_decision_id": (
+                str(owner_tail.id) if owner_tail else ""
+            ),
+            "expected_next_action_decision_id": (
+                str(action_tail.id) if action_tail else ""
+            ),
+            "redirect_to": redirect_to,
+        },
+        follow_redirects=False,
+    )
 
 
 @pytest.fixture
@@ -2740,11 +2802,7 @@ def test_the_record_view_assigns_an_owner_as_a_visible_project_decision(
     page = client.get(f"/ledger/{project.slug}/{dep.id}").text
     assert "unassigned" in page
 
-    response = client.post(
-        f"/dependencies/{dep.id}/owner",
-        data={"slug": project.slug, "owner": "Dana Fields"},
-        follow_redirects=False,
-    )
+    response = _save_plan(client, session, project, dep.id, due_date="2026-09-01")
     assert response.status_code == 303
 
     page = client.get(f"/ledger/{project.slug}/{dep.id}").text
@@ -2753,7 +2811,7 @@ def test_the_record_view_assigns_an_owner_as_a_visible_project_decision(
     assert TEST_PRINCIPAL.subject in page
 
 
-def test_a_blank_owner_refuses_at_the_form_boundary(session, client, project):
+def test_a_blank_assignee_refuses_at_the_form_boundary(session, client, project):
     dep = Dependency(
         project_id=project.id,
         ref_code="WD-WEB-2",
@@ -2764,8 +2822,13 @@ def test_a_blank_owner_refuses_at_the_form_boundary(session, client, project):
     session.flush()
 
     response = client.post(
-        f"/dependencies/{dep.id}/owner",
-        data={"slug": project.slug, "owner": "   "},
+        f"/dependencies/{dep.id}/plan",
+        data={
+            "slug": project.slug,
+            "internal_owner_roster_entry_id": "",
+            "next_action": PLAN_ACTION,
+            "action_due_date": "2026-09-01",
+        },
         follow_redirects=False,
     )
     assert response.status_code == 400
@@ -2783,18 +2846,12 @@ def test_the_action_lifecycle_runs_from_the_record_view(session, client, project
     session.add(dep)
     session.flush()
 
-    set_response = client.post(
-        f"/dependencies/{dep.id}/action",
-        data={
-            "slug": project.slug,
-            "action": "Request relocation schedule",
-            "due_date": "2026-09-01",
-        },
-        follow_redirects=False,
+    set_response = _save_plan(
+        client, session, project, dep.id, due_date="2026-09-01"
     )
     assert set_response.status_code == 303
     page = client.get(f"/ledger/{project.slug}/{dep.id}").text
-    assert "Request relocation schedule" in page
+    assert PLAN_ACTION in page
     assert "due 2026-09-01" in page
 
     done = client.post(
@@ -3049,35 +3106,21 @@ def test_accept_flows_into_the_coordination_strip_and_back(session, client, proj
     assert "assigned to" in page
 
     dependency_id = int(location.rsplit("coordinate=", 1)[1])
-    assigned = client.post(
-        f"/dependencies/{dependency_id}/owner",
-        data={
-            "slug": project.slug,
-            "owner": "Dana Fields",
-            "redirect_to": location,
-        },
-        follow_redirects=False,
+    saved = _save_plan(
+        client,
+        session,
+        project,
+        dependency_id,
+        due_date="2026-09-01",
+        redirect_to=lane,
     )
-    assert assigned.status_code == 303
-    assert assigned.headers["location"] == location
-
-    acted = client.post(
-        f"/dependencies/{dependency_id}/action",
-        data={
-            "slug": project.slug,
-            "action": "Confirm the crossing schedule",
-            "due_date": "2026-09-01",
-            "redirect_to": lane,
-        },
-        follow_redirects=False,
-    )
-    assert acted.status_code == 303
-    assert acted.headers["location"] == lane
+    assert saved.status_code == 303
+    assert saved.headers["location"] == lane
 
     dep = session.get(Dependency, dependency_id)
     session.refresh(dep)
     assert dep.internal_owner == "Dana Fields"
-    assert dep.next_action == "Confirm the crossing schedule"
+    assert dep.next_action == PLAN_ACTION
 
 
 def test_decided_rehearsal_cohort_resumes_admitted_dependency_coordination(
@@ -3109,8 +3152,8 @@ def test_decided_rehearsal_cohort_resumes_admitted_dependency_coordination(
     continued = client.get(f"{lane}&coordinate={dependency_id}").text
     assert "Recorded" in continued
     assert "assigned to" in continued
-    assert 'name="owner"' in continued
-    assert 'name="action"' in continued
+    assert 'name="internal_owner_roster_entry_id"' in continued
+    assert 'name="next_action"' in continued
 
 
 def test_decided_rehearsal_cohort_keeps_coordinated_dependency_openable(
@@ -3127,19 +3170,12 @@ def test_decided_rehearsal_cohort_keeps_coordinated_dependency_openable(
         follow_redirects=False,
     )
     dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
-    client.post(
-        f"/dependencies/{dependency_id}/owner",
-        data={"slug": project.slug, "owner": "Dana Fields"},
-        follow_redirects=False,
-    )
-    client.post(
-        f"/dependencies/{dependency_id}/action",
-        data={
-            "slug": project.slug,
-            "action": "Confirm the crossing schedule",
-            "due_date_unknown_reason": "awaiting_schedule_information",
-        },
-        follow_redirects=False,
+    _save_plan(
+        client,
+        session,
+        project,
+        dependency_id,
+        due_date_unknown_reason="awaiting_schedule_information",
     )
 
     page = client.get(lane).text
@@ -3197,19 +3233,12 @@ def test_decided_rehearsal_cohort_does_not_hide_a_mixed_unresolved_member(
         follow_redirects=False,
     )
     dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
-    client.post(
-        f"/dependencies/{dependency_id}/owner",
-        data={"slug": project.slug, "owner": "Dana Fields"},
-        follow_redirects=False,
-    )
-    client.post(
-        f"/dependencies/{dependency_id}/action",
-        data={
-            "slug": project.slug,
-            "action": "Confirm the crossing schedule",
-            "due_date_unknown_reason": "awaiting_schedule_information",
-        },
-        follow_redirects=False,
+    _save_plan(
+        client,
+        session,
+        project,
+        dependency_id,
+        due_date_unknown_reason="awaiting_schedule_information",
     )
     w5.state = "accepted"
     session.flush([w5])
@@ -3245,19 +3274,12 @@ def test_decided_rehearsal_cohort_orders_incomplete_before_coordinated(
         admitted[utility_id] = int(
             response.headers["location"].rsplit("coordinate=", 1)[1]
         )
-    client.post(
-        f"/dependencies/{admitted['W4']}/owner",
-        data={"slug": project.slug, "owner": "Dana Fields"},
-        follow_redirects=False,
-    )
-    client.post(
-        f"/dependencies/{admitted['W4']}/action",
-        data={
-            "slug": project.slug,
-            "action": "Confirm the crossing schedule",
-            "due_date_unknown_reason": "awaiting_schedule_information",
-        },
-        follow_redirects=False,
+    _save_plan(
+        client,
+        session,
+        project,
+        admitted["W4"],
+        due_date_unknown_reason="awaiting_schedule_information",
     )
 
     page = client.get(
@@ -3280,21 +3302,20 @@ def test_rehearsal_cohort_focuses_the_first_missing_coordination_field(
         data={"slug": project.slug, "cohort_receipt_id": str(receipt.id)},
         follow_redirects=False,
     )
-    dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
-    client.post(
-        f"/dependencies/{dependency_id}/owner",
-        data={"slug": project.slug, "owner": "Dana Fields"},
-        follow_redirects=False,
-    )
+    int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
 
     page = client.get(
         f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
     ).text
-    owner_input = page.split('name="owner"', 1)[1].split(">", 1)[0]
-    action_input = page.split('name="action"', 1)[1].split(">", 1)[0]
 
-    assert "autofocus" not in owner_input
-    assert "autofocus" in action_input
+    # One roster-backed plan form, one Save; the free-text inputs are gone
+    # and the unassigned record focuses the assignee choice first.
+    assert 'name="owner"' not in page
+    assert 'name="action"' not in page
+    owner_select = page.split('name="internal_owner_roster_entry_id"', 1)[1].split(
+        ">", 1
+    )[0]
+    assert "autofocus" in owner_select
 
 
 def _link_href(page: str, label: str) -> str:
@@ -3352,11 +3373,19 @@ def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
     )
     detail = client.get(record_url).text
     return_url = _link_href(detail, "Back to test coordination")
-    action = f"/dependencies/{dependency_id}/owner"
+    action = f"/dependencies/{dependency_id}/plan"
     form = _rendered_form_data(detail, action)
 
     assert form["redirect_to"] == return_url
-    form["owner"] = "Dana Fields"
+    entry = _plan_assignee(session, project)
+    form.update(
+        {
+            "internal_owner_roster_entry_id": str(entry.id),
+            "next_action": PLAN_ACTION,
+            "action_due_date": "",
+            "action_due_date_unknown_reason": "awaiting_schedule_information",
+        }
+    )
     response = client.post(action, data=form, follow_redirects=False)
 
     assert response.status_code == 303
@@ -3364,22 +3393,6 @@ def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
     dependency = session.get(Dependency, dependency_id)
     session.refresh(dependency)
     assert dependency.internal_owner == "Dana Fields"
-
-    detail = client.get(record_url).text
-    action = f"/dependencies/{dependency_id}/action"
-    form = _rendered_form_data(detail, action)
-    assert form["redirect_to"] == return_url
-    form.update(
-        {
-            "action": "Confirm the crossing schedule",
-            "due_date": "",
-            "due_date_unknown_reason": "awaiting_schedule_information",
-        }
-    )
-    response = client.post(action, data=form, follow_redirects=False)
-
-    assert response.status_code == 303
-    assert response.headers["location"] == return_url
     next_action = session.scalar(
         select(WorkDecision).where(
             WorkDecision.dependency_id == dependency_id,
@@ -3388,7 +3401,7 @@ def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
     )
     assert next_action is not None
     assert json.loads(next_action.after_value) == {
-        "action": "Confirm the crossing schedule",
+        "action": PLAN_ACTION,
         "due_date": None,
     }
     assert next_action.action_due_date_reason == "awaiting_schedule_information"
@@ -3420,14 +3433,15 @@ def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
     assert completion.no_follow_up_reason == "no_immediate_follow_up"
 
     detail = client.get(record_url).text
-    action = f"/dependencies/{dependency_id}/action"
+    action = f"/dependencies/{dependency_id}/plan"
     form = _rendered_form_data(detail, action)
     assert form["redirect_to"] == return_url
     form.update(
         {
-            "action": "Prepare the targeted status request",
-            "due_date": "",
-            "due_date_unknown_reason": "awaiting_external_information",
+            "internal_owner_roster_entry_id": str(entry.id),
+            "next_action": FOLLOW_UP_NEXT_ACTION_CHOICES[1],
+            "action_due_date": "",
+            "action_due_date_unknown_reason": "awaiting_external_information",
         }
     )
     response = client.post(action, data=form, follow_redirects=False)
@@ -3446,7 +3460,7 @@ def test_cohort_carried_coordination_forms_return_to_the_exact_cohort(
     assert successor.id != next_action.id
     assert successor.predecessor_decision_id == completion.id
     assert json.loads(successor.after_value) == {
-        "action": "Prepare the targeted status request",
+        "action": FOLLOW_UP_NEXT_ACTION_CHOICES[1],
         "due_date": None,
     }
     assert successor.action_due_date_reason == "awaiting_external_information"
@@ -3512,7 +3526,7 @@ def test_rehearsal_cohort_exposes_record_evidence_and_exact_return(
 
     returned = client.get(return_url).text
     assert "Recorded" in returned
-    assert 'name="owner"' in returned
+    assert 'name="internal_owner_roster_entry_id"' in returned
     assert session.scalar(select(func.count()).select_from(AuditLog)) == before_audit
     assert (
         session.scalar(select(func.count()).select_from(WorkDecision))
@@ -3560,19 +3574,12 @@ def test_coordinated_cohort_record_returns_to_the_cohort_summary(
         follow_redirects=False,
     )
     dependency_id = int(accepted.headers["location"].rsplit("coordinate=", 1)[1])
-    client.post(
-        f"/dependencies/{dependency_id}/owner",
-        data={"slug": project.slug, "owner": "Dana Fields"},
-        follow_redirects=False,
-    )
-    client.post(
-        f"/dependencies/{dependency_id}/action",
-        data={
-            "slug": project.slug,
-            "action": "Confirm the crossing schedule",
-            "due_date_unknown_reason": "awaiting_schedule_information",
-        },
-        follow_redirects=False,
+    _save_plan(
+        client,
+        session,
+        project,
+        dependency_id,
+        due_date_unknown_reason="awaiting_schedule_information",
     )
     lane = f"/queue/{project.slug}?lane=rehearsal&cohort_receipt_id={receipt.id}"
 
@@ -3881,13 +3888,12 @@ def test_rehearsal_cohort_does_not_open_a_dependency_outside_its_receipt(
 
 
 _COORDINATION_FORM_SUBMISSIONS = (
-    ("owner", {"owner": "Dana Fields"}),
     (
-        "action",
+        "plan",
         {
-            "action": "Replace the current action",
-            "due_date": "",
-            "due_date_unknown_reason": "date_not_yet_known",
+            "next_action": PLAN_ACTION,
+            "action_due_date": "",
+            "action_due_date_unknown_reason": "date_not_yet_known",
         },
     ),
     (
@@ -3904,14 +3910,17 @@ _COORDINATION_FORM_SUBMISSIONS = (
 )
 
 
-def _seed_next_action_from_detail(client, detail_url: str, dependency_id: int):
-    action_path = f"/dependencies/{dependency_id}/action"
+def _seed_next_action_from_detail(client, session, project, detail_url, dependency_id):
+    action_path = f"/dependencies/{dependency_id}/plan"
     form = _rendered_form_data(client.get(detail_url).text, action_path)
     form.update(
         {
-            "action": "Confirm the crossing schedule",
-            "due_date": "",
-            "due_date_unknown_reason": "awaiting_schedule_information",
+            "internal_owner_roster_entry_id": str(
+                _plan_assignee(session, project).id
+            ),
+            "next_action": PLAN_ACTION,
+            "action_due_date": "",
+            "action_due_date_unknown_reason": "awaiting_schedule_information",
         }
     )
     response = client.post(action_path, data=form, follow_redirects=False)
@@ -3937,12 +3946,17 @@ def test_direct_coordination_forms_fall_back_to_dependency_detail(
     detail_url = f"/ledger/{project.slug}/{dep.id}"
 
     if path_suffix in {"action/complete", "action/cancel"}:
-        _seed_next_action_from_detail(client, detail_url, dep.id)
+        _seed_next_action_from_detail(client, session, project, detail_url, dep.id)
 
     action_path = f"/dependencies/{dep.id}/{path_suffix}"
     form = _rendered_form_data(client.get(detail_url).text, action_path)
     assert "redirect_to" not in form
     form.update(submitted)
+    if path_suffix == "plan":
+        form["internal_owner_roster_entry_id"] = str(
+            _plan_assignee(session, project).id
+        )
+        form["next_action"] = FOLLOW_UP_NEXT_ACTION_CHOICES[1]
 
     response = client.post(action_path, data=form, follow_redirects=False)
 
@@ -3972,11 +3986,16 @@ def test_unsafe_coordination_form_return_is_rejected_before_any_write(
 
     detail_url = f"/ledger/{project.slug}/{dep.id}"
     if path_suffix in {"action/complete", "action/cancel"}:
-        _seed_next_action_from_detail(client, detail_url, dep.id)
+        _seed_next_action_from_detail(client, session, project, detail_url, dep.id)
 
     action_path = f"/dependencies/{dep.id}/{path_suffix}"
     form = _rendered_form_data(client.get(detail_url).text, action_path)
     form.update(submitted)
+    if path_suffix == "plan":
+        form["internal_owner_roster_entry_id"] = str(
+            _plan_assignee(session, project).id
+        )
+        form["next_action"] = FOLLOW_UP_NEXT_ACTION_CHOICES[1]
     form["redirect_to"] = unsafe_return
     before_decisions = session.scalar(select(func.count()).select_from(WorkDecision))
     before_projection = (
@@ -4168,8 +4187,8 @@ def test_event_lane_accept_still_opens_the_admitted_dependency(
     assert "coordinate=" in accepted.headers["location"]
     page = client.get(accepted.headers["location"]).text
     assert "Recorded" in page
-    assert 'name="owner"' in page
-    assert 'name="action"' in page
+    assert 'name="internal_owner_roster_entry_id"' in page
+    assert 'name="next_action"' in page
     assert "Prepare coordination report (opens in new tab)" not in page
 
 
@@ -5328,15 +5347,14 @@ def test_dismissing_twice_refuses(session, client, project, document):
 
 def _coordinated_record(session, client, project, document, *, owner, action):
     dependency = _record_on_the_list(session, project, document)
-    client.post(
-        f"/dependencies/{dependency.id}/owner",
-        data={"slug": project.slug, "owner": owner},
-        follow_redirects=False,
-    )
-    client.post(
-        f"/dependencies/{dependency.id}/action",
-        data={"slug": project.slug, "action": action, "due_date": "2026-01-05"},
-        follow_redirects=False,
+    _save_plan(
+        client,
+        session,
+        project,
+        dependency.id,
+        owner=owner,
+        next_action=action,
+        due_date="2026-01-05",
     )
     session.refresh(dependency)
     return dependency
@@ -5353,12 +5371,12 @@ def test_the_list_shows_who_owns_it_and_what_is_next(
         project,
         document,
         owner="Dana Reyes",
-        action="call the utility about relocation",
+        action=PLAN_ACTION,
     )
 
     page = client.get(f"/ledger/{project.slug}").text
     assert "Dana Reyes" in page
-    assert "call the utility about relocation" in page
+    assert PLAN_ACTION in page
     assert "by 2026-01-05" in page
 
 
@@ -5366,7 +5384,7 @@ def test_the_list_can_be_narrowed_to_one_persons_work(
     session, client, project, document
 ):
     _coordinated_record(
-        session, client, project, document, owner="Dana Reyes", action="call"
+        session, client, project, document, owner="Dana Reyes", action=PLAN_ACTION
     )
 
     mine = client.get(f"/ledger/{project.slug}?owner=Dana+Reyes").text
@@ -5391,7 +5409,7 @@ def test_an_assigned_record_leaves_the_unassigned_list(
     session, client, project, document
 ):
     _coordinated_record(
-        session, client, project, document, owner="Dana Reyes", action="call"
+        session, client, project, document, owner="Dana Reyes", action=PLAN_ACTION
     )
 
     unassigned = client.get(f"/ledger/{project.slug}?owner=unassigned").text
@@ -5402,7 +5420,7 @@ def test_the_owner_filter_offers_only_people_this_project_assigned(
     session, client, project, document
 ):
     _coordinated_record(
-        session, client, project, document, owner="Dana Reyes", action="call"
+        session, client, project, document, owner="Dana Reyes", action=PLAN_ACTION
     )
 
     page = client.get(f"/ledger/{project.slug}").text
@@ -5414,7 +5432,7 @@ def test_a_dismissed_record_is_not_offered_as_someones_work(
     session, client, project, document
 ):
     dependency = _coordinated_record(
-        session, client, project, document, owner="Dana Reyes", action="call"
+        session, client, project, document, owner="Dana Reyes", action=PLAN_ACTION
     )
     client.post(
         f"/ledger/{project.slug}/{dependency.id}/dismiss",
@@ -5460,11 +5478,7 @@ def test_a_dismissed_record_refuses_work_decisions(session, client, project, doc
         follow_redirects=False,
     )
 
-    refused = client.post(
-        f"/dependencies/{dependency.id}/owner",
-        data={"slug": project.slug, "owner": "Dana Reyes"},
-        follow_redirects=False,
-    )
+    refused = _save_plan(client, session, project, dependency.id, owner="Dana Reyes")
     assert refused.status_code == 400
     session.refresh(dependency)
     assert dependency.internal_owner is None

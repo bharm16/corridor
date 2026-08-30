@@ -26,7 +26,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 pytestmark = pytest.mark.slow
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f367a8c1d2e4"
-HEAD = "b5d1e2f3a5c6"
+HEAD = "c9e4f2a7b153"
 
 
 def _url(database) -> str:

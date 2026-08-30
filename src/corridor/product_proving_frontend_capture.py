@@ -251,6 +251,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "POST",
         frozenset({303, 400}),
     ),
+    "save_dependency_follow_up_plan": (
+        "/dependencies/{dependency_id}/plan",
+        "POST",
+        frozenset({303}),
+    ),
     "processing_operations": ("/operations/{slug}", "GET", frozenset({200})),
     "declare_operations_active_run": (
         "/operations/{slug}/runs/{document_id}/declare",
@@ -264,16 +269,6 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
     ),
     "lift_operations_unknown_scope": (
         "/operations/{slug}/unknown-scope/lift",
-        "POST",
-        frozenset({303}),
-    ),
-    "assign_owner": (
-        "/dependencies/{dependency_id}/owner",
-        "POST",
-        frozenset({303}),
-    ),
-    "record_next_action": (
-        "/dependencies/{dependency_id}/action",
         "POST",
         frozenset({303}),
     ),
@@ -2707,16 +2702,25 @@ def _observe_frontend_requests(
         )
     for decision in decision_changes:
         matching_routes = {
-            "assign_owner",
-            "record_next_action",
+            "save_dependency_follow_up_plan",
             "save_admitted_statement_owner",
             "save_admitted_statement_next_action",
         }
+        # One grouped Follow-up Plan Save commits several Work Decisions but
+        # is one frontend act; its receipt names the Constraint it acted on,
+        # so sibling decisions of the same grouped Save match through it.
         if not any(
             item.route_name in matching_routes
             and item.method == "POST"
             and item.status == 303
-            and item.subject.get("work_decision_id") == decision.successor_decision_id
+            and (
+                item.subject.get("work_decision_id") == decision.successor_decision_id
+                or (
+                    item.route_name == "save_dependency_follow_up_plan"
+                    and decision.dependency_id is not None
+                    and item.subject.get("dependency_id") == decision.dependency_id
+                )
+            )
             for item in observations
         ):
             raise ValueError("Work Decision change lacks its frontend request")

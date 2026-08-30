@@ -38,6 +38,7 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal
 from corridor.web import auth
 from corridor.web.app import app, get_session
+from corridor.work_decisions import FOLLOW_UP_NEXT_ACTION_CHOICES
 
 OPERATOR = HumanPrincipal("local:operations")
 
@@ -441,14 +442,22 @@ def test_coordination_member_can_coordinate_and_the_write_records_them(
 ):
     project = make_project(session)
     dependency = a_dependency(session, project)
-    enroll(session, project, "local:alice", "alice@example.test", [access.COORDINATION])
+    member = enroll(
+        session, project, "local:alice", "alice@example.test", [access.COORDINATION]
+    )
     sign_in(client, sender, "alice@example.test")
 
     # A form field claiming another principal must not be honored.
     response = authed_post(
         client,
-        f"/dependencies/{dependency.id}/owner",
-        {"slug": project.slug, "owner": "Field Lead", "principal": "local:someone-else"},
+        f"/dependencies/{dependency.id}/plan",
+        {
+            "slug": project.slug,
+            "internal_owner_roster_entry_id": str(member.id),
+            "next_action": FOLLOW_UP_NEXT_ACTION_CHOICES[0],
+            "action_due_date": "2026-09-01",
+            "principal": "local:someone-else",
+        },
     )
     assert response.status_code == 303
     recorded = session.scalars(
@@ -494,8 +503,8 @@ def test_documentation_review_alone_cannot_coordinate(client, session, sender):
 
     coordinate = authed_post(
         client,
-        f"/dependencies/{dependency.id}/owner",
-        {"slug": project.slug, "owner": "Field Lead"},
+        f"/dependencies/{dependency.id}/plan",
+        {"slug": project.slug, "next_action": FOLLOW_UP_NEXT_ACTION_CHOICES[0]},
     )
     assert coordinate.status_code == 403
     # The review designation itself passes its own gate (not a 403).
@@ -585,8 +594,8 @@ def test_external_release_alone_cannot_coordinate(client, session, sender):
 
     coordinate = authed_post(
         client,
-        f"/dependencies/{dependency.id}/owner",
-        {"slug": project.slug, "owner": "Field Lead"},
+        f"/dependencies/{dependency.id}/plan",
+        {"slug": project.slug, "next_action": FOLLOW_UP_NEXT_ACTION_CHOICES[0]},
     )
     assert coordinate.status_code == 403
     # The release designation passes its own gate (reaching the domain refusal).
@@ -607,8 +616,8 @@ def test_authenticated_write_without_a_csrf_token_is_refused(client, session, se
 
     # No X-CSRF-Token header and no csrf form field.
     response = client.post(
-        f"/dependencies/{dependency.id}/owner",
-        data={"slug": project.slug, "owner": "Field Lead"},
+        f"/dependencies/{dependency.id}/plan",
+        data={"slug": project.slug, "next_action": FOLLOW_UP_NEXT_ACTION_CHOICES[0]},
         follow_redirects=False,
     )
     assert response.status_code == 403
@@ -622,8 +631,8 @@ def test_a_forged_csrf_token_is_refused(client, session, sender):
     sign_in(client, sender, "alice@example.test")
 
     response = client.post(
-        f"/dependencies/{dependency.id}/owner",
-        data={"slug": project.slug, "owner": "Field Lead"},
+        f"/dependencies/{dependency.id}/plan",
+        data={"slug": project.slug, "next_action": FOLLOW_UP_NEXT_ACTION_CHOICES[0]},
         headers={auth.CSRF_HEADER: "not-the-real-token"},
         follow_redirects=False,
     )

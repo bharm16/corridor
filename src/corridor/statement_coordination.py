@@ -869,18 +869,7 @@ def _require_no_later_audited_save_reference(
 
 def _audit_references_save(value: object, referenced_ids: dict[str, set[int]]) -> bool:
     """Find a typed exact Save reference in append-only audit detail."""
-    if isinstance(value, dict):
-        return any(
-            key in referenced_ids
-            and isinstance(item, int)
-            and item in referenced_ids[key]
-            for key, item in value.items()
-        ) or any(
-            _audit_references_save(item, referenced_ids) for item in value.values()
-        )
-    if isinstance(value, list):
-        return any(_audit_references_save(item, referenced_ids) for item in value)
-    return False
+    return audit.references_typed_ids(value, referenced_ids)
 
 
 def _report_published_scoped_dependency(
