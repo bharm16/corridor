@@ -31,13 +31,18 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.statement_lifecycle import observe_current_statement
 from corridor.work_decisions import (
+    CoordinationDecisionRefusal,
     CoordinationSubject,
+    FOLLOW_UP_NEXT_ACTION_CHOICES,
+    StaleNextAction,
     assign_internal_owner,
     cancel_next_action,
     complete_next_action,
+    current_deferral_decision,
     current_internal_owner_decision,
     current_milestone_impact_decision,
     current_next_action_decision,
+    defer_work,
     set_milestone_impact,
     set_next_action,
 )
@@ -656,6 +661,140 @@ def test_action_closure_refuses_to_invent_structured_reasons(
         complete_next_action(session, subject, principal=RECORDER)
     with pytest.raises(ValueError, match="no-follow-up reason"):
         cancel_next_action(session, subject, principal=RECORDER)
+
+
+def test_close_binds_to_the_exact_action_the_coordinator_saw(
+    session, accepted_statement
+):
+    """A stale expected id refuses without closing a different action (#334)."""
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    action = set_next_action(
+        session, subject, "Call the party", due_date=date(2026, 8, 20),
+        principal=RECORDER,
+    )
+
+    with pytest.raises(StaleNextAction):
+        complete_next_action(
+            session,
+            subject,
+            no_follow_up_reason="no_immediate_follow_up",
+            expected_next_action_decision_id=action.id + 10_000,
+            principal=RECORDER,
+        )
+    # Nothing was written: the action the coordinator saw is still current.
+    assert current_next_action_decision(session, subject).id == action.id
+
+    completed = complete_next_action(
+        session,
+        subject,
+        no_follow_up_reason="no_immediate_follow_up",
+        expected_next_action_decision_id=action.id,
+        principal=RECORDER,
+    )
+    assert completed.predecessor_decision_id == action.id
+    assert current_next_action_decision(session, subject).after_value is None
+
+
+def test_a_repeated_close_cannot_close_a_later_action(session, accepted_statement):
+    """The same screen submitted twice must not close a newer action (#334)."""
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    first = set_next_action(
+        session, subject, "Call the party", due_date=date(2026, 8, 20),
+        principal=RECORDER,
+    )
+    complete_next_action(
+        session,
+        subject,
+        no_follow_up_reason="no_immediate_follow_up",
+        expected_next_action_decision_id=first.id,
+        principal=RECORDER,
+    )
+    second = set_next_action(
+        session, subject, "Confirm the revised schedule",
+        due_date_unknown_reason="awaiting_external_information", principal=RECORDER,
+    )
+
+    with pytest.raises(StaleNextAction):
+        complete_next_action(
+            session,
+            subject,
+            no_follow_up_reason="no_immediate_follow_up",
+            expected_next_action_decision_id=first.id,
+            principal=RECORDER,
+        )
+    assert current_next_action_decision(session, subject).id == second.id
+
+
+def test_a_permitted_successor_rejects_free_text(session, dependency):
+    """A close successor must be one bounded structured choice (#334, ADR-0035)."""
+    set_next_action(
+        session, dependency.id, FOLLOW_UP_NEXT_ACTION_CHOICES[0],
+        due_date=date(2026, 9, 1), principal=RECORDER,
+    )
+    with pytest.raises(CoordinationDecisionRefusal):
+        complete_next_action(
+            session,
+            dependency.id,
+            successor_action="call them again maybe",
+            permitted_successor_actions=FOLLOW_UP_NEXT_ACTION_CHOICES,
+            principal=RECORDER,
+        )
+    # The action is untouched by the refused free-text successor.
+    assert (
+        current_next_action_decision(session, dependency.id).after_value is not None
+    )
+
+    completed = complete_next_action(
+        session,
+        dependency.id,
+        successor_action=FOLLOW_UP_NEXT_ACTION_CHOICES[1],
+        successor_due_date=date(2026, 10, 1),
+        permitted_successor_actions=FOLLOW_UP_NEXT_ACTION_CHOICES,
+        principal=RECORDER,
+    )
+    assert completed.decision_type == "complete_next_action"
+    current = current_next_action_decision(session, dependency.id)
+    assert json.loads(current.after_value)["action"] == FOLLOW_UP_NEXT_ACTION_CHOICES[1]
+
+
+def test_deferral_binds_to_the_action_the_coordinator_saw(
+    session, accepted_statement
+):
+    """A stale deferral submission refuses instead of deferring a changed plan."""
+    subject = CoordinationSubject.statement(
+        accepted_statement.commitment_lineage_id
+    )
+    action = set_next_action(
+        session, subject, "Call the party", due_date=date(2026, 8, 20),
+        principal=RECORDER,
+    )
+
+    with pytest.raises(StaleNextAction):
+        defer_work(
+            session,
+            subject,
+            reason="waiting_for_information",
+            return_date=date(2026, 9, 1),
+            expected_next_action_decision_id=action.id + 10_000,
+            principal=RECORDER,
+        )
+    assert current_deferral_decision(session, subject) is None
+
+    deferral = defer_work(
+        session,
+        subject,
+        reason="waiting_for_information",
+        return_date=date(2026, 9, 1),
+        expected_next_action_decision_id=action.id,
+        principal=RECORDER,
+    )
+    assert deferral.deferral_return_date == date(2026, 9, 1)
+    # Deferral does not close the action; it stays the current live plan.
+    assert current_next_action_decision(session, subject).id == action.id
 
 
 def test_changing_only_the_unknown_due_date_reason_appends_a_new_receipt(

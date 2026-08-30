@@ -238,17 +238,23 @@ from corridor.organization_identity import (
 from corridor.work_decisions import (
     FOLLOW_UP_NEXT_ACTION_CHOICES,
     UNKNOWN_DUE_DATE_REASONS,
+    CANCELLATION_REASONS,
     CoordinationSubject,
+    DEFERRAL_REASONS,
+    NO_FOLLOW_UP_REASONS,
     FollowUpPlanDraft,
     FollowUpPlanPredecessors,
     FollowUpPlanRefusal,
     FollowUpPlanUndoRefusal,
     StaleFollowUpPlan,
+    StaleNextAction,
     cancel_next_action,
     complete_next_action,
+    current_deferral_decision,
     current_follow_up_plan_receipt,
     current_internal_owner_decision,
     current_next_action_decision,
+    defer_work,
     save_follow_up_plan,
     undo_follow_up_plan,
 )
@@ -291,7 +297,10 @@ from corridor.statement_coordination import (
     StatementCoordinationRefusal,
     StatementScopeCorrection,
     assign_admitted_statement_owner,
+    cancel_admitted_statement_next_action,
+    complete_admitted_statement_next_action,
     coordinate_statement,
+    defer_admitted_statement,
     correct_statement_facts,
     correct_statement_scope,
     keep_candidate_unresolved,
@@ -1291,6 +1300,147 @@ async def save_admitted_statement_next_action(
     return response
 
 
+@app.post("/statements/{slug}/{candidate_id}/admitted/complete")
+async def complete_admitted_statement(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Complete an accepted commitment's Next Action without closing the fact.
+
+    Completing internal work never establishes Completion Reported by an
+    External Organization; the statement, Applies To, and reports are
+    unchanged (ADR-0035/0038).
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    form = await request.form()
+    try:
+        complete_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=required_positive_form_id(
+                form, "expected_next_action_decision_id"
+            ),
+            principal=principal,
+            successor_action=str(form.get("successor_action") or "").strip() or None,
+            successor_due_date=optional_form_date(form, "successor_due_date"),
+            successor_due_date_unknown_reason=(
+                str(form.get("successor_due_date_unknown_reason") or "").strip() or None
+            ),
+            no_follow_up_reason=(
+                str(form.get("no_follow_up_reason") or "").strip() or None
+            ),
+            note=str(form.get("note") or "").strip() or None,
+        )
+    except StaleStatementCoordination as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=409
+        )
+    except (StatementCoordinationRefusal, ValueError) as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/admitted/cancel")
+async def cancel_admitted_statement(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Cancel an accepted commitment's Next Action with a structured reason."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    form = await request.form()
+    try:
+        cancel_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=required_positive_form_id(
+                form, "expected_next_action_decision_id"
+            ),
+            principal=principal,
+            cancellation_reason=(
+                str(form.get("cancellation_reason") or "").strip() or None
+            ),
+            successor_action=str(form.get("successor_action") or "").strip() or None,
+            successor_due_date=optional_form_date(form, "successor_due_date"),
+            successor_due_date_unknown_reason=(
+                str(form.get("successor_due_date_unknown_reason") or "").strip() or None
+            ),
+            no_follow_up_reason=(
+                str(form.get("no_follow_up_reason") or "").strip() or None
+            ),
+            note=str(form.get("note") or "").strip() or None,
+        )
+    except StaleStatementCoordination as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=409
+        )
+    except (StatementCoordinationRefusal, ValueError) as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
+@app.post("/statements/{slug}/{candidate_id}/admitted/defer")
+async def defer_admitted_statement_route(
+    request: Request,
+    slug: str,
+    candidate_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Defer an accepted commitment's immediate work to a stated return date."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    form = await request.form()
+    try:
+        return_date = optional_form_date(form, "return_date")
+        if return_date is None:
+            raise StatementCoordinationRefusal(
+                "a deferral needs a stated return date"
+            )
+        defer_admitted_statement(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=required_positive_form_id(
+                form, "expected_next_action_decision_id"
+            ),
+            reason=str(form.get("deferral_reason") or "").strip(),
+            return_date=return_date,
+            principal=principal,
+        )
+    except StaleStatementCoordination as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=409
+        )
+    except (StatementCoordinationRefusal, ValueError) as exc:
+        return _statement_coordination_screen(
+            request, session, project, candidate, error=str(exc), status_code=400
+        )
+    session.commit()
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
+
+
 @app.post("/statements/{slug}/{candidate_id}/coordination/{receipt_id}/undo")
 def undo_coordinated_statement(
     request: Request,
@@ -1674,6 +1824,13 @@ def _admitted_statement_template_context(
         "decision": coordination.next_decision,
         "authority_gap": coordination.authority_gap,
         "next_action_choices": coordination.next_action_choices,
+        "next_action_decision": coordination.next_action_decision,
+        "deferral_decision": coordination.deferral_decision,
+        "can_close_next_action": coordination.can_close_next_action,
+        "plan_unknown_date_reasons": sorted(UNKNOWN_DUE_DATE_REASONS),
+        "plan_no_follow_up_reasons": sorted(NO_FOLLOW_UP_REASONS),
+        "plan_cancellation_reasons": sorted(CANCELLATION_REASONS),
+        "plan_deferral_reasons": sorted(DEFERRAL_REASONS),
     }
 
 
@@ -4407,9 +4564,13 @@ def _dependency_detail_response(
             "view": view,
             "owner_decision": owner_decision,
             "action_decision": action_decision,
+            "deferral_decision": current_deferral_decision(session, dependency_id),
             "plan_roster": _active_project_roster(session, project.id),
             "plan_next_action_choices": FOLLOW_UP_NEXT_ACTION_CHOICES,
             "plan_unknown_date_reasons": sorted(UNKNOWN_DUE_DATE_REASONS),
+            "plan_no_follow_up_reasons": sorted(NO_FOLLOW_UP_REASONS),
+            "plan_cancellation_reasons": sorted(CANCELLATION_REASONS),
+            "plan_deferral_reasons": sorted(DEFERRAL_REASONS),
             "plan_receipt": current_follow_up_plan_receipt(session, dependency_id),
             "plan_error": plan_error,
             "sufficient_evidence_ids": {
@@ -4718,39 +4879,126 @@ def _optional_form_id(value: str) -> int | None:
         raise HTTPException(400, "a form identity must be a whole number")
 
 
+def _optional_form_date(value: str) -> date | None:
+    """A form's date field: an ISO date, or None when the field is empty."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(400, "a date field must be a valid date")
+
+
 @app.post("/dependencies/{dependency_id}/action/{outcome}")
 def close_next_action(
+    request: Request,
     dependency_id: int,
     outcome: Literal["complete", "cancel"],
     slug: str = Form(...),
     no_follow_up_reason: str = Form(""),
     cancellation_reason: str = Form(""),
+    successor_action: str = Form(""),
+    successor_due_date: str = Form(""),
+    successor_due_date_unknown_reason: str = Form(""),
+    note: str = Form(""),
+    expected_next_action_decision_id: str = Form(""),
     redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Completion and cancellation are distinct decisions, never one button."""
+    """Completion and cancellation are distinct decisions, never one button.
+
+    On an open Constraint each requires exactly the permitted successor Next
+    Action or a structured no-follow-up reason.  The closure binds to the exact
+    action the coordinator saw, so a stale, repeated, or cross-project submit
+    refuses without closing a different action (#334, ADR-0035/0038).
+    """
     project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
     return_location = _safe_return(
         redirect_to, f"/ledger/{slug}/{dependency_id}"
     )
+    parsed_successor_due_date = _optional_form_date(successor_due_date)
+    common = dict(
+        successor_action=successor_action.strip() or None,
+        successor_due_date=parsed_successor_due_date,
+        successor_due_date_unknown_reason=(
+            successor_due_date_unknown_reason.strip() or None
+        ),
+        no_follow_up_reason=no_follow_up_reason.strip() or None,
+        note=note.strip() or None,
+        expected_next_action_decision_id=_optional_form_id(
+            expected_next_action_decision_id
+        ),
+        permitted_successor_actions=FOLLOW_UP_NEXT_ACTION_CHOICES,
+    )
     try:
         if outcome == "complete":
             complete_next_action(
-                session,
-                dependency_id,
-                no_follow_up_reason=no_follow_up_reason.strip() or None,
-                principal=principal,
+                session, dependency_id, principal=principal, **common
             )
         else:
             cancel_next_action(
                 session,
                 dependency_id,
-                no_follow_up_reason=no_follow_up_reason.strip() or None,
-                cancellation_reason=cancellation_reason.strip() or None,
                 principal=principal,
+                cancellation_reason=cancellation_reason.strip() or None,
+                **common,
             )
+    except StaleNextAction as exc:
+        return _dependency_detail_response(
+            request, session, project, dependency_id, redirect_to,
+            plan_error=str(exc), status_code=409,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    session.commit()
+    return RedirectResponse(return_location, status_code=303)
+
+
+@app.post("/dependencies/{dependency_id}/defer")
+def defer_dependency_action(
+    request: Request,
+    dependency_id: int,
+    slug: str = Form(...),
+    deferral_reason: str = Form(""),
+    return_date: str = Form(""),
+    expected_next_action_decision_id: str = Form(""),
+    redirect_to: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Defer immediate work with a structured reason and a stated return date.
+
+    A deferral is a separate attributable decision, never a synonym for an
+    unknown Action Due Date: without a return date the work stays immediate
+    (#334, ADR-0035).
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    _project_dependency(session, project, dependency_id)
+    return_location = _safe_return(
+        redirect_to, f"/ledger/{slug}/{dependency_id}"
+    )
+    parsed_return_date = _optional_form_date(return_date)
+    if parsed_return_date is None:
+        raise HTTPException(400, "a deferral needs a return date")
+    try:
+        defer_work(
+            session,
+            dependency_id,
+            reason=deferral_reason.strip(),
+            return_date=parsed_return_date,
+            principal=principal,
+            expected_next_action_decision_id=_optional_form_id(
+                expected_next_action_decision_id
+            ),
+        )
+    except StaleNextAction as exc:
+        return _dependency_detail_response(
+            request, session, project, dependency_id, redirect_to,
+            plan_error=str(exc), status_code=409,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     session.commit()

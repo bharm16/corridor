@@ -59,25 +59,33 @@ from corridor.statement_suggestions import (
     declare_statement_suggestion_protection,
 )
 from corridor.work_list import build_work_list
+from corridor.event_admission import UNKNOWN_SCOPE_POLICY_VERSION, run_event_admission
 from corridor.statement_coordination import (
     CLOSURE_TARGET_RELATIONSHIP_GAP,
     StaleStatementCoordination,
     StatementCoordinationDraft,
     StatementCoordinationRefusal,
     StatementCoordinationUndoRefusal,
+    assign_admitted_statement_owner,
+    cancel_admitted_statement_next_action,
+    complete_admitted_statement_next_action,
     coordinate_statement,
     correct_statement_facts,
     correct_statement_scope,
+    defer_admitted_statement,
     mark_statement_not_relevant,
     keep_statement_unresolved,
     pending_statement_authority_gap,
+    read_admitted_statement_coordination,
     restore_statement_not_relevant,
+    set_admitted_statement_next_action,
     StatementFactCorrectionDraft,
     StatementScopeCorrection,
     undo_statement_coordination,
 )
 from corridor.work_decisions import (
     CoordinationSubject,
+    current_deferral_decision,
     current_internal_owner_decision,
     current_next_action_decision,
     set_next_action,
@@ -3058,3 +3066,536 @@ def test_a_moved_key_date_surfaces_on_a_decision_that_referenced_it(
     assert move.milestone_id == milestone.id
     assert move.prior_need_date == date(2026, 5, 1)
     assert move.new_need_date == date(2026, 9, 15)
+
+
+# --- Complete, cancel, and defer an accepted commitment's plan (#334) --------
+#
+# These exercise the mechanically admitted Commitment surface: its residual
+# owner and Next Action, then the internal complete, cancel, and deferral
+# decisions.  Internal work never closes the External Organization fact
+# (ADR-0035, ADR-0038).
+
+
+def _admitted_commitment(session, project, party):
+    """Mechanically admit one unknown-scope Commitment and return its Candidate."""
+    quote = f"{party.name} will provide the chain of title in June 2025."
+    document = _document(session, project, "admitted-commitment.pdf", quote)
+    _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "commitment",
+            "event_date": date(2025, 1, 16).isoformat(),
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+            "committed_date": {
+                "text": "June 2025",
+                "precision": "month",
+                "start_date": "2025-06-01",
+                "end_date": "2025-06-30",
+            },
+        },
+    )
+    result = run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    assert result.admitted_count == 1
+    return session.scalar(
+        select(Candidate).where(
+            Candidate.project_id == project.id, Candidate.kind == "event"
+        )
+    )
+
+
+def _plan_the_admitted_commitment(session, project, candidate, roster_entry, action):
+    """Drive the residual owner and Next Action, returning the coordination."""
+    assign_admitted_statement_owner(
+        session, project.id, candidate.id, roster_entry.id, principal=RECORDER
+    )
+    set_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        action,
+        due_date=None,
+        due_date_unknown_reason="date_not_yet_known",
+        principal=RECORDER,
+    )
+    return read_admitted_statement_coordination(session, project.id, candidate.id)
+
+
+def test_admitted_commitment_completes_with_an_optional_note(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    assert coordination.can_close_next_action
+
+    completed = complete_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        expected_next_action_decision_id=coordination.next_action_decision.id,
+        no_follow_up_reason="return_condition_recorded",
+        note="Confirmed on the weekly call.",
+        principal=RECORDER,
+    )
+
+    assert completed.decision_type == "complete_next_action"
+    assert completed.note == "Confirmed on the weekly call."
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    assert current_next_action_decision(session, subject).after_value is None
+
+
+def test_admitted_commitment_cancel_requires_a_structured_reason(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    expected = coordination.next_action_decision.id
+
+    # No structured reason: refused, nothing written.
+    with pytest.raises(StatementCoordinationRefusal):
+        cancel_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=expected,
+            no_follow_up_reason="no_immediate_follow_up",
+            principal=RECORDER,
+        )
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    assert current_next_action_decision(session, subject).id == expected
+
+    cancelled = cancel_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        expected_next_action_decision_id=expected,
+        cancellation_reason="superseded",
+        no_follow_up_reason="no_immediate_follow_up",
+        note="Replaced by a direct call.",
+        principal=RECORDER,
+    )
+    assert cancelled.cancellation_reason == "superseded"
+    assert cancelled.note == "Replaced by a direct call."
+
+
+def test_admitted_completion_requires_successor_or_no_follow_up(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    with pytest.raises(StatementCoordinationRefusal):
+        complete_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=coordination.next_action_decision.id,
+            principal=RECORDER,
+        )
+
+
+def test_admitted_completion_accepts_a_permitted_structured_successor(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    # Free text is refused even as a successor; a bounded choice is accepted.
+    with pytest.raises(StatementCoordinationRefusal):
+        complete_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=coordination.next_action_decision.id,
+            successor_action="just call them",
+            successor_due_date=date(2025, 7, 1),
+            principal=RECORDER,
+        )
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    completed = complete_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        expected_next_action_decision_id=coordination.next_action_decision.id,
+        successor_action="Coordinate the selected constraints",
+        successor_due_date=date(2025, 7, 1),
+        principal=RECORDER,
+    )
+    assert completed.decision_type == "complete_next_action"
+    current = current_next_action_decision(session, subject)
+    assert current.after_value is not None
+    assert "Coordinate the selected constraints" in current.after_value
+
+
+def test_completing_admitted_internal_work_leaves_the_external_fact_unchanged(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    statement_id = coordination.event.id
+    scope_id = coordination.scope.id
+
+    complete_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        expected_next_action_decision_id=coordination.next_action_decision.id,
+        no_follow_up_reason="return_condition_recorded",
+        principal=RECORDER,
+    )
+
+    # The External Organization statement, Applies To, and Completion Reported
+    # are all untouched; the open past-due fact stays in the work list.
+    after = read_admitted_statement_coordination(session, project.id, candidate.id)
+    assert after.event.id == statement_id
+    assert after.scope.id == scope_id
+    assert after.scope.scope_mode == "unknown"
+    assert not after.can_close_next_action
+    work_list = build_work_list(session, project.id, today=date(2025, 7, 1))
+    lineage_id = coordination.lineage.id
+    item = next(
+        entry for entry in work_list.immediate
+        if entry.commitment_lineage_id == lineage_id
+    )
+    assert item.past_due is not None
+
+
+def test_admitted_close_refuses_stale_and_duplicate_submissions(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    stale_expected = coordination.next_action_decision.id
+
+    # First completion succeeds.
+    complete_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        expected_next_action_decision_id=stale_expected,
+        no_follow_up_reason="no_immediate_follow_up",
+        principal=RECORDER,
+    )
+    # A duplicate submission of the same screen finds no live action to close.
+    with pytest.raises(StatementCoordinationRefusal):
+        complete_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=stale_expected,
+            no_follow_up_reason="no_immediate_follow_up",
+            principal=RECORDER,
+        )
+
+    # A fresh Next Action becomes current; the stale screen must not close it.
+    set_admitted_statement_next_action(
+        session,
+        project.id,
+        candidate.id,
+        "Coordinate the selected constraints",
+        due_date=None,
+        due_date_unknown_reason="date_not_yet_known",
+        principal=RECORDER,
+    )
+    current = read_admitted_statement_coordination(session, project.id, candidate.id)
+    with pytest.raises(StaleStatementCoordination):
+        complete_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=stale_expected,
+            no_follow_up_reason="no_immediate_follow_up",
+            principal=RECORDER,
+        )
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    assert (
+        current_next_action_decision(session, subject).id
+        == current.next_action_decision.id
+    )
+
+
+def test_admitted_commitment_defers_with_reason_and_return_date(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+
+    deferral = defer_admitted_statement(
+        session,
+        project.id,
+        candidate.id,
+        expected_next_action_decision_id=coordination.next_action_decision.id,
+        reason="waiting_for_external_party",
+        return_date=date(2025, 6, 1),
+        principal=RECORDER,
+    )
+    assert deferral.deferral_return_date == date(2025, 6, 1)
+    assert current_deferral_decision(session, subject).id == deferral.id
+    # The deferral does not close the action or the external fact.
+    assert current_next_action_decision(session, subject).after_value is not None
+
+
+def test_http_admitted_surface_exposes_complete_cancel_and_defer(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    expected = coordination.next_action_decision.id
+    lineage_id = coordination.lineage.id
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            page = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            assert page.status_code == 200
+            assert (
+                f"/statements/{project.slug}/{candidate.id}/admitted/complete"
+                in page.text
+            )
+            assert (
+                f"/statements/{project.slug}/{candidate.id}/admitted/defer"
+                in page.text
+            )
+
+            deferred = client.post(
+                f"/statements/{project.slug}/{candidate.id}/admitted/defer",
+                data={
+                    "expected_next_action_decision_id": str(expected),
+                    "deferral_reason": "waiting_for_external_party",
+                    "return_date": "2025-06-01",
+                },
+                follow_redirects=False,
+            )
+            assert deferred.status_code == 303
+
+            completed = client.post(
+                f"/statements/{project.slug}/{candidate.id}/admitted/complete",
+                data={
+                    "expected_next_action_decision_id": str(expected),
+                    "no_follow_up_reason": "return_condition_recorded",
+                    "note": "Confirmed by phone.",
+                },
+                follow_redirects=False,
+            )
+            assert completed.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    subject = CoordinationSubject.statement(lineage_id)
+    completion = current_next_action_decision(session, subject)
+    assert completion.after_value is None
+    assert completion.note == "Confirmed by phone."
+
+
+def test_http_admitted_close_refuses_a_stale_or_malformed_submission(
+    session, project, party, roster_entry
+):
+    candidate = _admitted_commitment(session, project, party)
+    coordination = _plan_the_admitted_commitment(
+        session,
+        project,
+        candidate,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            # A missing expected id is a malformed submission: refused, no close.
+            malformed = client.post(
+                f"/statements/{project.slug}/{candidate.id}/admitted/complete",
+                data={"no_follow_up_reason": "no_immediate_follow_up"},
+                follow_redirects=False,
+            )
+            assert malformed.status_code == 400
+
+            stale = client.post(
+                f"/statements/{project.slug}/{candidate.id}/admitted/complete",
+                data={
+                    "expected_next_action_decision_id": str(
+                        coordination.next_action_decision.id + 10_000
+                    ),
+                    "no_follow_up_reason": "no_immediate_follow_up",
+                },
+                follow_redirects=False,
+            )
+            assert stale.status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+    subject = CoordinationSubject.statement(coordination.lineage.id)
+    assert current_next_action_decision(session, subject).after_value is not None
+
+
+def test_a_pending_statement_cannot_acquire_a_close_control(
+    session, project, party
+):
+    """A proposal with no accepted plan cannot be completed or deferred (#334)."""
+    quote = f"{party.name} might provide the chain of title in June 2025."
+    document = _document(session, project, "pending-statement.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "commitment",
+            "event_date": date(2025, 1, 16).isoformat(),
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+        },
+    )
+    # No mechanical admission ran: there is no accepted commitment plan.
+    assert read_admitted_statement_coordination(
+        session, project.id, candidate.id
+    ) is None
+    with pytest.raises(StatementCoordinationRefusal):
+        complete_admitted_statement_next_action(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=1,
+            no_follow_up_reason="no_immediate_follow_up",
+            principal=RECORDER,
+        )
+    with pytest.raises(StatementCoordinationRefusal):
+        defer_admitted_statement(
+            session,
+            project.id,
+            candidate.id,
+            expected_next_action_decision_id=1,
+            reason="waiting_for_information",
+            return_date=date(2025, 6, 1),
+            principal=RECORDER,
+        )
+
+
+def test_a_close_bound_to_another_subjects_action_is_refused(
+    session, project, party, roster_entry
+):
+    """Passing a different subject's action id must not close this one (#334)."""
+    first = _admitted_commitment(session, project, party)
+    first_plan = _plan_the_admitted_commitment(
+        session,
+        project,
+        first,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+    other_party = ExternalOrg(name="Enterprise Products")
+    session.add(other_party)
+    session.flush()
+    quote = f"{other_party.name} will provide the chain of title in June 2025."
+    other_doc = _document(session, project, "other-commitment.pdf", quote)
+    _candidate(
+        session,
+        project,
+        other_doc,
+        quote=quote,
+        fields={
+            "event_type": "commitment",
+            "event_date": date(2025, 1, 16).isoformat(),
+            "description": quote,
+            "external_org": other_party.name,
+            "stated_party": other_party.name,
+            "committed_date": {
+                "text": "June 2025",
+                "precision": "month",
+                "start_date": "2025-06-01",
+                "end_date": "2025-06-30",
+            },
+        },
+    )
+    run_event_admission(
+        session, project.id, policy_version=UNKNOWN_SCOPE_POLICY_VERSION
+    )
+    other = session.scalar(
+        select(Candidate).where(
+            Candidate.project_id == project.id,
+            Candidate.kind == "event",
+            Candidate.id != first.id,
+        )
+    )
+    other_plan = _plan_the_admitted_commitment(
+        session,
+        project,
+        other,
+        roster_entry,
+        "Confirm the stated timing with the organization",
+    )
+
+    # Completing the first commitment with the second's action id is refused.
+    with pytest.raises(StaleStatementCoordination):
+        complete_admitted_statement_next_action(
+            session,
+            project.id,
+            first.id,
+            expected_next_action_decision_id=other_plan.next_action_decision.id,
+            no_follow_up_reason="no_immediate_follow_up",
+            principal=RECORDER,
+        )
+    first_subject = CoordinationSubject.statement(first_plan.lineage.id)
+    other_subject = CoordinationSubject.statement(other_plan.lineage.id)
+    assert current_next_action_decision(
+        session, first_subject
+    ).after_value is not None
+    assert current_next_action_decision(
+        session, other_subject
+    ).after_value is not None

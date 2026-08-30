@@ -33,6 +33,7 @@ from corridor.work_decisions import (
     FollowUpPlanUndoRefusal,
     StaleFollowUpPlan,
     complete_next_action,
+    current_deferral_decision,
     current_follow_up_plan_receipt,
     current_internal_owner_decision,
     current_next_action_decision,
@@ -563,3 +564,153 @@ def test_the_dissolved_free_text_routes_no_longer_exist(
     finally:
         _clear_overrides()
     assert _decisions(session, dependency) == []
+
+
+# --- Close, successor, note, and defer from the Constraint surface (#334) -----
+
+
+def test_the_constraint_page_completes_with_a_structured_successor_and_note(
+    session, project, dependency, roster_entry
+):
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    action = current_next_action_decision(session, dependency.id)
+    try:
+        with _client(session) as client:
+            page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+            assert f"/dependencies/{dependency.id}/action/complete" in page
+            assert f"/dependencies/{dependency.id}/defer" in page
+
+            completed = client.post(
+                f"/dependencies/{dependency.id}/action/complete",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": str(action.id),
+                    "successor_action": OTHER_ACTION,
+                    "successor_due_date": "2026-10-01",
+                    "note": "Closed on the site walk.",
+                },
+                follow_redirects=False,
+            )
+            assert completed.status_code == 303
+    finally:
+        _clear_overrides()
+
+    completion = session.scalar(
+        select(WorkDecision).where(
+            WorkDecision.dependency_id == dependency.id,
+            WorkDecision.decision_type == "complete_next_action",
+        )
+    )
+    assert completion.predecessor_decision_id == action.id
+    assert completion.note == "Closed on the site walk."
+    # The successor is the current live action, chained to the completion.
+    successor = current_next_action_decision(session, dependency.id)
+    assert successor.predecessor_decision_id == completion.id
+    assert OTHER_ACTION in successor.after_value
+
+
+def test_the_constraint_page_refuses_a_stale_close(
+    session, project, dependency, roster_entry
+):
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    stale = current_next_action_decision(session, dependency.id)
+    # The action the screen showed is replaced before the coordinator submits.
+    save_follow_up_plan(
+        session,
+        _draft(
+            dependency,
+            roster_entry,
+            next_action=OTHER_ACTION,
+            expected=FollowUpPlanPredecessors(
+                internal_owner_decision_id=current_internal_owner_decision(
+                    session, dependency.id
+                ).id,
+                next_action_decision_id=stale.id,
+            ),
+        ),
+        principal=RECORDER,
+    )
+    current = current_next_action_decision(session, dependency.id)
+    assert current.id != stale.id
+
+    try:
+        with _client(session) as client:
+            refused = client.post(
+                f"/dependencies/{dependency.id}/action/complete",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": str(stale.id),
+                    "no_follow_up_reason": "no_immediate_follow_up",
+                },
+                follow_redirects=False,
+            )
+            assert refused.status_code == 409
+    finally:
+        _clear_overrides()
+    # Nothing closed: the newer action is still current, unchanged.
+    assert current_next_action_decision(session, dependency.id).id == current.id
+
+
+def test_the_constraint_page_refuses_a_free_text_successor(
+    session, project, dependency, roster_entry
+):
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    action = current_next_action_decision(session, dependency.id)
+    try:
+        with _client(session) as client:
+            refused = client.post(
+                f"/dependencies/{dependency.id}/action/complete",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": str(action.id),
+                    "successor_action": "call them next week",
+                    "successor_due_date": "2026-10-01",
+                },
+                follow_redirects=False,
+            )
+            assert refused.status_code == 400
+    finally:
+        _clear_overrides()
+    assert current_next_action_decision(session, dependency.id).id == action.id
+
+
+def test_the_constraint_page_defers_with_a_reason_and_return_date(
+    session, project, dependency, roster_entry
+):
+    save_follow_up_plan(session, _draft(dependency, roster_entry), principal=RECORDER)
+    action = current_next_action_decision(session, dependency.id)
+    try:
+        with _client(session) as client:
+            # A deferral without a return date is refused: not a synonym for an
+            # unknown Action Due Date.
+            no_date = client.post(
+                f"/dependencies/{dependency.id}/defer",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": str(action.id),
+                    "deferral_reason": "waiting_for_information",
+                    "return_date": "",
+                },
+                follow_redirects=False,
+            )
+            assert no_date.status_code == 400
+            assert current_deferral_decision(session, dependency.id) is None
+
+            deferred = client.post(
+                f"/dependencies/{dependency.id}/defer",
+                data={
+                    "slug": project.slug,
+                    "expected_next_action_decision_id": str(action.id),
+                    "deferral_reason": "waiting_for_information",
+                    "return_date": "2026-10-01",
+                },
+                follow_redirects=False,
+            )
+            assert deferred.status_code == 303
+    finally:
+        _clear_overrides()
+    deferral = current_deferral_decision(session, dependency.id)
+    assert deferral.deferral_reason == "waiting_for_information"
+    assert deferral.deferral_return_date == date(2026, 10, 1)
+    # The action is untouched by the deferral.
+    assert current_next_action_decision(session, dependency.id).id == action.id

@@ -127,6 +127,78 @@
       <dt>Next Action</dt><dd>{{ lineage.next_action }}</dd>
       <dt>Action Due Date</dt><dd>{{ lineage.action_due_date or lineage.action_due_date_reason.replace('_', ' ').capitalize() }}</dd>
     </dl>
+    {% if deferral_decision %}
+      <p class="muted">Deferred ({{ deferral_decision.deferral_reason.replace('_', ' ') }}) —
+        returns {{ deferral_decision.deferral_return_date }}. Completing internal work
+        never closes the recorded Commitment.</p>
+    {% endif %}
+    {% if can_close_next_action %}
+      <h2>Complete, cancel, or defer the internal Next Action</h2>
+      <p class="muted">This records only the project's internal work. It never marks the
+        recorded Commitment reported, changes {{ label('applies_to') }}, or removes a
+        past-due fact from the reports.</p>
+      {% macro successor_fields() %}
+        <label>Successor Next Action (or choose a no-follow-up reason)
+          <select name="successor_action">
+            <option value="">no successor</option>
+            {% for choice in next_action_choices %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Successor Action Due Date <input name="successor_due_date" type="date"></label>
+        <label>If the successor has no date, why?
+          <select name="successor_due_date_unknown_reason">
+            <option value="">Choose only when no date is known</option>
+            {% for reason in plan_unknown_date_reasons %}<option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Or: no immediate follow-up because
+          <select name="no_follow_up_reason">
+            <option value="">Choose only when there is no successor</option>
+            {% for reason in plan_no_follow_up_reasons %}<option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Optional note <input name="note" type="text"></label>
+      {% endmacro %}
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/complete">
+      {{ csrf_field() }}
+        <fieldset>
+          <legend>Completed</legend>
+          <input type="hidden" name="expected_next_action_decision_id" value="{{ next_action_decision.id }}">
+          {{ successor_fields() }}
+          <button type="submit">Complete Next Action</button>
+        </fieldset>
+      </form>
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/cancel">
+      {{ csrf_field() }}
+        <fieldset>
+          <legend>Cancelled</legend>
+          <input type="hidden" name="expected_next_action_decision_id" value="{{ next_action_decision.id }}">
+          {{ successor_fields() }}
+          <label>Why cancel?
+            <select name="cancellation_reason" required>
+              <option value="">Choose a structured reason</option>
+              {% for reason in plan_cancellation_reasons %}<option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>{% endfor %}
+            </select>
+          </label>
+          <button type="submit">Cancel Next Action</button>
+        </fieldset>
+      </form>
+      <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/defer">
+      {{ csrf_field() }}
+        <fieldset>
+          <legend>Defer immediate work</legend>
+          <input type="hidden" name="expected_next_action_decision_id" value="{{ next_action_decision.id }}">
+          <label>Why can this wait?
+            <select name="deferral_reason" required>
+              <option value="">Choose a structured reason</option>
+              {% for reason in plan_deferral_reasons %}<option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Return date <input name="return_date" type="date" required></label>
+          <button type="submit">Defer</button>
+        </fieldset>
+      </form>
+    {% endif %}
   {% endif %}
 
 </main>

@@ -84,11 +84,17 @@ from corridor.statement_lifecycle import (
 )
 from corridor.verify import normalize
 from corridor.work_decisions import (
+    CoordinationDecisionRefusal,
     CoordinationSubject,
+    StaleNextAction,
     WorkDecision,
     assign_internal_owner,
+    cancel_next_action,
+    complete_next_action,
+    current_deferral_decision,
     current_internal_owner_decision,
     current_next_action_decision,
+    defer_work,
     set_milestone_impact,
     set_next_action,
 )
@@ -180,10 +186,24 @@ class AdmittedStatementCoordination:
     roster: tuple[ProjectRosterEntry, ...]
     next_decision: str | None
     authority_gap: str | None
+    # The live Next Action a coordinator may now complete, cancel, or defer,
+    # and the current deferral if immediate work was already delayed.  These
+    # are the exact Coordination Decision tails the close and deferral commands
+    # bind to, never the lineage projection alone (ADR-0038).
+    next_action_decision: WorkDecision | None = None
+    deferral_decision: WorkDecision | None = None
 
     @property
     def next_action_choices(self) -> tuple[str, ...]:
         return STATEMENT_NEXT_ACTION_CHOICES
+
+    @property
+    def can_close_next_action(self) -> bool:
+        """True once a live Next Action exists to complete, cancel, or defer."""
+        return (
+            self.next_action_decision is not None
+            and self.next_action_decision.after_value is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -391,6 +411,18 @@ def read_admitted_statement_coordination(
         authority_gap = "Verified statement Evidence is unavailable; residual decisions remain pending."
     elif next_decision == "owner" and not roster:
         authority_gap = "No active project roster choices are available; Internal Owner remains pending."
+    subject = CoordinationSubject.statement(lineage.id)
+    action_tail = current_next_action_decision(session, subject)
+    next_action_decision = (
+        action_tail if action_tail is not None and action_tail.after_value is not None
+        else None
+    )
+    deferral_tail = current_deferral_decision(session, subject)
+    deferral_decision = (
+        deferral_tail
+        if deferral_tail is not None and deferral_tail.after_value is not None
+        else None
+    )
     return AdmittedStatementCoordination(
         event=event,
         affected_party_name=(
@@ -407,6 +439,8 @@ def read_admitted_statement_coordination(
         roster=roster,
         next_decision=next_decision,
         authority_gap=authority_gap,
+        next_action_decision=next_action_decision,
+        deferral_decision=deferral_decision,
     )
 
 
@@ -486,6 +520,127 @@ def set_admitted_statement_next_action(
         due_date_unknown_reason=due_date_unknown_reason,
         principal=principal,
     )
+
+
+def _read_admitted_with_live_action(
+    session: Session, project_id: int, candidate_id: int
+) -> AdmittedStatementCoordination:
+    """Read the accepted commitment or refuse if it has no closable action."""
+    lock_project(session, project_id)
+    coordination = read_admitted_statement_coordination(
+        session, project_id, candidate_id
+    )
+    if coordination is None:
+        raise StatementCoordinationRefusal(
+            "no mechanically admitted statement exists in this project"
+        )
+    if not coordination.can_close_next_action:
+        raise StatementCoordinationRefusal(
+            "this statement has no current Next Action to close or defer"
+        )
+    return coordination
+
+
+def complete_admitted_statement_next_action(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    *,
+    expected_next_action_decision_id: int,
+    principal: HumanPrincipal,
+    successor_action: str | None = None,
+    successor_due_date: date | None = None,
+    successor_due_date_unknown_reason: str | None = None,
+    no_follow_up_reason: str | None = None,
+    note: str | None = None,
+) -> WorkDecision:
+    """Complete an accepted commitment's Next Action without touching the fact.
+
+    Completion leaves the External Party statement, Completion Reported, Applies
+    To, and documentation judgments unchanged (ADR-0035, ADR-0038); it records
+    only the project's internal response.
+    """
+    coordination = _read_admitted_with_live_action(session, project_id, candidate_id)
+    try:
+        return complete_next_action(
+            session,
+            CoordinationSubject.statement(coordination.lineage.id),
+            principal=principal,
+            successor_action=successor_action,
+            successor_due_date=successor_due_date,
+            successor_due_date_unknown_reason=successor_due_date_unknown_reason,
+            no_follow_up_reason=no_follow_up_reason,
+            note=note,
+            expected_next_action_decision_id=expected_next_action_decision_id,
+            permitted_successor_actions=STATEMENT_NEXT_ACTION_CHOICES,
+        )
+    except StaleNextAction as exc:
+        raise StaleStatementCoordination(str(exc)) from exc
+    except (CoordinationDecisionRefusal, ValueError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
+
+
+def cancel_admitted_statement_next_action(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    *,
+    expected_next_action_decision_id: int,
+    principal: HumanPrincipal,
+    cancellation_reason: str | None = None,
+    successor_action: str | None = None,
+    successor_due_date: date | None = None,
+    successor_due_date_unknown_reason: str | None = None,
+    no_follow_up_reason: str | None = None,
+    note: str | None = None,
+) -> WorkDecision:
+    """Cancel an accepted commitment's Next Action with a structured reason."""
+    coordination = _read_admitted_with_live_action(session, project_id, candidate_id)
+    try:
+        return cancel_next_action(
+            session,
+            CoordinationSubject.statement(coordination.lineage.id),
+            principal=principal,
+            cancellation_reason=cancellation_reason,
+            successor_action=successor_action,
+            successor_due_date=successor_due_date,
+            successor_due_date_unknown_reason=successor_due_date_unknown_reason,
+            no_follow_up_reason=no_follow_up_reason,
+            note=note,
+            expected_next_action_decision_id=expected_next_action_decision_id,
+            permitted_successor_actions=STATEMENT_NEXT_ACTION_CHOICES,
+        )
+    except StaleNextAction as exc:
+        raise StaleStatementCoordination(str(exc)) from exc
+    except (CoordinationDecisionRefusal, ValueError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
+
+
+def defer_admitted_statement(
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    *,
+    expected_next_action_decision_id: int,
+    reason: str,
+    return_date: date,
+    principal: HumanPrincipal,
+) -> WorkDecision:
+    """Defer an accepted commitment's immediate work to a stated return date."""
+    coordination = _read_admitted_with_live_action(session, project_id, candidate_id)
+    try:
+        return defer_work(
+            session,
+            CoordinationSubject.statement(coordination.lineage.id),
+            reason=reason,
+            return_date=return_date,
+            principal=principal,
+            expected_next_action_decision_id=expected_next_action_decision_id,
+        )
+    except StaleNextAction as exc:
+        raise StaleStatementCoordination(str(exc)) from exc
+    except (CoordinationDecisionRefusal, ValueError) as exc:
+        raise StatementCoordinationRefusal(str(exc)) from exc
 
 
 def coordinate_statement(

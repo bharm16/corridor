@@ -88,6 +88,27 @@ DEFERRAL_REASONS = frozenset(
     }
 )
 
+
+class CoordinationDecisionRefusal(ValueError):
+    """A subject-bound close or deferral refused; nothing was written.
+
+    Subclasses ``ValueError`` so existing callers that already treat a bad
+    decision as a 400 keep working; a work surface that wants to separate a
+    concurrency conflict from a malformed request catches the stale subclass
+    first.
+    """
+
+
+class StaleNextAction(CoordinationDecisionRefusal):
+    """The Next Action the work surface showed is no longer the current one.
+
+    A close or deferral names the exact Next Action the coordinator saw.  If
+    that decision is no longer the chain tail — because it was already closed,
+    replaced, or the request targeted a different or cross-project subject —
+    the command refuses without closing a different action.
+    """
+
+
 @dataclass(frozen=True)
 class CoordinationSubject:
     """The single thing a Work Decision is about.
@@ -219,12 +240,17 @@ def defer_work(
     reason: str,
     return_date: date,
     principal: HumanPrincipal,
+    expected_next_action_decision_id: int | None = None,
 ) -> WorkDecision:
     """Record why immediate work can wait and the date it must return.
 
     This is deliberately not an unknown Action Due Date.  The latter says
     the project does not know when its next step belongs; a deferral is a
     positive, attributable decision to revisit a Work Item on one date.
+
+    When a work surface passes ``expected_next_action_decision_id`` it binds
+    the deferral to the exact plan the coordinator saw; a stale or
+    cross-project submission refuses instead of deferring a different subject.
     """
     recorder = require_human_principal(principal)
     if not isinstance(return_date, date):
@@ -235,6 +261,9 @@ def defer_work(
         "a deferral needs a structured reason",
     )
     coordination_subject, projection = _locked_subject(session, subject)
+    _require_expected_next_action(
+        session, coordination_subject, expected_next_action_decision_id
+    )
     observation = _return_observation(session, coordination_subject)
     tail = _consistent_tail(
         session,
@@ -273,6 +302,8 @@ def complete_next_action(
     successor_due_date_unknown_reason: str | None = None,
     no_follow_up_reason: str | None = None,
     note: str | None = None,
+    expected_next_action_decision_id: int | None = None,
+    permitted_successor_actions: Iterable[str] | None = None,
 ) -> WorkDecision:
     """Record completion without pretending it proves an External Party fact."""
     return _close_next_action(
@@ -287,6 +318,8 @@ def complete_next_action(
         no_follow_up_reason=no_follow_up_reason,
         cancellation_reason=None,
         note=note,
+        expected_next_action_decision_id=expected_next_action_decision_id,
+        permitted_successor_actions=permitted_successor_actions,
     )
 
 
@@ -301,6 +334,8 @@ def cancel_next_action(
     no_follow_up_reason: str | None = None,
     cancellation_reason: str | None = None,
     note: str | None = None,
+    expected_next_action_decision_id: int | None = None,
+    permitted_successor_actions: Iterable[str] | None = None,
 ) -> WorkDecision:
     """Withdraw an action with a structured reason, never an external closure."""
     return _close_next_action(
@@ -315,6 +350,8 @@ def cancel_next_action(
         no_follow_up_reason=no_follow_up_reason,
         cancellation_reason=cancellation_reason,
         note=note,
+        expected_next_action_decision_id=expected_next_action_decision_id,
+        permitted_successor_actions=permitted_successor_actions,
     )
 
 
@@ -498,6 +535,8 @@ def _close_next_action(
     no_follow_up_reason: str | None,
     cancellation_reason: str | None,
     note: str | None,
+    expected_next_action_decision_id: int | None = None,
+    permitted_successor_actions: Iterable[str] | None = None,
 ) -> WorkDecision:
     recorder = require_human_principal(principal)
     coordination_subject, projection = _locked_subject(session, subject)
@@ -506,6 +545,14 @@ def _close_next_action(
         raise ValueError("a successor Next Action is a stated step, not a blank")
     if has_successor and no_follow_up_reason is not None:
         raise ValueError("an action cannot have both a successor and no-follow-up reason")
+    if (
+        has_successor
+        and permitted_successor_actions is not None
+        and successor_action.strip() not in set(permitted_successor_actions)
+    ):
+        raise CoordinationDecisionRefusal(
+            "a successor Next Action must be one structured project-language choice"
+        )
 
     tail = _consistent_tail(
         session,
@@ -514,6 +561,17 @@ def _close_next_action(
         _projected_composite(projection),
     )
     _assert_next_action_reason_consistent(projection, tail)
+    # Bind the closure to the exact action the coordinator saw before anything
+    # is written.  A stale, repeated, or cross-project submission names a
+    # decision that is no longer the chain tail and refuses here, so it can
+    # never close a different action or leave a partial decision.
+    if expected_next_action_decision_id is not None and (
+        tail is None or tail.id != expected_next_action_decision_id
+    ):
+        raise StaleNextAction(
+            "the Next Action changed after this work surface was read; "
+            "nothing was closed"
+        )
     if tail is None or tail.after_value is None:
         raise ValueError(f"{_subject_label(coordination_subject)} has no current Next Action")
 
@@ -634,6 +692,22 @@ def _tail(
         )
         .order_by(WorkDecision.id)
     )
+
+
+def _require_expected_next_action(
+    session: Session,
+    subject: CoordinationSubject,
+    expected_next_action_decision_id: int | None,
+) -> None:
+    """Refuse unless the current Next Action tail is the one the surface saw."""
+    if expected_next_action_decision_id is None:
+        return
+    tail = _tail(session, subject, NEXT_ACTION)
+    if tail is None or tail.id != expected_next_action_decision_id:
+        raise StaleNextAction(
+            "the Next Action changed after this work surface was read; "
+            "nothing was deferred"
+        )
 
 
 def _append(
