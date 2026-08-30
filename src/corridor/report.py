@@ -1267,8 +1267,14 @@ def assert_no_bare_cells(report: Report) -> None:
         )
 
 
-def render(report: Report) -> str:
-    """Rendering enforces the rule; it is not a convention to remember."""
+def render(report: Report, *, banner: str = "") -> str:
+    """Rendering enforces the rule; it is not a convention to remember.
+
+    `banner` prints one caller-supplied notice at the top of the body and is
+    empty by default, so the sealed external-release rendering is byte-identical
+    to before. The internal working view passes it to state, on the exact same
+    report markup, that the page is not an approved external release.
+    """
     assert_no_bare_cells(report)
 
     def cell_html(cell: Cell, *, include_label: bool = False) -> str:
@@ -1350,6 +1356,9 @@ def render(report: Report) -> str:
     # last week's numbers.
     evaluated = (
         f" · evaluated {report.evaluation.today:%Y-%m-%d}" if report.evaluation else ""
+    )
+    banner_html = (
+        f'<p class="coverage" role="note">{html.escape(banner)}</p>' if banner else ""
     )
 
     return f"""<!doctype html>
@@ -1435,6 +1444,7 @@ def render(report: Report) -> str:
 </style>
 <h1>{label('report')} — {html.escape(report.project_name)}</h1>
 <p class="note">Generated {report.generated_at:%Y-%m-%d %H:%M} UTC{evaluated} · ruleset {report.ruleset_version}</p>
+{banner_html}
 {coverage}
 {document_only}
 {summary}

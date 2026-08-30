@@ -20,7 +20,9 @@ declared, and both policies skip what is already on the record.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_admission import (
@@ -29,7 +31,8 @@ from corridor.dependency_admission import (
 )
 from corridor.event_admission import EventAdmissionResult, run_event_admission
 from corridor.extraction_runs import declare_single_run_documents_by_policy
-from corridor.models import Project
+from corridor.models import Project, RecordInclusionRequest
+from corridor.record_inclusion import ReconcileResult
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,50 @@ def load_project(session: Session, project_id: int) -> LoadResult:
         ambiguous_documents=declarations.ambiguous,
         dependencies=dependencies,
         events=events,
+    )
+
+
+def reconcile_record_inclusion(
+    session: Session, project_id: int
+) -> ReconcileResult:
+    """Run ``load_project`` for a project, but only while its watermark is pending.
+
+    This is the consuming side of the Record Inclusion watermark (see
+    :mod:`corridor.record_inclusion`). It lives here, beside the load it gates,
+    because unconditional reconciliation is exactly what ``load_project`` must not
+    do on an idle tick: each admission pass appends a PolicyRun, so gating on the
+    durable ``dirty_seq``/``reconciled_seq`` marker is what keeps an idle sweep
+    from growing the receipt log (ADR-0029, #342).
+
+    The watermark row is locked so a concurrent producer's bump serializes behind
+    this pass rather than being lost. When the snapshot is not pending this is a
+    no-op that appends nothing; when it is, it loads and advances
+    ``reconciled_seq`` to the exact snapshot observed under the lock, so a bump
+    that arrives during the load keeps the project pending for the next pass.
+    """
+
+    row = session.scalar(
+        select(RecordInclusionRequest)
+        .where(RecordInclusionRequest.project_id == project_id)
+        .with_for_update()
+    )
+    if row is None or row.dirty_seq <= row.reconciled_seq:
+        return ReconcileResult(
+            project_id=project_id,
+            did_load=False,
+            reconciled_seq=row.reconciled_seq if row is not None else 0,
+            load=None,
+        )
+
+    snapshot = row.dirty_seq
+    load = load_project(session, project_id)
+    row.reconciled_seq = snapshot
+    row.reconciled_at = datetime.now(timezone.utc)
+    return ReconcileResult(
+        project_id=project_id,
+        did_load=True,
+        reconciled_seq=snapshot,
+        load=load,
     )
 
 

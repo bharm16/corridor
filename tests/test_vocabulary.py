@@ -6,7 +6,19 @@ while changing what enters the Ledger.
 """
 
 from corridor.gold import RETIREMENT_PHRASES as GOLD_PHRASES
-from corridor.vocabulary import RETIREMENT_PHRASES, is_retired_row
+from corridor.vocabulary import (
+    RETIREMENT_PHRASES,
+    ROW_FIELDS,
+    UCM_CONFLICT_LIST_HEADINGS,
+    is_retired_row,
+)
+
+
+def test_the_ucm_conflict_list_form_maps_only_to_real_canonical_fields():
+    """The second published TxDOT form's columns map to existing fields, never
+    a phantom one (#365). A typo here would file a value under a heading no
+    reader downstream knows, which is the drift ROW_FIELDS exists to close."""
+    assert set(UCM_CONFLICT_LIST_HEADINGS.values()) <= set(ROW_FIELDS)
 
 
 def test_a_numbered_retired_row_is_retired():

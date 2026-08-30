@@ -62,6 +62,8 @@ from corridor.db import Session as SessionFactory
 from corridor import access
 from corridor.web import auth
 from corridor.exceptions import RULES, evaluate_project, format_exception_name
+from corridor.export import to_xlsx
+from corridor.report import build_report, render
 from corridor.lane import (
     LaneRefusal,
     SiblingsNeedTheEventLane,
@@ -93,10 +95,17 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
     Milestone,
+    MilestoneRegistration,
     Project,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
+)
+from corridor.milestones import (
+    MalformedMilestoneCsv,
+    StaleMilestoneImport,
+    confirm_import,
+    preview_import,
 )
 from corridor.dependency_events import (
     current_scope_decision_filter,
@@ -260,6 +269,8 @@ _WORK_REASON_COPY = {
     "committed_date_change": "The organization changed its promised timing.",
     "milestone_impact_unknown": "The effect on key dates is not yet known.",
     "disputed_date": "Sources disagree about a current date.",
+    "required_by_advanced": "A schedule revision moved this constraint's Required By date.",
+    "key_date_decision_affected": "A schedule revision moved a key date a recorded decision referenced.",
     "unknown_scope": "Applies to: not yet known.",
     "unplaced_statement": "Clarify the organization's statement and which constraints it applies to.",
     "missing_internal_owner": "Assign a project person for this Commitment.",
@@ -2253,6 +2264,447 @@ def release_report(
             release_id=release.id,
         ),
         request_fields={"artifact_id": artifact_id},
+    )
+    session.commit()
+    return response
+
+
+def _key_dates_rows(session: Session, project: Project) -> list[dict]:
+    """Current Key dates with their live Key Date Version, undated ones last."""
+    milestones = session.scalars(
+        select(Milestone)
+        .where(Milestone.project_id == project.id)
+        .order_by(
+            Milestone.need_date.is_(None),
+            Milestone.need_date,
+            Milestone.code,
+        )
+    ).all()
+    rows = []
+    for milestone in milestones:
+        registration = (
+            session.get(MilestoneRegistration, milestone.current_registration_id)
+            if milestone.current_registration_id is not None
+            else None
+        )
+        rows.append(
+            {
+                "code": milestone.code,
+                "name": milestone.name,
+                "need_date": milestone.need_date,
+                "source_name": registration.source_name if registration else milestone.source,
+                "recorded_by": registration.recorded_by if registration else None,
+                "version_id": milestone.current_registration_id,
+            }
+        )
+    return rows
+
+
+def _key_dates_context(session: Session, project: Project, **overrides) -> dict:
+    context = {
+        "project": project,
+        "rows": _key_dates_rows(session, project),
+        "preview": None,
+        "content": "",
+        "source_name": "",
+        "predecessors_json": "",
+        "message": None,
+        "error": None,
+        "stale": None,
+    }
+    context.update(overrides)
+    return context
+
+
+@app.get("/key-dates/{slug}", response_class=HTMLResponse)
+def key_dates(
+    request: Request,
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """Read-only view of a project's registered Key dates and the import form."""
+    project = _project(session, slug)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "key_dates.html",
+        _key_dates_context(
+            session, project, message=request.query_params.get("imported")
+        ),
+    )
+
+
+@app.post("/key-dates/{slug}/preview", response_class=HTMLResponse)
+def key_dates_preview(
+    request: Request,
+    slug: str,
+    source_name: str = Form(""),
+    content: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Dry-run a hand-typed CSV: show its source, fingerprint, and row effects.
+
+    Nothing is written; malformed input refuses without a partial import.
+    """
+    project = _project(session, slug)
+    resolved_source = source_name.strip() or "pasted-key-dates.csv"
+    try:
+        preview = preview_import(
+            session,
+            project_id=project.id,
+            content=content.encode("utf-8"),
+            source_name=resolved_source,
+        )
+    except MalformedMilestoneCsv as exc:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(
+                session,
+                project,
+                content=content,
+                source_name=source_name,
+                error=str(exc),
+            ),
+            status_code=422,
+        )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "key_dates.html",
+        _key_dates_context(
+            session,
+            project,
+            preview=preview,
+            content=content,
+            source_name=preview.source_name,
+            predecessors_json=json.dumps(preview.predecessors),
+        ),
+    )
+
+
+@app.post("/key-dates/{slug}/confirm")
+def key_dates_confirm(
+    request: Request,
+    slug: str,
+    source_name: str = Form(...),
+    content: str = Form(...),
+    expected_sha256: str = Form(...),
+    expected_predecessors: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Commit the previewed CSV under the acting person's stable identity.
+
+    Bound to the previewed bytes and the Key Date Versions the preview showed:
+    changed content or a moved project state refuses and re-presents the current
+    state rather than importing against a stale review.
+    """
+    project = _project(session, slug)
+    try:
+        predecessors = json.loads(expected_predecessors) if expected_predecessors else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "expected_predecessors must be JSON") from exc
+    if not isinstance(predecessors, dict):
+        raise HTTPException(400, "expected_predecessors must be a JSON object")
+    try:
+        with session.begin_nested():
+            result = confirm_import(
+                session,
+                project_id=project.id,
+                content=content.encode("utf-8"),
+                source_name=source_name,
+                expected_sha256=expected_sha256,
+                expected_predecessors=predecessors,
+                principal=principal,
+            )
+    except MalformedMilestoneCsv as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except StaleMilestoneImport as exc:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(
+                session,
+                project,
+                preview=exc.preview,
+                content=content,
+                source_name=exc.preview.source_name,
+                predecessors_json=json.dumps(exc.preview.predecessors),
+                stale=str(exc),
+            ),
+            status_code=409,
+        )
+    session.commit()
+    summary = f"{len(result.created)} added, {len(result.updated)} updated"
+    return RedirectResponse(
+        f"/key-dates/{project.slug}?imported={quote(summary)}", status_code=303
+    )
+
+
+# --- Internal working Coordination Report -----------------------------------
+# A live, refreshable reading of the current Project Record for project
+# coordinators, served without a terminal command. It reuses the same coherent
+# project reading, Evaluation, report, facet and export behavior the external
+# release path renders, but it seals nothing and advances nothing: viewing,
+# refreshing, filtering, or downloading here reads only. It records no
+# ReportRun, prepares no external artifact, and moves no report comparison
+# baseline — the external release (one fixed PDF, ADR-0040) stays under
+# /reports/{slug}, and the baseline it advances is the last released report
+# (ADR-0053). Each surface builds one coherent bound reading through
+# build_report, which freezes population, Evaluation, statement reading and
+# provenance mode together and refuses a mismatched set.
+
+_INTERNAL_REPORT_BANNER = (
+    "Internal working view of the current project record. This is not an "
+    "approved external release: viewing, refreshing, filtering, and downloading "
+    "here record no report run and move no comparison baseline "
+    "(ADR-0040, ADR-0053)."
+)
+
+_ALERT_POPULATION_PAGE = 50
+
+
+def _provenance_mode_label(document_only: bool) -> str:
+    return "Documents only" if document_only else "All supported sources"
+
+
+def _xlsx_download(xlsx_bytes: bytes, filename: str) -> Response:
+    """Return workbook bytes with an encoded, non-executable download name."""
+    encoded_name = quote(filename, safe="")
+    return Response(
+        content=xlsx_bytes,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"
+        },
+    )
+
+
+def _internal_workbook_bytes(
+    session: Session,
+    project_id: int,
+    *,
+    evaluation,
+    statement_publication,
+) -> bytes:
+    """Render the internal working workbook without retaining a file on disk."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = to_xlsx(
+            session,
+            project_id,
+            Path(tmp) / "internal-working-constraint-log.xlsx",
+            evaluation=evaluation,
+            statement_publication=statement_publication,
+            internal_working_copy=True,
+        )
+        return path.read_bytes()
+
+
+def _internal_workbook_name(
+    project: Project, evaluated_on: date, document_only: bool
+) -> str:
+    mode = "documents-only" if document_only else "all-sources"
+    return (
+        f"{project.slug}-internal-working-constraint-log-"
+        f"{evaluated_on.isoformat()}-{mode}.xlsx"
+    )
+
+
+@app.get("/internal-report/{slug}", response_class=HTMLResponse)
+def internal_report(
+    request: Request,
+    slug: str,
+    document_only: bool = False,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """The ordinary internal entry: current facts, no approval step."""
+    project = _project(session, slug)
+    report = build_report(session, project.id, document_only=document_only)
+    evaluation = report.evaluation
+    facets = [
+        {
+            "rule": facet.rule,
+            "name": format_exception_name(facet.rule),
+            "count": facet.count,
+            "top_quantity_days": (
+                facet.exceptions[0].quantity_days if facet.has_quantities else None
+            ),
+            "critical_count": sum(1 for exception in facet.exceptions if exception.critical),
+        }
+        for facet in evaluation.facets()
+    ]
+    response = TEMPLATES.TemplateResponse(
+        request,
+        "internal_report.html",
+        {
+            "project": project,
+            "document_only": document_only,
+            "provenance_mode_label": _provenance_mode_label(document_only),
+            "banner": _INTERNAL_REPORT_BANNER,
+            "evaluated_on": evaluation.today,
+            "ruleset_version": evaluation.ruleset_version,
+            "thresholds": evaluation.thresholds,
+            "covered_count": len(report.covered_records),
+            "summary": report.summary,
+            "coverage_note": report.coverage_note,
+            "facets": facets,
+        },
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="internal_report",
+        route_template="/internal-report/{slug}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.get("/internal-report/{slug}/full", response_class=HTMLResponse)
+def internal_report_full(
+    request: Request,
+    slug: str,
+    document_only: bool = False,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """The full report markup, reused verbatim and marked internal."""
+    project = _project(session, slug)
+    report = build_report(session, project.id, document_only=document_only)
+    response = HTMLResponse(render(report, banner=_INTERNAL_REPORT_BANNER))
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="internal_report_full",
+        route_template="/internal-report/{slug}/full",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.get("/internal-report/{slug}/alerts/{rule}", response_class=HTMLResponse)
+def internal_report_alerts(
+    request: Request,
+    slug: str,
+    rule: str,
+    document_only: bool = False,
+    page: int = 1,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """One alert's complete matching constraint population, bounded for reading."""
+    project = _project(session, slug)
+    if rule not in RULES:
+        raise HTTPException(404, "no such constraint alert")
+    report = build_report(session, project.id, document_only=document_only)
+    evaluation = report.evaluation
+    # The complete matching population from the same reading the counts came
+    # from, not the visible Work List page. browse filters on the computed
+    # exceptions, so one row per matching constraint, and the total equals the
+    # facet count.
+    matching = browse(
+        session,
+        project.id,
+        evaluation=evaluation,
+        rule=rule,
+        limit=100_000,
+    )
+    total = len(matching)
+    pages = max(1, (total + _ALERT_POPULATION_PAGE - 1) // _ALERT_POPULATION_PAGE)
+    page = min(max(page, 1), pages)
+    start = (page - 1) * _ALERT_POPULATION_PAGE
+    window = matching[start : start + _ALERT_POPULATION_PAGE]
+    rows = []
+    for row in window:
+        found = next(
+            (exception for exception in row.exceptions if exception.rule == rule), None
+        )
+        rows.append(
+            {
+                "dependency_id": row.dependency.id,
+                "ref_code": row.dependency.ref_code,
+                "title": row.dependency.title,
+                "org_name": row.org_name,
+                "is_ready": row.is_ready,
+                "critical": found.critical if found is not None else False,
+                "detail": found.detail if found is not None else "",
+                "quantity_days": found.quantity_days if found is not None else None,
+                "alert_label": found.label if found is not None else format_exception_name(rule),
+            }
+        )
+    response = TEMPLATES.TemplateResponse(
+        request,
+        "internal_report_alerts.html",
+        {
+            "project": project,
+            "document_only": document_only,
+            "provenance_mode_label": _provenance_mode_label(document_only),
+            "evaluated_on": evaluation.today,
+            "ruleset_version": evaluation.ruleset_version,
+            "rule": rule,
+            "rule_name": format_exception_name(rule),
+            "total": total,
+            "rows": rows,
+            "page": page,
+            "pages": pages,
+        },
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="internal_report_alerts",
+        route_template="/internal-report/{slug}/alerts/{rule}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.get("/internal-report/{slug}/workbook.xlsx")
+def internal_report_workbook(
+    request: Request,
+    slug: str,
+    document_only: bool = False,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """The internal working workbook, at the same reading the view shows."""
+    project = _project(session, slug)
+    report = build_report(session, project.id, document_only=document_only)
+    xlsx_bytes = _internal_workbook_bytes(
+        session,
+        project.id,
+        evaluation=report.evaluation,
+        statement_publication=report.statement_publication,
+    )
+    response = _xlsx_download(
+        xlsx_bytes,
+        _internal_workbook_name(project, report.evaluation.today, document_only),
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="internal_report_workbook",
+        route_template="/internal-report/{slug}/workbook.xlsx",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
     )
     session.commit()
     return response

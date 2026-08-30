@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>{{ rule_name }} — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --accent:#06c; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:56rem; margin:2rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.4rem; margin:0 0 .25rem; }
+  .lead,.muted { color:var(--muted); }
+  .reading { border:1px solid var(--line); border-radius:7px; padding:.7rem 1rem;
+             margin:1rem 0 1.4rem; }
+  .reading dl { display:grid; grid-template-columns:12rem 1fr; gap:.15rem .8rem; margin:0; }
+  .reading dt { color:var(--muted); }
+  .reading dd { margin:0; overflow-wrap:anywhere; }
+  table { border-collapse:collapse; width:100%; margin:.4rem 0 1rem; }
+  th,td { text-align:left; padding:.4rem .55rem; border-bottom:1px solid #f2f2f2;
+          vertical-align:top; }
+  th { font-size:.82rem; color:var(--muted); border-bottom:1px solid var(--line); }
+  td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .ref a { color:var(--accent); font-weight:600; text-decoration:none; }
+  .critical { color:var(--warn); font-weight:600; }
+  .ready { color:#067647; }
+  .detail { color:var(--muted); font-size:.9rem; }
+  .pager { display:flex; justify-content:space-between; align-items:center; margin-top:1rem; }
+  .empty { color:var(--muted); }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span>
+    <a href="/internal-report/{{ project.slug }}{% if document_only %}?document_only=true{% endif %}">Back to internal working report</a>
+  </span>
+</header>
+
+<main>
+  <h1>{{ rule_name }}</h1>
+  <p class="lead">Every constraint the current Evaluation raises this alert on, in this project.</p>
+
+  <section class="reading">
+    <dl>
+      <dt>Alert rule</dt><dd>{{ rule_name }} <span class="muted">[{{ rule }}]</span></dd>
+      <dt>Checks as of</dt><dd>{{ evaluated_on }} · ruleset {{ ruleset_version }}</dd>
+      <dt>{{ label('provenance') }}</dt><dd>{{ provenance_mode_label }}</dd>
+      <dt>Matching constraints</dt><dd>{{ total }}</dd>
+    </dl>
+  </section>
+
+  {% if rows %}
+    <table>
+      <thead>
+        <tr><th>Ref</th><th>Constraint</th><th>{{ label('organization') }}</th><th>Days</th><th>Why this alert fired</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td class="ref">
+              <a href="/ledger/{{ project.slug }}/{{ row.dependency_id }}">{{ row.ref_code }}</a>
+              {% if row.critical %}<div class="critical">Relocation / removal / abandonment</div>{% endif %}
+              {% if row.is_ready %}<div class="ready">Documents marked sufficient</div>{% endif %}
+            </td>
+            <td>{{ row.title or "—" }}</td>
+            <td>{{ row.org_name or "—" }}</td>
+            <td class="num">{% if row.quantity_days is not none %}{{ row.quantity_days }}d{% else %}—{% endif %}</td>
+            <td class="detail">{{ row.detail }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if pages > 1 %}
+      <nav class="pager" aria-label="Matching constraint pages">
+        <span>
+          {% if page > 1 %}
+            <a href="/internal-report/{{ project.slug }}/alerts/{{ rule }}?page={{ page - 1 }}{% if document_only %}&document_only=true{% endif %}">Previous</a>
+          {% endif %}
+        </span>
+        <span>Page {{ page }} of {{ pages }}</span>
+        <span>
+          {% if page < pages %}
+            <a href="/internal-report/{{ project.slug }}/alerts/{{ rule }}?page={{ page + 1 }}{% if document_only %}&document_only=true{% endif %}">Next</a>
+          {% endif %}
+        </span>
+      </nav>
+    {% endif %}
+  {% else %}
+    <p class="empty">No constraint currently raises this alert in the {{ provenance_mode_label|lower }} reading as of {{ evaluated_on }}. This states the current Evaluation found none, not that the underlying work is complete.</p>
+  {% endif %}
+</main>

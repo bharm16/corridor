@@ -665,3 +665,170 @@ def test_a_retired_row_is_excluded_by_rule_not_luck(session, project, tmp_path):
     }
 
     assert ids == {"UC-1", "UC-3"}
+
+
+# --------- a second published TxDOT form: "UCM - Utility Conflict List" (#365)
+
+# I-35 NEX South publishes its Utility Conflict Matrix as this earlier TxDOT
+# workbook (ADR-0005). Its header sits on row 8 beneath a project-information
+# block, and its columns are named by the workbook's own data dictionary.
+UCM_LIST_HEADINGS = [
+    "Utility Company",
+    "Utility Company Contact",
+    "Utility Conflict ID",
+    "Drawing or Sheet No.",
+    "Line Style",
+    "Utility Type",
+    "Size and/or Material",
+    "Base or Ultimate",
+    "Utility Conflict Description",
+    "Longitudinal or Crossing",
+    "Utility Placement in Relation to Existing TxDOT Right of Way",
+    "Highway\nAlignment",
+    "Station Origin",
+    "Start Station",
+    "Start Offset",
+    "End Station",
+    "End Offset",
+    "Level of Utility Investigation  Needed",
+    "Test Hole No.",
+    "Test Hole Depth",
+    "Recommended Action or Resolution",
+    "Estimated Resolution Date",
+    "Resolution Status",
+    "Comments",
+]
+
+UCM_LIST_ROW = [
+    "CPS Electric", "John Offer", "41", "N/A", "N/A", "Electric",
+    "Pullbox (2B)", "I-35 NEX South",
+    "In conflict with proposed sidewalk improvements", "Longitudinal",
+    "Inside", "IH-35", "RT", "327869.22", "131.97", "-", "-", "QLC", "N/A",
+    "N/A", "Accommodate - Relocation", "", "", "IH 35 E ROW",
+]
+
+
+def ingest_ucm_list(session, project, tmp_path, data_rows=(UCM_LIST_ROW,)):
+    book = Workbook()
+    book.remove(book.active)
+    sheet = book.create_sheet("UCM-Conflict List")
+    for row in (
+        ["TxDOT Utility Conflict Management (UCM) - Utility Conflict List"],
+        [""],
+        ["Project Owner:", "TxDOT"],
+        ["CCSJ/RCSJ.:", "0016-05-111"],
+        ["Project Description:", "I-35 NEX South"],
+        ["Highway or Route:", "I-35 From FM 1103 to AT&T Center Drive"],
+        [""],
+        UCM_LIST_HEADINGS,
+        *data_rows,
+    ):
+        sheet.append(row)
+    book.create_sheet("Field_Column Descriptions").append(["Field", "Description"])
+    path = tmp_path / "i35nex-ucm.xlsx"
+    book.save(path)
+    document = ingest_document(
+        session,
+        project_id=project.id,
+        path=path,
+        doc_type="matrix",
+        images_dir=tmp_path / "images",
+    )
+    document._stored_path = str(path)
+    return document
+
+
+def test_the_ucm_conflict_list_form_becomes_a_cited_dependency_proposal(
+    session, project, tmp_path
+):
+    """The structured original read on its own exact terms (ADR-0005, #365):
+    the form's own column names become canonical fields, the values are the
+    cells, and the citation quotes the whole row and verifies exactly."""
+    document = ingest_ucm_list(session, project, tmp_path)
+
+    [proposal] = extract_document(session, document)
+
+    assert proposal.kind == "dependency"
+    assert proposal.payload_json["fields"] == {
+        "external_org": "CPS Electric",
+        "external_org_contact": "John Offer",
+        "utility_id": "41",
+        "utility_type": "Electric",
+        "conflict_description": "In conflict with proposed sidewalk improvements",
+        "orientation": "Longitudinal",
+        "row_placement": "Inside",
+        "baseline": "RT",
+        "station_from": "327869.22",
+        "offset_from": "131.97",
+        "station_to": "-",
+        "offset_to": "-",
+        "sue_level": "QLC",
+        "resolution_strategy": "Accommodate - Relocation",
+        "notes": "IH 35 E ROW",
+    }
+    assert proposal.payload_json["tier"] == TIER_NATIVE
+    assert proposal.payload_json["text_source"] == "cells"
+    assert proposal.model is None
+    citation = proposal.payload_json["citations"][0]
+    assert citation["verified"] is True
+    assert citation["page"] == 1
+    assert citation["table_row"] == 1
+    assert citation["quote"].startswith("CPS Electric John Offer 41")
+    assert proposal.citations_verified is True
+
+
+def test_the_ucm_conflict_list_form_reports_its_extra_columns_unmapped(
+    session, project, tmp_path
+):
+    """Nine of the form's columns have no canonical field — including the
+    two the vocabulary declines, `Resolution Status` (workflow state,
+    ADR-0002) and `Estimated Resolution Date` (the project's own estimate).
+    Every one is reported, never guessed into a field."""
+    document = ingest_ucm_list(session, project, tmp_path)
+
+    payload = extract_document(session, document)[0].payload_json
+
+    assert payload["unmapped_columns"] == [
+        "Drawing or Sheet No.",
+        "Line Style",
+        "Size and/or Material",
+        "Base or Ultimate",
+        "Highway\nAlignment",
+        "Test Hole No.",
+        "Test Hole Depth",
+        "Estimated Resolution Date",
+        "Resolution Status",
+    ]
+    # The unmapped cell values are not smuggled into a canonical field.
+    assert "N/A" not in payload["fields"].values()
+    assert "Accommodate - Relocation" in payload["fields"].values()
+
+
+def test_the_ucm_conflict_list_form_reads_with_no_model(
+    session, project, tmp_path, monkeypatch
+):
+    """The whole reason it is read natively (ADR-0005): a spreadsheet states
+    its own structure, so no model runs and the run records an exact zero."""
+    from corridor import pipeline
+
+    document = ingest_ucm_list(session, project, tmp_path)
+    monkeypatch.setattr(
+        pipeline,
+        "stored_file",
+        lambda value: getattr(value, "_stored_path", None),
+    )
+
+    class ModelMustNotRun:
+        def complete(self, **_):
+            raise AssertionError("native UCM extraction must not call a model")
+
+    proposals = pipeline.extract_any(session, document, client=ModelMustNotRun())
+
+    assert [p.kind for p in proposals] == ["dependency"]
+    run = session.scalar(
+        select(ExtractionRun).where(ExtractionRun.document_id == document.id)
+    )
+    assert run.model is None
+    assert run.token_usage_json["measurement"] == "exact"
+    assert run.token_usage_json["prompt_tokens"] == 0
+    assert run.token_usage_json["completion_tokens"] == 0

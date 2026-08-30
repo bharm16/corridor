@@ -172,6 +172,56 @@ DECLINED_COLUMNS = {
     ),
 }
 
+# A second published TxDOT UCM form, by its exact printed column headings.
+#
+# `TEMPLATE_FIELDS` names the columns of TxDOT's *Utility Conflict Analysis
+# Template* — the blank form in `corpus/cross-agency.yaml`. I-35 NEX South
+# publishes an earlier TxDOT workbook, "Utility Conflict Management (UCM) -
+# Utility Conflict List" (#365), whose columns carry the same meanings under
+# different printed names. The workbook's own `Field_Column Descriptions`
+# sheet defines each one, so this is the same kind of fact `TEMPLATE_FIELDS`
+# already records — a published form's exact column name, read from the form's
+# data dictionary — and it is added on the same terms `sheets.column_mapping`
+# states: an exact name, never a fuzzy synonym. It lets the native reader read
+# the structured original (ADR-0005) instead of reporting it unreadable.
+#
+# printed heading -> canonical field, each read straight from that data
+# dictionary:
+#   "Utility Company"                       owner of the facility  -> external_org
+#   "Utility Company Contact"               facility point of contact
+#                                                                  -> external_org_contact
+#   "Longitudinal or Crossing"              runs along vs crosses  -> orientation
+#   "Utility Placement in Relation to       inside/outside existing
+#     Existing TxDOT Right of Way"            ROW                  -> row_placement
+#   "Level of Utility Investigation Needed" QLB/QLC/QLD level      -> sue_level
+#   "Recommended Action or Resolution"      next step to resolve   -> resolution_strategy
+#     (the recommended resolution the document records, ADR-0009 — not a status)
+#   "Comments"                              additional information -> notes
+#
+# Columns this form also carries that stay unmapped on purpose, reported
+# rather than guessed (#365):
+#   "Resolution Status"        — workflow state; the Ledger derives readiness
+#                                and nothing imports a document's status (ADR-0002),
+#                                the same reason FDOT's "Resolved Status" is declined.
+#   "Estimated Resolution Date" — the project's own estimate, a different claim
+#                                than an External Party's committed date (see
+#                                `committed_date` above).
+#   "Drawing or Sheet No."     — points at another document (declined like the
+#                                template's own "Utility Layout/Sheet No.").
+#   "Size and/or Material", "Base or Ultimate", "Line Style",
+#   "Highway Alignment", "Test Hole No.", "Test Hole Depth"
+#                              — no canonical field names them; carried as unmapped.
+UCM_CONFLICT_LIST_HEADINGS = {
+    "Utility Company": "external_org",
+    "Utility Company Contact": "external_org_contact",
+    "Longitudinal or Crossing": "orientation",
+    "Utility Placement in Relation to Existing TxDOT Right of Way": "row_placement",
+    "Level of Utility Investigation Needed": "sue_level",
+    "Recommended Action or Resolution": "resolution_strategy",
+    "Comments": "notes",
+}
+
+
 # The vocabulary the model may name, and the code enforces. Anything outside
 # the set is treated as unmapped rather than stored, because a new field is
 # a deliberate change and not an extractor's improvisation.

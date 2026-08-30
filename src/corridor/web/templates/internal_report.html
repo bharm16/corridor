@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Internal working report — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; --accent:#06c; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  header a { color:#111; }
+  main { max-width:56rem; margin:2rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h2 { font-size:1.05rem; margin:2rem 0 .5rem; }
+  .lead,.muted { color:var(--muted); }
+  .banner { background:#fffaeb; border:1px solid #fedf89; color:var(--warn);
+            padding:.6rem .8rem; border-radius:5px; margin:.8rem 0 1.4rem; }
+  .reading { border:1px solid var(--line); border-radius:7px; padding:.85rem 1rem;
+             margin:1rem 0; }
+  .reading dl { display:grid; grid-template-columns:12rem 1fr; gap:.2rem .8rem; margin:0; }
+  .reading dt { color:var(--muted); }
+  .reading dd { margin:0; overflow-wrap:anywhere; }
+  .stats { display:flex; flex-wrap:wrap; gap:1.6rem; margin:1rem 0 1.4rem; }
+  .stat .n { display:block; font-size:1.6rem; font-weight:600; }
+  .stat .k { color:var(--muted); }
+  .marker { color:var(--accent); font-size:.72em; margin-left:.35rem; cursor:help; }
+  table { border-collapse:collapse; width:100%; margin:.4rem 0 1rem; }
+  th,td { text-align:left; padding:.4rem .55rem; border-bottom:1px solid #f2f2f2;
+          vertical-align:top; }
+  th { font-size:.82rem; color:var(--muted); border-bottom:1px solid var(--line); }
+  td.num { font-variant-numeric:tabular-nums; }
+  .critical { color:var(--warn); font-weight:600; }
+  .coverage { background:#fffaeb; border:1px solid #fedf89; color:var(--warn);
+              padding:.5rem .7rem; border-radius:4px; }
+  .downloads { display:flex; flex-wrap:wrap; gap:.8rem; margin:1.2rem 0; }
+  .action { display:inline-block; color:#fff; background:#111; border-radius:4px;
+            padding:.4rem .7rem; text-decoration:none; font-size:.92rem; }
+  .action.secondary { color:#111; background:#fff; border:1px solid var(--line); }
+  .empty { color:var(--muted); font-style:italic; }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span>
+    <a href="/work/{{ project.slug }}">Coordination work</a> ·
+    <a href="/ledger/{{ project.slug }}">Search all constraints</a> ·
+    <a href="/reports/{{ project.slug }}">Prepare external release</a>
+  </span>
+</header>
+
+<main>
+  <h1>Internal working report</h1>
+  <p class="banner" role="note">{{ banner }}</p>
+
+  <section class="reading">
+    <dl>
+      <dt>Checks as of</dt>
+      <dd>{{ evaluated_on }} · ruleset {{ ruleset_version }}</dd>
+      <dt>{{ label('provenance') }}</dt>
+      <dd>
+        {{ provenance_mode_label }} ·
+        {% if document_only %}
+          <a href="/internal-report/{{ project.slug }}">Switch to all supported sources</a>
+        {% else %}
+          <a href="/internal-report/{{ project.slug }}?document_only=true">Switch to documents only</a>
+        {% endif %}
+      </dd>
+      <dt>Alert thresholds</dt>
+      <dd>
+        No recent documents after {{ thresholds.stale_days }}d ·
+        Required-by within {{ thresholds.due_soon_days }}d ·
+        Next action within {{ thresholds.action_due_soon_days }}d
+      </dd>
+      <dt>Covered constraints</dt>
+      <dd>{{ covered_count }}</dd>
+    </dl>
+  </section>
+
+  <div class="stats">
+    {% for cell in summary %}
+      <div class="stat">
+        <span class="n">{{ cell.value }}</span>
+        <span class="k">{{ cell.label }}<span class="marker" title="{{ cell.provenance.drill }}">{{ cell.provenance.marker }}</span></span>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if coverage_note %}
+    <p class="coverage">{{ coverage_note }}</p>
+  {% endif %}
+
+  <h2>{{ label('constraint_alerts') }}</h2>
+  <p class="muted">Counts and quantities are the current Evaluation's own facet view. Each row leads to every matching constraint, not just one page of the Work List.</p>
+  {% if facets %}
+    <table>
+      <thead>
+        <tr><th>Alert</th><th>Constraints</th><th>Most days</th><th>Relocation / removal / abandonment</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for facet in facets %}
+          <tr>
+            <td>{{ facet.name }}</td>
+            <td class="num">{{ facet.count }}</td>
+            <td class="num">{% if facet.top_quantity_days is not none %}{{ facet.top_quantity_days }}d{% else %}—{% endif %}</td>
+            <td class="num">{% if facet.critical_count %}<span class="critical">{{ facet.critical_count }}</span>{% else %}0{% endif %}</td>
+            <td><a href="/internal-report/{{ project.slug }}/alerts/{{ facet.rule }}{% if document_only %}?document_only=true{% endif %}">View constraints</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">No constraint alerts in this reading. This states that the current Evaluation raised none, not that every constraint is complete.</p>
+  {% endif %}
+
+  <div class="downloads">
+    <a class="action" href="/internal-report/{{ project.slug }}/full{% if document_only %}?document_only=true{% endif %}">Open full working report</a>
+    <a class="action secondary" href="/internal-report/{{ project.slug }}/workbook.xlsx{% if document_only %}?document_only=true{% endif %}">Download internal workbook (XLSX)</a>
+  </div>
+  <p class="muted">The workbook is an internal working copy, not an approved external release. Preparing a fixed external PDF stays on <a href="/reports/{{ project.slug }}">Prepare external release</a>.</p>
+</main>

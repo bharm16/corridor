@@ -1,0 +1,44 @@
+{
+  "agency": "TxDOT",
+  "ingest_by_default": true,
+  "name": "I-35 NEX South",
+  "project": "i35-nex-south",
+  "sources": {
+    "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=nj56xaqh2dqoj88euo0zqndyk8mfw0a3&file_id=f_1793826942528::Utilities/I-35 NEX_SOUTH_Potential_Utility_Conflicts.xlsx": {
+      "archive_url": "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=nj56xaqh2dqoj88euo0zqndyk8mfw0a3&file_id=f_1793826942528",
+      "bytes": 47560,
+      "content_type": "application/zip",
+      "curation_status": "confirmed",
+      "doc_date": null,
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/3c/3cd94fea058a3e61ac95ab1efd566e684e146f64ce6f25048d93cf9db55f83ba.xlsx",
+      "member": "Utilities/I-35 NEX_SOUTH_Potential_Utility_Conflicts.xlsx",
+      "member_crc32": 3920360912,
+      "registry_id": "i35nexso-potential-utility-conflicts",
+      "retrieved_at": "2026-08-29T23:47:06.962547+00:00",
+      "role": "spine",
+      "sha256": "3cd94fea058a3e61ac95ab1efd566e684e146f64ce6f25048d93cf9db55f83ba",
+      "title": "Potential Utility Conflict List (UCM)"
+    },
+    "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=nj56xaqh2dqoj88euo0zqndyk8mfw0a3&file_id=f_1793826942528::Utilities/I-35_NEX_SOUTH_UCM_22.02.07.xlsx": {
+      "archive_url": "https://app.box.com/index.php?rm=box_download_shared_file&shared_name=nj56xaqh2dqoj88euo0zqndyk8mfw0a3&file_id=f_1793826942528",
+      "bytes": 38984,
+      "content_type": "application/zip",
+      "curation_status": "confirmed",
+      "doc_date": "2022-02-07",
+      "doc_type": "matrix",
+      "history": [],
+      "http_status": 200,
+      "local_path": "corpus/files/d5/d5895debe379e6b2dc2e7abe5d71060d2f0bef99a58c1ffaa031d1836db70c62.xlsx",
+      "member": "Utilities/I-35_NEX_SOUTH_UCM_22.02.07.xlsx",
+      "member_crc32": 1841191515,
+      "registry_id": "i35nexso-ucm-2022-02-07",
+      "retrieved_at": "2026-08-29T23:47:04.914308+00:00",
+      "role": "spine",
+      "sha256": "d5895debe379e6b2dc2e7abe5d71060d2f0bef99a58c1ffaa031d1836db70c62",
+      "title": "Utility Conflict List (UCM, 2/7/2022)"
+    }
+  }
+}

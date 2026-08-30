@@ -960,3 +960,101 @@ def test_polite_user_agent_is_used_first(tmp_path):
     run_with(tmp_path, MANIFEST, httpx.MockTransport(handler))
     assert seen and seen[0] == USER_AGENT
     assert BROWSER_UA not in seen
+
+
+# --------------------------------------------------- I-35 NEX South (#365)
+
+I35NEX_ARCHIVE = "https://example.gov/i35nexso-rid-utilities.zip"
+
+I35NEX_MANIFEST = f"""
+project: i35-nex-south
+agency: TxDOT
+sources:
+  - registry_id: i35nexso-ucm-2022-02-07
+    url: {I35NEX_ARCHIVE}
+    member: "Utilities/I-35_NEX_SOUTH_UCM_22.02.07.xlsx"
+    doc_type: matrix
+    role: spine
+    title: "Utility Conflict List (UCM, 2/7/2022)"
+    doc_date: 2022-02-07
+  - registry_id: i35nexso-potential-utility-conflicts
+    url: {I35NEX_ARCHIVE}
+    member: "Utilities/I-35 NEX_SOUTH_Potential_Utility_Conflicts.xlsx"
+    doc_type: matrix
+    role: spine
+    title: "Potential Utility Conflict List (UCM)"
+"""
+
+
+def test_i35_nex_south_registers_both_workbooks_as_matrix_spines():
+    """Two structured conflict workbooks, both members of the one utilities
+    archive, curated as the project's matrix spine (ADR-0005, ADR-0046)."""
+    manifest = load_manifest("corpus/i35-nex-south.yaml")
+
+    assert (manifest.project, manifest.agency) == ("i35-nex-south", "TxDOT")
+    registered = {source.registry_id: source for source in manifest.sources}
+    assert set(registered) == {
+        "i35nexso-ucm-2022-02-07",
+        "i35nexso-potential-utility-conflicts",
+    }
+    assert all(s.doc_type == "matrix" and s.role == "spine" for s in registered.values())
+    assert all(s.curation_status == "confirmed" for s in registered.values())
+    # Both reach into the same archive; only the member differs.
+    assert {s.url for s in registered.values()} == {
+        "https://app.box.com/index.php?rm=box_download_shared_file"
+        "&shared_name=nj56xaqh2dqoj88euo0zqndyk8mfw0a3&file_id=f_1793826942528"
+    }
+    assert registered["i35nexso-ucm-2022-02-07"].member == (
+        "Utilities/I-35_NEX_SOUTH_UCM_22.02.07.xlsx"
+    )
+    assert registered["i35nexso-ucm-2022-02-07"].doc_date == date(2022, 2, 7)
+    assert registered["i35nexso-potential-utility-conflicts"].member == (
+        "Utilities/I-35 NEX_SOUTH_Potential_Utility_Conflicts.xlsx"
+    )
+
+
+def test_i35_nex_south_lock_records_both_verified_workbooks():
+    """The committed lock is the fetch outcome: both members verified as
+    stored spreadsheet bytes, by exact hash and archive CRC."""
+    lock = json.loads(Path("corpus/i35-nex-south.lock.json").read_text())
+    by_registry = {
+        record.get("registry_id"): record for record in lock["sources"].values()
+    }
+
+    ucm = by_registry["i35nexso-ucm-2022-02-07"]
+    potential = by_registry["i35nexso-potential-utility-conflicts"]
+    assert ucm["sha256"] == (
+        "d5895debe379e6b2dc2e7abe5d71060d2f0bef99a58c1ffaa031d1836db70c62"
+    )
+    assert ucm["member_crc32"] == 1841191515
+    assert potential["sha256"] == (
+        "3cd94fea058a3e61ac95ab1efd566e684e146f64ce6f25048d93cf9db55f83ba"
+    )
+    assert potential["member_crc32"] == 3920360912
+    for record in (ucm, potential):
+        assert record["doc_type"] == "matrix"
+        assert record["role"] == "spine"
+        assert record["curation_status"] == "confirmed"
+        assert record["local_path"].endswith(".xlsx")
+
+
+def test_i35_nex_south_archive_members_refetch_as_a_no_op(tmp_path):
+    """Re-running fetch is a no-op: an unchanged member is recognised by its
+    archive CRC and never re-stored (#365 acceptance)."""
+    archive = make_zip(
+        {
+            "Utilities/I-35_NEX_SOUTH_UCM_22.02.07.xlsx": b"PK\x03\x04ucm-cells",
+            "Utilities/I-35 NEX_SOUTH_Potential_Utility_Conflicts.xlsx": (
+                b"PK\x03\x04potential-cells"
+            ),
+        }
+    )
+    bodies = {I35NEX_ARCHIVE: archive}
+
+    first = run_with(tmp_path, I35NEX_MANIFEST, ranged_transport(bodies))
+    second = run_with(tmp_path, I35NEX_MANIFEST, ranged_transport(bodies))
+
+    assert len(first.fetched) == 2
+    assert first.failed == []
+    assert second.fetched == []
+    assert len(second.skipped) == 2
