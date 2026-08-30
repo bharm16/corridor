@@ -261,6 +261,7 @@ from corridor.report_release import (
     retrieve_prepared_external_report,
     retrieve_released_external_report,
 )
+from corridor.report_publication import project_publication_history
 from corridor.cohort import (
     CohortScopeViolation,
     cohort_candidate_ids,
@@ -2415,6 +2416,7 @@ def reports(
         {
             "project": project,
             "history": external_report_release_history(session, project.id),
+            "publications": project_publication_history(session, project.id),
         },
     )
     record_frontend_request(

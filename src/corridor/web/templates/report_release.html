@@ -81,4 +81,53 @@
   {% else %}
     <p class="empty">No coordination report PDFs have been approved to share.</p>
   {% endfor %}
+
+  {% if publications and (publications.retained or publications.failed_slots) %}
+    <h2>Scheduled weekly retention</h2>
+    <p class="muted">
+      Retained weekly readings supplement the working view; a prepared PDF still
+      needs a separate approval above and is never sent automatically.
+    </p>
+    {% for pub in publications.retained %}
+      <section class="release">
+        <h3>
+          {% if pub.state == "released" %}Released
+          {% elif pub.state == "prepared" %}Prepared — awaiting a release decision
+          {% else %}Retained snapshot{% endif %}
+          · {{ pub.evaluated_on }}
+        </h3>
+        <dl>
+          <dt>Observed at</dt><dd>{{ pub.observed_at }}</dd>
+          <dt>{{ label('provenance') }}</dt>
+          <dd>{{ "All supported sources" if pub.provenance_mode == "all-supported-sources" else "Documents only" }}</dd>
+          <dt>Compared against</dt>
+          <dd>
+            {% if pub.window_start %}
+              the last approved report ({{ pub.window_start }}) · changes in the last {{ pub.comparison_window_days }} days
+            {% else %}
+              no approved report yet — current state only
+            {% endif %}
+          </dd>
+          {% if pub.prepared_artifact_sha256 %}
+            <dt>SHA-256 digest</dt><dd><code>{{ pub.prepared_artifact_sha256 }}</code></dd>
+          {% endif %}
+        </dl>
+        {% if pub.state == "prepared" and pub.prepared_artifact_id %}
+          <a href="/reports/{{ project.slug }}/prepared/{{ pub.prepared_artifact_id }}">Review this prepared PDF</a>
+        {% elif pub.state == "released" and pub.release_id %}
+          <a href="/reports/{{ project.slug }}/releases/{{ pub.release_id }}/download">Download approved PDF</a>
+        {% endif %}
+      </section>
+    {% endfor %}
+    {% for slot in publications.failed_slots %}
+      <section class="release">
+        <h3>Slot did not complete · {{ slot.due_at }}</h3>
+        <dl>
+          <dt>State</dt><dd>{{ slot.state }}</dd>
+          <dt>Reason</dt><dd>{{ slot.last_error_code or "unknown" }}</dd>
+        </dl>
+        <p class="muted">No PDF was retained or approved for this slot; the supervised runtime recovers it.</p>
+      </section>
+    {% endfor %}
+  {% endif %}
 </main>
