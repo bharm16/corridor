@@ -4699,3 +4699,286 @@ class ScheduleLinkActivation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class UnreadableCellReadingProfile(Base):
+    """One declared, versioned eligibility profile for the second-read harness.
+
+    ADR-0064: a page enters the reading harness only under a named profile with
+    declared deterministic OCR-quality checks, page scope, tool and model
+    identities, and per-cell/per-page budgets — declared before it can run,
+    refused visibly when missing. Append-only: a changed bound is a new
+    attributable declaration, never an edit of an earlier one, so a receipt can
+    always name the exact profile it ran under. The harness cannot widen its own
+    scope: eligibility is computed by Corridor from these declared checks.
+    """
+
+    __tablename__ = "unreadable_cell_reading_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(profile_version)) > 0",
+            name="ck_unreadable_cell_profile_version",
+        ),
+        CheckConstraint(
+            "min_readable_text_chars between 1 and 100000",
+            name="ck_unreadable_cell_profile_min_chars",
+        ),
+        CheckConstraint(
+            "max_cells_per_page between 1 and 10000",
+            name="ck_unreadable_cell_profile_max_cells",
+        ),
+        CheckConstraint(
+            "max_image_ops_per_cell between 1 and 100",
+            name="ck_unreadable_cell_profile_max_image_ops",
+        ),
+        CheckConstraint(
+            "max_reads_per_cell between 1 and 100",
+            name="ck_unreadable_cell_profile_max_reads",
+        ),
+        CheckConstraint(
+            "max_corpus_reads_per_cell between 1 and 100",
+            name="ck_unreadable_cell_profile_max_corpus_reads",
+        ),
+        CheckConstraint(
+            "timeout_seconds between 1 and 600",
+            name="ck_unreadable_cell_profile_timeout",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(page_scope_json) = 'array'",
+            name="ck_unreadable_cell_profile_page_scope",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(image_op_identities_json) = 'array'",
+            name="ck_unreadable_cell_profile_image_ops",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(read_identities_json) = 'array'",
+            name="ck_unreadable_cell_profile_reads",
+        ),
+        CheckConstraint(
+            "length(trim(created_by)) > 0",
+            name="ck_unreadable_cell_profile_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    profile_version: Mapped[str] = mapped_column(String(64))
+    # The deterministic OCR-quality check: a page whose usable text falls short
+    # of this and whose text was never generated from cells is unreadable.
+    min_readable_text_chars: Mapped[int] = mapped_column(Integer)
+    page_scope_json: Mapped[list] = mapped_column(JSONB)
+    image_op_identities_json: Mapped[list] = mapped_column(JSONB)
+    read_identities_json: Mapped[list] = mapped_column(JSONB)
+    max_cells_per_page: Mapped[int] = mapped_column(Integer)
+    max_image_ops_per_cell: Mapped[int] = mapped_column(Integer)
+    max_reads_per_cell: Mapped[int] = mapped_column(Integer)
+    max_corpus_reads_per_cell: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class UnreadableCellReadingRun(Base):
+    """One immutable, non-authoritative attempt to read one unreadable cell.
+
+    Every attempt — a mechanical page rescue, a bounded reading-harness run, or a
+    refusal before either — leaves exactly one receipt. ``terminal_state`` says
+    what happened; ``page_image_sha256`` pins the exact rendition the run read, so
+    a page image that changed mid-run is caught as ``stale_input``. The receipt is
+    never Ledger authority: model or OCR reads are candidate generation only.
+    """
+
+    __tablename__ = "unreadable_cell_reading_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "terminal_state in ('rescued', 'corroborated', 'reading_only', "
+            "'failure', 'stale_input', 'budget_exhausted', 'refused', "
+            "'validation_refused', 'runtime_failure')",
+            name="ck_unreadable_cell_run_state",
+        ),
+        CheckConstraint(
+            "page_image_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_unreadable_cell_run_image_sha",
+        ),
+        CheckConstraint(
+            "read_fingerprint is null or read_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_unreadable_cell_run_fingerprint",
+        ),
+        CheckConstraint(
+            "non_authoritative", name="ck_unreadable_cell_run_non_auth"
+        ),
+        CheckConstraint(
+            "length(trim(cell_key)) > 0", name="ck_unreadable_cell_run_cell_key"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    page_no: Mapped[int] = mapped_column(Integer)
+    cell_key: Mapped[str] = mapped_column(String(128))
+    profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("unreadable_cell_reading_profiles.id")
+    )
+    profile_version: Mapped[str | None] = mapped_column(String(64))
+    page_image_sha256: Mapped[str] = mapped_column(String(64))
+    read_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    terminal_state: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(String(160))
+    outcome_json: Mapped[dict | None] = mapped_column(JSONB)
+    validator_outcome: Mapped[str] = mapped_column(String(32))
+    budget_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    non_authoritative: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class UnreadableCellReadingStep(Base):
+    """Redacted ordered receipt of one image op, read, or corpus read."""
+
+    __tablename__ = "unreadable_cell_reading_steps"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "ordinal", name="uq_unreadable_cell_step_ordinal"
+        ),
+        CheckConstraint(
+            "step_type in ('image_op', 'read', 'corpus_read')",
+            name="ck_unreadable_cell_step_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("unreadable_cell_reading_runs.id"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    step_type: Mapped[str] = mapped_column(String(24))
+    name: Mapped[str] = mapped_column(String(128))
+    arguments_json: Mapped[dict] = mapped_column(JSONB)
+    result_summary_json: Mapped[dict] = mapped_column(JSONB)
+    request_sha256: Mapped[str] = mapped_column(String(64))
+    result_sha256: Mapped[str] = mapped_column(String(64))
+
+
+class UnreadableCellResolution(Base):
+    """Append-only three-state value for one unreadable cell (ADR-0064).
+
+    The current value of a cell is the latest row for its
+    ``(project, document, page, cell_key)``. ``state`` is one of: ``unconfirmed``
+    (a reading with full provenance but no corroboration — flagged, never Ready),
+    ``corroborated`` (the value is literal text on a readable source, whose
+    citation is verified by code — never by model agreement), ``absent`` (the
+    source genuinely has no value), or ``admitted`` (a corroborated value the
+    gated cross-document admission class has promoted to record-contributing).
+    ``origin`` says which pass appended it; a corroboration that arrives later
+    upgrades an ``unconfirmed`` row automatically without any human step.
+    """
+
+    __tablename__ = "unreadable_cell_resolutions"
+    __table_args__ = (
+        Index(
+            "ix_unreadable_cell_resolutions_cell",
+            "project_id",
+            "document_id",
+            "page_no",
+            "cell_key",
+        ),
+        CheckConstraint(
+            "state in ('unconfirmed', 'corroborated', 'absent', 'admitted')",
+            name="ck_unreadable_cell_resolution_state",
+        ),
+        CheckConstraint(
+            "origin in ('harness', 'corroboration_upgrade', 'admission', "
+            "'human_decision')",
+            name="ck_unreadable_cell_resolution_origin",
+        ),
+        CheckConstraint(
+            "policy_sha256 is null or policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_unreadable_cell_resolution_sha",
+        ),
+        CheckConstraint(
+            "length(trim(cell_key)) > 0",
+            name="ck_unreadable_cell_resolution_cell_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    page_no: Mapped[int] = mapped_column(Integer)
+    cell_key: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(24))
+    value: Mapped[str | None] = mapped_column(Text)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("unreadable_cell_reading_runs.id")
+    )
+    corroboration_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id")
+    )
+    corroboration_page_no: Mapped[int | None] = mapped_column(Integer)
+    corroboration_quote: Mapped[str | None] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(String(32))
+    policy_version: Mapped[str | None] = mapped_column(String(64))
+    policy_sha256: Mapped[str | None] = mapped_column(String(64))
+    # Set only for an origin='human_decision' row; the answer key for the
+    # ADR-0050 replay. Null for every machine origin.
+    recorded_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class UnreadableCellAdmissionActivation(Base):
+    """Append-only activation/suspension of corroborated cross-document admission.
+
+    Admitting a corroborated cell value across documents expands automatic Record
+    Inclusion behavior, so ADR-0050 governs it: the class may not auto-admit until
+    a regression replay of the project's own recorded human cell-value decisions
+    passes with at least one real case and no contradiction. A passing replay
+    writes an ``activate`` row under the system actor; a deliberate human
+    ``suspend`` beats any passing test; only a human act lifts it. Shipped
+    inactive — a project with no passing replay never auto-admits.
+    """
+
+    __tablename__ = "unreadable_cell_admission_activations"
+    __table_args__ = (
+        CheckConstraint(
+            "action in ('activate', 'suspend')",
+            name="ck_unreadable_cell_admission_action",
+        ),
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_unreadable_cell_admission_reason",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_unreadable_cell_admission_actor",
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_unreadable_cell_admission_sha",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    action: Mapped[str] = mapped_column(String(16))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    replay_case_count: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(160))
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
