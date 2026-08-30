@@ -1032,6 +1032,174 @@ class DocumentQuarantine(Base):
     )
 
 
+# The lifecycle of one reference observed at a connected location (#350). A
+# reference is `proposed` when discovery has only observed it; a human moves it
+# to `authorized` by declaring the kind the bytes cannot state (ADR-0007); the
+# fetch pass moves it to `registered` once its exact bytes become a Document.
+# Discovery is never registration authority, so `proposed` is not actionable
+# and no guessed filename, type, or date is ever an accepted fact.
+DISCOVERED_REFERENCE_STATES = ("proposed", "authorized", "registered")
+
+# Every fetch attempt against an authorized reference retains its own honest
+# outcome (#350). `registered` created a new Document; `unchanged` re-observed
+# identical bytes and created nothing; `drift` saw different bytes under an
+# existing registry identity and is retained as operations work rather than an
+# overwrite or an inferred Supersession (ADR-0015); `failed` is a rejected
+# response, boundary, or member that never became a source document; and
+# `budget_exhausted` stopped a bounded pass with resumable or held state.
+SOURCE_FETCH_OUTCOMES = (
+    "registered",
+    "unchanged",
+    "drift",
+    "failed",
+    "budget_exhausted",
+)
+
+
+class DiscoveredReference(Base):
+    """One coalesced reference observed at a connected location (#350).
+
+    Discovery of a new document reference or newly published archive URL records
+    exactly one row per reference identity, keyed by where it was observed rather
+    than by any value read from it. Repeated discovery of the same reference
+    updates ``last_observed_at`` and ``observed_count`` in place — one proposed
+    intake identity, its origin and available source metadata preserved — never a
+    second row. The observed title and type hint are the location's own words and
+    stay advisory: they are never promoted to an accepted document fact, and a
+    reference becomes a Document only through an attributable authorization plus a
+    validated fetch. Members of an already-declared dated snapshot are recognized
+    here (their archive URL was observed before) so a refetch is not miscounted as
+    a discovery.
+    """
+
+    __tablename__ = "discovered_references"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "reference_key", name="uq_discovered_reference_identity"
+        ),
+        CheckConstraint(
+            "observed_count >= 1", name="ck_discovered_reference_observed_count"
+        ),
+        CheckConstraint(
+            "authorized_doc_type is null or authorized_doc_type in "
+            "('matrix','minutes','agreement','email','plan','schedule','spec',"
+            "'status_report','other')",
+            name="ck_discovered_reference_authorized_doc_type",
+        ),
+        CheckConstraint(
+            "(state = 'proposed' and authorized_at is null "
+            "and registered_document_id is null) or "
+            "(state = 'authorized' and authorized_at is not null "
+            "and authorized_doc_type is not null) or "
+            "(state = 'registered' and authorized_at is not null "
+            "and registered_document_id is not null)",
+            name="ck_discovered_reference_state",
+        ),
+        Index("ix_discovered_references_project_state", "project_id", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    # The server-owned location identity this reference was observed at. Scope is
+    # bound to one declared location; a reference never floats free of one.
+    location_id: Mapped[str] = mapped_column(String(128))
+    # A deterministic identity over (location, url, member) — where the reference
+    # was observed, not what it contains. Two runs of discovery coalesce onto it.
+    reference_key: Mapped[str] = mapped_column(String(64))
+    source_url: Mapped[str] = mapped_column(Text)
+    # Set when the reference is a member of an archive; ``archive_url`` is the
+    # dated snapshot and ``member`` names the file inside it.
+    archive_url: Mapped[str | None] = mapped_column(Text)
+    member: Mapped[str | None] = mapped_column(Text)
+    # The location's own advisory words. Never an accepted fact (ADR-0007).
+    observed_title: Mapped[str | None] = mapped_column(Text)
+    observed_type_hint: Mapped[str | None] = mapped_column(String(64))
+    first_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observed_count: Mapped[int] = mapped_column(
+        Integer, default=1, server_default=text("1")
+    )
+    state: Mapped[str] = mapped_column(
+        _enum(*DISCOVERED_REFERENCE_STATES, name="discovered_reference_state"),
+        default="proposed",
+        server_default="proposed",
+    )
+    # Declared by a human at authorization — the kind the bytes cannot state — and
+    # an optional stable registry identity for a curated corpus document.
+    authorized_doc_type: Mapped[str | None] = mapped_column(String(32))
+    authorized_registry_id: Mapped[str | None] = mapped_column(String(128))
+    authorized_by: Mapped[str | None] = mapped_column(String(128))
+    authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    registered_document_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SourceFetchAttempt(Base):
+    """One retained fetch attempt against an authorized reference (#350).
+
+    The append-only counterpart to the corpus lockfile's per-source record, held
+    in the database so a crash between fetching bytes and registering a Document
+    cannot advertise partial content as a completed retrieval: a row is written in
+    the same committed transaction that registers (or refuses) the bytes. A failed
+    attempt is retained beside any prior success, so a source that returns an error
+    page, a missing member, a truncated body, or an unauthorized redirect shows the
+    new attempt failed rather than silently overwriting the last good retrieval.
+    """
+
+    __tablename__ = "source_fetch_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "sha256 is null or sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_source_fetch_attempt_sha256",
+        ),
+        CheckConstraint(
+            "prior_sha256 is null or prior_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_source_fetch_attempt_prior_sha256",
+        ),
+        Index(
+            "ix_source_fetch_attempts_project_outcome", "project_id", "outcome"
+        ),
+        Index(
+            "ix_source_fetch_attempts_reference", "project_id", "reference_key"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    # The reference this attempt was for. Null only for a pass-level budget
+    # exhaustion that stopped before a specific reference was chosen.
+    reference_key: Mapped[str | None] = mapped_column(String(64))
+    location_id: Mapped[str] = mapped_column(String(128))
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    outcome: Mapped[str] = mapped_column(
+        _enum(*SOURCE_FETCH_OUTCOMES, name="source_fetch_outcome")
+    )
+    # The exact URL whose bytes were read, after any authorized redirect — the
+    # retrieval provenance a citation ultimately bottoms out at.
+    resolved_url: Mapped[str | None] = mapped_column(Text)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    content_type: Mapped[str | None] = mapped_column(Text)
+    byte_count: Mapped[int | None] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    # For a drift outcome, the sha256 of the document already registered under the
+    # same registry identity; both byte identities are retained on disk.
+    prior_sha256: Mapped[str | None] = mapped_column(String(64))
+    # The registered or existing Document this attempt resolved to, when any.
+    document_id: Mapped[int | None] = mapped_column(BigInteger)
+    # A stable machine reason plus a human sentence for a failed, drift, or
+    # budget outcome; null for an ordinary success.
+    reason: Mapped[str | None] = mapped_column(Text)
+    # Whether a stopped pass may simply run again to finish the remaining work.
+    resumable: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ActiveRunDeclaration(Base):
     """One appended human act declaring a document's Active Run.
 
