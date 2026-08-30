@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Processing operations — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#9a4d00; --ok:#067647; --bad:#b42318; }
+  * { box-sizing:border-box; } body { margin:0; color:#111; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:72rem; margin:2rem auto; padding:0 1.2rem 3rem; } h1 { margin:0; font-size:1.55rem; }
+  h2 { margin:2rem 0 .5rem; font-size:1.1rem; } .muted { color:var(--muted); }
+  .card { border:1px solid var(--line); border-radius:7px; padding:1rem; margin:.8rem 0; }
+  .notice { color:var(--ok); background:#f0fbf4; padding:.6rem .8rem; border-radius:5px; }
+  .warning { color:var(--warn); background:#fffaeb; padding:.6rem .8rem; border-radius:5px; }
+  .failure { color:var(--bad); background:#fef3f2; padding:.6rem .8rem; border-radius:5px; }
+  table { border-collapse:collapse; width:100%; } th,td { text-align:left; border-bottom:1px solid #eee; padding:.45rem; vertical-align:top; }
+  th { color:var(--muted); font-size:.82rem; } button { font:inherit; padding:.4rem .75rem; } input { font:inherit; padding:.35rem; }
+  details { margin:.5rem 0; } code { overflow-wrap:anywhere; }
+</style>
+<header><b>{{ project.name }}</b><span><a href="/work/{{ project.slug }}">Coordination work</a> · <a href="/operations/{{ project.slug }}/checks">Check configuration</a></span></header>
+<main>
+  <h1>Processing operations</h1>
+  <p class="muted">This surface exposes existing, bounded processing controls. It cannot create a new policy, bypass a proof, or turn held and terminal inputs into a rerun. No generic retry is available.</p>
+  {% if notice %}<p class="notice" role="status">Current Production Run declared. Record Inclusion will recover through its durable handoff.</p>{% endif %}
+
+  <h2>Record Inclusion policy</h2>
+  <section class="card">
+    <p><b>Effective status:</b> {{ event_policy.status | replace('_', ' ') }}</p>
+    <p><b>Proof:</b>
+      {% if event_policy.proof_status == 'no_applicable_proof' %}No applicable proof{% else %}{{ event_policy.proof_status | replace('_', ' ') }}{% endif %}
+      {% if event_policy.latest_receipt_id %} · receipt #{{ event_policy.latest_receipt_id }}{% endif %}
+    </p>
+    <p><b>Effective policy:</b> <code>{{ event_policy.effective_policy_version }}</code></p>
+    {% if event_policy.latest_action %}
+      <p><b>Latest human policy act:</b> {{ event_policy.latest_action }} by {{ event_policy.latest_action_recorded_by }} — {{ event_policy.latest_action_reason }}</p>
+    {% endif %}
+    {% if event_policy.status == 'suspended' %}
+      <p class="warning">A passing proof remains suspended. It is not an active policy.</p>
+      {% if 'lift' in event_policy.allowed_operations %}
+        <form method="post" action="/operations/{{ project.slug }}/unknown-scope/lift">{{ csrf_field() }}<input type="hidden" name="state_fingerprint" value="{{ policy_offer_state }}"><button>Lift suspension after current proof</button></form>
+      {% endif %}
+    {% elif 'suspend' in event_policy.allowed_operations %}
+      <form method="post" action="/operations/{{ project.slug }}/unknown-scope/suspend">{{ csrf_field() }}<input type="hidden" name="state_fingerprint" value="{{ policy_offer_state }}">
+        <label>Why suspend <input name="reason" required maxlength="128"></label>
+        <button>Suspend this policy</button>
+      </form>
+    {% else %}
+      <p class="muted">No automatic activation is offered here. Replay and the declared promotion gates remain separate operations.</p>
+    {% endif %}
+  </section>
+
+  <h2>Current Production Runs</h2>
+  {% if record_inclusion_pending %}<p class="notice">Record Inclusion is pending through the shared durable load handoff.</p>{% else %}<p class="muted">No Record Inclusion load is pending.</p>{% endif %}
+  {% for row in documents %}
+    <section class="card">
+      <h3>{{ row.document.filename }}</h3>
+      <p class="muted">{{ row.document.doc_type }} · parse {{ row.document.parse_status }}{% if row.document.doc_date %} · {{ row.document.doc_date }}{% endif %}{% if row.document.registry_id %} · {{ row.document.registry_id }}{% endif %}</p>
+      {% if row.quarantine %}<p class="warning">Held input: {{ row.quarantine.reason }}. This source document is not eligible for a recovery run.</p>{% endif %}
+      {% if row.active_run_id %}<p><b>Current Production Run:</b> #{{ row.active_run_id }}</p>{% else %}<p class="warning">No Current Production Run has been declared.</p>{% endif %}
+      {% if row.runs %}
+        <table><thead><tr><th>Run</th><th>Outcome</th><th>Purpose / completion</th><th>Prompt / model / configuration</th><th>Action</th></tr></thead><tbody>
+        {% for run in row.runs %}<tr>
+          <td>#{{ run.id }}</td><td>{{ run.outcome }}{% if run.page_errors %} ({{ run.page_errors }} page errors){% endif %}{% if run.error_detail %}<br><span class="failure">Failure retained in the processing receipt.</span>{% endif %}</td>
+          <td>Production database · {{ run.completed_at }}</td>
+          <td>{{ run.prompt_version }}{% if run.model %} · {{ run.model }}{% endif %}<br>{% if run.extractor_config_sha256 %}<code>{{ run.extractor_config_sha256 }}</code>{% else %}<span class="warning">Legacy configuration unavailable — not sealed.</span>{% endif %}</td>
+          <td>{% if run.outcome == 'completed' and not run.page_errors and row.active_run_id != run.id %}<form method="post" action="/operations/{{ project.slug }}/runs/{{ row.document.id }}/declare">{{ csrf_field() }}<input type="hidden" name="extraction_run_id" value="{{ run.id }}"><input type="hidden" name="state_fingerprint" value="{{ row.offer_state }}"><button>Declare current</button></form>{% endif %}</td>
+        </tr>{% endfor %}</tbody></table>
+      {% else %}<p class="muted">No processing attempt has been retained for this source document.</p>{% endif %}
+      {% if row.history %}<details><summary>Declaration history ({{ row.history | length }})</summary><ul>{% for declaration in row.history %}<li>Run #{{ declaration.extraction_run_id }} declared by {{ declaration.declared_by }} at {{ declaration.declared_at }}</li>{% endfor %}</ul></details>{% endif %}
+    </section>
+  {% else %}<p class="muted">No source documents are registered for this project.</p>{% endfor %}
+
+  <h2>Scheduled recovery</h2>
+  {% if schedules %}
+    {% for schedule in schedules %}<section class="card"><p><b>{{ schedule.handler_key | replace('_', ' ') }}</b> is enabled.</p><p class="muted">{{ schedule.cadence }} · {{ schedule.timezone_name }} · {{ schedule.missed_run_policy }} · at most {{ schedule.max_attempts }} attempts · declared model budget {{ schedule.model_token_budget }}</p></section>{% endfor %}
+  {% else %}<p class="warning">Scheduled recovery is not enabled: no retained gate-7 configuration names this project, exact identities, cadence, retention, bounded retries, resources, and authorized destinations.</p>{% endif %}
+  {% if recovery_rows %}<table><thead><tr><th>Occurrence</th><th>State</th><th>Attempts</th><th>Safe next operation</th></tr></thead><tbody>{% for row in recovery_rows %}<tr><td>{{ row.occurrence.public_id }}</td><td>{{ row.occurrence.state }}</td><td>{{ row.occurrence.attempt_count }}</td><td>{% if row.receipts %}{{ row.receipts[-1].safe_next_step }}{% else %}await scheduled processing{% endif %}{% if row.occurrence.last_error_code %}<br><span class="failure">{{ row.occurrence.last_error_code }}</span>{% endif %}</td></tr>{% endfor %}</tbody></table>{% endif %}
+</main>

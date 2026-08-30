@@ -105,6 +105,13 @@
         </div>
       {% endif %}
       <h2 style="margin-top:.2rem">Preview of {{ preview.source_name }}</h2>
+      {% if draft %}
+        <div class="banner stale">
+          <b>Drafted from {{ draft.source_name }}.</b> This is a non-authoritative
+          transcription from the retained source, not a schedule decision. Review
+          the cited wording, then use the ordinary import confirmation below.
+        </div>
+      {% endif %}
       <dl>
         <dt>Source</dt><dd>{{ preview.source_name }}</dd>
         <dt>Fingerprint</dt><dd><code>{{ preview.source_sha256 }}</code></dd>
@@ -117,7 +124,7 @@
       </p>
       <table>
         <thead>
-          <tr><th>Code</th><th>Event</th><th>Scheduled date</th><th>Effect</th></tr>
+          <tr><th>Code</th><th>Event</th><th>Scheduled date</th><th>Effect</th>{% if draft %}<th>Source locator</th>{% endif %}</tr>
         </thead>
         <tbody>
           {% for row in preview.rows %}
@@ -136,6 +143,10 @@
                 {% elif row.classification == "new_source_version" %}<span class="tag newver">New source version, date unchanged</span>
                 {% else %}<span class="tag unchanged">No change</span>{% endif %}
               </td>
+              {% if draft %}
+                {% set source = draft.rows[loop.index0].source %}
+                <td><b>Source page {{ source.page_no }}</b><br><code>{{ source.quote }}</code></td>
+              {% endif %}
             </tr>
           {% endfor %}
         </tbody>
@@ -144,6 +155,7 @@
         <input type="hidden" name="source_name" value="{{ preview.source_name }}">
         <input type="hidden" name="expected_sha256" value="{{ preview.source_sha256 }}">
         <input type="hidden" name="expected_predecessors" value="{{ predecessors_json }}">
+        {% if draft_receipt_id %}<input type="hidden" name="draft_receipt_id" value="{{ draft_receipt_id }}">{% endif %}
         <textarea name="content" hidden>{{ content }}</textarea>
         <button type="submit">Confirm import — record under my name</button>
       </form>
@@ -151,6 +163,57 @@
         Confirming records each row as an immutable Key Date Version under your identity.
         It does not relink constraints or move any Required By date.
       </p>
+    </div>
+  {% endif %}
+
+  {% if draft and (draft.unresolved or draft.quarantined_sequencing) %}
+    <div class="preview">
+      <h2 style="margin-top:.2rem">Unresolved draft findings — nothing below can be imported</h2>
+      <p class="muted">
+        The assistant could not support these from the authorized source wording,
+        so they stay visible here as questions for a person. They are never
+        imported, linked, or turned into schedule dates.
+      </p>
+      {% if draft.unresolved %}
+        <table>
+          <thead>
+            <tr><th>Why it is unresolved</th><th>Source locator</th></tr>
+          </thead>
+          <tbody>
+            {% for item in draft.unresolved %}
+              <tr>
+                <td>{{ item.reason }}</td>
+                <td>
+                  {% if item.page_no %}<b>Source page {{ item.page_no }}</b>{% endif %}
+                  {% if item.quote %}<br><code>{{ item.quote }}</code>{% endif %}
+                  {% if not item.page_no and not item.quote %}<span class="muted">no supported citation</span>{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+      {% if draft.quarantined_sequencing %}
+        <h2>Quarantined sequencing — kept visible, never consumed</h2>
+        <p class="muted">
+          The source states scheduling relationships Corridor does not represent.
+          Importing their dates while dropping the relationship would be deceptive,
+          so no drafted rows from this source are importable.
+        </p>
+        <table>
+          <thead>
+            <tr><th>Source page</th><th>Stated relationship</th></tr>
+          </thead>
+          <tbody>
+            {% for item in draft.quarantined_sequencing %}
+              <tr>
+                <td><b>Source page {{ item.page_no }}</b></td>
+                <td><code>{{ item.quote }}</code></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
     </div>
   {% endif %}
 </main>

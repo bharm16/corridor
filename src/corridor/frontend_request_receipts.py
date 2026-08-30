@@ -105,6 +105,16 @@ ROUTE_CONTRACTS: Mapping[str, tuple[str, str, frozenset[int]]] = {
     "save_operations_checks": (
         "/operations/{slug}/checks", "POST", frozenset({303, 400})
     ),
+    "processing_operations": ("/operations/{slug}", "GET", frozenset({200})),
+    "declare_operations_active_run": (
+        "/operations/{slug}/runs/{document_id}/declare", "POST", frozenset({303})
+    ),
+    "suspend_operations_unknown_scope": (
+        "/operations/{slug}/unknown-scope/suspend", "POST", frozenset({303})
+    ),
+    "lift_operations_unknown_scope": (
+        "/operations/{slug}/unknown-scope/lift", "POST", frozenset({303})
+    ),
     "assign_owner": (
         "/dependencies/{dependency_id}/owner", "POST", frozenset({303})
     ),

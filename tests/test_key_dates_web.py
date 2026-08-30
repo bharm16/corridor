@@ -8,8 +8,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from corridor.db import Session, engine
+from corridor.key_date_drafting import (
+    KeyDateDraftRow,
+    KeyDateDraftRuntimeOutput,
+    QuarantinedSequencing,
+    SourceBoundKeyDateDraftRequest,
+    draft_key_dates,
+)
 from corridor.milestones import import_xer, preview_import
-from corridor.models import Milestone, MilestoneRegistration, Project
+from corridor.models import DocPage, Document, Milestone, MilestoneRegistration, Project
 from corridor.principals import HumanPrincipal
 from corridor.web.app import app, get_human_principal, get_session
 from access_support import seed_membership
@@ -172,3 +179,215 @@ def test_import_is_scoped_to_its_project(client, session, project):
     client.post(f"/key-dates/{project.slug}/confirm", data=fields, follow_redirects=False)
     assert codes(session, project) == {"UTIL-CLEAR", "LET"}
     assert codes(session, other) == set()
+
+
+def test_source_bound_draft_uses_existing_preview_then_ordinary_confirmation(
+    client, session, project
+):
+    quote = "UTIL-CLEAR | Utility clearance | 2026-11-01"
+    document = Document(
+        project_id=project.id,
+        sha256=sha256(quote.encode()).hexdigest(),
+        filename="schedule-summary.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    session.add(DocPage(document_id=document.id, page_no=2, text=quote, text_source="cells"))
+    session.flush()
+
+    class Runtime:
+        identity = {
+            "adapter": "fake-key-date-draft-v1",
+            "model": "fake-model",
+            "prompt_version": "key-date-draft-test-v1",
+            "configuration": {"temperature": 0},
+        }
+
+        def draft(self, request, pages, budget):
+            return KeyDateDraftRuntimeOutput(
+                rows=(
+                    KeyDateDraftRow(
+                        code="UTIL-CLEAR",
+                        name="Utility clearance",
+                        scheduled_for="2026-11-01",
+                        precision="day",
+                        page_no=2,
+                        quote=quote,
+                    ),
+                ),
+                    usage={"input_tokens": 10, "output_tokens": 5, "elapsed_ms": 2, "spend_usd_micros": 0},
+            )
+
+    draft = draft_key_dates(
+        session,
+        SourceBoundKeyDateDraftRequest(
+            project_id=project.id,
+            document_id=document.id,
+            source_sha256=document.sha256,
+            allowed_pages=(2,),
+            requested_by=TEST_PRINCIPAL,
+        ),
+        runtime=Runtime(),
+    )
+    response = client.get(f"/key-dates/{project.slug}/drafts/{draft.receipt_id}/preview")
+    assert response.status_code == 200
+    assert "Drafted from schedule-summary.pdf" in response.text
+    assert "Source page 2" in response.text
+    assert quote in response.text
+    preview = preview_import(
+        session,
+        project_id=project.id,
+        content=draft.csv_content,
+        source_name=draft.source_name,
+    )
+    response = client.post(
+        f"/key-dates/{project.slug}/confirm",
+        data={
+            "source_name": draft.source_name,
+            "content": draft.csv_content.decode(),
+            "expected_sha256": preview.source_sha256,
+            "expected_predecessors": json.dumps(preview.predecessors),
+            "draft_receipt_id": str(draft.receipt_id),
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert codes(session, project) == {"UTIL-CLEAR"}
+
+
+def test_unresolved_and_quarantined_sequencing_stay_visible_without_an_importer(
+    client, session, project
+):
+    quote = "UTIL-CLEAR | Utility clearance | 2026-11-01"
+    relationship = "UTIL-RELO must finish before UTIL-CLEAR"
+    text = f"{quote}\n{relationship}"
+    document = Document(
+        project_id=project.id,
+        sha256=sha256(text.encode()).hexdigest(),
+        filename="schedule-summary.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    session.add(DocPage(document_id=document.id, page_no=2, text=text, text_source="cells"))
+    session.flush()
+
+    class Runtime:
+        identity = {
+            "adapter": "fake-key-date-draft-v1",
+            "model": "fake-model",
+            "prompt_version": "key-date-draft-test-v1",
+            "configuration": {"temperature": 0},
+        }
+
+        def draft(self, request, pages, budget):
+            return KeyDateDraftRuntimeOutput(
+                rows=(
+                    KeyDateDraftRow(
+                        code="UTIL-CLEAR",
+                        name="Utility clearance",
+                        scheduled_for="2026-11-01",
+                        precision="day",
+                        page_no=2,
+                        quote=quote,
+                    ),
+                ),
+                sequencing=(QuarantinedSequencing(page_no=2, quote=relationship),),
+                usage={"input_tokens": 9, "output_tokens": 4, "elapsed_ms": 1, "spend_usd_micros": 0},
+            )
+
+    draft = draft_key_dates(
+        session,
+        SourceBoundKeyDateDraftRequest(
+            project_id=project.id,
+            document_id=document.id,
+            source_sha256=document.sha256,
+            allowed_pages=(2,),
+            requested_by=TEST_PRINCIPAL,
+        ),
+        runtime=Runtime(),
+    )
+    assert draft.rows == ()
+
+    response = client.get(f"/key-dates/{project.slug}/drafts/{draft.receipt_id}/preview")
+    assert response.status_code == 200
+    assert "Quarantined sequencing" in response.text
+    assert relationship in response.text
+    assert "no rows were imported" in response.text
+    assert "Confirm import" not in response.text
+    assert session.scalars(select(Milestone)).all() == []
+
+
+def test_tampered_draft_content_refuses_the_draft_bound_confirmation(
+    client, session, project
+):
+    quote = "UTIL-CLEAR | Utility clearance | 2026-11-01"
+    document = Document(
+        project_id=project.id,
+        sha256=sha256(quote.encode()).hexdigest(),
+        filename="schedule-summary.pdf",
+        doc_type="minutes",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    session.add(DocPage(document_id=document.id, page_no=2, text=quote, text_source="cells"))
+    session.flush()
+
+    class Runtime:
+        identity = {
+            "adapter": "fake-key-date-draft-v1",
+            "model": "fake-model",
+            "prompt_version": "key-date-draft-test-v1",
+            "configuration": {"temperature": 0},
+        }
+
+        def draft(self, request, pages, budget):
+            return KeyDateDraftRuntimeOutput(
+                rows=(
+                    KeyDateDraftRow(
+                        code="UTIL-CLEAR",
+                        name="Utility clearance",
+                        scheduled_for="2026-11-01",
+                        precision="day",
+                        page_no=2,
+                        quote=quote,
+                    ),
+                ),
+                usage={"input_tokens": 9, "output_tokens": 4, "elapsed_ms": 1, "spend_usd_micros": 0},
+            )
+
+    draft = draft_key_dates(
+        session,
+        SourceBoundKeyDateDraftRequest(
+            project_id=project.id,
+            document_id=document.id,
+            source_sha256=document.sha256,
+            allowed_pages=(2,),
+            requested_by=TEST_PRINCIPAL,
+        ),
+        runtime=Runtime(),
+    )
+    preview = preview_import(
+        session,
+        project_id=project.id,
+        content=draft.csv_content,
+        source_name=draft.source_name,
+    )
+    tampered = "code,name,need_date\nUTIL-CLEAR,Utility clearance,2026-12-25\n"
+    response = client.post(
+        f"/key-dates/{project.slug}/confirm",
+        data={
+            "source_name": draft.source_name,
+            "content": tampered,
+            "expected_sha256": preview.source_sha256,
+            "expected_predecessors": json.dumps(preview.predecessors),
+            "draft_receipt_id": str(draft.receipt_id),
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    assert session.scalars(select(Milestone)).all() == []
