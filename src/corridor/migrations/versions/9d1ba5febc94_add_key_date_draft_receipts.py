@@ -110,4 +110,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("cannot downgrade immutable Key date draft receipts")
+    op.execute(
+        """
+        do $$
+        begin
+            if exists (select 1 from key_date_draft_receipts)
+               or exists (select 1 from key_date_draft_row_receipts) then
+                raise exception 'cannot erase retained Key date draft receipts';
+            end if;
+        end
+        $$;
+        """
+    )
+    op.drop_table("key_date_draft_row_receipts")
+    op.drop_table("key_date_draft_receipts")
+    op.execute("drop function if exists refuse_key_date_draft_receipt_mutation()")

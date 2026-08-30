@@ -93,4 +93,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("cannot erase statement-suggestion eligibility or protection history")
+    op.execute(
+        """
+        do $$
+        begin
+            if exists (select 1 from statement_suggestion_eligibility_declarations)
+               or exists (select 1 from statement_suggestion_protections)
+               or exists (select 1 from statement_suggestion_protection_ends) then
+                raise exception 'cannot erase statement-suggestion eligibility or protection history';
+            end if;
+        end
+        $$;
+        """
+    )
+    op.drop_table("statement_suggestion_protection_ends")
+    op.drop_table("statement_suggestion_protections")
+    op.drop_table("statement_suggestion_eligibility_declarations")
+    op.execute("drop function if exists reject_statement_suggestion_protection_mutation()")
