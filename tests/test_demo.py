@@ -171,6 +171,8 @@ def test_reset_only_clears_demonstration_project_rows(session, demo_project, rea
 
 def test_reset_refuses_a_real_project_without_changing_it(session, real_project):
     document = make_document(session, real_project, sha="c" * 64)
+    session.add(ExternalOrg(name="AT&T Texas (SWBT)", aliases=[]))
+    session.flush()
     accept_candidate(
         session,
         make_candidate(session, document),

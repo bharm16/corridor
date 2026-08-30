@@ -105,7 +105,14 @@ def project(session):
     # established organization.  ADR-0051 moves first-time organization
     # confirmation to its own explicit command; normal candidate acceptance
     # may no longer create this row as a side effect.
-    session.add(ExternalOrg(name="AT&T Texas (SWBT)", aliases=[]))
+    session.add_all(
+        [
+            ExternalOrg(name="AT&T Texas (SWBT)", aliases=[]),
+            ExternalOrg(name="City of Houston", aliases=[]),
+            ExternalOrg(name="Web queue Pipeline Co", aliases=[]),
+            ExternalOrg(name="Web Pipeline Co", aliases=[]),
+        ]
+    )
     session.flush()
     seed_membership(session, p, TEST_PRINCIPAL)
     return p
@@ -263,6 +270,92 @@ def test_confirming_an_organization_requires_an_explicit_existing_or_new_choice(
         follow_redirects=False,
     )
     assert response.status_code == 400
+
+
+def test_unresolved_identity_shows_one_card_with_evidence_and_no_preselection(
+    client, session, project
+):
+    """ADR-0051: the abstained spelling gets its card — source wording, the
+    evidence already considered, and explicit existing-or-new choices."""
+    from corridor.dependency_admission import run_dependency_admission
+    from corridor.extraction_runs import (
+        declare_single_run_documents,
+        record_extraction_run,
+    )
+
+    matrix = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "identity-card.pdf"),
+        filename="identity-card.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(matrix)
+    session.flush()
+    fields = {
+        "utility_id": "PL9",
+        "external_org": "Fresh Spelling Gas Partners",
+        "utility_type": "Petroleum and Gaseous Materials",
+        "station_from": "1102+20",
+        "station_to": "1102+80",
+    }
+    quote = " | ".join(fields.values())
+    session.add(DocPage(document_id=matrix.id, page_no=1, text=quote))
+    row = Candidate(
+        project_id=project.id,
+        kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": fields,
+            "citations": [
+                {
+                    "document_id": matrix.id,
+                    "page": 1,
+                    "quote": quote,
+                    "verified": True,
+                    "whole_row": True,
+                }
+            ],
+            "dedupe_hint": quote,
+            "text_source": "text_layer",
+        },
+        source_document_id=matrix.id,
+        source_pages=[1],
+        confidence=0.99,
+        prompt_version="matrix_v1",
+        model="gpt-test",
+        citations_verified=True,
+    )
+    session.add(row)
+    record_extraction_run(
+        session,
+        matrix,
+        prompt_version="matrix_v1",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(row,),
+        model="gpt-test",
+        schema_version="matrix_candidate_shape_v1",
+        allow_unsealed_legacy=True,
+    )
+    session.flush()
+    declare_single_run_documents(session, project.id, principal=TEST_PRINCIPAL)
+    result = run_dependency_admission(session, project.id)
+    assert {item.reason for item in result.abstentions} == {
+        "external_org_identity_unresolved"
+    }
+
+    page = client.get(f"/queue/{project.slug}").text
+
+    assert "External Organization identity not established." in page
+    assert "Fresh Spelling Gas Partners" in page
+    assert "Evidence already considered" in page
+    # The empty choice is the only preselected option; no organization is.
+    assert '<option value="" selected>' in page
+    assert page.count(" selected>") == 1
+    assert 'name="create_organization"' in page
+    assert f'action="/candidates/{row.id}/confirm-organization"' in page
 
 
 def test_queue_rejects_an_unknown_review_lane(client, project):
@@ -1996,7 +2089,7 @@ def test_edit_then_accept_records_the_edited_values(client, session, project, do
         data={
             "slug": project.slug,
             "field_utility_id": "FOC1-1",
-            "field_external_org": "AT&T Texas",
+            "field_external_org": "AT&T Texas (SWBT)",
             "field_station_from": "1150+00",
         },
         follow_redirects=False,
@@ -3989,7 +4082,7 @@ def _event_cohort_lane(session, project):
                 "kind": "dependency",
                 "fields": {
                     "utility_id": uid,
-                    "external_org": "Tejas Pipeline Co",
+                    "external_org": "Web queue Pipeline Co",
                     "utility_type": "Petroleum and Gaseous Materials",
                     "baseline": "SR-BL",
                     "station_from": "1102+20",
@@ -4023,9 +4116,9 @@ def _event_cohort_lane(session, project):
                 "kind": "event",
                 "fields": {
                     "event_type": "commitment",
-                    "description": f"Tejas committed on {ref}",
-                    "external_org": "Tejas Pipeline Co",
-                    "stated_party": "Tejas Pipeline Co",
+                    "description": f"Web queue Pipeline committed on {ref}",
+                    "external_org": "Web queue Pipeline Co",
+                    "stated_party": "Web queue Pipeline Co",
                     "event_date": "2025-01-16",
                     "committed_date": "2025-06-01",
                     "conflict_ref": ref,
@@ -4361,6 +4454,12 @@ def _disagreeing_project(session, project):
         record_extraction_run,
     )
 
+    if session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == "Web Pipeline Co")
+    ).first() is None:
+        session.add(ExternalOrg(name="Web Pipeline Co", aliases=[]))
+        session.flush()
+
     def doc(filename, doc_date):
         from datetime import date as _date
 
@@ -4382,7 +4481,7 @@ def _disagreeing_project(session, project):
     def row(document, station):
         fields = {
             "utility_id": "PL7",
-            "external_org": "Tejas Pipeline Co",
+            "external_org": "Web Pipeline Co",
             "utility_type": "Petroleum and Gaseous Materials",
             "station_from": station,
             "station_to": station,
@@ -4673,6 +4772,12 @@ def _unplaced_statement(session, project):
     """One conflict on the record and one statement naming another."""
     from corridor.extraction_runs import record_extraction_run
 
+    if session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == "Web Pipeline Co")
+    ).first() is None:
+        session.add(ExternalOrg(name="Web Pipeline Co", aliases=[]))
+        session.flush()
+
     matrix = Document(
         project_id=project.id,
         sha256=_document_sha(project.id, "ucm-statements.pdf"),
@@ -4729,7 +4834,7 @@ def _unplaced_statement(session, project):
         "dependency",
         {
             "utility_id": "PL1",
-            "external_org": "Tejas Pipeline Co",
+            "external_org": "Web Pipeline Co",
             "utility_type": "Petroleum and Gaseous Materials",
             "station_from": "1102+20",
             "station_to": "1102+80",
@@ -4741,9 +4846,9 @@ def _unplaced_statement(session, project):
         "event",
         {
             "event_type": "commitment",
-            "description": "Tejas committed on the crossing",
-            "external_org": "Tejas Pipeline Co",
-            "stated_party": "Tejas Pipeline Co",
+            "description": "Web Pipeline committed on the crossing",
+            "external_org": "Web Pipeline Co",
+            "stated_party": "Web Pipeline Co",
             "event_date": "2025-01-16",
             "committed_date": "2025-06-01",
             "conflict_ref": "PL99",
@@ -4777,7 +4882,7 @@ def test_the_pile_names_what_each_statement_needs(session, client, project):
     page = client.get(f"/statements/{project.slug}").text
     assert "This statement names a conflict the record does not have." in page
     # The reviewer sees what was actually said, not a candidate id.
-    assert "Tejas committed on the crossing" in page
+    assert "Web Pipeline committed on the crossing" in page
     assert "2025-01-16" in page
 
 

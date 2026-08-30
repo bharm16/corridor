@@ -94,7 +94,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 OPERATOR = HumanPrincipal("local:event-admission-operator")
-PIPELINE = "Tejas Pipeline Co"
+PIPELINE = "Event Admission Pipeline Co"
 PROJECT_SIDE = "LJA"
 
 
@@ -131,8 +131,6 @@ def project(session):
         project_side_parties=[PROJECT_SIDE],
     )
     session.add(p)
-    session.flush()
-    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
     session.flush()
     return p
 
@@ -224,6 +222,8 @@ def _event(
 @pytest.fixture
 def admitted(session, project):
     """One admitted Dependency (PL1, Tejas) — events attach to records."""
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
     matrix = _document(session, project, filename="ucm.pdf", doc_type="matrix")
     candidate = _candidate(
         matrix,
@@ -380,7 +380,7 @@ def test_unknown_scope_policy_admits_one_exact_party_level_commitment(
             "end_date": "2025-06-30",
         },
         description="Tejas Pipeline will deliver the Barlow calculation in June 2025.",
-        stated_party="Tejas Pipeline",
+        stated_party=PIPELINE,
     )
     [candidate] = _minutes_with(session, project, [fields])
 

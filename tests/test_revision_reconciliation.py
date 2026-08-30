@@ -33,6 +33,7 @@ from corridor.models import (
     Document,
     DocumentQuarantine,
     EvidenceLink,
+    ExternalOrg,
     PolicyRun,
     Project,
     RevisionComparisonRun,
@@ -179,6 +180,13 @@ def _seed_transition(session, *, successor_fields=None, extra_predecessor_candid
     )
     session.add(project)
     session.flush([project])
+    # Issue #345 ended silent minting: register the External Organization the
+    # candidates name ("AT&T") so adjudication resolves it instead of refusing.
+    # Get-or-create: the registry is shared across files on a worker database,
+    # so another file may already have committed this organization.
+    if session.scalar(select(ExternalOrg).where(ExternalOrg.name == "AT&T")) is None:
+        session.add(ExternalOrg(name="AT&T", aliases=[]))
+        session.flush()
 
     predecessor_fields = _fields()
     successor_fields = successor_fields or _fields()

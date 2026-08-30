@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
+from corridor.config import settings
+from corridor.db import Session
+from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.models import (
     Candidate,
     Dependency,
@@ -17,6 +20,8 @@ from corridor.models import (
     OrganizationIdentityReceipt,
     Project,
     RecordInclusionRequest,
+    RevisionComparisonFinding,
+    RevisionComparisonRun,
 )
 from corridor.organization_identity import (
     MACHINE_ACTOR,
@@ -35,9 +40,30 @@ from corridor.principals import HumanPrincipal
 ALICE = HumanPrincipal("local:identity-alice")
 
 
+@pytest.fixture(scope="module")
+def identity_isolated_database():
+    """One migrated disposable database for the identity registry proofs.
+
+    These tests resolve and count identities registry-wide (ADR-0051), so a
+    clean registry is part of their fixture. On the shared worker database
+    other files commit organizations, identity receipts, and reconsideration
+    requests that would otherwise be seen here; an isolated database keeps the
+    registry-wide reads and the replay proofs deterministic, mirroring the
+    event-admission cross-session fixture.
+    """
+
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=Path(__file__).resolve().parents[1],
+        error_cls=RuntimeError,
+        database_prefix="corridor_organization_identity_",
+    ) as database:
+        yield database
+
+
 @pytest.fixture
-def session():
-    connection = engine.connect()
+def session(identity_isolated_database):
+    connection = identity_isolated_database.session_factory.kw["bind"].connect()
     transaction = connection.begin()
     scoped = Session(bind=connection)
     yield scoped
@@ -385,3 +411,205 @@ def test_alias_correction_preserves_history_and_never_reuses_a_canonical_name(se
     assert receipt.evidence_json["previous_external_org_id"] == mistaken.id
     assert session.get(ExternalOrg, mistaken.id).aliases == []
     assert session.get(ExternalOrg, correct.id).aliases == ["Old Utility DBA"]
+
+
+def _extraction_run(session, row):
+    from corridor.extraction_runs import record_extraction_run
+
+    document = session.get(Document, row.source_document_id)
+    return record_extraction_run(
+        session,
+        document,
+        prompt_version="test",
+        candidate_count=1,
+        page_errors=0,
+        candidates=(row,),
+        model="test",
+        schema_version="matrix_candidate_shape_v1",
+        allow_unsealed_legacy=True,
+    )
+
+
+def _paired_finding(session, project, predecessor, successor, *, state="changed"):
+    from datetime import datetime, timezone
+
+    run = RevisionComparisonRun(
+        project_id=project.id,
+        predecessor_document_id=predecessor.source_document_id,
+        successor_document_id=successor.source_document_id,
+        predecessor_extraction_run_id=_extraction_run(session, predecessor).id,
+        successor_extraction_run_id=_extraction_run(session, successor).id,
+        predecessor_prompt_version="test",
+        successor_prompt_version="test",
+        predecessor_model="test",
+        successor_model="test",
+        matcher_version="test",
+        matcher_config={},
+        predecessor_inputs_json=[],
+        successor_inputs_json=[],
+        finding_count=1,
+        content_sha256="0" * 64,
+    )
+    # The database requires a Revision Comparison to begin unsealed and be
+    # sealed only once its finding set is complete, so follow the production
+    # ordering: insert the run, add the finding, then seal.
+    session.add(run)
+    session.flush([run])
+    finding = RevisionComparisonFinding(
+        revision_comparison_run_id=run.id,
+        ordinal=1,
+        state=state,
+        predecessor_candidate_ids=[predecessor.id],
+        successor_candidate_ids=[successor.id],
+        match_score=None,
+        field_changes=[],
+        matcher_detail={},
+    )
+    session.add(finding)
+    session.flush([finding])
+    run.sealed_at = datetime.now(timezone.utc)
+    session.flush([run])
+    return finding
+
+
+def test_revision_lineage_resolves_a_relabelled_owner_through_the_existing_pairing(session):
+    p = project(session, "identity-lineage")
+    org = ExternalOrg(name="AT&T Texas", aliases=[])
+    session.add(org)
+    session.flush()
+    predecessor = candidate(session, p, owner="AT&T Texas")
+    successor = candidate(session, p, owner="SWBT relabelled in the May matrix")
+    _paired_finding(session, p, predecessor, successor)
+
+    resolution = resolve_candidate_identity(session, successor, permit_advanced=True)
+
+    assert resolution.external_org_id == org.id
+    assert resolution.method == "automatic_revision_lineage"
+    assert resolution.evidence["automatic_revision_lineage"]["predecessor_candidate_ids"] == [
+        predecessor.id
+    ]
+
+
+def test_an_unpaired_row_contributes_no_revision_lineage(session):
+    p = project(session, "identity-lineage-unpaired")
+    session.add(ExternalOrg(name="AT&T Texas", aliases=[]))
+    session.flush()
+    predecessor = candidate(session, p, owner="AT&T Texas")
+    paired_successor = candidate(session, p, owner="paired successor spelling")
+    _paired_finding(session, p, predecessor, paired_successor)
+    unpaired = candidate(session, p, owner="SWBT relabelled but unpaired")
+
+    resolution = resolve_candidate_identity(session, unpaired, permit_advanced=True)
+
+    assert not resolution.resolved
+    assert resolution.evidence["automatic_revision_lineage"]["predecessor_candidate_ids"] == []
+
+
+def test_a_quote_verified_dba_passage_records_the_alias_mechanically_after_replay(session):
+    p = project(session, "identity-stated-alias")
+    org = ExternalOrg(name="AT&T Texas", aliases=[])
+    session.add(org)
+    session.flush()
+    passage = "Southwestern Bell Telephone Company d/b/a AT&T Texas will relocate the line."
+    historical = candidate(
+        session, p, owner="Southwestern Bell Telephone Company", quote=passage
+    )
+    session.add(
+        OrganizationIdentityReceipt(
+            project_id=p.id,
+            candidate_id=historical.id,
+            external_org_id=org.id,
+            method="human_confirmation",
+            scope="registry",
+            stated_wording="Southwestern Bell Telephone Company",
+            evidence_json={"human": "seeded answer key"},
+            facility_classes_json=[],
+            recorded_by=ALICE.subject,
+        )
+    )
+    session.flush()
+
+    assert replay_human_identity_decisions(session, p.id).passed
+    assert attempt_activation(session, p.id) is not None
+
+    row = candidate(
+        session, p, owner="Southwestern Bell Telephone Co.", quote=passage
+    )
+    resolution = resolve_for_record_inclusion(session, row)
+
+    assert resolution.external_org_id == org.id
+    assert resolution.method == "automatic_stated_alias"
+    receipt = session.scalar(
+        select(OrganizationIdentityReceipt).where(
+            OrganizationIdentityReceipt.candidate_id == row.id
+        )
+    )
+    # The deciding passage is retained verbatim on the receipt.
+    assert receipt.evidence_json["automatic_stated_alias"]["passages"] == [
+        {
+            "document_id": row.source_document_id,
+            "page_no": 1,
+            "quote": passage,
+        }
+    ]
+    # The confirmed spelling teaches future matching registry-wide.
+    assert "Southwestern Bell Telephone Co." in session.get(ExternalOrg, org.id).aliases
+
+
+def test_a_contrary_human_decision_fails_the_replay_and_keeps_the_tiers_inactive(session):
+    p = project(session, "identity-contrary")
+    att = ExternalOrg(name="AT&T", aliases=[])
+    verizon = ExternalOrg(name="Verizon", aliases=[])
+    session.add_all([att, verizon])
+    session.flush()
+    session.add(
+        Dependency(
+            project_id=p.id,
+            ref_code="DEP-00001",
+            dep_type="utility_relocation",
+            title="existing",
+            external_org_id=att.id,
+            external_contact="dan@att.example",
+        )
+    )
+    historical = candidate(
+        session, p, owner="Southwestern Bell Telephone", contact="dan@att.example"
+    )
+    # The stack would say AT&T; the person, knowing better, chose Verizon.
+    session.add(
+        OrganizationIdentityReceipt(
+            project_id=p.id,
+            candidate_id=historical.id,
+            external_org_id=verizon.id,
+            method="human_confirmation",
+            scope="registry",
+            stated_wording="Southwestern Bell Telephone",
+            evidence_json={"human": "contrary answer key"},
+            facility_classes_json=[],
+            recorded_by=ALICE.subject,
+        )
+    )
+    session.flush()
+
+    replay = replay_human_identity_decisions(session, p.id)
+    assert not replay.passed
+    assert replay.contrary_candidate_ids == (historical.id,)
+    assert attempt_activation(session, p.id) is None
+    assert activation_status(session, p.id) == "inactive"
+
+    row = candidate(session, p, owner="SWBT again", contact="dan@att.example")
+    resolution = resolve_for_record_inclusion(session, row)
+    assert not resolution.resolved
+    assert session.scalar(
+        select(OrganizationIdentityReceipt).where(
+            OrganizationIdentityReceipt.candidate_id == row.id
+        )
+    ) is None
+
+
+def test_zero_recorded_cases_never_pass_the_replay(session):
+    p = project(session, "identity-zero-cases")
+    replay = replay_human_identity_decisions(session, p.id)
+    assert replay.case_count == 0
+    assert not replay.passed
+    assert attempt_activation(session, p.id) is None

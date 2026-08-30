@@ -21,6 +21,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     Project,
 )
 from corridor.principals import HumanPrincipal
@@ -206,6 +207,13 @@ def _seed_transition(session):
     )
     session.add(project)
     session.flush([project])
+    # Issue #345 ended silent minting: register the External Organization the
+    # candidates name ("AT&T") so adjudication resolves it instead of refusing.
+    # Get-or-create: the registry is shared across files on a worker database,
+    # so another file may already have committed this organization.
+    if session.scalar(select(ExternalOrg).where(ExternalOrg.name == "AT&T")) is None:
+        session.add(ExternalOrg(name="AT&T", aliases=[]))
+        session.flush()
 
     predecessor_fields = _fields()
     successor_fields = _fields()

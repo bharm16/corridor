@@ -37,6 +37,7 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
+    ExternalOrg,
     ExtractionRun,
     Project,
 )
@@ -592,6 +593,8 @@ def test_committed_upload_is_processed_by_the_standing_pass(
         uploading.add(project)
         uploading.flush([project])
         project_id = project.id
+        uploading.add(ExternalOrg(name="Tejas Pipeline Co", aliases=[]))
+        uploading.flush()
         staged = validate_and_stage(_matrix_pdf(), "committed.pdf")
         preview = preview_intake(uploading, project, staged, "matrix")
         confirm_intake(

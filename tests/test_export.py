@@ -47,6 +47,8 @@ def project(session):
     project = Project(slug="exp-test", name="Export Test", is_synthetic=True)
     session.add(project)
     session.flush()
+    session.add(ExternalOrg(name="Export Test Utility", aliases=[]))
+    session.flush()
     doc = Document(
         project_id=project.id,
         sha256="x9" * 32,

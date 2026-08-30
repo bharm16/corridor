@@ -159,6 +159,8 @@ def _accept_dependency(session, project, document, *, ref, org, page_no=1):
     session.flush()
     declare_active_run(session, document.id, run.id, principal=TEST_PRINCIPAL)
     session.flush()
+    session.add(ExternalOrg(name=org, aliases=[]))
+    session.flush()
     accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
     return session.scalars(
         select(Dependency).where(

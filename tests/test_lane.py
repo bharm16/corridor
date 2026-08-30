@@ -83,7 +83,7 @@ def test_under_a_per_party_scheme_the_name_is_the_party_and_the_number():
     schemes = {1: PER_PARTY}
     att = _candidate(1, "1", org="AT&T TCA")
 
-    assert conflict_key(att, schemes) == ("at&t tca", "1")
+    assert conflict_key(att, schemes) == ("at t tca", "1")
     assert same_conflict(att, _candidate(2, "1", org="AT&T TCA"), schemes)
     assert not same_conflict(att, _candidate(3, "1", org="Comcast"), schemes)
 

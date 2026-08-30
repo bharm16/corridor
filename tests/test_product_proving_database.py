@@ -179,8 +179,8 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         engine.dispose()
 
     assert transaction_read_only == "on"
-    assert fingerprint.table_count == 77
-    assert fingerprint.sequence_count == 66
+    assert fingerprint.table_count == 79
+    assert fingerprint.sequence_count == 68
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

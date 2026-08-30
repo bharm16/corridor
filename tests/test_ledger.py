@@ -80,6 +80,8 @@ def project(session):
     p = Project(slug="ledger-test", name="Ledger Test", is_synthetic=True)
     session.add(p)
     session.flush()
+    session.add(ExternalOrg(name="LT AT&T Texas", aliases=[]))
+    session.flush()
     seed_membership(session, p, TEST_PRINCIPAL)
     return p
 

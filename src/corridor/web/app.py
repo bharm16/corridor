@@ -195,6 +195,7 @@ from corridor.organization_identity import (
     OrganizationIdentityRefusal,
     confirm_cited_stated_alias,
     confirm_identity,
+    resolve_candidate_identity,
 )
 from corridor.work_decisions import (
     CoordinationSubject,
@@ -628,6 +629,30 @@ def _review_reason(
         .order_by(DependencyAdmissionOutcome.id.desc())
         .limit(1)
     )
+
+
+def _identity_card(session: Session, candidate: Candidate) -> dict | None:
+    """The one card behind an unresolved External Organization spelling.
+
+    ADR-0051: after every deterministic evidence kind came up empty or
+    ambiguous, the remaining question lives in a person's head.  The card
+    shows the unresolved source wording, the evidence the stack already
+    considered, and the explicit existing-or-new choices — nothing
+    preselected, nothing scored.
+    """
+
+    try:
+        residue = resolve_candidate_identity(session, candidate, permit_advanced=True)
+    except OrganizationIdentityRefusal:
+        return None
+    return {
+        "stated_wording": residue.stated_wording,
+        "evidence": residue.evidence,
+        "surviving_ids": residue.candidate_ids,
+        "organizations": session.scalars(
+            select(ExternalOrg).order_by(ExternalOrg.name)
+        ).all(),
+    }
 
 
 # What each unplaced statement means to the person now holding it. The
@@ -3284,6 +3309,11 @@ def queue(
 
     reason = _review_reason(session, project, candidate)
     headline, guidance = REVIEW_REASONS.get(reason or "", (None, None))
+    identity_card = (
+        _identity_card(session, candidate)
+        if reason == "external_org_identity_unresolved"
+        else None
+    )
     candidate_authority_gap = pending_candidate_authority_gap(
         session,
         project.id,
@@ -3321,6 +3351,7 @@ def queue(
             "project": project,
             "review_headline": headline,
             "review_guidance": guidance,
+            "identity_card": identity_card,
             "candidate_authority_gap": candidate_authority_gap,
             "unresolved_acknowledgments": unresolved_acknowledgments,
             "differences": differences,

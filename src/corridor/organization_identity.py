@@ -291,13 +291,9 @@ def resolve_candidate_identity(
         {organization.id for organization in exact} if permit_exact and exact else None
     )
     first_surviving_method: str | None = None
-    organizations_by_id: dict[int, ExternalOrg] = {
-        organization.id: organization for organization in exact
-    }
     for method, organizations, basis in tier_results:
         evidence[method] = basis
         ids = {organization.id for organization in organizations}
-        organizations_by_id.update({organization.id: organization for organization in organizations})
         if not ids:
             continue
         if survivor_ids is None:

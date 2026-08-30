@@ -15,6 +15,7 @@ from corridor.models import (
     Dependency,
     DocPage,
     Document,
+    ExternalOrg,
     EvidenceLink,
     Project,
 )
@@ -38,6 +39,8 @@ def session():
 def project(session):
     project = Project(slug="human-principal-project", name="Human Principal", is_synthetic=True)
     session.add(project)
+    session.flush()
+    session.add(ExternalOrg(name="AT&T Texas (SWBT)", aliases=[]))
     session.flush()
     return project
 
