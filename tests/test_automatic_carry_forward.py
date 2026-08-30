@@ -45,6 +45,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     ExtractionRun,
     OperativeSupport,
     Project,
@@ -244,6 +245,9 @@ def _seed_transition(
     )
     session.add(project)
     session.flush([project])
+    if session.scalar(select(ExternalOrg).where(ExternalOrg.name == "AT&T")) is None:
+        session.add(ExternalOrg(name="AT&T", aliases=[]))
+        session.flush()
 
     predecessor_fields = _fields()
     successor_fields = _fields(station_from=successor_station)

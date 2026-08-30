@@ -112,6 +112,9 @@ ROUTE_CONTRACTS: Mapping[str, tuple[str, str, frozenset[int]]] = {
         "/candidates/{candidate_id}/keep-unresolved", "POST", frozenset({303})
     ),
     "accept": ("/candidates/{candidate_id}/accept", "POST", frozenset({303})),
+    "confirm_organization": (
+        "/candidates/{candidate_id}/confirm-organization", "POST", frozenset({303})
+    ),
     "edit_accept": (
         "/candidates/{candidate_id}/edit-accept", "POST", frozenset({303})
     ),

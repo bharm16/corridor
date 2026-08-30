@@ -266,6 +266,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "POST",
         frozenset({303}),
     ),
+    "confirm_organization": (
+        "/candidates/{candidate_id}/confirm-organization",
+        "POST",
+        frozenset({303}),
+    ),
     "edit_accept": (
         "/candidates/{candidate_id}/edit-accept",
         "POST",

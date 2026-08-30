@@ -60,19 +60,21 @@ def party_canonical_names(session: Session) -> dict[str, str]:
     """
     from corridor.models import ExternalOrg
 
-    # Ordered, and first registration wins: a spelling the registry has
-    # (wrongly) recorded on two parties resolves to the older one every
-    # time, on every reader — the write path applies the same rule — so
-    # dirty registry data degrades to a deterministic answer instead of
-    # a scan-order gamble. The real fix for a collision is fixing the
-    # registry.
-    canonical: dict[str, str] = {}
+    # A collision is not made deterministic by identifier order.  The whole
+    # point of ADR-0051 is that two registry parties surviving means a person
+    # must decide; omitting the spelling here lets the admission boundary
+    # retain that visible residue instead of silently choosing the oldest row.
+    candidates: dict[str, set[str]] = {}
     for org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id)):
-        target = canonical.get(normalize_party(org.name), normalize_party(org.name))
+        target = normalize_party(org.name)
         for spelling in (org.name, *(org.aliases or [])):
             if spelling:
-                canonical.setdefault(normalize_party(spelling), target)
-    return canonical
+                candidates.setdefault(normalize_party(spelling), set()).add(target)
+    return {
+        spelling: next(iter(targets))
+        for spelling, targets in candidates.items()
+        if len(targets) == 1
+    }
 
 
 def canonical_party(
@@ -127,12 +129,13 @@ def row_identity(
 def normalize_party(name: str) -> str:
     """One spelling of a party name, for use as a key.
 
-    Whitespace collapsed and case folded — the two ways one company's
-    name differs between revisions of the same form. Nothing looser:
-    matching a party by resemblance is Adjudication's judgment, and
-    alias resolution belongs to the External Party's own record.
+    Legal suffixes, punctuation, whitespace, and case are the trivial
+    spelling variants ADR-0051 permits a rule to collapse.  Nothing more
+    semantic happens here: similarity remains human residue.
     """
-    return " ".join(str(name).split()).casefold()
+    from corridor.organization_identity import normalize_organization
+
+    return normalize_organization(name)
 
 
 def document_numbering_schemes(

@@ -6,7 +6,7 @@ from corridor.adjudicate import accept_candidate
 from corridor.demo import _reset
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
-from corridor.models import AuditLog, Candidate, Dependency, DocPage, Document, Project
+from corridor.models import AuditLog, Candidate, Dependency, DocPage, Document, ExternalOrg, Project
 from corridor.principals import HumanPrincipal
 from corridor.demo import DEMO_SLUG, DemoIsolationError
 
@@ -30,6 +30,8 @@ def demo_project(session):
         slug=DEMO_SLUG, name="Demo Project", agency="TxDOT", is_synthetic=True
     )
     session.add(project)
+    session.flush()
+    session.add(ExternalOrg(name="AT&T Texas (SWBT)", aliases=[]))
     session.flush()
     return project
 
@@ -159,9 +161,10 @@ def test_reset_only_clears_demonstration_project_rows(session, demo_project, rea
     before_demo = _project_counts(session, demo_project.id)
     before_real = _project_counts(session, real_project.id)
 
-    _reset(session, demo_project)
+    with pytest.raises(DemoIsolationError, match="organization identity history"):
+        _reset(session, demo_project)
 
-    assert _project_counts(session, demo_project.id) == (0, 0, 0)
+    assert _project_counts(session, demo_project.id) == before_demo
     assert _project_counts(session, real_project.id) == before_real
     assert before_demo == (1, 1, 1)
 

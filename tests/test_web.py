@@ -41,6 +41,7 @@ from corridor.models import (
     EvidenceInvestigationCandidateReviewStart,
     ExternalReportArtifact,
     ExternalOrg,
+    OrganizationIdentityReceipt,
     Project,
     ReportRun,
     WorkDecision,
@@ -99,6 +100,12 @@ def client_without_session(session):
 def project(session):
     p = Project(slug="web-test", name="Web Test", is_synthetic=True)
     session.add(p)
+    session.flush()
+    # The web fixtures exercise queue behavior after the registry has an
+    # established organization.  ADR-0051 moves first-time organization
+    # confirmation to its own explicit command; normal candidate acceptance
+    # may no longer create this row as a side effect.
+    session.add(ExternalOrg(name="AT&T Texas (SWBT)", aliases=[]))
     session.flush()
     seed_membership(session, p, TEST_PRINCIPAL)
     return p
@@ -207,6 +214,55 @@ def test_queue_shows_the_next_pending_candidate(client, session, project, docume
     assert r.status_code == 200
     assert "AT&amp;T Texas (SWBT)" in r.text
     assert "1149+00" in r.text
+
+
+def test_confirming_an_organization_is_project_gated_and_records_the_source_choice(
+    client, session, project, document
+):
+    candidate = make_candidate(session, project, document)
+    candidate.payload_json = {
+        **candidate.payload_json,
+        "fields": {
+            **candidate.payload_json["fields"],
+            "external_org": "AT&T Texas",
+        },
+    }
+    session.flush()
+    registered = session.scalar(
+        select(ExternalOrg).where(ExternalOrg.name == "AT&T Texas (SWBT)")
+    )
+
+    response = client.post(
+        f"/candidates/{candidate.id}/confirm-organization",
+        data={
+            "slug": project.slug,
+            "external_org_id": str(registered.id),
+            "facility_classes": ["Telecom"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    receipt = session.scalar(
+        select(OrganizationIdentityReceipt).where(
+            OrganizationIdentityReceipt.candidate_id == candidate.id
+        )
+    )
+    assert receipt.external_org_id == registered.id
+    assert receipt.recorded_by == TEST_PRINCIPAL.subject
+    assert receipt.facility_classes_json == ["Telecom"]
+
+
+def test_confirming_an_organization_requires_an_explicit_existing_or_new_choice(
+    client, session, project, document
+):
+    candidate = make_candidate(session, project, document)
+    response = client.post(
+        f"/candidates/{candidate.id}/confirm-organization",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
 
 
 def test_queue_rejects_an_unknown_review_lane(client, project):

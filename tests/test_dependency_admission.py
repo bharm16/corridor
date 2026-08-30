@@ -33,11 +33,13 @@ from corridor.models import (
     Dependency,
     DependencyAdmissionOutcome,
     EvidenceLink,
+    ExternalOrg,
     ExtractionRun,
     PolicyRun,
     DocPage,
     Document,
     Project,
+    is_placeholder_party,
 )
 from corridor.principals import HumanPrincipal
 
@@ -132,7 +134,21 @@ def _run(
     prompt_version="matrix_v1",
     model="gpt-test",
     schema_version="matrix_candidate_shape_v1",
+    register_organizations=True,
 ):
+    # ADR-0051: matrix rows do not mint registry parties.  Most legacy
+    # admission fixtures are exercising row/admission behavior rather than the
+    # separate identity question, so explicitly install their known registry
+    # fixtures here.  Identity-specific tests opt out below.
+    if register_organizations:
+        for candidate in candidates:
+            name = (candidate.payload_json or {}).get("fields", {}).get("external_org")
+            if not name or is_placeholder_party(name):
+                continue
+            known = session.scalars(select(ExternalOrg)).all()
+            if not any(name == org.name or name in (org.aliases or []) for org in known):
+                session.add(ExternalOrg(name=name, aliases=[]))
+        session.flush()
     for c in candidates:
         c.prompt_version = prompt_version
         c.model = model
@@ -974,16 +990,25 @@ def test_an_unregistered_spelling_stays_its_own_party(session, project):
     row to look at rather than silently merging two companies."""
     feb = _per_party_document(session, project, filename="unreg-feb.pdf")
     may = _per_party_document(session, project, filename="unreg-may.pdf")
-    _run(session, feb, [_candidate(feb, _fields("1", org="Aardvark Gas TEST"))])
+    _run(
+        session,
+        feb,
+        [_candidate(feb, _fields("1", org="Aardvark Gas TEST"))],
+        register_organizations=False,
+    )
     _run(
         session,
         may,
         [_candidate(may, _fields("1", org="Aardvark Gas Company TEST"))],
+        register_organizations=False,
     )
     declare_single_run_documents_by_policy(session, project.id)
 
     result = run_dependency_admission(session, project.id)
-    assert result.admitted_count == 2  # two parties, as far as anyone knows
+    assert result.admitted_count == 0
+    assert {item.reason for item in result.abstentions} == {
+        "external_org_identity_unresolved"
+    }
 
 
 def test_a_registered_alias_binds_to_its_party_not_a_duplicate(

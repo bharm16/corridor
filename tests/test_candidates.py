@@ -5,7 +5,7 @@ from corridor.candidates import citations_verified, dedupe_hint, propose
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.geometry import dedupe_hint as matrix_hint
-from corridor.models import DocPage, Document, Project
+from corridor.models import DocPage, Document, ExternalOrg, Project
 from corridor.principals import HumanPrincipal
 
 TEST_PRINCIPAL = HumanPrincipal("local:tester")
@@ -39,6 +39,8 @@ def session():
 def document(session):
     project = Project(slug="cand-test", name="Candidate Test", is_synthetic=True)
     session.add(project)
+    session.flush()
+    session.add(ExternalOrg(name="AT&T Texas", aliases=[]))
     session.flush()
     doc = Document(
         project_id=project.id,

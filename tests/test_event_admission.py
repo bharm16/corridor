@@ -132,6 +132,8 @@ def project(session):
     )
     session.add(p)
     session.flush()
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
+    session.flush()
     return p
 
 
