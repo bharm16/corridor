@@ -103,4 +103,28 @@
       </a>
     </div>
   </form>
+
+  <h2>Optional: draft source-bound suggestions</h2>
+  <p class="note">
+    A model can read this source's pages and suggest optional metadata and any
+    replacement it states, each with the exact passage. Suggestions are
+    proposals only — they register nothing and never preselect the confirmation
+    above.
+  </p>
+  {% if draft_configured %}
+    <form method="post" action="/projects/{{ project.slug }}/sources/draft">
+      {{ csrf_field() }}
+      <input type="hidden" name="sha256" value="{{ preview.sha256 }}">
+      <input type="hidden" name="filename" value="{{ preview.filename }}">
+      <input type="hidden" name="doc_type" value="{{ preview.doc_type }}">
+      <input type="hidden" name="state_token" value="{{ draft_state_token }}">
+      <div class="actions">
+        <button type="submit">Draft suggestions</button>
+      </div>
+    </form>
+  {% else %}
+    <p class="note">
+      No bounded intake-draft spend authority is declared, so no draft can run.
+    </p>
+  {% endif %}
 </main>

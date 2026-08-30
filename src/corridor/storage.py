@@ -22,6 +22,20 @@ def stored_file(document: Document | None) -> Path | None:
     return next(iter(sorted(shard.glob(f"{document.sha256}.*"))), None)
 
 
+def staged_file(sha256: str | None) -> Path | None:
+    """Resolve staged bytes back to the store by their hash, before any Document.
+
+    Product intake writes exact bytes to the same content-addressed store keyed by
+    their own hash *before* registration (``source_intake``), so a bounded
+    read-only pass — a source-intake draft (#362) — can read the exact previewed
+    bytes by hash without a registered Document. One hash, one file.
+    """
+    if not sha256:
+        return None
+    shard = Path(settings.corpus_store) / sha256[:2]
+    return next(iter(sorted(shard.glob(f"{sha256}.*"))), None)
+
+
 def stored_pdf(document: Document | None) -> Path | None:
     """The stored file, when it really is a PDF.
 

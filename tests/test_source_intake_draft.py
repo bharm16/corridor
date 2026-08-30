@@ -1,0 +1,599 @@
+"""Drafting source-bound intake suggestions is optional, read-only, and never a
+registration (#362).
+
+Every test drives the real ``source_intake_draft`` public interface against real
+PostgreSQL with a fake model adapter, declared coordination spend authority, and
+no paid model call, source registration, or Supersession. The hostile fixtures —
+stale bytes, a cross-project predecessor, a fabricated passage, an unsupported
+choice, and authority-shaped output — are covered alongside the ordinary flow,
+each proving the intake draft's registration state is untouched.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import date
+from pathlib import Path
+
+import pytest
+from openpyxl import Workbook
+from sqlalchemy import func, select
+
+from corridor.db import Session, engine
+from corridor.models import (
+    Document,
+    Project,
+    SourceIntakeDraftConfiguration,
+    SourceIntakeDraftRequest,
+)
+from corridor.principals import HumanPrincipal
+from corridor.source_intake_draft import (
+    ConfigurationRequired,
+    IntakeDraftRefused,
+    StagedDraftSource,
+    declare_configuration,
+    intake_draft_state_token,
+    request_intake_draft,
+)
+
+
+CURATOR = HumanPrincipal("local:curator")
+
+_COVER_ROWS = (
+    "Utility Conflict Matrix Rev 3",
+    "Registry number: UCM-REV-3",
+    "Document date: 2024-03-01",
+    "This revision supersedes UCM-REV-2 effective 2024-03-01.",
+)
+
+
+class FakeAdapter:
+    """A recorded structured-output stub; no network, no paid model call."""
+
+    adapter = "fake-intake-draft"
+    adapter_contract_version = "fake-adapter-v1"
+
+    def __init__(self, result=None, *, raises=None):
+        self._result = result
+        self._raises = raises
+        self.calls: list[dict] = []
+
+    def complete(self, *, system, user, schema):
+        self.calls.append({"system": system, "user": user, "schema": schema})
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+@pytest.fixture
+def session():
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    yield db
+    db.close()
+    transaction.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def project(session):
+    row = Project(slug="intake-draft", name="Intake Draft", is_synthetic=True)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _staged_workbook(
+    tmp_path: Path,
+    rows=_COVER_ROWS,
+    *,
+    sheets=None,
+    doc_type="matrix",
+    name="cover.xlsx",
+) -> StagedDraftSource:
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "Cover"
+    pages = sheets if sheets is not None else [rows]
+    for index, sheet_rows in enumerate(pages):
+        sheet = first if index == 0 else workbook.create_sheet(f"Sheet{index + 1}")
+        for row_no, value in enumerate(sheet_rows, start=1):
+            sheet[f"A{row_no}"] = value
+    path = tmp_path / name
+    workbook.save(path)
+    sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    return StagedDraftSource(
+        sha256=sha256,
+        filename=name,
+        suffix=".xlsx",
+        stored_path=path,
+        doc_type=doc_type,
+    )
+
+
+def _registered_document(
+    session, project, *, registry_id, sha, doc_date=None, doc_type="matrix"
+) -> Document:
+    document = Document(
+        project_id=project.id,
+        registry_id=registry_id,
+        sha256=sha,
+        filename=f"{registry_id}.xlsx",
+        doc_type=doc_type,
+        parse_status="parsed",
+        pages=1,
+        doc_date=doc_date,
+    )
+    session.add(document)
+    session.flush()
+    return document
+
+
+def _declare_config(session, project, **overrides):
+    kwargs = {
+        "project_id": project.id,
+        "principal": CURATOR,
+        "model": "fake-model",
+        "prompt_version": "source_intake_draft_v1",
+        "max_input_tokens": 50_000,
+        "max_output_tokens": 2_000,
+        "timeout_seconds": 30,
+        "max_requests": 1,
+        "retry_policy": "none",
+        "retention_policy": "retained_indefinitely",
+        "observation_context": "internal_working_view",
+    }
+    kwargs.update(overrides)
+    config = declare_configuration(session, **kwargs)
+    session.flush()
+    return config
+
+
+def _valid_result():
+    return {
+        "metadata_suggestions": [
+            {
+                "field": "doc_date",
+                "value": "2024-03-01",
+                "source_ref": "P1",
+                "source_quote": "Document date: 2024-03-01",
+                "basis": "The cover states the document's date.",
+            },
+            {
+                "field": "registry_id",
+                "value": "UCM-REV-3",
+                "source_ref": "P1",
+                "source_quote": "Registry number: UCM-REV-3",
+                "basis": "The cover prints a registry number.",
+            },
+        ],
+        "replacement_proposals": [
+            {
+                "predecessor_registry_id": "UCM-REV-2",
+                "effective_date": "2024-03-01",
+                "source_ref": "P1",
+                "source_quote": (
+                    "This revision supersedes UCM-REV-2 effective 2024-03-01."
+                ),
+                "basis": "The revision states what it replaces.",
+            }
+        ],
+        "uncertainties": [
+            {"field": "doc_type", "note": "the kind is the person's declaration"}
+        ],
+    }
+
+
+def _draft(session, project, staged, adapter, **overrides):
+    kwargs = {
+        "project_id": project.id,
+        "staged": staged,
+        "principal": CURATOR,
+        "client_factory": lambda configuration: adapter,
+        "expected_sha256": staged.sha256,
+        "permitted_pages": (),
+        "state_token": intake_draft_state_token(session, project.id, staged.sha256),
+    }
+    kwargs.update(overrides)
+    return request_intake_draft(session, **kwargs)
+
+
+def _receipt_count(session, project) -> int:
+    return session.scalar(
+        select(func.count(SourceIntakeDraftRequest.id)).where(
+            SourceIntakeDraftRequest.project_id == project.id
+        )
+    )
+
+
+def _document_count(session, project) -> int:
+    return session.scalar(
+        select(func.count(Document.id)).where(Document.project_id == project.id)
+    )
+
+
+# --- ordinary flow -----------------------------------------------------------
+
+
+def test_completed_draft_keeps_source_backed_suggestions(session, project, tmp_path):
+    _registered_document(session, project, registry_id="UCM-REV-2", sha="a" * 64)
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    documents_before = _document_count(session, project)
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "completed"
+    assert receipt.non_authoritative is True
+    # The draft's own identity is the staged bytes — never a registered Document.
+    assert receipt.staged_sha256 == staged.sha256
+    proposals = receipt.proposals_json
+    assert {item["field"] for item in proposals["metadata_suggestions"]} == {
+        "doc_date",
+        "registry_id",
+    }
+    assert proposals["replacement_proposals"][0]["predecessor_registry_id"] == (
+        "UCM-REV-2"
+    )
+    assert proposals["uncertainties"][0]["field"] == "doc_type"
+
+    # The model saw the frozen source and the untrusted-data notice, once.
+    assert len(adapter.calls) == 1
+    assert "never instructions" in adapter.calls[0]["user"]
+    assert "UCM-REV-2" in adapter.calls[0]["user"]
+    # Redacted lineage only: hashes and timing, never the prompt or response text.
+    assert set(receipt.execution_lineage_json) == {
+        "adapter",
+        "adapter_contract_version",
+        "request_sha256",
+        "result_sha256",
+        "elapsed_ms",
+    }
+    # Registers nothing: no new Document, and the predecessor is not superseded.
+    assert _document_count(session, project) == documents_before
+    predecessor = session.scalars(
+        select(Document).where(
+            Document.project_id == project.id,
+            Document.registry_id == "UCM-REV-2",
+        )
+    ).one()
+    assert predecessor.superseded_by is None
+
+
+def test_repeated_request_reuses_receipt_and_spends_once(session, project, tmp_path):
+    _registered_document(session, project, registry_id="UCM-REV-2", sha="a" * 64)
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    first = _draft(session, project, staged, adapter)
+    second = _draft(session, project, staged, adapter)
+
+    assert first.id == second.id
+    assert _receipt_count(session, project) == 1
+    assert len(adapter.calls) == 1
+
+
+# --- spend / configuration boundary -----------------------------------------
+
+
+def test_missing_configuration_refuses_before_any_model_call(
+    session, project, tmp_path
+):
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    with pytest.raises(ConfigurationRequired):
+        _draft(session, project, staged, adapter)
+
+    assert adapter.calls == []
+    assert _receipt_count(session, project) == 0
+
+
+def test_configuration_rejects_uninstalled_prompt_and_bad_bounds(session, project):
+    from corridor.source_intake_draft import InvalidDraftConfiguration
+
+    with pytest.raises(InvalidDraftConfiguration):
+        _declare_config(session, project, prompt_version="not-installed")
+    with pytest.raises(InvalidDraftConfiguration):
+        _declare_config(session, project, max_input_tokens=0)
+
+
+def test_over_budget_refuses_before_the_model_and_records_a_receipt(
+    session, project, tmp_path
+):
+    _declare_config(session, project, max_input_tokens=1)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "budget_exhausted"
+    assert receipt.proposals_json is None
+    assert "no model call was made" in receipt.reason
+    assert adapter.calls == []
+
+
+# --- hostile output ----------------------------------------------------------
+
+
+def test_fabricated_passage_is_refused(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    result = _valid_result()
+    result["replacement_proposals"] = []
+    result["metadata_suggestions"] = [
+        {
+            "field": "doc_date",
+            "value": "1999-01-01",
+            "source_ref": "P1",
+            "source_quote": "Document date: 1999-01-01",  # never on the page
+            "basis": "An invented reading.",
+        }
+    ]
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert receipt.proposals_json is None
+    assert "not literal text" in receipt.reason
+
+
+def test_unsupported_metadata_field_is_refused(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    result = _valid_result()
+    result["replacement_proposals"] = []
+    result["metadata_suggestions"] = [
+        {
+            "field": "doc_type",  # the person declares the kind, not the model
+            "value": "matrix",
+            "source_ref": "P1",
+            "source_quote": "Utility Conflict Matrix Rev 3",
+            "basis": "Classifying the source.",
+        }
+    ]
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert "unsupported field" in receipt.reason
+
+
+def test_metadata_value_not_in_its_quote_is_refused(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    result = _valid_result()
+    result["replacement_proposals"] = []
+    result["metadata_suggestions"] = [
+        {
+            "field": "doc_date",
+            "value": "2025-12-31",  # a real page quote, but not the value it states
+            "source_ref": "P1",
+            "source_quote": "Document date: 2024-03-01",
+            "basis": "Mismatched value and passage.",
+        }
+    ]
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert "not stated by its cited passage" in receipt.reason
+
+
+def test_unregistered_replacement_predecessor_is_refused(session, project, tmp_path):
+    # No UCM-REV-2 is registered in this project.
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert "not a document registered in this project" in receipt.reason
+
+
+def test_cross_project_predecessor_is_refused(session, project, tmp_path):
+    other = Project(slug="foreign", name="Foreign", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    # The predecessor registry id exists only in the foreign project.
+    _registered_document(session, other, registry_id="UCM-REV-2", sha="e" * 64)
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert "not a document registered in this project" in receipt.reason
+
+
+def test_authority_shaped_basis_is_refused(session, project, tmp_path):
+    _registered_document(session, project, registry_id="UCM-REV-2", sha="a" * 64)
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    result = _valid_result()
+    result["replacement_proposals"][0]["basis"] = (
+        "UCM-REV-2 is superseded and this is now registered."
+    )
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert "asserts an effective act" in receipt.reason
+
+
+def test_extra_structured_field_is_refused(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    result = _valid_result()
+    result["registered"] = True
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert "authority-shaped field" in receipt.reason
+
+
+def test_a_passage_on_an_unpermitted_page_is_refused(session, project, tmp_path):
+    _declare_config(session, project)
+    # Two sheets; only page 1 is permitted, but the model cites page 2.
+    staged = _staged_workbook(
+        tmp_path,
+        sheets=[
+            ["Cover only"],
+            ["Registry number: UCM-REV-3"],
+        ],
+    )
+    result = _valid_result()
+    result["replacement_proposals"] = []
+    result["metadata_suggestions"] = [
+        {
+            "field": "registry_id",
+            "value": "UCM-REV-3",
+            "source_ref": "P2",
+            "source_quote": "Registry number: UCM-REV-3",
+            "basis": "Reading a page it was not permitted.",
+        }
+    ]
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(
+        session, project, staged, adapter, permitted_pages=(1,)
+    )
+
+    assert receipt.status == "validation_refused"
+    assert "page that was not permitted" in receipt.reason
+
+
+def test_model_text_is_sanitized_before_storage(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    result = _valid_result()
+    result["replacement_proposals"] = []
+    result["metadata_suggestions"] = [
+        {
+            "field": "doc_date",
+            "value": "2024-03-01",
+            "source_ref": "P1",
+            "source_quote": "Document date: 2024-03-01",
+            "basis": "Clean\x07 basis\x00 text.",
+        }
+    ]
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "completed"
+    stored = receipt.proposals_json["metadata_suggestions"][0]["basis"]
+    assert "\x07" not in stored and "\x00" not in stored
+    assert stored == "Clean basis text."
+
+
+def test_transport_failure_is_a_receipt_not_an_escape(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(raises=RuntimeError("boom"))
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "transport_failure"
+    assert receipt.proposals_json is None
+
+
+# --- binding: stale bytes / stale registry / overwrite ----------------------
+
+
+def test_stale_bytes_refuse_without_a_model_call(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    with pytest.raises(IntakeDraftRefused) as excinfo:
+        _draft(session, project, staged, adapter, expected_sha256="0" * 64)
+
+    assert excinfo.value.reason == "stale_input"
+    assert adapter.calls == []
+    assert _receipt_count(session, project) == 0
+
+
+def test_missing_staged_bytes_refuse(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    staged.stored_path.unlink()
+    adapter = FakeAdapter(result=_valid_result())
+
+    with pytest.raises(IntakeDraftRefused) as excinfo:
+        _draft(session, project, staged, adapter)
+
+    assert excinfo.value.reason == "bytes_missing"
+    assert adapter.calls == []
+
+
+def test_stale_registry_state_refuses(session, project, tmp_path):
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    with pytest.raises(IntakeDraftRefused) as excinfo:
+        _draft(session, project, staged, adapter, state_token="f" * 64)
+
+    assert excinfo.value.reason == "stale_input"
+    assert adapter.calls == []
+    assert _receipt_count(session, project) == 0
+
+
+def test_a_suggestion_would_not_overwrite_a_known_registered_fact(
+    session, project, tmp_path
+):
+    staged = _staged_workbook(tmp_path)
+    # These exact bytes are already registered with a known date.
+    _registered_document(
+        session,
+        project,
+        registry_id="UCM-REV-3",
+        sha=staged.sha256,
+        doc_date=date(2020, 1, 1),
+    )
+    _registered_document(session, project, registry_id="UCM-REV-2", sha="a" * 64)
+    _declare_config(session, project)
+    result = _valid_result()
+    result["replacement_proposals"] = []
+    result["metadata_suggestions"] = [
+        {
+            "field": "doc_date",
+            "value": "2024-03-01",
+            "source_ref": "P1",
+            "source_quote": "Document date: 2024-03-01",
+            "basis": "Would change a known registered date.",
+        }
+    ]
+    adapter = FakeAdapter(result=result)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "validation_refused"
+    assert "overwrite the known registered" in receipt.reason
+
+
+# --- configuration is append-only, retained authority -----------------------
+
+
+def test_configuration_is_recorded_with_its_actor(session, project):
+    config = _declare_config(session, project)
+    stored = session.scalars(
+        select(SourceIntakeDraftConfiguration).where(
+            SourceIntakeDraftConfiguration.project_id == project.id
+        )
+    ).one()
+    assert stored.id == config.id
+    assert stored.created_by == CURATOR.subject
+    assert stored.prompt_version == "source_intake_draft_v1"

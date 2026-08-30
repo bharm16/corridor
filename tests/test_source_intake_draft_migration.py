@@ -1,4 +1,4 @@
-"""Rehearse retained revision-change explanation receipts on real PostgreSQL."""
+"""Rehearse retained source-intake-draft receipts on real disposable PostgreSQL."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
-PREDECESSOR = "e4c8b1a6d3f7"
+PREDECESSOR = "e360b7c1d2a4"
 HEAD = "f362a1b2c3d4"
 
 
@@ -49,7 +49,7 @@ def _columns(connection, table: str) -> list[str]:
     )
 
 
-def test_revision_change_schema_is_one_linear_head_on_a_fresh_database():
+def test_intake_draft_schema_is_one_linear_head_on_a_fresh_database():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     assert scripts.get_heads() == [HEAD]
 
@@ -57,7 +57,7 @@ def test_revision_change_schema_is_one_linear_head_on_a_fresh_database():
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="issue360_fresh_",
+        database_prefix="issue362_fresh_",
     ) as database:
         url = make_url(settings.database_url).set(database=database.name)
         engine = create_engine(url)
@@ -68,7 +68,7 @@ def test_revision_change_schema_is_one_linear_head_on_a_fresh_database():
                     == HEAD
                 )
                 assert _columns(
-                    connection, "revision_change_explanation_configurations"
+                    connection, "source_intake_draft_configurations"
                 ) == [
                     "id",
                     "project_id",
@@ -84,20 +84,18 @@ def test_revision_change_schema_is_one_linear_head_on_a_fresh_database():
                     "created_by",
                     "created_at",
                 ]
-                assert _columns(
-                    connection, "revision_change_explanation_requests"
-                ) == [
+                assert _columns(connection, "source_intake_draft_requests") == [
                     "id",
                     "public_id",
                     "project_id",
-                    "dependency_id",
-                    "comparison_id",
-                    "finding_id",
-                    "finding_state",
+                    "staged_sha256",
+                    "filename",
+                    "declared_doc_type",
                     "configuration_id",
                     "requested_by",
-                    "comparison_sha256",
+                    "source_sha256",
                     "state_token",
+                    "permitted_pages_json",
                     "model",
                     "prompt_version",
                     "adapter",
@@ -106,8 +104,8 @@ def test_revision_change_schema_is_one_linear_head_on_a_fresh_database():
                     "validator_version",
                     "status",
                     "reason",
-                    "comparison_json",
-                    "explanation_json",
+                    "source_json",
+                    "proposals_json",
                     "execution_lineage_json",
                     "read_fingerprint",
                     "budget_json",
@@ -117,10 +115,10 @@ def test_revision_change_schema_is_one_linear_head_on_a_fresh_database():
                     "completed_at",
                 ]
                 for trigger_name in (
-                    "revision_change_explanation_configurations_are_immutable",
-                    "revision_change_explanation_requests_are_immutable",
-                    "revision_change_explanation_configurations_reject_truncate",
-                    "revision_change_explanation_requests_reject_truncate",
+                    "source_intake_draft_configurations_are_immutable",
+                    "source_intake_draft_requests_are_immutable",
+                    "source_intake_draft_configurations_reject_truncate",
+                    "source_intake_draft_requests_reject_truncate",
                 ):
                     assert connection.scalar(
                         text(
@@ -138,7 +136,7 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_receipts():
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="issue360_predecessor_",
+        database_prefix="issue362_predecessor_",
         migration_revision=PREDECESSOR,
     ) as database:
         url = make_url(settings.database_url).set(database=database.name)
@@ -149,7 +147,7 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_receipts():
                 connection.execute(
                     text(
                         "insert into projects (slug, name, is_synthetic) "
-                        "values ('issue360', 'Issue 360', true)"
+                        "values ('issue362', 'Issue 362', true)"
                     )
                 )
             _upgrade(rendered, "head")
@@ -160,25 +158,19 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_receipts():
                 )
                 assert (
                     connection.scalar(
-                        text(
-                            "select to_regclass"
-                            "('revision_change_explanation_requests')"
-                        )
+                        text("select to_regclass('source_intake_draft_requests')")
                     )
                     is not None
                 )
                 assert (
                     connection.scalar(
-                        text("select count(*) from projects where slug = 'issue360'")
+                        text("select count(*) from projects where slug = 'issue362'")
                     )
                     == 1
                 )
                 assert (
                     connection.scalar(
-                        text(
-                            "select count(*) from "
-                            "revision_change_explanation_requests"
-                        )
+                        text("select count(*) from source_intake_draft_requests")
                     )
                     == 0
                 )
