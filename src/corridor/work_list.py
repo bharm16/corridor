@@ -50,6 +50,12 @@ from corridor.statement_lifecycle import (
     current_statement_event_filter,
     observe_current_statements,
 )
+from corridor.schedule_linking import (
+    KeyDateMove,
+    RequiredByMove,
+    moved_key_dates,
+    required_by_moves,
+)
 from corridor.supersession import actionable_candidate_query
 from corridor.supersession_review import ordinary_candidate_ids
 from corridor.work_decisions import (
@@ -71,6 +77,10 @@ _REASON_ORDER = {
     "committed_date_change": 2,
     "milestone_impact_unknown": 2,
     "disputed_date": 2,
+    # A schedule revision moved a Required By basis (ADR-0057): surfaced as
+    # attention showing old and new dates, never as an approval question.
+    "required_by_advanced": 2,
+    "key_date_decision_affected": 2,
     "unknown_scope": 3,
     "unplaced_statement": 3,
     "missing_internal_owner": 4,
@@ -129,6 +139,11 @@ class WorkItem:
     candidate_decision: str | None = None
     display_name: str | None = None
     description: str | None = None
+    # A schedule revision advanced this Constraint's Required By basis (ADR-0057),
+    # or moved a key date a recorded decision referenced — old and new dates for
+    # the coordinator to see, never a question.
+    required_by_move: RequiredByMove | None = None
+    key_date_moves: tuple[KeyDateMove, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -181,6 +196,9 @@ def build_work_list(
     """
     evaluated_on = today or date.today()
     closed_lineages = _closed_commitment_lineages(session, project_id)
+    # Key dates a schedule revision moved — for surfacing impact on any recorded
+    # decision that referenced them (ADR-0057), never as an approval question.
+    moved_dates = moved_key_dates(session, project_id)
     rows = session.execute(
         select(
             ExternalPartyStatement,
@@ -238,6 +256,17 @@ def build_work_list(
             reason_codes.append("committed_date_change")
             if lineage.milestone_impact in (None, "not_yet_known"):
                 reason_codes.append("milestone_impact_unknown")
+        affected_moves = (
+            tuple(
+                moved_dates[mid]
+                for mid in (lineage.milestone_ids or [])
+                if mid in moved_dates
+            )
+            if lineage.milestone_impact == "affects"
+            else ()
+        )
+        if affected_moves:
+            reason_codes.append("key_date_decision_affected")
         if not is_closed and scope.scope_mode == "unknown":
             reason_codes.append("unknown_scope")
         if lineage.next_action is not None and is_closed:
@@ -272,6 +301,7 @@ def build_work_list(
             return_date=lineage.deferral_return_date,
             display_name=event.stated_party,
             description=event.description,
+            key_date_moves=affected_moves,
         )
         is_immediate = _is_immediate(lineage, evaluated_on) or _statement_changed(
             lineage, statement_state
@@ -483,6 +513,7 @@ def _dependency_items(
     disputed = contradicted_fields(
         session, [dependency.id for dependency in dependencies]
     )
+    moves = required_by_moves(session, project_id)
     items = []
     for dependency in dependencies:
         reason_codes: list[str] = []
@@ -495,6 +526,9 @@ def _dependency_items(
             {"committed_date", "need_date"}
         ):
             reason_codes.append("disputed_date")
+        move = moves.get(dependency.id)
+        if move is not None:
+            reason_codes.append("required_by_advanced")
         if not reason_codes:
             continue
         items.append(
@@ -516,6 +550,7 @@ def _dependency_items(
                     return_date=dependency.deferral_return_date,
                     display_name=external_org_names.get(dependency.external_org_id),
                     description=dependency.title,
+                    required_by_move=move,
                 ),
                 dependency,
             )

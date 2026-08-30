@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Upload a source document — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color:#111;
+         background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header b { font-size:1rem; }
+  header a { color:#111; }
+  main { max-width: 46rem; margin: 2.5rem auto; padding: 0 1.2rem; }
+  h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+  .lead { color:var(--muted); margin:0 0 2rem; font-size:.95rem; }
+  form { border:1px solid var(--line); border-radius:6px; padding:1.1rem 1.2rem; }
+  label { display:block; font-weight:600; margin:0 0 .3rem; }
+  .row { margin-bottom:1.1rem; }
+  select, input[type=file] { font:inherit; padding:.35rem .4rem;
+           border:1px solid var(--line); border-radius:4px; width:100%; }
+  .hint { color:var(--muted); font-size:.85rem; margin:.3rem 0 0; }
+  button { font:inherit; padding:.35rem .9rem; border:1px solid #111;
+           background:#111; color:#fff; border-radius:4px; cursor:pointer; }
+  .error { border:1px solid var(--warn); background:#fff7ed; color:var(--warn);
+           border-radius:6px; padding:.6rem .8rem; margin:0 0 1.2rem;
+           font-size:.9rem; }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span>
+    <a href="/projects/{{ project.slug }}/sources">uploaded documents</a>
+  </span>
+</header>
+
+<main>
+  <h1>Upload a source document</h1>
+  <p class="lead">
+    Hand Corridor a document that reached you outside the usual channels — paper
+    from a meeting, a file someone emailed you directly. You will see exactly what
+    registering it would record before you confirm. Corridor never treats a
+    filename, a date, or identical bytes as evidence that one document replaces or
+    is a version of another.
+  </p>
+
+  {% if error %}
+    <p class="error">{{ error }}</p>
+  {% endif %}
+
+  <form method="post"
+        action="/projects/{{ project.slug }}/sources/upload"
+        enctype="multipart/form-data">
+    {{ csrf_field() }}
+    <div class="row">
+      <label for="doc_type">What kind of document is this?</label>
+      <select id="doc_type" name="doc_type" required>
+        <option value="" disabled {{ 'selected' if not selected_doc_type }}>
+          Choose the kind…
+        </option>
+        {% for choice in doc_types %}
+          <option value="{{ choice }}"
+                  {{ 'selected' if choice == selected_doc_type }}>
+            {{ choice }}
+          </option>
+        {% endfor %}
+      </select>
+      <p class="hint">
+        You are telling Corridor what this is; it never guesses the kind from the
+        file.
+      </p>
+    </div>
+
+    <div class="row">
+      <label for="upload">The file</label>
+      <input id="upload" name="upload" type="file"
+             accept=".pdf,.xlsx,.xlsm" required>
+      <p class="hint">
+        A PDF or an Excel workbook (.xlsx / .xlsm), up to {{ max_mib }} MiB.
+      </p>
+    </div>
+
+    <button type="submit">Preview registration</button>
+  </form>
+</main>

@@ -63,6 +63,7 @@
     supporting-source use(s) will move.</p>
 
   <form method="post" action="/supersession-review/{{ view.review.dependency_id }}/reconfirm" id="reconfirm">
+    {{ csrf_field() }}
     <input type="hidden" name="slug" value="{{ project.slug }}">
     <input type="hidden" name="predecessor_document_id" value="{{ view.review.predecessor_document_id }}">
     <input type="hidden" name="successor_candidate_id" value="{{ view.successor_candidate_id }}">

@@ -1,0 +1,80 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Uploaded documents — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color:#111;
+         background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header b { font-size:1rem; }
+  header a { color:#111; }
+  main { max-width: 56rem; margin: 2.5rem auto; padding: 0 1.2rem; }
+  h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+  .lead { color:var(--muted); margin:0 0 1.6rem; font-size:.95rem; }
+  .top { margin:0 0 1.4rem; }
+  .top a { font:inherit; padding:.35rem .9rem; border:1px solid #111;
+           background:#111; color:#fff; border-radius:4px; text-decoration:none; }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th, td { text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .file { font-weight:600; }
+  .mono { font-family:ui-monospace, monospace; font-size:.78rem; color:var(--muted); }
+  .who { color:var(--muted); font-size:.82rem; }
+  .status { white-space:nowrap; }
+  .empty { color:var(--muted); }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span>
+    <a href="/projects/{{ project.slug }}/sources/upload">upload a document</a>
+  </span>
+</header>
+
+<main>
+  <h1>Uploaded documents</h1>
+  <p class="lead">
+    Documents registered through product upload, and the honest state of their
+    processing. A document that could not be read shows as failed; one the
+    processing pass has not reached yet shows as pending.
+  </p>
+
+  <p class="top">
+    <a href="/projects/{{ project.slug }}/sources/upload">Upload a document</a>
+  </p>
+
+  {% if uploads %}
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Kind</th>
+          <th>Status</th>
+          <th>Confirmed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in uploads %}
+          <tr>
+            <td>
+              <div class="file">{{ row.filename }}</div>
+              <div class="mono">{{ row.sha256[:16] }}…</div>
+            </td>
+            <td>{{ row.doc_type }}</td>
+            <td class="status">{{ status_labels.get(row.processing_status,
+                                                     row.processing_status) }}</td>
+            <td>
+              <div>{{ row.confirmed_at.strftime('%Y-%m-%d %H:%M') }}</div>
+              <div class="who">{{ row.confirmed_by }}</div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">No documents have been uploaded to this project yet.</p>
+  {% endif %}
+</main>

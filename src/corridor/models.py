@@ -1293,6 +1293,92 @@ class DueWorkReceipt(Base):
     )
 
 
+class RecordInclusionRequest(Base):
+    """One durable, coalescing watermark of a project's pending Record Inclusion.
+
+    A completed Extraction Run (and, later, an approved identity/fact change)
+    leaves the record needing reconciliation, but ``load_project`` appends a
+    PolicyRun on every call — so calling it on every idle tick would grow the
+    receipt log without bound. This row is the handoff that makes reconciliation
+    conditional and recoverable: a producer bumps ``dirty_seq`` inside its own
+    transaction, so a rolled-back producer leaves no work and a committed one
+    survives process exit. Reconciliation is pending exactly while
+    ``dirty_seq > reconciled_seq``; many bumps between reconciliations coalesce
+    into one pending pass. Unlike the append-only receipt tables, this is
+    mutable operational state (like a due-work occurrence), so it carries no
+    immutability trigger.
+    """
+
+    __tablename__ = "record_inclusion_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "dirty_seq >= 0 and reconciled_seq >= 0",
+            name="ck_record_inclusion_requests_non_negative",
+        ),
+        CheckConstraint(
+            "reconciled_seq <= dirty_seq",
+            name="ck_record_inclusion_requests_watermark_order",
+        ),
+    )
+
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id"), primary_key=True
+    )
+    dirty_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    reconciled_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    last_reason: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RevisionReconciliationRequest(Base):
+    """One durable, coalescing watermark of a project's pending revision work.
+
+    A committed structural change — a registered Supersession edge or a changed
+    Current Production Run — makes a project's Document Revision Processing and
+    Automatic Support Update possibly stale, but re-running that pass on every
+    idle scheduled tick would create a Revision Comparison nobody asked for and
+    append a Carry-Forward PolicyRun without bound. This row is the handoff that
+    makes the pass conditional and recoverable, exactly like
+    ``record_inclusion_requests``: a producer bumps ``dirty_seq`` inside its own
+    transaction, so a rolled-back producer leaves no revision work and a
+    committed one survives process exit. Reconciliation is pending exactly while
+    ``dirty_seq > reconciled_seq``; many bumps between reconciliations coalesce
+    into one pending pass. Like the Record Inclusion watermark this is mutable
+    operational state, not an append-only receipt, so it carries no immutability
+    trigger.
+    """
+
+    __tablename__ = "revision_reconciliation_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "dirty_seq >= 0 and reconciled_seq >= 0",
+            name="ck_revision_reconciliation_requests_non_negative",
+        ),
+        CheckConstraint(
+            "reconciled_seq <= dirty_seq",
+            name="ck_revision_reconciliation_requests_watermark_order",
+        ),
+    )
+
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id"), primary_key=True
+    )
+    dirty_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    reconciled_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    last_reason: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class DependencyAdmissionOutcome(Base):
     """One immutable candidate outcome within an admission receipt.
 
@@ -2102,12 +2188,19 @@ class CommitmentLineage(Base):
 
 
 class ProjectRosterEntry(Base):
-    """One selectable project-team member for a Coordination Plan.
+    """One project-team membership, and the authority it carries.
 
     A Work Decision keeps its human-readable owner projection for existing
     readers, but a guided save must not turn a typed project roster into a
     caller-supplied string.  The grouping receipt binds the exact roster row
     that supplied the rendered name.
+
+    The membership is also the project-scoped access boundary (#331).  An
+    ``active`` row makes the person a member who may read the project and be
+    assigned work, but membership alone is not authority: each write designation
+    is an explicit, independently granted flag (ADR-0034 decisions 28 and 34,
+    ADR-0035).  Possessing a signed-in principal, or merely appearing on the
+    roster, confers none of them by default — they fail closed.
     """
 
     __tablename__ = "project_roster_entries"
@@ -2128,7 +2221,147 @@ class ProjectRosterEntry(Base):
     principal_subject: Mapped[str] = mapped_column(String(128))
     display_name: Mapped[str] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # The four distinct designations of #331.  None is implied by another or by
+    # membership: a coordinator is not a Documentation Reviewer, a reviewer may
+    # not release externally, and none of them is a technical operator.
+    can_coordinate: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    can_review_documentation: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    can_release_externally: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    is_technical_operator: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PersonIdentity(Base):
+    """The stable subject a verified email resolves to, and nothing more.
+
+    Sign-in authenticates a person (email -> principal); membership and its
+    designations decide what that person may do, per project.  This table is
+    deliberately global and authority-free: creating it grants no project access
+    and no organization-registry power (#331).  It is never backfilled for
+    historical actors — an existing audit or decision principal keeps its own
+    identity, and its email basis stays unknown unless a person enrolls (ADR-0035).
+    """
+
+    __tablename__ = "person_identities"
+    __table_args__ = (
+        UniqueConstraint("email_normalized", name="uq_person_identity_email"),
+        UniqueConstraint("principal_subject", name="uq_person_identity_principal"),
+        CheckConstraint(
+            "length(trim(email_normalized)) > 0", name="ck_person_identity_email"
+        ),
+        CheckConstraint(
+            "length(trim(principal_subject)) > 0",
+            name="ck_person_identity_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    email_normalized: Mapped[str] = mapped_column(Text)
+    principal_subject: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SignInToken(Base):
+    """One expiring, single-use magic-link secret, stored only as a hash.
+
+    The raw token lives only in the emailed link; the column is its SHA-256 so a
+    database read can never replay a link.  ``consumed_at`` is the single-use
+    guard: consumption is an atomic ``UPDATE ... WHERE consumed_at IS NULL AND
+    expires_at > now()`` so an expired, reused, tampered, or concurrently
+    consumed link can never establish a second session (#331).
+    """
+
+    __tablename__ = "sign_in_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_sha256", name="uq_sign_in_token_hash"),
+        CheckConstraint("length(token_sha256) = 64", name="ck_sign_in_token_hash"),
+        CheckConstraint("expires_at > created_at", name="ck_sign_in_token_expiry"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    email_normalized: Mapped[str] = mapped_column(Text)
+    token_sha256: Mapped[str] = mapped_column(String(64))
+    redirect_path: Mapped[str | None] = mapped_column(Text, server_default=text("null"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("null")
+    )
+
+
+class WebSession(Base):
+    """A signed-in browser session: explicit expiry, revocable, hash-stored.
+
+    The cookie carries a random id; this row stores only its SHA-256, so a
+    database read cannot resume a session.  ``expires_at`` and ``revoked_at`` are
+    both checked on every request, which is why revoking a session (logout) or a
+    membership takes effect immediately, with no reliance on a stale roster or an
+    earlier page load (#331).  ``csrf_sha256`` is the hash of the per-session
+    request-forgery token echoed by authenticated writes.
+    """
+
+    __tablename__ = "web_sessions"
+    __table_args__ = (
+        UniqueConstraint("session_sha256", name="uq_web_session_hash"),
+        CheckConstraint("length(session_sha256) = 64", name="ck_web_session_hash"),
+        CheckConstraint("length(csrf_sha256) = 64", name="ck_web_session_csrf"),
+        CheckConstraint("expires_at > created_at", name="ck_web_session_expiry"),
+        CheckConstraint(
+            "length(trim(principal_subject)) > 0", name="ck_web_session_principal"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    session_sha256: Mapped[str] = mapped_column(String(64))
+    csrf_sha256: Mapped[str] = mapped_column(String(64))
+    principal_subject: Mapped[str] = mapped_column(String(128))
+    email_normalized: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("null")
+    )
+
+
+class SignInAttempt(Base):
+    """Append-only record of one issuance or consumption attempt, for backoff.
+
+    Counting rows in a recent window bounds how many email or token attempts an
+    unauthenticated caller can generate (#331).  The scope is the throttle key —
+    a normalized email or a client address — never a claim that the email maps to
+    a member, so the counter cannot be used to enumerate membership.
+    """
+
+    __tablename__ = "sign_in_attempts"
+    __table_args__ = (
+        Index(
+            "ix_sign_in_attempt_scope",
+            "scope_kind",
+            "scope_value",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    scope_kind: Mapped[str] = mapped_column(String(32))
+    scope_value: Mapped[str] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
@@ -3320,6 +3553,156 @@ class Assertion(Base):
     # The source document's own date, which is what orders competing claims
     # and drives last_evidenced_at.
     doc_date: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ScheduleGoverningDerivation(Base):
+    """One immutable record of which schedule activities govern utility work.
+
+    ADR-0057: governing dates identify themselves. When a schedule imports,
+    activities whose codes and names match utility conventions flag themselves
+    as the governing set with no human step, and this row records exactly which
+    codes and names matched (``matches_json``). Only when the coding is too poor
+    to read does a person pick, once — a ``human_pick`` row under their own
+    subject. Append-only: a re-derivation that changes nothing writes nothing.
+    """
+
+    __tablename__ = "schedule_governing_derivations"
+    __table_args__ = (
+        CheckConstraint(
+            "method in ('coded', 'awaiting_pick', 'human_pick')",
+            name="ck_schedule_governing_method",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_schedule_governing_recorded_by",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(matches_json) = 'array'",
+            name="ck_schedule_governing_matches",
+        ),
+        CheckConstraint(
+            "source_sha256 is null or source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_schedule_governing_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    source_name: Mapped[str] = mapped_column(Text)
+    source_sha256: Mapped[str | None] = mapped_column(String(64))
+    method: Mapped[str] = mapped_column(String(24))
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    matches_json: Mapped[list] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ScheduleLinkReceipt(Base):
+    """The deciding values behind one Constraint-to-key-date link.
+
+    The binding itself is written by ``milestones.link_dependency`` (unchanged),
+    which copies the exact Key Date Version onto the Constraint and audits it.
+    This receipt retains *why* that activity was chosen — the Constraint's own
+    station text and the governing activity's coverage, verbatim from both
+    sources (ADR-0057, ADR-0051's exact-rule discipline). ``basis`` says whether
+    an exact rule fired (``exact_station_containment``), a person resolved a tie
+    or confirmed a single candidate (``human_choice``), or a schedule revision
+    advanced an existing link (``flow_through``). ``audit_log_id`` ties this to
+    the exact ``LINK_MILESTONE`` audit entry so the two can never drift.
+    """
+
+    __tablename__ = "schedule_link_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "audit_log_id", name="uq_schedule_link_receipts_audit"
+        ),
+        CheckConstraint(
+            "basis in ('exact_station_containment', 'human_choice', 'flow_through')",
+            name="ck_schedule_link_receipts_basis",
+        ),
+        CheckConstraint(
+            "length(trim(decided_by)) > 0",
+            name="ck_schedule_link_receipts_decided_by",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(deciding_values_json) = 'object'",
+            name="ck_schedule_link_receipts_values",
+        ),
+        CheckConstraint(
+            "policy_sha256 is null or policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_schedule_link_receipts_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    dependency_id: Mapped[int] = mapped_column(
+        ForeignKey("dependencies.id"), index=True
+    )
+    milestone_id: Mapped[int] = mapped_column(ForeignKey("milestones.id"))
+    milestone_registration_id: Mapped[int] = mapped_column(
+        ForeignKey("milestone_registrations.id")
+    )
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"))
+    basis: Mapped[str] = mapped_column(String(32))
+    decided_by: Mapped[str] = mapped_column(String(128))
+    # Null for a human choice: only the automatic exact rule stands on a
+    # fingerprinted, replay-gated policy version.
+    policy_version: Mapped[str | None] = mapped_column(String(64))
+    policy_sha256: Mapped[str | None] = mapped_column(String(64))
+    deciding_values_json: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ScheduleLinkActivation(Base):
+    """Append-only activation or suspension of the automatic location link rule.
+
+    The exact location-link rule is a new automatic matching class, so ADR-0050
+    governs it: it may not auto-write until a regression replay of the project's
+    own recorded human link decisions passes with at least one real case and no
+    contradiction. A passing replay writes an ``activate`` row (system actor); a
+    deliberate human ``suspend`` beats any passing test, and only a human act
+    lifts it (an ``activate`` under their own subject). A brand-new rule with no
+    history has no passing replay and so never auto-links until a person has
+    linked by hand — exactly ADR-0050's rule.
+    """
+
+    __tablename__ = "schedule_link_activations"
+    __table_args__ = (
+        CheckConstraint(
+            "action in ('activate', 'suspend')",
+            name="ck_schedule_link_activation_action",
+        ),
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_schedule_link_activation_reason",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_schedule_link_activation_actor",
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_schedule_link_activation_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    action: Mapped[str] = mapped_column(String(16))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    # How many recorded human decisions the replay compared against. Null for a
+    # suspension, which needs no proof.
+    replay_case_count: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(160))
+    recorded_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

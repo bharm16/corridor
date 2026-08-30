@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Your projects — Corridor</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:44rem; margin:2.5rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.5rem; margin:0 0 1rem; }
+  ul { list-style:none; padding:0; margin:0; }
+  li { border:1px solid var(--line); border-radius:7px; padding:.7rem 1rem;
+       margin:.5rem 0; }
+  li a { color:#111; font-weight:600; text-decoration:none; }
+  .muted { color:var(--muted); }
+  button { font:inherit; color:#111; background:#fff; border:1px solid var(--line);
+           border-radius:4px; padding:.35rem .7rem; cursor:pointer; }
+</style>
+
+<header>
+  <b>Corridor</b>
+  <form method="post" action="/sign-out">
+    {{ csrf_field() }}
+    <span class="muted">{{ email }}</span>
+    <button type="submit">Sign out</button>
+  </form>
+</header>
+
+<main>
+  <h1>Your projects</h1>
+  {% for project in projects %}
+    <ul>
+      <li>
+        <a href="/work/{{ project.slug }}">{{ project.name }}</a>
+        <div class="muted">Coordination work, constraint log, and reports.</div>
+      </li>
+    </ul>
+  {% else %}
+    <p class="muted">
+      You are not yet a member of any project. Your project is set up by Corridor
+      operations; you will see it here once you are enrolled.
+    </p>
+  {% endfor %}
+</main>

@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sign in — Corridor</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --ok:#067647; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  main { max-width:32rem; margin:4rem auto; padding:0 1.2rem 3rem; }
+  h1 { font-size:1.55rem; margin:0 0 .5rem; }
+  .lead,.muted { color:var(--muted); }
+  label { display:block; margin:1.2rem 0 .3rem; }
+  input[type=email] { width:100%; font:inherit; padding:.5rem .6rem;
+                      border:1px solid var(--line); border-radius:4px; }
+  button { font:inherit; color:#fff; background:#111; border:1px solid #111;
+           border-radius:4px; padding:.5rem .9rem; cursor:pointer; margin-top:1rem; }
+  .sent { color:var(--ok); }
+</style>
+
+<main>
+  <h1>Sign in to Corridor</h1>
+  {% if throttled %}
+    <p class="muted">
+      Too many sign-in requests from here recently. Please wait a few minutes
+      and try again.
+    </p>
+  {% elif sent %}
+    <p class="sent"><b>Check your email.</b></p>
+    <p class="muted">
+      If that address belongs to a project member, a single-use sign-in link is
+      on its way. The link expires shortly and can be used only once.
+    </p>
+  {% else %}
+    <p class="lead">
+      Enter your work email. We will send a single-use link that signs you in —
+      no password to remember.
+    </p>
+    <form method="post" action="/sign-in/request">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label for="email">Work email</label>
+      <input id="email" name="email" type="email" autocomplete="email" required
+             autofocus>
+      <button type="submit">Email me a sign-in link</button>
+    </form>
+  {% endif %}
+</main>

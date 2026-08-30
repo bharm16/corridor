@@ -34,7 +34,14 @@ from corridor.models import (
 
 
 HANDLER_PROCESSING_HEALTH = "processing_health"
+HANDLER_PROJECT_PROCESSING = "project_processing"
+HANDLER_REVISION_RECONCILIATION = "revision_reconciliation"
+# The upper safety ceiling for a declared model spend. A processing schedule
+# must declare a positive budget (never a silent zero); it may not exceed this.
+_PROJECT_PROCESSING_TOKEN_CEILING = 100_000_000
 _CONFIGURATION_VERSION = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+_EXTRACTOR_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+_POLICY_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _RUNTIME_OWNER = re.compile(r"^runtime:[A-Za-z0-9][A-Za-z0-9._:-]{1,119}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -95,6 +102,123 @@ class ProcessingHealthDeclaration:
 
 
 @dataclass(frozen=True)
+class ProjectProcessingDeclaration:
+    """One validated gate-7 declaration that enables project processing.
+
+    Processing reads models, so its bounds differ from the read-only health
+    handler: the claim lease and deadline are longer, and a positive model
+    spending budget must be declared explicitly rather than left at a silent
+    zero. Scope names the exact project and the deployed extractor identity;
+    authorized destinations stay empty and concurrency stays one.
+    """
+
+    project_id: int
+    configuration_version: str
+    extractor_identity: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        extractor_identity: str,
+        starts_at: datetime,
+        model_token_budget: int = 2_000_000,
+    ) -> "ProjectProcessingDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            extractor_identity=extractor_identity,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1800,
+            concurrency_limit=1,
+            model_token_budget=model_token_budget,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
+class RevisionReconciliationDeclaration:
+    """One validated gate-7 declaration that enables automatic revision work.
+
+    Revision reconciliation is deterministic — it converges on an already-produced
+    exact comparison and applies the released Automatic Support Update Rules — so
+    it authorizes no model spending: its ``model_token_budget`` must be a declared
+    zero, never a silent one, and its resource bounds match the read-only health
+    handler rather than the model-spending processing pass. Scope names the exact
+    project and the two policy identities the pass is bound to: the comparison
+    ``matcher_identity`` and the support-transfer ``support_rule_identity``.
+    Authorized destinations stay empty and concurrency stays one.
+    """
+
+    project_id: int
+    configuration_version: str
+    matcher_identity: str
+    support_rule_identity: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        matcher_identity: str,
+        support_rule_identity: str,
+        starts_at: datetime,
+    ) -> "RevisionReconciliationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            matcher_identity=matcher_identity,
+            support_rule_identity=support_rule_identity,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=600,
+            deadline_seconds=300,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
 class DueWorkClaim:
     occurrence_id: int
     occurrence_public_id: str
@@ -134,7 +258,27 @@ class HandlerContract:
     max_result_bytes: int
     model_token_budget: int
     notification_budget: int
-    run: Callable[[Session, DueWorkSchedule, datetime], dict[str, Any]]
+    # A read-only handler runs inside a `reading` session and returns a result
+    # dict the runtime finalizes. An effectful handler owns its own durable
+    # commits and instead takes an `EffectfulContext`; exactly one is set.
+    run: Callable[[Session, DueWorkSchedule, datetime], dict[str, Any]] | None = None
+    run_effectful: Callable[["EffectfulContext"], dict[str, Any]] | None = None
+
+
+@dataclass(frozen=True)
+class EffectfulContext:
+    """What an effectful handler needs to own its durable work and be recovered.
+
+    The handler commits its domain work through ``session_factory`` before the
+    runtime finalizes the claim, so a stale-claim or deadline failure at finalize
+    only re-runs work that is already durable and idempotent.
+    """
+
+    session_factory: Any
+    schedule: DueWorkSchedule
+    claim: "DueWorkClaim"
+    clock: "Clock"
+    registry: Mapping[str, "HandlerContract"]
 
 
 def _processing_health(
@@ -192,6 +336,79 @@ def _processing_health(
     }
 
 
+def _project_processing_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Run the bounded project-processing pass for a claimed occurrence.
+
+    The pass commits extraction and Record Inclusion durably through the
+    session factory; this wrapper only adapts the runtime's claim into a
+    ``process_project`` call over the currently deployed extraction routes and
+    summarizes the result into a bounded receipt.
+    """
+
+    from corridor.llm import OpenAIClient
+    from corridor.pipeline import extraction_route
+    from corridor.project_processing import process_project, summarize_pass
+
+    with context.session_factory() as reading:
+        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
+        if schedule is None:
+            raise DueWorkRefusal("Due Work schedule disappeared")
+        project_id = schedule.project_id
+        configuration_version = schedule.configuration_version
+
+    client = OpenAIClient()
+    try:
+        result = process_project(
+            context.session_factory,
+            project_id=project_id,
+            select_route=lambda document: extraction_route(document, client=client),
+            clock=context.clock,
+        )
+    finally:
+        client.close()
+    return summarize_pass(
+        result,
+        configuration_version=configuration_version,
+        observed_at=_aware_utc(context.clock.now()),
+    )
+
+
+def _revision_reconciliation_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Run the bounded revision reconciliation for a claimed occurrence.
+
+    The pass commits its Revision Comparisons, released support updates, and the
+    downstream Record Inclusion handoff durably through the session factory; this
+    wrapper only adapts the runtime's claim into a ``reconcile_project_revisions``
+    call over the declared matcher identity and summarizes the result into a
+    bounded receipt. It reads no model.
+    """
+
+    from corridor.revision_reconciliation import (
+        reconcile_project_revisions,
+        summarize_revision_reconciliation,
+    )
+
+    with context.session_factory() as reading:
+        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
+        if schedule is None:
+            raise DueWorkRefusal("Due Work schedule disappeared")
+        project_id = schedule.project_id
+        configuration_version = schedule.configuration_version
+        matcher_identity = schedule.scope_json.get("matcher_identity", "")
+
+    result = reconcile_project_revisions(
+        context.session_factory,
+        project_id=project_id,
+        matcher_version=matcher_identity,
+        clock=context.clock,
+    )
+    return summarize_revision_reconciliation(
+        result,
+        configuration_version=configuration_version,
+        observed_at=_aware_utc(context.clock.now()),
+    )
+
+
 HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
     {
         HANDLER_PROCESSING_HEALTH: HandlerContract(
@@ -202,7 +419,25 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             model_token_budget=0,
             notification_budget=0,
             run=_processing_health,
-        )
+        ),
+        HANDLER_PROJECT_PROCESSING: HandlerContract(
+            key=HANDLER_PROJECT_PROCESSING,
+            scope_kind="one_registered_project_extraction",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=8192,
+            model_token_budget=_PROJECT_PROCESSING_TOKEN_CEILING,
+            notification_budget=0,
+            run_effectful=_project_processing_effectful,
+        ),
+        HANDLER_REVISION_RECONCILIATION: HandlerContract(
+            key=HANDLER_REVISION_RECONCILIATION,
+            scope_kind="one_registered_project_revision",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            run_effectful=_revision_reconciliation_effectful,
+        ),
     }
 )
 
@@ -260,6 +495,176 @@ def configure_processing_health(
         handler_key=HANDLER_PROCESSING_HEALTH,
         configuration_version=declaration.configuration_version,
         scope_json={"project_id": declaration.project_id},
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
+def configure_project_processing(
+    session: Session,
+    declaration: ProjectProcessingDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 project-processing declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written; model credentials alone never enable a project sweep. Enabling a
+    new configuration disables the project's prior processing schedule while
+    retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_processing_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_PROJECT_PROCESSING,
+            "project_id": declaration.project_id,
+            "extractor_identity": declaration.extractor_identity,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_PROJECT_PROCESSING,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_PROJECT_PROCESSING,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_PROJECT_PROCESSING,
+        configuration_version=declaration.configuration_version,
+        scope_json={
+            "project_id": declaration.project_id,
+            "extractor_identity": declaration.extractor_identity,
+        },
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
+def configure_revision_reconciliation(
+    session: Session,
+    declaration: RevisionReconciliationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 revision-reconciliation declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written; a deterministic handler still requires an explicit gate-7 declaration
+    before it may run. Enabling a new configuration disables the project's prior
+    revision schedule while retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_revision_reconciliation_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_REVISION_RECONCILIATION,
+            "project_id": declaration.project_id,
+            "matcher_identity": declaration.matcher_identity,
+            "support_rule_identity": declaration.support_rule_identity,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_REVISION_RECONCILIATION,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_REVISION_RECONCILIATION,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_REVISION_RECONCILIATION,
+        configuration_version=declaration.configuration_version,
+        scope_json={
+            "project_id": declaration.project_id,
+            "matcher_identity": declaration.matcher_identity,
+            "support_rule_identity": declaration.support_rule_identity,
+        },
         configuration_json=configuration,
         configuration_sha256=configuration_sha256,
         input_identity_sha256=input_identity_sha256,
@@ -432,11 +837,7 @@ def complete_due_work(
     occurrence, schedule = _locked_live_claim(session, claim, now=now)
     contract = _handler(schedule.handler_key)
     _validate_handler_result(contract, handler_result)
-    safe_next_step = (
-        "none"
-        if handler_result.get("health") == "healthy"
-        else "inspect_failed_document_processing"
-    )
+    safe_next_step = _safe_next_step(contract, handler_result)
     receipt = _append_receipt(
         session,
         occurrence,
@@ -512,11 +913,29 @@ def run_due_work_once(
             if schedule is None or schedule.handler_key not in registry:
                 raise DueWorkRefusal("claimed handler is not server-owned")
             contract = registry[schedule.handler_key]
-            handler_result = contract.run(reading, schedule, started_at)
+            if contract.run_effectful is None:
+                # Read-only handler: run inside the reading transaction and
+                # let the runtime finalize its result.
+                handler_result = contract.run(reading, schedule, started_at)
+        if contract.run_effectful is not None:
+            # Effectful handler: it owns its durable commits, run outside any
+            # runtime-held transaction so no domain lock spans the finalize.
+            handler_result = contract.run_effectful(
+                EffectfulContext(
+                    session_factory=session_factory,
+                    schedule=schedule,
+                    claim=claim,
+                    clock=clock,
+                    registry=registry,
+                )
+            )
         finished_at = _aware_utc(clock.now())
         with session_factory() as finalizing:
             with finalizing.begin():
                 if finished_at > claim.deadline_at:
+                    # The domain work already committed durably and is
+                    # idempotent, so recovering and re-running this occurrence
+                    # is safe.
                     return fail_due_work(
                         finalizing,
                         claim,
@@ -762,6 +1181,152 @@ def _validated_health_declaration(
     }
 
 
+def _validated_processing_declaration(
+    declaration: ProjectProcessingDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("project-processing starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if not _EXTRACTOR_IDENTITY.fullmatch(declaration.extractor_identity):
+        raise DueWorkRefusal("project-processing extractor identity is invalid")
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "project-processing supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and 1 <= declaration.model_token_budget <= _PROJECT_PROCESSING_TOKEN_CEILING
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal(
+            "project-processing gate-7 resource declaration is invalid"
+        )
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_PROJECT_PROCESSING,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "extractor_identity": declaration.extractor_identity,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "registered_project_extraction-v1",
+            "project_id": declaration.project_id,
+            "extractor_identity": declaration.extractor_identity,
+        },
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
+def _validated_revision_reconciliation_declaration(
+    declaration: RevisionReconciliationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal(
+            "revision-reconciliation starts_at must align to a UTC hour"
+        )
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if not _EXTRACTOR_IDENTITY.fullmatch(declaration.matcher_identity):
+        raise DueWorkRefusal("revision-reconciliation matcher identity is invalid")
+    if not _POLICY_IDENTITY.fullmatch(declaration.support_rule_identity):
+        raise DueWorkRefusal(
+            "revision-reconciliation support rule identity is invalid"
+        )
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "revision-reconciliation supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal(
+            "revision-reconciliation gate-7 resource declaration is invalid"
+        )
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_REVISION_RECONCILIATION,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "matcher_identity": declaration.matcher_identity,
+            "support_rule_identity": declaration.support_rule_identity,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "registered_project_revision-v1",
+            "project_id": declaration.project_id,
+            "matcher_identity": declaration.matcher_identity,
+            "support_rule_identity": declaration.support_rule_identity,
+        },
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
     if schedule.handler_key not in HANDLER_REGISTRY:
         raise DueWorkRefusal("persisted Due Work handler is not server-owned")
@@ -769,40 +1334,111 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
         raise DueWorkRefusal("persisted Due Work configuration digest does not match")
     if schedule.configuration_json.get("handler") != schedule.handler_key:
         raise DueWorkRefusal("persisted Due Work configuration handler does not match")
-    declaration = ProcessingHealthDeclaration(
-        project_id=schedule.project_id,
-        configuration_version=schedule.configuration_version,
-        starts_at=schedule.starts_at,
-        cadence=schedule.cadence,
-        timezone_name=schedule.timezone_name,
-        missed_run_policy=schedule.missed_run_policy,
-        retention_days=schedule.retention_days,
-        max_attempts=schedule.max_attempts,
-        backoff_seconds=schedule.backoff_seconds,
-        claim_ttl_seconds=schedule.claim_ttl_seconds,
-        deadline_seconds=schedule.deadline_seconds,
-        concurrency_limit=schedule.concurrency_limit,
-        model_token_budget=schedule.model_token_budget,
-        notification_budget=schedule.notification_budget,
-    )
-    if schedule.configuration_json != _validated_health_declaration(declaration):
-        raise DueWorkRefusal("persisted Due Work configuration is unsupported")
-    expected_input_identity = _sha256(
-        {
-            "handler": schedule.handler_key,
+    if schedule.handler_key == HANDLER_PROJECT_PROCESSING:
+        expected_config = _validated_processing_declaration(
+            ProjectProcessingDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                extractor_identity=schedule.scope_json.get("extractor_identity", ""),
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = {
             "project_id": schedule.project_id,
-            "source": "stored_processing_facts-v1",
+            "extractor_identity": schedule.scope_json.get("extractor_identity", ""),
         }
-    )
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "extractor_identity": schedule.scope_json.get("extractor_identity", ""),
+            }
+        )
+    elif schedule.handler_key == HANDLER_REVISION_RECONCILIATION:
+        matcher_identity = schedule.scope_json.get("matcher_identity", "")
+        support_rule_identity = schedule.scope_json.get("support_rule_identity", "")
+        expected_config = _validated_revision_reconciliation_declaration(
+            RevisionReconciliationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                matcher_identity=matcher_identity,
+                support_rule_identity=support_rule_identity,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = {
+            "project_id": schedule.project_id,
+            "matcher_identity": matcher_identity,
+            "support_rule_identity": support_rule_identity,
+        }
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "matcher_identity": matcher_identity,
+                "support_rule_identity": support_rule_identity,
+            }
+        )
+    else:
+        expected_config = _validated_health_declaration(
+            ProcessingHealthDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = {"project_id": schedule.project_id}
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "source": "stored_processing_facts-v1",
+            }
+        )
+    if schedule.configuration_json != expected_config:
+        raise DueWorkRefusal("persisted Due Work configuration is unsupported")
     if (
-        schedule.scope_json != {"project_id": schedule.project_id}
+        schedule.scope_json != expected_scope
         or schedule.input_identity_sha256 != expected_input_identity
     ):
         raise DueWorkRefusal("persisted Due Work scope or input identity is invalid")
     contract = HANDLER_REGISTRY[schedule.handler_key]
     if (
-        schedule.model_token_budget != contract.model_token_budget
-        or schedule.notification_budget != contract.notification_budget
+        schedule.model_token_budget > contract.model_token_budget
+        or schedule.notification_budget > contract.notification_budget
     ):
         raise DueWorkRefusal("persisted Due Work budgets exceed the handler contract")
 
@@ -812,6 +1448,18 @@ def _handler(key: str) -> HandlerContract:
     if contract is None:
         raise DueWorkRefusal("Due Work handler is not server-owned")
     return contract
+
+
+def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -> str:
+    """The recovery pointer a completed receipt records, per handler."""
+
+    if handler_result.get("health") == "healthy":
+        return "none"
+    if contract.key == HANDLER_PROJECT_PROCESSING:
+        return "inspect_processing_attention"
+    if contract.key == HANDLER_REVISION_RECONCILIATION:
+        return "inspect_revision_attention"
+    return "inspect_failed_document_processing"
 
 
 def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) -> None:
@@ -835,6 +1483,50 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         or result.get("health") not in {"healthy", "processing_failures_observed"}
     ):
         raise DueWorkRefusal("processing-health handler result is invalid")
+    if contract.key == HANDLER_PROJECT_PROCESSING and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "eligible_document_count",
+            "extracted",
+            "skipped",
+            "failed",
+            "unreadable",
+            "quarantined",
+            "held_out",
+            "processing_failures",
+            "reconciled",
+            "admitted",
+            "waiting",
+            "ambiguous_documents",
+        }
+        or result.get("health") not in {"healthy", "processing_attention_required"}
+    ):
+        raise DueWorkRefusal("project-processing handler result is invalid")
+    if contract.key == HANDLER_REVISION_RECONCILIATION and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "did_reconcile",
+            "pairs_discovered",
+            "comparisons_created",
+            "comparisons_reused",
+            "comparison_failures",
+            "carried",
+            "abstained",
+            "requested_record_inclusion",
+        }
+        or result.get("health") not in {"healthy", "revision_attention_required"}
+    ):
+        raise DueWorkRefusal("revision-reconciliation handler result is invalid")
 
 
 def _locked_live_claim(

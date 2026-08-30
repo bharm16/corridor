@@ -86,6 +86,7 @@
   {% if decision == "owner" %}
     {% if not authority_gap %}
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/owner">
+    {{ csrf_field() }}
         <fieldset>
           <legend>Choose the assigned project person</legend>
           <select name="internal_owner_roster_entry_id" required>
@@ -98,6 +99,7 @@
     {% endif %}
   {% elif decision == "next_action" %}
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/admitted/next-action">
+    {{ csrf_field() }}
       <fieldset>
         <legend>Choose the Next Action</legend>
         <select name="next_action" required>

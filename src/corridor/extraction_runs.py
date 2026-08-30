@@ -32,6 +32,8 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.record_inclusion import request_record_inclusion
+from corridor.revision_reconciliation_request import request_revision_reconciliation
 from corridor.row_accounting import validate_row_accounting
 
 
@@ -161,6 +163,15 @@ def record_extraction_run(
     session.flush([run])
     for candidate in candidates:
         candidate.extraction_run_id = run.id
+    if outcome == "completed":
+        # The one producer #342 owns: a completed reading leaves the project's
+        # Record Inclusion needing reconciliation. Bumping the durable watermark
+        # in this same transaction is what makes a crash after the extraction
+        # commit but before the load recoverable — the completed run is on the
+        # record if and only if the project is marked pending (#342, ADR-0029).
+        request_record_inclusion(
+            session, document.project_id, "extraction_completed"
+        )
     return run
 
 
@@ -392,6 +403,11 @@ def _declare(
             .values(extraction_run_id=extraction_run_id, declared_at=func.now())
         )
         session.expire(current)
+    # A changed Current Production Run changes which exact runs a revision pair
+    # compares, so it is a revision pair to reconsider. Bumping the durable
+    # watermark in this same transaction reaches reconciliation on commit and
+    # leaves nothing on rollback (#343).
+    request_revision_reconciliation(session, project_id, "active_run_declared")
     return run
 
 

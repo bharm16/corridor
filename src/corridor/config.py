@@ -15,8 +15,13 @@ class Settings(BaseSettings):
         "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
     )
     # Content-addressed store written by `make corpus`. The queue resolves a
-    # Document back to its PDF from here to compute quote highlights.
+    # Document back to its PDF from here to compute quote highlights, and product
+    # intake stages an uploaded file's exact bytes here before confirmation.
     corpus_store: str = "corpus/files"
+    # Where page renders land when a document is parsed. Explicit deployment-
+    # resolved storage behavior, so an intake adapter renders to the same place
+    # the rest of the pipeline reads (`corridor.ingest`).
+    corpus_images: str = "out/page-images"
 
     # Fail closed by default.  This is a deployment-resolved stable subject,
     # not a request header or form value.  Full authentication/SSO is M9;

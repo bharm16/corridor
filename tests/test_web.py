@@ -17,7 +17,6 @@ from corridor.adjudicate import (
     reject_candidate,
 )
 from corridor.admission import load_project
-from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
@@ -56,6 +55,7 @@ from corridor.supersession import SupersessionDeclaration, register_supersession
 from corridor.supersession_review import build_reviewer_worklist
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.queue import build_view, next_candidate, pending_counts
+from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
@@ -82,9 +82,12 @@ def client(session):
 
 
 @pytest.fixture
-def client_without_principal(session, monkeypatch):
-    """Exercise the real fail-closed deployment identity dependency."""
-    monkeypatch.setattr(settings, "human_principal", "")
+def client_without_session(session):
+    """A client with no signed-in session, exercising the real fail-closed gate.
+
+    Nothing overrides the identity dependency, so a request carries no session
+    cookie and the real ``get_human_principal`` refuses it (#331).
+    """
     app.dependency_overrides.clear()
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as c:
@@ -97,6 +100,7 @@ def project(session):
     p = Project(slug="web-test", name="Web Test", is_synthetic=True)
     session.add(p)
     session.flush()
+    seed_membership(session, p, TEST_PRINCIPAL)
     return p
 
 
@@ -1784,12 +1788,10 @@ def test_marking_evidence_on_another_projects_dependency_is_hidden_and_refused(
     )
     session.flush()
     candidate = make_candidate(session, other, stray_doc)
-    response = client.post(
-        f"/candidates/{candidate.id}/accept",
-        data={"slug": other.slug},
-        follow_redirects=False,
-    )
-    assert response.status_code == 303
+    # The acting principal is not a member of `other`, so it could never build
+    # this through the app; create the dependency and evidence directly so the
+    # test can prove the member-slug route still refuses to reach across.
+    accept_candidate(session, candidate, principal=TEST_PRINCIPAL)
     dependency = session.scalars(
         select(Dependency).where(Dependency.project_id == other.id)
     ).one()
@@ -1838,8 +1840,8 @@ def test_accepting_creates_a_dependency_and_advances(
 
 
 @pytest.mark.parametrize("action", ["accept", "edit-accept", "merge", "reject"])
-def test_mutation_routes_refuse_without_a_configured_human_principal_and_write_nothing(
-    client_without_principal, session, project, document, action
+def test_mutation_routes_refuse_without_a_signed_in_session_and_write_nothing(
+    client_without_session, session, project, document, action
 ):
     candidate = make_candidate(session, project, document)
     original_payload = deepcopy(candidate.payload_json)
@@ -1864,13 +1866,13 @@ def test_mutation_routes_refuse_without_a_configured_human_principal_and_write_n
         for model in (Dependency, Assertion, EvidenceLink, AuditLog)
     }
 
-    response = client_without_principal.post(
+    response = client_without_session.post(
         f"/candidates/{candidate.id}/{action}",
         data=data,
         follow_redirects=False,
     )
 
-    assert response.status_code == 503
+    assert response.status_code == 401
     session.refresh(candidate)
     assert candidate.state == "pending"
     assert candidate.merged_into is None
@@ -1881,8 +1883,8 @@ def test_mutation_routes_refuse_without_a_configured_human_principal_and_write_n
     } == before
 
 
-def test_mark_satisfies_route_refuses_without_a_configured_human_principal(
-    client_without_principal, session, project, document
+def test_mark_satisfies_route_refuses_without_a_signed_in_session(
+    client_without_session, session, project, document
 ):
     candidate = make_candidate(session, project, document)
     dependency = session.scalars(
@@ -1892,7 +1894,7 @@ def test_mark_satisfies_route_refuses_without_a_configured_human_principal(
 
     app.dependency_overrides[get_human_principal] = lambda: TEST_PRINCIPAL
     try:
-        accepted = client_without_principal.post(
+        accepted = client_without_session.post(
             f"/candidates/{candidate.id}/accept",
             data={"slug": project.slug},
             follow_redirects=False,
@@ -1909,13 +1911,13 @@ def test_mark_satisfies_route_refuses_without_a_configured_human_principal(
     ).one()
     before_audit = session.scalar(select(func.count()).select_from(AuditLog))
 
-    response = client_without_principal.post(
+    response = client_without_session.post(
         f"/dependencies/{dependency.id}/evidence/{evidence.id}/satisfies",
         data={"slug": project.slug},
         follow_redirects=False,
     )
 
-    assert response.status_code == 503
+    assert response.status_code == 401
     assert (
         session.scalar(
             select(func.count())
@@ -2883,6 +2885,10 @@ def test_the_boundary_refuses_a_receipt_from_another_project(session, client, pr
     stranger = Project(slug="a-different-project", name="A different project")
     session.add(stranger)
     session.flush()
+    # Make the caller a genuine member of the stranger project, so this test
+    # exercises the receipt/candidate cross-project boundary (409) rather than
+    # stopping earlier at the membership gate (#331).
+    seed_membership(session, stranger, TEST_PRINCIPAL)
 
     # The member and the receipt are genuinely paired; only the project
     # the request names is wrong.

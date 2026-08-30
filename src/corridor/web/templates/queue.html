@@ -359,6 +359,7 @@
     {# Reading is the job; the form appears behind `e`. #}
     <div id="editwrap" hidden>
       <form method="post" action="/candidates/{{ view.candidate.id }}/edit-accept" id="candidate">
+    {{ csrf_field() }}
         {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
         {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
         <input type="hidden" name="slug" value="{{ project.slug }}">
@@ -397,6 +398,7 @@
         </details>
         <small>This recorded acknowledgment leaves the proposal pending and changes no Constraint.</small>
         <form method="post" action="/candidates/{{ view.candidate.id }}/keep-unresolved">
+    {{ csrf_field() }}
           <input type="hidden" name="slug" value="{{ project.slug }}">
           <button type="submit">Keep unresolved in the Work List</button>
         </form>
@@ -418,6 +420,7 @@
    <div class="sticky">
     <div class="actions">
       <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/accept">
+    {{ csrf_field() }}
         {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
         {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
         <input type="hidden" name="slug" value="{{ project.slug }}">
@@ -464,6 +467,7 @@
       </p>
       {% for m in view.matches %}
         <form class="mergerow" method="post" action="/candidates/{{ view.candidate.id }}/merge">
+    {{ csrf_field() }}
           {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
         {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
           <input type="hidden" name="slug" value="{{ project.slug }}">
@@ -486,6 +490,7 @@
     <div class="actions" id="reasons" hidden>
       {% for reason in ["duplicate", "wrong", "irrelevant", "bad-citation"] %}
         <form class="inline" method="post" action="/candidates/{{ view.candidate.id }}/reject">
+    {{ csrf_field() }}
           {% if cohort_receipt %}<input type="hidden" name="cohort_receipt_id" value="{{ cohort_receipt.id }}">{% endif %}
         {% if event_cohort_receipt %}<input type="hidden" name="event_cohort_receipt_id" value="{{ event_cohort_receipt.id }}">{% endif %}
           <input type="hidden" name="slug" value="{{ project.slug }}">

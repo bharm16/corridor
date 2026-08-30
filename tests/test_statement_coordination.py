@@ -46,8 +46,13 @@ from corridor.models import (
     WorkDecision,
     WorkDecisionMilestoneImpact,
 )
+from corridor.milestones import import_csv
+from corridor.models import DependencyEventTiming
 from corridor.principals import HumanPrincipal
+from access_support import seed_membership
+from corridor.schedule_linking import flow_through_revisions, resolve_link
 from corridor.statement_lifecycle import current_lineage_statement
+from corridor.work_list import build_work_list
 from corridor.statement_coordination import (
     CLOSURE_TARGET_RELATIONSHIP_GAP,
     StaleStatementCoordination,
@@ -101,6 +106,7 @@ def project(session):
     )
     session.add(project)
     session.flush()
+    seed_membership(session, project, RECORDER)
     return project
 
 
@@ -2596,3 +2602,161 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
             assert "Follow-up plan saved" in stale.text
     finally:
         app.dependency_overrides.clear()
+
+
+# --- ADR-0057 boundary: a schedule import never touches Promised For ---------
+
+
+def _import_governing(session, project, tmp_path, need_date, name="schedule.csv"):
+    path = tmp_path / name
+    path.write_text(
+        "code,name,need_date\n"
+        f"UTIL-RELO-A,Utility relocations 6600+00 to 6620+00,{need_date}\n"
+    )
+    import_csv(session, project_id=project.id, path=path)
+    return session.scalars(
+        select(Milestone).where(
+            Milestone.project_id == project.id, Milestone.code == "UTIL-RELO-A"
+        )
+    ).one()
+
+
+def _statement_facts_snapshot(session, project):
+    events = {
+        event.id: (
+            event.event_type,
+            event.timing_direction,
+            event.description,
+            event.event_date,
+            event.stated_party,
+            event.scope_mode,
+        )
+        for event in session.scalars(
+            select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+        )
+    }
+    timings = {
+        timing.id: (
+            timing.event_id,
+            timing.kind,
+            timing.text,
+            timing.precision,
+            timing.start_date,
+            timing.end_date,
+        )
+        for timing in session.scalars(select(DependencyEventTiming))
+        if timing.event_id in events
+    }
+    committed = {
+        dependency.id: dependency.committed_date
+        for dependency in session.scalars(
+            select(Dependency).where(Dependency.project_id == project.id)
+        )
+    }
+    return events, timings, committed
+
+
+def test_a_schedule_import_never_alters_promised_for_or_any_statement_fact(
+    session, project, party, roster_entry, tmp_path
+):
+    """ADR-0057: the schedule updates Required By automatically and never the
+    Promised For an organization stated, nor any statement fact."""
+    quote = "Kinder Morgan will provide the relocation schedule by June 1, 2026."
+    document = _document(session, project, "boundary.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    dependency = _dependency(session, project, party, "KM-1", "KM 20-inch line")
+    coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+    session.refresh(dependency)
+    # The organization's Promised For is on record for this exact row.
+    assert dependency.committed_date == date(2026, 6, 1)
+
+    milestone = _import_governing(session, project, tmp_path, "2026-05-01")
+    resolve_link(session, dependency, milestone, principal=RECORDER)
+    session.refresh(dependency)
+    assert dependency.need_date == date(2026, 5, 1)
+
+    before = _statement_facts_snapshot(session, project)
+
+    # A schedule revision moves the Required By basis, and it flows through.
+    _import_governing(session, project, tmp_path, "2026-08-15", name="rev.csv")
+    flow_through_revisions(session, project.id)
+    session.refresh(dependency)
+
+    after = _statement_facts_snapshot(session, project)
+    # Required By moved (the schedule's legitimate effect)...
+    assert dependency.need_date == date(2026, 8, 15)
+    # ...while Promised For and every statement fact are byte-for-byte untouched.
+    assert after == before
+    assert after[2][dependency.id] == date(2026, 6, 1)
+
+
+def test_a_moved_key_date_surfaces_on_a_decision_that_referenced_it(
+    session, project, party, roster_entry, tmp_path
+):
+    """ADR-0057: a recorded Effect-on-Key-Dates decision referencing a moved
+    date appears as attention with the old and new values."""
+    milestone = _import_governing(session, project, tmp_path, "2026-05-01")
+    linked = _dependency(session, project, party, "KM-LINK", "KM line under RELO-A")
+    resolve_link(session, linked, milestone, principal=RECORDER)
+
+    quote = "Kinder Morgan moved completion from May 1, 2026 to June 1, 2026."
+    document = _document(session, project, "affects.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "slip", "description": quote},
+    )
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            previous_timing=StatementTiming.day("May 1, 2026", date(2026, 5, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.selected((linked.id,)),
+            milestone_impact="affects",
+            milestone_ids=(milestone.id,),
+        ),
+        principal=RECORDER,
+    )
+    lineage_id = result.event.commitment_lineage_id
+
+    # A schedule revision moves the very key date that decision referenced.
+    _import_governing(session, project, tmp_path, "2026-09-15", name="rev.csv")
+    flow_through_revisions(session, project.id)
+
+    work = build_work_list(session, project.id, today=date(2026, 3, 1))
+    items = work.immediate + work.backlog
+    statement_items = [
+        item for item in items if item.commitment_lineage_id == lineage_id
+    ]
+    assert statement_items
+    item = statement_items[0]
+    assert "key_date_decision_affected" in item.attention_reason_codes
+    [move] = item.key_date_moves
+    assert move.milestone_id == milestone.id
+    assert move.prior_need_date == date(2026, 5, 1)
+    assert move.new_need_date == date(2026, 9, 15)

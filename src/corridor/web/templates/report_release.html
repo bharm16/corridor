@@ -42,6 +42,7 @@
     <p class="empty"><b>This exact PDF is approved to share and retained.</b></p>
   {% endif %}
   <form method="post" action="/reports/{{ project.slug }}/render">
+    {{ csrf_field() }}
     <input type="hidden" name="ordinary" value="1">
     <button type="submit">Prepare fixed PDF for review</button>
   </form>

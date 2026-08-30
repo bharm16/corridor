@@ -53,9 +53,13 @@ CANDIDATE = "candidate"
 MILESTONE = "milestone"
 PROJECT = "project"
 COMMITMENT_LINEAGE = "commitment_lineage"
+# The registered source file itself, as the subject of a product-intake
+# confirmation (#349). The confirmation binds the acting person to one exact
+# Document; extraction and admission remain the machine's separate, later acts.
+DOCUMENT = "document"
 
 ENTITY_TYPES = frozenset(
-    {DEPENDENCY, CANDIDATE, MILESTONE, PROJECT, COMMITMENT_LINEAGE}
+    {DEPENDENCY, CANDIDATE, MILESTONE, PROJECT, COMMITMENT_LINEAGE, DOCUMENT}
 )
 
 # Every act this system records against the Ledger. `entity_type` was
@@ -110,6 +114,15 @@ KEEP_STATEMENT_UNRESOLVED = KEEP_CANDIDATE_UNRESOLVED
 # include it in the same transaction and the same protected write-set as the
 # Project Record act it caused.
 PRODUCT_PROVING_FRONTEND_REQUEST = "product_proving_frontend_request"
+# Managed, attributable enrollment or re-designation of one project member
+# (#331).  The act names the project it is scoped to and the operator who made
+# it; a selectable assignee or an email address alone never grants access.
+ENROLL_PROJECT_MEMBER = "enroll_project_member"
+# One person confirmed the registration of one uploaded source Document through
+# the product (#349, ADR-0035). It is an AuditLog action rather than a second
+# table so the confirmation shares the exact transaction and write-set as the
+# Document registration it authorizes, and a rolled-back confirm records nothing.
+CONFIRM_SOURCE_INTAKE = "confirm_source_intake"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -159,6 +172,8 @@ ACTIONS = frozenset(
         RESTORE_STATEMENT_NOT_RELEVANT,
         KEEP_CANDIDATE_UNRESOLVED,
         PRODUCT_PROVING_FRONTEND_REQUEST,
+        ENROLL_PROJECT_MEMBER,
+        CONFIRM_SOURCE_INTAKE,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )
