@@ -33,6 +33,7 @@ from corridor.models import (
     EvidenceLink,
     ExtractionRun,
     OperativeSupport,
+    OrganizationIdentityReceipt,
     Project,
 )
 from corridor.changes import record_run
@@ -68,6 +69,19 @@ def _reset(session, project: Project) -> None:
     if project.slug != DEMO_SLUG or not project.is_synthetic:
         raise DemoIsolationError(
             "demo reset is allowed only for the synthetic corridor-demo project"
+        )
+
+    # Identity receipts are immutable registry provenance.  A synthetic demo
+    # may clear only data that has no retained decision history; it must refuse
+    # rather than delete a Candidate whose source spelling already taught the
+    # registry (ADR-0051).
+    if session.scalar(
+        select(OrganizationIdentityReceipt.id).where(
+            OrganizationIdentityReceipt.project_id == project.id
+        ).limit(1)
+    ) is not None:
+        raise DemoIsolationError(
+            "demo reset cannot erase retained organization identity history"
         )
 
     dep_ids = select(Dependency.id).where(Dependency.project_id == project.id)

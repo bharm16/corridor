@@ -110,6 +110,16 @@ def make_candidate(
     activate=True,
 ):
     fields = FIELDS if fields is None else fields
+    # These fixtures exercise adjudication once a row's organization is
+    # registered.  ADR-0051 makes the separate confirmation flow responsible
+    # for introducing an unfamiliar spelling; it is not an adjudication side
+    # effect.
+    source_party = fields.get("external_org") if isinstance(fields, dict) else None
+    if source_party and source_party not in {"NA", "N/A", "Unknown"} and not session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == source_party)
+    ).first():
+        session.add(ExternalOrg(name=source_party, aliases=[]))
+        session.flush()
     candidate = Candidate(
         project_id=document.project_id,
         kind="dependency",
@@ -1986,6 +1996,12 @@ def agreement_document(session, document):
 
 def agreement_candidate(session, document, *, fields=None):
     fields = AGREEMENT_FIELDS if fields is None else fields
+    source_party = fields.get("external_org") if isinstance(fields, dict) else None
+    if source_party and not session.scalars(
+        select(ExternalOrg).where(ExternalOrg.name == source_party)
+    ).first():
+        session.add(ExternalOrg(name=source_party, aliases=[]))
+        session.flush()
     candidate = Candidate(
         project_id=document.project_id,
         kind="dependency",

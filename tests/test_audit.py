@@ -24,6 +24,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     Milestone,
     Project,
 )
@@ -55,6 +56,8 @@ def session():
 def document(session):
     project = Project(slug="audit-test", name="Audit Test", is_synthetic=True)
     session.add(project)
+    session.flush()
+    session.add(ExternalOrg(name="AT&T Texas", aliases=[]))
     session.flush()
     doc = Document(
         project_id=project.id,
@@ -392,7 +395,7 @@ def test_a_demo_reset_does_not_delete_another_entity_s_history(session, document
     Milestone history happened to share a number with a demo Dependency,
     out of a table whose own docstring says append-only.
     """
-    from corridor.demo import DEMO_SLUG, _reset
+    from corridor.demo import DEMO_SLUG, DemoIsolationError, _reset
 
     project = session.get(Project, document.project_id)
     project.slug = DEMO_SLUG
@@ -412,7 +415,8 @@ def test_a_demo_reset_does_not_delete_another_entity_s_history(session, document
         after={"code": "UTIL-CLEAR"},
     )
 
-    _reset(session, project)
+    with pytest.raises(DemoIsolationError, match="organization identity history"):
+        _reset(session, project)
 
     survived = session.scalars(
         select(AuditLog).where(
@@ -421,9 +425,11 @@ def test_a_demo_reset_does_not_delete_another_entity_s_history(session, document
         )
     ).all()
     assert len(survived) == 1
-    assert session.scalars(
-        select(AuditLog).where(
-            AuditLog.entity_type == audit.DEPENDENCY,
-            AuditLog.entity_id == dependency.id,
-        )
-    ).all() == []
+    assert len(
+        session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_type == audit.DEPENDENCY,
+                AuditLog.entity_id == dependency.id,
+            )
+        ).all()
+    ) == 1

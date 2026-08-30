@@ -33,8 +33,11 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     ExtractionRun,
     OperativeSupport,
+    OrganizationIdentityActivation,
+    OrganizationIdentityReceipt,
     Project,
     ReconfirmationReceipt,
     RevisionComparisonFinding,
@@ -201,6 +204,21 @@ def _completed_run(session, document: Document, *candidates: Candidate):
     return run
 
 
+def _register_external_org(session, name: str = "AT&T") -> None:
+    """Register the External Organization these matrix candidates name.
+
+    Issue #345 stopped admission from silently minting an organization from an
+    unfamiliar source spelling: accepting a Candidate whose ``external_org`` is
+    not already registered now refuses.  Every matrix row built here names
+    "AT&T", so the registry must hold that exact spelling before any candidate
+    is accepted.  Idempotent because a single Session (and one per-worker
+    database) can build several scenarios and ``ExternalOrg.name`` is unique.
+    """
+    if session.scalar(select(ExternalOrg).where(ExternalOrg.name == name)) is None:
+        session.add(ExternalOrg(name=name, aliases=[]))
+        session.flush()
+
+
 def _superseded_dependency(
     session,
     *,
@@ -218,6 +236,7 @@ def _superseded_dependency(
     )
     session.add(project)
     session.flush()
+    _register_external_org(session)
     predecessor = _document(
         session,
         project,
@@ -507,6 +526,18 @@ def _delete_committed_review_project(project_id: int) -> None:
                 RevisionComparisonRun.id.in_(comparison_ids)
             )
         )
+        # #345's acceptance path now records organization-identity provenance;
+        # these are project-scoped, so remove them with the rest of the project.
+        cleanup.execute(
+            delete(OrganizationIdentityReceipt).where(
+                OrganizationIdentityReceipt.project_id == project_id
+            )
+        )
+        cleanup.execute(
+            delete(OrganizationIdentityActivation).where(
+                OrganizationIdentityActivation.project_id == project_id
+            )
+        )
         cleanup.execute(
             delete(Candidate).where(Candidate.project_id == project_id)
         )
@@ -538,6 +569,11 @@ def _delete_committed_review_project(project_id: int) -> None:
         )
         cleanup.execute(delete(Document).where(Document.project_id == project_id))
         cleanup.execute(delete(Project).where(Project.id == project_id))
+        # The registry is global, not project-scoped: leaving the committed
+        # organization behind pollutes other files' registry-wide reads on the
+        # same guarded worker database (duplicate-name seeds, org counts, and
+        # deterministic resolution). Its dependencies are already gone above.
+        cleanup.execute(delete(ExternalOrg).where(ExternalOrg.name == "AT&T"))
         cleanup.commit()
 
 
@@ -1163,6 +1199,7 @@ def test_corrupt_admission_does_not_reserve_unrelated_comparison_rows(session):
     )
     session.add(project)
     session.flush()
+    _register_external_org(session)
     predecessor = _document(
         session,
         project,

@@ -14,6 +14,7 @@ from corridor.models import (
     DependencyEvidenceSufficiency,
     DocPage,
     Document,
+    ExternalOrg,
     EvidenceLink,
     Project,
 )
@@ -54,6 +55,8 @@ def project(session):
         is_synthetic=True,
     )
     session.add(project)
+    session.flush()
+    session.add(ExternalOrg(name="LT AT&T Texas", aliases=[]))
     session.flush()
     return project
 

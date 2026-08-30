@@ -41,6 +41,10 @@ from corridor.verify import (
     threshold_for,
     unverified_fields,
 )
+
+
+class OrganizationIdentityUnresolved(ValueError):
+    """A named source party has no exact registered identity yet (ADR-0051)."""
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
 from corridor.measurement_cases import (
@@ -342,7 +346,11 @@ def accept_candidate(
             "rejection, not an acceptance"
         )
 
-    org = _resolve_org(session, fields.get("external_org"))
+    # Refuse an unsupported source shape before asking for identity work.  A
+    # malformed agreement or plan is not an identity question, and surfacing
+    # identity first would mask the real safe refusal.
+    _materialize(session, candidate, fields, None)
+    org = _resolve_org(session, candidate, fields.get("external_org"))
     dependency = _materialize(session, candidate, fields, org)
     session.add(dependency)
     session.flush()
@@ -433,7 +441,8 @@ def admit_dependency_by_policy(
                     f"candidate {candidate.id} asserts nothing, and a Ledger "
                     "row is what a document claims"
                 )
-            org = _resolve_org(session, fields.get("external_org"))
+            _materialize(session, candidate, fields, None)
+            org = _resolve_org(session, candidate, fields.get("external_org"))
             dependency = _materialize(session, candidate, fields, org)
             session.add(dependency)
             session.flush()
@@ -1010,40 +1019,29 @@ def _validate_candidate_provenance(
     return payload, fields, citations
 
 
-def _resolve_org(session: Session, name: str | None) -> ExternalOrg | None:
+def _resolve_org(
+    session: Session, candidate: Candidate, name: str | None
+) -> ExternalOrg | None:
     # A placeholder is the document declining to name a party, not a party
     # called `NA` (#77). Minting one puts 86 of Project A's rows behind an
     # owner nobody can chase and inflates every report that groups by
     # party. The Assertion still records what the document printed.
     if not name or is_placeholder_party(name):
         return None
-    org = session.scalars(select(ExternalOrg).where(ExternalOrg.name == name)).first()
-    if org is not None:
-        return org
-    # A registered spelling resolves to its party rather than minting a
-    # duplicate. This is the registry's own sanctioned resolution — the
-    # aliases exist precisely because one company is named many ways —
-    # and it is the same rule `identity.party_matches` and the admission
-    # key apply, so the org a row binds to is the org the
-    # `already_admitted` check will look for. Anything looser stays
-    # forbidden: an unregistered spelling mints its own party below.
-    #
-    # Ordered by id so a spelling the registry has (wrongly) recorded on
-    # two parties resolves to the older registration every time — a
-    # deterministic answer to dirty data, matching
-    # `identity.party_canonical_names`, rather than a scan-order gamble.
-    from corridor.identity import normalize_party
+    # The registry matching boundary lives in one module.  It preserves why an
+    # exact spelling resolved and, for the replay-gated tiers, refuses to turn
+    # an unfamiliar string into a silently minted organization.
+    from corridor.organization_identity import resolve_for_record_inclusion
 
-    wanted = normalize_party(name)
-    for candidate_org in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id)):
-        spellings = (candidate_org.name, *(candidate_org.aliases or []))
-        if any(
-            spelling and normalize_party(spelling) == wanted for spelling in spellings
-        ):
-            return candidate_org
-    org = ExternalOrg(name=name, org_type="utility", aliases=[])
-    session.add(org)
-    session.flush()
+    resolution = resolve_for_record_inclusion(session, candidate)
+    if resolution.external_org_id is None:
+        raise OrganizationIdentityUnresolved(
+            "External Organization identity is not established; confirm the "
+            "source spelling before adding this record"
+        )
+    org = session.get(ExternalOrg, resolution.external_org_id)
+    if org is None:  # pragma: no cover - receipt has a foreign key
+        raise OrganizationIdentityUnresolved("resolved External Organization no longer exists")
     return org
 
 
@@ -1081,6 +1079,7 @@ def _materialize(
             location_desc=_location(fields),
             station_from=fields.get("station_from"),
             station_to=fields.get("station_to"),
+            external_contact=fields.get("external_org_contact"),
             # None when the document asserted no strategy this layout's
             # vocabulary recognises (ADR-0009).
             resolution_strategy=_asserted_strategy(session, candidate, fields),

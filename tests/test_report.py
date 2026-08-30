@@ -66,6 +66,13 @@ def project_with_two_dependencies(session):
     project = Project(slug="report-test", name="Report Test", is_synthetic=True)
     session.add(project)
     session.flush()
+    session.add_all(
+        [
+            ExternalOrg(name="AT&T Texas (SWBT)", aliases=[]),
+            ExternalOrg(name="CenterPoint Energy", aliases=[]),
+        ]
+    )
+    session.flush()
     doc = Document(
         project_id=project.id,
         sha256="c" * 64,
@@ -1886,6 +1893,8 @@ def _critical_dependency(session):
     principal = HumanPrincipal("local:field-exact-tester")
     project = Project(slug="field-exact-test", name="Field Exact", is_synthetic=True)
     session.add(project)
+    session.flush()
+    session.add(ExternalOrg(name="Example Water", aliases=[]))
     session.flush()
     document = Document(
         project_id=project.id,

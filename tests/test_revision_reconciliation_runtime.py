@@ -35,6 +35,7 @@ from corridor.models import (
     Document,
     DueWorkSchedule,
     EvidenceLink,
+    ExternalOrg,
     PolicyRun,
     Project,
     RevisionComparisonRun,
@@ -139,6 +140,10 @@ def _seed_committed_transition(factory, now):
         )
         setup.add(project)
         setup.flush([project])
+        # Issue #345 ended silent minting: register the External Organization
+        # the candidates name ("AT&T") so adjudication resolves it.
+        setup.add(ExternalOrg(name="AT&T", aliases=[]))
+        setup.flush()
         fields = _fields()
         predecessor = _document(
             setup, project, registry_id="REV-A", sha_character="a",

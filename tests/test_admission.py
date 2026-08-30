@@ -26,6 +26,7 @@ from corridor.models import (
     DependencyEventScope,
     DocPage,
     Document,
+    ExternalOrg,
     PolicyRun,
     Project,
 )
@@ -53,6 +54,8 @@ def project(session):
         project_side_parties=["LJA Engineering"],
     )
     session.add(p)
+    session.flush()
+    session.add(ExternalOrg(name=PIPELINE, aliases=[]))
     session.flush()
     return p
 
@@ -147,6 +150,15 @@ def _statement(document, ref):
 
 
 def _read(session, document, candidates, prompt_version="matrix_v1"):
+    # These landing fixtures are about Active Runs and admission ordering.  The
+    # named organizations are established registry inputs, not an implicit
+    # side effect of the admission writer (ADR-0051).
+    for candidate in candidates:
+        fields = (candidate.payload_json or {}).get("fields", {})
+        name = fields.get("external_org") if isinstance(fields, dict) else None
+        if name and not session.scalar(select(ExternalOrg).where(ExternalOrg.name == name)):
+            session.add(ExternalOrg(name=name, aliases=[]))
+    session.flush()
     for candidate in candidates:
         candidate.prompt_version = prompt_version
         session.add(candidate)

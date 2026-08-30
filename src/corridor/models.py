@@ -1860,6 +1860,101 @@ class ExternalParty(Base):
 ExternalOrg = ExternalParty
 
 
+class OrganizationIdentityReceipt(Base):
+    """One append-only resolution of source wording to a registered party.
+
+    The ``external_orgs`` row remains the registry's current projection.  This
+    receipt is the authority and provenance for an alias, a human selection, or
+    a deterministic whole-row resolution: it preserves the wording, the
+    evidence that was considered, and the responsible person or policy.  A
+    local statement resolution is deliberately not represented here; it stays
+    source-bound on the statement receipt rather than acquiring registry reach.
+    """
+
+    __tablename__ = "organization_identity_receipts"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "method", name="uq_organization_identity_receipt_candidate_method"),
+        CheckConstraint(
+            "method in ('human_confirmation', 'automatic_name_alias', "
+            "'automatic_facility_class', 'automatic_contact', "
+            "'automatic_revision_lineage', 'automatic_stated_alias', "
+            "'human_cited_alias_confirmation', 'alias_correction')",
+            name="ck_organization_identity_receipt_method",
+        ),
+        CheckConstraint(
+            "scope = 'registry'", name="ck_organization_identity_receipt_scope"
+        ),
+        CheckConstraint(
+            "length(trim(stated_wording)) > 0",
+            name="ck_organization_identity_receipt_wording",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_organization_identity_receipt_actor",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(evidence_json) = 'object'",
+            name="ck_organization_identity_receipt_evidence",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(facility_classes_json) = 'array'",
+            name="ck_organization_identity_receipt_facility_classes",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    external_org_id: Mapped[int] = mapped_column(ForeignKey("external_orgs.id"), index=True)
+    method: Mapped[str] = mapped_column(String(64))
+    scope: Mapped[str] = mapped_column(String(32), default="registry", server_default="registry")
+    stated_wording: Mapped[str] = mapped_column(Text)
+    evidence_json: Mapped[dict] = mapped_column(JSONB)
+    facility_classes_json: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    policy_version: Mapped[str | None] = mapped_column(String(64))
+    policy_sha256: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OrganizationIdentityActivation(Base):
+    """Append-only ADR-0050 gate for whole-row automatic identity tiers."""
+
+    __tablename__ = "organization_identity_activations"
+    __table_args__ = (
+        CheckConstraint(
+            "action in ('activate', 'suspend')",
+            name="ck_organization_identity_activation_action",
+        ),
+        CheckConstraint(
+            "policy_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_organization_identity_activation_sha256",
+        ),
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_organization_identity_activation_reason",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_organization_identity_activation_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    action: Mapped[str] = mapped_column(String(16))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    replay_case_count: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(160))
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ReportRun(Base):
     """A published report, kept so the next one can say what changed.
 

@@ -34,6 +34,7 @@ from corridor.models import (
     DocPage,
     Document,
     DueWorkSchedule,
+    ExternalOrg,
     PolicyRun,
     Project,
 )
@@ -171,6 +172,9 @@ def _project_with_matrix(factory, now, filename="ucm.pdf", **declaration_overrid
         )
         setup.add(project)
         setup.flush([project])
+        # Record Inclusion refuses to mint an External Organization (#345), so
+        # the owner every conflict candidate cites must already be registered.
+        setup.add(ExternalOrg(name=PIPELINE, aliases=[]))
         document = Document(
             project_id=project.id,
             sha256=hashlib.sha256(f"{project.id}:{filename}".encode()).hexdigest(),

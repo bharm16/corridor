@@ -258,6 +258,40 @@
       </div>
     {% endif %}
 
+    {% if identity_card %}
+      <div class="identity-confirm" style="border:1px solid #d0d5dd;border-radius:6px;padding:.9rem;margin:.8rem 0">
+        <b>The source names “{{ identity_card.stated_wording }}”.</b>
+        <p style="margin:.4rem 0">No registered organization is determined by the
+          retained evidence. Choose the organization it means, or create it —
+          Corridor never creates one silently.</p>
+        <details>
+          <summary>Evidence already considered</summary>
+          <dl class="readfields">
+            {% for kind, basis in identity_card.evidence.items() %}
+              <dt>{{ kind }}</dt><dd>{{ basis }}</dd>
+            {% endfor %}
+          </dl>
+        </details>
+        <form method="post" action="/candidates/{{ view.candidate.id }}/confirm-organization"
+              style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.6rem">
+          <input type="hidden" name="slug" value="{{ project.slug }}">
+          <select name="external_org_id">
+            <option value="" selected>— choose an existing organization —</option>
+            {% for org in identity_card.organizations %}
+              <option value="{{ org.id }}">{{ org.name }}</option>
+            {% endfor %}
+          </select>
+          <label>
+            <input type="checkbox" name="create_organization" value="true">
+            create “{{ identity_card.stated_wording }}” as a new organization
+          </label>
+          <input type="text" name="facility_classes"
+                 placeholder="facility class it owns (optional)">
+          <button type="submit">Confirm organization</button>
+        </form>
+      </div>
+    {% endif %}
+
     {% if differences %}
       <table class="diff">
         <tr>

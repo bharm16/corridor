@@ -51,6 +51,7 @@ from corridor.adjudicate import (
     InvalidCandidateProvenance,
     InvalidCandidateScope,
     InvalidRejectReason,
+    OrganizationIdentityUnresolved,
     REJECT_REASONS,
     UnadjudicableKind,
     accept_candidate,
@@ -215,6 +216,12 @@ from corridor.cohort import (
 )
 from corridor.models import CohortReceipt, EventCohortReceipt
 from corridor.operative_support import resolve_operative_support
+from corridor.organization_identity import (
+    OrganizationIdentityRefusal,
+    confirm_cited_stated_alias,
+    confirm_identity,
+    resolve_candidate_identity,
+)
 from corridor.work_decisions import (
     FOLLOW_UP_NEXT_ACTION_CHOICES,
     UNKNOWN_DUE_DATE_REASONS,
@@ -699,6 +706,30 @@ def _review_reason(
     )
 
 
+def _identity_card(session: Session, candidate: Candidate) -> dict | None:
+    """The one card behind an unresolved External Organization spelling.
+
+    ADR-0051: after every deterministic evidence kind came up empty or
+    ambiguous, the remaining question lives in a person's head.  The card
+    shows the unresolved source wording, the evidence the stack already
+    considered, and the explicit existing-or-new choices — nothing
+    preselected, nothing scored.
+    """
+
+    try:
+        residue = resolve_candidate_identity(session, candidate, permit_advanced=True)
+    except OrganizationIdentityRefusal:
+        return None
+    return {
+        "stated_wording": residue.stated_wording,
+        "evidence": residue.evidence,
+        "surviving_ids": residue.candidate_ids,
+        "organizations": session.scalars(
+            select(ExternalOrg).order_by(ExternalOrg.name)
+        ).all(),
+    }
+
+
 # What each unplaced statement means to the person now holding it. The
 # machine's vocabulary names the check; the reviewer needs the question.
 STATEMENT_REASONS = {
@@ -779,6 +810,11 @@ REVIEW_REASONS = {
         "This source row was previously handled, but safe replay is not proven.",
         "Its extracted facts or current Constraint association no longer prove "
         "an exact replay. Keep it pending and review the cited passages.",
+    ),
+    "external_org_identity_unresolved": (
+        "External Organization identity not established.",
+        "The source wording does not yet determine one registered organization. "
+        "Confirm the organization from its source context; Corridor will not create one silently.",
     ),
     "asserts_nothing": (
         "This row states nothing.",
@@ -3879,6 +3915,11 @@ def queue(
 
     reason = _review_reason(session, project, candidate)
     headline, guidance = REVIEW_REASONS.get(reason or "", (None, None))
+    identity_card = (
+        _identity_card(session, candidate)
+        if reason == "external_org_identity_unresolved"
+        else None
+    )
     candidate_authority_gap = pending_candidate_authority_gap(
         session,
         project.id,
@@ -3916,6 +3957,7 @@ def queue(
             "project": project,
             "review_headline": headline,
             "review_guidance": guidance,
+            "identity_card": identity_card,
             "candidate_authority_gap": candidate_authority_gap,
             "unresolved_acknowledgments": unresolved_acknowledgments,
             "differences": differences,
@@ -4819,6 +4861,107 @@ def _accept(
         raise HTTPException(400, str(exc))
     except CandidateAssertsNothing as exc:
         raise HTTPException(400, str(exc))
+    except OrganizationIdentityUnresolved as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/candidates/{candidate_id}/confirm-organization")
+def confirm_organization(
+    candidate_id: int,
+    slug: str = Form(...),
+    external_org_id: str = Form(""),
+    create_organization: bool = Form(False),
+    facility_classes: list[str] = Form([]),
+    alias_citation_document_id: str = Form(""),
+    alias_citation_page_no: str = Form(""),
+    alias_citation_quote: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Record the one human registry decision behind a pending source spelling.
+
+    This is intentionally a narrow command rather than a general organization
+    editor: it can only decide the cited pending Candidate in the caller's own
+    project.  A blank organization id means the person explicitly creates the
+    source-named organization; it never means a default selection.  The normal
+    durable handoff later re-runs Record Inclusion and is the only path that
+    may create a Project Record fact.
+    """
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    candidate = _project_pending_candidate(session, project, candidate_id)
+    raw_org_id = external_org_id.strip()
+    if raw_org_id:
+        try:
+            selected_org_id = int(raw_org_id)
+        except ValueError as exc:
+            raise HTTPException(400, "external_org_id must be a positive identity") from exc
+        if selected_org_id <= 0:
+            raise HTTPException(400, "external_org_id must be a positive identity")
+    else:
+        selected_org_id = None
+    if selected_org_id is None and not create_organization:
+        raise HTTPException(400, "choose an existing organization or explicitly create one")
+    if selected_org_id is not None and create_organization:
+        raise HTTPException(400, "choose either an existing organization or create one")
+    cited_alias_values = (
+        alias_citation_document_id.strip(),
+        alias_citation_page_no.strip(),
+        alias_citation_quote.strip(),
+    )
+    if any(cited_alias_values) and not all(cited_alias_values):
+        raise HTTPException(400, "a cited alias confirmation needs document, page, and quote")
+    try:
+        if all(cited_alias_values):
+            if selected_org_id is None:
+                raise HTTPException(400, "a cited alias confirmation chooses an existing organization")
+            try:
+                citation_document_id = int(cited_alias_values[0])
+                citation_page_no = int(cited_alias_values[1])
+            except ValueError as exc:
+                raise HTTPException(400, "cited alias document and page must be positive identities") from exc
+            if citation_document_id <= 0 or citation_page_no <= 0:
+                raise HTTPException(400, "cited alias document and page must be positive identities")
+            receipt = confirm_cited_stated_alias(
+                session,
+                candidate,
+                external_org_id=selected_org_id,
+                document_id=citation_document_id,
+                page_no=citation_page_no,
+                quote=cited_alias_values[2],
+                principal=principal,
+            )
+        else:
+            receipt = confirm_identity(
+                session,
+                candidate,
+                external_org_id=selected_org_id,
+                facility_classes=tuple(facility_classes),
+                principal=principal,
+            )
+    except OrganizationIdentityRefusal as exc:
+        raise HTTPException(409, str(exc))
+    response = RedirectResponse(f"/queue/{project.slug}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="confirm_organization",
+        route_template="/candidates/{candidate_id}/confirm-organization",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id, candidate_id=candidate.id),
+        request_fields={
+            "slug": slug,
+            "external_org_id": selected_org_id,
+            "create_organization": create_organization,
+            "facility_classes": facility_classes,
+            "alias_citation_document_id": cited_alias_values[0] or None,
+            "alias_citation_page_no": cited_alias_values[1] or None,
+            "organization_identity_receipt_id": receipt.id,
+        },
+    )
+    session.commit()
+    return response
 
 
 @app.post("/candidates/{candidate_id}/edit-accept")

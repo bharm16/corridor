@@ -26,6 +26,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceInvestigationCandidateReviewStart,
+    ExternalOrg,
     ExternalParty,
     ExtractionRun,
     Milestone,
@@ -712,6 +713,10 @@ def test_bounded_operations_declare_every_equal_run_before_admission(session):
 
 def test_bounded_operations_trace_and_commit_real_dependency_admission(session):
     project = _project(session, "real-admission")
+    # Record Inclusion refuses to mint an External Organization (#345); register
+    # the owner the dependency candidate cites before admission runs.
+    session.add(ExternalOrg(name="Tejas Pipeline Co", aliases=[]))
+    session.flush()
     document = _document(
         session, project, doc_type="matrix", name="real-admission-matrix.pdf"
     )
@@ -804,6 +809,10 @@ def test_bounded_operations_admit_only_fresh_candidates_not_other_active_work(
     session,
 ):
     project = _project(session, "fresh-admission-scope")
+    # Record Inclusion refuses to mint an External Organization (#345); register
+    # the owner every dependency candidate cites before admission runs.
+    session.add(ExternalOrg(name="Tejas Pipeline Co", aliases=[]))
+    session.flush()
 
     def matrix_run(db, document, utility_id):
         fields = {

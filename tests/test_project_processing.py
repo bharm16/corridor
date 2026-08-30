@@ -27,6 +27,7 @@ from corridor.models import (
     DocPage,
     Document,
     DocumentQuarantine,
+    ExternalOrg,
     ExtractionRun,
     PolicyRun,
     Project,
@@ -134,6 +135,9 @@ def _project(factory, **overrides) -> int:
         )
         setup.add(project)
         setup.flush([project])
+        # Record Inclusion refuses to mint an External Organization (#345), so
+        # the owner every conflict candidate cites must already be registered.
+        setup.add(ExternalOrg(name=PIPELINE, aliases=[]))
         project_id = project.id
         setup.commit()
     return project_id

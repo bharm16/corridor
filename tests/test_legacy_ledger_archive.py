@@ -37,6 +37,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     LegacyLedgerArchive,
     OperativeSupport,
     Project,
@@ -678,6 +679,8 @@ def test_retirement_appends_one_honestly_attributed_project_audit(
 
 def test_retired_reference_codes_are_never_reused(session, legacy_ledger):
     project, document, _, _ = legacy_ledger
+    session.add(ExternalOrg(name="AT&T Texas", aliases=[]))
+    session.flush()
     plan = plan_retirement(session, project.id)
     retire_legacy_ledger(
         session,

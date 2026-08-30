@@ -52,6 +52,7 @@ from corridor.adjudicate import (
     InvalidCandidateProvenance,
     InvalidCandidateScope,
     MalformedCandidateShape,
+    OrganizationIdentityUnresolved,
     admit_dependency_by_policy,
 )
 from corridor.models import (
@@ -107,6 +108,10 @@ ABSTENTION_REASONS = frozenset(
         "revisions_disagree_on_party",
         "already_admitted",
         "same_document_replay_unproven",
+        # ADR-0051: the source named a party but retained evidence did not
+        # determine one registered organization.  This is honest human residue,
+        # not a failed write and never a reason to mint a registry row.
+        "external_org_identity_unresolved",
         "asserts_nothing",
         "write_refused",
     }
@@ -553,8 +558,14 @@ def run_dependency_admission(
             InvalidCandidateProvenance,
             InvalidCandidateScope,
             MalformedCandidateShape,
-        ):
-            abstain([primary, *siblings], "write_refused")
+            OrganizationIdentityUnresolved,
+        ) as exc:
+            reason = (
+                "external_org_identity_unresolved"
+                if isinstance(exc, OrganizationIdentityUnresolved)
+                else "write_refused"
+            )
+            abstain([primary, *siblings], reason)
             continue
         admitted.append((primary, siblings, dependency))
 
