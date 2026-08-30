@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from corridor.models import ActiveExtractionRun, Candidate, DocPage, Document
 from corridor.project_lock import lock_project
+from corridor.revision_reconciliation_request import request_revision_reconciliation
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,13 @@ def register_supersessions(
 
         if changed:
             session.flush(changed)
+            # A newly registered edge is a revision pair to compare and route.
+            # Bumping the durable watermark in this same transaction is what
+            # makes a committed edge reach reconciliation and a rolled-back one
+            # leave no revision work (#343).
+            request_revision_reconciliation(
+                session, resolved_project_id, "supersession_registered"
+            )
         return tuple(edge[0] for edge in edges)
 
 

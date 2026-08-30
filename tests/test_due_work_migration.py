@@ -30,7 +30,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "c318d6e8f0a3"
-HEAD = "b6d24f1e8a37"
+HEAD = "b7f3a1c9d2e4"
 
 
 def _run_alembic(database_url: str, *args: str):
