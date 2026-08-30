@@ -50,6 +50,7 @@ from corridor.models import (
     DependencyEventScopeDecision,
     DependencyEventTiming,
     DependencyEvidenceSufficiency,
+    DocumentationFieldConfirmation,
     DisputeSettlement,
     DocPage,
     Document,
@@ -907,6 +908,14 @@ def capture_project_write_set(
                 session,
                 DependencyEvidenceSufficiency,
                 DependencyEvidenceSufficiency.dependency_id.in_(dependency_ids),
+            ),
+        ),
+        (
+            DocumentationFieldConfirmation,
+            _rows(
+                session,
+                DocumentationFieldConfirmation,
+                DocumentationFieldConfirmation.dependency_id.in_(dependency_ids),
             ),
         ),
         (

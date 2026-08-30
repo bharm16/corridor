@@ -64,6 +64,7 @@ def request_record_inclusion(
     if not reason:
         raise ValueError("a Record Inclusion request must state a reason")
     now = datetime.now(timezone.utc)
+    existing = session.get(RecordInclusionRequest, project_id)
     statement = insert(RecordInclusionRequest).values(
         project_id=project_id,
         dirty_seq=1,
@@ -81,6 +82,11 @@ def request_record_inclusion(
             },
         )
     )
+    # The PostgreSQL upsert changes an already-loaded watermark outside the ORM
+    # identity map. Expire it so a writer that immediately asks whether work is
+    # pending sees the durable sequence it just advanced.
+    if existing is not None:
+        session.expire(existing)
 
 
 def record_inclusion_pending(session: Session, project_id: int) -> bool:

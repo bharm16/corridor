@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     # the rest of the pipeline reads (`corridor.ingest`).
     corpus_images: str = "out/page-images"
 
+    # The one server-owned mailbox address and webhook credential for #372.
+    # Empty credential is intentionally non-operational: a deployment must
+    # explicitly configure the sender-authentication boundary before mail can
+    # enter the record.
+    inbound_service_address: str = ""
+    inbound_webhook_secret: str = ""
+
     # Fail closed by default.  This is a deployment-resolved stable subject,
     # not a request header or form value.  Full authentication/SSO is M9;
     # M8 only closes Admission over an attributable principal.

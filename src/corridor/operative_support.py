@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from corridor import audit
 from corridor.dependency_events import current_statement_evidence_memberships
+from corridor.documentation_checklist import read_checklist
 from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
@@ -573,13 +574,22 @@ def resolve_operative_support(
                 )
             )
         dates = tuple(item.evidence_date for item in verified if item.evidence_date)
+        checklist = read_checklist(
+            session,
+            dependency_id,
+            legacy_ready=bool(current_readiness),
+        )
         resolved[dependency_id] = ResolvedSupport(
             dependency_id=dependency_id,
             publication=publication,
             publication_by_field=tuple(sorted(by_field.items())),
             readiness=readiness,
             current_readiness=current_readiness,
-            is_ready=bool(current_readiness),
+            # The legacy readiness rows remain provenance and continue to
+            # drive the record until the structured field model takes over.
+            # Once it does, Ready is the derived checklist result — never a
+            # second mutable support flag (ADR-0052).
+            is_ready=checklist.is_ready,
             readiness_history_trusted=readiness_history_trusted,
             superseded_scopes=tuple(superseded_scopes),
             verified_evidence_count=len(verified),

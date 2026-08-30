@@ -339,6 +339,7 @@ def declare_active_run_by_policy(
         document_id,
         extraction_run_id,
         declared_by=audit.ACTIVE_RUN_DECLARATION_ACTOR,
+        request_inclusion=False,
     )
 
 
@@ -348,6 +349,7 @@ def _declare(
     extraction_run_id: int,
     *,
     declared_by: str,
+    request_inclusion: bool = True,
 ) -> ExtractionRun:
     project_id = session.scalar(
         select(Document.project_id).where(Document.id == document_id)
@@ -408,6 +410,14 @@ def _declare(
     # watermark in this same transaction reaches reconciliation on commit and
     # leaves nothing on rollback (#343).
     request_revision_reconciliation(session, project_id, "active_run_declared")
+    if request_inclusion:
+        # A human declaration changes which exact Candidate inputs ordinary
+        # Record Inclusion can see. The completed run may have been reconciled
+        # while it was still ambiguous, so the run-completion watermark is not
+        # enough here. Use the shared durable handoff in this same transaction:
+        # rollback leaves no load request; a crash after commit leaves work for
+        # the recovery pass.
+        request_record_inclusion(session, project_id, "active_run_declared")
     return run
 
 

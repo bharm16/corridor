@@ -182,6 +182,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "POST",
         frozenset({303}),
     ),
+    "clarify_dispute": (
+        "/ledger/{slug}/{dependency_id}/clarify",
+        "POST",
+        frozenset({303}),
+    ),
     "reports": ("/reports/{slug}", "GET", frozenset({200})),
     "review_report": (
         "/reports/{slug}/prepared/{artifact_id}",
@@ -248,6 +253,27 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
     ),
     "save_dependency_follow_up_plan": (
         "/dependencies/{dependency_id}/plan",
+        "POST",
+        frozenset({303}),
+    ),
+    "processing_operations": ("/operations/{slug}", "GET", frozenset({200})),
+    "declare_operations_active_run": (
+        "/operations/{slug}/runs/{document_id}/declare",
+        "POST",
+        frozenset({303}),
+    ),
+    "suspend_operations_unknown_scope": (
+        "/operations/{slug}/unknown-scope/suspend",
+        "POST",
+        frozenset({303}),
+    ),
+    "lift_operations_unknown_scope": (
+        "/operations/{slug}/unknown-scope/lift",
+        "POST",
+        frozenset({303}),
+    ),
+    "confirm_documentation_approval": (
+        "/dependencies/{dependency_id}/documentation/confirm-approval",
         "POST",
         frozenset({303}),
     ),

@@ -26,7 +26,7 @@ from corridor.external_statements import (
     StatementRefusal,
     validate_cited_statement_evidence,
 )
-from corridor.disputes import contradicted_fields
+from corridor.disputes import contradicted_fields, contractual_amendment_field_names
 from corridor.models import (
     Candidate,
     CommitmentLineage,
@@ -77,6 +77,7 @@ _REASON_ORDER = {
     "committed_date_change": 2,
     "milestone_impact_unknown": 2,
     "disputed_date": 2,
+    "contractual_amendment": 2,
     # A schedule revision moved a Required By basis (ADR-0057): surfaced as
     # attention showing old and new dates, never as an approval question.
     "required_by_advanced": 2,
@@ -510,8 +511,10 @@ def _dependency_items(
             )
         ).all()
     )
-    disputed = contradicted_fields(
-        session, [dependency.id for dependency in dependencies]
+    dependency_ids = [dependency.id for dependency in dependencies]
+    disputed = contradicted_fields(session, dependency_ids)
+    contractual_amendments = contractual_amendment_field_names(
+        session, dependency_ids
     )
     moves = required_by_moves(session, project_id)
     items = []
@@ -526,6 +529,8 @@ def _dependency_items(
             {"committed_date", "need_date"}
         ):
             reason_codes.append("disputed_date")
+        if contractual_amendments.get(dependency.id):
+            reason_codes.append("contractual_amendment")
         move = moves.get(dependency.id)
         if move is not None:
             reason_codes.append("required_by_advanced")

@@ -15,13 +15,15 @@ as unavailable rather than faked.
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
+import secrets
 from datetime import date
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -37,6 +39,8 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from corridor import audit
+from corridor import email_intake
+from corridor.config import settings
 from corridor.adjudicate import (
     AlreadyAdjudicated,
     AlreadyDismissed,
@@ -88,6 +92,11 @@ from corridor.ledger import (
     load_dependency,
     mark_satisfies,
 )
+from corridor.documentation_checklist import (
+    DocumentationConfirmationRefusal,
+    confirm_interpretation,
+    read_checklist,
+)
 from corridor.models import (
     RESOLUTION_STRATEGIES,
     AuditLog,
@@ -98,6 +107,7 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventEvidence,
     DependencyEventScope,
+    InboundMessage,
     DependencyEventScopeDecision,
     DocPage,
     Document,
@@ -111,12 +121,26 @@ from corridor.models import (
     ProjectRosterEntry,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
+    CoordinationSummaryRequest,
+)
+from corridor.coordination_summary import (
+    ConfigurationRequired,
+    InvalidSummaryConfiguration,
+    current_configuration as current_summary_configuration,
+    declare_configuration as declare_summary_configuration,
+    request_summary as request_coordination_summary,
 )
 from corridor.milestones import (
     MalformedMilestoneCsv,
     StaleMilestoneImport,
     confirm_import,
     preview_import,
+)
+from corridor.key_date_drafting import (
+    StaleKeyDateDraft,
+    load_key_date_draft,
+    preview_drafted_key_dates,
+    verify_draft_for_ordinary_import,
 )
 from corridor.dependency_events import (
     current_scope_decision_filter,
@@ -139,13 +163,12 @@ from corridor.disputes import (
     DisputeMovedOn,
     NoSuchDispute,
     disputes_for,
+    history_assessments_for,
+    record_dispute_clarification,
     settle_dispute,
 )
-from corridor.event_admission import (
-    StatementUnplaceable,
-    attach_statement,
-    waiting_statements,
-)
+from corridor.dispute_timeline import build_dispute_timeline
+from corridor.event_admission import waiting_statements
 from corridor.frontend_request_receipts import (
     FrontendRequestSubject,
     record_frontend_request,
@@ -218,9 +241,28 @@ from corridor.supersession_review import (
 )
 from corridor.models import (
     ActiveExtractionRun,
+    ActiveRunDeclaration,
+    DueWorkOccurrence,
+    DueWorkReceipt,
+    DueWorkSchedule,
     DependencyAdmissionOutcome,
+    DocumentQuarantine,
+    ExtractionRun,
     PolicyRun,
+    RecordInclusionRequest,
 )
+from corridor.extraction_runs import declare_active_run
+from corridor.extraction_runs import current_active_run_declaration, is_completed_run
+from corridor.event_admission import read_event_admission_policy_status
+from corridor.event_admission_acceptance import (
+    lift_unknown_scope_admission,
+    suspend_unknown_scope_admission,
+)
+from corridor.due_work import (
+    HANDLER_PROJECT_PROCESSING,
+    HANDLER_REVISION_RECONCILIATION,
+)
+from corridor.project_lock import lock_project
 from corridor.statement_coordination import (
     AdmittedStatementCoordination,
     CLOSURE_TARGET_GAP,
@@ -252,6 +294,7 @@ from corridor.statement_scope_match import (
     scope_match_card_data,
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
+from corridor.statement_suggestions import read_statement_suggestions
 from corridor.work_list import build_work_list
 from corridor.web.statement_forms import (
     CANDIDATE_EVIDENCE_UNAVAILABLE,
@@ -303,6 +346,9 @@ _WORK_REASON_COPY = {
     "committed_date_change": "The organization changed its promised timing.",
     "milestone_impact_unknown": "The effect on key dates is not yet known.",
     "disputed_date": "Sources disagree about a current date.",
+    "contractual_amendment": (
+        "Field data changed under an executed agreement — flag the agreement for amendment."
+    ),
     "required_by_advanced": "A schedule revision moved this constraint's Required By date.",
     "key_date_decision_affected": "A schedule revision moved a key date a recorded decision referenced.",
     "unknown_scope": "Applies to: not yet known.",
@@ -317,6 +363,20 @@ _WORK_REASON_COPY = {
 def get_session():
     with SessionFactory() as session:
         yield session
+
+
+def get_coordination_summary_client_factory():
+    """Build an adapter only after the route found declared spend authority."""
+    from corridor.llm import OpenAIClient
+
+    def build(configuration):
+        return OpenAIClient(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+        )
+
+    return build
 
 
 async def get_human_principal(
@@ -800,31 +860,18 @@ def _revision_panels(
 def attach_waiting_statement(
     slug: str,
     candidate_id: int,
-    dependency_ref: str = Form(...),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Put an unplaced statement on the record a human names."""
+    """Retire raw attach-by-reference without translating it into a decision."""
     project = _project(session, slug, principal, designation=access.COORDINATION)
-    candidate = session.get(Candidate, candidate_id)
-    if candidate is None or candidate.project_id != project.id:
-        raise HTTPException(404, "no such statement in this project")
-    dependency = session.scalars(
-        select(Dependency).where(
-            Dependency.project_id == project.id,
-            Dependency.ref_code == dependency_ref.strip(),
-        )
-    ).first()
-    if dependency is None:
-        raise HTTPException(
-            400, f"no record in this project called {dependency_ref!r}"
-        )
-    try:
-        attach_statement(session, candidate, dependency, principal=principal)
-    except StatementUnplaceable as exc:
-        raise HTTPException(409, str(exc))
-    session.commit()
-    return RedirectResponse(f"/statements/{slug}", status_code=303)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    # Deliberately ignore every submitted value.  The old endpoint named a
+    # Constraint directly, bypassing explicit scope, source, and stale-state
+    # checks.  The guided screen starts no mutation by itself.
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
 
 
 @app.post("/ledger/{slug}/{dependency_id}/dismiss")
@@ -1608,6 +1655,11 @@ def _statement_coordination_screen(
         else None
     )
     candidate_facts = prepare_candidate_statement_facts(session, candidate)
+    statement_suggestions = (
+        read_statement_suggestions(session, project.id, candidate.id)
+        if candidate.state == "pending" and candidate.citations_verified
+        else ()
+    )
     candidate_evidence = candidate_statement_evidence_view(candidate_facts)
     candidate_evidence_available = candidate_facts.evidence_is_reviewable
     dependencies = session.execute(
@@ -1619,6 +1671,19 @@ def _statement_coordination_screen(
         )
         .order_by(Dependency.ref_code)
     ).all()
+    # Suggestions may reorder the choice list; they never preselect an entry,
+    # and a protected or ineligible statement keeps the plain ref-code order.
+    suggestion_rank = {
+        suggestion.dependency_id: rank
+        for rank, suggestion in enumerate(statement_suggestions)
+    }
+    dependencies = sorted(
+        dependencies,
+        key=lambda row: (
+            suggestion_rank.get(row[0].id, len(suggestion_rank)),
+            row[0].ref_code,
+        ),
+    )
     roster = session.scalars(
         select(ProjectRosterEntry)
         .where(
@@ -1728,6 +1793,7 @@ def _statement_coordination_screen(
             "candidate_evidence_unavailable_message": (
                 CANDIDATE_EVIDENCE_UNAVAILABLE
             ),
+            "statement_suggestions": statement_suggestions,
             "dependencies": [
                 {
                     "id": dependency.id,
@@ -2383,6 +2449,8 @@ def _key_dates_context(session: Session, project: Project, **overrides) -> dict:
         "message": None,
         "error": None,
         "stale": None,
+        "draft": None,
+        "draft_receipt_id": "",
     }
     context.update(overrides)
     return context
@@ -2455,6 +2523,67 @@ def key_dates_preview(
     )
 
 
+@app.get("/key-dates/{slug}/drafts/{receipt_id}/preview", response_class=HTMLResponse)
+def key_date_draft_preview(
+    request: Request,
+    slug: str,
+    receipt_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Show a retained, non-authoritative source-bound draft in the normal preview.
+
+    This route cannot invoke a runtime.  It only re-reads a receipt already
+    bound to the authorized project source, then hands its validated rows to
+    #337's existing preview.  That keeps model drafting separate from a
+    person's ordinary import confirmation.
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        draft = load_key_date_draft(
+            session, receipt_id=receipt_id, project_id=project.id
+        )
+    except StaleKeyDateDraft as exc:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(session, project, error=str(exc)),
+            status_code=409,
+        )
+    if not draft.rows:
+        # The unresolved findings and quarantined sequencing are the product
+        # here: they stay visible as questions for a person, with nothing to
+        # import and no importer offered.
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(
+                session,
+                project,
+                draft=draft,
+                error=(
+                    "this source-bound draft has no supported day-precise "
+                    "Key date rows; its unresolved findings are shown below"
+                ),
+            ),
+        )
+    preview = preview_drafted_key_dates(session, draft)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "key_dates.html",
+        _key_dates_context(
+            session,
+            project,
+            preview=preview,
+            content=draft.csv_content.decode("utf-8"),
+            source_name=preview.source_name,
+            predecessors_json=json.dumps(preview.predecessors),
+            draft=draft,
+            draft_receipt_id=str(draft.receipt_id),
+        ),
+    )
+
+
 @app.post("/key-dates/{slug}/confirm")
 def key_dates_confirm(
     request: Request,
@@ -2463,6 +2592,7 @@ def key_dates_confirm(
     content: str = Form(...),
     expected_sha256: str = Form(...),
     expected_predecessors: str = Form(...),
+    draft_receipt_id: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -2479,6 +2609,21 @@ def key_dates_confirm(
         raise HTTPException(400, "expected_predecessors must be JSON") from exc
     if not isinstance(predecessors, dict):
         raise HTTPException(400, "expected_predecessors must be a JSON object")
+    if draft_receipt_id:
+        try:
+            receipt_id = int(draft_receipt_id)
+        except ValueError as exc:
+            raise HTTPException(400, "draft_receipt_id must be an integer") from exc
+        try:
+            verify_draft_for_ordinary_import(
+                session,
+                receipt_id=receipt_id,
+                project_id=project.id,
+                content=content.encode("utf-8"),
+                source_name=source_name,
+            )
+        except StaleKeyDateDraft as exc:
+            raise HTTPException(409, str(exc)) from exc
     try:
         with session.begin_nested():
             result = confirm_import(
@@ -2626,6 +2771,7 @@ def internal_report(
             "summary": report.summary,
             "coverage_note": report.coverage_note,
             "facets": facets,
+            "summary_configuration": current_summary_configuration(session, project.id),
         },
     )
     record_frontend_request(
@@ -2637,6 +2783,88 @@ def internal_report(
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/coordination-summary/configuration")
+async def declare_coordination_summary_configuration(
+    slug: str,
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Declare bounded summary authority; this is technical operations, not a draft."""
+    project = _project(session, slug, principal, designation=access.TECHNICAL_OPERATIONS)
+    form = await request.form()
+    try:
+        declare_summary_configuration(
+            session, project_id=project.id, principal=principal,
+            model=str(form.get("model", "")), prompt_version=str(form.get("prompt_version", "")),
+            source_scope=str(form.get("source_scope", "")),
+            max_input_tokens=int(str(form.get("max_input_tokens", ""))),
+            max_output_tokens=int(str(form.get("max_output_tokens", ""))),
+            timeout_seconds=int(str(form.get("timeout_seconds", ""))),
+            max_requests=int(str(form.get("max_requests", ""))),
+            retry_policy=str(form.get("retry_policy", "")),
+            retention_policy=str(form.get("retention_policy", "")),
+            observation_context=str(form.get("observation_context", "")),
+        )
+    except (ValueError, InvalidSummaryConfiguration) as exc:
+        raise HTTPException(400, f"Coordination Summary configuration refused: {exc}") from exc
+    session.commit()
+    return RedirectResponse(f"/internal-report/{project.slug}", status_code=303)
+
+
+@app.post("/internal-report/{slug}/coordination-summary")
+def request_internal_coordination_summary(
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    client_factory=Depends(get_coordination_summary_client_factory),
+):
+    """The single ordinary action that may spend the declared bounded budget."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        receipt = request_coordination_summary(
+            session, project_id=project.id, principal=principal, client_factory=client_factory,
+        )
+    except ConfigurationRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/internal-report/{project.slug}/coordination-summary/{receipt.public_id}",
+        status_code=303,
+    )
+
+
+@app.get("/internal-report/{slug}/coordination-summary/{public_id}", response_class=HTMLResponse)
+def read_internal_coordination_summary(
+    request: Request,
+    slug: str,
+    public_id: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read one retained receipt; a GET never invokes a model."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    receipt = session.scalars(
+        select(CoordinationSummaryRequest).where(
+            CoordinationSummaryRequest.public_id == public_id,
+            CoordinationSummaryRequest.project_id == project.id,
+        )
+    ).first()
+    if receipt is None:
+        raise HTTPException(404, "no Coordination Summary receipt for this project")
+    response = TEMPLATES.TemplateResponse(
+        request, "coordination_summary.html", {"project": project, "receipt": receipt},
+    )
+    record_frontend_request(
+        session, principal=principal, route_name="coordination_summary_receipt",
+        route_template="/internal-report/{slug}/coordination-summary/{public_id}",
+        method="GET", response=response,
+        subject=FrontendRequestSubject(project_id=project.id), request_fields=request.path_params,
     )
     session.commit()
     return response
@@ -3018,6 +3246,330 @@ async def save_operations_checks(
         subject=FrontendRequestSubject(
             project_id=project.id, check_configuration_id=row.id
         ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+# --- Processing operations (#344) -----------------------------------------
+
+
+def _operations_state_fingerprint(value: dict) -> str:
+    """Bind an operations form to the exact facts its screen rendered.
+
+    This is a stale-state guard, not an authorization token: every mutation
+    still obtains its scope and authority server-side.  A canonical digest
+    makes a changed declaration chain, completed-run set, proof, or permitted
+    policy action refuse rather than silently applying an obsolete choice.
+    """
+    return sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _run_offer_state(session: Session, document_id: int) -> str:
+    current = session.get(ActiveExtractionRun, document_id)
+    tail = current_active_run_declaration(session, document_id)
+    completed_ids = [
+        run.id
+        for run in session.scalars(
+            select(ExtractionRun)
+            .where(ExtractionRun.document_id == document_id)
+            .order_by(ExtractionRun.id)
+        )
+        if is_completed_run(run)
+    ]
+    return _operations_state_fingerprint(
+        {
+            "document_id": document_id,
+            "active_run_id": None if current is None else current.extraction_run_id,
+            "declaration_id": None if tail is None else tail.id,
+            "completed_run_ids": completed_ids,
+        }
+    )
+
+
+def _policy_offer_state(status) -> str:
+    return _operations_state_fingerprint(
+        {
+            "status": status.status,
+            "proof_status": status.proof_status,
+            "latest_receipt_id": status.latest_receipt_id,
+            "latest_action_id": status.latest_action_id,
+            "allowed_operations": list(status.allowed_operations),
+        }
+    )
+
+
+def _operations_processing_context(session: Session, project: Project) -> dict:
+    """Read the bounded operations facts without inventing a second authority.
+
+    The screen joins existing records only: Active Run declarations own the
+    chosen reading, Event Admission owns effective policy status, and Due Work
+    owns recovery state.  Keeping this composite read here prevents an operator
+    UI from reimplementing any of their safety decisions.
+    """
+    documents = session.scalars(
+        select(Document)
+        .where(Document.project_id == project.id)
+        .order_by(Document.doc_date, Document.id)
+    ).all()
+    quarantines = {
+        row.document_id: row
+        for row in session.scalars(
+            select(DocumentQuarantine)
+            .join(Document, Document.id == DocumentQuarantine.document_id)
+            .where(Document.project_id == project.id)
+        )
+    }
+    declared = {
+        row.document_id: row
+        for row in session.scalars(
+            select(ActiveExtractionRun)
+            .join(Document, Document.id == ActiveExtractionRun.document_id)
+            .where(Document.project_id == project.id)
+        )
+    }
+    history_by_document: dict[int, list[ActiveRunDeclaration]] = {}
+    for row in session.scalars(
+        select(ActiveRunDeclaration)
+        .join(Document, Document.id == ActiveRunDeclaration.document_id)
+        .where(Document.project_id == project.id)
+        .order_by(ActiveRunDeclaration.document_id, ActiveRunDeclaration.id)
+    ):
+        history_by_document.setdefault(row.document_id, []).append(row)
+    runs_by_document: dict[int, list[ExtractionRun]] = {}
+    for row in session.scalars(
+        select(ExtractionRun)
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(Document.project_id == project.id)
+        .order_by(ExtractionRun.document_id, ExtractionRun.id)
+    ):
+        runs_by_document.setdefault(row.document_id, []).append(row)
+
+    document_rows = []
+    for document in documents:
+        current = declared.get(document.id)
+        document_rows.append(
+            {
+                "document": document,
+                "active_run_id": current.extraction_run_id if current else None,
+                "runs": runs_by_document.get(document.id, []),
+                "history": history_by_document.get(document.id, []),
+                "quarantine": quarantines.get(document.id),
+                "offer_state": _run_offer_state(session, document.id),
+            }
+        )
+
+    schedules = session.scalars(
+        select(DueWorkSchedule)
+        .where(
+            DueWorkSchedule.project_id == project.id,
+            DueWorkSchedule.handler_key.in_(
+                (HANDLER_PROJECT_PROCESSING, HANDLER_REVISION_RECONCILIATION)
+            ),
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+        .order_by(DueWorkSchedule.handler_key, DueWorkSchedule.id.desc())
+    ).all()
+    schedule_ids = [schedule.id for schedule in schedules]
+    recovery_rows = []
+    if schedule_ids:
+        receipts_by_occurrence: dict[int, list[DueWorkReceipt]] = {}
+        for receipt in session.scalars(
+            select(DueWorkReceipt)
+            .where(DueWorkReceipt.project_id == project.id)
+            .order_by(DueWorkReceipt.occurrence_id, DueWorkReceipt.attempt_number)
+        ):
+            receipts_by_occurrence.setdefault(receipt.occurrence_id, []).append(receipt)
+        for occurrence in session.scalars(
+            select(DueWorkOccurrence)
+            .where(DueWorkOccurrence.scheduled_job_id.in_(schedule_ids))
+            .order_by(DueWorkOccurrence.id.desc())
+            .limit(50)
+        ):
+            recovery_rows.append(
+                {
+                    "occurrence": occurrence,
+                    "receipts": receipts_by_occurrence.get(occurrence.id, []),
+                }
+            )
+
+    handoff = session.get(RecordInclusionRequest, project.id)
+    event_policy = read_event_admission_policy_status(session, project.id)
+    return {
+        "documents": document_rows,
+        "event_policy": event_policy,
+        "policy_offer_state": _policy_offer_state(event_policy),
+        "record_inclusion_pending": (
+            handoff is not None and handoff.dirty_seq > handoff.reconciled_seq
+        ),
+        "schedules": schedules,
+        "recovery_rows": recovery_rows,
+    }
+
+
+def _render_processing_operations(
+    request: Request, session: Session, project: Project, *, notice: str | None = None
+):
+    return TEMPLATES.TemplateResponse(
+        request,
+        "operations.html",
+        {"project": project, "notice": notice, **_operations_processing_context(session, project)},
+    )
+
+
+@app.get("/operations/{slug}", response_class=HTMLResponse)
+def processing_operations(
+    request: Request,
+    slug: str,
+    notice: str | None = None,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Show only the existing, project-scoped technical operations."""
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    response = _render_processing_operations(request, session, project, notice=notice)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="processing_operations",
+        route_template="/operations/{slug}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/runs/{document_id}/declare")
+async def declare_operations_active_run(
+    request: Request,
+    slug: str,
+    document_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Append one permitted Current Production Run declaration.
+
+    The document, run, completed state, declaration chain, and the two durable
+    downstream handoffs are all revalidated by ``declare_active_run`` while the
+    project is locked.  Form values never name the operator.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project.id:
+        raise HTTPException(404, "no such source document")
+    form = await request.form()
+    run_id = _required_positive_http_id(form, "extraction_run_id")
+    offered_state = str(form.get("state_fingerprint") or "")
+    try:
+        lock_project(session, project.id)
+        if offered_state != _run_offer_state(session, document.id):
+            raise ValueError("the production-run choices changed; refresh first")
+        declaration = declare_active_run(
+            session, document.id, run_id, principal=principal
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(
+        f"/operations/{project.slug}?notice=declared-{declaration.id}", status_code=303
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="declare_operations_active_run",
+        route_template="/operations/{slug}/runs/{document_id}/declare",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/unknown-scope/suspend")
+async def suspend_operations_unknown_scope(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    form = await request.form()
+    reason = str(form.get("reason") or "")
+    try:
+        lock_project(session, project.id)
+        status = read_event_admission_policy_status(session, project.id)
+        if "suspend" not in status.allowed_operations:
+            raise ValueError("unknown-scope Event Admission is not active")
+        if str(form.get("state_fingerprint") or "") != _policy_offer_state(status):
+            raise ValueError("the policy status changed; refresh first")
+        suspend_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            reason=reason,
+            recorded_by=principal.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(f"/operations/{project.slug}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="suspend_operations_unknown_scope",
+        route_template="/operations/{slug}/unknown-scope/suspend",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/unknown-scope/lift")
+async def lift_operations_unknown_scope(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    form = await request.form()
+    try:
+        lock_project(session, project.id)
+        status = read_event_admission_policy_status(session, project.id)
+        if "lift" not in status.allowed_operations:
+            raise ValueError("unknown-scope Event Admission is not suspended")
+        if str(form.get("state_fingerprint") or "") != _policy_offer_state(status):
+            raise ValueError("the policy status changed; refresh first")
+        lift_unknown_scope_admission(
+            session, project_id=project.id, recorded_by=principal.subject
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(f"/operations/{project.slug}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="lift_operations_unknown_scope",
+        route_template="/operations/{slug}/unknown-scope/lift",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
         request_fields=form,
     )
     session.commit()
@@ -3582,6 +4134,51 @@ def _dependency_detail_response(
     owner_decision = current_internal_owner_decision(session, dependency_id)
     action_decision = current_next_action_decision(session, dependency_id)
     support = resolve_operative_support(session, (dependency_id,))[dependency_id]
+    checklist = read_checklist(
+        session, dependency_id, legacy_ready=support.current_readiness != ()
+    )
+    all_assessments = {
+        assessment.field_name: assessment
+        for assessment in history_assessments_for(session, dependency_id)
+    }
+    amendment_fields = {
+        field_name
+        for field_name, assessment in all_assessments.items()
+        if assessment.outcome == "contractual_amendment"
+    }
+    all_disputes = {
+        dispute.field_name: dispute
+        for dispute in disputes_for(session, dependency_id, include_settled=True)
+    }
+    disputes = {
+        field_name: dispute
+        for field_name, dispute in all_disputes.items()
+        if field_name not in amendment_fields
+    }
+    assessments = {
+        field_name: assessment
+        for field_name, assessment in all_assessments.items()
+        if field_name in disputes
+    }
+    # A stale executed agreement is coordination work, not a pick-one card:
+    # the why-line and both quotes render without any settle control.
+    amendments = {
+        field_name: all_assessments[field_name]
+        for field_name in amendment_fields
+        if field_name in all_disputes
+    }
+    timelines = {
+        field_name: build_dispute_timeline(session, dependency_id, field_name)
+        for field_name in disputes
+    }
+    roster = session.scalars(
+        select(ProjectRosterEntry)
+        .where(
+            ProjectRosterEntry.project_id == project.id,
+            ProjectRosterEntry.active.is_(True),
+        )
+        .order_by(ProjectRosterEntry.display_name, ProjectRosterEntry.id)
+    ).all()
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
@@ -3598,13 +4195,13 @@ def _dependency_detail_response(
             "sufficient_evidence_ids": {
                 item.evidence_link_id for item in support.readiness
             },
+            "checklist": checklist,
             "return_to": safe_return,
-            "disputes": {
-                d.field_name: d
-                for d in disputes_for(
-                    session, dependency_id, include_settled=True
-                )
-            },
+            "disputes": disputes,
+            "dispute_assessments": assessments,
+            "dispute_amendments": amendments,
+            "dispute_timelines": timelines,
+            "roster": roster,
             "dismiss_reasons": DISMISS_REASONS,
         },
         status_code=status_code,
@@ -3711,6 +4308,61 @@ def settle(
     return RedirectResponse(
         f"/ledger/{slug}/{dependency_id}", status_code=303
     )
+
+
+@app.post("/ledger/{slug}/{dependency_id}/clarify")
+def clarify_dispute(
+    slug: str,
+    dependency_id: int,
+    field_name: str = Form(...),
+    internal_owner_roster_entry_id: int = Form(...),
+    next_action: str = Form(...),
+    due_date: date | None = Form(None),
+    due_date_unknown_reason: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Keep a source discrepancy open and record the coordinated follow-up."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    _project_dependency(session, project, dependency_id)
+    try:
+        clarification = record_dispute_clarification(
+            session,
+            dependency_id,
+            field_name,
+            roster_entry_id=internal_owner_roster_entry_id,
+            next_action=next_action,
+            due_date=due_date,
+            due_date_unknown_reason=due_date_unknown_reason.strip() or None,
+            principal=principal,
+        )
+    except NoSuchDispute as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="clarify_dispute",
+        route_template="/ledger/{slug}/{dependency_id}/clarify",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            dependency_id=dependency_id,
+            work_decision_id=clarification.next_action_decision_id,
+        ),
+        request_fields={
+            "field_name": field_name,
+            "internal_owner_roster_entry_id": str(internal_owner_roster_entry_id),
+            "next_action": next_action,
+            "due_date": due_date.isoformat() if due_date else "",
+            "due_date_unknown_reason": due_date_unknown_reason,
+        },
+    )
+    session.commit()
+    return response
 
 
 @app.post("/dependencies/{dependency_id}/plan")
@@ -3902,6 +4554,12 @@ def mark_evidence_satisfies(
     project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
     dependency = _project_dependency(session, project, dependency_id)
     _project_evidence(session, dependency, link_id)
+    if read_checklist(session, dependency_id).uses_standard_checklist:
+        raise HTTPException(
+            409,
+            "this constraint uses the standard documentation checklist; "
+            "a legacy sufficiency mark cannot bypass it",
+        )
     try:
         mark_satisfies(session, dependency_id, link_id, principal=principal)
     except NoSuchEvidence as exc:
@@ -3912,6 +4570,60 @@ def mark_evidence_satisfies(
         raise HTTPException(409, str(exc))
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+
+
+@app.post("/dependencies/{dependency_id}/documentation/confirm-approval")
+def confirm_documentation_approval(
+    dependency_id: int,
+    slug: str = Form(...),
+    evidence_link_id: int = Form(...),
+    condition_immaterial: bool = Form(False),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Append a Documentation Reviewer's cited approval confirmation.
+
+    The route intentionally accepts no conclusion.  The checklist recomputes
+    the displayed classification from the cited current source under the
+    project lock, and only a Documentation Reviewer may make that thin human
+    confirmation (#347, ADR-0052/0056).  A conditional letter needs no click
+    to stay not ready; ``condition_immaterial`` is the one optional override
+    that records a quoted hedge as approval (ADR-0060).
+    """
+
+    project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
+    _project_dependency(session, project, dependency_id)
+    try:
+        confirmation = confirm_interpretation(
+            session,
+            dependency_id,
+            evidence_link_id,
+            principal=principal,
+            condition_immaterial=condition_immaterial,
+        )
+    except DocumentationConfirmationRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="confirm_documentation_approval",
+        route_template="/dependencies/{dependency_id}/documentation/confirm-approval",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            dependency_id=dependency_id,
+        ),
+        request_fields={
+            "slug": slug,
+            "evidence_link_id": evidence_link_id,
+            "condition_immaterial": condition_immaterial,
+            "documentation_confirmation_id": confirmation.id,
+        },
+    )
+    session.commit()
+    return response
 
 
 @app.get("/page-image/{document_id}/{page_no}")
@@ -4585,3 +5297,93 @@ _UPLOAD_STATUS_LABELS = {
     "processing_failed": "Processing failed — a later pass will retry",
     "held_unmodeled": "Held — its content is deliberately not read",
 }
+
+
+@app.post("/intake/inbound")
+async def receive_inbound_mail(
+    request: Request,
+    inbound_token: str | None = Header(default=None, alias="X-Corridor-Inbound-Token"),
+    session: Session = Depends(get_session),
+):
+    """Server-to-server receipt boundary for the one configured intake address.
+
+    This is not an ordinary customer route: it refuses unless deployment supplied
+    both server-owned configuration values and the sender authentication secret.
+    It does not accept a project id, actor, or route from a client.
+    """
+    if (
+        not settings.inbound_service_address
+        or not settings.inbound_webhook_secret
+        or inbound_token is None
+        or not secrets.compare_digest(inbound_token, settings.inbound_webhook_secret)
+    ):
+        raise HTTPException(401, "inbound sender is not authorized")
+    try:
+        received = email_intake.receive_message(
+            session,
+            raw_bytes=await request.body(),
+            service_address=settings.inbound_service_address,
+        )
+    except email_intake.InboundMailRefused as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.commit()
+    return {
+        "message_id": received.message_id,
+        "thread_id": received.thread_id,
+        "project_id": received.project_id,
+        "route_status": received.route_status,
+        "created": received.created,
+    }
+
+
+@app.get("/projects/{slug}/inbound")
+def inbound_mail_readback(
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read a member's project's retained inbound-message receipt metadata."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    messages = session.scalars(
+        select(InboundMessage)
+        .where(InboundMessage.project_id == project.id)
+        .order_by(InboundMessage.received_at.desc(), InboundMessage.id.desc())
+    ).all()
+    return {
+        "project": project.slug,
+        "messages": [
+            {
+                "id": message.id,
+                "thread_id": message.thread_id,
+                "sender": message.sender,
+                "subject": message.subject,
+                "route_evidence": message.route_evidence_json,
+                "document_id": message.document_id,
+                "attachments": message.attachments_json,
+                "received_at": message.received_at.isoformat(),
+            }
+            for message in messages
+        ],
+    }
+
+
+@app.post("/projects/{slug}/inbound/{thread_id}/route")
+def resolve_inbound_route(
+    slug: str,
+    thread_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Attribute the one pending routing choice to an authorized project member."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        email_intake.resolve_route_triage(
+            session,
+            thread_id=thread_id,
+            project_id=project.id,
+            principal=principal,
+        )
+    except email_intake.InboundRouteConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return {"thread_id": thread_id, "project": project.slug, "route_status": "routed"}

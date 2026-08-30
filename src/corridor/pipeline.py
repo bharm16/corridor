@@ -301,6 +301,30 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
     candidate rows it happened to produce, so the version recorded for that
     attempt has to be the version of the reader that actually ran.
     """
+    if getattr(document, "doc_type", None) == "email":
+        # A routed inbound message body reads through the ordinary prose
+        # statement extractor (ADR-0058): proposals with quotes verified
+        # against the stored message, never a second reading pipeline.
+        from corridor.extract_minutes_v5 import (
+            PROMPT_VERSION as EMAIL_PROMPT_VERSION,
+            extract_document as extract_message_body,
+        )
+        from corridor.llm import OpenAIClient
+
+        body_client = client or OpenAIClient()
+
+        def extract_email(session: Session, doc: Document) -> list[Candidate]:
+            return extract_message_body(session, doc, client=body_client)
+
+        return ExtractionRoute(
+            effective_prompt_version=EMAIL_PROMPT_VERSION,
+            schema_version=EMAIL_PROMPT_VERSION,
+            extract=extract_email,
+            model=getattr(body_client, "model", None),
+            extractor_config=deployed_extractor_config("minutes", client=body_client),
+            usage_client=body_client,
+        )
+
     path = stored_file(document)
     if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
         from corridor.extract_sheet import (
