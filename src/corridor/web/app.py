@@ -129,6 +129,12 @@ from corridor.milestones import (
     confirm_import,
     preview_import,
 )
+from corridor.key_date_drafting import (
+    StaleKeyDateDraft,
+    load_key_date_draft,
+    preview_drafted_key_dates,
+    verify_draft_for_ordinary_import,
+)
 from corridor.dependency_events import (
     current_scope_decision_filter,
     current_statement_evidence_memberships,
@@ -2376,6 +2382,8 @@ def _key_dates_context(session: Session, project: Project, **overrides) -> dict:
         "message": None,
         "error": None,
         "stale": None,
+        "draft": None,
+        "draft_receipt_id": "",
     }
     context.update(overrides)
     return context
@@ -2448,6 +2456,67 @@ def key_dates_preview(
     )
 
 
+@app.get("/key-dates/{slug}/drafts/{receipt_id}/preview", response_class=HTMLResponse)
+def key_date_draft_preview(
+    request: Request,
+    slug: str,
+    receipt_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Show a retained, non-authoritative source-bound draft in the normal preview.
+
+    This route cannot invoke a runtime.  It only re-reads a receipt already
+    bound to the authorized project source, then hands its validated rows to
+    #337's existing preview.  That keeps model drafting separate from a
+    person's ordinary import confirmation.
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        draft = load_key_date_draft(
+            session, receipt_id=receipt_id, project_id=project.id
+        )
+    except StaleKeyDateDraft as exc:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(session, project, error=str(exc)),
+            status_code=409,
+        )
+    if not draft.rows:
+        # The unresolved findings and quarantined sequencing are the product
+        # here: they stay visible as questions for a person, with nothing to
+        # import and no importer offered.
+        return TEMPLATES.TemplateResponse(
+            request,
+            "key_dates.html",
+            _key_dates_context(
+                session,
+                project,
+                draft=draft,
+                error=(
+                    "this source-bound draft has no supported day-precise "
+                    "Key date rows; its unresolved findings are shown below"
+                ),
+            ),
+        )
+    preview = preview_drafted_key_dates(session, draft)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "key_dates.html",
+        _key_dates_context(
+            session,
+            project,
+            preview=preview,
+            content=draft.csv_content.decode("utf-8"),
+            source_name=preview.source_name,
+            predecessors_json=json.dumps(preview.predecessors),
+            draft=draft,
+            draft_receipt_id=str(draft.receipt_id),
+        ),
+    )
+
+
 @app.post("/key-dates/{slug}/confirm")
 def key_dates_confirm(
     request: Request,
@@ -2456,6 +2525,7 @@ def key_dates_confirm(
     content: str = Form(...),
     expected_sha256: str = Form(...),
     expected_predecessors: str = Form(...),
+    draft_receipt_id: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
@@ -2472,6 +2542,21 @@ def key_dates_confirm(
         raise HTTPException(400, "expected_predecessors must be JSON") from exc
     if not isinstance(predecessors, dict):
         raise HTTPException(400, "expected_predecessors must be a JSON object")
+    if draft_receipt_id:
+        try:
+            receipt_id = int(draft_receipt_id)
+        except ValueError as exc:
+            raise HTTPException(400, "draft_receipt_id must be an integer") from exc
+        try:
+            verify_draft_for_ordinary_import(
+                session,
+                receipt_id=receipt_id,
+                project_id=project.id,
+                content=content.encode("utf-8"),
+                source_name=source_name,
+            )
+        except StaleKeyDateDraft as exc:
+            raise HTTPException(409, str(exc)) from exc
     try:
         with session.begin_nested():
             result = confirm_import(

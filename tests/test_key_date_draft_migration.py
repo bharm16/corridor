@@ -1,4 +1,4 @@
-"""Rehearse retained Coordination Summary receipts on real disposable PostgreSQL."""
+"""Rehearse retained Key date draft receipts on real disposable PostgreSQL."""
 
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ def _upgrade(database_url: str, target: str) -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_predecessor_to_head_preserves_project_rows_and_adds_immutable_receipts():
+def test_predecessor_to_head_preserves_project_rows_and_adds_append_only_receipts():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="issue355_predecessor_",
+        database_prefix="issue363_predecessor_",
         migration_revision=PREDECESSOR,
     ) as database:
         url = make_url(settings.database_url).set(database=database.name)
@@ -47,7 +47,7 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_immutable_receipts(
             with engine.begin() as connection:
                 connection.execute(
                     text(
-                        "insert into projects (slug, name, is_synthetic) values ('issue355', 'Issue 355', true)"
+                        "insert into projects (slug, name, is_synthetic) values ('issue363', 'Issue 363', true)"
                     )
                 )
             _upgrade(rendered, "head")
@@ -56,39 +56,36 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_immutable_receipts(
                     connection.scalar(text("select version_num from alembic_version"))
                     == HEAD
                 )
-                assert (
-                    connection.scalar(
-                        text(
-                            "select to_regclass('coordination_summary_configurations')"
+                for table in (
+                    "key_date_draft_receipts",
+                    "key_date_draft_row_receipts",
+                ):
+                    assert (
+                        connection.scalar(
+                            text("select to_regclass(:table)").bindparams(table=table)
                         )
+                        is not None
                     )
-                    is not None
-                )
+                    assert (
+                        connection.scalar(
+                            text(
+                                "select exists (select 1 from pg_trigger "
+                                "where tgname = :trigger)"
+                            ).bindparams(trigger=f"{table}_append_only")
+                        )
+                        is True
+                    )
                 assert (
                     connection.scalar(
-                        text("select to_regclass('coordination_summary_requests')")
-                    )
-                    is not None
-                )
-                assert (
-                    connection.scalar(
-                        text("select count(*) from projects where slug = 'issue355'")
+                        text("select count(*) from projects where slug = 'issue363'")
                     )
                     == 1
                 )
                 assert (
                     connection.scalar(
-                        text("select count(*) from coordination_summary_requests")
+                        text("select count(*) from key_date_draft_receipts")
                     )
                     == 0
-                )
-                assert (
-                    connection.scalar(
-                        text(
-                            "select exists (select 1 from pg_trigger where tgname = 'coordination_summary_requests_are_immutable')"
-                        )
-                    )
-                    is True
                 )
         finally:
             engine.dispose()

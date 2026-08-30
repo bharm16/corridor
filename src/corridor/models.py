@@ -3039,6 +3039,85 @@ class MilestoneRegistration(Base):
     )
 
 
+class KeyDateDraftReceipt(Base):
+    """One bounded, source-bound, non-authoritative Key date drafting attempt.
+
+    This receipt deliberately has no relationship to ``Milestone`` or
+    ``Dependency``.  A model can leave a draft here, but only the existing
+    human import and linking commands can change the Project Record.
+    """
+
+    __tablename__ = "key_date_draft_receipts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "source_document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_key_date_draft_receipts_source_same_project",
+        ),
+        CheckConstraint(
+            "status in ('drafted', 'abstained', 'failed')",
+            name="ck_key_date_draft_receipts_status",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_key_date_draft_receipts_source_sha256",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(allowed_pages_json) = 'array' and "
+            "jsonb_typeof(configuration_json) = 'object' and "
+            "jsonb_typeof(budget_json) = 'object' and "
+            "jsonb_typeof(usage_json) = 'object' and "
+            "jsonb_typeof(unresolved_json) = 'array' and "
+            "jsonb_typeof(sequencing_json) = 'array'",
+            name="ck_key_date_draft_receipts_json",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    allowed_pages_json: Mapped[list] = mapped_column(JSONB)
+    requested_by: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(128))
+    detail: Mapped[str | None] = mapped_column(Text)
+    configuration_json: Mapped[dict] = mapped_column(JSONB)
+    budget_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    unresolved_json: Mapped[list] = mapped_column(JSONB)
+    sequencing_json: Mapped[list] = mapped_column(JSONB)
+    non_authoritative: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class KeyDateDraftRowReceipt(Base):
+    """One validated day-precise row retained beside its draft receipt."""
+
+    __tablename__ = "key_date_draft_row_receipts"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", "ordinal", name="uq_key_date_draft_row_ordinal"),
+        CheckConstraint("precision = 'day'", name="ck_key_date_draft_row_precision"),
+        CheckConstraint("source_page > 0", name="ck_key_date_draft_row_source_page"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("key_date_draft_receipts.id"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    code: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(Text)
+    need_date: Mapped[date] = mapped_column(Date)
+    precision: Mapped[str] = mapped_column(String(16))
+    source_page: Mapped[int] = mapped_column(Integer)
+    source_quote: Mapped[str] = mapped_column(Text)
+
+
 class RetiredDependencyStatus(Base):
     """The unauthoritative legacy status preserved when ADR-0044 retired it."""
 
