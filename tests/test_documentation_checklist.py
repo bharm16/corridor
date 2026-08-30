@@ -9,9 +9,11 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.documentation_checklist import (
+    DocumentationClarificationRefusal,
     DocumentationConfirmationRefusal,
     confirm_interpretation,
     read_checklist,
+    record_documentation_clarification,
 )
 from corridor.ledger import mark_satisfies
 from corridor.models import (
@@ -22,8 +24,13 @@ from corridor.models import (
     Document,
     EvidenceLink,
     Project,
+    ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal
+from corridor.work_decisions import (
+    current_internal_owner_decision,
+    current_next_action_decision,
+)
 
 
 REVIEWER = HumanPrincipal("local:checklist-reviewer")
@@ -397,3 +404,130 @@ def test_confirmation_stops_binding_when_its_exact_document_is_superseded(
     current = read_checklist(session, dependency.id)
     assert current.is_ready is False
     assert current.field("approval_interpretation").complete is False
+
+
+def _roster(session, project, *, display_name="Dana Reviewer", active=True):
+    entry = ProjectRosterEntry(
+        project_id=project.id,
+        principal_subject=f"local:{display_name.lower().replace(' ', '-')}",
+        display_name=display_name,
+        active=active,
+    )
+    session.add(entry)
+    session.flush()
+    return entry
+
+
+def test_documentation_needs_clarification_records_follow_up_without_confirming(
+    session, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-CLARIFY",
+        dep_type="utility_relocation",
+        title="Gas crossing",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="hedged",
+        text="The as-built package is on file. Approval is pending final sign-off.",
+    )
+    _support(session, dependency, document, "The as-built package is on file.")
+    _support(session, dependency, document, "Approval is pending final sign-off.")
+    roster = _roster(session, project)
+
+    before = read_checklist(session, dependency.id)
+    assert before.uses_standard_checklist is True
+    assert before.is_ready is False
+
+    clarification = record_documentation_clarification(
+        session,
+        dependency.id,
+        roster_entry_id=roster.id,
+        next_action="Ask the utility for a clean approval letter",
+        due_date=date(2026, 9, 15),
+        due_date_unknown_reason=None,
+        principal=REVIEWER,
+    )
+
+    # The follow-up is recorded, and the requirement stays not met — no
+    # conclusion was forced simply to clear the work.
+    owner = current_internal_owner_decision(session, dependency.id)
+    action = current_next_action_decision(session, dependency.id)
+    assert owner is not None and owner.id == clarification.owner_decision_id
+    assert action is not None and action.id == clarification.next_action_decision_id
+    assert owner.after_value == "Dana Reviewer"
+    after = read_checklist(session, dependency.id)
+    assert after.is_ready is False
+    assert after.field("approval_interpretation").complete is False
+    assert session.scalars(select(DocumentationFieldConfirmation)).all() == []
+
+
+def test_documentation_clarification_refused_when_requirement_already_met(
+    session, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-DONE",
+        dep_type="utility_relocation",
+        title="Gas crossing",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="clean",
+        text="The as-built package is on file. The relocation is approved.",
+    )
+    _support(session, dependency, document, "The as-built package is on file.")
+    approval = _support(session, dependency, document, "The relocation is approved.")
+    confirm_interpretation(session, dependency.id, approval.id, principal=REVIEWER)
+    roster = _roster(session, project)
+
+    assert read_checklist(session, dependency.id).is_ready is True
+
+    with pytest.raises(DocumentationClarificationRefusal):
+        record_documentation_clarification(
+            session,
+            dependency.id,
+            roster_entry_id=roster.id,
+            next_action="anything",
+            due_date=None,
+            due_date_unknown_reason="waiting",
+            principal=REVIEWER,
+        )
+
+
+def test_documentation_clarification_rejects_a_foreign_roster_member(session, project):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-FOREIGN",
+        dep_type="utility_relocation",
+        title="Gas crossing",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(session, project, name="hedged2", text="approval pending")
+    _support(session, dependency, document, "approval pending")
+    other_project = Project(slug="other", name="Other", is_synthetic=True)
+    session.add(other_project)
+    session.flush()
+    foreign = _roster(session, other_project, display_name="Outsider")
+
+    with pytest.raises(ValueError):
+        record_documentation_clarification(
+            session,
+            dependency.id,
+            roster_entry_id=foreign.id,
+            next_action="anything",
+            due_date=None,
+            due_date_unknown_reason="waiting",
+            principal=REVIEWER,
+        )
