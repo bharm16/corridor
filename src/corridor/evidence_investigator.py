@@ -35,7 +35,6 @@ from corridor.extraction_runs import (
     active_run_for_document,
     current_active_run_declaration,
 )
-from corridor.merge import parse_station
 from corridor.models import (
     Candidate,
     Dependency,
@@ -48,6 +47,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
 )
+from corridor.statement_matcher import shortlist_dependencies
 from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.verify import literal_quote_on_page
 
@@ -547,37 +547,18 @@ class InvestigationTools:
             )
             .order_by(Dependency.ref_code, Dependency.id)
         ).all()
-        source_station = parse_station(station_text)
-        term_keys = tuple(_normalize(term) for term in terms if _normalize(term))
-        ranked: list[tuple[int, str, Dependency, tuple[str, ...]]] = []
-        for dependency in dependencies:
-            signals = ["registered_party_match"]
-            low = parse_station(dependency.station_from)
-            high = parse_station(dependency.station_to)
-            if source_station is not None and _station_contains(
-                source_station, low, high
-            ):
-                signals.append("station_overlap")
-            haystack = _normalize(
-                " ".join(
-                    value
-                    for value in (
-                        dependency.ref_code,
-                        dependency.source_ref,
-                        dependency.title,
-                        dependency.location_desc,
-                    )
-                    if value
-                )
-            )
-            term_hits = sum(term in haystack for term in term_keys)
-            if term_hits:
-                signals.append("source_term_match")
-            score = (10 if "station_overlap" in signals else 0) + term_hits
-            ranked.append((score, dependency.ref_code, dependency, tuple(signals)))
-        ranked.sort(key=lambda row: (-row[0], row[1], row[2].id))
+        shared = shortlist_dependencies(
+            dependencies, station_text=station_text, terms=terms
+        )
+        by_id = {dependency.id: dependency for dependency in dependencies}
         options = []
-        for _, _, dependency, signals in ranked[:limit]:
+        for result in shared[:limit]:
+            dependency = by_id[result.dependency_id]
+            signals = ["registered_party_match"]
+            if "station_containment" in result.signals:
+                signals.append("station_overlap")
+            if any(signal.startswith("term:") for signal in result.signals):
+                signals.append("source_term_match")
             dependency_ref = self.__bound.dependency_ref_by_id[dependency.id]
             self.__issued_dependency_refs.add(dependency_ref)
             options.append(
@@ -1444,14 +1425,3 @@ def _supporting_evidence_eligible(page: DocPage) -> bool:
     return page.text_source == "cells" or bool(
         page.image_path and Path(page.image_path).is_file()
     )
-
-
-def _station_contains(source: float, low: float | None, high: float | None) -> bool:
-    if low is None and high is None:
-        return False
-    if low is None:
-        low = high
-    if high is None:
-        high = low
-    assert low is not None and high is not None
-    return min(low, high) <= source <= max(low, high)

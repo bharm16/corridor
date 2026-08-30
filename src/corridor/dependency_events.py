@@ -704,6 +704,18 @@ def _verified_party_statement_provenance(
     return provenance
 
 
+def closed_party_commitment_lineages(
+    session: Session, project_id: int
+) -> frozenset[int]:
+    """The lineages whose Completion Reported still holds — the public read.
+
+    The statement scope matcher treats these rows' Constraints as
+    completed/cleared state (ADR-0054's row-state evidence), so the closure
+    rule must not be re-derived in a second module.
+    """
+    return _closed_party_commitment_lineages(session, project_id)
+
+
 def _closed_party_commitment_lineages(
     session: Session, project_id: int
 ) -> frozenset[int]:

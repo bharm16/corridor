@@ -113,6 +113,14 @@ from corridor.models import (
     ProjectRosterEntry,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
+    CoordinationSummaryRequest,
+)
+from corridor.coordination_summary import (
+    ConfigurationRequired,
+    InvalidSummaryConfiguration,
+    current_configuration as current_summary_configuration,
+    declare_configuration as declare_summary_configuration,
+    request_summary as request_coordination_summary,
 )
 from corridor.milestones import (
     MalformedMilestoneCsv,
@@ -306,6 +314,20 @@ _WORK_REASON_COPY = {
 def get_session():
     with SessionFactory() as session:
         yield session
+
+
+def get_coordination_summary_client_factory():
+    """Build an adapter only after the route found declared spend authority."""
+    from corridor.llm import OpenAIClient
+
+    def build(configuration):
+        return OpenAIClient(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+        )
+
+    return build
 
 
 async def get_human_principal(
@@ -2577,6 +2599,7 @@ def internal_report(
             "summary": report.summary,
             "coverage_note": report.coverage_note,
             "facets": facets,
+            "summary_configuration": current_summary_configuration(session, project.id),
         },
     )
     record_frontend_request(
@@ -2588,6 +2611,88 @@ def internal_report(
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/coordination-summary/configuration")
+async def declare_coordination_summary_configuration(
+    slug: str,
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Declare bounded summary authority; this is technical operations, not a draft."""
+    project = _project(session, slug, principal, designation=access.TECHNICAL_OPERATIONS)
+    form = await request.form()
+    try:
+        declare_summary_configuration(
+            session, project_id=project.id, principal=principal,
+            model=str(form.get("model", "")), prompt_version=str(form.get("prompt_version", "")),
+            source_scope=str(form.get("source_scope", "")),
+            max_input_tokens=int(str(form.get("max_input_tokens", ""))),
+            max_output_tokens=int(str(form.get("max_output_tokens", ""))),
+            timeout_seconds=int(str(form.get("timeout_seconds", ""))),
+            max_requests=int(str(form.get("max_requests", ""))),
+            retry_policy=str(form.get("retry_policy", "")),
+            retention_policy=str(form.get("retention_policy", "")),
+            observation_context=str(form.get("observation_context", "")),
+        )
+    except (ValueError, InvalidSummaryConfiguration) as exc:
+        raise HTTPException(400, f"Coordination Summary configuration refused: {exc}") from exc
+    session.commit()
+    return RedirectResponse(f"/internal-report/{project.slug}", status_code=303)
+
+
+@app.post("/internal-report/{slug}/coordination-summary")
+def request_internal_coordination_summary(
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    client_factory=Depends(get_coordination_summary_client_factory),
+):
+    """The single ordinary action that may spend the declared bounded budget."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        receipt = request_coordination_summary(
+            session, project_id=project.id, principal=principal, client_factory=client_factory,
+        )
+    except ConfigurationRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/internal-report/{project.slug}/coordination-summary/{receipt.public_id}",
+        status_code=303,
+    )
+
+
+@app.get("/internal-report/{slug}/coordination-summary/{public_id}", response_class=HTMLResponse)
+def read_internal_coordination_summary(
+    request: Request,
+    slug: str,
+    public_id: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read one retained receipt; a GET never invokes a model."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    receipt = session.scalars(
+        select(CoordinationSummaryRequest).where(
+            CoordinationSummaryRequest.public_id == public_id,
+            CoordinationSummaryRequest.project_id == project.id,
+        )
+    ).first()
+    if receipt is None:
+        raise HTTPException(404, "no Coordination Summary receipt for this project")
+    response = TEMPLATES.TemplateResponse(
+        request, "coordination_summary.html", {"project": project, "receipt": receipt},
+    )
+    record_frontend_request(
+        session, principal=principal, route_name="coordination_summary_receipt",
+        route_template="/internal-report/{slug}/coordination-summary/{public_id}",
+        method="GET", response=response,
+        subject=FrontendRequestSubject(project_id=project.id), request_fields=request.path_params,
     )
     session.commit()
     return response

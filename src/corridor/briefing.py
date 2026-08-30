@@ -544,6 +544,14 @@ def _check(
     return kept, withheld
 
 
+# The public seam for other Coordination Summary surfaces (#355): the same
+# assembly, prompt composition, and mechanical checking this module's own
+# briefings use, importable without reaching into private implementation.
+assemble_citables = _assemble
+compose_user_message = _user_message
+check_sentences = _check
+
+
 def render(briefing: Briefing) -> str:
     """The Briefing as text, stamps first — provenance before prose."""
     lines = [

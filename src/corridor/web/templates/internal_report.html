@@ -116,5 +116,19 @@
     <a class="action" href="/internal-report/{{ project.slug }}/full{% if document_only %}?document_only=true{% endif %}">Open full working report</a>
     <a class="action secondary" href="/internal-report/{{ project.slug }}/workbook.xlsx{% if document_only %}?document_only=true{% endif %}">Download internal workbook (XLSX)</a>
   </div>
+  <section class="reading" aria-labelledby="coordination-summary-heading">
+    <h2 id="coordination-summary-heading">{{ label('coordination_summary') }}</h2>
+    <p class="muted">An optional, source-linked AI draft over one named project reading. It is not a project decision, Documentation Review, approval, notification, or external release.</p>
+    {% if summary_configuration %}
+      <p class="muted">Configured for {{ summary_configuration.model }} · {{ summary_configuration.source_scope|replace('_', ' ') }} · one request and no automatic retry.</p>
+      <form method="post" action="/internal-report/{{ project.slug }}/coordination-summary">
+        {{ csrf_field() }}
+        <button class="action" type="submit">Request Coordination Summary</button>
+      </form>
+    {% else %}
+      <p class="coverage">Unavailable until Corridor Operations declares the applicable source scope, model/prompt, budgets, no-retry policy, retention, and observation context. Viewing this report never starts model work.</p>
+      <button class="action secondary" type="button" disabled>Request Coordination Summary</button>
+    {% endif %}
+  </section>
   <p class="muted">The workbook is an internal working copy, not an approved external release. Preparing a fixed external PDF stays on <a href="/reports/{{ project.slug }}">Prepare external release</a>.</p>
 </main>
