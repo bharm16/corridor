@@ -19,10 +19,12 @@ from sqlalchemy import select
 from corridor.due_work import (
     AssignmentNotificationDeclaration,
     DueWorkRefusal,
+    EventAdmissionReproofDeclaration,
     LocationDiscoveryDeclaration,
     ProcessingHealthDeclaration,
     ProjectProcessingDeclaration,
     configure_assignment_notification,
+    configure_event_admission_reproof,
     configure_location_discovery,
     configure_processing_health,
     configure_project_processing,
@@ -126,6 +128,26 @@ def _parser() -> argparse.ArgumentParser:
     notifications.add_argument("--concurrency-limit", required=True, type=int)
     notifications.add_argument("--model-token-budget", required=True, type=int)
     notifications.add_argument("--notification-budget", required=True, type=int)
+
+    reproof = commands.add_parser("configure-reproof")
+    reproof.add_argument("project_slug")
+    reproof.add_argument("--configuration-version", required=True)
+    reproof.add_argument("--policy-version", required=True)
+    reproof.add_argument("--reason-version", required=True)
+    reproof.add_argument("--selection-rule", required=True)
+    reproof.add_argument("--starts-at", required=True)
+    reproof.add_argument("--cadence", required=True)
+    reproof.add_argument("--timezone", required=True, dest="timezone_name")
+    reproof.add_argument("--missed-run-policy", required=True)
+    reproof.add_argument("--retention-days", required=True, type=int)
+    reproof.add_argument("--max-attempts", required=True, type=int)
+    reproof.add_argument("--backoff-seconds", required=True, type=int)
+    reproof.add_argument("--claim-ttl-seconds", required=True, type=int)
+    reproof.add_argument("--deadline-seconds", required=True, type=int)
+    reproof.add_argument("--concurrency-limit", required=True, type=int)
+    reproof.add_argument("--model-token-budget", required=True, type=int)
+    reproof.add_argument("--notification-budget", required=True, type=int)
+    reproof.add_argument("--clone-budget", required=True, type=int)
 
     commands.add_parser("tick")
     for name in ("run-once", "recover"):
@@ -289,6 +311,42 @@ def main(
                         notification_budget=args.notification_budget,
                     )
                     schedule = configure_assignment_notification(
+                        session,
+                        declaration,
+                        now=clock.now(),
+                    )
+                    payload = {
+                        "command": args.command,
+                        "job_id": schedule.public_id,
+                        "project_id": project.id,
+                        "configuration_sha256": schedule.configuration_sha256,
+                        "enabled": schedule.disabled_at is None,
+                    }
+        elif args.command == "configure-reproof":
+            with session_factory() as session:
+                with session.begin():
+                    project = _project(session, args.project_slug)
+                    declaration = EventAdmissionReproofDeclaration(
+                        project_id=project.id,
+                        configuration_version=args.configuration_version,
+                        policy_version=args.policy_version,
+                        reason_version=args.reason_version,
+                        selection_rule=args.selection_rule,
+                        starts_at=_datetime(args.starts_at),
+                        cadence=args.cadence,
+                        timezone_name=args.timezone_name,
+                        missed_run_policy=args.missed_run_policy,
+                        retention_days=args.retention_days,
+                        max_attempts=args.max_attempts,
+                        backoff_seconds=args.backoff_seconds,
+                        claim_ttl_seconds=args.claim_ttl_seconds,
+                        deadline_seconds=args.deadline_seconds,
+                        concurrency_limit=args.concurrency_limit,
+                        model_token_budget=args.model_token_budget,
+                        notification_budget=args.notification_budget,
+                        clone_budget=args.clone_budget,
+                    )
+                    schedule = configure_event_admission_reproof(
                         session,
                         declaration,
                         now=clock.now(),
