@@ -110,6 +110,10 @@ KEEP_STATEMENT_UNRESOLVED = KEEP_CANDIDATE_UNRESOLVED
 # include it in the same transaction and the same protected write-set as the
 # Project Record act it caused.
 PRODUCT_PROVING_FRONTEND_REQUEST = "product_proving_frontend_request"
+# Managed, attributable enrollment or re-designation of one project member
+# (#331).  The act names the project it is scoped to and the operator who made
+# it; a selectable assignee or an email address alone never grants access.
+ENROLL_PROJECT_MEMBER = "enroll_project_member"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -159,6 +163,7 @@ ACTIONS = frozenset(
         RESTORE_STATEMENT_NOT_RELEVANT,
         KEEP_CANDIDATE_UNRESOLVED,
         PRODUCT_PROVING_FRONTEND_REQUEST,
+        ENROLL_PROJECT_MEMBER,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )
