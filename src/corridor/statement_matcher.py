@@ -3,19 +3,22 @@
 The statement-review assistant originally held a small station-and-term scorer
 privately.  That was useful for ordering a person's choices, but could never
 be a Record Inclusion predicate: a high score is still a guess.  ADR-0054
-allows this module to share the observations while separating their two uses.
+moves the scorer here and separates its two uses.
 
-``shortlist_dependencies`` ranks deterministic observations for a reader.
-``match_statement_scope`` treats the same observations as filters and returns
-an exact result *only* when one active Constraint survives every applicable
-filter.  Context is supplied by the owning intake/coordination path as
-recorded associations; source words are never commands and no model output is
-an authority-shaped input.
+``shortlist_dependencies`` ranks the assistant's bounded options — the exact
+observations the private scorer made, unchanged, still presentation-only.
+``match_statement_scope`` applies ADR-0054's evidence stack as deterministic
+*filters* and returns an exact result only when one active Constraint survives
+the full stack.  Every deciding fact is verbatim presence, station
+containment, recorded state, or a recorded association; no similarity score
+or threshold decides anything.  Context arrives as already-recorded
+associations owned by the thread/follow-up/commitment services — source words
+are data, never commands, and a message-id chain is provenance only.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import Iterable
 
@@ -25,33 +28,52 @@ from corridor.verify import normalize
 
 
 MATCHER_VERSION = "statement-identifying-language-v1"
-# Changing any individual evidence contract changes the rule fingerprint.  The
-# mapping is deliberately data, rather than an incidental list in a digest, so
-# a later evidence kind cannot silently pool its readings with this one.
+# Each evidence kind carries its own version, and all of them feed the matcher
+# fingerprint.  Adding an evidence kind adds an entry, which changes the
+# fingerprint, which voids any prior ADR-0050 replay pass — readings are never
+# pooled across versions.  The mapping is deliberately data rather than an
+# incidental list inside a digest so a later evidence kind cannot slip in
+# silently.
 MATCHER_EVIDENCE_VERSIONS = {
     "explicit_reference": "v1",
     "identifying_terms": "v1",
     "station": "v1",
+    "row_state": "v1",
     "thread": "v1",
     "recorded_ask": "v1",
-    "row_state": "v1",
     "promise_chain": "v1",
     "row_contact": "v1",
 }
 
+# The exact future-action verbs whose row-state applicability is defined.  A
+# relocation promise cannot apply to a protect-in-place row or a row whose
+# Commitment already has Completion Reported.  Any other verb fits both, so
+# state narrows nothing (the ticket's "a promise whose verb fits both rows is
+# not narrowed by state").
+_RELOCATION_VERBS = frozenset({"relocate", "relocated", "relocating"})
+
 
 @dataclass(frozen=True)
 class StatementMatchContext:
-    """Already-recorded context the caller may apply as an exact filter.
+    """Already-recorded context the caller may apply as exact filters.
 
-    The IDs are not extracted guesses.  They are associations owned by the
-    email/thread, follow-up, or commitment services.  An empty or plural ask
+    Every ID here is a recorded association owned by the thread, follow-up,
+    commitment, or closure machinery — never an extracted guess, and never
+    text read out of the statement itself.  An empty or plural ask
     deliberately contributes nothing; it is not an instruction to select one.
     """
 
+    # Constraints earlier messages in the same thread (by message-id chain)
+    # were recorded against.  The chain is provenance data only.
     thread_dependency_ids: tuple[int, ...] = ()
+    # Constraints named by currently open recorded follow-up asks for this
+    # organization.  Only an exactly-one set narrows.
     open_ask_dependency_ids: tuple[int, ...] = ()
+    # Constraints inside the organization's open Commitment scopes.
     promise_dependency_ids: tuple[int, ...] = ()
+    # Constraints whose governing Commitment has Completion Reported
+    # (a verified Closure) — the "completed/cleared" row state.
+    closed_dependency_ids: tuple[int, ...] = ()
     sender: str | None = None
     named_speaker: str | None = None
 
@@ -74,27 +96,75 @@ class DependencyShortlistSignal:
 def matcher_fingerprint() -> str:
     """The stable per-evidence-kind fingerprint included in policy receipts."""
     material = "|".join(
-        f"{name}:{version}" for name, version in sorted(MATCHER_EVIDENCE_VERSIONS.items())
+        f"{name}:{version}"
+        for name, version in sorted(MATCHER_EVIDENCE_VERSIONS.items())
     )
     return sha256(f"{MATCHER_VERSION}|{material}".encode()).hexdigest()
 
 
+# --------------------------------------------------------------------------- #
+# The assistant's shortlist — ranking only, behavior-identical to the scorer  #
+# it replaces in the Statement Review Assistant's private tool layer.         #
+# --------------------------------------------------------------------------- #
+
+
 def shortlist_dependencies(
-    dependencies: Iterable[Dependency], *, station_text: str | None, terms: tuple[str, ...]
+    dependencies: Iterable[Dependency],
+    *,
+    station_text: str | None,
+    terms: tuple[str, ...],
 ) -> tuple[DependencyShortlistSignal, ...]:
-    """Rank the assistant's bounded options from shared, non-decisive signals."""
+    """Rank bounded options from shared, non-decisive signals.
+
+    This reproduces the assistant's original scorer exactly — the same
+    casefold normalization, the same score, the same (score, ref_code, id)
+    ordering — so extraction changed no reader-visible result.  Exact
+    admission never consults the rank or any threshold.
+    """
     source_station = parse_station(station_text)
-    wanted = tuple(_normalized_terms(terms))
-    ranked: list[DependencyShortlistSignal] = []
+    term_keys = tuple(
+        key for key in (_casefold(term) for term in terms) if key
+    )
+    ranked: list[tuple[int, str, int, DependencyShortlistSignal]] = []
     for dependency in dependencies:
-        signals = _signals_for(dependency, source_station=source_station, terms=wanted)
-        # Ranking remains presentation-only.  Exact admission below never
-        # consults this number or a threshold.
-        rank = (10 if "station_containment" in signals else 0) + sum(
-            signal.startswith("term:") for signal in signals
+        signals: list[str] = []
+        if source_station is not None and _station_contains(
+            dependency, source_station
+        ):
+            signals.append("station_containment")
+        haystack = _casefold(
+            " ".join(
+                value
+                for value in (
+                    dependency.ref_code,
+                    dependency.source_ref,
+                    dependency.title,
+                    dependency.location_desc,
+                )
+                if value
+            )
         )
-        ranked.append(DependencyShortlistSignal(dependency.id, rank, signals))
-    return tuple(sorted(ranked, key=lambda item: (-item.rank, item.dependency_id)))
+        term_hits = 0
+        for term in term_keys:
+            if term in haystack:
+                term_hits += 1
+                signals.append(f"term:{term}")
+        rank = (10 if source_station is not None and "station_containment" in signals else 0) + term_hits
+        ranked.append(
+            (
+                rank,
+                dependency.ref_code,
+                dependency.id,
+                DependencyShortlistSignal(dependency.id, rank, tuple(signals)),
+            )
+        )
+    ranked.sort(key=lambda row: (-row[0], row[1], row[2]))
+    return tuple(row[3] for row in ranked)
+
+
+# --------------------------------------------------------------------------- #
+# The exact tier — ADR-0054's evidence stack as deterministic filters.        #
+# --------------------------------------------------------------------------- #
 
 
 def match_statement_scope(
@@ -105,7 +175,16 @@ def match_statement_scope(
     station_text: str | None = None,
     context: StatementMatchContext | None = None,
 ) -> StatementScopeMatch:
-    """Apply ADR-0054's exact stack, retaining every deciding observation."""
+    """Apply the full evidence stack, retaining every deciding observation.
+
+    Layer 1 is the sentence's own identifying language: explicit references,
+    identifying row terms, and station containment.  Layer 2 is recorded
+    context: row state, thread continuity, an answer to exactly one open
+    recorded ask, promise chains, and the per-row registered contact.  All
+    filters stack; ``exact`` is returned only for a sole survivor of the full
+    stack.  With no identifying language and no deciding context the result
+    is ``unknown`` and the existing unknown-scope path applies, unchanged.
+    """
     source = _normal_phrase(wording)
     source_station = parse_station(station_text)
     context = context or StatementMatchContext()
@@ -124,7 +203,7 @@ def match_statement_scope(
         dependency
         for dependency in active
         if any(
-            value and normalize(value) in source
+            value and _normal_phrase(value) in source
             for value in (dependency.ref_code, dependency.source_ref)
         )
     )
@@ -137,24 +216,28 @@ def match_statement_scope(
         for dependency in active
         if source_station is not None and _station_contains(dependency, source_station)
     }
-    has_identifying_language = bool(references or station_hits or any(term_hits.values()))
+    has_identifying_language = bool(
+        references or station_hits or any(term_hits.values())
+    )
+    # Everything below is retained on the receipt; JSON-native values only so
+    # a reloaded receipt compares equal to a freshly computed one.
     evidence: dict = {
         "matcher_version": MATCHER_VERSION,
         "matcher_fingerprint": matcher_fingerprint(),
         "evidence_versions": dict(MATCHER_EVIDENCE_VERSIONS),
-        "explicit_reference_ids": tuple(dependency.id for dependency in references),
+        "explicit_reference_ids": [dependency.id for dependency in references],
         "station": station_text if source_station is not None else None,
-        "station_dependency_ids": tuple(sorted(station_hits)),
-        "matched_terms": tuple(
-            sorted({term for terms in term_hits.values() for term in terms})
+        "station_dependency_ids": sorted(station_hits),
+        "matched_terms": sorted(
+            {term for terms in term_hits.values() for term in terms}
         ),
     }
-    if not has_identifying_language:
+    if not has_identifying_language and _context_is_empty(context):
         return StatementScopeMatch("unknown", (), evidence)
 
-    # Each Layer 1 fact narrows only when it has an exact row-side match.  A
-    # stated station that fits no active row is an honest no-survivor, never a
-    # reason to discard the station and fall through to a score.
+    # Each layer-1 fact narrows only when it has an exact row-side match.  A
+    # stated station that fits no active row is an honest no-survivor, never
+    # a reason to discard the station and fall back to a score.
     survivors = set(active)
     if references:
         survivors.intersection_update(references)
@@ -168,34 +251,60 @@ def match_statement_scope(
     if matched_term_dependencies:
         survivors.intersection_update(matched_term_dependencies)
 
-    # A relocation promise cannot apply to a protect-in-place row.  Dismissed
-    # rows were excluded before any matcher work; they are no longer active.
-    if _is_relocation_promise(source):
-        before = tuple(sorted(dependency.id for dependency in survivors))
-        survivors = {
-            dependency
-            for dependency in survivors
-            if dependency.resolution_strategy != "protect_in_place"
-        }
-        evidence["row_state"] = {
-            "promise_verb": "relocate",
-            "before_dependency_ids": before,
-            "after_dependency_ids": tuple(sorted(d.id for d in survivors)),
-        }
-
+    survivors = _apply_row_state(survivors, source, context, evidence)
     survivors = _apply_recorded_context(survivors, context, evidence)
+
     ids = tuple(sorted(dependency.id for dependency in survivors))
     if len(ids) == 1:
         return StatementScopeMatch("exact", ids, evidence)
+    if not has_identifying_language:
+        # Context existed but did not determine one row.  That is not a
+        # narrowed set — the sentence itself named nothing — so the existing
+        # unknown-scope path applies, unchanged.
+        return StatementScopeMatch("unknown", (), evidence)
     if not ids:
         return StatementScopeMatch("none", (), evidence)
+    # Several survivors: never auto-select.  The narrowed-set card carries
+    # each candidate, the matched details, and the evidence already applied,
+    # and offers "both/all listed" because a statement can legitimately cover
+    # several rows (ADR-0035/0042: suggestions order but never select).
     card = {
-        "candidate_dependency_ids": ids,
+        "candidate_dependency_ids": list(ids),
         "matched_details": evidence["matched_terms"],
         "evidence_applied": evidence,
-        "choice_modes": ("each", "both_all_listed"),
+        "choice_modes": ["each", "both_all_listed"],
     }
     return StatementScopeMatch("ambiguous", ids, evidence, card)
+
+
+def _apply_row_state(
+    survivors: set[Dependency],
+    wording: str,
+    context: StatementMatchContext,
+    evidence: dict,
+) -> set[Dependency]:
+    """State filters candidates by what the promise's own verb can apply to.
+
+    A relocation promise cannot match a protect-in-place row or a row whose
+    Commitment has Completion Reported.  A verb without a defined
+    applicability rule narrows nothing.
+    """
+    if not _is_relocation_promise(wording):
+        return survivors
+    closed = set(context.closed_dependency_ids)
+    before = sorted(dependency.id for dependency in survivors)
+    survivors = {
+        dependency
+        for dependency in survivors
+        if dependency.resolution_strategy != "protect_in_place"
+        and dependency.id not in closed
+    }
+    evidence["row_state"] = {
+        "promise_verb": "relocate",
+        "before_dependency_ids": before,
+        "after_dependency_ids": sorted(d.id for d in survivors),
+    }
+    return survivors
 
 
 def _apply_recorded_context(
@@ -203,45 +312,60 @@ def _apply_recorded_context(
 ) -> set[Dependency]:
     def narrow(name: str, ids: tuple[int, ...], *, only_if_one: bool = False) -> None:
         nonlocal survivors
-        valid = tuple(sorted(set(ids)))
+        valid = sorted(set(ids))
+        if not valid:
+            return
         if only_if_one and len(valid) != 1:
+            # Zero or several recorded asks/promises contribute nothing.
             return
         overlap = {dependency for dependency in survivors if dependency.id in valid}
         if overlap:
             survivors = overlap
             evidence[f"{name}_dependency_ids"] = valid
 
+    # A reply resolves within its thread's established set first; a thread
+    # with no recorded association (or none overlapping) contributes nothing.
     narrow("thread", context.thread_dependency_ids)
     narrow("open_ask", context.open_ask_dependency_ids, only_if_one=True)
-    narrow("promise", context.promise_dependency_ids, only_if_one=True)
+    narrow("promise", context.promise_dependency_ids)
     contacts = {
         name: value.strip().lower()
-        for name, value in (("sender", context.sender), ("named_speaker", context.named_speaker))
+        for name, value in (
+            ("sender", context.sender),
+            ("named_speaker", context.named_speaker),
+        )
         if value and value.strip()
     }
-    matching = {
-        dependency
-        for dependency in survivors
-        if any(_contact_matches(dependency.external_contact, value) for value in contacts.values())
-    }
-    if len(matching) == 1:
-        survivors = matching
-        evidence["contacts"] = contacts
+    if contacts:
+        matching = {
+            dependency
+            for dependency in survivors
+            if any(
+                _contact_matches(dependency.external_contact, value)
+                for value in contacts.values()
+            )
+        }
+        # Only an exactly-one registered-contact match narrows; a contact
+        # registered on several surviving rows proves nothing about which.
+        if len(matching) == 1:
+            survivors = matching
+            evidence["contacts"] = contacts
     return survivors
 
 
-def _signals_for(
-    dependency: Dependency, *, source_station: float | None, terms: tuple[str, ...]
+def _context_is_empty(context: StatementMatchContext) -> bool:
+    return not (
+        context.thread_dependency_ids
+        or context.open_ask_dependency_ids
+        or context.promise_dependency_ids
+        or (context.sender or "").strip()
+        or (context.named_speaker or "").strip()
+    )
+
+
+def _dependency_terms_in_wording(
+    dependency: Dependency, wording: str
 ) -> tuple[str, ...]:
-    signals = ["registered_party_match"]
-    if source_station is not None and _station_contains(dependency, source_station):
-        signals.append("station_containment")
-    haystack = _haystack(dependency)
-    signals.extend(f"term:{term}" for term in terms if term in haystack)
-    return tuple(signals)
-
-
-def _dependency_terms_in_wording(dependency: Dependency, wording: str) -> tuple[str, ...]:
     values = (dependency.title, dependency.location_desc, dependency.source_ref)
     return tuple(
         sorted(
@@ -254,40 +378,29 @@ def _dependency_terms_in_wording(dependency: Dependency, wording: str) -> tuple[
     )
 
 
+def _casefold(value: object) -> str:
+    """The assistant scorer's original normalization, preserved verbatim."""
+    return " ".join(str(value or "").casefold().split())
+
+
 def _normal_phrase(value: str | None) -> str:
     return " ".join(normalize((value or "").replace("-", " ")).split())
-
-
-def _normalized_terms(terms: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(term for term in (_normal_phrase(term) for term in terms) if term)
-
-
-def _haystack(dependency: Dependency) -> str:
-    return _normal_phrase(
-        " ".join(
-            value
-            for value in (
-                dependency.ref_code,
-                dependency.source_ref,
-                dependency.title,
-                dependency.location_desc,
-            )
-            if value
-        )
-    )
 
 
 def _station_contains(dependency: Dependency, station: float) -> bool:
     values = [
         parsed
-        for parsed in (parse_station(dependency.station_from), parse_station(dependency.station_to))
+        for parsed in (
+            parse_station(dependency.station_from),
+            parse_station(dependency.station_to),
+        )
         if parsed is not None
     ]
     return bool(values) and min(values) <= station <= max(values)
 
 
 def _is_relocation_promise(wording: str) -> bool:
-    return any(token in wording.split() for token in ("relocate", "relocated", "relocating"))
+    return any(token in _RELOCATION_VERBS for token in wording.split())
 
 
 def _contact_matches(contact: str | None, person: str) -> bool:

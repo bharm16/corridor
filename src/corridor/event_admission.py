@@ -364,6 +364,7 @@ def run_event_admission(
     *,
     policy_version: str | None = None,
     write_candidate_ids: Sequence[int] | None = None,
+    _withheld_candidate_ids: tuple[int, ...] | None = None,
 ) -> EventAdmissionResult:
     """Attach what the minutes say to the conflicts they name.
 
@@ -380,12 +381,12 @@ def run_event_admission(
         project_id=project_id,
         write_candidate_ids=write_candidate_ids,
     )
-    # ADR-0054's newer exact scope tier is intentionally ahead of the
-    # unknown-scope extension: once it has a passing ADR-0050 replay it claims
-    # only its sole-survivor cases, and the existing policies retain every
-    # remaining Candidate.  The matcher itself is inert on zero history or a
-    # contradiction, so this ordinary entry point cannot silently enable it.
-    if policy_version is None and write_scope is None:
+    # ADR-0054's newer exact scope tier runs ahead of the existing policies:
+    # once it has a passing ADR-0050 replay it claims only its sole-survivor
+    # cases and holds its narrowed sets pending, and the existing policies
+    # retain every remaining Candidate.  The tier is inert on zero history or
+    # a contradiction, so this ordinary entry point cannot silently enable it.
+    if policy_version is None and write_scope is None and _withheld_candidate_ids is None:
         from corridor.statement_scope_matching import run_identifying_language_admission
 
         scoped = run_identifying_language_admission(
@@ -393,14 +394,17 @@ def run_event_admission(
             project,
             prepare_candidate=unknown_scope_candidate_preparer(session, project),
         )
-        if scoped.admitted_count:
-            remainder = run_event_admission(session, project_id)
-            return EventAdmissionResult(
-                run_id=remainder.run_id,
-                admitted_count=scoped.admitted_count + remainder.admitted_count,
-                abstained_count=remainder.abstained_count,
-                abstentions=remainder.abstentions,
-            )
+        remainder = run_event_admission(
+            session,
+            project_id,
+            _withheld_candidate_ids=scoped.withheld_candidate_ids,
+        )
+        return EventAdmissionResult(
+            run_id=remainder.run_id,
+            admitted_count=scoped.admitted_count + remainder.admitted_count,
+            abstained_count=remainder.abstained_count,
+            abstentions=remainder.abstentions,
+        )
     selected_version = policy_version or normal_event_admission_policy_version(
         session, project_id
     )
@@ -431,6 +435,7 @@ def run_event_admission(
             project_id,
             policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
             write_candidate_ids=extension_scope,
+            _withheld_candidate_ids=_withheld_candidate_ids,
         )
         return EventAdmissionResult(
             run_id=extension.run_id,
@@ -443,6 +448,7 @@ def run_event_admission(
             session,
             project,
             write_candidate_ids=write_scope,
+            withheld_candidate_ids=_withheld_candidate_ids or (),
         )
     if selected_version != EVENT_ADMISSION_POLICY_VERSION:
         raise ValueError(f"unsupported Event Admission policy {selected_version!r}")
@@ -704,6 +710,7 @@ def _run_unknown_scope_admission(
     project: Project,
     *,
     write_candidate_ids: Sequence[int] | None = None,
+    withheld_candidate_ids: tuple[int, ...] = (),
 ) -> EventAdmissionResult:
     """Apply only ADR-0042's exact party-level Commitment class."""
     lock_project(session, project.id)
@@ -725,6 +732,16 @@ def _run_unknown_scope_admission(
         writable_ids = set(write_candidate_ids)
         candidates = [
             candidate for candidate in candidates if candidate.id in writable_ids
+        ]
+    if withheld_candidate_ids:
+        # ADR-0054's exact tier narrowed these Candidates to a set of several
+        # Constraints this run.  Its narrowed-set abstention is their record;
+        # admitting them here with Applies To not yet known would erase the
+        # narrowed card and hide the one human decision that remains.  They
+        # stay visibly pending instead.
+        withheld = set(withheld_candidate_ids)
+        candidates = [
+            candidate for candidate in candidates if candidate.id not in withheld
         ]
     prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
     for outcome in session.scalars(

@@ -1,16 +1,33 @@
 """Replay-gated exact Record Inclusion for statement identifying language.
 
-This is deliberately a small extension in front of the existing unknown-scope
-policy.  It writes only an exact one-row scope after replaying the project's
-recorded human scope choices; every other Candidate remains for the older
-policy/residual workflow.  A new project has zero answer-key cases and is
-therefore inactive (ADR-0050), not optimistically enabled.
+ADR-0054's exact tier, in front of the existing unknown-scope policy.  Three
+outcomes leave this module:
+
+- Exactly one active Constraint survives the full evidence stack: the
+  statement records itself with that scope, attributed to this rule and its
+  matcher fingerprint, retaining every deciding observation on the receipt.
+  A statement whose sole survivor already sits inside exactly one open
+  Commitment of the same organization records on that chain as a Change to
+  Promised Timing rather than as a new unplaced statement.
+- Several survive: one abstention receipt carries the surviving candidates,
+  the matched details, and the evidence applied, so the coordination screen
+  can render the narrowed-set card (each survivor, or "both/all listed").
+  Nothing is auto-selected, and the unknown-scope extension is told to leave
+  the Candidate pending rather than swallow it as Applies To not yet known.
+- Nothing decides: the Candidate flows to the existing policies, unchanged.
+
+This is an expansion of an automatic Record Inclusion class, so ADR-0050
+gates it: it writes nothing until a regression replay of the project's own
+recorded human scope decisions passes with at least one real case and no
+contradiction.  A new project has zero answer-key cases and is therefore
+inactive — exactly the ship-inactive posture of #371's schedule link rule.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import select
@@ -18,7 +35,15 @@ from sqlalchemy.orm import Session
 
 from corridor import audit, policy
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
-from corridor.external_statements import StatementScope, record_external_party_statement
+from corridor.dependency_events import (
+    COMMITTED_EVENT_TYPES,
+    closed_party_commitment_lineages,
+    current_scope_decision_filter,
+)
+from corridor.external_statements import (
+    StatementScope,
+    record_external_party_statement,
+)
 from corridor.models import (
     Candidate,
     CandidateDisposition,
@@ -31,23 +56,36 @@ from corridor.models import (
     EvidenceLink,
     PolicyRun,
     Project,
+    StatementTimingRecord,
 )
 from corridor.statement_lifecycle import current_statement_event_filter
-from corridor.statement_matcher import MATCHER_VERSION, match_statement_scope, matcher_fingerprint
+from corridor.statement_matcher import (
+    MATCHER_EVIDENCE_VERSIONS,
+    MATCHER_VERSION,
+    StatementMatchContext,
+    match_statement_scope,
+    matcher_fingerprint,
+)
+from corridor.statement_values import StatementRefusal, StatementTiming
 
 
 POLICY_VERSION = "event-admission-v4-identifying-language"
 MACHINE_ACTOR = "corridor:statement-scope-matcher"
 REASON_VERSION = "event-admission-identifying-language-abstentions-v1"
+NARROWED_SET_REASON = "identifying_language_narrowed_set"
 
 
 @dataclass(frozen=True)
 class StatementScopeReplay:
+    """ADR-0050's comparison: the rule against recorded human scope choices."""
+
     case_count: int
     contradictions: tuple[int, ...]
 
     @property
     def passed(self) -> bool:
+        # Zero real cases never pass; a rule with no history waits for a
+        # person to do the small task by hand.
         return self.case_count > 0 and not self.contradictions
 
 
@@ -56,51 +94,163 @@ class StatementScopeRun:
     admitted_count: int
     run_id: int | None
     replay: StatementScopeReplay
+    # Candidates whose identifying language narrowed to several survivors.
+    # They carry the narrowed-set abstention and must stay visibly pending:
+    # the unknown-scope extension skips them instead of recording them with
+    # Applies To not yet known.
+    withheld_candidate_ids: tuple[int, ...] = ()
+
+
+def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
+    """The deployed bytes that decide a scope — the fingerprint's ground truth."""
+    from corridor import merge as merge_module
+    from corridor import statement_matcher as matcher_module
+    from corridor import verify as verify_module
+
+    return (
+        ("corridor.statement_scope_matching", Path(__file__).read_bytes()),
+        ("corridor.statement_matcher", Path(matcher_module.__file__).read_bytes()),
+        ("corridor.merge", Path(merge_module.__file__).read_bytes()),
+        ("corridor.verify", Path(verify_module.__file__).read_bytes()),
+    )
 
 
 def canonical_policy() -> dict:
+    """The exact rule a passing replay stands on; either digest voids the pass."""
     return {
         "policy_version": POLICY_VERSION,
         "matcher_version": MATCHER_VERSION,
         "matcher_fingerprint": matcher_fingerprint(),
+        "evidence_versions": dict(MATCHER_EVIDENCE_VERSIONS),
         "activation": "adr-0050-recorded-human-scope-replay-v1",
         "exact_result": "one-survivor-of-full-stack",
+        "rules_digest_method": "sha256-rule-source-files-v1",
+        "rules_digest": policy.digest_of_sources(_rule_source_bytes),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Derived context — recorded associations only, computed from current records #
+# --------------------------------------------------------------------------- #
+
+
+def derived_statement_context(
+    session: Session, project_id: int, organization_id: int
+) -> tuple[StatementMatchContext, dict[int, tuple[int, ...]]]:
+    """Build the layer-2 context ADR-0054 allows, from recorded facts only.
+
+    Returns the context plus the organization's open Commitment scopes
+    (lineage id -> scoped Constraint ids), which the writer reuses to place a
+    timing update on its chain.  Thread and sender evidence stay empty until
+    email-borne statements (#372) supply them; the matcher's tiers for them
+    are live and null-safe either way.
+    """
+    closed_lineages = closed_party_commitment_lineages(session, project_id)
+    scope_rows = session.execute(
+        select(DependencyEvent.commitment_lineage_id, DependencyEventScope.dependency_id)
+        .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
+        .join(
+            DependencyEventScopeDecision,
+            DependencyEventScopeDecision.id == DependencyEventScope.scope_decision_id,
+        )
+        .where(
+            DependencyEvent.project_id == project_id,
+            DependencyEvent.event_type.in_(COMMITTED_EVENT_TYPES),
+            DependencyEvent.attribution_state == "resolved",
+            DependencyEvent.affected_external_org_id == organization_id,
+            DependencyEvent.stated_external_org_id == organization_id,
+            DependencyEvent.commitment_lineage_id.is_not(None),
+            current_statement_event_filter(DependencyEvent.id),
+            current_scope_decision_filter(),
+        )
+        .order_by(DependencyEvent.commitment_lineage_id, DependencyEventScope.dependency_id)
+    ).all()
+    open_lineage_scopes: dict[int, tuple[int, ...]] = {}
+    closed_dependency_ids: set[int] = set()
+    for lineage_id, dependency_id in scope_rows:
+        if lineage_id in closed_lineages:
+            closed_dependency_ids.add(dependency_id)
+        else:
+            open_lineage_scopes[lineage_id] = tuple(
+                sorted({*open_lineage_scopes.get(lineage_id, ()), dependency_id})
+            )
+    # An open recorded follow-up ask names a Constraint through the row's
+    # current Next Action projection (ADR-0054's "call the organization and
+    # ask" task).  Only an exactly-one open ask narrows, decided in the
+    # matcher itself.
+    open_ask_ids = tuple(
+        session.scalars(
+            select(Dependency.id)
+            .where(
+                Dependency.project_id == project_id,
+                Dependency.external_org_id == organization_id,
+                Dependency.dismissed_at.is_(None),
+                Dependency.next_action.is_not(None),
+            )
+            .order_by(Dependency.id)
+        ).all()
+    )
+    promise_ids = tuple(
+        sorted({dep for ids in open_lineage_scopes.values() for dep in ids})
+    )
+    context = StatementMatchContext(
+        open_ask_dependency_ids=open_ask_ids,
+        promise_dependency_ids=promise_ids,
+        closed_dependency_ids=tuple(sorted(closed_dependency_ids)),
+    )
+    return context, open_lineage_scopes
+
+
+# --------------------------------------------------------------------------- #
+# Regression replay (ADR-0050)                                                #
+# --------------------------------------------------------------------------- #
 
 
 def replay_matches_human_scope_decisions(
     session: Session, project_id: int
 ) -> StatementScopeReplay:
-    """Compare the new exact rule to actual human selected-scope history."""
-    rows = session.execute(
-        select(DependencyEventScopeDecision, DependencyEvent, EvidenceLink)
+    """Compare the exact rule to actual human selected-scope history.
+
+    The cases a person decided are the answer key.  A contradiction is the
+    stack producing an exact answer *different* from the person's selection;
+    the stack abstaining on a case a person decided is not a contradiction.
+    Machine-selected scopes (any ``corridor:*`` actor) are the rule's own or
+    a sibling rule's answers, never the answer key.
+    """
+    decisions = session.execute(
+        select(DependencyEventScopeDecision, DependencyEvent)
         .join(DependencyEvent, DependencyEvent.id == DependencyEventScopeDecision.event_id)
-        .join(DependencyEventEvidence, DependencyEventEvidence.event_id == DependencyEvent.id)
-        .join(EvidenceLink, EvidenceLink.id == DependencyEventEvidence.evidence_link_id)
         .where(
             DependencyEvent.project_id == project_id,
             DependencyEventScopeDecision.scope_mode == "selected",
-            DependencyEventScopeDecision.decided_by.not_in((MACHINE_ACTOR,)),
+            DependencyEventScopeDecision.decided_by.not_like("corridor:%"),
             current_statement_event_filter(DependencyEvent.id),
         )
-        .order_by(DependencyEventScopeDecision.id, EvidenceLink.id)
+        .order_by(DependencyEventScopeDecision.id)
     ).all()
-    latest: dict[int, tuple[DependencyEventScopeDecision, DependencyEvent, EvidenceLink]] = {}
-    for decision, event, evidence in rows:
-        latest[decision.event_id] = (decision, event, evidence)
+    latest: dict[int, tuple[DependencyEventScopeDecision, DependencyEvent]] = {}
+    for decision, event in decisions:
+        latest[decision.event_id] = (decision, event)
     contradictions: list[int] = []
-    for event_id, (decision, event, evidence) in latest.items():
+    for event_id, (decision, event) in sorted(latest.items()):
         if event.affected_external_org_id is None:
             continue
-        expected = tuple(
-            sorted(
-                session.scalars(
-                    select(DependencyEventScope.dependency_id).where(
-                        DependencyEventScope.scope_decision_id == decision.id
-                    )
-                ).all()
-            )
+        expected = frozenset(
+            session.scalars(
+                select(DependencyEventScope.dependency_id).where(
+                    DependencyEventScope.scope_decision_id == decision.id
+                )
+            ).all()
         )
+        quotes = session.scalars(
+            select(EvidenceLink.quote)
+            .join(
+                DependencyEventEvidence,
+                DependencyEventEvidence.evidence_link_id == EvidenceLink.id,
+            )
+            .where(DependencyEventEvidence.event_id == event_id)
+            .order_by(EvidenceLink.id)
+        ).all()
         dependencies = session.scalars(
             select(Dependency).where(
                 Dependency.project_id == project_id,
@@ -108,14 +258,23 @@ def replay_matches_human_scope_decisions(
                 Dependency.dismissed_at.is_(None),
             )
         ).all()
+        context, _ = derived_statement_context(
+            session, project_id, event.affected_external_org_id
+        )
         match = match_statement_scope(
             dependencies,
             organization_id=event.affected_external_org_id,
-            wording=f"{event.description} {evidence.quote}",
+            wording=" ".join((event.description or "", *quotes)),
+            context=context,
         )
-        if match.kind == "exact" and match.dependency_ids != expected:
+        if match.kind == "exact" and frozenset(match.dependency_ids) != expected:
             contradictions.append(event_id)
     return StatementScopeReplay(len(latest), tuple(sorted(contradictions)))
+
+
+# --------------------------------------------------------------------------- #
+# The admission run                                                           #
+# --------------------------------------------------------------------------- #
 
 
 def run_identifying_language_admission(
@@ -131,53 +290,131 @@ def run_identifying_language_admission(
 
     from corridor.supersession import actionable_candidate_query
 
-    placements = []
+    policy_json = canonical_policy()
+    policy_sha256 = policy.canonical_sha256(policy_json)
+    prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
+    for outcome in session.scalars(
+        select(EventAdmissionOutcome)
+        .join(PolicyRun, PolicyRun.id == EventAdmissionOutcome.policy_run_id)
+        .where(
+            PolicyRun.project_id == project.id,
+            PolicyRun.policy_version == POLICY_VERSION,
+            EventAdmissionOutcome.outcome == "abstained",
+        )
+        .order_by(EventAdmissionOutcome.id)
+    ):
+        prior_abstentions.setdefault(outcome.candidate_id, []).append(outcome)
+
     candidates = session.scalars(
         actionable_candidate_query(project.id)
         .where(Candidate.kind == "event", Candidate.state == "pending")
         .order_by(Candidate.id)
     ).all()
+    context_cache: dict[int, tuple[StatementMatchContext, dict[int, tuple[int, ...]]]] = {}
+    placements: list[tuple[object, object, int | None, StatementTiming | None]] = []
+    narrowed: list[tuple[Candidate, object, dict]] = []
+    withheld: list[int] = []
     for candidate in candidates:
-        # Explicit references remain the predecessor's unchanged tier.
-        facts = prepare_candidate_statement_facts(session, candidate)
-        if str(facts.fields.get("conflict_ref") or "").strip():
-            continue
         verdict = prepare_candidate(candidate)
         if not hasattr(verdict, "candidate"):
+            # Explicit references stay the predecessor's unchanged tier;
+            # abstention strings and duplicate verdicts stay the existing
+            # policies' outcomes.
             continue
+        organization_id = verdict.stated_external_org_id
+        if organization_id not in context_cache:
+            context_cache[organization_id] = derived_statement_context(
+                session, project.id, organization_id
+            )
+        context, open_lineage_scopes = context_cache[organization_id]
+        facts = prepare_candidate_statement_facts(session, candidate)
         dependencies = session.scalars(
             select(Dependency).where(
                 Dependency.project_id == project.id,
-                Dependency.external_org_id == verdict.stated_external_org_id,
+                Dependency.external_org_id == organization_id,
                 Dependency.dismissed_at.is_(None),
             )
         ).all()
         match = match_statement_scope(
             dependencies,
-            organization_id=verdict.stated_external_org_id,
-            wording=f"{verdict.fields.get('description') or ''} {verdict.evidence.quote}",
+            organization_id=organization_id,
+            wording=" ".join(
+                (
+                    str(verdict.fields.get("description") or ""),
+                    verdict.evidence.quote,
+                )
+            ),
             station_text=str(facts.fields.get("station") or "") or None,
+            context=context,
         )
         if match.kind == "exact":
-            placements.append((verdict, match))
-    if not placements:
-        return StatementScopeRun(0, None, replay)
+            [survivor_id] = match.dependency_ids
+            lineage_ids = tuple(
+                sorted(
+                    lineage_id
+                    for lineage_id, dependency_ids in open_lineage_scopes.items()
+                    if survivor_id in dependency_ids
+                )
+            )
+            lineage_id: int | None = None
+            previous_timing: StatementTiming | None = None
+            if len(lineage_ids) == 1:
+                # Same organization, overlapping identifying language, one
+                # open Commitment holding the survivor: this is a Change to
+                # Promised Timing on that chain, not a new unplaced statement.
+                lineage_id = lineage_ids[0]
+                previous_timing = _lineage_current_timing(session, lineage_id)
+            placements.append((verdict, match, lineage_id, previous_timing))
+        elif match.kind == "ambiguous":
+            input_receipt = _narrowed_input_receipt(
+                candidate, policy_sha256=policy_sha256, match_evidence=match.evidence
+            )
+            withheld.append(candidate.id)
+            if policy.has_matching_abstention(
+                prior_abstentions.get(candidate.id, []),
+                input_receipt=input_receipt,
+                verdict=NARROWED_SET_REASON,
+                reason_version=REASON_VERSION,
+            ):
+                continue
+            narrowed.append((candidate, match, input_receipt))
 
-    policy_json = canonical_policy()
+    if not placements and not narrowed:
+        return StatementScopeRun(0, None, replay, tuple(withheld))
+
     with session.begin_nested():
         run = PolicyRun(
             project_id=project.id,
             family="event-admission",
             policy_approval_id=None,
             policy_version=POLICY_VERSION,
-            policy_sha256=policy.canonical_sha256(policy_json),
+            policy_sha256=policy_sha256,
             abstention_reason_version=REASON_VERSION,
             applied_count=len(placements),
-            abstained_count=0,
+            abstained_count=len(narrowed),
         )
         session.add(run)
         session.flush([run])
-        for placement, match in placements:
+
+        for candidate, match, input_receipt in narrowed:
+            eligibility = {
+                "input": input_receipt,
+                "verdict": NARROWED_SET_REASON,
+                "reason_version": REASON_VERSION,
+                "card": match.card,
+            }
+            session.add(
+                EventAdmissionOutcome(
+                    policy_run_id=run.id,
+                    candidate_id=candidate.id,
+                    outcome="abstained",
+                    reason=NARROWED_SET_REASON,
+                    eligibility_json=eligibility,
+                    eligibility_sha256=policy.canonical_sha256(eligibility),
+                )
+            )
+
+        for placement, match, lineage_id, previous_timing in placements:
             event = record_external_party_statement(
                 session,
                 project_id=project.id,
@@ -188,10 +425,11 @@ def run_identifying_language_admission(
                 event_date=placement.event_date,
                 description=str(placement.fields.get("description") or ""),
                 new_timing=placement.new_timing,
-                previous_timing=None,
+                previous_timing=previous_timing,
                 scope=StatementScope.selected(match.dependency_ids),
                 created_by=MACHINE_ACTOR,
                 evidence=placement.evidence,
+                commitment_lineage_id=lineage_id,
             )
             placement.candidate.state = "accepted"
             placement.candidate.adjudicated_at = datetime.now(timezone.utc)
@@ -202,19 +440,83 @@ def run_identifying_language_admission(
                 recorded_by=MACHINE_ACTOR,
             )
             session.add(disposition)
-            outcome = EventAdmissionOutcome(
-                policy_run_id=run.id,
-                candidate_id=placement.candidate.id,
-                outcome="admitted",
-                dependency_event_id=event.id,
-                eligibility_json={"match": match.evidence, "replay_case_count": replay.case_count},
-                eligibility_sha256=policy.canonical_sha256(match.evidence),
+            eligibility = {
+                "match": match.evidence,
+                "replay_case_count": replay.case_count,
+                "commitment_lineage_id": event.commitment_lineage_id,
+            }
+            session.add(
+                EventAdmissionOutcome(
+                    policy_run_id=run.id,
+                    candidate_id=placement.candidate.id,
+                    outcome="admitted",
+                    dependency_event_id=event.id,
+                    commitment_lineage_id=event.commitment_lineage_id,
+                    eligibility_json=eligibility,
+                    eligibility_sha256=policy.canonical_sha256(eligibility),
+                )
             )
-            session.add(outcome)
             audit.record(
-                session, actor=MACHINE_ACTOR, action=audit.ADMIT_EVENT,
-                entity_type=audit.DEPENDENCY, entity_id=match.dependency_ids[0],
-                after={"policy_run_id": run.id, "candidate_id": placement.candidate.id,
-                       "dependency_event_id": event.id, "matcher_fingerprint": matcher_fingerprint()},
+                session,
+                actor=MACHINE_ACTOR,
+                action=audit.ADMIT_EVENT,
+                entity_type=audit.DEPENDENCY,
+                entity_id=match.dependency_ids[0],
+                after={
+                    "policy_run_id": run.id,
+                    "candidate_id": placement.candidate.id,
+                    "dependency_event_id": event.id,
+                    "commitment_lineage_id": event.commitment_lineage_id,
+                    "matcher_fingerprint": matcher_fingerprint(),
+                    "policy_sha256": policy_sha256,
+                },
             )
-    return StatementScopeRun(len(placements), run.id, replay)
+        session.flush()
+    return StatementScopeRun(len(placements), run.id, replay, tuple(withheld))
+
+
+def _narrowed_input_receipt(
+    candidate: Candidate, *, policy_sha256: str, match_evidence: dict
+) -> dict:
+    """Exact unchanged input that makes one narrowed-set Abstention reusable."""
+    return {
+        "receipt_version": "identifying-language-narrowed-input-v1",
+        "project_id": candidate.project_id,
+        "candidate_id": candidate.id,
+        "source_document_id": candidate.source_document_id,
+        "active_extraction_run_id": candidate.extraction_run_id,
+        "candidate_payload_sha256": policy.canonical_sha256(candidate.payload_json),
+        "policy_sha256": policy_sha256,
+        "match_evidence_sha256": policy.canonical_sha256(match_evidence),
+    }
+
+
+def _lineage_current_timing(
+    session: Session, commitment_lineage_id: int
+) -> StatementTiming | None:
+    """The chain's current promised timing, preserved as the previous timing."""
+    superseding = DependencyEvent.__table__.alias("superseding")
+    event = session.scalar(
+        select(DependencyEvent)
+        .where(
+            DependencyEvent.commitment_lineage_id == commitment_lineage_id,
+            current_statement_event_filter(DependencyEvent.id),
+            ~select(superseding.c.id)
+            .where(superseding.c.supersedes_event_id == DependencyEvent.id)
+            .exists(),
+        )
+        .order_by(DependencyEvent.id)
+    )
+    if event is None:
+        return None
+    record = session.scalar(
+        select(StatementTimingRecord).where(
+            StatementTimingRecord.event_id == event.id,
+            StatementTimingRecord.kind == "new",
+        )
+    )
+    if record is None:
+        return None
+    return StatementTiming(
+        record.text, record.precision, record.start_date, record.end_date
+    )
