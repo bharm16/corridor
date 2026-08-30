@@ -4212,6 +4212,121 @@ class EvidenceInvestigationEvaluationReceipt(Base):
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class EvidenceInvestigationCaptureContract(Base):
+    """Declared gate-7 contract for delayed cutoff-correct outcome capture.
+
+    One approved observation contract names an exact frozen cohort, the sealed
+    configuration identities it may associate, the observation window and its
+    intended cutoff, the protection end, and the retained-history coverage the
+    reconstruction is allowed to trust.  It is content-addressed and append-only:
+    a different cutoff, membership, or identity is a different contract, never a
+    rewrite of this one, and an incomplete or unapproved declaration is never
+    written at all (the capture stays disabled).
+    """
+
+    __tablename__ = "evidence_investigation_capture_contracts"
+    __table_args__ = (
+        CheckConstraint(
+            "missing_label_policy = 'remain_missing'",
+            name="ck_capture_contract_missing_label_policy",
+        ),
+        CheckConstraint(
+            "length(trim(declared_by)) > 0",
+            name="ck_capture_contract_actor",
+        ),
+        CheckConstraint(
+            "window_start <= cutoff_at",
+            name="ck_capture_contract_window_before_cutoff",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    cohort_id: Mapped[str] = mapped_column(String(128))
+    contract_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    prompt_sha256: Mapped[str] = mapped_column(String(64))
+    adapter_contract_version: Mapped[str] = mapped_column(String(128))
+    tool_contract_version: Mapped[str] = mapped_column(String(128))
+    validator_version: Mapped[str] = mapped_column(String(128))
+    baseline_identity: Mapped[str] = mapped_column(String(128))
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    protection_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    history_retained_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    missing_label_policy: Mapped[str] = mapped_column(String(32))
+    member_case_public_ids_json: Mapped[list] = mapped_column(JSONB)
+    contract_json: Mapped[dict] = mapped_column(JSONB)
+    declared_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EvidenceInvestigationCaptureResult(Base):
+    """One cutoff-correct association of a frozen case's independent outcome.
+
+    The association records the intended cutoff and the actual execution time
+    separately, binds the exact project, frozen case, execution run, human
+    outcome, and source-receipt identities, and states its completeness.  It
+    never rewrites the frozen case, its run, or the immutable one-time capture,
+    and a reconstruction that retained history cannot support exactly is kept as
+    ``incomplete`` with its reason rather than labelled as cutoff-time truth.
+    """
+
+    __tablename__ = "evidence_investigation_capture_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "capture_contract_id",
+            "shadow_case_id",
+            name="uq_capture_result_case",
+        ),
+        CheckConstraint(
+            "completeness in ('complete', 'incomplete')",
+            name="ck_capture_result_completeness",
+        ),
+        CheckConstraint(
+            "(completeness = 'complete' and incomplete_reason is null) or "
+            "(completeness = 'incomplete' and incomplete_reason is not null)",
+            name="ck_capture_result_incomplete_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    capture_contract_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_capture_contracts.id"), index=True
+    )
+    shadow_case_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_investigation_shadow_cases.id")
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("evidence_investigation_runs.id")
+    )
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completeness: Mapped[str] = mapped_column(String(16))
+    incomplete_reason: Mapped[str | None] = mapped_column(String(64))
+    candidate_disposition: Mapped[str | None] = mapped_column(String(32))
+    scope_mode: Mapped[str | None] = mapped_column(String(32))
+    selected_dependency_ids_json: Mapped[list] = mapped_column(JSONB)
+    correction: Mapped[bool] = mapped_column(Boolean)
+    undo: Mapped[bool] = mapped_column(Boolean)
+    unresolved: Mapped[bool] = mapped_column(Boolean)
+    human_outcome_identity: Mapped[str | None] = mapped_column(String(64))
+    outcome_identities_json: Mapped[dict] = mapped_column(JSONB)
+    strata_json: Mapped[list] = mapped_column(JSONB)
+    review_seconds: Mapped[float | None] = mapped_column(Float)
+    association_sha256: Mapped[str] = mapped_column(String(64))
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class CandidateDisposition(Base):
     """One human disposition of an Unplaced Statement Candidate.
 
