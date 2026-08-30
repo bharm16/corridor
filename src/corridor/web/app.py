@@ -2320,10 +2320,11 @@ def _key_dates_context(session: Session, project: Project, **overrides) -> dict:
 def key_dates(
     request: Request,
     slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Read-only view of a project's registered Key dates and the import form."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     return TEMPLATES.TemplateResponse(
         request,
         "key_dates.html",
@@ -2339,13 +2340,14 @@ def key_dates_preview(
     slug: str,
     source_name: str = Form(""),
     content: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Dry-run a hand-typed CSV: show its source, fingerprint, and row effects.
 
     Nothing is written; malformed input refuses without a partial import.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     resolved_source = source_name.strip() or "pasted-key-dates.csv"
     try:
         preview = preview_import(
@@ -2398,7 +2400,7 @@ def key_dates_confirm(
     changed content or a moved project state refuses and re-presents the current
     state rather than importing against a stale review.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     try:
         predecessors = json.loads(expected_predecessors) if expected_predecessors else {}
     except json.JSONDecodeError as exc:
@@ -2522,7 +2524,7 @@ def internal_report(
     session: Session = Depends(get_session),
 ):
     """The ordinary internal entry: current facts, no approval step."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     report = build_report(session, project.id, document_only=document_only)
     evaluation = report.evaluation
     facets = [
@@ -2577,7 +2579,7 @@ def internal_report_full(
     session: Session = Depends(get_session),
 ):
     """The full report markup, reused verbatim and marked internal."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     report = build_report(session, project.id, document_only=document_only)
     response = HTMLResponse(render(report, banner=_INTERNAL_REPORT_BANNER))
     record_frontend_request(
@@ -2605,7 +2607,7 @@ def internal_report_alerts(
     session: Session = Depends(get_session),
 ):
     """One alert's complete matching constraint population, bounded for reading."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     if rule not in RULES:
         raise HTTPException(404, "no such constraint alert")
     report = build_report(session, project.id, document_only=document_only)
@@ -2684,7 +2686,7 @@ def internal_report_workbook(
     session: Session = Depends(get_session),
 ):
     """The internal working workbook, at the same reading the view shows."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     report = build_report(session, project.id, document_only=document_only)
     xlsx_bytes = _internal_workbook_bytes(
         session,
