@@ -36,12 +36,17 @@ from corridor.models import (
 HANDLER_PROCESSING_HEALTH = "processing_health"
 HANDLER_PROJECT_PROCESSING = "project_processing"
 HANDLER_REVISION_RECONCILIATION = "revision_reconciliation"
+HANDLER_LOCATION_DISCOVERY = "location_discovery"
 # The upper safety ceiling for a declared model spend. A processing schedule
 # must declare a positive budget (never a silent zero); it may not exceed this.
 _PROJECT_PROCESSING_TOKEN_CEILING = 100_000_000
 _CONFIGURATION_VERSION = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _EXTRACTOR_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _POLICY_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+_LOCATION_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+# A location host is a bare DNS name; the adapter reaches only these and follows
+# no redirect off them (#350). No scheme, port, path, or wildcard is accepted.
+_LOCATION_HOST = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))+$")
 _RUNTIME_OWNER = re.compile(r"^runtime:[A-Za-z0-9][A-Za-z0-9._:-]{1,119}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -203,6 +208,92 @@ class RevisionReconciliationDeclaration:
             configuration_version=configuration_version,
             matcher_identity=matcher_identity,
             support_rule_identity=support_rule_identity,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=600,
+            deadline_seconds=300,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
+class LocationDiscoveryDeclaration:
+    """One validated gate-7 declaration that enables one connected location (#350).
+
+    The adapter discovers and fetches; it reads no model, so ``model_token_budget``
+    is a declared zero (extraction of a registered document is the separate
+    project-processing pass). Scope names the one exact location the adapter may
+    reach — its stable ``location_id``, the deployed ``adapter_identity``, the
+    registered source/manifest identity, the concrete ``index_url``, and the
+    authorized host boundary no redirect may leave — plus the sealed-holdout flag
+    and every archive/resource limit. Missing or invalid configuration leaves the
+    adapter refused; credentials never widen this scope, and authorized
+    destinations stay empty.
+    """
+
+    project_id: int
+    configuration_version: str
+    location_id: str
+    adapter_identity: str
+    source_manifest_id: str
+    index_url: str
+    authorized_hosts: tuple[str, ...]
+    sealed: bool
+    nested_archive_depth: int
+    max_archive_compressed_mib: int
+    max_member_decompressed_mib: int
+    enumeration_limit: int
+    request_limit: int
+    document_limit: int
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        location_id: str,
+        adapter_identity: str,
+        source_manifest_id: str,
+        index_url: str,
+        authorized_hosts: tuple[str, ...],
+        sealed: bool = False,
+        starts_at: datetime,
+    ) -> "LocationDiscoveryDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            location_id=location_id,
+            adapter_identity=adapter_identity,
+            source_manifest_id=source_manifest_id,
+            index_url=index_url,
+            authorized_hosts=authorized_hosts,
+            sealed=sealed,
+            nested_archive_depth=2,
+            max_archive_compressed_mib=512,
+            max_member_decompressed_mib=128,
+            enumeration_limit=500,
+            request_limit=200,
+            document_limit=100,
             starts_at=starts_at,
             cadence="hourly",
             timezone_name="UTC",
@@ -409,6 +500,71 @@ def _revision_reconciliation_effectful(context: EffectfulContext) -> dict[str, A
     )
 
 
+def _location_discovery_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Run one bounded discovery-and-fetch pass for a claimed occurrence (#350).
+
+    The pass commits its discovered references, fetch attempts, and any registered
+    Documents durably through the session factory; this wrapper only rebuilds the
+    server-owned location scope and resource budgets from the persisted schedule,
+    runs the pass over an ordinary HTTP client, and summarizes the result. It reads
+    no model — a registered document is handed to the standing project-processing
+    pass. Its own HTTP client is closed before the runtime finalizes the claim.
+    """
+
+    import httpx
+
+    from corridor.location_discovery import (
+        DiscoveryBudgets,
+        LocationScope,
+        discover_and_process,
+        summarize_discovery_pass,
+    )
+
+    with context.session_factory() as reading:
+        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
+        if schedule is None:
+            raise DueWorkRefusal("Due Work schedule disappeared")
+        project_id = schedule.project_id
+        configuration_version = schedule.configuration_version
+        scope_json = dict(schedule.scope_json)
+        deadline_seconds = schedule.deadline_seconds
+
+    scope = LocationScope(
+        location_id=scope_json["location_id"],
+        project_id=project_id,
+        index_url=scope_json["index_url"],
+        authorized_hosts=frozenset(scope_json["authorized_hosts"]),
+        sealed=bool(scope_json.get("sealed")),
+        source_manifest_id=scope_json["source_manifest_id"],
+        adapter_identity=scope_json["adapter_identity"],
+    )
+    budgets = DiscoveryBudgets(
+        max_references=scope_json["enumeration_limit"],
+        max_requests=scope_json["request_limit"],
+        max_documents=scope_json["document_limit"],
+        nested_archive_depth=scope_json["nested_archive_depth"],
+        max_compressed_bytes=scope_json["max_archive_compressed_mib"] * 1024 * 1024,
+        max_decompressed_bytes=scope_json["max_member_decompressed_mib"] * 1024 * 1024,
+        time_budget_seconds=deadline_seconds,
+    )
+    client = httpx.Client(timeout=60.0)
+    try:
+        result = discover_and_process(
+            context.session_factory,
+            scope=scope,
+            budgets=budgets,
+            client=client,
+            clock=context.clock,
+        )
+    finally:
+        client.close()
+    return summarize_discovery_pass(
+        result,
+        configuration_version=configuration_version,
+        observed_at=_aware_utc(context.clock.now()),
+    )
+
+
 HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
     {
         HANDLER_PROCESSING_HEALTH: HandlerContract(
@@ -437,6 +593,15 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             model_token_budget=0,
             notification_budget=0,
             run_effectful=_revision_reconciliation_effectful,
+        ),
+        HANDLER_LOCATION_DISCOVERY: HandlerContract(
+            key=HANDLER_LOCATION_DISCOVERY,
+            scope_kind="one_connected_location",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            run_effectful=_location_discovery_effectful,
         ),
     }
 )
@@ -665,6 +830,91 @@ def configure_revision_reconciliation(
             "matcher_identity": declaration.matcher_identity,
             "support_rule_identity": declaration.support_rule_identity,
         },
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
+def configure_location_discovery(
+    session: Session,
+    declaration: LocationDiscoveryDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 connected-location declaration (#350).
+
+    Missing, invalid, or incomplete configuration leaves the adapter refused and no
+    schedule written; a location's credentials never authorize a broader scan.
+    Enabling a new configuration disables the project's prior location schedule for
+    the same location while retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_location_discovery_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    scope = configuration["scope"]
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_LOCATION_DISCOVERY,
+            "project_id": declaration.project_id,
+            "location_id": declaration.location_id,
+            "adapter_identity": declaration.adapter_identity,
+            "source_manifest_id": declaration.source_manifest_id,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_LOCATION_DISCOVERY,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_LOCATION_DISCOVERY,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_LOCATION_DISCOVERY,
+        configuration_version=declaration.configuration_version,
+        scope_json=scope,
         configuration_json=configuration,
         configuration_sha256=configuration_sha256,
         input_identity_sha256=input_identity_sha256,
@@ -1327,6 +1577,118 @@ def _validated_revision_reconciliation_declaration(
     }
 
 
+def _validated_location_discovery_declaration(
+    declaration: "LocationDiscoveryDeclaration",
+) -> dict[str, Any]:
+    from urllib.parse import urlparse
+
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("location-discovery starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if not _LOCATION_IDENTITY.fullmatch(declaration.location_id):
+        raise DueWorkRefusal("location-discovery location identity is invalid")
+    if not _EXTRACTOR_IDENTITY.fullmatch(declaration.adapter_identity):
+        raise DueWorkRefusal("location-discovery adapter identity is invalid")
+    if not _LOCATION_IDENTITY.fullmatch(declaration.source_manifest_id):
+        raise DueWorkRefusal("location-discovery source manifest identity is invalid")
+    hosts = tuple(dict.fromkeys(declaration.authorized_hosts))
+    if not hosts or any(not _LOCATION_HOST.fullmatch(host) for host in hosts):
+        raise DueWorkRefusal("location-discovery authorized hosts are invalid")
+    parsed_index = urlparse(declaration.index_url)
+    if (
+        parsed_index.scheme not in ("http", "https")
+        or not parsed_index.hostname
+        or parsed_index.hostname not in hosts
+    ):
+        raise DueWorkRefusal(
+            "location-discovery index url must be http(s) within an authorized host"
+        )
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "location-discovery supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.nested_archive_depth <= 8
+        and 1 <= declaration.max_archive_compressed_mib <= 4096
+        and 1 <= declaration.max_member_decompressed_mib <= 4096
+        and 1 <= declaration.enumeration_limit <= 100_000
+        and 1 <= declaration.request_limit <= 100_000
+        and 1 <= declaration.document_limit <= 100_000
+    ):
+        raise DueWorkRefusal(
+            "location-discovery archive/resource limits are invalid"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal(
+            "location-discovery gate-7 resource declaration is invalid"
+        )
+    scope = {
+        "project_id": declaration.project_id,
+        "location_id": declaration.location_id,
+        "adapter_identity": declaration.adapter_identity,
+        "source_manifest_id": declaration.source_manifest_id,
+        "index_url": declaration.index_url,
+        "authorized_hosts": sorted(hosts),
+        "sealed": declaration.sealed,
+        "nested_archive_depth": declaration.nested_archive_depth,
+        "max_archive_compressed_mib": declaration.max_archive_compressed_mib,
+        "max_member_decompressed_mib": declaration.max_member_decompressed_mib,
+        "enumeration_limit": declaration.enumeration_limit,
+        "request_limit": declaration.request_limit,
+        "document_limit": declaration.document_limit,
+    }
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_LOCATION_DISCOVERY,
+        "project_id": declaration.project_id,
+        "scope": scope,
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "connected_location-v1",
+            "project_id": declaration.project_id,
+            "location_id": declaration.location_id,
+            "adapter_identity": declaration.adapter_identity,
+            "source_manifest_id": declaration.source_manifest_id,
+        },
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
     if schedule.handler_key not in HANDLER_REGISTRY:
         raise DueWorkRefusal("persisted Due Work handler is not server-owned")
@@ -1401,6 +1763,52 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
                 "support_rule_identity": support_rule_identity,
             }
         )
+    elif schedule.handler_key == HANDLER_LOCATION_DISCOVERY:
+        scope_json = schedule.scope_json
+        expected_config = _validated_location_discovery_declaration(
+            LocationDiscoveryDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                location_id=scope_json.get("location_id", ""),
+                adapter_identity=scope_json.get("adapter_identity", ""),
+                source_manifest_id=scope_json.get("source_manifest_id", ""),
+                index_url=scope_json.get("index_url", ""),
+                authorized_hosts=tuple(scope_json.get("authorized_hosts", ())),
+                sealed=bool(scope_json.get("sealed", False)),
+                nested_archive_depth=scope_json.get("nested_archive_depth", 0),
+                max_archive_compressed_mib=scope_json.get(
+                    "max_archive_compressed_mib", 0
+                ),
+                max_member_decompressed_mib=scope_json.get(
+                    "max_member_decompressed_mib", 0
+                ),
+                enumeration_limit=scope_json.get("enumeration_limit", 0),
+                request_limit=scope_json.get("request_limit", 0),
+                document_limit=scope_json.get("document_limit", 0),
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = expected_config["scope"]
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "location_id": scope_json.get("location_id", ""),
+                "adapter_identity": scope_json.get("adapter_identity", ""),
+                "source_manifest_id": scope_json.get("source_manifest_id", ""),
+            }
+        )
     else:
         expected_config = _validated_health_declaration(
             ProcessingHealthDeclaration(
@@ -1453,12 +1861,14 @@ def _handler(key: str) -> HandlerContract:
 def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -> str:
     """The recovery pointer a completed receipt records, per handler."""
 
-    if handler_result.get("health") == "healthy":
+    if handler_result.get("health") in ("healthy", "held_sealed"):
         return "none"
     if contract.key == HANDLER_PROJECT_PROCESSING:
         return "inspect_processing_attention"
     if contract.key == HANDLER_REVISION_RECONCILIATION:
         return "inspect_revision_attention"
+    if contract.key == HANDLER_LOCATION_DISCOVERY:
+        return "inspect_location_discovery_attention"
     return "inspect_failed_document_processing"
 
 
@@ -1527,6 +1937,31 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         or result.get("health") not in {"healthy", "revision_attention_required"}
     ):
         raise DueWorkRefusal("revision-reconciliation handler result is invalid")
+    if contract.key == HANDLER_LOCATION_DISCOVERY and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "location_id",
+            "sealed_excluded",
+            "references_observed",
+            "new_references",
+            "repeat_references",
+            "new_archive_urls",
+            "authorized_selected",
+            "registered",
+            "unchanged",
+            "drifted",
+            "fetch_failures",
+            "budget_exhausted",
+        }
+        or result.get("health")
+        not in {"healthy", "attention_required", "held_sealed"}
+    ):
+        raise DueWorkRefusal("location-discovery handler result is invalid")
 
 
 def _locked_live_claim(

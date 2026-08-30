@@ -18,8 +18,10 @@ from sqlalchemy import select
 
 from corridor.due_work import (
     DueWorkRefusal,
+    LocationDiscoveryDeclaration,
     ProcessingHealthDeclaration,
     ProjectProcessingDeclaration,
+    configure_location_discovery,
     configure_processing_health,
     configure_project_processing,
     due_work_status,
@@ -71,6 +73,40 @@ def _parser() -> argparse.ArgumentParser:
     processing.add_argument("--concurrency-limit", required=True, type=int)
     processing.add_argument("--model-token-budget", required=True, type=int)
     processing.add_argument("--notification-budget", required=True, type=int)
+
+    discovery = commands.add_parser("configure-discovery")
+    discovery.add_argument("project_slug")
+    discovery.add_argument("--configuration-version", required=True)
+    discovery.add_argument("--location-id", required=True)
+    discovery.add_argument("--adapter-identity", required=True)
+    discovery.add_argument("--source-manifest-id", required=True)
+    discovery.add_argument("--index-url", required=True)
+    discovery.add_argument(
+        "--authorized-host",
+        action="append",
+        required=True,
+        dest="authorized_hosts",
+        help="an authorized host; repeat for more than one",
+    )
+    discovery.add_argument("--sealed", action="store_true")
+    discovery.add_argument("--nested-archive-depth", type=int, default=2)
+    discovery.add_argument("--max-archive-compressed-mib", type=int, default=512)
+    discovery.add_argument("--max-member-decompressed-mib", type=int, default=128)
+    discovery.add_argument("--enumeration-limit", type=int, default=500)
+    discovery.add_argument("--request-limit", type=int, default=200)
+    discovery.add_argument("--document-limit", type=int, default=100)
+    discovery.add_argument("--starts-at", required=True)
+    discovery.add_argument("--cadence", required=True)
+    discovery.add_argument("--timezone", required=True, dest="timezone_name")
+    discovery.add_argument("--missed-run-policy", required=True)
+    discovery.add_argument("--retention-days", required=True, type=int)
+    discovery.add_argument("--max-attempts", required=True, type=int)
+    discovery.add_argument("--backoff-seconds", required=True, type=int)
+    discovery.add_argument("--claim-ttl-seconds", required=True, type=int)
+    discovery.add_argument("--deadline-seconds", required=True, type=int)
+    discovery.add_argument("--concurrency-limit", required=True, type=int)
+    discovery.add_argument("--model-token-budget", required=True, type=int)
+    discovery.add_argument("--notification-budget", required=True, type=int)
 
     commands.add_parser("tick")
     for name in ("run-once", "recover"):
@@ -164,6 +200,52 @@ def main(
                         "job_id": schedule.public_id,
                         "project_id": project.id,
                         "configuration_sha256": schedule.configuration_sha256,
+                        "enabled": schedule.disabled_at is None,
+                    }
+        elif args.command == "configure-discovery":
+            with session_factory() as session:
+                with session.begin():
+                    project = _project(session, args.project_slug)
+                    declaration = LocationDiscoveryDeclaration(
+                        project_id=project.id,
+                        configuration_version=args.configuration_version,
+                        location_id=args.location_id,
+                        adapter_identity=args.adapter_identity,
+                        source_manifest_id=args.source_manifest_id,
+                        index_url=args.index_url,
+                        authorized_hosts=tuple(args.authorized_hosts),
+                        sealed=args.sealed,
+                        nested_archive_depth=args.nested_archive_depth,
+                        max_archive_compressed_mib=args.max_archive_compressed_mib,
+                        max_member_decompressed_mib=args.max_member_decompressed_mib,
+                        enumeration_limit=args.enumeration_limit,
+                        request_limit=args.request_limit,
+                        document_limit=args.document_limit,
+                        starts_at=_datetime(args.starts_at),
+                        cadence=args.cadence,
+                        timezone_name=args.timezone_name,
+                        missed_run_policy=args.missed_run_policy,
+                        retention_days=args.retention_days,
+                        max_attempts=args.max_attempts,
+                        backoff_seconds=args.backoff_seconds,
+                        claim_ttl_seconds=args.claim_ttl_seconds,
+                        deadline_seconds=args.deadline_seconds,
+                        concurrency_limit=args.concurrency_limit,
+                        model_token_budget=args.model_token_budget,
+                        notification_budget=args.notification_budget,
+                    )
+                    schedule = configure_location_discovery(
+                        session,
+                        declaration,
+                        now=clock.now(),
+                    )
+                    payload = {
+                        "command": args.command,
+                        "job_id": schedule.public_id,
+                        "project_id": project.id,
+                        "location_id": args.location_id,
+                        "configuration_sha256": schedule.configuration_sha256,
+                        "sealed": args.sealed,
                         "enabled": schedule.disabled_at is None,
                     }
         elif args.command == "tick":
