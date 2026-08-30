@@ -88,6 +88,7 @@
   {% endif %}
 
   <form method="post" action="/projects/{{ project.slug }}/sources/confirm">
+    {{ csrf_field() }}
     <input type="hidden" name="sha256" value="{{ preview.sha256 }}">
     <input type="hidden" name="filename" value="{{ preview.filename }}">
     <input type="hidden" name="doc_type" value="{{ preview.doc_type }}">

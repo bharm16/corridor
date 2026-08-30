@@ -4085,10 +4085,11 @@ _DOC_TYPE_CHOICES = tuple(sorted(ACCEPTED_DOC_TYPES))
 def source_upload_form(
     request: Request,
     slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Offer the upload fallback: no filesystem path, no command."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     return TEMPLATES.TemplateResponse(
         request,
         "source_upload.html",
@@ -4108,10 +4109,11 @@ def source_upload_preview(
     slug: str,
     doc_type: str = Form(...),
     upload: UploadFile = File(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Stage the bytes and show what confirming would create or change."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     # Read one byte past the limit so an unbounded upload is refused without
     # buffering all of it; the shared validator re-checks the true bound.
     body = upload.file.read(MAX_UPLOAD_BYTES + 1)
@@ -4149,7 +4151,7 @@ def source_confirm(
     session: Session = Depends(get_session),
 ):
     """Bind the previewed source to the acting person and register it."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     try:
         confirm_intake(
             session,
@@ -4172,10 +4174,11 @@ def source_confirm(
 def source_uploads(
     request: Request,
     slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """The confirmed uploads and their honest processing outcomes."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     return TEMPLATES.TemplateResponse(
         request,
         "source_uploads.html",

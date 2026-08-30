@@ -50,6 +50,7 @@
   <form method="post"
         action="/projects/{{ project.slug }}/sources/upload"
         enctype="multipart/form-data">
+    {{ csrf_field() }}
     <div class="row">
       <label for="doc_type">What kind of document is this?</label>
       <select id="doc_type" name="doc_type" required>

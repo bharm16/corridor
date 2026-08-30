@@ -21,6 +21,8 @@ from corridor.models import Document, Project
 import corridor.source_intake as source_intake
 from corridor.web.app import app, get_human_principal, get_session
 
+from access_support import seed_membership
+
 TEST_PRINCIPAL = source_intake.HumanPrincipal("local:web-uploader")
 
 
@@ -65,8 +67,9 @@ def client(session):
 
 
 @pytest.fixture
-def client_without_principal(session, monkeypatch):
-    monkeypatch.setattr(settings, "human_principal", "")
+def client_without_session(session):
+    # No get_human_principal override: an anonymous request (no session cookie)
+    # is refused before any handler runs (#331).
     app.dependency_overrides.clear()
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as c:
@@ -79,6 +82,7 @@ def project(session):
     p = Project(slug=f"web-intake-{uuid4().hex[:8]}", name="Web Intake", is_synthetic=True)
     session.add(p)
     session.flush()
+    seed_membership(session, p, TEST_PRINCIPAL)
     return p
 
 
@@ -180,9 +184,9 @@ def test_upload_refuses_foreign_content_that_lies_about_its_suffix(
     assert "does not contain" in r.text
 
 
-def test_confirm_needs_a_verified_principal(client_without_principal, project, store):
+def test_confirm_needs_a_signed_in_session(client_without_session, project, store):
     body = _matrix_pdf()
-    r = client_without_principal.post(
+    r = client_without_session.post(
         f"/projects/{project.slug}/sources/confirm",
         data={
             "sha256": hashlib.sha256(body).hexdigest(),
@@ -192,7 +196,7 @@ def test_confirm_needs_a_verified_principal(client_without_principal, project, s
         },
         follow_redirects=False,
     )
-    assert r.status_code == 503
+    assert r.status_code == 401
 
 
 def test_confirm_refuses_a_cross_project_binding(client, session, project, store):
