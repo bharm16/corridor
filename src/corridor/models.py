@@ -2083,12 +2083,19 @@ class CommitmentLineage(Base):
 
 
 class ProjectRosterEntry(Base):
-    """One selectable project-team member for a Coordination Plan.
+    """One project-team membership, and the authority it carries.
 
     A Work Decision keeps its human-readable owner projection for existing
     readers, but a guided save must not turn a typed project roster into a
     caller-supplied string.  The grouping receipt binds the exact roster row
     that supplied the rendered name.
+
+    The membership is also the project-scoped access boundary (#331).  An
+    ``active`` row makes the person a member who may read the project and be
+    assigned work, but membership alone is not authority: each write designation
+    is an explicit, independently granted flag (ADR-0034 decisions 28 and 34,
+    ADR-0035).  Possessing a signed-in principal, or merely appearing on the
+    roster, confers none of them by default — they fail closed.
     """
 
     __tablename__ = "project_roster_entries"
@@ -2109,7 +2116,147 @@ class ProjectRosterEntry(Base):
     principal_subject: Mapped[str] = mapped_column(String(128))
     display_name: Mapped[str] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # The four distinct designations of #331.  None is implied by another or by
+    # membership: a coordinator is not a Documentation Reviewer, a reviewer may
+    # not release externally, and none of them is a technical operator.
+    can_coordinate: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    can_review_documentation: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    can_release_externally: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    is_technical_operator: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PersonIdentity(Base):
+    """The stable subject a verified email resolves to, and nothing more.
+
+    Sign-in authenticates a person (email -> principal); membership and its
+    designations decide what that person may do, per project.  This table is
+    deliberately global and authority-free: creating it grants no project access
+    and no organization-registry power (#331).  It is never backfilled for
+    historical actors — an existing audit or decision principal keeps its own
+    identity, and its email basis stays unknown unless a person enrolls (ADR-0035).
+    """
+
+    __tablename__ = "person_identities"
+    __table_args__ = (
+        UniqueConstraint("email_normalized", name="uq_person_identity_email"),
+        UniqueConstraint("principal_subject", name="uq_person_identity_principal"),
+        CheckConstraint(
+            "length(trim(email_normalized)) > 0", name="ck_person_identity_email"
+        ),
+        CheckConstraint(
+            "length(trim(principal_subject)) > 0",
+            name="ck_person_identity_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    email_normalized: Mapped[str] = mapped_column(Text)
+    principal_subject: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SignInToken(Base):
+    """One expiring, single-use magic-link secret, stored only as a hash.
+
+    The raw token lives only in the emailed link; the column is its SHA-256 so a
+    database read can never replay a link.  ``consumed_at`` is the single-use
+    guard: consumption is an atomic ``UPDATE ... WHERE consumed_at IS NULL AND
+    expires_at > now()`` so an expired, reused, tampered, or concurrently
+    consumed link can never establish a second session (#331).
+    """
+
+    __tablename__ = "sign_in_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_sha256", name="uq_sign_in_token_hash"),
+        CheckConstraint("length(token_sha256) = 64", name="ck_sign_in_token_hash"),
+        CheckConstraint("expires_at > created_at", name="ck_sign_in_token_expiry"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    email_normalized: Mapped[str] = mapped_column(Text)
+    token_sha256: Mapped[str] = mapped_column(String(64))
+    redirect_path: Mapped[str | None] = mapped_column(Text, server_default=text("null"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("null")
+    )
+
+
+class WebSession(Base):
+    """A signed-in browser session: explicit expiry, revocable, hash-stored.
+
+    The cookie carries a random id; this row stores only its SHA-256, so a
+    database read cannot resume a session.  ``expires_at`` and ``revoked_at`` are
+    both checked on every request, which is why revoking a session (logout) or a
+    membership takes effect immediately, with no reliance on a stale roster or an
+    earlier page load (#331).  ``csrf_sha256`` is the hash of the per-session
+    request-forgery token echoed by authenticated writes.
+    """
+
+    __tablename__ = "web_sessions"
+    __table_args__ = (
+        UniqueConstraint("session_sha256", name="uq_web_session_hash"),
+        CheckConstraint("length(session_sha256) = 64", name="ck_web_session_hash"),
+        CheckConstraint("length(csrf_sha256) = 64", name="ck_web_session_csrf"),
+        CheckConstraint("expires_at > created_at", name="ck_web_session_expiry"),
+        CheckConstraint(
+            "length(trim(principal_subject)) > 0", name="ck_web_session_principal"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    session_sha256: Mapped[str] = mapped_column(String(64))
+    csrf_sha256: Mapped[str] = mapped_column(String(64))
+    principal_subject: Mapped[str] = mapped_column(String(128))
+    email_normalized: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("null")
+    )
+
+
+class SignInAttempt(Base):
+    """Append-only record of one issuance or consumption attempt, for backoff.
+
+    Counting rows in a recent window bounds how many email or token attempts an
+    unauthenticated caller can generate (#331).  The scope is the throttle key —
+    a normalized email or a client address — never a claim that the email maps to
+    a member, so the counter cannot be used to enumerate membership.
+    """
+
+    __tablename__ = "sign_in_attempts"
+    __table_args__ = (
+        Index(
+            "ix_sign_in_attempt_scope",
+            "scope_kind",
+            "scope_value",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    scope_kind: Mapped[str] = mapped_column(String(32))
+    scope_value: Mapped[str] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

@@ -30,6 +30,8 @@ from fastapi.responses import (
     Response,
 )
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
+from markupsafe import Markup, escape
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -57,7 +59,8 @@ from corridor.candidate_statement_facts import (
     prepare_candidate_statement_facts,
 )
 from corridor.db import Session as SessionFactory
-from corridor.config import settings
+from corridor import access
+from corridor.web import auth
 from corridor.exceptions import RULES, evaluate_project, format_exception_name
 from corridor.export import to_xlsx
 from corridor.report import build_report, render
@@ -138,7 +141,7 @@ from corridor.frontend_request_receipts import (
 )
 from corridor.verbal import VerbalRefusal, record_verbal
 from corridor.identity import document_numbering_schemes, party_canonical_names
-from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.principals import HumanPrincipal
 from corridor.presentation import (
     documentation_review_label,
     field_label,
@@ -227,6 +230,22 @@ from corridor.web.statement_forms import (
 )
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+@pass_context
+def _csrf_field(context) -> Markup:
+    """Emit the hidden request-forgery field a signed-in POST form must carry.
+
+    The token rides in a readable cookie set at sign-in; the form echoes it so
+    the write path can match it against the session's stored hash (#331).
+    """
+    request = context.get("request")
+    token = request.cookies.get(auth.CSRF_COOKIE, "") if request is not None else ""
+    return Markup(
+        f'<input type="hidden" name="{auth.CSRF_FIELD}" value="{escape(token)}">'
+    )
+
+
 TEMPLATES.env.globals.update(
     label=label,
     field_label=field_label,
@@ -235,6 +254,7 @@ TEMPLATES.env.globals.update(
     provenance_label=provenance_label,
     resolution_strategy_label=resolution_strategy_label,
     statement_type_label=statement_type_label,
+    csrf_field=_csrf_field,
 )
 app = FastAPI(title="Corridor — coordination records")
 
@@ -265,16 +285,26 @@ def get_session():
         yield session
 
 
-def get_human_principal() -> HumanPrincipal:
-    """Resolve deployment identity, never identity supplied by the request."""
-    try:
-        return HumanPrincipal(settings.human_principal)
-    except InvalidHumanPrincipal as exc:
-        raise HTTPException(
-            503,
-            "Recording a human decision is unavailable until CORRIDOR_HUMAN_PRINCIPAL names "
-            "a stable human subject",
-        ) from exc
+async def get_human_principal(
+    request: Request, session: Session = Depends(get_session)
+) -> HumanPrincipal:
+    """The signed-in person for this request (#331).
+
+    Identity is the live session named by the HttpOnly cookie — never a form
+    field, request header, role label, or deployment value, and with no
+    fallback. An absent, expired, or revoked session refuses the request before
+    any handler runs, so a revoked session or membership is felt at once. On a
+    write, the session's request-forgery token must be echoed, so a cross-site
+    POST — which carries neither the cookie nor the token — cannot act.
+    """
+    web_session = auth.load_session(request, session)
+    if web_session is None:
+        raise HTTPException(401, "sign in to continue")
+    if request.method not in auth.SAFE_METHODS:
+        submitted = await auth.extract_csrf(request)
+        if not access.csrf_token_matches(web_session, submitted):
+            raise HTTPException(403, "request could not be verified")
+    return HumanPrincipal(web_session.principal_subject)
 
 
 def _safe_return(redirect_to: str, fallback: str) -> str:
@@ -488,10 +518,64 @@ def _sibling_revisions(
     return sorted(siblings, key=lambda s: (s["doc_date"] or date.min))
 
 
-def _project(session: Session, slug: str) -> Project:
+def _project(
+    session: Session,
+    slug: str,
+    principal: HumanPrincipal,
+    *,
+    designation: str | None = None,
+) -> Project:
+    """Resolve a project and, in the same step, gate access to it (#331).
+
+    Every slug-addressed surface resolves its project here, so membership and
+    designation are enforced by the resolver itself — a route cannot obtain a
+    Project without passing the gate. A non-member sees the same 404 as a
+    missing project, so project existence never leaks.
+    """
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:
         raise HTTPException(404, f"no project {slug!r}")
+    _authorize(session, principal, project, designation=designation)
+    return project
+
+
+def _authorize(
+    session: Session,
+    principal: HumanPrincipal,
+    project: Project,
+    *,
+    designation: str | None = None,
+) -> access.MembershipAccess:
+    """The one gate every project surface passes through (#331).
+
+    Non-membership is answered exactly like a missing project, so an
+    authenticated caller can neither enumerate projects nor confirm rows they
+    may not see. A member who lacks the specific designation is refused with no
+    side effects: membership never implies project coordination, Documentation
+    Review, external release, or technical operations.
+    """
+    membership = access.resolve_membership(session, principal.subject, project.id)
+    if membership is None:
+        raise HTTPException(404, f"no project {project.slug!r}")
+    if designation is not None and not membership.has(designation):
+        raise HTTPException(403, "not authorized for this project action")
+    return membership
+
+
+def _project_for_document(session: Session, document_id: int) -> Project:
+    """Resolve the owning project of a source document, or 404.
+
+    Source images are addressed by document id alone, so the membership gate has
+    to reach the project through the document rather than a slug in the path.
+    """
+    project_id = session.scalar(
+        select(Document.project_id).where(Document.id == document_id)
+    )
+    if project_id is None:
+        raise HTTPException(404, "no such page image")
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "no such page image")
     return project
 
 
@@ -687,7 +771,7 @@ def attach_waiting_statement(
     session: Session = Depends(get_session),
 ):
     """Put an unplaced statement on the record a human names."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = session.get(Candidate, candidate_id)
     if candidate is None or candidate.project_id != project.id:
         raise HTTPException(404, "no such statement in this project")
@@ -718,7 +802,7 @@ def dismiss(
     session: Session = Depends(get_session),
 ):
     """Take a junk record off the working list, with a reason."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     dependency = session.get(Dependency, dependency_id)
     if dependency is None or dependency.project_id != project.id:
         raise HTTPException(404, "no such constraint in this project")
@@ -736,6 +820,7 @@ def dismiss(
 def statements(
     request: Request,
     slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """The one pile: statements the machine could not place.
@@ -744,7 +829,7 @@ def statements(
     they choose, because a dated promise from a meeting is exactly what
     this product exists to catch and losing it silently is worse.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     waiting = waiting_statements(session, project.id)
     for item in waiting:
         item["headline"], item["guidance"] = STATEMENT_REASONS.get(
@@ -770,7 +855,7 @@ def coordinate_statement_screen(
     session: Session = Depends(get_session),
 ):
     """Show source Evidence and plain-language choices for one Unplaced Statement."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     candidate = _project_statement_candidate(session, project, candidate_id)
     if candidate.state == "pending" and observe_shadow_review(
         session, candidate.id, boundary="start", principal=principal
@@ -802,7 +887,7 @@ async def save_coordinated_statement(
     session: Session = Depends(get_session),
 ):
     """Delegate the ordinary screen's one Save to the atomic command."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     form = await request.form()
     try:
@@ -864,7 +949,7 @@ async def save_admitted_statement_scope(
     session: Session = Depends(get_session),
 ):
     """Scope correction belongs only to the explicit Correct flow."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     coordination = read_admitted_statement_coordination(
         session, project.id, candidate.id
@@ -905,7 +990,7 @@ def keep_unresolved_statement(
     session: Session = Depends(get_session),
 ):
     """Acknowledge a recomputed structured gap and retain pending work."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     try:
         keep_statement_unresolved(
@@ -952,7 +1037,7 @@ async def save_admitted_statement_owner(
     session: Session = Depends(get_session),
 ):
     """Assign an Internal Owner from the registered project roster."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     coordination = read_admitted_statement_coordination(
         session, project.id, candidate.id
@@ -1009,7 +1094,7 @@ async def save_admitted_statement_next_action(
     session: Session = Depends(get_session),
 ):
     """Append the structured project-language Next Action and return timing."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     coordination = read_admitted_statement_coordination(
         session, project.id, candidate.id
@@ -1072,7 +1157,7 @@ def undo_coordinated_statement(
     session: Session = Depends(get_session),
 ):
     """Undo exactly the Save identified by the rendered grouping receipt."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     receipt = session.get(StatementCoordinationReceipt, receipt_id)
     if receipt is None or receipt.candidate_id != candidate.id:
@@ -1098,7 +1183,7 @@ async def mark_waiting_statement_not_relevant(
     session: Session = Depends(get_session),
 ):
     """Keep a reasoned non-statement disposition separate from generic rejection."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     form = await request.form()
     try:
@@ -1143,7 +1228,7 @@ def restore_waiting_statement_not_relevant(
     session: Session = Depends(get_session),
 ):
     """Restore a Candidate from its exact Not Relevant disposition."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     disposition = session.get(CandidateDisposition, disposition_id)
     if disposition is None or disposition.candidate_id != candidate.id:
@@ -1169,7 +1254,7 @@ def correct_statement_screen(
     session: Session = Depends(get_session),
 ):
     """Show one supported scope or fact correction for the current statement."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     candidate = _project_statement_candidate(session, project, candidate_id)
     receipt = _active_statement_coordination_receipt(session, candidate.id)
     event: DependencyEvent | None
@@ -1281,7 +1366,7 @@ async def correct_statement_scope_from_screen(
     session: Session = Depends(get_session),
 ):
     """Delegate the scope form to the append-only scope correction command."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     form = await request.form()
     try:
@@ -1364,7 +1449,7 @@ async def correct_statement_facts_from_screen(
     session: Session = Depends(get_session),
 ):
     """Delegate a supported factual correction to the lineage successor command."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_statement_candidate(session, project, candidate_id)
     form = await request.form()
     try:
@@ -1722,9 +1807,147 @@ def _authority_gap_label(code: str) -> str:
     }.get(code, code.replace("_", " "))
 
 
+def _safe_next(candidate: str) -> str:
+    """A same-app path, or ``/`` — never an off-site redirect target (#331)."""
+    value = (candidate or "").strip()
+    if value.startswith("/") and not value.startswith("//"):
+        return value
+    return "/"
+
+
 @app.get("/", response_class=HTMLResponse)
-def root():
-    return RedirectResponse("/work/nhhip-3c2", status_code=302)
+def root(request: Request, session: Session = Depends(get_session)):
+    """Send a signed-in person to their projects, everyone else to sign-in."""
+    web_session = auth.load_session(request, session)
+    if web_session is None:
+        return RedirectResponse("/sign-in", status_code=303)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "projects.html",
+        {
+            "projects": access.member_projects(session, web_session.principal_subject),
+            "email": web_session.email_normalized,
+        },
+    )
+
+
+@app.get("/sign-in", response_class=HTMLResponse)
+def sign_in_form(request: Request, next: str = "", session: Session = Depends(get_session)):
+    """The passwordless entry point; no identity is revealed here."""
+    if auth.load_session(request, session) is not None:
+        return RedirectResponse("/", status_code=303)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "sign_in.html",
+        {"next": _safe_next(next), "sent": False, "throttled": False},
+    )
+
+
+@app.post("/sign-in/request", response_class=HTMLResponse)
+def request_sign_in(
+    request: Request,
+    email: str = Form(...),
+    next: str = Form(""),
+    session: Session = Depends(get_session),
+    sender: auth.EmailSender = Depends(auth.get_email_sender),
+):
+    """Issue a magic link, without ever revealing whether the address is enrolled.
+
+    Every well-formed request gets the same "check your email" answer; only the
+    abuse ceiling (independent of membership) can change it. A live link is
+    reused rather than multiplied, and a link is created and mailed only for an
+    enrolled identity — but the response never says which case occurred (#331).
+    """
+    normalized = access.normalize_email(email)
+    scope = auth.client_scope(request)
+    throttled = access.over_limit(
+        session, access.ISSUE_IP, scope, access.MAX_ISSUE_PER_IP
+    ) or (
+        bool(normalized)
+        and access.over_limit(
+            session, access.ISSUE_EMAIL, normalized, access.MAX_ISSUE_PER_EMAIL
+        )
+    )
+    if throttled:
+        session.commit()
+        response = TEMPLATES.TemplateResponse(
+            request,
+            "sign_in.html",
+            {"next": _safe_next(next), "sent": False, "throttled": True},
+            status_code=429,
+        )
+        return response
+    access.record_attempt(session, access.ISSUE_IP, scope)
+    if normalized:
+        access.record_attempt(session, access.ISSUE_EMAIL, normalized)
+        identity = access.identity_for_email(session, normalized)
+        if identity is not None and not access.has_live_token(session, normalized):
+            issued = access.issue_sign_in_token(
+                session, normalized, redirect_path=_safe_next(next)
+            )
+            link = (
+                str(request.base_url).rstrip("/")
+                + "/sign-in/consume?token="
+                + quote(issued.raw_token)
+            )
+            sender.send_sign_in_link(email=normalized, link=link)
+    session.commit()
+    return TEMPLATES.TemplateResponse(
+        request,
+        "sign_in.html",
+        {"next": _safe_next(next), "sent": True, "throttled": False},
+    )
+
+
+@app.get("/sign-in/consume")
+def consume_sign_in(
+    request: Request,
+    token: str = "",
+    session: Session = Depends(get_session),
+):
+    """Spend a link once and open a session, or fail the same way for every cause.
+
+    Expired, reused, tampered, and unknown tokens are indistinguishable: each
+    lands on the same generic error, and none establishes a session.  The
+    redirect target is re-constrained to the application (#331).
+    """
+    scope = auth.client_scope(request)
+    if access.over_limit(session, access.CONSUME_IP, scope, access.MAX_CONSUME_PER_IP):
+        session.commit()
+        return TEMPLATES.TemplateResponse(
+            request, "sign_in_invalid.html", {}, status_code=429
+        )
+    access.record_attempt(session, access.CONSUME_IP, scope)
+    consumed = access.consume_sign_in_token(session, token)
+    if consumed is None:
+        session.commit()
+        return TEMPLATES.TemplateResponse(
+            request, "sign_in_invalid.html", {}, status_code=400
+        )
+    new_session = access.create_web_session(
+        session,
+        principal=consumed.principal,
+        email_normalized=consumed.email_normalized,
+    )
+    response = RedirectResponse(_safe_next(consumed.redirect_path or "/"), status_code=303)
+    auth.set_session_cookies(response, new_session)
+    session.commit()
+    return response
+
+
+@app.post("/sign-out")
+def sign_out(
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Revoke this session now; a cross-site POST cannot reach here (CSRF)."""
+    raw = request.cookies.get(auth.SESSION_COOKIE) or ""
+    access.revoke_web_session(session, raw)
+    session.commit()
+    response = RedirectResponse("/sign-in", status_code=303)
+    auth.clear_session_cookies(response)
+    return response
 
 
 @app.get("/reports/{slug}", response_class=HTMLResponse)
@@ -1735,7 +1958,7 @@ def reports(
     session: Session = Depends(get_session),
 ):
     """Ordinary project-person entry point for fixed PDF release."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     response = TEMPLATES.TemplateResponse(
         request,
         "report_release.html",
@@ -1767,7 +1990,7 @@ def review_report(
     session: Session = Depends(get_session),
 ):
     """Review one retained PDF and only its frozen context."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     try:
         review = review_prepared_external_report(session, project.id, artifact_id)
     except ReleaseRefusal as exc:
@@ -1802,7 +2025,7 @@ def download_prepared_report(
     session: Session = Depends(get_session),
 ):
     """Download exactly the retained bytes awaiting a release decision."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     try:
         artifact = retrieve_prepared_external_report(
             session, project.id, artifact_id
@@ -1835,7 +2058,7 @@ def preview_prepared_report(
     session: Session = Depends(get_session),
 ):
     """Display exactly the retained bytes awaiting a release decision."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     try:
         artifact = retrieve_prepared_external_report(
             session, project.id, artifact_id
@@ -1872,7 +2095,7 @@ def release_prepared_report(
     session: Session = Depends(get_session),
 ):
     """Authorize the artifact bound to the review control, without rerendering."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.EXTERNAL_RELEASE)
     try:
         with session.begin_nested():
             receipt = release_external_report(
@@ -1913,10 +2136,11 @@ def release_prepared_report(
 def download_released_report(
     slug: str,
     release_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Retrieve the immutable bytes named by one historical release."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     try:
         receipt = retrieve_released_external_report(
             session, project.id, release_id
@@ -1956,7 +2180,7 @@ def render_report(
     session: Session = Depends(get_session),
 ):
     """Render and retain one fixed PDF; this does not release it externally."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     try:
         with session.begin_nested():
             _rendered, report_run, artifact = render_and_prepare_external_report(
@@ -2009,7 +2233,7 @@ def release_report(
     session: Session = Depends(get_session),
 ):
     """Human-authorize one previously rendered PDF without regenerating it."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.EXTERNAL_RELEASE)
     try:
         release = release_external_report(
             session,
@@ -2096,10 +2320,11 @@ def _key_dates_context(session: Session, project: Project, **overrides) -> dict:
 def key_dates(
     request: Request,
     slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Read-only view of a project's registered Key dates and the import form."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     return TEMPLATES.TemplateResponse(
         request,
         "key_dates.html",
@@ -2115,13 +2340,14 @@ def key_dates_preview(
     slug: str,
     source_name: str = Form(""),
     content: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
     """Dry-run a hand-typed CSV: show its source, fingerprint, and row effects.
 
     Nothing is written; malformed input refuses without a partial import.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     resolved_source = source_name.strip() or "pasted-key-dates.csv"
     try:
         preview = preview_import(
@@ -2174,7 +2400,7 @@ def key_dates_confirm(
     changed content or a moved project state refuses and re-presents the current
     state rather than importing against a stale review.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     try:
         predecessors = json.loads(expected_predecessors) if expected_predecessors else {}
     except json.JSONDecodeError as exc:
@@ -2298,7 +2524,7 @@ def internal_report(
     session: Session = Depends(get_session),
 ):
     """The ordinary internal entry: current facts, no approval step."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     report = build_report(session, project.id, document_only=document_only)
     evaluation = report.evaluation
     facets = [
@@ -2353,7 +2579,7 @@ def internal_report_full(
     session: Session = Depends(get_session),
 ):
     """The full report markup, reused verbatim and marked internal."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     report = build_report(session, project.id, document_only=document_only)
     response = HTMLResponse(render(report, banner=_INTERNAL_REPORT_BANNER))
     record_frontend_request(
@@ -2381,7 +2607,7 @@ def internal_report_alerts(
     session: Session = Depends(get_session),
 ):
     """One alert's complete matching constraint population, bounded for reading."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     if rule not in RULES:
         raise HTTPException(404, "no such constraint alert")
     report = build_report(session, project.id, document_only=document_only)
@@ -2460,7 +2686,7 @@ def internal_report_workbook(
     session: Session = Depends(get_session),
 ):
     """The internal working workbook, at the same reading the view shows."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     report = build_report(session, project.id, document_only=document_only)
     xlsx_bytes = _internal_workbook_bytes(
         session,
@@ -2498,7 +2724,7 @@ def coordinator_home(
     session: Session = Depends(get_session),
 ):
     """The coordinator's short, project-language entry point."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     work_list = build_work_list(
         session,
         project.id,
@@ -2590,7 +2816,7 @@ def queue(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     cohort_receipt = None
     if lane == "rehearsal":
         if cohort_receipt_id is None:
@@ -2907,7 +3133,7 @@ async def reconfirm_support(
     finding_id = _required_positive_http_id(form, "finding_id")
     scope_fingerprint = _required_scope_fingerprint(form)
 
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
     try:
         reconfirm_operative_support(
@@ -2938,9 +3164,10 @@ def ledger(
     ready: str | None = None,
     rule: str | None = None,
     owner: str | None = None,
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     # This page is its own publication, so it takes its own evaluation —
     # stated here rather than defaulted inside `browse`, where a caller who
     # already held one could silently pay for a second.
@@ -2998,9 +3225,10 @@ def dependency_detail(
     slug: str,
     dependency_id: int,
     return_to: str = "",
+    principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    project = _project(session, slug)
+    project = _project(session, slug, principal)
     try:
         view = load_dependency(session, dependency_id)
     except LookupError:
@@ -3055,7 +3283,7 @@ def record_dependency_verbal(
     session: Session = Depends(get_session),
 ):
     """Record one attributable phone statement from this Dependency's page."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     dependency = _project_dependency(session, project, dependency_id)
     try:
         record_verbal(
@@ -3091,7 +3319,7 @@ def settle(
     them (ADR-0031). A later revision disagreeing again reopens the
     Dispute without anyone reopening it.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     dependency = session.get(Dependency, dependency_id)
     if dependency is None or dependency.project_id != project.id:
         raise HTTPException(404, "no such constraint in this project")
@@ -3128,7 +3356,7 @@ def assign_owner(
     One decision per submit. The rules belong to the Work Decision seam;
     this route carries the HTTP.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
     return_location = _safe_return(
         redirect_to, f"/ledger/{slug}/{dependency_id}"
@@ -3174,7 +3402,7 @@ def record_next_action(
     session: Session = Depends(get_session),
 ):
     """One submit, one Work Decision: the action and its date together."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
     return_location = _safe_return(
         redirect_to, f"/ledger/{slug}/{dependency_id}"
@@ -3233,7 +3461,7 @@ def close_next_action(
     session: Session = Depends(get_session),
 ):
     """Completion and cancellation are distinct decisions, never one button."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
     return_location = _safe_return(
         redirect_to, f"/ledger/{slug}/{dependency_id}"
@@ -3274,7 +3502,7 @@ def mark_evidence_satisfies(
     deliberate act on a named piece of evidence rather than a status change.
     The rules belong to the Ledger; this route carries the HTTP.
     """
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
     dependency = _project_dependency(session, project, dependency_id)
     _project_evidence(session, dependency, link_id)
     try:
@@ -3290,7 +3518,20 @@ def mark_evidence_satisfies(
 
 
 @app.get("/page-image/{document_id}/{page_no}")
-def page_image(document_id: int, page_no: int, session: Session = Depends(get_session)):
+def page_image(
+    document_id: int,
+    page_no: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Serve a source page image only to a member of its project (#331).
+
+    The image is addressed by document id, so a guessed id must not leak another
+    project's source. The owning project is resolved from the document and the
+    membership gate applied before any file is read.
+    """
+    project = _project_for_document(session, document_id)
+    _authorize(session, principal, project)
     page = session.scalars(
         select(DocPage).where(
             DocPage.document_id == document_id, DocPage.page_no == page_no
@@ -3309,7 +3550,7 @@ def keep_unresolved_candidate(
     session: Session = Depends(get_session),
 ):
     """Acknowledge the latest structured gap and retain the pending proposal."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     candidate = _project_candidate(session, project, candidate_id)
     try:
         keep_candidate_unresolved(
@@ -3352,7 +3593,7 @@ def accept(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     _require_cohort_scope(
         session, cohort_receipt_id, candidate_id, project=project
     )
@@ -3506,7 +3747,7 @@ async def edit_accept(
             event_cohort_receipt_id = int(str(raw_event_receipt_id).strip())
         except ValueError:
             raise HTTPException(400, "event_cohort_receipt_id must be an integer")
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     _require_cohort_scope(
         session, cohort_receipt_id, candidate_id, project=project
     )
@@ -3580,7 +3821,7 @@ def merge(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     _require_cohort_scope(
         session, cohort_receipt_id, candidate_id, project=project
     )
@@ -3655,7 +3896,7 @@ def reject(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     # The receipt id arrived with every reject form and was ignored — the
     # boundary holds at every mutation or it is not a boundary.
     _require_cohort_scope(

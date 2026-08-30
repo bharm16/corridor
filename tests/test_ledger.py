@@ -40,6 +40,7 @@ from corridor.operative_support import (
     resolve_operative_support,
 )
 from corridor.principals import HumanPrincipal
+from access_support import seed_membership
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 from corridor.web.app import app, get_human_principal, get_session
 
@@ -79,6 +80,7 @@ def project(session):
     p = Project(slug="ledger-test", name="Ledger Test", is_synthetic=True)
     session.add(p)
     session.flush()
+    seed_membership(session, p, TEST_PRINCIPAL)
     return p
 
 

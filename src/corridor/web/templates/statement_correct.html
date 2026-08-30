@@ -54,6 +54,7 @@
       <details>
         <summary>I can identify one or more affected constraints</summary>
         <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/scope">
+    {{ csrf_field() }}
           <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
           <input type="hidden" name="expected_scope_decision_id" value="{{ scope_decision.id }}">
           <input type="hidden" name="scope_mode" value="selected">
@@ -71,6 +72,7 @@
         <summary>The statement applies to every active {{ affected_party_name }} constraint</summary>
         <ul>{% for dependency, party_name in dependencies %}<li>{{ dependency.source_ref or dependency.ref_code }} — {{ dependency.title }}{% if dependency.station_from or dependency.station_to %} · Station {{ dependency.station_from or "?" }} to {{ dependency.station_to or "?" }}{% endif %}</li>{% endfor %}</ul>
         <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/scope">
+    {{ csrf_field() }}
           <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
           <input type="hidden" name="expected_scope_decision_id" value="{{ scope_decision.id }}">
           <input type="hidden" name="scope_mode" value="all_active">
@@ -82,6 +84,7 @@
       <details>
         <summary>The recorded constraint links are no longer supported</summary>
         <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/scope">
+    {{ csrf_field() }}
           <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
           <input type="hidden" name="expected_scope_decision_id" value="{{ scope_decision.id }}">
           <input type="hidden" name="scope_mode" value="unknown">
@@ -92,6 +95,7 @@
   </section>
 
   <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/correct/facts">
+    {{ csrf_field() }}
     <input type="hidden" name="expected_statement_event_id" value="{{ event.id }}">
     <fieldset>
       <legend>Correct one supported fact from the organization</legend>

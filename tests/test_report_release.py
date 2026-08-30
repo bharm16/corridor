@@ -32,6 +32,7 @@ from corridor.models import (
     ReportRun,
 )
 from corridor.principals import HumanPrincipal
+from access_support import seed_membership
 from corridor.report import Cell, build_report
 from corridor.report_release import (
     ExternalReportRelease,
@@ -84,7 +85,14 @@ def project(session):
 
 
 @pytest.fixture
-def client(session):
+def client(session, project):
+    # HTTP release tests act as an enrolled, release-designated member of the
+    # project under test (#331). Seeding lives here rather than in the shared
+    # project fixture so the many non-HTTP release-history tests keep exercising
+    # the releaser's own roster and display behavior untouched.
+    seed_membership(
+        session, project, TEST_PRINCIPAL, display_name="Release Coordinator"
+    )
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_human_principal] = lambda: TEST_PRINCIPAL
     with TestClient(app) as client:
@@ -772,13 +780,9 @@ def test_release_history_is_project_language_and_keeps_the_audit_digest(
 def test_release_history_uses_roster_name_while_retaining_principal_for_audit(
     client, session, project
 ):
-    session.add(
-        ProjectRosterEntry(
-            project_id=project.id,
-            principal_subject=TEST_PRINCIPAL.subject,
-            display_name="Dana Fields",
-        )
-    )
+    # The releaser is already an enrolled member (client fixture); give that
+    # membership the projected display name this test is about.
+    seed_membership(session, project, TEST_PRINCIPAL, display_name="Dana Fields")
     session.flush()
     release = _release(session, project)
 
@@ -1123,7 +1127,9 @@ def test_ordinary_release_click_keeps_the_reviewed_bytes_retrievable_in_history(
     assert released.status_code == 201
     assert "This exact PDF is approved to share and retained." in released.text
     assert artifact.artifact_name in released.text
-    assert "Project person (display name not recorded)" in released.text
+    # The signed-in releaser is an enrolled member, so the history shows their
+    # roster display name, never the raw principal subject (#331).
+    assert "Release Coordinator" in released.text
     assert TEST_PRINCIPAL.subject not in released.text
     assert "DEP-RELEASE-1" in released.text
     assert artifact.pdf_sha256 in released.text
@@ -1369,27 +1375,30 @@ def test_ordinary_artifact_routes_refuse_another_project(client, session, projec
     session.flush()
     artifact = _prepare(session, project)
 
+    # The releaser is not a member of the other project, so the membership gate
+    # refuses every artifact surface with an indistinguishable 404 before the
+    # cross-project artifact mismatch is ever reached (#331).
     assert (
         client.get(f"/reports/{other_project.slug}/prepared/{artifact.id}").status_code
-        == 409
+        == 404
     )
     assert (
         client.get(
             f"/reports/{other_project.slug}/prepared/{artifact.id}/preview"
         ).status_code
-        == 409
+        == 404
     )
     assert (
         client.get(
             f"/reports/{other_project.slug}/prepared/{artifact.id}/download"
         ).status_code
-        == 409
+        == 404
     )
     assert (
         client.post(
             f"/reports/{other_project.slug}/prepared/{artifact.id}/release"
         ).status_code
-        == 409
+        == 404
     )
 
     release = _release(session, project, artifact=artifact)

@@ -51,6 +51,7 @@
       </dl>
       <p><a href="/statements/{{ project.slug }}/{{ candidate.id }}/correct">Correct one supported fact or which constraints this applies to</a></p>
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/coordination/{{ receipt.id }}/undo">
+    {{ csrf_field() }}
         <button type="submit">Undo this Save</button>
       </form>
     </section>
@@ -59,6 +60,7 @@
       <b>Not added to project record.</b> Reason: {{ not_relevant.reason.replace('_', ' ') }}.
       The extracted source and its cited passages remain in history.
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant/{{ not_relevant.id }}/restore">
+    {{ csrf_field() }}
         <button type="submit">Restore this extracted statement to prioritized work</button>
       </form>
     </section>
@@ -108,6 +110,7 @@
         </section>
       {% endif %}
       <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/keep-unresolved">
+    {{ csrf_field() }}
         <button type="submit">Keep unresolved in the Work List</button>
       </form>
     {% else %}
@@ -120,6 +123,7 @@
     {% endif %}
 
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/coordinate">
+    {{ csrf_field() }}
       <input type="hidden" name="expected_candidate_state" value="pending">
       <input type="hidden" name="expected_commitment_lineage_id" value="">
       <input type="hidden" name="expected_statement_event_id" value="">
@@ -224,6 +228,7 @@
       <button type="submit"{% if not guided_save_available or not roster %} disabled{% endif %}>Save statement and Follow-up plan</button>
     </form>
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant">
+    {{ csrf_field() }}
       <fieldset>
         <legend>Do not add to project record</legend>
         <p class="muted">Use only when this proposed statement does not belong in the project record. It records no organization's statement or follow-up plan and can be reversed.</p>

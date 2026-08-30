@@ -74,6 +74,7 @@
     <div class="actions">
       <a class="download" href="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/download">Download this exact PDF</a>
       <form method="post" action="/reports/{{ project.slug }}/prepared/{{ review.artifact_id }}/release">
+    {{ csrf_field() }}
         <button type="submit">Approve this exact PDF to share</button>
       </form>
     </div>
