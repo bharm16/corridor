@@ -106,6 +106,56 @@ def test_configure_run_once_and_status_use_the_public_runtime(
     )
 
 
+def test_configure_discovery_retains_a_gate_7_connected_location(
+    runtime_database, capsys
+):
+    factory = runtime_database.session_factory
+    clock = ControlledClock(datetime(2026, 8, 29, 7, 5, tzinfo=timezone.utc))
+    with factory() as setup:
+        project = Project(
+            slug=f"loc-cli-{uuid4().hex}", name="Location CLI", is_synthetic=True
+        )
+        setup.add(project)
+        setup.commit()
+
+    argv = [
+        "configure-discovery",
+        project.slug,
+        "--configuration-version=location-discovery-v1",
+        "--location-id=txdot-loc",
+        "--adapter-identity=http-index-v1",
+        "--source-manifest-id=txdot-manifest",
+        "--index-url=https://docs.example.gov/index.json",
+        "--authorized-host=docs.example.gov",
+        "--starts-at=2026-08-29T07:00:00+00:00",
+        "--cadence=hourly",
+        "--timezone=UTC",
+        "--missed-run-policy=latest_only",
+        "--retention-days=3650",
+        "--max-attempts=3",
+        "--backoff-seconds=120",
+        "--claim-ttl-seconds=600",
+        "--deadline-seconds=300",
+        "--concurrency-limit=1",
+        "--model-token-budget=0",
+        "--notification-budget=0",
+    ]
+    assert main(argv, session_factory=factory, clock=clock) == 0
+    configured = _payload(capsys)
+    assert configured["enabled"] is True
+    assert configured["sealed"] is False
+    assert configured["location_id"] == "txdot-loc"
+
+    assert main(
+        ["status", f"--project-slug={project.slug}"],
+        session_factory=factory,
+        clock=clock,
+    ) == 0
+    status = _payload(capsys)
+    assert status["jobs"][0]["handler"] == "location_discovery"
+    assert status["jobs"][0]["input_identity"]["kind"] == "connected_location-v1"
+
+
 def test_configure_refuses_an_incomplete_gate_7_declaration(capsys):
     assert main(["configure-health", "project"]) == 2
     assert "required" in capsys.readouterr().err

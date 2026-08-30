@@ -126,6 +126,13 @@ ENROLL_PROJECT_MEMBER = "enroll_project_member"
 # table so the confirmation shares the exact transaction and write-set as the
 # Document registration it authorizes, and a rolled-back confirm records nothing.
 CONFIRM_SOURCE_INTAKE = "confirm_source_intake"
+# A person authorized one discovered reference for processing, declaring the
+# document kind the observed bytes cannot state (#350). Discovery only proposes;
+# this attributable act is what lets the fetch pass register the reference.
+AUTHORIZE_DISCOVERED_REFERENCE = "authorize_discovered_reference"
+# A person ran the explicit bounded parse recovery on one failed-parse document
+# (#350). Append-only, so the prior failure and every recovery attempt are kept.
+RECOVER_DOCUMENT_PARSE = "recover_document_parse"
 # Nothing records these any more: the admission policies stopped asking
 # for a signature (ADR-0029). They stay named because the audit log is
 # append-only and still holds entries that carry them.
@@ -180,6 +187,8 @@ ACTIONS = frozenset(
         PRODUCT_PROVING_FRONTEND_REQUEST,
         ENROLL_PROJECT_MEMBER,
         CONFIRM_SOURCE_INTAKE,
+        AUTHORIZE_DISCOVERED_REFERENCE,
+        RECOVER_DOCUMENT_PARSE,
         AUTHORIZE_DEPENDENCY_ADMISSION,
     }
 )

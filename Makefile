@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -156,8 +156,19 @@ carry-forward:
 #   make due-work ARGS="run-once --owner=runtime:<worker-id>"
 #   make due-work ARGS="recover --owner=runtime:<worker-id>"
 #   make due-work ARGS="status --project-slug=<project-slug>"
+# Enable one connected-location adapter (#350). Every gate-7 field is explicit;
+# a sealed rehearsal location is refused before any fetch:
+#   make due-work ARGS="configure-discovery <project-slug> --configuration-version=location-discovery-v1 --location-id=txdot-nhhip-3c2 --adapter-identity=http-index-v1 --source-manifest-id=nhhip-3c2 --index-url=https://www.example.gov/index.json --authorized-host=www.example.gov --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=120 --claim-ttl-seconds=600 --deadline-seconds=300 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
 due-work:
 	uv run python -m corridor.due_work_cli $(ARGS)
+
+# The two managed connected-location acts that need a person, plus a read-only
+# operations view (#350). Attribution comes from CORRIDOR_HUMAN_PRINCIPAL:
+#   make location-discovery ARGS="authorize <project-slug> --reference-key=<key> --doc-type=matrix --registry-id=<id>"
+#   make location-discovery ARGS="recover-parse <project-slug> --document-id=<id>"
+#   make location-discovery ARGS="view <project-slug>"
+location-discovery:
+	uv run python -m corridor.location_discovery_cli $(ARGS)
 
 # Capture, replay, or verify the isolated mechanical M8 acceptance-test bundle.
 # This tests software behavior; it is not Contract Acceptance of construction.

@@ -42,7 +42,7 @@ from corridor.product_proving_database import (
 
 
 REVISION = "a" * 40
-MIGRATION_HEAD = "d359a1b2c3e4"
+MIGRATION_HEAD = "d3f1a9c05b21"
 SOURCE_URL = "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
 ADMIN_URL = SOURCE_URL
 REPO_ROOT = Path(__file__).resolve().parents[1]
