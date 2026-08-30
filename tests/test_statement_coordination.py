@@ -47,6 +47,7 @@ from corridor.models import (
     WorkDecisionMilestoneImpact,
 )
 from corridor.principals import HumanPrincipal
+from access_support import seed_membership
 from corridor.statement_lifecycle import current_lineage_statement
 from corridor.statement_coordination import (
     CLOSURE_TARGET_RELATIONSHIP_GAP,
@@ -101,6 +102,7 @@ def project(session):
     )
     session.add(project)
     session.flush()
+    seed_membership(session, project, RECORDER)
     return project
 
 

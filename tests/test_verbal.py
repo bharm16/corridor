@@ -30,6 +30,7 @@ from corridor.models import (
     ReportRun,
 )
 from corridor.principals import HumanPrincipal
+from access_support import seed_membership
 from corridor.report import (
     Assertion,
     Verbal,
@@ -67,6 +68,7 @@ def dependency(session):
     party = ExternalOrg(name="AT&T Texas", aliases=["AT&T"])
     session.add_all((project, party))
     session.flush()
+    seed_membership(session, project, RECORDER)
     dependency = Dependency(
         project_id=project.id,
         ref_code="TEL-1",

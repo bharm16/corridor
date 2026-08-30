@@ -42,6 +42,7 @@ from corridor.models import (
     StatementCoordinationReceipt,
 )
 from corridor.principals import HumanPrincipal
+from access_support import seed_membership
 from corridor.statement_coordination import (
     assign_admitted_statement_owner,
     read_admitted_statement_coordination,
@@ -73,7 +74,12 @@ def session():
 
 
 @pytest.fixture
-def client(session):
+def client(session, project):
+    # The acting coordinator is a member of the project under test (#331);
+    # seeding here, not in the shared project fixture, keeps the roster
+    # projection untouched for the non-HTTP domain tests.
+    seed_membership(session, project, RECORDER)
+
     def override_session():
         yield session
 
