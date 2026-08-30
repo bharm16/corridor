@@ -20,7 +20,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "d3f1a9c05b21"
-HEAD = "f360a1b2c3d4"
+HEAD = "e360b7c1d2a4"
 
 _TABLES = (
     "unreadable_cell_reading_profiles",

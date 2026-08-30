@@ -44,6 +44,10 @@ HANDLER_LOCATION_DISCOVERY = "location_discovery"
 HANDLER_ASSIGNMENT_NOTIFICATION = ASSIGNMENT_NOTIFICATION_HANDLER
 HANDLER_EVENT_ADMISSION_REPROOF = "event_admission_reproof"
 HANDLER_EVIDENCE_OUTCOME_CAPTURE = "evidence_outcome_capture"
+# Retain a weekly Coordination Report reading and prepare its external PDF. The
+# string matches ``report_publication.HANDLER_KEY``; the execution lives in that
+# lower module, which the runtime imports lazily so no import cycle forms.
+HANDLER_REPORT_PUBLICATION = "report_publication"
 # The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
 # notification schedule must declare a positive request budget within this.
 _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
@@ -516,6 +520,70 @@ class EvidenceOutcomeCaptureDeclaration:
 
 
 @dataclass(frozen=True)
+class ReportPublicationDeclaration:
+    """One validated gate-7 declaration that enables scheduled report publication.
+
+    Publication renders a report and, when declared, prepares one external PDF;
+    it reads no model, so ``model_token_budget`` must be a declared zero and the
+    schedule is weekly rather than hourly.  Scope names the exact project, the
+    provenance mode the reading and any PDF are taken under, and whether an
+    external PDF is prepared for later human release — the output identity.  The
+    comparison predecessor is the last released report (ADR-0053), declared
+    explicitly so no replacement policy is chosen implicitly.  Authorized
+    destinations stay empty, concurrency stays one, and the notification budget
+    stays zero: this slice adds no delivery and no new notification category.
+    """
+
+    project_id: int
+    configuration_version: str
+    provenance_mode: str
+    prepare_external_pdf: bool
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    comparison_window_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_weekly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        provenance_mode: str = "all-supported-sources",
+        prepare_external_pdf: bool = True,
+    ) -> "ReportPublicationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            provenance_mode=provenance_mode,
+            prepare_external_pdf=prepare_external_pdf,
+            starts_at=starts_at,
+            cadence="weekly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            comparison_window_policy="since_last_released",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1800,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
 class DueWorkClaim:
     occurrence_id: int
     occurrence_public_id: str
@@ -855,6 +923,25 @@ def _evidence_outcome_capture_effectful(context: EffectfulContext) -> dict[str, 
     )
 
 
+def _report_publication_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Retain one weekly reading and prepare its external PDF for a claimed slot.
+
+    The pass commits its retained reading and any prepared artifact durably
+    through the session factory and converges on the occurrence's one retained
+    row; this wrapper only adapts the runtime's claim into the publication call
+    and returns its bounded receipt. It reads no model.
+    """
+
+    from corridor.report_publication import execute_report_publication
+
+    return execute_report_publication(
+        context.session_factory,
+        occurrence_id=context.claim.occurrence_id,
+        schedule_id=context.claim.schedule_id,
+        clock=context.clock,
+    )
+
+
 HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
     {
         HANDLER_PROCESSING_HEALTH: HandlerContract(
@@ -919,6 +1006,15 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             model_token_budget=0,
             notification_budget=0,
             run_effectful=_evidence_outcome_capture_effectful,
+        ),
+        HANDLER_REPORT_PUBLICATION: HandlerContract(
+            key=HANDLER_REPORT_PUBLICATION,
+            scope_kind="one_project_scheduled_report_publication",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            run_effectful=_report_publication_effectful,
         ),
     }
 )
@@ -1517,6 +1613,93 @@ def configure_evidence_outcome_capture(
     return schedule
 
 
+def configure_report_publication(
+    session: Session,
+    declaration: ReportPublicationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 report-publication declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written; a schedule is never enabled with silent production defaults.
+    Enabling a new configuration disables the project's prior publication
+    schedule for this output identity while retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_report_publication_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_REPORT_PUBLICATION,
+            "project_id": declaration.project_id,
+            "provenance_mode": declaration.provenance_mode,
+            "prepare_external_pdf": declaration.prepare_external_pdf,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_REPORT_PUBLICATION,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_REPORT_PUBLICATION,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_REPORT_PUBLICATION,
+        configuration_version=declaration.configuration_version,
+        scope_json={
+            "project_id": declaration.project_id,
+            "provenance_mode": declaration.provenance_mode,
+            "prepare_external_pdf": declaration.prepare_external_pdf,
+        },
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
 def enqueue_due_work(session: Session, *, now: datetime) -> tuple[DueWorkOccurrence, ...]:
     """Coalesce the latest due occurrence for every active validated schedule."""
 
@@ -1532,8 +1715,8 @@ def enqueue_due_work(session: Session, *, now: datetime) -> tuple[DueWorkOccurre
     keys: list[str] = []
     for schedule in schedules:
         _validate_stored_schedule(schedule)
-        due_at = now.replace(minute=0, second=0, microsecond=0)
-        if due_at < schedule.starts_at:
+        due_at = _due_slot(schedule, now)
+        if due_at is None:
             continue
         occurrence_key = _sha256(
             {
@@ -2498,6 +2681,110 @@ def _validated_evidence_outcome_capture_declaration(
     }
 
 
+def _validated_report_publication_declaration(
+    declaration: ReportPublicationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("report-publication starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if declaration.provenance_mode not in (
+        "all-supported-sources",
+        "document-only",
+    ):
+        raise DueWorkRefusal("report-publication provenance mode is invalid")
+    if not isinstance(declaration.prepare_external_pdf, bool):
+        raise DueWorkRefusal("report-publication external preparation flag is invalid")
+    if (
+        declaration.cadence != "weekly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+        or declaration.comparison_window_policy != "since_last_released"
+    ):
+        raise DueWorkRefusal(
+            "report-publication supports only weekly UTC latest-only scheduling "
+            "against the last released report"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal(
+            "report-publication gate-7 resource declaration is invalid"
+        )
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_REPORT_PUBLICATION,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "provenance_mode": declaration.provenance_mode,
+            "prepare_external_pdf": declaration.prepare_external_pdf,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "scheduled_report_publication-v1",
+            "project_id": declaration.project_id,
+            "provenance_mode": declaration.provenance_mode,
+            "prepare_external_pdf": declaration.prepare_external_pdf,
+        },
+        "output": {
+            "internal_snapshot": True,
+            "external_preparation": declaration.prepare_external_pdf,
+        },
+        "comparison_window_policy": declaration.comparison_window_policy,
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
+def _due_slot(schedule: DueWorkSchedule, now: datetime) -> datetime | None:
+    """The current occurrence slot for one schedule's cadence, or ``None``.
+
+    Hourly handlers keep their existing UTC-hour slot.  A weekly publication
+    aligns to its declared ``starts_at``, so every trigger within one week
+    resolves to the same slot and coalesces onto one occurrence rather than
+    producing a snapshot each hour; ``latest_only`` recovery then measures a
+    missed week from that same weekly boundary.
+    """
+
+    now = _aware_utc(now)
+    starts_at = _aware_utc(schedule.starts_at)
+    if schedule.cadence == "weekly":
+        if now < starts_at:
+            return None
+        weeks = (now - starts_at) // timedelta(days=7)
+        return starts_at + weeks * timedelta(days=7)
+    slot = now.replace(minute=0, second=0, microsecond=0)
+    return slot if slot >= starts_at else None
+
+
 def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
     if schedule.handler_key not in HANDLER_REGISTRY:
         raise DueWorkRefusal("persisted Due Work handler is not server-owned")
@@ -2732,6 +3019,45 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
                 "observation_contract_sha256": observation_contract_sha256,
             }
         )
+    elif schedule.handler_key == HANDLER_REPORT_PUBLICATION:
+        provenance_mode = schedule.scope_json.get("provenance_mode", "")
+        prepare_external_pdf = schedule.scope_json.get("prepare_external_pdf")
+        expected_config = _validated_report_publication_declaration(
+            ReportPublicationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                provenance_mode=provenance_mode,
+                prepare_external_pdf=prepare_external_pdf,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                comparison_window_policy=schedule.configuration_json.get(
+                    "comparison_window_policy", ""
+                ),
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = {
+            "project_id": schedule.project_id,
+            "provenance_mode": provenance_mode,
+            "prepare_external_pdf": prepare_external_pdf,
+        }
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "provenance_mode": provenance_mode,
+                "prepare_external_pdf": prepare_external_pdf,
+            }
+        )
     else:
         expected_config = _validated_health_declaration(
             ProcessingHealthDeclaration(
@@ -2784,6 +3110,12 @@ def _handler(key: str) -> HandlerContract:
 def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -> str:
     """The recovery pointer a completed receipt records, per handler."""
 
+    if contract.key == HANDLER_REPORT_PUBLICATION:
+        return (
+            "review_prepared_report"
+            if handler_result.get("prepared")
+            else "review_retained_snapshot"
+        )
     if handler_result.get("health") in ("healthy", "held_sealed"):
         return "none"
     if contract.key == HANDLER_PROJECT_PROCESSING:
@@ -2954,6 +3286,26 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         or result.get("health") not in {"healthy", "capture_attention_required"}
     ):
         raise DueWorkRefusal("outcome-capture handler result is invalid")
+    if contract.key == HANDLER_REPORT_PUBLICATION and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "provenance_mode",
+            "observed_at",
+            "evaluated_on",
+            "outcome",
+            "snapshot_public_id",
+            "prepared",
+            "prepared_artifact_id",
+            "has_prior_release",
+            "comparison_window_days",
+        }
+        or result.get("outcome") != "retained"
+        or not isinstance(result.get("prepared"), bool)
+    ):
+        raise DueWorkRefusal("report-publication handler result is invalid")
 
 
 def _locked_live_claim(

@@ -2874,6 +2874,82 @@ class ExternalReportRelease(Base):
         return sha256(self.pdf_bytes).hexdigest() == self.pdf_sha256
 
 
+class ScheduledReportPublication(Base):
+    """One retained weekly reading a scheduled Due Work occurrence produced.
+
+    A scheduled publication supplements the working view; it never becomes a
+    ``ReportRun`` and so never advances the internal report's comparison
+    baseline (ADR-0053).  Each row binds one occurrence to one coherent project
+    reading, the predecessor it compared against — the last Report Approved for
+    Release at observation time, ``NULL`` before a project's first release — and,
+    when the schedule declared external preparation, the exact prepared PDF
+    artifact awaiting a separate human release (ADR-0040).
+
+    The unique occurrence binding is the convergence guarantee: repeated
+    triggers, competing workers, abandoned claims, and retries all resolve to
+    this one row rather than a second snapshot or artifact.  The row is
+    append-only; a refreshed working view or a later release cannot rewrite the
+    predecessor or comparison window it recorded.
+    """
+
+    __tablename__ = "scheduled_report_publications"
+    __table_args__ = (
+        UniqueConstraint(
+            "occurrence_id", name="uq_scheduled_report_publication_occurrence"
+        ),
+        CheckConstraint(
+            "provenance_mode in ('all-supported-sources', 'document-only')",
+            name="ck_scheduled_report_publication_provenance_mode",
+        ),
+        CheckConstraint(
+            "(predecessor_release_id is null) = (window_start is null)",
+            name="ck_scheduled_report_publication_predecessor_window",
+        ),
+        CheckConstraint(
+            "(window_start is null) = (comparison_window_days is null)",
+            name="ck_scheduled_report_publication_window_days",
+        ),
+        CheckConstraint(
+            "comparison_window_days is null or comparison_window_days >= 0",
+            name="ck_scheduled_report_publication_window_nonneg",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(snapshot_json) = 'object'",
+            name="ck_scheduled_report_publication_snapshot_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(thresholds_json) = 'object'",
+            name="ck_scheduled_report_publication_thresholds_object",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("due_work_occurrences.id")
+    )
+    schedule_id: Mapped[int] = mapped_column(ForeignKey("due_work_schedules.id"))
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    configuration_version: Mapped[str] = mapped_column(String(64))
+    provenance_mode: Mapped[str] = mapped_column(String(32))
+    # Reference ids into two append-only stores.  They are plain ids, not
+    # foreign keys, so this retained row never changes the truncate or deletion
+    # semantics of the release and artifact tables it points at; those rows are
+    # immutable and never removed, so a dangling reference cannot arise.
+    predecessor_release_id: Mapped[int | None] = mapped_column(BigInteger)
+    prepared_artifact_id: Mapped[int | None] = mapped_column(BigInteger)
+    evaluated_on: Mapped[date] = mapped_column(Date)
+    window_start: Mapped[date | None] = mapped_column(Date)
+    comparison_window_days: Mapped[int | None] = mapped_column(Integer)
+    ruleset_version: Mapped[str] = mapped_column(String(64))
+    thresholds_json: Mapped[dict] = mapped_column(JSONB)
+    snapshot_json: Mapped[dict] = mapped_column(JSONB)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class LegacyLedgerArchive(Base):
     """One immutable receipt for retiring a development-era Ledger graph.
 

@@ -32,6 +32,7 @@ from corridor.exceptions import RULESET_VERSION, Evaluation
 from corridor.ledger import browse
 from corridor.models import (
     DependencyDismissal,
+    ExternalReportRelease,
     LegacyLedgerArchive,
     ReportRun,
     is_critical,
@@ -352,6 +353,40 @@ def diff_since_last(
 
     diff.changes.sort(key=lambda c: (c.kind, c.ref_code))
     return diff
+
+
+def last_released_report(
+    session: Session,
+    project_id: int,
+    *,
+    provenance_mode: str,
+) -> ExternalReportRelease | None:
+    """The predecessor a report compares against: the last released report.
+
+    ADR-0053 fixes one comparison baseline for every report — the last Report
+    Approved for Release — and nothing else moves it.  A prepared but unapproved
+    PDF, a retained weekly snapshot, or an ad hoc report never advances this
+    marker, so a scheduled occurrence records exactly the release its weekly
+    window is measured from.  Before a project's first release in this
+    provenance mode there is no predecessor and the reading stands on its own.
+
+    The predecessor is matched within one provenance mode because a
+    document-only release and an all-supported-sources release describe
+    different readings; comparing across them would leak a verbal date into an
+    otherwise citation-only surface.
+    """
+    return session.scalars(
+        select(ExternalReportRelease)
+        .where(
+            ExternalReportRelease.project_id == project_id,
+            ExternalReportRelease.provenance_mode == provenance_mode,
+        )
+        .order_by(
+            ExternalReportRelease.released_at.desc(),
+            ExternalReportRelease.id.desc(),
+        )
+        .limit(1)
+    ).first()
 
 
 def record_run(
