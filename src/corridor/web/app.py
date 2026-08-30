@@ -123,6 +123,8 @@ from corridor.models import (
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
     CoordinationSummaryRequest,
+    ProductionRunExplanationConfiguration,
+    ProductionRunExplanationRequest,
 )
 from corridor.coordination_summary import (
     ConfigurationRequired,
@@ -130,6 +132,17 @@ from corridor.coordination_summary import (
     current_configuration as current_summary_configuration,
     declare_configuration as declare_summary_configuration,
     request_summary as request_coordination_summary,
+)
+from corridor.production_run_explanation import (
+    PROMPT_VERSION as RUN_EXPLANATION_PROMPT_VERSION,
+    ConfigurationRequired as RunExplanationConfigurationRequired,
+    ExplanationRequestRefused,
+    InvalidExplanationConfiguration,
+    competing_production_runs,
+    competing_runs_state_token,
+    current_configuration as current_run_explanation_configuration,
+    declare_configuration as declare_run_explanation_configuration,
+    request_run_explanation,
 )
 from corridor.milestones import (
     MalformedMilestoneCsv,
@@ -374,6 +387,20 @@ def get_session():
 
 def get_coordination_summary_client_factory():
     """Build an adapter only after the route found declared spend authority."""
+    from corridor.llm import OpenAIClient
+
+    def build(configuration):
+        return OpenAIClient(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+        )
+
+    return build
+
+
+def get_run_explanation_client_factory():
+    """Build an explanation adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
     def build(configuration):
@@ -3387,6 +3414,7 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
     document_rows = []
     for document in documents:
         current = declared.get(document.id)
+        competing = competing_production_runs(session, document.id)
         document_rows.append(
             {
                 "document": document,
@@ -3395,6 +3423,11 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
                 "history": history_by_document.get(document.id, []),
                 "quarantine": quarantines.get(document.id),
                 "offer_state": _run_offer_state(session, document.id),
+                # An explanation is offered only when there is an actual choice:
+                # two or more completed runs competing to be declared.
+                "competing_run_ids": [run.id for run in competing],
+                "explanation_offered": len(competing) >= 2,
+                "explain_state": competing_runs_state_token(session, document.id),
             }
         )
 
@@ -3443,6 +3476,10 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
         ),
         "schedules": schedules,
         "recovery_rows": recovery_rows,
+        "run_explanation_configuration": current_run_explanation_configuration(
+            session, project.id
+        ),
+        "run_explanation_prompt_version": RUN_EXPLANATION_PROMPT_VERSION,
     }
 
 
@@ -3530,6 +3567,147 @@ async def declare_operations_active_run(
     )
     session.commit()
     return response
+
+
+@app.post("/operations/{slug}/run-explanation/configuration")
+async def declare_run_explanation_configuration_route(
+    slug: str,
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Declare bounded run-explanation authority; this is technical operations.
+
+    A missing or incomplete declaration is exactly why an explanation refuses
+    before any model call — there is no environment or default fallback.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    form = await request.form()
+    try:
+        declare_run_explanation_configuration(
+            session,
+            project_id=project.id,
+            principal=principal,
+            model=str(form.get("model", "")),
+            prompt_version=str(form.get("prompt_version", "")),
+            max_input_tokens=int(str(form.get("max_input_tokens", ""))),
+            max_output_tokens=int(str(form.get("max_output_tokens", ""))),
+            timeout_seconds=int(str(form.get("timeout_seconds", ""))),
+            max_requests=int(str(form.get("max_requests", ""))),
+            retry_policy=str(form.get("retry_policy", "")),
+            retention_policy=str(form.get("retention_policy", "")),
+            observation_context=str(form.get("observation_context", "")),
+        )
+    except (ValueError, InvalidExplanationConfiguration) as exc:
+        raise HTTPException(
+            400, f"run-explanation configuration refused: {exc}"
+        ) from exc
+    session.commit()
+    return RedirectResponse(f"/operations/{project.slug}", status_code=303)
+
+
+@app.post("/operations/{slug}/runs/{document_id}/explain")
+async def explain_operations_competing_runs(
+    request: Request,
+    slug: str,
+    document_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    client_factory=Depends(get_run_explanation_client_factory),
+):
+    """Run one explicit, read-only explanation of competing production runs.
+
+    The declaration controls are untouched: this only reads immutable snapshots
+    and stores a non-authoritative receipt. It never declares or preselects a
+    run.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project.id:
+        raise HTTPException(404, "no such source document")
+    form = await request.form()
+    raw_ids = str(form.get("competing_run_ids") or "").strip()
+    try:
+        expected_run_ids = tuple(
+            int(part) for part in raw_ids.split(",") if part.strip()
+        )
+    except ValueError as exc:
+        raise HTTPException(400, "competing_run_ids must be integers") from exc
+    state_token = str(form.get("state_token") or "")
+    try:
+        receipt = request_run_explanation(
+            session,
+            project_id=project.id,
+            document_id=document.id,
+            principal=principal,
+            client_factory=client_factory,
+            expected_run_ids=expected_run_ids,
+            state_token=state_token,
+        )
+    except ExplanationRequestRefused as exc:
+        raise HTTPException(
+            404 if exc.reason == "cross_project" else 409, exc.detail
+        ) from exc
+    except RunExplanationConfigurationRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/operations/{project.slug}/runs/{document.id}/explanation/{receipt.public_id}",
+        status_code=303,
+    )
+
+
+@app.get(
+    "/operations/{slug}/runs/{document_id}/explanation/{public_id}",
+    response_class=HTMLResponse,
+)
+def read_run_explanation(
+    request: Request,
+    slug: str,
+    document_id: int,
+    public_id: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read one retained non-authoritative explanation; a GET never spends.
+
+    The deterministic run details and the human declaration controls stay live
+    and no run is preselected — whether the explanation completed, refused, or
+    abstained, the operator still declares.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project.id:
+        raise HTTPException(404, "no such source document")
+    receipt = session.scalars(
+        select(ProductionRunExplanationRequest).where(
+            ProductionRunExplanationRequest.public_id == public_id,
+            ProductionRunExplanationRequest.project_id == project.id,
+            ProductionRunExplanationRequest.document_id == document.id,
+        )
+    ).first()
+    if receipt is None:
+        raise HTTPException(404, "no run explanation for this document")
+    current = session.get(ActiveExtractionRun, document.id)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "production_run_explanation.html",
+        {
+            "project": project,
+            "document": document,
+            "receipt": receipt,
+            "runs": (receipt.comparison_json or {}).get("runs", []),
+            "competing_runs": competing_production_runs(session, document.id),
+            "current_active_run_id": current.extraction_run_id if current else None,
+            "offer_state": _run_offer_state(session, document.id),
+        },
+    )
 
 
 @app.post("/operations/{slug}/unknown-scope/suspend")
