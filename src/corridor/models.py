@@ -1293,6 +1293,48 @@ class DueWorkReceipt(Base):
     )
 
 
+class RecordInclusionRequest(Base):
+    """One durable, coalescing watermark of a project's pending Record Inclusion.
+
+    A completed Extraction Run (and, later, an approved identity/fact change)
+    leaves the record needing reconciliation, but ``load_project`` appends a
+    PolicyRun on every call — so calling it on every idle tick would grow the
+    receipt log without bound. This row is the handoff that makes reconciliation
+    conditional and recoverable: a producer bumps ``dirty_seq`` inside its own
+    transaction, so a rolled-back producer leaves no work and a committed one
+    survives process exit. Reconciliation is pending exactly while
+    ``dirty_seq > reconciled_seq``; many bumps between reconciliations coalesce
+    into one pending pass. Unlike the append-only receipt tables, this is
+    mutable operational state (like a due-work occurrence), so it carries no
+    immutability trigger.
+    """
+
+    __tablename__ = "record_inclusion_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "dirty_seq >= 0 and reconciled_seq >= 0",
+            name="ck_record_inclusion_requests_non_negative",
+        ),
+        CheckConstraint(
+            "reconciled_seq <= dirty_seq",
+            name="ck_record_inclusion_requests_watermark_order",
+        ),
+    )
+
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id"), primary_key=True
+    )
+    dirty_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    reconciled_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    last_reason: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class DependencyAdmissionOutcome(Base):
     """One immutable candidate outcome within an admission receipt.
 

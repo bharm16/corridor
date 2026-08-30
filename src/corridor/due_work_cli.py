@@ -19,7 +19,9 @@ from sqlalchemy import select
 from corridor.due_work import (
     DueWorkRefusal,
     ProcessingHealthDeclaration,
+    ProjectProcessingDeclaration,
     configure_processing_health,
+    configure_project_processing,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -52,6 +54,23 @@ def _parser() -> argparse.ArgumentParser:
     configure.add_argument("--concurrency-limit", required=True, type=int)
     configure.add_argument("--model-token-budget", required=True, type=int)
     configure.add_argument("--notification-budget", required=True, type=int)
+
+    processing = commands.add_parser("configure-processing")
+    processing.add_argument("project_slug")
+    processing.add_argument("--configuration-version", required=True)
+    processing.add_argument("--extractor-identity", required=True)
+    processing.add_argument("--starts-at", required=True)
+    processing.add_argument("--cadence", required=True)
+    processing.add_argument("--timezone", required=True, dest="timezone_name")
+    processing.add_argument("--missed-run-policy", required=True)
+    processing.add_argument("--retention-days", required=True, type=int)
+    processing.add_argument("--max-attempts", required=True, type=int)
+    processing.add_argument("--backoff-seconds", required=True, type=int)
+    processing.add_argument("--claim-ttl-seconds", required=True, type=int)
+    processing.add_argument("--deadline-seconds", required=True, type=int)
+    processing.add_argument("--concurrency-limit", required=True, type=int)
+    processing.add_argument("--model-token-budget", required=True, type=int)
+    processing.add_argument("--notification-budget", required=True, type=int)
 
     commands.add_parser("tick")
     for name in ("run-once", "recover"):
@@ -103,6 +122,39 @@ def main(
                         notification_budget=args.notification_budget,
                     )
                     schedule = configure_processing_health(
+                        session,
+                        declaration,
+                        now=clock.now(),
+                    )
+                    payload = {
+                        "command": args.command,
+                        "job_id": schedule.public_id,
+                        "project_id": project.id,
+                        "configuration_sha256": schedule.configuration_sha256,
+                        "enabled": schedule.disabled_at is None,
+                    }
+        elif args.command == "configure-processing":
+            with session_factory() as session:
+                with session.begin():
+                    project = _project(session, args.project_slug)
+                    declaration = ProjectProcessingDeclaration(
+                        project_id=project.id,
+                        configuration_version=args.configuration_version,
+                        extractor_identity=args.extractor_identity,
+                        starts_at=_datetime(args.starts_at),
+                        cadence=args.cadence,
+                        timezone_name=args.timezone_name,
+                        missed_run_policy=args.missed_run_policy,
+                        retention_days=args.retention_days,
+                        max_attempts=args.max_attempts,
+                        backoff_seconds=args.backoff_seconds,
+                        claim_ttl_seconds=args.claim_ttl_seconds,
+                        deadline_seconds=args.deadline_seconds,
+                        concurrency_limit=args.concurrency_limit,
+                        model_token_budget=args.model_token_budget,
+                        notification_budget=args.notification_budget,
+                    )
+                    schedule = configure_project_processing(
                         session,
                         declaration,
                         now=clock.now(),
