@@ -4,7 +4,9 @@
 
 ```bash
 make boot   # uv sync, Postgres 16 in Docker, alembic upgrade head
-make test   # pytest — needs the stack up; tests hit the real database
+make check  # fast source and architecture checks
+make test-focused ARGS="tests/test_file.py::test_name"  # tight isolated loop
+make test   # broad non-slow PostgreSQL gate
 make down   # stop the stack
 make queue  # run the coordination UI at http://localhost:8412
 ```
@@ -12,6 +14,23 @@ make queue  # run the coordination UI at http://localhost:8412
 Every entry point is a `make` target, and the Makefile comments say what each
 one takes. `make extract`, `make agreements`, and `make minutes` call a model
 and need `OPENAI_API_KEY` in `.env`.
+
+## Testing
+
+Use non-overlapping gates appropriate to the exact revision
+([ADR-0065](docs/adr/0065-test-gates-preserve-feedback-without-weakening-release-proof.md)):
+
+- During implementation, run `make check` and `make test-focused ARGS="..."`
+  for the changed seam. Do not run the broad suite after every edit.
+- Use `make test` after a broad change or before pushing when local broad
+  feedback is useful.
+- `make test-full` includes every test selected by `make test`. Run the full
+  gate once for a release revision, normally in PR CI; never precede it with
+  `make test` on the unchanged revision.
+- If `make test` already passed and the revision is unchanged, `make test-slow`
+  supplies the exhaustive complement without rerunning the normal tests.
+- Any source or test change invalidates an earlier result. Rerun the smallest
+  affected seam, then whichever single final gate the revised change requires.
 
 ## Architecture
 
@@ -40,6 +59,8 @@ saying why it exists and what was tried before — read it before changing one.
   leases, competing workers, or restart recovery — uses only the harness-owned
   `runtime_database` fixture in `tests/conftest.py`. Ordinary database tests
   remain rollback-scoped; test modules do not provision their own databases.
+  The harness copies these databases from one migrated per-process template;
+  migration rehearsal tests still provision and migrate their exact revisions.
 - `llm_model` and the prompt version in `prompts/` are recorded on every
   Extracted Proposal. Changing either without an eval run makes the numbers
   incomparable.

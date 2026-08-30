@@ -1086,6 +1086,7 @@ def _reextracted_candidate(document, predecessor):
     return candidate
 
 
+@pytest.mark.slow
 def test_exact_reextraction_replays_453_rows_and_admits_only_the_new_row(
     session, project
 ):
