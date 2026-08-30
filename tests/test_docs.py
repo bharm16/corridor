@@ -941,3 +941,29 @@ def test_a_registered_schedule_document_carries_a_durable_quarantine(
     ).all()
     assert len(quarantines) == 1
     assert "sequencing" in quarantines[0].reason
+
+
+def test_a_lock_entry_whose_store_file_is_missing_fails_soft_per_document(
+    session, project, lockfile, tmp_path
+):
+    from pathlib import Path
+
+    lock = json.loads(lockfile.read_text())
+    rec = lock["sources"]["https://example.gov/agreement.pdf"]
+    Path(rec["local_path"]).unlink()
+    lockfile.write_text(json.dumps(lock))
+
+    documents = ingest_manifest(
+        session,
+        project_id=project.id,
+        lock_path=lockfile,
+        images_dir=tmp_path / "images",
+    )
+
+    # The whole project still ingests; the hole is registered and visible.
+    assert len(documents) == 2
+    failed = [d for d in documents if d.parse_status == "failed"]
+    parsed = [d for d in documents if d.parse_status == "parsed"]
+    assert len(failed) == 1 and len(parsed) == 1
+    assert failed[0].sha256 == rec["sha256"]
+    assert failed[0].pages == 0

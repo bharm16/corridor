@@ -67,12 +67,25 @@ def ingest_document(
     # next to a citation.
     path = Path(path)
     filename = filename or path.name
-    sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-    if expected_sha256 is not None and sha256 != expected_sha256:
-        raise ValueError(
-            f"document bytes do not match lockfile sha256: expected "
-            f"{expected_sha256}, got {sha256}"
-        )
+    source_file_missing = not path.exists()
+    if source_file_missing:
+        # The lockfile recorded a successful fetch, but the content-addressed
+        # store lost the bytes. The recorded hash still identifies the
+        # document, so register it visibly failed rather than aborting the
+        # whole project's ingest on one hole in the store.
+        if expected_sha256 is None:
+            raise FileNotFoundError(
+                f"document file {path} is missing and no lockfile sha256 "
+                "identifies its content"
+            )
+        sha256 = expected_sha256
+    else:
+        sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if expected_sha256 is not None and sha256 != expected_sha256:
+            raise ValueError(
+                f"document bytes do not match lockfile sha256: expected "
+                f"{expected_sha256}, got {sha256}"
+            )
     if registry_id is not None and not registry_id.strip():
         raise ValueError("registry_id must be non-empty")
     if numbering_scheme is not None and numbering_scheme not in NUMBERING_SCHEMES:
@@ -152,6 +165,15 @@ def ingest_document(
     session.add(document)
     session.flush()
     _quarantine_unmodeled_semantics(session, document)
+
+    if source_file_missing:
+        # Registered and visibly failed rather than silently absent — the
+        # same contract as a parse failure. The recovery path for failed
+        # documents picks it up once the store file is restored.
+        document.parse_status = "failed"
+        document.pages = 0
+        session.flush()
+        return document
 
     try:
         pages = _extract(path, Path(images_dir) / sha256)

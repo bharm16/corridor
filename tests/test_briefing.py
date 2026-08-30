@@ -926,6 +926,15 @@ def test_live_nhhip_project_floor_is_bounded_by_buckets(
         ).first()
         if project is None:
             pytest.skip("the shared NHHIP corpus is not present")
+        from corridor.project_reading import freeze_project_reading
+
+        # Guard on the same scope the briefing itself reads: a freshly
+        # re-ingested project can exist — even hold raw rows mid-processing —
+        # while the coherent project reading is still empty. That is the same
+        # "no production corpus" state the docstring already promises to
+        # skip on.
+        if not freeze_project_reading(shared_session, project.id).rows:
+            pytest.skip("the shared NHHIP corpus carries no readable records yet")
 
         class FloorCoveringClient:
             model = "scripted-floor-coverer"
