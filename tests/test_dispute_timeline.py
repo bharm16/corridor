@@ -123,3 +123,52 @@ def test_timeline_orders_and_reverifies_each_row_scoped_mention(session, depende
     assert "settled_value" not in rendered
     assert "selected_value" not in rendered
     assert "coordination" not in rendered
+
+
+def test_a_cross_project_source_is_refused_from_the_timeline(session, dependency):
+    """A foreign project's document never leaks into the bounded packet."""
+    _mention(session, dependency, order=1, value="12-inch", doc_type="matrix")
+    _mention(session, dependency, order=2, value="16-inch", doc_type="matrix")
+
+    foreign_project = Project(slug="foreign", name="Foreign", is_synthetic=True)
+    session.add(foreign_project)
+    session.flush()
+    quote = "The main is 44-inch."
+    foreign_document = Document(
+        project_id=foreign_project.id,
+        sha256=hashlib.sha256(b"foreign").hexdigest(),
+        filename="foreign.pdf",
+        doc_type="matrix",
+        doc_date=date(2025, 3, 1),
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(foreign_document)
+    session.flush()
+    session.add(DocPage(document_id=foreign_document.id, page_no=1, text=quote))
+    link = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=foreign_document.id,
+        page_no=1,
+        quote=quote,
+        verified=True,
+    )
+    session.add(link)
+    session.flush()
+    session.add(
+        Assertion(
+            dependency_id=dependency.id,
+            field_name="station_from",
+            asserted_value="44-inch",
+            evidence_link_id=link.id,
+            doc_date=foreign_document.doc_date,
+        )
+    )
+    session.flush()
+
+    packet = build_dispute_timeline(session, dependency.id, "station_from")
+
+    assert [mention.value for mention in packet.mentions] == ["12-inch", "16-inch"]
+    assert all(
+        mention.document_id != foreign_document.id for mention in packet.mentions
+    )

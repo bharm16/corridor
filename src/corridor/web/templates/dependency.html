@@ -318,6 +318,13 @@
             <button>Record follow-up without settling</button>
           </form>
         </div>
+      {% elif f.name in dispute_amendments %}
+        <section class="dispute-summary" aria-label="Stale executed agreement">
+          <h3>Field data changed under an executed agreement — flag for amendment</h3>
+          <p class="why">{{ dispute_amendments[f.name].why }}</p>
+          <p class="muted">This is coordination work, not a pick-one verdict:
+            both cited quotes stay above, and no conclusion is recorded here.</p>
+        </section>
       {% endif %}
     </div>
   {% else %}

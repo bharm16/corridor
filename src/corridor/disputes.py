@@ -18,7 +18,7 @@ on its own, because its Assertion postdates what the reviewer saw.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -122,6 +122,10 @@ class DisputedClaim:
     document_type: str
     page_no: int | None
     quote: str | None
+    # When the document entered the corpus. A printed date is claimable;
+    # registration is observed, so a backdated document contradicting its
+    # own registration order is a provenance conflict, never quiet history.
+    registered_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -392,6 +396,7 @@ def disputes_for(
                         document_type=document.doc_type,
                         page_no=link.page_no,
                         quote=link.quote,
+                        registered_at=document.created_at,
                     )
                     for assertion, link, document in rows
                 ),
@@ -411,7 +416,18 @@ def history_assessments_for(
     ``apply_staleness_resolutions`` may retain the two strictly mechanical
     outcomes.
     """
-    return [_history_assessment(dispute) for dispute in _raw_disputes_for(session, dependency_id)]
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None:
+        raise ValueError(f"dependency {dependency_id} does not exist")
+    assessments = []
+    for dispute in _raw_disputes_for(session, dependency_id):
+        # Only a like-for-like text projection can witness the row's own
+        # recorded position; anything else stays out of the predicate.
+        current_value = getattr(dependency, dispute.field_name, None)
+        if not isinstance(current_value, str):
+            current_value = None
+        assessments.append(_history_assessment(dispute, current_value))
+    return assessments
 
 
 def apply_staleness_resolutions(
@@ -469,6 +485,7 @@ def apply_staleness_resolutions(
                     newer.asserted_value is None
                     and assessment.field_name in _NOT_NULL_COLUMNS
                 )
+                and _value_fits_column(assessment.field_name, newer.asserted_value)
             ):
                 setattr(dependency, assessment.field_name, newer.asserted_value)
         recorded.append(resolution)
@@ -561,6 +578,7 @@ def _raw_disputes_for(session: Session, dependency_id: int) -> list[Dispute]:
                         document_type=document.doc_type,
                         page_no=link.page_no,
                         quote=link.quote,
+                        registered_at=document.created_at,
                     )
                     for assertion, link, document in rows
                 ),
@@ -569,7 +587,9 @@ def _raw_disputes_for(session: Session, dependency_id: int) -> list[Dispute]:
     return found
 
 
-def _history_assessment(dispute: Dispute) -> DisputeHistoryAssessment:
+def _history_assessment(
+    dispute: Dispute, current_value: str | None
+) -> DisputeHistoryAssessment:
     """Apply only the narrow, date-provable staleness predicate."""
     claims = dispute.claims
     coverage = dispute.newest_claim_id
@@ -581,9 +601,13 @@ def _history_assessment(dispute: Dispute) -> DisputeHistoryAssessment:
         )
     assert all(isinstance(value, date) for value in dates)
     if len(set(dates)) != len(dates):
+        shared = sorted(
+            {value.isoformat() for value in dates if dates.count(value) > 1}
+        )
         return _contested(
             dispute,
-            "the sources cannot be ordered because two competing claims carry the same document date",
+            "the sources cannot be ordered because competing claims carry the "
+            f"same document date ({', '.join(shared)})",
         )
     ordered = tuple(sorted(claims, key=lambda claim: (claim.doc_date, claim.assertion_id)))
     values = [claim.value for claim in ordered]
@@ -605,7 +629,36 @@ def _history_assessment(dispute: Dispute) -> DisputeHistoryAssessment:
     if older.doc_date >= newer.doc_date:
         return _contested(
             dispute,
-            "the competing source dates do not establish an older value followed by a recorded change",
+            "the competing source dates "
+            f"({older.doc_date.isoformat()}, {newer.doc_date.isoformat()}) do "
+            "not establish an older value followed by a recorded change",
+        )
+    if (
+        older.registered_at is not None
+        and newer.registered_at is not None
+        and older.registered_at > newer.registered_at
+    ):
+        return _contested(
+            dispute,
+            f"provenance conflict: {older.document_filename} carries the "
+            f"earlier document date {older.doc_date.isoformat()} but was "
+            f"registered {older.registered_at.date().isoformat()}, after "
+            f"{newer.document_filename} ({newer.doc_date.isoformat()}, "
+            f"registered {newer.registered_at.date().isoformat()}) — a "
+            "backdated chronology is surfaced, never trusted mechanically",
+        )
+    if current_value is not None and current_value != newer.value:
+        origin = (
+            f" from {older.document_filename} ({older.doc_date.isoformat()})"
+            if current_value == older.value
+            else ""
+        )
+        return _contested(
+            dispute,
+            f"the disagreeing document {newer.document_filename} "
+            f"({newer.doc_date.isoformat()}) is newer than the row's recorded "
+            f"value {current_value!r}{origin} — a newer source challenging "
+            "the record is a human question",
         )
     change = (
         f"the recorded field change from {older.value!r} in "
@@ -622,7 +675,9 @@ def _history_assessment(dispute: Dispute) -> DisputeHistoryAssessment:
             covers_assertion_id=coverage,
             why=(
                 f"{change}; field data changed under the executed agreement — "
-                "flag for amendment"
+                "flag for amendment. "
+                f"Agreement quote: {older.quote or '(no quote recorded)'} "
+                f"Newer source quote: {newer.quote or '(no quote recorded)'}"
             ),
         )
     if dispute.field_name not in _PHYSICAL_FIELDS:
@@ -639,6 +694,22 @@ def _history_assessment(dispute: Dispute) -> DisputeHistoryAssessment:
         covers_assertion_id=coverage,
         why=f"{change}; earlier value superseded by field update",
     )
+
+
+def _value_fits_column(field_name: str, value: str | None) -> bool:
+    """A mechanical layer never forces a value the schema would refuse.
+
+    A hostile or malformed claim can carry text longer than the projected
+    column.  The chronology receipt is still recorded; only the write-through
+    to the Constraint Record is withheld, leaving the field for a person.
+    """
+    if value is None:
+        return True
+    column = Dependency.__table__.columns.get(field_name)
+    if column is None:
+        return False
+    limit = getattr(column.type, "length", None)
+    return limit is None or len(value) <= limit
 
 
 def _contested(dispute: Dispute, why: str) -> DisputeHistoryAssessment:

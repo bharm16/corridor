@@ -3522,16 +3522,31 @@ def dependency_detail(
         assessment.field_name: assessment
         for assessment in history_assessments_for(session, dependency_id)
     }
-    disputes = {
+    amendment_fields = {
+        field_name
+        for field_name, assessment in all_assessments.items()
+        if assessment.outcome == "contractual_amendment"
+    }
+    all_disputes = {
         dispute.field_name: dispute
         for dispute in disputes_for(session, dependency_id, include_settled=True)
-        if all_assessments.get(dispute.field_name, None) is None
-        or all_assessments[dispute.field_name].outcome != "contractual_amendment"
+    }
+    disputes = {
+        field_name: dispute
+        for field_name, dispute in all_disputes.items()
+        if field_name not in amendment_fields
     }
     assessments = {
         field_name: assessment
         for field_name, assessment in all_assessments.items()
-        if assessment.field_name in disputes
+        if field_name in disputes
+    }
+    # A stale executed agreement is coordination work, not a pick-one card:
+    # the why-line and both quotes render without any settle control.
+    amendments = {
+        field_name: all_assessments[field_name]
+        for field_name in amendment_fields
+        if field_name in all_disputes
     }
     timelines = {
         field_name: build_dispute_timeline(session, dependency_id, field_name)
@@ -3559,6 +3574,7 @@ def dependency_detail(
             "return_to": safe_return,
             "disputes": disputes,
             "dispute_assessments": assessments,
+            "dispute_amendments": amendments,
             "dispute_timelines": timelines,
             "roster": roster,
             "dismiss_reasons": DISMISS_REASONS,
