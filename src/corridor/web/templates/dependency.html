@@ -140,6 +140,63 @@
           Remove this entry from the active log, or correct it, using the controls below.
         {% endif %}
       </p>
+
+      {% if revision_change_binding %}
+        <div class="revision-change-explanation" aria-label="Optional explanation of the change"
+             style="border-top:1px dashed #d0b070; margin-top:.6rem; padding-top:.5rem;">
+          <p class="muted" style="margin:.2rem 0; font-size:.82rem;">
+            Optional: ask for a plain-language explanation of what the verified
+            comparison found. It reads only that comparison, decides nothing, and
+            does not change the question above.
+          </p>
+          <form class="inline" method="post"
+                action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/explain-revision-change">
+            {{ csrf_field() }}
+            <input type="hidden" name="comparison_id" value="{{ revision_change_binding.comparison_id }}">
+            <input type="hidden" name="finding_id" value="{{ revision_change_binding.finding_id }}">
+            <input type="hidden" name="state_token" value="{{ revision_change_binding.state_token }}">
+            <button type="submit">Explain this change</button>
+          </form>
+          {% if not revision_change_configuration %}
+            <p class="muted" style="margin:.2rem 0; font-size:.78rem;">
+              A model and bounded resource limits must be declared in operations
+              before an explanation can run.
+            </p>
+          {% endif %}
+
+          {% if revision_change_explanation %}
+            {% set rc = revision_change_explanation %}
+            <div style="margin-top:.5rem; font-size:.85rem;">
+              {% if rc.status == "completed" and rc.explanation_json %}
+                <p class="muted" style="margin:.2rem 0;">A non-authoritative reading — check it against the change above; it settles nothing.</p>
+                {% for change in rc.explanation_json.supported_changes %}
+                  <p style="margin:.2rem 0;">
+                    <b>{{ change.field }}</b>: {{ change.before_value }} → {{ change.after_value }} — {{ change.explanation }}
+                  </p>
+                {% endfor %}
+                {% for alt in rc.explanation_json.preserved_alternatives %}
+                  <p style="margin:.2rem 0;">Kept alternatives {{ alt.row_refs|join(", ") }}: {{ alt.note }}</p>
+                {% endfor %}
+                {% for dist in rc.explanation_json.preserved_distinctions %}
+                  <p style="margin:.2rem 0;">{{ dist.row_ref }} ({{ dist.distinction }}): {{ dist.note }}</p>
+                {% endfor %}
+                {% for limit in rc.explanation_json.completeness_limits %}
+                  <p class="muted" style="margin:.2rem 0;">Extraction limit ({{ limit.side }}): {{ limit.note }}</p>
+                {% endfor %}
+                {% for unknown in rc.explanation_json.unknowns %}
+                  <p class="muted" style="margin:.2rem 0;">Unknown — {{ unknown.subject }}: {{ unknown.note }}</p>
+                {% endfor %}
+              {% else %}
+                <p class="muted" style="margin:.2rem 0;">
+                  No explanation is available ({{ rc.status }}). The change above and
+                  the question stand on their own.
+                  {% if rc.reason %}<br><span style="font-size:.78rem;">{{ rc.reason }}</span>{% endif %}
+                </p>
+              {% endif %}
+            </div>
+          {% endif %}
+        </div>
+      {% endif %}
     </section>
   {% endif %}
 

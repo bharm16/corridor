@@ -1,4 +1,4 @@
-"""Rehearse retained run-explanation receipts on real disposable PostgreSQL."""
+"""Rehearse retained revision-change explanation receipts on real PostgreSQL."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
-PREDECESSOR = "c345a9f1d2e3"
+PREDECESSOR = "e4c8b1a6d3f7"
 HEAD = "f360a1b2c3d4"
 
 
@@ -49,7 +49,7 @@ def _columns(connection, table: str) -> list[str]:
     )
 
 
-def test_run_explanation_schema_is_one_linear_head_on_a_fresh_database():
+def test_revision_change_schema_is_one_linear_head_on_a_fresh_database():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     assert scripts.get_heads() == [HEAD]
 
@@ -57,7 +57,7 @@ def test_run_explanation_schema_is_one_linear_head_on_a_fresh_database():
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="issue359_fresh_",
+        database_prefix="issue360_fresh_",
     ) as database:
         url = make_url(settings.database_url).set(database=database.name)
         engine = create_engine(url)
@@ -68,7 +68,7 @@ def test_run_explanation_schema_is_one_linear_head_on_a_fresh_database():
                     == HEAD
                 )
                 assert _columns(
-                    connection, "production_run_explanation_configurations"
+                    connection, "revision_change_explanation_configurations"
                 ) == [
                     "id",
                     "project_id",
@@ -85,17 +85,19 @@ def test_run_explanation_schema_is_one_linear_head_on_a_fresh_database():
                     "created_at",
                 ]
                 assert _columns(
-                    connection, "production_run_explanation_requests"
+                    connection, "revision_change_explanation_requests"
                 ) == [
                     "id",
                     "public_id",
                     "project_id",
-                    "document_id",
+                    "dependency_id",
+                    "comparison_id",
+                    "finding_id",
+                    "finding_state",
                     "configuration_id",
                     "requested_by",
                     "comparison_sha256",
                     "state_token",
-                    "competing_run_ids_json",
                     "model",
                     "prompt_version",
                     "adapter",
@@ -115,10 +117,10 @@ def test_run_explanation_schema_is_one_linear_head_on_a_fresh_database():
                     "completed_at",
                 ]
                 for trigger_name in (
-                    "production_run_explanation_configurations_are_immutable",
-                    "production_run_explanation_requests_are_immutable",
-                    "production_run_explanation_configurations_reject_truncate",
-                    "production_run_explanation_requests_reject_truncate",
+                    "revision_change_explanation_configurations_are_immutable",
+                    "revision_change_explanation_requests_are_immutable",
+                    "revision_change_explanation_configurations_reject_truncate",
+                    "revision_change_explanation_requests_reject_truncate",
                 ):
                     assert connection.scalar(
                         text(
@@ -136,7 +138,7 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_receipts():
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="issue359_predecessor_",
+        database_prefix="issue360_predecessor_",
         migration_revision=PREDECESSOR,
     ) as database:
         url = make_url(settings.database_url).set(database=database.name)
@@ -147,7 +149,7 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_receipts():
                 connection.execute(
                     text(
                         "insert into projects (slug, name, is_synthetic) "
-                        "values ('issue359', 'Issue 359', true)"
+                        "values ('issue360', 'Issue 360', true)"
                     )
                 )
             _upgrade(rendered, "head")
@@ -160,14 +162,14 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_receipts():
                     connection.scalar(
                         text(
                             "select to_regclass"
-                            "('production_run_explanation_requests')"
+                            "('revision_change_explanation_requests')"
                         )
                     )
                     is not None
                 )
                 assert (
                     connection.scalar(
-                        text("select count(*) from projects where slug = 'issue359'")
+                        text("select count(*) from projects where slug = 'issue360'")
                     )
                     == 1
                 )
@@ -175,7 +177,7 @@ def test_predecessor_to_head_preserves_project_rows_and_adds_receipts():
                     connection.scalar(
                         text(
                             "select count(*) from "
-                            "production_run_explanation_requests"
+                            "revision_change_explanation_requests"
                         )
                     )
                     == 0

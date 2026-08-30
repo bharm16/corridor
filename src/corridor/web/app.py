@@ -136,6 +136,7 @@ from corridor.models import (
     ProductionRunExplanationConfiguration,
     ProductionRunExplanationRequest,
     ExtractionFailureDiagnosisRequest,
+    RevisionChangeExplanationRequest,
 )
 from corridor.coordination_summary import (
     ConfigurationRequired,
@@ -165,6 +166,17 @@ from corridor.extraction_failure_diagnosis import (
     failed_extraction_runs,
     failure_diagnosis_state_token,
     request_failure_diagnosis,
+)
+from corridor.revision_change_explanation import (
+    PROMPT_VERSION as REVISION_CHANGE_EXPLANATION_PROMPT_VERSION,
+    ConfigurationRequired as RevisionChangeConfigurationRequired,
+    ExplanationRequestRefused as RevisionChangeExplanationRequestRefused,
+    InvalidExplanationConfiguration as RevisionChangeInvalidConfiguration,
+    current_configuration as current_revision_change_configuration,
+    declare_configuration as declare_revision_change_configuration,
+    explanation_binding as revision_change_explanation_binding,
+    latest_revision_change_explanation,
+    request_revision_change_explanation,
 )
 from corridor.milestones import (
     MalformedMilestoneCsv,
@@ -476,6 +488,20 @@ def get_run_explanation_client_factory():
 
 def get_failure_diagnosis_client_factory():
     """Build a diagnosis adapter only after declared spend authority exists."""
+    from corridor.llm import OpenAIClient
+
+    def build(configuration):
+        return OpenAIClient(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+        )
+
+    return build
+
+
+def get_revision_change_explanation_client_factory():
+    """Build a revision-change adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
     def build(configuration):
@@ -4085,6 +4111,93 @@ def read_failure_diagnosis(
     )
 
 
+@app.post("/operations/{slug}/revision-change-explanation/configuration")
+async def declare_revision_change_explanation_configuration_route(
+    slug: str,
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Declare bounded revision-change-explanation authority; technical operations.
+
+    A missing or incomplete declaration is exactly why an explanation refuses
+    before any model call — there is no environment or default fallback.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    form = await request.form()
+    try:
+        declare_revision_change_configuration(
+            session,
+            project_id=project.id,
+            principal=principal,
+            model=str(form.get("model", "")),
+            prompt_version=str(form.get("prompt_version", "")),
+            max_input_tokens=int(str(form.get("max_input_tokens", ""))),
+            max_output_tokens=int(str(form.get("max_output_tokens", ""))),
+            timeout_seconds=int(str(form.get("timeout_seconds", ""))),
+            max_requests=int(str(form.get("max_requests", ""))),
+            retry_policy=str(form.get("retry_policy", "")),
+            retention_policy=str(form.get("retention_policy", "")),
+            observation_context=str(form.get("observation_context", "")),
+        )
+    except (ValueError, RevisionChangeInvalidConfiguration) as exc:
+        raise HTTPException(
+            400, f"revision-change-explanation configuration refused: {exc}"
+        ) from exc
+    session.commit()
+    return RedirectResponse(f"/operations/{project.slug}", status_code=303)
+
+
+@app.post("/ledger/{slug}/{dependency_id}/explain-revision-change")
+async def explain_revision_change(
+    request: Request,
+    slug: str,
+    dependency_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    client_factory=Depends(get_revision_change_explanation_client_factory),
+):
+    """Run one explicit, read-only explanation of a verified newer-document change.
+
+    The deterministic question and change context are untouched: this only reads
+    the exact integrity-verified comparison and stores a non-authoritative
+    receipt. It never selects a comparison, updates support, or settles anything.
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    form = await request.form()
+    try:
+        expected_comparison_id = int(str(form.get("comparison_id", "")))
+        expected_finding_id = int(str(form.get("finding_id", "")))
+    except ValueError as exc:
+        raise HTTPException(
+            400, "comparison_id and finding_id must be integers"
+        ) from exc
+    state_token = str(form.get("state_token") or "")
+    try:
+        request_revision_change_explanation(
+            session,
+            project_id=project.id,
+            dependency_id=dependency_id,
+            principal=principal,
+            client_factory=client_factory,
+            expected_comparison_id=expected_comparison_id,
+            expected_finding_id=expected_finding_id,
+            state_token=state_token,
+        )
+    except RevisionChangeExplanationRequestRefused as exc:
+        raise HTTPException(
+            404 if exc.reason == "wrong_project" else 409, exc.detail
+        ) from exc
+    except RevisionChangeConfigurationRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/ledger/{project.slug}/{dependency_id}", status_code=303
+    )
+
+
 @app.post("/operations/{slug}/unknown-scope/suspend")
 async def suspend_operations_unknown_scope(
     request: Request,
@@ -4836,6 +4949,28 @@ def _dependency_detail_response(
         if support_consequence is not None
         else None
     )
+    # An optional, read-only explanation of the exact verified comparison the
+    # question already selected (#360). The binding and any retained receipt are
+    # an adjunct: the deterministic question and change context above stand on
+    # their own whether or not one exists, is stale, or was refused.
+    revision_change_binding = (
+        revision_change_explanation_binding(
+            session, project_id=project.id, dependency_id=dependency_id
+        )
+        if support_context is not None
+        else None
+    )
+    revision_change_explanation = (
+        latest_revision_change_explanation(
+            session,
+            project_id=project.id,
+            dependency_id=dependency_id,
+            comparison_id=revision_change_binding.comparison_id,
+            finding_id=revision_change_binding.finding_id,
+        )
+        if revision_change_binding is not None
+        else None
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
@@ -4867,6 +5002,14 @@ def _dependency_detail_response(
             "dismiss_reasons": DISMISS_REASONS,
             "support_consequence": support_consequence,
             "support_context": support_context,
+            "revision_change_binding": revision_change_binding,
+            "revision_change_explanation": revision_change_explanation,
+            "revision_change_configuration": current_revision_change_configuration(
+                session, project.id
+            ),
+            "revision_change_prompt_version": (
+                REVISION_CHANGE_EXPLANATION_PROMPT_VERSION
+            ),
         },
         status_code=status_code,
     )

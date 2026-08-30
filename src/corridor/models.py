@@ -2588,6 +2588,158 @@ class ExtractionFailureDiagnosisRequest(Base):
     )
 
 
+class RevisionChangeExplanationConfiguration(Base):
+    """One explicit, server-owned authorization for a bounded revision-change
+    explanation (#360).
+
+    Explaining a verified newer-document change can spend model budget, so it
+    has no supported default: an attributable technical-operations declaration
+    names the model, prompt, and the time, input, output, retry, retention, and
+    observation bounds before any explanation request is allowed. Rows are
+    append-only so a retained explanation always names the rules it ran under.
+    """
+
+    __tablename__ = "revision_change_explanation_configurations"
+    __table_args__ = (
+        CheckConstraint(
+            "max_input_tokens between 1 and 200000",
+            name="ck_rev_change_expl_cfg_input_budget",
+        ),
+        CheckConstraint(
+            "max_output_tokens between 1 and 20000",
+            name="ck_rev_change_expl_cfg_output_budget",
+        ),
+        CheckConstraint(
+            "timeout_seconds between 1 and 600",
+            name="ck_rev_change_expl_cfg_timeout",
+        ),
+        CheckConstraint("max_requests = 1", name="ck_rev_change_expl_cfg_one_request"),
+        CheckConstraint("retry_policy = 'none'", name="ck_rev_change_expl_cfg_no_retry"),
+        CheckConstraint(
+            "retention_policy = 'retained_indefinitely'",
+            name="ck_rev_change_expl_cfg_retention",
+        ),
+        CheckConstraint("length(trim(model)) > 0", name="ck_rev_change_expl_cfg_model"),
+        CheckConstraint(
+            "length(trim(prompt_version)) > 0", name="ck_rev_change_expl_cfg_prompt"
+        ),
+        CheckConstraint(
+            "length(trim(observation_context)) > 0",
+            name="ck_rev_change_expl_cfg_context",
+        ),
+        CheckConstraint(
+            "length(trim(created_by)) > 0", name="ck_rev_change_expl_cfg_actor"
+        ),
+        Index("ix_rev_change_expl_cfg_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    max_input_tokens: Mapped[int] = mapped_column(Integer)
+    max_output_tokens: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    max_requests: Mapped[int] = mapped_column(Integer)
+    retry_policy: Mapped[str] = mapped_column(String(32))
+    retention_policy: Mapped[str] = mapped_column(String(64))
+    observation_context: Mapped[str] = mapped_column(String(128))
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class RevisionChangeExplanationRequest(Base):
+    """Immutable receipt for one bounded, non-authoritative revision-change
+    explanation (#360).
+
+    The receipt binds the exact affected Constraint and the integrity-verified
+    Revision Comparison finding it explained, retains the frozen sanitized
+    comparison it read (the context a coordinator checks the explanation
+    against), and stores only the validated explanation plus a redacted
+    execution lineage — never raw source text, a chain of thought, or any claim
+    of human decision authorship. It never updates support or settles anything.
+    """
+
+    __tablename__ = "revision_change_explanation_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "configuration_id",
+            "comparison_sha256",
+            name="uq_rev_change_expl_req_comparison",
+        ),
+        CheckConstraint(
+            "status in ('completed', 'budget_exhausted', 'timeout', "
+            "'transport_failure', 'validation_refused', 'stale_input')",
+            name="ck_rev_change_expl_req_status",
+        ),
+        CheckConstraint(
+            "comparison_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_rev_change_expl_req_comparison_sha",
+        ),
+        CheckConstraint(
+            "state_token ~ '^[0-9a-f]{64}$'",
+            name="ck_rev_change_expl_req_state_token",
+        ),
+        CheckConstraint(
+            "length(trim(requested_by)) > 0", name="ck_rev_change_expl_req_actor"
+        ),
+        CheckConstraint(
+            "length(trim(adapter)) > 0", name="ck_rev_change_expl_req_adapter"
+        ),
+        CheckConstraint("non_authoritative", name="ck_rev_change_expl_req_non_auth"),
+        Index("ix_rev_change_expl_req_project_id", "project_id"),
+        Index("ix_rev_change_expl_req_dependency_id", "dependency_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    comparison_id: Mapped[int] = mapped_column(
+        ForeignKey("revision_comparison_runs.id")
+    )
+    finding_id: Mapped[int] = mapped_column(
+        ForeignKey("revision_comparison_findings.id")
+    )
+    finding_state: Mapped[str] = mapped_column(String(32))
+    configuration_id: Mapped[int] = mapped_column(
+        ForeignKey("revision_change_explanation_configurations.id")
+    )
+    requested_by: Mapped[str] = mapped_column(String(128))
+    comparison_sha256: Mapped[str] = mapped_column(String(64))
+    state_token: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    adapter: Mapped[str] = mapped_column(String(64))
+    adapter_contract_version: Mapped[str | None] = mapped_column(String(128))
+    tool_contract_version: Mapped[str] = mapped_column(String(128))
+    validator_version: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    # The frozen, sanitized comparison finding this explanation read: the
+    # checkable context, not a raw source-wide trace.
+    comparison_json: Mapped[dict] = mapped_column(JSONB)
+    # The validated, non-authoritative explanation, or null when none was kept.
+    explanation_json: Mapped[dict | None] = mapped_column(JSONB)
+    # Redacted transport metadata (hashes, usage, timing) — no prompt, response,
+    # or chain-of-thought text.
+    execution_lineage_json: Mapped[dict | None] = mapped_column(JSONB)
+    read_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    budget_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    non_authoritative: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ExternalReportArtifact(Base):
     """One immutable, already-rendered External Report PDF.
 
