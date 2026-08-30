@@ -36,6 +36,7 @@ from corridor.extraction_runs import (
     current_active_run_declaration,
 )
 from corridor.merge import parse_station
+from corridor.statement_matching import dependency_match_signals, match_score
 from corridor.models import (
     Candidate,
     Dependency,
@@ -548,33 +549,16 @@ class InvestigationTools:
             .order_by(Dependency.ref_code, Dependency.id)
         ).all()
         source_station = parse_station(station_text)
+        source_stations = (source_station,) if source_station is not None else ()
         term_keys = tuple(_normalize(term) for term in terms if _normalize(term))
         ranked: list[tuple[int, str, Dependency, tuple[str, ...]]] = []
         for dependency in dependencies:
-            signals = ["registered_party_match"]
-            low = parse_station(dependency.station_from)
-            high = parse_station(dependency.station_to)
-            if source_station is not None and _station_contains(
-                source_station, low, high
-            ):
-                signals.append("station_overlap")
-            haystack = _normalize(
-                " ".join(
-                    value
-                    for value in (
-                        dependency.ref_code,
-                        dependency.source_ref,
-                        dependency.title,
-                        dependency.location_desc,
-                    )
-                    if value
-                )
+            signals, term_hits = dependency_match_signals(
+                dependency, source_stations=source_stations, term_keys=term_keys
             )
-            term_hits = sum(term in haystack for term in term_keys)
-            if term_hits:
-                signals.append("source_term_match")
-            score = (10 if "station_overlap" in signals else 0) + term_hits
-            ranked.append((score, dependency.ref_code, dependency, tuple(signals)))
+            ranked.append(
+                (match_score(signals, term_hits), dependency.ref_code, dependency, signals)
+            )
         ranked.sort(key=lambda row: (-row[0], row[1], row[2].id))
         options = []
         for _, _, dependency, signals in ranked[:limit]:
@@ -1444,14 +1428,3 @@ def _supporting_evidence_eligible(page: DocPage) -> bool:
     return page.text_source == "cells" or bool(
         page.image_path and Path(page.image_path).is_file()
     )
-
-
-def _station_contains(source: float, low: float | None, high: float | None) -> bool:
-    if low is None and high is None:
-        return False
-    if low is None:
-        low = high
-    if high is None:
-        high = low
-    assert low is not None and high is not None
-    return min(low, high) <= source <= max(low, high)

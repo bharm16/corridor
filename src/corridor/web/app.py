@@ -139,11 +139,7 @@ from corridor.disputes import (
     disputes_for,
     settle_dispute,
 )
-from corridor.event_admission import (
-    StatementUnplaceable,
-    attach_statement,
-    waiting_statements,
-)
+from corridor.event_admission import waiting_statements
 from corridor.frontend_request_receipts import (
     FrontendRequestSubject,
     record_frontend_request,
@@ -237,6 +233,7 @@ from corridor.statement_lifecycle import (
     current_lineage_statement,
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
+from corridor.statement_suggestions import read_statement_suggestions
 from corridor.work_list import build_work_list
 from corridor.web.statement_forms import (
     CANDIDATE_EVIDENCE_UNAVAILABLE,
@@ -785,31 +782,18 @@ def _revision_panels(
 def attach_waiting_statement(
     slug: str,
     candidate_id: int,
-    dependency_ref: str = Form(...),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Put an unplaced statement on the record a human names."""
+    """Retire raw attach-by-reference without translating it into a decision."""
     project = _project(session, slug, principal, designation=access.COORDINATION)
-    candidate = session.get(Candidate, candidate_id)
-    if candidate is None or candidate.project_id != project.id:
-        raise HTTPException(404, "no such statement in this project")
-    dependency = session.scalars(
-        select(Dependency).where(
-            Dependency.project_id == project.id,
-            Dependency.ref_code == dependency_ref.strip(),
-        )
-    ).first()
-    if dependency is None:
-        raise HTTPException(
-            400, f"no record in this project called {dependency_ref!r}"
-        )
-    try:
-        attach_statement(session, candidate, dependency, principal=principal)
-    except StatementUnplaceable as exc:
-        raise HTTPException(409, str(exc))
-    session.commit()
-    return RedirectResponse(f"/statements/{slug}", status_code=303)
+    candidate = _project_statement_candidate(session, project, candidate_id)
+    # Deliberately ignore every submitted value.  The old endpoint named a
+    # Constraint directly, bypassing explicit scope, source, and stale-state
+    # checks.  The guided screen starts no mutation by itself.
+    return RedirectResponse(
+        f"/statements/{project.slug}/{candidate.id}/coordinate", status_code=303
+    )
 
 
 @app.post("/ledger/{slug}/{dependency_id}/dismiss")
@@ -1593,6 +1577,11 @@ def _statement_coordination_screen(
         else None
     )
     candidate_facts = prepare_candidate_statement_facts(session, candidate)
+    statement_suggestions = (
+        read_statement_suggestions(session, project.id, candidate.id)
+        if candidate.state == "pending" and candidate.citations_verified
+        else ()
+    )
     candidate_evidence = candidate_statement_evidence_view(candidate_facts)
     candidate_evidence_available = candidate_facts.evidence_is_reviewable
     dependencies = session.execute(
@@ -1604,6 +1593,19 @@ def _statement_coordination_screen(
         )
         .order_by(Dependency.ref_code)
     ).all()
+    # Suggestions may reorder the choice list; they never preselect an entry,
+    # and a protected or ineligible statement keeps the plain ref-code order.
+    suggestion_rank = {
+        suggestion.dependency_id: rank
+        for rank, suggestion in enumerate(statement_suggestions)
+    }
+    dependencies = sorted(
+        dependencies,
+        key=lambda row: (
+            suggestion_rank.get(row[0].id, len(suggestion_rank)),
+            row[0].ref_code,
+        ),
+    )
     roster = session.scalars(
         select(ProjectRosterEntry)
         .where(
@@ -1675,6 +1677,7 @@ def _statement_coordination_screen(
             "candidate_evidence_unavailable_message": (
                 CANDIDATE_EVIDENCE_UNAVAILABLE
             ),
+            "statement_suggestions": statement_suggestions,
             "dependencies": [
                 {
                     "id": dependency.id,

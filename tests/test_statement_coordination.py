@@ -52,6 +52,10 @@ from corridor.principals import HumanPrincipal
 from access_support import seed_membership
 from corridor.schedule_linking import flow_through_revisions, resolve_link
 from corridor.statement_lifecycle import current_lineage_statement
+from corridor.statement_suggestions import (
+    declare_statement_suggestion_eligibility,
+    declare_statement_suggestion_protection,
+)
 from corridor.work_list import build_work_list
 from corridor.statement_coordination import (
     CLOSURE_TARGET_RELATIONSHIP_GAP,
@@ -2600,6 +2604,143 @@ def test_http_flow_renders_verified_context_and_delegates_to_the_atomic_command(
             )
             assert stale.status_code == 409
             assert "Follow-up plan saved" in stale.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_suggestions_only_order_explicit_scope_choices(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will relocate the gas main near Station 6609+00."
+    document = _document(session, project, "suggestions.xlsx", quote)
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id, DocPage.page_no == 1
+        )
+    )
+    page.text_source = "cells"
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "commitment",
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+            "conflict_ref": "SUGGEST-17",
+            "station_from": "6609+00",
+            "station_to": "6609+00",
+            "committed_date": {
+                "text": "June 1, 2026",
+                "precision": "day",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-01",
+            },
+        },
+    )
+    dependency = _dependency(
+        session, project, party, "SUGGEST-17", "Kinder Morgan gas main"
+    )
+    dependency.source_ref = "SUGGEST-17"
+    unrelated = _dependency(session, project, party, "AAA-01", "Unrelated fence")
+    declare_statement_suggestion_eligibility(session, project.id, candidate.id)
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+
+        assert screen.status_code == 200
+        suggestions = screen.text.split('id="statement-suggestions"', 1)[1].split(
+            "</section>", 1
+        )[0]
+        assert "Possible matching constraints" in suggestions
+        assert "SUGGEST-17 — Kinder Morgan gas main" in suggestions
+        assert "input" not in suggestions
+        assert 'name="scope_mode" value="unknown" required' in screen.text
+        assert f'value="{dependency.id}" checked' not in screen.text
+        assert "checked" not in screen.text.split(
+            'id="selected-scope-dependencies"', 1
+        )[1].split("</div>", 1)[0]
+        choices = screen.text.split('id="selected-scope-dependencies"', 1)[1].split(
+            "</div>", 1
+        )[0]
+        assert choices.index("Kinder Morgan gas main") < choices.index(
+            "Unrelated fence"
+        )
+        assert f'value="{unrelated.id}" checked' not in screen.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_http_protected_statement_screen_withholds_every_suggestion(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will relocate the gas main near Station 6609+00."
+    document = _document(session, project, "protected-suggestions.xlsx", quote)
+    page = session.scalar(
+        select(DocPage).where(
+            DocPage.document_id == document.id, DocPage.page_no == 1
+        )
+    )
+    page.text_source = "cells"
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "commitment",
+            "description": quote,
+            "external_org": party.name,
+            "stated_party": party.name,
+            "conflict_ref": "SUGGEST-17",
+            "station_from": "6609+00",
+            "station_to": "6609+00",
+            "committed_date": {
+                "text": "June 1, 2026",
+                "precision": "day",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-01",
+            },
+        },
+    )
+    dependency = _dependency(
+        session, project, party, "SUGGEST-17", "Kinder Morgan gas main"
+    )
+    dependency.source_ref = "SUGGEST-17"
+    _dependency(session, project, party, "AAA-01", "Unrelated fence")
+    declare_statement_suggestion_eligibility(session, project.id, candidate.id)
+    declare_statement_suggestion_protection(
+        session,
+        project.id,
+        candidate.id,
+        kind="no_agent_baseline",
+        observation_contract="correction-observation-window-v1",
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            screen = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+
+        assert screen.status_code == 200
+        assert 'id="statement-suggestions"' not in screen.text
+        assert "Possible matching constraints" not in screen.text
+        assert 'name="scope_mode" value="unknown" required' in screen.text
+        choices = screen.text.split('id="selected-scope-dependencies"', 1)[1].split(
+            "</div>", 1
+        )[0]
+        assert choices.index("Unrelated fence") < choices.index(
+            "Kinder Morgan gas main"
+        )
+        assert "checked" not in choices
     finally:
         app.dependency_overrides.clear()
 

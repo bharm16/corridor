@@ -4752,7 +4752,7 @@ def test_the_queue_points_at_the_pile_without_becoming_it(session, client, proje
     assert "1 statement to review" in page
 
 
-def test_attaching_from_the_pile_puts_it_on_the_record(session, client, project):
+def test_retired_attach_from_the_pile_hands_off_without_mutating(session, client, project):
 
     _unplaced_statement(session, project)
     dependency = session.scalars(
@@ -4765,23 +4765,22 @@ def test_attaching_from_the_pile_puts_it_on_the_record(session, client, project)
         )
     ).one()
 
+    before_events = session.scalars(select(DependencyEvent)).all()
     response = client.post(
         f"/projects/{project.slug}/statements/{candidate.id}/attach",
-        data={"dependency_ref": dependency.ref_code},
+        data={"dependency_ref": dependency.ref_code, "dependency_id": str(dependency.id)},
         follow_redirects=False,
     )
     assert response.status_code == 303
-
-    [event] = session.scalars(
-        select(DependencyEvent)
-        .join(DependencyEventScope, DependencyEventScope.event_id == DependencyEvent.id)
-        .where(DependencyEventScope.dependency_id == dependency.id)
-    ).all()
-    assert event.created_by == TEST_PRINCIPAL.subject
-    assert "Nothing waiting" in client.get(f"/statements/{project.slug}").text
+    assert response.headers["location"] == (
+        f"/statements/{project.slug}/{candidate.id}/coordinate"
+    )
+    assert session.scalars(select(DependencyEvent)).all() == before_events
+    session.refresh(candidate)
+    assert candidate.state == "pending"
 
 
-def test_naming_a_record_that_does_not_exist_refuses(session, client, project):
+def test_retired_attach_ignores_a_forged_reference(session, client, project):
     _unplaced_statement(session, project)
     candidate = session.scalars(
         select(Candidate).where(
@@ -4789,14 +4788,19 @@ def test_naming_a_record_that_does_not_exist_refuses(session, client, project):
         )
     ).one()
 
+    before_events = session.scalars(select(DependencyEvent)).all()
     refused = client.post(
         f"/projects/{project.slug}/statements/{candidate.id}/attach",
         data={"dependency_ref": "DEP-99999"},
         follow_redirects=False,
     )
-    assert refused.status_code == 400
+    assert refused.status_code == 303
+    assert refused.headers["location"] == (
+        f"/statements/{project.slug}/{candidate.id}/coordinate"
+    )
     session.refresh(candidate)
     assert candidate.state == "pending"
+    assert session.scalars(select(DependencyEvent)).all() == before_events
 
 
 def test_tossing_a_statement_returns_to_the_pile(session, client, project):

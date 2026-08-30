@@ -51,6 +51,11 @@ from corridor.statement_coordination import (
     read_admitted_statement_coordination,
     set_admitted_statement_next_action,
 )
+from corridor.statement_suggestions import (
+    declare_statement_suggestion_eligibility,
+    declare_statement_suggestion_protection,
+    read_statement_suggestions,
+)
 from corridor.work_list import build_work_list
 from corridor.work_decisions import (
     CoordinationSubject,
@@ -2002,3 +2007,63 @@ def test_a_schedule_revision_surfaces_the_required_by_move_as_attention(
     assert item.required_by_move.prior_need_date == date(2026, 11, 1)
     assert item.required_by_move.new_need_date == date(2026, 9, 15)
     assert item.required_by_move.activity_code == "UTIL-RELO-A"
+
+
+def test_suggestion_reads_never_change_the_review_order_of_pending_statements(
+    session, project, party
+):
+    """Precomputing or reading deterministic suggestions is invisible here.
+
+    Protected cohort work and ordinary eligible work must keep the exact
+    review order the Work List already derives from the record; enabling
+    ordering hints on one statement cannot resequence or annotate either.
+    """
+    protected, eligible = _record_pending_statement_candidates(
+        session,
+        project,
+        [
+            {
+                "event_type": "commitment",
+                "event_date": date(2025, 1, 16),
+                "committed_date": {
+                    "text": "June 2025",
+                    "precision": "month",
+                    "start_date": "2025-06-01",
+                    "end_date": "2025-06-30",
+                },
+                "external_org": party.name,
+                "stated_party": party.name,
+                "quote": "We will relocate the line by June 2025.",
+                "reason": "no_conflict_reference",
+            },
+            {
+                "event_type": "commitment",
+                "event_date": date(2025, 1, 16),
+                "committed_date": {
+                    "text": "July 2025",
+                    "precision": "month",
+                    "start_date": "2025-07-01",
+                    "end_date": "2025-07-31",
+                },
+                "external_org": party.name,
+                "stated_party": party.name,
+                "quote": "We will clear the crossing by July 2025.",
+                "reason": "no_conflict_reference",
+            },
+        ],
+    )
+    before = build_work_list(session, project.id, today=date(2025, 2, 1))
+
+    declare_statement_suggestion_protection(
+        session,
+        project.id,
+        protected.id,
+        kind="shadow_cohort",
+        observation_contract="frozen-v2-membership",
+    )
+    declare_statement_suggestion_eligibility(session, project.id, eligible.id)
+    read_statement_suggestions(session, project.id, eligible.id)
+    read_statement_suggestions(session, project.id, eligible.id)
+
+    after = build_work_list(session, project.id, today=date(2025, 2, 1))
+    assert after == before

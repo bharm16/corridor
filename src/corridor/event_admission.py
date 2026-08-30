@@ -1924,9 +1924,9 @@ def waiting_statements(
                 "committed_date": fields.get("committed_date"),
                 "conflict_ref": fields.get("conflict_ref"),
                 "description": fields.get("description"),
-                # Whether attach could possibly take it: the checks that
-                # depend on the statement alone use the same preparation as
-                # attach_statement. An enabled button that 409s teaches a
+                # Whether guided coordination could possibly place it: the
+                # checks that depend on the statement alone use this shared
+                # preparation. An enabled action that later refuses teaches a
                 # reviewer the pile is broken; a disabled one with the
                 # reason beside it teaches them what the statement lacks.
                 "attachable": attachable,
@@ -2025,102 +2025,3 @@ def _prepare_statement_placement(
         description=str(fields.get("description") or ""),
         evidence=evidence,
     )
-
-
-def attach_statement(
-    session: Session,
-    candidate: Candidate,
-    dependency: Dependency,
-    *,
-    principal: HumanPrincipal,
-) -> DependencyEvent:
-    """Put an unplaced statement on the record a human says it belongs to.
-
-    Acceptance builds a Dependency and refuses an event outright; this is
-    the gesture that message has always pointed at. What the policy could
-    not prove — which record the statement names — a human supplies by
-    naming it, and everything the policy would still have refused is
-    refused here too: an unparseable date, a type outside the policy, and
-    above all the masquerade boundary, because a project-side actor
-    stating a delivery date is an internal action item and never an
-    External Party's commitment (ADR-0026).
-    """
-    attacher = require_human_principal(principal)
-    if candidate.project_id != dependency.project_id:
-        raise StatementUnplaceable(
-            "a statement cannot attach to another project's record"
-        )
-    # The Candidate is mutable reviewer work until this act. Its state,
-    # payload, and action scope must all be re-read after the project lock;
-    # preparing first could write a stale pre-lock edit.
-    from corridor.adjudicate import require_candidate_action_scope
-
-    try:
-        require_candidate_action_scope(
-            session, candidate, historical_document_id=None
-        )
-    except Exception as exc:
-        raise StatementUnplaceable(str(exc)) from exc
-    project = session.get(Project, dependency.project_id, populate_existing=True)
-    if project is None:
-        raise StatementUnplaceable(
-            f"dependency {dependency.id} belongs to no registered project"
-        )
-    # Re-read under the lock — the caller loaded this row before taking
-    # it, and a dismissal committed in between must refuse this attach,
-    # not race it. The same stale-read the dismiss path re-reads for.
-    session.refresh(dependency)
-    if dependency.dismissed_at is not None:
-        raise StatementUnplaceable(
-            f"{dependency.ref_code} was dismissed — a statement cannot "
-            "attach to a record nobody is working"
-        )
-    prepared = _prepare_statement_placement(session, project, candidate)
-
-    if prepared.affected_party and not identity.party_matches(
-        session, dependency, prepared.affected_party
-    ):
-        raise StatementUnplaceable(
-            "the statement's affected External Party does not match this record"
-        )
-    if dependency.external_org_id is None:
-        raise StatementUnplaceable("this record has no resolved External Party")
-
-    try:
-        # The accepted Candidate and its audit receipt are one human act with
-        # the event. A late refusal must not preserve the event while leaving
-        # the source Candidate pending or unaudited.
-        with session.begin_nested():
-            event = record_external_party_statement(
-                session,
-                project_id=project.id,
-                affected_external_org_id=dependency.external_org_id,
-                stated_party=prepared.stated_party,
-                stated_external_org_id=prepared.stated_external_org_id,
-                source_kind="cited",
-                event_date=prepared.event_date,
-                description=prepared.description,
-                new_timing=prepared.new_timing,
-                previous_timing=prepared.previous_timing,
-                scope=StatementScope.selected((dependency.id,)),
-                created_by=attacher.subject,
-                evidence=prepared.evidence,
-            )
-            candidate.state = "accepted"
-            candidate.adjudicated_at = datetime.now(timezone.utc)
-            audit.record(
-                session,
-                principal=attacher,
-                action=audit.ATTACH_STATEMENT,
-                entity_type=audit.DEPENDENCY,
-                entity_id=dependency.id,
-                after={
-                    "candidate_id": candidate.id,
-                    "dependency_event_id": event.id,
-                    "event_type": prepared.event_type,
-                },
-            )
-            session.flush()
-    except StatementRefusal as exc:
-        raise StatementUnplaceable(str(exc)) from exc
-    return event

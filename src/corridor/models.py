@@ -2882,6 +2882,77 @@ class Candidate(Base):
     )
 
 
+class StatementSuggestionEligibilityDeclaration(Base):
+    """One explicit approval to expose deterministic statement ordering."""
+
+    __tablename__ = "statement_suggestion_eligibility_declarations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(contract_version)) > 0",
+            name="ck_statement_suggestion_eligibility_contract",
+        ),
+        UniqueConstraint(
+            "candidate_id", name="uq_statement_suggestion_eligibility_candidate"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    contract_version: Mapped[str] = mapped_column(String(128))
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class StatementSuggestionProtection(Base):
+    """One declared cohort window during which statement ordering is withheld."""
+
+    __tablename__ = "statement_suggestion_protections"
+    __table_args__ = (
+        CheckConstraint(
+            "kind in ('shadow_cohort', 'no_agent_baseline')",
+            name="ck_statement_suggestion_protection_kind",
+        ),
+        CheckConstraint(
+            "length(trim(observation_contract)) > 0",
+            name="ck_statement_suggestion_protection_contract",
+        ),
+        UniqueConstraint(
+            "candidate_id",
+            "kind",
+            "observation_contract",
+            name="uq_statement_suggestion_protection_window",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    observation_contract: Mapped[str] = mapped_column(String(128))
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class StatementSuggestionProtectionEnd(Base):
+    """Append-only conclusion of one declared suggestion-protection window."""
+
+    __tablename__ = "statement_suggestion_protection_ends"
+    __table_args__ = (
+        UniqueConstraint(
+            "protection_id", name="uq_statement_suggestion_protection_end"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    protection_id: Mapped[int] = mapped_column(
+        ForeignKey("statement_suggestion_protections.id"), index=True
+    )
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class EvidenceInvestigationRun(Base):
     """One immutable terminal attempt by the non-authoritative investigator."""
 
