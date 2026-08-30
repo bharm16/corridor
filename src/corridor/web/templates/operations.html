@@ -105,4 +105,23 @@
     {% for schedule in schedules %}<section class="card"><p><b>{{ schedule.handler_key | replace('_', ' ') }}</b> is enabled.</p><p class="muted">{{ schedule.cadence }} · {{ schedule.timezone_name }} · {{ schedule.missed_run_policy }} · at most {{ schedule.max_attempts }} attempts · declared model budget {{ schedule.model_token_budget }}</p></section>{% endfor %}
   {% else %}<p class="warning">Scheduled recovery is not enabled: no retained gate-7 configuration names this project, exact identities, cadence, retention, bounded retries, resources, and authorized destinations.</p>{% endif %}
   {% if recovery_rows %}<table><thead><tr><th>Occurrence</th><th>State</th><th>Attempts</th><th>Safe next operation</th></tr></thead><tbody>{% for row in recovery_rows %}<tr><td>{{ row.occurrence.public_id }}</td><td>{{ row.occurrence.state }}</td><td>{{ row.occurrence.attempt_count }}</td><td>{% if row.receipts %}{{ row.receipts[-1].safe_next_step }}{% else %}await scheduled processing{% endif %}{% if row.occurrence.last_error_code %}<br><span class="failure">{{ row.occurrence.last_error_code }}</span>{% endif %}</td></tr>{% endfor %}</tbody></table>{% endif %}
+
+  <h2>Newer-document processing needing attention</h2>
+  {% if support_update_failures %}
+    <p class="muted">A newer document changed a supporting source, but the exact comparison could not be produced or read. The customer sees only the plain consequence; these technical details stay here.</p>
+    <table>
+      <thead><tr><th>Constraint</th><th>Project consequence</th><th>Technical reason</th></tr></thead>
+      <tbody>
+        {% for failure in support_update_failures %}
+          <tr>
+            <td>{{ failure.dependency_id }}</td>
+            <td>{{ failure.explanation }}</td>
+            <td><span class="failure">{{ failure.reason }}</span> ({{ failure.status }})</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No newer-document processing failures for this project.</p>
+  {% endif %}
 </main>

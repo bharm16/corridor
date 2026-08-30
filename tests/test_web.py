@@ -427,12 +427,15 @@ def test_queue_rejects_an_unknown_review_lane(client, project):
     assert r.status_code == 422
 
 
-def test_queue_exposes_two_counted_exclusive_review_lanes(client, project):
+def test_queue_points_newer_document_work_at_the_work_list(client, project):
     r = client.get(f"/queue/{project.slug}")
 
     assert r.status_code == 200
     assert f'href="/queue/{project.slug}?lane=candidate" aria-current="page"' in r.text
-    assert f'href="/queue/{project.slug}?lane=reconfirmation"' in r.text
+    # The retired reconfirmation ceremony is gone; newer-document work is a
+    # routed Work List question, so the pointer goes to the Work List.
+    assert f'href="/queue/{project.slug}?lane=reconfirmation"' not in r.text
+    assert f'href="/work/{project.slug}"' in r.text
     assert "Proposed constraints (0)" in r.text
     assert "Newer documents needing attention (0)" in r.text
 
@@ -620,22 +623,19 @@ def test_dependency_only_work_stays_visible_beside_an_ordinary_candidate(
     assert "Awaiting extraction" in r.text
 
 
-def test_empty_reconfirmation_lane_points_to_remaining_candidate_work(
+def test_retired_reconfirmation_lane_redirects_to_the_work_list(
     client, session, project, document
 ):
     make_candidate(session, project, document)
 
-    r = client.get(f"/queue/{project.slug}?lane=reconfirmation")
-
-    assert r.status_code == 200
-    assert "Queue empty" in r.text
-    assert "Proposed constraints (1)" in r.text
-    assert (
-        f'href="/queue/{project.slug}?lane=reconfirmation" '
-        'aria-current="page"' in r.text
+    r = client.get(
+        f"/queue/{project.slug}?lane=reconfirmation", follow_redirects=False
     )
-    assert "1 proposed constraint item(s) remain" in r.text
-    assert "AT&amp;T Texas (SWBT)" not in r.text
+
+    # The generic reconfirmation ceremony is retired; the lane now sends the
+    # coordinator to the Work List where the specific consequences live.
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/work/{project.slug}"
 
 
 def test_unverified_candidates_sink_but_are_never_hidden(
@@ -1077,35 +1077,25 @@ def test_queue_selects_successor_when_active_run_is_declared(client, session, pr
     assert "PRE-ONLY" not in r.text
 
 
-def test_safe_unchanged_successor_moves_out_of_candidate_lane(client, session, project):
-    chain = _seed_reconfirmation_ready_chain(session, project)
+def test_safe_unchanged_successor_is_not_a_customer_ceremony(client, session, project):
+    _seed_reconfirmation_ready_chain(session, project)
 
     candidate_lane = client.get(f"/queue/{project.slug}?lane=candidate")
-    reconfirm_lane = client.get(f"/queue/{project.slug}?lane=reconfirmation")
+    reconfirm_lane = client.get(
+        f"/queue/{project.slug}?lane=reconfirmation", follow_redirects=False
+    )
 
+    # The exact unchanged successor is out of the proposal queue, and there is
+    # no generic reconfirmation ceremony to confirm it — it flows through the
+    # managed automatic path (ADR-0034, ADR-0037).
     assert candidate_lane.status_code == 200
     assert "FOC1-1" not in candidate_lane.text
     assert "Queue empty" in candidate_lane.text
     assert "Proposed constraints (0)" in candidate_lane.text
-    assert "Newer documents needing attention (1)" in candidate_lane.text
-    assert reconfirm_lane.status_code == 200
-    body = reconfirm_lane.text
-    assert chain["dependency"].ref_code in body
-    assert chain["predecessor"].filename in body
-    assert chain["successor"].filename in body
-    assert "The source wording is unchanged" in body
-    assert "<kbd>c</kbd> Confirm replacement supporting document" in body
-    assert f'action="/supersession-review/{chain["dependency"].id}/reconfirm"' in body
-    assert f'name="predecessor_document_id" value="{chain["predecessor"].id}"' in body
-    assert (
-        f'name="successor_candidate_id" value="{chain["successor_candidate"].id}"'
-        in body
-    )
-    assert f'name="comparison_id" value="{chain["comparison"].id}"' in body
-    assert 'name="finding_id" value="' in body
-    assert 'name="scope_fingerprint" value=' in body
-    assert ">accept<" not in body
-    assert ">reject<" not in body
+    assert "Confirm replacement supporting document" not in candidate_lane.text
+    assert "The source wording is unchanged" not in candidate_lane.text
+    assert reconfirm_lane.status_code == 303
+    assert reconfirm_lane.headers["location"] == f"/work/{project.slug}"
 
 
 def test_queue_keeps_automatic_carry_forward_in_the_audit_layer(
@@ -1144,135 +1134,48 @@ def test_direct_post_cannot_admit_a_reconfirmation_only_candidate(
     assert chain["successor_candidate"].state == "pending"
 
 
-def test_reconfirmation_post_moves_support_and_redirects_back_to_that_lane(
+def test_exact_unchanged_support_moves_through_the_automatic_path(
     client, session, project
 ):
+    from corridor.automatic_carry_forward import run_automatic_carry_forward
+    from corridor.operative_support import resolve_operative_support
+
     chain = _seed_reconfirmation_ready_chain(session, project)
     before = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
     assert "Supporting document replaced" in before.text
 
-    response = client.post(
-        f"/supersession-review/{chain['dependency'].id}/reconfirm",
-        data={
-            "slug": project.slug,
-            "predecessor_document_id": str(chain["predecessor"].id),
-            "successor_candidate_id": str(chain["successor_candidate"].id),
-            "comparison_id": str(chain["comparison"].id),
-            "finding_id": str(chain["finding"].id),
-            "scope_fingerprint": json.dumps(
-                [list(item) for item in chain["review"].scope_fingerprint]
-            ),
-        },
-        follow_redirects=False,
-    )
+    # No customer confirmation and no ceremony: the managed automatic path
+    # carries the exact unchanged support (#343, ADR-0034).
+    result = run_automatic_carry_forward(session, project.id)
+    session.flush()
 
-    assert response.status_code == 303
-    assert response.headers["location"] == f"/queue/{project.slug}?lane=reconfirmation"
-    refreshed = client.get(f"/queue/{project.slug}?lane=reconfirmation")
-    assert "Queue empty" in refreshed.text
+    assert len(result.carried) == 1
+    support = resolve_operative_support(session, (chain["dependency"].id,))[
+        chain["dependency"].id
+    ]
+    assert support.publication.document_id == chain["successor"].id
     ordinary_after = client.get(f"/queue/{project.slug}?lane=candidate")
-    assert "Queue empty" in ordinary_after.text
     assert "Proposed constraints (0)" in ordinary_after.text
     assert "FOC1-1" not in ordinary_after.text
     detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
     assert "Supporting document replaced" not in detail.text
-    assert chain["predecessor"].filename in detail.text
     assert chain["successor"].filename in detail.text
-    assert "reconfirm_operative_support" in detail.text
 
 
-def test_stale_reconfirmation_form_is_409_and_leaves_review_work_open(
-    client, session, project
-):
+def test_retired_reconfirm_post_route_no_longer_exists(client, session, project):
     chain = _seed_reconfirmation_ready_chain(session, project)
 
     response = client.post(
         f"/supersession-review/{chain['dependency'].id}/reconfirm",
-        data={
-            "slug": project.slug,
-            "predecessor_document_id": str(chain["predecessor"].id),
-            "successor_candidate_id": str(chain["successor_candidate"].id),
-            "comparison_id": str(chain["comparison"].id),
-            "finding_id": str(chain["finding"].id + 1_000_000),
-            "scope_fingerprint": json.dumps(
-                [list(item) for item in chain["review"].scope_fingerprint]
-            ),
-        },
+        data={"slug": project.slug},
         follow_redirects=False,
     )
 
-    assert response.status_code == 409
-    assert "stale or no longer safe" in response.json()["detail"]
-    review = client.get(f"/queue/{project.slug}?lane=reconfirmation")
-    assert "Confirm replacement supporting document" in review.text
+    # The direct customer reconfirmation request is gone; there is no way to
+    # bypass the specific decision authority (ADR-0037).
+    assert response.status_code in (404, 405)
     detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
-    assert "Supporting document replaced" in detail.text
-    assert chain["predecessor"].filename in detail.text
-    assert chain["successor"].filename not in detail.text
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("predecessor_document_id", "not-an-id"),
-        ("successor_candidate_id", ""),
-        ("comparison_id", "0"),
-        ("finding_id", "-1"),
-    ],
-)
-def test_malformed_reconfirmation_identity_is_400(
-    client, session, project, field, value
-):
-    chain = _seed_reconfirmation_ready_chain(session, project)
-    data = {
-        "slug": project.slug,
-        "predecessor_document_id": str(chain["predecessor"].id),
-        "successor_candidate_id": str(chain["successor_candidate"].id),
-        "comparison_id": str(chain["comparison"].id),
-        "finding_id": str(chain["finding"].id),
-        "scope_fingerprint": json.dumps(
-            [list(item) for item in chain["review"].scope_fingerprint]
-        ),
-    }
-    data[field] = value
-
-    response = client.post(
-        f"/supersession-review/{chain['dependency'].id}/reconfirm",
-        data=data,
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 400
-
-
-@pytest.mark.parametrize(
-    ("raw_scope_fingerprint", "expected_detail"),
-    [
-        ("", "scope_fingerprint must be present"),
-        ("not-json", "scope_fingerprint must be valid JSON"),
-    ],
-)
-def test_missing_or_malformed_scope_fingerprint_is_400(
-    client, session, project, raw_scope_fingerprint, expected_detail
-):
-    chain = _seed_reconfirmation_ready_chain(session, project)
-
-    response = client.post(
-        f"/supersession-review/{chain['dependency'].id}/reconfirm",
-        data={
-            "slug": project.slug,
-            "predecessor_document_id": str(chain["predecessor"].id),
-            "successor_candidate_id": str(chain["successor_candidate"].id),
-            "comparison_id": str(chain["comparison"].id),
-            "finding_id": str(chain["finding"].id),
-            "scope_fingerprint": raw_scope_fingerprint,
-        },
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == expected_detail
-    assert chain["successor_candidate"].state == "pending"
+    assert "Confirm replacement supporting document" not in detail.text
 
 
 def test_queue_uses_the_declared_successor_run_not_a_newer_experiment(
@@ -2789,7 +2692,7 @@ def test_a_zero_day_quantity_still_renders(client, session, project):
     assert "Required by date is near 0d" in body
 
 
-def test_superseded_citation_is_visible_as_reconfirmation_work(
+def test_superseded_citation_is_visible_as_a_replaced_support_alert(
     client, session, project, document
 ):
     dependency = Dependency(
@@ -2850,7 +2753,7 @@ def test_superseded_citation_is_visible_as_reconfirmation_work(
 
     for body in (ledger, detail):
         assert "Supporting document replaced 0d" in body
-        assert "needs human re-confirmation against the current revision" in body
+        assert "replaced by a newer revision and is no longer current" in body
 
 
 def _event_candidate(session, project, document):
@@ -5740,3 +5643,153 @@ def test_frontend_request_subject_refuses_non_positive_integer_ids(invalid_id):
 
     with pytest.raises((TypeError, ValueError)):
         FrontendRequestSubject(project_id=invalid_id).as_json()  # type: ignore[arg-type]
+
+
+def _seed_changed_support_chain(session, project):
+    """A superseded Constraint whose newer revision states a different value."""
+    predecessor = _document_with_registry_id(
+        session, project, registry_id="CHG-PRE",
+        filename="chg-rev-01.pdf", doc_date=date(2025, 10, 1),
+    )
+    successor = _document_with_registry_id(
+        session, project, registry_id="CHG-SUC",
+        filename="chg-rev-02.pdf", doc_date=date(2026, 1, 1),
+    )
+    index = _document_with_registry_id(
+        session, project, registry_id="CHG-IDX",
+        filename="chg-index.xlsx", doc_date=date(2010, 1, 1),
+    )
+    session.add_all([
+        DocPage(document_id=index.id, page_no=1, text="CHG index"),
+        DocPage(document_id=predecessor.id, page_no=1,
+                text="FOC1-1 AT&T Texas (SWBT) 1149+00"),
+        DocPage(document_id=successor.id, page_no=1,
+                text="FOC1-1 AT&T Metro (SWBT) 1149+00"),
+    ])
+    session.flush()
+    predecessor_candidate = make_candidate(
+        session, project, predecessor, uid="FOC1-1", station_from="1149+00",
+        prompt_version="txdot_ucm_v1",
+    )
+    # Accept while the predecessor is still current, then supersede it below.
+    accept_candidate(session, predecessor_candidate, principal=TEST_PRINCIPAL)
+    dependency = session.scalars(
+        select(Dependency).where(Dependency.project_id == project.id)
+    ).one()
+    publication = session.scalars(
+        select(EvidenceLink).where(EvidenceLink.dependency_id == dependency.id)
+    ).first()
+    designate_publication_support(
+        session, dependency.id, publication.id, principal=TEST_PRINCIPAL,
+    )
+    successor_candidate = Candidate(
+        project_id=project.id, kind="dependency",
+        payload_json={
+            "kind": "dependency",
+            "fields": {"utility_id": "FOC1-1",
+                       "external_org": "AT&T Metro (SWBT)",
+                       "station_from": "1149+00"},
+            "citations": [{"document_id": successor.id, "page": 1,
+                           "quote": "FOC1-1 AT&T Metro (SWBT)",
+                           "verified": True, "whole_row": True}],
+        },
+        source_document_id=successor.id, source_pages=[1], confidence=1.0,
+        prompt_version="txdot_ucm_v1", citations_verified=True,
+    )
+    session.add(successor_candidate)
+    session.flush()
+    successor_run = record_extraction_run(
+        session, successor, prompt_version="txdot_ucm_v1", candidate_count=1,
+        page_errors=0, candidates=(successor_candidate,),
+        allow_unsealed_legacy=True,
+    )
+    declare_active_run(
+        session, successor.id, successor_run.id, principal=TEST_PRINCIPAL
+    )
+    register_supersessions(
+        session,
+        [SupersessionDeclaration(
+            predecessor_registry_id=predecessor.registry_id,
+            successor_registry_id=successor.registry_id,
+            replacement_date=date(2026, 2, 13),
+            source_registry_id=index.registry_id, source_page=1)],
+        project_id=project.id,
+    )
+    create_revision_comparison(
+        session,
+        predecessor_extraction_run_id=predecessor_candidate.extraction_run_id,
+        successor_extraction_run_id=successor_run.id,
+        matcher_version="revision-correspondence-v2",
+    )
+    session.flush()
+    # Confirm the seed produced the changed row the routing depends on.
+    [review] = [
+        r for r in build_reviewer_worklist(session, project.id).ordinary
+        if r.dependency_id == dependency.id and r.status == "changed"
+    ]
+    return {"dependency": dependency, "predecessor": predecessor,
+            "successor": successor, "review": review}
+
+
+def test_changed_support_appears_once_on_the_work_list(client, session, project):
+    _seed_changed_support_chain(session, project)
+
+    work = client.get(f"/work/{project.slug}")
+
+    assert work.status_code == 200
+    copy = "states a different value than the recorded conclusion"
+    assert copy in work.text
+    # One grouped coordination question, not one row per revision detail.
+    assert work.text.count(copy) == 1
+    assert "Confirm replacement supporting document" not in work.text
+
+
+def test_changed_support_shows_before_and_after_on_the_dependency_page(
+    client, session, project
+):
+    chain = _seed_changed_support_chain(session, project)
+
+    detail = client.get(f"/ledger/{project.slug}/{chain['dependency'].id}")
+
+    assert detail.status_code == 200
+    assert "A newer document needs attention" in detail.text
+    assert "chg-rev-01.pdf" in detail.text
+    assert "chg-rev-02.pdf" in detail.text
+    assert "AT&amp;T Texas (SWBT)" in detail.text
+    assert "AT&amp;T Metro (SWBT)" in detail.text
+    assert "Resolve the source discrepancy" in detail.text
+
+
+def test_documentation_needs_clarification_route_records_follow_up(
+    client, session, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-WEB-CLARIFY",
+        dep_type="utility_relocation",
+        title="Gas crossing",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    roster = session.scalars(
+        select(ProjectRosterEntry).where(
+            ProjectRosterEntry.project_id == project.id
+        )
+    ).first()
+
+    response = client.post(
+        f"/dependencies/{dependency.id}/documentation/clarify",
+        data={
+            "slug": project.slug,
+            "internal_owner_roster_entry_id": str(roster.id),
+            "next_action": "Ask the utility for a clean approval letter",
+            "due_date": "2026-09-15",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    detail = client.get(f"/ledger/{project.slug}/{dependency.id}")
+    assert "Ask the utility for a clean approval letter" in detail.text
+    assert "Documentation fields not complete" in detail.text

@@ -58,6 +58,7 @@ from corridor.schedule_linking import (
 )
 from corridor.supersession import actionable_candidate_query
 from corridor.supersession_review import ordinary_candidate_ids
+from corridor.support_update_routing import customer_consequences_by_dependency
 from corridor.work_decisions import (
     DEFERRAL,
     NEXT_ACTION,
@@ -78,6 +79,13 @@ _REASON_ORDER = {
     "milestone_impact_unknown": 2,
     "disputed_date": 2,
     "contractual_amendment": 2,
+    # The routed consequence of ineligible replacement support (ADR-0037):
+    # a specific project question, never the retired generic reconfirmation.
+    "support_changed_value": 2,
+    "support_documentation_review": 2,
+    "support_failed_citation": 2,
+    "support_uncertain_match": 2,
+    "support_dropped_row": 2,
     # A schedule revision moved a Required By basis (ADR-0057): surfaced as
     # attention showing old and new dates, never as an approval question.
     "required_by_advanced": 2,
@@ -517,6 +525,15 @@ def _dependency_items(
         session, dependency_ids
     )
     moves = required_by_moves(session, project_id)
+    # The routed consequence of ineligible replacement support (ADR-0037): a
+    # newer document changed, dropped, or made ambiguous the supporting source.
+    # Technical failures are excluded here; they are operations work.  With no
+    # Constraints there is nothing to route, so the routing is not consulted.
+    support_consequences = (
+        customer_consequences_by_dependency(session, project_id)
+        if dependency_ids
+        else {}
+    )
     items = []
     for dependency in dependencies:
         reason_codes: list[str] = []
@@ -534,6 +551,9 @@ def _dependency_items(
         move = moves.get(dependency.id)
         if move is not None:
             reason_codes.append("required_by_advanced")
+        consequence = support_consequences.get(dependency.id)
+        if consequence is not None and consequence.work_list_reason is not None:
+            reason_codes.append(consequence.work_list_reason)
         if not reason_codes:
             continue
         items.append(

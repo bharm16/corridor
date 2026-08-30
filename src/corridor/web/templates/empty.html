@@ -48,7 +48,7 @@
 <div>
   <nav aria-label="Review categories">
     <a href="/queue/{{ project.slug }}?lane=candidate" {% if lane == "candidate" %}aria-current="page"{% endif %}>Proposed constraints ({{ candidate_count }})</a>
-    <a href="/queue/{{ project.slug }}?lane=reconfirmation" {% if lane == "reconfirmation" %}aria-current="page"{% endif %}>Newer documents needing attention ({{ reconfirmation_count }})</a>
+    <a href="/work/{{ project.slug }}">Newer documents needing attention ({{ support_update_count }})</a>
   </nav>
   {% include "_coordinate.html" %}
   {% if lane == "rehearsal" and rail %}
@@ -129,10 +129,8 @@
          not place are still waiting, and this is where a reviewer looks. #}
       <p><a href="/statements/{{ project.slug }}">{{ waiting_statements }} statement{{ '' if waiting_statements == 1 else 's' }} to review</a></p>
     {% endif %}
-    {% if lane == "candidate" and reconfirmation_count %}
-      <p>{{ reconfirmation_count }} item(s) have newer supporting documents.</p>
-    {% elif lane == "reconfirmation" and candidate_count %}
-      <p>{{ candidate_count }} proposed constraint item(s) remain.</p>
+    {% if support_update_count %}
+      <p><a href="/work/{{ project.slug }}">{{ support_update_count }} constraint(s) have newer supporting documents needing attention.</a></p>
     {% endif %}
     <p>Historical extracted sources remain preserved and never return by fallback.</p>
   {% endif %}

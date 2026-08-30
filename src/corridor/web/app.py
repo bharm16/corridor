@@ -94,9 +94,11 @@ from corridor.ledger import (
     mark_satisfies,
 )
 from corridor.documentation_checklist import (
+    DocumentationClarificationRefusal,
     DocumentationConfirmationRefusal,
     confirm_interpretation,
     read_checklist,
+    record_documentation_clarification,
 )
 from corridor.models import (
     RESOLUTION_STRATEGIES,
@@ -259,11 +261,14 @@ from corridor.work_decisions import (
     undo_follow_up_plan,
 )
 from corridor.supersession_review import (
-    ReconfirmationUnavailable,
     build_reviewer_worklist,
-    normalize_scope_fingerprint,
     ordinary_candidate_for_update,
-    reconfirm_operative_support,
+)
+from corridor.support_update_routing import (
+    changed_source_context,
+    classify_review,
+    customer_consequences_by_dependency,
+    operations_consequences,
 )
 from corridor.models import (
     ActiveExtractionRun,
@@ -387,6 +392,26 @@ _WORK_REASON_COPY = {
     "action_due": "The project Next Action is due now.",
     "action_due_date_unknown": "The Next Action needs a return date.",
     "external_closure_follow_up": "Confirm the project Next Action after the organization reported completion.",
+    "support_changed_value": (
+        "A newer document states a different value than the recorded conclusion — "
+        "resolve which one the record concludes."
+    ),
+    "support_documentation_review": (
+        "A newer document changed the supporting documentation — review it against "
+        "the stated requirement."
+    ),
+    "support_failed_citation": (
+        "A newer document's supporting passage could not be verified — check the "
+        "citation."
+    ),
+    "support_uncertain_match": (
+        "A newer document has more than one row that could replace this "
+        "supporting document — coordinate the correct one."
+    ),
+    "support_dropped_row": (
+        "A newer document no longer contains the row this entry relied on — remove "
+        "or correct the entry."
+    ),
 }
 
 def get_session():
@@ -3624,6 +3649,11 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
 
     handoff = session.get(RecordInclusionRequest, project.id)
     event_policy = read_event_admission_policy_status(session, project.id)
+    # Technical replacement-support failures — a missing or failed extraction,
+    # an undeclared run, a missing, corrupt, or duplicate comparison, or broken
+    # admission lineage — are operations problems, never a customer question
+    # (ADR-0034).  They surface here with their plain project consequence.
+    support_update_failures = operations_consequences(session, project.id)
     return {
         "documents": document_rows,
         "event_policy": event_policy,
@@ -3637,6 +3667,7 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
             session, project.id
         ),
         "run_explanation_prompt_version": RUN_EXPLANATION_PROMPT_VERSION,
+        "support_update_failures": support_update_failures,
     }
 
 
@@ -4096,11 +4127,23 @@ def queue(
             ordinary_candidate_ids
             & _event_lane_dependency_ids(session, event_cohort_receipt)
         )
+    # Only the technical failures a customer cannot act on are shown here as a
+    # plain "supporting documents unavailable" note; a changed, dropped,
+    # ambiguous, or edited row is a routed coordination question that appears
+    # once on the Work List, never twice (ADR-0034, ADR-0037).
     ordinary_reviews = [
         build_supersession_review_view(session, review)
         for review in worklist.ordinary
         if not review.successor_candidate_ids
+        and review.dependency_id is not None
+        and classify_review(review).is_operations
     ]
+    # The retired generic reconfirmation lane is gone; the count that used to
+    # invite a customer to reconfirm now points at the specific routed
+    # coordination questions on the Work List.
+    support_update_count = len(
+        customer_consequences_by_dependency(session, project.id)
+    )
     total, _verified = pending_counts(
         session,
         project.id,
@@ -4116,22 +4159,14 @@ def queue(
         "lane": lane,
         "cohort_receipt": cohort_receipt,
         "candidate_count": total + len(ordinary_reviews),
-        "reconfirmation_count": len(worklist.reconfirmation),
+        "support_update_count": support_update_count,
         "ordinary_reviews": ordinary_reviews,
     }
-    if lane == "reconfirmation" and not worklist.reconfirmation:
-        return TEMPLATES.TemplateResponse(request, "empty.html", lane_context)
     if lane == "reconfirmation":
-        return TEMPLATES.TemplateResponse(
-            request,
-            "reconfirmation.html",
-            {
-                **lane_context,
-                "view": build_supersession_review_view(
-                    session, worklist.reconfirmation[0]
-                ),
-            },
-        )
+        # Exact unchanged support now moves through the managed automatic path
+        # with no customer confirmation; the specific consequence of every other
+        # case is a Work List question.  The retired ceremony redirects there.
+        return RedirectResponse(f"/work/{slug}", status_code=303)
 
     lane_url = f"/queue/{slug}?lane=candidate"
     if cohort_receipt is not None:
@@ -4352,52 +4387,6 @@ def queue(
     return response
 
 
-@app.post("/supersession-review/{dependency_id}/reconfirm")
-async def reconfirm_support(
-    request: Request,
-    dependency_id: int,
-    principal: HumanPrincipal = Depends(get_human_principal),
-    session: Session = Depends(get_session),
-):
-    """Carry one exact reviewer decision into the fail-closed domain seam."""
-
-    form = await request.form()
-    slug = form.get("slug")
-    if not isinstance(slug, str) or not slug.strip():
-        raise HTTPException(400, "slug must be a non-empty string")
-    slug = slug.strip()
-    predecessor_document_id = _required_positive_http_id(
-        form, "predecessor_document_id"
-    )
-    successor_candidate_id = _required_positive_http_id(
-        form, "successor_candidate_id"
-    )
-    comparison_id = _required_positive_http_id(form, "comparison_id")
-    finding_id = _required_positive_http_id(form, "finding_id")
-    scope_fingerprint = _required_scope_fingerprint(form)
-
-    project = _project(session, slug, principal, designation=access.COORDINATION)
-    _project_dependency(session, project, dependency_id)
-    try:
-        reconfirm_operative_support(
-            session,
-            project_id=project.id,
-            dependency_id=dependency_id,
-            predecessor_document_id=predecessor_document_id,
-            successor_candidate_id=successor_candidate_id,
-            comparison_id=comparison_id,
-            finding_id=finding_id,
-            scope_fingerprint=scope_fingerprint,
-            principal=principal,
-        )
-    except ReconfirmationUnavailable as exc:
-        raise HTTPException(409, str(exc)) from exc
-    session.commit()
-    return RedirectResponse(
-        f"/queue/{slug}?lane=reconfirmation", status_code=303
-    )
-
-
 @app.get("/ledger/{slug}", response_class=HTMLResponse)
 def ledger(
     request: Request,
@@ -4556,6 +4545,17 @@ def _dependency_detail_response(
         )
         .order_by(ProjectRosterEntry.display_name, ProjectRosterEntry.id)
     ).all()
+    # The routed consequence of ineligible replacement support for this exact
+    # Constraint, with the retained before/after read back from the verified
+    # comparison — the changed-source context the retired ceremony never gave.
+    support_consequence = customer_consequences_by_dependency(
+        session, project.id
+    ).get(dependency_id)
+    support_context = (
+        changed_source_context(session, support_consequence)
+        if support_consequence is not None
+        else None
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
@@ -4584,6 +4584,8 @@ def _dependency_detail_response(
             "dispute_timelines": timelines,
             "roster": roster,
             "dismiss_reasons": DISMISS_REASONS,
+            "support_consequence": support_consequence,
+            "support_context": support_context,
         },
         status_code=status_code,
     )
@@ -5088,6 +5090,63 @@ def confirm_documentation_approval(
             "evidence_link_id": evidence_link_id,
             "condition_immaterial": condition_immaterial,
             "documentation_confirmation_id": confirmation.id,
+        },
+    )
+    session.commit()
+    return response
+
+
+@app.post("/dependencies/{dependency_id}/documentation/clarify")
+def clarify_documentation_review(
+    dependency_id: int,
+    slug: str = Form(...),
+    internal_owner_roster_entry_id: int = Form(...),
+    next_action: str = Form(...),
+    due_date: date | None = Form(None),
+    due_date_unknown_reason: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Keep an open Documentation Review open and record the coordinated follow-up.
+
+    The same Needs clarification a Source Discrepancy supports: an Internal Owner
+    and Next Action, without forcing a conclusion to clear the work (ADR-0037).
+    """
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    _project_dependency(session, project, dependency_id)
+    try:
+        clarification = record_documentation_clarification(
+            session,
+            dependency_id,
+            roster_entry_id=internal_owner_roster_entry_id,
+            next_action=next_action,
+            due_date=due_date,
+            due_date_unknown_reason=due_date_unknown_reason.strip() or None,
+            principal=principal,
+        )
+    except DocumentationClarificationRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="clarify_documentation_review",
+        route_template="/dependencies/{dependency_id}/documentation/clarify",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            dependency_id=dependency_id,
+            work_decision_id=clarification.next_action_decision_id,
+        ),
+        request_fields={
+            "internal_owner_roster_entry_id": str(internal_owner_roster_entry_id),
+            "next_action": next_action,
+            "due_date": due_date.isoformat() if due_date else "",
+            "due_date_unknown_reason": due_date_unknown_reason,
         },
     )
     session.commit()
@@ -5696,20 +5755,6 @@ def _required_positive_http_id(form, name: str) -> int:
     if identifier <= 0:
         raise HTTPException(400, f"{name} must be a positive integer")
     return identifier
-
-
-def _required_scope_fingerprint(form):
-    raw = form.get("scope_fingerprint")
-    if not isinstance(raw, str) or not raw.strip():
-        raise HTTPException(400, "scope_fingerprint must be present")
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(400, "scope_fingerprint must be valid JSON") from exc
-    try:
-        return normalize_scope_fingerprint(decoded)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
 
 
 def _queue_location(slug: str, historical_document_id: int | None) -> str:

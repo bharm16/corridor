@@ -88,6 +88,61 @@
     <span class="pill {{ 'ready' if view.is_ready else 'notready' }}">{% if checklist.uses_standard_checklist %}{% if view.is_ready %}Documentation fields complete{% else %}Documentation fields not complete{% endif %}{% else %}{{ documentation_review_label(view.is_ready) }}{% endif %}</span>
     {% if view.contradictions %}<span class="pill contra">Sources disagree on {{ view.contradictions|length }} field(s)</span>{% endif %}
   </p>
+
+  {% if support_consequence %}
+    <section class="support-update" aria-label="Newer document needs attention"
+             style="border:1px solid #fdb022; background:#fffaeb; border-radius:6px; padding:.7rem .9rem; margin:.8rem 0;">
+      <h2 style="margin:0 0 .3rem; font-size:1rem;">A newer document needs attention</h2>
+      <p style="margin:.2rem 0;">{{ support_consequence.explanation }}</p>
+      {% if support_context %}
+        <p class="muted" style="margin:.2rem 0;">
+          Replaced revision <b>{{ support_context.predecessor_document_name }}</b>
+          → current revision <b>{{ support_context.successor_document_name }}</b>
+        </p>
+        {% if support_context.changed_values %}
+          <table style="margin:.4rem 0;">
+            <thead><tr><th>Field</th><th>Before (replaced revision)</th><th>After (current revision)</th></tr></thead>
+            <tbody>
+              {% for change in support_context.changed_values %}
+                <tr>
+                  <td>{{ field_label(change.field) }}</td>
+                  <td>{{ change.before if change.before is not none else "—" }}</td>
+                  <td>{{ change.after if change.after is not none else "—" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+        {% if support_context.ambiguous and support_context.successor_rows|length > 1 %}
+          <p class="muted" style="margin:.2rem 0;">The current revision has more than one row that could match. Every alternative is kept below; none is chosen for you.</p>
+        {% endif %}
+        {% set rows = support_context.successor_rows or support_context.predecessor_rows %}
+        {% for row in rows %}
+          <p style="margin:.2rem 0; font-size:.82rem;">
+            {{ row.document_name }} p.{{ row.page_no or '—' }}
+            {% if row.quote %}— <span style="font-family:ui-monospace,monospace">{{ row.quote[:140] }}</span>{% endif %}
+            {% if row.document_id and row.page_no %}
+              — <a href="/page-image/{{ row.document_id }}/{{ row.page_no }}">open the page</a>
+            {% endif %}
+          </p>
+        {% endfor %}
+      {% endif %}
+      <p class="muted" style="margin:.3rem 0 0;">
+        {% if support_consequence.destination == "source_discrepancy" %}
+          Resolve the source discrepancy below, or record Needs clarification to keep it open.
+        {% elif support_consequence.destination == "documentation_review" %}
+          Review the documentation against the stated requirement below.
+        {% elif support_consequence.destination == "failed_citation" %}
+          Check the citation on the supporting documents below before it is used.
+        {% elif support_consequence.destination == "guided_statement" %}
+          Coordinate the correct statement from the kept alternatives.
+        {% elif support_consequence.destination == "correction_removal" %}
+          Remove this entry from the active log, or correct it, using the controls below.
+        {% endif %}
+      </p>
+    </section>
+  {% endif %}
+
   <p class="muted" style="font-size:.85rem">
     Most recent supporting document {{ view.last_evidenced_at or 'not available' }} ·
     {% if checklist.uses_standard_checklist %}
@@ -507,6 +562,33 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if not checklist.is_ready %}
+      <form class="clarify" method="post"
+            action="/dependencies/{{ view.dependency.id }}/documentation/clarify"
+            style="border-top:1px solid var(--line);">
+    {{ csrf_field() }}
+        <input type="hidden" name="slug" value="{{ project.slug }}">
+        <b>Needs clarification — keep this documentation review open</b>
+        <p class="muted">Record who follows up and the next action without confirming the requirement met.</p>
+        <label>Assign to
+          <select name="internal_owner_roster_entry_id" required>
+            <option value="">Choose a project-team member</option>
+            {% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Next Action <input name="next_action" required placeholder="Ask the utility for a clean approval letter"></label>
+        <label>Action Due Date <input type="date" name="due_date"></label>
+        <label>If unknown, reason
+          <select name="due_date_unknown_reason">
+            <option value="">Choose only when no date is known</option>
+            <option value="awaiting_external_information">awaiting external information</option>
+            <option value="awaiting_schedule_information">awaiting schedule information</option>
+            <option value="date_not_yet_known">date not yet known</option>
+          </select>
+        </label>
+        <button>Record follow-up without confirming</button>
+      </form>
+    {% endif %}
   {% elif checklist.legacy_mark_remains_effective %}
     <p class="muted">A retained historical sufficiency mark remains effective until a structured documentation confirmation replaces it.</p>
   {% endif %}

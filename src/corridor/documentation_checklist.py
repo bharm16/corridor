@@ -21,6 +21,7 @@ first structured confirmation takes over; they are never rewritten.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 import re
 
 from sqlalchemy import select
@@ -33,9 +34,11 @@ from corridor.models import (
     DocumentationFieldConfirmation,
     Document,
     EvidenceLink,
+    ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.work_decisions import assign_internal_owner, set_next_action
 
 
 AS_BUILT = "as_built"
@@ -257,6 +260,78 @@ def confirm_interpretation(
     )
     session.flush()
     return confirmation
+
+
+@dataclass(frozen=True)
+class DocumentationClarification:
+    """The two Work Decision receipts one Needs clarification request wrote."""
+
+    owner_decision_id: int
+    next_action_decision_id: int
+
+
+class DocumentationClarificationRefusal(ValueError):
+    """This requirement is already met, so a clarification is unnecessary."""
+
+
+def record_documentation_clarification(
+    session: Session,
+    dependency_id: int,
+    *,
+    roster_entry_id: int,
+    next_action: str,
+    due_date: date | None,
+    due_date_unknown_reason: str | None,
+    principal: HumanPrincipal,
+) -> DocumentationClarification:
+    """Keep an open Documentation Review open while recording the follow-up.
+
+    A Documentation Review answers whether current documentation meets the
+    stated requirement (ADR-0037).  When a person cannot yet answer, they must
+    be able to record an Internal Owner and Next Action without being forced to
+    confirm the requirement met — the same Needs clarification structured
+    follow-up a Source Discrepancy already supports.  This writes only the two
+    ordinary Work Decisions; it never confirms an interpretation, moves support,
+    or changes the derived readiness (ADR-0035, ADR-0042).
+    """
+
+    recorder = require_human_principal(principal)
+    dependency = session.get(Dependency, dependency_id)
+    if dependency is None:
+        raise LookupError(f"no dependency {dependency_id}")
+    checklist = read_checklist(session, dependency_id)
+    if not checklist.uses_standard_checklist or all(
+        field.complete for field in checklist.fields
+    ):
+        raise DocumentationClarificationRefusal(
+            "this constraint has no open documentation requirement to clarify"
+        )
+    roster = session.get(ProjectRosterEntry, roster_entry_id)
+    if (
+        roster is None
+        or roster.project_id != dependency.project_id
+        or not roster.active
+    ):
+        raise ValueError(
+            "the assignee must be an active member of this project roster"
+        )
+
+    with session.begin_nested():
+        owner = assign_internal_owner(
+            session, dependency_id, roster.display_name, principal=recorder
+        )
+        action = set_next_action(
+            session,
+            dependency_id,
+            next_action,
+            due_date=due_date,
+            due_date_unknown_reason=due_date_unknown_reason,
+            principal=recorder,
+        )
+    return DocumentationClarification(
+        owner_decision_id=owner.id,
+        next_action_decision_id=action.id,
+    )
 
 
 def _legacy_ready(session: Session, dependency_id: int) -> bool:

@@ -647,8 +647,8 @@ def _apply(
         found.append(
             (
                 "SUPERSEDED_CITATION",
-                f"operative support needs human re-confirmation against the "
-                f"current revision: {scopes}",
+                f"a supporting document was replaced by a newer revision and is "
+                f"no longer current: {scopes}",
                 quantity,
             )
         )
