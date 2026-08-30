@@ -28,9 +28,9 @@ from corridor.briefing import (
     PROMPT,
     PROMPT_VERSION,
     Sentence,
-    _assemble,
-    _check,
-    _user_message,
+    assemble_citables,
+    check_sentences,
+    compose_user_message,
     render,
 )
 from corridor.models import (
@@ -256,14 +256,14 @@ def request_summary(
         document_only=configuration.source_scope == "documents_only",
     )
     dependencies = [row.dependency for row in reading.rows]
-    citables, floor, committed_dates = _assemble(
+    citables, floor, committed_dates = assemble_citables(
         session,
         dependencies,
         reading.evaluation,
         reading.statement_publication,
         project_scope=True,
     )
-    user_message = _user_message(dependencies, citables, committed_dates, floor)
+    user_message = compose_user_message(dependencies, citables, committed_dates, floor)
     payload = _reading_payload(reading, configuration, citables, floor, user_message)
     reading_sha256 = _reading_sha256(payload)
     existing = session.scalars(
@@ -360,7 +360,7 @@ def request_summary(
                 for item in (result.get("sentences") or [])
                 if isinstance(item, dict)
             ]
-            kept, withheld = _check(
+            kept, withheld = check_sentences(
                 drafted, {citable.ref: citable for citable in citables}
             )
             cited = {ref for sentence in kept for ref in sentence.cites}
