@@ -5079,3 +5079,245 @@ class UnreadableCellAdmissionActivation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+# --- New-assignment notifications (#351) ---------------------------------
+#
+# A committed new roster-backed assignment produces exactly one immutable
+# notification occurrence bound to its exact subject, assignment decision, and
+# selected roster identity.  The occurrence is registered in the same
+# transaction as the assignment, so a rolled-back save leaves no notification
+# and a crash after commit cannot lose it (ADR-0032).  Delivery rides the one
+# supervised Due Work runtime (#332) through a server-owned handler; the
+# occurrence and its dispatch are the durable domain record, never a second
+# scheduler.  Only the ``new_assignment`` interruption category exists here;
+# reminders, escalation, and change notices are separately scoped successors.
+
+# The one category this slice emits.  Kept as a check-constrained value rather
+# than a free string so a later category cannot silently ride this table.
+NEW_ASSIGNMENT_NOTIFICATION_CATEGORY = "new_assignment"
+ASSIGNMENT_NOTIFICATION_SUBJECT_KINDS = ("constraint", "statement")
+ASSIGNMENT_DELIVERY_STATES = (
+    "queued",
+    "completed",
+    "retry_due",
+    "failed",
+    "uncertain",
+)
+
+
+class AssignmentNotification(Base):
+    """One immutable new-assignment notification occurrence (#351, ADR-0032).
+
+    Bound to the exact Coordination Subject, the exact assignment Work Decision
+    that made the person accountable, and the selected roster identity.  The
+    ``occurrence_key`` fingerprint makes repeated triggers and competing writers
+    converge on one row; the occurrence never gates ownership, which takes
+    effect on the assignment's own commit regardless of any delivery outcome.
+    """
+
+    __tablename__ = "assignment_notifications"
+    __table_args__ = (
+        UniqueConstraint("occurrence_key", name="uq_assignment_notification_key"),
+        CheckConstraint(
+            "category = 'new_assignment'",
+            name="ck_assignment_notification_category",
+        ),
+        CheckConstraint(
+            "subject_kind in ('constraint', 'statement')",
+            name="ck_assignment_notification_subject_kind",
+        ),
+        CheckConstraint(
+            "(subject_kind = 'constraint' and dependency_id is not null "
+            "and commitment_lineage_id is null) or "
+            "(subject_kind = 'statement' and commitment_lineage_id is not null "
+            "and dependency_id is null)",
+            name="ck_assignment_notification_subject_shape",
+        ),
+        CheckConstraint(
+            "occurrence_key ~ '^[0-9a-f]{64}$'",
+            name="ck_assignment_notification_key_hex",
+        ),
+        CheckConstraint(
+            "length(trim(registered_by)) > 0",
+            name="ck_assignment_notification_actor",
+        ),
+        CheckConstraint(
+            "length(trim(recipient_principal_subject)) > 0",
+            name="ck_assignment_notification_recipient",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    subject_kind: Mapped[str] = mapped_column(String(16))
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    commitment_lineage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("commitment_lineages.id")
+    )
+    assignment_decision_id: Mapped[int] = mapped_column(
+        ForeignKey("work_decisions.id"), index=True
+    )
+    recipient_roster_entry_id: Mapped[int] = mapped_column(
+        ForeignKey("project_roster_entries.id")
+    )
+    recipient_principal_subject: Mapped[str] = mapped_column(String(128))
+    occurrence_key: Mapped[str] = mapped_column(String(64))
+    registered_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AssignmentNotificationDispatch(Base):
+    """Mutable delivery standing for one notification occurrence (#351).
+
+    The occurrence is immutable; this row carries what the shared runtime and
+    the recipient inbox read: the queued / completed / retry-due / failed /
+    uncertain state, the resolved verified contact (or a visible delivery
+    limitation when the roster identity has no typed contact), retained provider
+    result and idempotency evidence, and bounded retry state.  Its identity is
+    immutable; only the delivery standing changes.
+    """
+
+    __tablename__ = "assignment_notification_dispatches"
+    __table_args__ = (
+        UniqueConstraint(
+            "notification_id", name="uq_assignment_dispatch_notification"
+        ),
+        CheckConstraint("channel = 'email'", name="ck_assignment_dispatch_channel"),
+        CheckConstraint(
+            "delivery_state in "
+            "('queued', 'completed', 'retry_due', 'failed', 'uncertain')",
+            name="ck_assignment_dispatch_state",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0", name="ck_assignment_dispatch_attempt_count"
+        ),
+        CheckConstraint(
+            "(delivery_state = 'retry_due' and next_attempt_at is not null) or "
+            "(delivery_state <> 'retry_due' and next_attempt_at is null)",
+            name="ck_assignment_dispatch_retry_shape",
+        ),
+        CheckConstraint(
+            "idempotency_key ~ '^[0-9a-f]{64}$'",
+            name="ck_assignment_dispatch_idempotency_hex",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    notification_id: Mapped[int] = mapped_column(
+        ForeignKey("assignment_notifications.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(16))
+    delivery_state: Mapped[str] = mapped_column(String(16))
+    recipient_contact: Mapped[str | None] = mapped_column(Text)
+    delivery_limitation: Mapped[str | None] = mapped_column(String(64))
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    provider_message_id: Mapped[str | None] = mapped_column(String(200))
+    provider_result_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AssignmentNotificationAttempt(Base):
+    """Append-only record of one notification delivery attempt (#351, ADR-0032).
+
+    Every sweep of a dispatch appends one row: what was attempted, the retained
+    provider result and idempotency evidence, and the explicit outcome —
+    including an ``uncertain`` outcome when an acknowledgment is unavailable and
+    a ``skipped`` outcome when a re-checked assignment is no longer current or a
+    typed contact could not be resolved.  Nothing here is ever mutated.
+    """
+
+    __tablename__ = "assignment_notification_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "dispatch_id", "attempt_number", name="uq_assignment_attempt_number"
+        ),
+        CheckConstraint(
+            "outcome in "
+            "('completed', 'retry_due', 'failed', 'uncertain', 'skipped')",
+            name="ck_assignment_attempt_outcome",
+        ),
+        CheckConstraint(
+            "attempt_number > 0", name="ck_assignment_attempt_positive"
+        ),
+        CheckConstraint(
+            "length(trim(runtime_owner)) > 0",
+            name="ck_assignment_attempt_owner",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    dispatch_id: Mapped[int] = mapped_column(
+        ForeignKey("assignment_notification_dispatches.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(24))
+    recipient_contact: Mapped[str | None] = mapped_column(Text)
+    delivery_limitation: Mapped[str | None] = mapped_column(String(64))
+    provider_message_id: Mapped[str | None] = mapped_column(String(200))
+    provider_result_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    runtime_owner: Mapped[str] = mapped_column(String(128))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AssignmentNotificationFeedback(Base):
+    """Append-only attributable feedback that an assignment looks incorrect (#351).
+
+    The assigned person can flag a notification's assignment through this path.
+    It preserves the existing assignment and its Work Decision history until an
+    authorized person changes it — flagging records a signed marker, never a
+    mutation of the assignment (ADR-0035).
+    """
+
+    __tablename__ = "assignment_notification_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "notification_id",
+            "flagged_by",
+            name="uq_assignment_feedback_person",
+        ),
+        CheckConstraint(
+            "feedback_kind = 'incorrect_assignment'",
+            name="ck_assignment_feedback_kind",
+        ),
+        CheckConstraint(
+            "length(trim(flagged_by)) > 0",
+            name="ck_assignment_feedback_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    notification_id: Mapped[int] = mapped_column(
+        ForeignKey("assignment_notifications.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    flagged_by: Mapped[str] = mapped_column(String(128))
+    feedback_kind: Mapped[str] = mapped_column(String(24))
+    note: Mapped[str | None] = mapped_column(Text)
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"), unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

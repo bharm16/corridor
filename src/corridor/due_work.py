@@ -31,12 +31,20 @@ from corridor.models import (
     ExtractionRun,
     Project,
 )
+from corridor.notifications import ASSIGNMENT_NOTIFICATION_HANDLER
 
 
 HANDLER_PROCESSING_HEALTH = "processing_health"
 HANDLER_PROJECT_PROCESSING = "project_processing"
 HANDLER_REVISION_RECONCILIATION = "revision_reconciliation"
 HANDLER_LOCATION_DISCOVERY = "location_discovery"
+# Deliver the one new-assignment interruption category through this runtime
+# (#351). The delivery logic and this key live in ``corridor.notifications``;
+# the runtime depends on that module, never the reverse.
+HANDLER_ASSIGNMENT_NOTIFICATION = ASSIGNMENT_NOTIFICATION_HANDLER
+# The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
+# notification schedule must declare a positive request budget within this.
+_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
 # The upper safety ceiling for a declared model spend. A processing schedule
 # must declare a positive budget (never a silent zero); it may not exceed this.
 _PROJECT_PROCESSING_TOKEN_CEILING = 100_000_000
@@ -310,6 +318,66 @@ class LocationDiscoveryDeclaration:
 
 
 @dataclass(frozen=True)
+class AssignmentNotificationDeclaration:
+    """One validated gate-7 declaration that enables assignment-notification delivery.
+
+    Delivery reads no model, so its ``model_token_budget`` must be a declared
+    zero; instead it declares a positive ``notification_budget`` — the request
+    budget bounding how many sends one bounded pass may attempt. The declaration
+    also records the project and channel scope, dispatch cadence and timezone,
+    retry budget, missed-run handling, and retention. Missing or invalid
+    configuration leaves delivery refused and disabled; credentials or a wired
+    provider alone never enable it. The recipient/contact mapping is fixed for
+    this slice: a recipient resolves only through the verified-contact record for
+    the selected roster identity's principal.
+    """
+
+    project_id: int
+    configuration_version: str
+    channel: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        channel: str = "email",
+        notification_budget: int = 500,
+    ) -> "AssignmentNotificationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            channel=channel,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=300,
+            deadline_seconds=120,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=notification_budget,
+        )
+
+
+@dataclass(frozen=True)
 class DueWorkClaim:
     occurrence_id: int
     occurrence_public_id: str
@@ -565,6 +633,46 @@ def _location_discovery_effectful(context: EffectfulContext) -> dict[str, Any]:
     )
 
 
+def _assignment_notification_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Deliver a project's due assignment notifications for a claimed occurrence.
+
+    The pass commits each dispatch outcome durably through the session factory
+    and holds no transaction across the provider call; this wrapper only adapts
+    the runtime's claim into a ``deliver_project_assignment_notifications`` call
+    over the declared channel and request budget, and summarizes it into a
+    bounded receipt. It reads no model. The channel's adapter is resolved from
+    the notifications seam, which defaults to a non-sending adapter so completing
+    the code enables no real delivery.
+    """
+
+    from corridor import notifications
+
+    with context.session_factory() as reading:
+        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
+        if schedule is None:
+            raise DueWorkRefusal("Due Work schedule disappeared")
+        project_id = schedule.project_id
+        configuration_version = schedule.configuration_version
+        channel = schedule.scope_json.get("channel", "")
+        max_attempts = schedule.max_attempts
+        backoff_seconds = schedule.backoff_seconds
+        budget = schedule.notification_budget
+
+    adapter = notifications.resolve_delivery_adapter(channel)
+    return notifications.deliver_project_assignment_notifications(
+        context.session_factory,
+        project_id=project_id,
+        configuration_version=configuration_version,
+        channel=channel,
+        adapter=adapter,
+        clock=context.clock,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        budget=budget,
+        owner=context.claim.runtime_owner,
+    )
+
+
 HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
     {
         HANDLER_PROCESSING_HEALTH: HandlerContract(
@@ -602,6 +710,15 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             model_token_budget=0,
             notification_budget=0,
             run_effectful=_location_discovery_effectful,
+        ),
+        HANDLER_ASSIGNMENT_NOTIFICATION: HandlerContract(
+            key=HANDLER_ASSIGNMENT_NOTIFICATION,
+            scope_kind="one_project_assignment_notifications",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING,
+            run_effectful=_assignment_notification_effectful,
         ),
     }
 )
@@ -915,6 +1032,91 @@ def configure_location_discovery(
         handler_key=HANDLER_LOCATION_DISCOVERY,
         configuration_version=declaration.configuration_version,
         scope_json=scope,
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
+def configure_assignment_notification(
+    session: Session,
+    declaration: AssignmentNotificationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 assignment-notification declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written, so a committed assignment still registers its durable dispatch but
+    nothing is delivered until an authorized operator records this gate-7 scope.
+    Enabling a new configuration disables the project's prior notification
+    schedule while retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_assignment_notification_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_ASSIGNMENT_NOTIFICATION,
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_ASSIGNMENT_NOTIFICATION,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_ASSIGNMENT_NOTIFICATION,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_ASSIGNMENT_NOTIFICATION,
+        configuration_version=declaration.configuration_version,
+        scope_json={
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
         configuration_json=configuration,
         configuration_sha256=configuration_sha256,
         input_identity_sha256=input_identity_sha256,
@@ -1689,6 +1891,83 @@ def _validated_location_discovery_declaration(
     }
 
 
+def _validated_assignment_notification_declaration(
+    declaration: AssignmentNotificationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal(
+            "assignment-notification starts_at must align to a UTC hour"
+        )
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if declaration.channel != "email":
+        raise DueWorkRefusal(
+            "assignment-notification supports only the email channel in this slice"
+        )
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "assignment-notification supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 1 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and 1 <= declaration.notification_budget <= _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING
+    ):
+        raise DueWorkRefusal(
+            "assignment-notification gate-7 resource declaration is invalid"
+        )
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_ASSIGNMENT_NOTIFICATION,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "project_assignment_notifications-v1",
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
+        # The recipient/contact mapping this delivery is authorized to use. It is
+        # fixed for this slice: a recipient resolves only through the verified
+        # contact for the selected roster identity's principal.
+        "recipient_contact_source": "verified_person_identity-v1",
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
     if schedule.handler_key not in HANDLER_REGISTRY:
         raise DueWorkRefusal("persisted Due Work handler is not server-owned")
@@ -1809,6 +2088,38 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
                 "source_manifest_id": scope_json.get("source_manifest_id", ""),
             }
         )
+    elif schedule.handler_key == HANDLER_ASSIGNMENT_NOTIFICATION:
+        channel = schedule.scope_json.get("channel", "")
+        expected_config = _validated_assignment_notification_declaration(
+            AssignmentNotificationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                channel=channel,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = {
+            "project_id": schedule.project_id,
+            "channel": channel,
+        }
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "channel": channel,
+            }
+        )
     else:
         expected_config = _validated_health_declaration(
             ProcessingHealthDeclaration(
@@ -1869,6 +2180,8 @@ def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -
         return "inspect_revision_attention"
     if contract.key == HANDLER_LOCATION_DISCOVERY:
         return "inspect_location_discovery_attention"
+    if contract.key == HANDLER_ASSIGNMENT_NOTIFICATION:
+        return "inspect_notification_delivery"
     return "inspect_failed_document_processing"
 
 
@@ -1962,6 +2275,25 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         not in {"healthy", "attention_required", "held_sealed"}
     ):
         raise DueWorkRefusal("location-discovery handler result is invalid")
+    if contract.key == HANDLER_ASSIGNMENT_NOTIFICATION and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "delivery_enabled",
+            "considered",
+            "completed",
+            "retry_due",
+            "failed",
+            "uncertain",
+            "skipped",
+        }
+        or result.get("health") not in {"healthy", "delivery_attention_required"}
+    ):
+        raise DueWorkRefusal("assignment-notification handler result is invalid")
 
 
 def _locked_live_claim(

@@ -161,6 +161,63 @@ def test_configure_refuses_an_incomplete_gate_7_declaration(capsys):
     assert "required" in capsys.readouterr().err
 
 
+def _configure_notifications_argv(project_slug: str) -> list[str]:
+    return [
+        "configure-notifications",
+        project_slug,
+        "--configuration-version=assignment-notification-v1",
+        "--channel=email",
+        "--starts-at=2026-08-29T07:00:00+00:00",
+        "--cadence=hourly",
+        "--timezone=UTC",
+        "--missed-run-policy=latest_only",
+        "--retention-days=3650",
+        "--max-attempts=3",
+        "--backoff-seconds=60",
+        "--claim-ttl-seconds=300",
+        "--deadline-seconds=120",
+        "--concurrency-limit=1",
+        "--model-token-budget=0",
+        "--notification-budget=500",
+    ]
+
+
+def test_configure_notifications_records_the_gate_7_delivery_schedule(
+    runtime_database, capsys
+):
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 29, 7, 5, tzinfo=timezone.utc)
+    with factory() as setup:
+        project = Project(
+            slug=f"notify-cli-{uuid4().hex}", name="Notify CLI", is_synthetic=True
+        )
+        setup.add(project)
+        setup.commit()
+
+    assert (
+        main(
+            _configure_notifications_argv(project.slug),
+            session_factory=factory,
+            clock=ControlledClock(now),
+        )
+        == 0
+    )
+    configured = _payload(capsys)
+    assert configured["enabled"] is True
+
+    assert (
+        main(
+            ["status", f"--project-slug={project.slug}"],
+            session_factory=factory,
+            clock=ControlledClock(now),
+        )
+        == 0
+    )
+    status = _payload(capsys)
+    assert status["jobs"][0]["handler"] == "assignment_notification"
+    assert status["jobs"][0]["notification_budget"] == 500
+
+
 def test_supervisor_honors_shutdown_before_taking_work(runtime_database, capsys):
     assert main(
         ["supervise", "--owner=runtime:cli-worker", "--poll-seconds=1"],

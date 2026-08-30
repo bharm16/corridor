@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from corridor import audit
+from corridor import audit, notifications
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.external_statements import (
     CitedStatementEvidence,
@@ -473,12 +473,21 @@ def assign_admitted_statement_owner(
         raise StatementCoordinationRefusal(
             "Internal Owner must come from the active project roster"
         )
-    return assign_internal_owner(
+    decision = assign_internal_owner(
         session,
         CoordinationSubject.statement(coordination.lineage.id),
         roster_entry.display_name,
         principal=principal,
     )
+    # This is the first Internal Owner for the admitted statement, so the
+    # committed assignment registers one new-assignment notification (#351).
+    notifications.register_new_assignment_notification(
+        session,
+        assignment_decision=decision,
+        roster_entry=roster_entry,
+        principal=principal,
+    )
+    return decision
 
 
 def set_admitted_statement_next_action(
@@ -700,6 +709,14 @@ def coordinate_statement(
             subject = CoordinationSubject.statement(event.commitment_lineage_id)
             internal_owner_decision = assign_internal_owner(
                 session, subject, roster_entry.display_name, principal=recorder
+            )
+            # The committed assignment registers exactly one new-assignment
+            # notification, atomically inside this accepted-statement Save (#351).
+            notifications.register_new_assignment_notification(
+                session,
+                assignment_decision=internal_owner_decision,
+                roster_entry=roster_entry,
+                principal=recorder,
             )
             next_action_decision = set_next_action(
                 session,

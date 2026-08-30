@@ -40,6 +40,7 @@ from starlette.requests import Request
 
 from corridor import audit
 from corridor import email_intake
+from corridor import notifications
 from corridor.config import settings
 from corridor.adjudicate import (
     AlreadyAdjudicated,
@@ -108,6 +109,7 @@ from corridor.documentation_checklist import (
 )
 from corridor.models import (
     RESOLUTION_STRATEGIES,
+    AssignmentNotification,
     AuditLog,
     Candidate,
     CandidateDisposition,
@@ -3979,6 +3981,96 @@ async def lift_operations_unknown_scope(
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+@app.get("/assignments/{slug}/inbox", response_class=HTMLResponse)
+def assignment_inbox(
+    request: Request,
+    slug: str,
+    notice: str | None = None,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """One member's own new-assignment notifications and delivery standing (#351).
+
+    Membership alone gates this read; a member sees only their own assignments in
+    this one project, never another person's or another project's records.
+    """
+    project = _project(session, slug, principal)
+    items = notifications.recipient_inbox(
+        session, project_id=project.id, principal_subject=principal.subject
+    )
+    response = TEMPLATES.TemplateResponse(
+        request,
+        "assignment_inbox.html",
+        {"project": project, "items": items, "notice": notice},
+    )
+    session.commit()
+    return response
+
+
+@app.post("/assignments/{slug}/notifications/{notification_id}/flag-incorrect")
+async def flag_incorrect_assignment_route(
+    request: Request,
+    slug: str,
+    notification_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """The assigned person flags an incorrect assignment; it changes nothing (#351).
+
+    The assignment and its Work Decision history stand until an authorized person
+    changes them. The notification must belong to this project, and the domain
+    guard additionally requires the acting person to be the assigned recipient.
+    """
+    project = _project(session, slug, principal)
+    notification = session.get(AssignmentNotification, notification_id)
+    if notification is None or notification.project_id != project.id:
+        raise HTTPException(404, "no such assignment notification")
+    form = await request.form()
+    note = str(form.get("note") or "").strip() or None
+    try:
+        notifications.flag_incorrect_assignment(
+            session,
+            notification_id=notification_id,
+            principal=principal,
+            note=note,
+        )
+    except notifications.NotificationAccessRefusal as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except notifications.NotificationRefusal as exc:
+        raise HTTPException(404, str(exc)) from exc
+    response = RedirectResponse(
+        f"/assignments/{project.slug}/inbox?notice=flagged", status_code=303
+    )
+    session.commit()
+    return response
+
+
+@app.get("/operations/{slug}/deliveries", response_class=HTMLResponse)
+def assignment_delivery_operations(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """The operator's project-scoped view of assignment-notification delivery (#351).
+
+    Distinguishes queued, completed, retry-due, failed, and uncertain deliveries
+    with subject context and whether real delivery is enabled by a recorded
+    gate-7 configuration. Gated by the technical-operations designation.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    view = notifications.operations_delivery_view(session, project_id=project.id)
+    response = TEMPLATES.TemplateResponse(
+        request,
+        "assignment_deliveries.html",
+        {"project": project, "view": view},
     )
     session.commit()
     return response
