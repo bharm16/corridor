@@ -3861,6 +3861,56 @@ class DisputeSettlement(Base):
     )
 
 
+class DisputeHistoryResolution(Base):
+    """One append-only ADR-0061 chronology outcome, never a human verdict.
+
+    A physical source can be shown to be stale from the record's own change
+    history.  That is a mechanical conclusion with a different authority from
+    ``DisputeSettlement``: it must never look like a person chose a value.  A
+    stale executed agreement is retained in this same chronology history, but
+    its ``contractual_amendment`` outcome deliberately does *not* settle the
+    field; it creates coordination work instead.
+    """
+
+    __tablename__ = "dispute_history_resolutions"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome in ('physical_superseded', 'contractual_amendment')",
+            name="ck_dispute_history_resolutions_outcome",
+        ),
+        CheckConstraint(
+            "older_assertion_id <> newer_assertion_id",
+            name="ck_dispute_history_resolutions_distinct_assertions",
+        ),
+        CheckConstraint(
+            "length(trim(rule_version)) > 0",
+            name="ck_dispute_history_resolutions_rule_version",
+        ),
+        UniqueConstraint(
+            "dependency_id",
+            "field_name",
+            "covers_assertion_id",
+            name="uq_dispute_history_resolutions_coverage",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    field_name: Mapped[str] = mapped_column(String(64))
+    older_assertion_id: Mapped[int] = mapped_column(ForeignKey("assertions.id"))
+    newer_assertion_id: Mapped[int] = mapped_column(ForeignKey("assertions.id"))
+    # This is intentionally the exact newest Assertion the rule saw.  A later
+    # assertion reopens a physical conclusion by the same coverage rule a
+    # human settlement already uses.
+    covers_assertion_id: Mapped[int] = mapped_column(BigInteger)
+    outcome: Mapped[str] = mapped_column(String(32))
+    rule_version: Mapped[str] = mapped_column(String(64))
+    why: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Assertion(Base):
     __tablename__ = "assertions"
 

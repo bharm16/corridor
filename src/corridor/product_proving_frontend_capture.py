@@ -182,6 +182,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "POST",
         frozenset({303}),
     ),
+    "clarify_dispute": (
+        "/ledger/{slug}/{dependency_id}/clarify",
+        "POST",
+        frozenset({303}),
+    ),
     "reports": ("/reports/{slug}", "GET", frozenset({200})),
     "review_report": (
         "/reports/{slug}/prepared/{artifact_id}",
