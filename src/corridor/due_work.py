@@ -23,6 +23,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from corridor.document_notifications import DOCUMENT_NOTIFICATION_HANDLER
 from corridor.models import (
     Document,
     DueWorkOccurrence,
@@ -56,10 +57,17 @@ HANDLER_EVIDENCE_OUTCOME_CAPTURE = "evidence_outcome_capture"
 # string matches ``report_publication.HANDLER_KEY``; the execution lives in that
 # lower module, which the runtime imports lazily so no import cycle forms.
 HANDLER_REPORT_PUBLICATION = "report_publication"
+# Discover and deliver the two document-related interruption categories (#353):
+# a Documentation Review that lost applicable support, and a source transition
+# affecting a current Commitment or a relocation/removal/abandonment Constraint.
+# The discovery and delivery logic and this key live in
+# ``corridor.document_notifications``; the runtime depends on that module.
+HANDLER_DOCUMENT_NOTIFICATION = DOCUMENT_NOTIFICATION_HANDLER
 # The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
 # notification schedule must declare a positive request budget within this.
 _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
 _DUE_ACTION_NOTIFICATION_BUDGET_CEILING = 10_000
+_DOCUMENT_NOTIFICATION_BUDGET_CEILING = 10_000
 # The upper safety ceiling for a declared model spend. A processing schedule
 # must declare a positive budget (never a silent zero); it may not exceed this.
 _PROJECT_PROCESSING_TOKEN_CEILING = 100_000_000
@@ -465,6 +473,68 @@ class DueActionNotificationDeclaration:
             backoff_seconds=60,
             claim_ttl_seconds=300,
             deadline_seconds=120,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=notification_budget,
+        )
+
+
+@dataclass(frozen=True)
+class DocumentNotificationDeclaration:
+    """One validated gate-7 declaration that enables document-notification delivery.
+
+    Delivery reads no model, so its ``model_token_budget`` must be a declared
+    zero; instead it declares a positive ``notification_budget`` — the request
+    budget bounding how many sends one bounded pass may attempt. The declaration
+    records the project and channel scope, dispatch cadence and timezone, retry
+    budget, missed-run handling, and retention. Missing or invalid configuration
+    leaves delivery refused and disabled; a committed transition still registers
+    its durable dispatch, but nothing is delivered until an authorized operator
+    records this gate-7 scope. Project, source, and subject scope are fixed for
+    this slice: the two approved categories over the recorded affected population,
+    reaching the typed current assignee and the original reviewer through their
+    verified-contact records only.
+    """
+
+    project_id: int
+    configuration_version: str
+    channel: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        channel: str = "email",
+        notification_budget: int = 500,
+    ) -> "DocumentNotificationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            channel=channel,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=600,
+            deadline_seconds=300,
             concurrency_limit=1,
             model_token_budget=0,
             notification_budget=notification_budget,
@@ -1033,6 +1103,55 @@ def _due_action_notification_effectful(context: EffectfulContext) -> dict[str, A
     )
 
 
+def _document_notification_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Discover and deliver a project's due document notifications (#353).
+
+    First, in its own committed transaction, it re-discovers the complete
+    authoritative affected population from committed state and registers any new
+    interruption occurrences idempotently — a rolled-back transition leaves
+    nothing, and a persistent condition converges on the existing rows. Then it
+    delivers the due dispatches, committing each outcome durably and holding no
+    transaction across the provider call. It reads no model, and the channel's
+    adapter is resolved from the shared notifications seam, which defaults to a
+    non-sending adapter so completing the code enables no real delivery.
+    """
+
+    from corridor import document_notifications, notifications
+
+    with context.session_factory() as reading:
+        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
+        if schedule is None:
+            raise DueWorkRefusal("Due Work schedule disappeared")
+        project_id = schedule.project_id
+        configuration_version = schedule.configuration_version
+        channel = schedule.scope_json.get("channel", "")
+        max_attempts = schedule.max_attempts
+        backoff_seconds = schedule.backoff_seconds
+        budget = schedule.notification_budget
+
+    with context.session_factory() as registering:
+        with registering.begin():
+            document_notifications.register_project_document_notifications(
+                registering,
+                project_id=project_id,
+                registered_by=context.claim.runtime_owner,
+            )
+
+    adapter = notifications.resolve_delivery_adapter(channel)
+    return document_notifications.deliver_project_document_notifications(
+        context.session_factory,
+        project_id=project_id,
+        configuration_version=configuration_version,
+        channel=channel,
+        adapter=adapter,
+        clock=context.clock,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        budget=budget,
+        owner=context.claim.runtime_owner,
+    )
+
+
 def _event_admission_reproof_effectful(context: EffectfulContext) -> dict[str, Any]:
     """Run one bounded stale-class re-proof for a claimed occurrence.
 
@@ -1151,6 +1270,15 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             model_token_budget=0,
             notification_budget=_DUE_ACTION_NOTIFICATION_BUDGET_CEILING,
             run_effectful=_due_action_notification_effectful,
+        ),
+        HANDLER_DOCUMENT_NOTIFICATION: HandlerContract(
+            key=HANDLER_DOCUMENT_NOTIFICATION,
+            scope_kind="one_project_document_notifications",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=_DOCUMENT_NOTIFICATION_BUDGET_CEILING,
+            run_effectful=_document_notification_effectful,
         ),
         HANDLER_EVENT_ADMISSION_REPROOF: HandlerContract(
             key=HANDLER_EVENT_ADMISSION_REPROOF,
@@ -1671,6 +1799,91 @@ def configure_due_action_notification(
         handler_key=HANDLER_DUE_ACTION_NOTIFICATION,
         configuration_version=declaration.configuration_version,
         scope_json=configuration["scope"],
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
+def configure_document_notification(
+    session: Session,
+    declaration: DocumentNotificationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 document-notification declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written, so a committed transition still registers its durable occurrences
+    but nothing is delivered until an authorized operator records this gate-7
+    scope. Enabling a new configuration disables the project's prior document
+    notification schedule while retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_document_notification_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_DOCUMENT_NOTIFICATION,
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_DOCUMENT_NOTIFICATION,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_DOCUMENT_NOTIFICATION,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_DOCUMENT_NOTIFICATION,
+        configuration_version=declaration.configuration_version,
+        scope_json={
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
         configuration_json=configuration,
         configuration_sha256=configuration_sha256,
         input_identity_sha256=input_identity_sha256,
@@ -2913,6 +3126,85 @@ def _validated_due_action_notification_declaration(
     }
 
 
+def _validated_document_notification_declaration(
+    declaration: DocumentNotificationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal(
+            "document-notification starts_at must align to a UTC hour"
+        )
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if declaration.channel != "email":
+        raise DueWorkRefusal(
+            "document-notification supports only the email channel in this slice"
+        )
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "document-notification supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 1 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and 1 <= declaration.notification_budget <= _DOCUMENT_NOTIFICATION_BUDGET_CEILING
+    ):
+        raise DueWorkRefusal(
+            "document-notification gate-7 resource declaration is invalid"
+        )
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_DOCUMENT_NOTIFICATION,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "project_document_notifications-v1",
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
+        # The project/source/subject scope this delivery is authorized for: the
+        # two approved categories over the recorded affected population, reaching
+        # the typed current assignee and the original reviewer only through their
+        # verified-contact records.
+        "subject_scope": "documentation_loss_and_document_change-v1",
+        "recipient_contact_source": "verified_person_identity-v1",
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _validated_event_admission_reproof_declaration(
     declaration: EventAdmissionReproofDeclaration,
 ) -> dict[str, Any]:
@@ -3350,6 +3642,38 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
             )
         )
         expected_scope = expected_config["scope"]
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "channel": channel,
+            }
+        )
+    elif schedule.handler_key == HANDLER_DOCUMENT_NOTIFICATION:
+        channel = schedule.scope_json.get("channel", "")
+        expected_config = _validated_document_notification_declaration(
+            DocumentNotificationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                channel=channel,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = {
+            "project_id": schedule.project_id,
+            "channel": channel,
+        }
         expected_input_identity = _sha256(
             {
                 "handler": schedule.handler_key,

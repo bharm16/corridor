@@ -27,7 +27,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f360a1b2c3d4"
-HEAD = "a1b2c3d4e5f6"
+HEAD = "b7d3f9a1c2e5"
 PUBLICATION_COLUMNS = [
     "id",
     "public_id",
