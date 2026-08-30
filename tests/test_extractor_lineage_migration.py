@@ -22,7 +22,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "a316c5d7e9f1"
-HEAD = "f1c0d17e0a2b"
+HEAD = "e1f2a3b4c5d6"
 
 
 def _migrate(database_url: str, target: str) -> None:

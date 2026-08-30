@@ -34,7 +34,7 @@ from corridor.principals import HumanPrincipal
 pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
-PREDECESSOR = "c345a9f1d2e3"
+PREDECESSOR = "f1c0d17e0a2b"
 HEAD = "e1f2a3b4c5d6"
 
 _TABLES = {
