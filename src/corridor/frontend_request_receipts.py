@@ -93,6 +93,15 @@ ROUTE_CONTRACTS: Mapping[str, tuple[str, str, frozenset[int]]] = {
     "internal_report_workbook": (
         "/internal-report/{slug}/workbook.xlsx", "GET", frozenset({200})
     ),
+    "operations_checks": (
+        "/operations/{slug}/checks", "GET", frozenset({200})
+    ),
+    "operations_checks_preview": (
+        "/operations/{slug}/checks/preview", "POST", frozenset({200, 400})
+    ),
+    "save_operations_checks": (
+        "/operations/{slug}/checks", "POST", frozenset({303, 400})
+    ),
     "assign_owner": (
         "/dependencies/{dependency_id}/owner", "POST", frozenset({303})
     ),
@@ -126,6 +135,7 @@ class FrontendRequestSubject:
     artifact_id: int | None = None
     release_id: int | None = None
     report_run_id: int | None = None
+    check_configuration_id: int | None = None
 
     def as_json(self) -> dict[str, int]:
         values = {
@@ -140,6 +150,7 @@ class FrontendRequestSubject:
             "artifact_id": self.artifact_id,
             "release_id": self.release_id,
             "report_run_id": self.report_run_id,
+            "check_configuration_id": self.check_configuration_id,
         }
         result = {key: value for key, value in values.items() if value is not None}
         if any(

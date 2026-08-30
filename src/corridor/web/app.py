@@ -58,6 +58,15 @@ from corridor.candidate_statement_facts import (
 )
 from corridor.db import Session as SessionFactory
 from corridor.config import settings
+from corridor.check_configuration import (
+    SUPPORTED_THRESHOLDS,
+    InvalidCheckConfiguration,
+    configuration_history,
+    effective_configuration,
+    effective_thresholds,
+    preview_configuration,
+    save_configuration,
+)
 from corridor.exceptions import RULES, evaluate_project, format_exception_name
 from corridor.export import to_xlsx
 from corridor.report import build_report, render
@@ -2484,6 +2493,246 @@ def internal_report_workbook(
     return response
 
 
+def _operations_checks_form_values(
+    effective, submitted: dict[str, str] | None
+) -> dict[str, str]:
+    """The value to show in each field: what was typed, else the effective one.
+
+    On a refusal or a preview the operator sees exactly what they entered, so a
+    rejected value is corrected rather than silently replaced. On a fresh view
+    the fields carry the effective configuration, declared or default.
+    """
+    values: dict[str, str] = {}
+    for spec in SUPPORTED_THRESHOLDS:
+        if submitted is not None and submitted.get(spec.key) is not None:
+            values[spec.key] = str(submitted[spec.key])
+        else:
+            values[spec.key] = str(getattr(effective.thresholds, spec.key))
+    return values
+
+
+def _render_operations_checks(
+    request: Request,
+    session: Session,
+    project: Project,
+    *,
+    preview=None,
+    error: str | None = None,
+    submitted: dict[str, str] | None = None,
+    saved_id: int | None = None,
+    status_code: int = 200,
+):
+    """One coherent render of the check-configuration operations view."""
+    effective = effective_configuration(session, project.id)
+    form_values = _operations_checks_form_values(effective, submitted)
+    supported = [
+        {
+            "key": spec.key,
+            "label": spec.label,
+            "unit": spec.unit,
+            "default": spec.default,
+            "minimum": spec.minimum,
+            "maximum": spec.maximum,
+            "rules": [format_exception_name(rule) for rule in spec.rules],
+            "effective_value": getattr(effective.thresholds, spec.key),
+            "form_value": form_values[spec.key],
+        }
+        for spec in SUPPORTED_THRESHOLDS
+    ]
+    history = [
+        {
+            "id": row.id,
+            "stale_days": row.stale_days,
+            "due_soon_days": row.due_soon_days,
+            "action_due_soon_days": row.action_due_soon_days,
+            "ruleset_version": row.ruleset_version,
+            "declared_by": row.created_by,
+            "declared_at": row.created_at,
+            "is_effective": row.id == effective.configuration_id,
+        }
+        for row in configuration_history(session, project.id)
+    ]
+    preview_context = None
+    if preview is not None:
+        preview_context = {
+            "evaluated_on": preview.evaluated_on,
+            "ruleset_version": preview.ruleset_version,
+            "proposed": {
+                spec.key: getattr(preview.proposed_thresholds, spec.key)
+                for spec in SUPPORTED_THRESHOLDS
+            },
+            "effective": {
+                spec.key: getattr(preview.effective.thresholds, spec.key)
+                for spec in SUPPORTED_THRESHOLDS
+            },
+            "affected_constraint_count": preview.affected_constraint_count,
+            "facets": [
+                {
+                    "rule": facet.rule,
+                    "name": format_exception_name(facet.rule),
+                    "count": facet.count,
+                }
+                for facet in preview.facets
+            ],
+        }
+    return TEMPLATES.TemplateResponse(
+        request,
+        "operations_checks.html",
+        {
+            "project": project,
+            "ruleset_version": effective.ruleset_version,
+            "effective": effective,
+            "supported": supported,
+            "history": history,
+            "error": error,
+            "preview": preview_context,
+            "saved_id": saved_id,
+        },
+        status_code=status_code,
+    )
+
+
+def _submitted_check_thresholds(form) -> dict[str, str]:
+    """Only the supported threshold fields, as submitted (validation follows).
+
+    A field the form omits is left out, so the domain refuses it as incomplete
+    rather than this adapter inventing a value. Only supported keys are read,
+    so an extra field cannot smuggle a value past the supported catalog.
+    """
+    submitted: dict[str, str] = {}
+    for spec in SUPPORTED_THRESHOLDS:
+        value = form.get(spec.key)
+        if value is not None:
+            submitted[spec.key] = value
+    return submitted
+
+
+@app.get("/operations/{slug}/checks", response_class=HTMLResponse)
+def operations_checks(
+    request: Request,
+    slug: str,
+    saved: int | None = None,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Inspect the supported thresholds and this project's effective checks."""
+    project = _project(session, slug)
+    response = _render_operations_checks(
+        request, session, project, saved_id=saved if saved and saved > 0 else None
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="operations_checks",
+        route_template="/operations/{slug}/checks",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/checks/preview", response_class=HTMLResponse)
+async def operations_checks_preview(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Show the reading under a proposed configuration, writing nothing."""
+    project = _project(session, slug)
+    form = await request.form()
+    submitted = _submitted_check_thresholds(form)
+    try:
+        preview = preview_configuration(session, project.id, submitted)
+        error = None
+        status_code = 200
+    except InvalidCheckConfiguration as exc:
+        preview = None
+        error = str(exc)
+        status_code = 400
+    response = _render_operations_checks(
+        request,
+        session,
+        project,
+        preview=preview,
+        error=error,
+        submitted=submitted,
+        status_code=status_code,
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="operations_checks_preview",
+        route_template="/operations/{slug}/checks/preview",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/checks", response_class=HTMLResponse)
+async def save_operations_checks(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Append a new retained configuration, or refuse an invalid proposal."""
+    project = _project(session, slug)
+    form = await request.form()
+    submitted = _submitted_check_thresholds(form)
+    try:
+        row = save_configuration(
+            session, project.id, submitted, principal=principal
+        )
+    except InvalidCheckConfiguration as exc:
+        # A refusal writes no configuration; only the access receipt is
+        # recorded, so the invalid attempt is attributable without activating.
+        response = _render_operations_checks(
+            request,
+            session,
+            project,
+            error=str(exc),
+            submitted=submitted,
+            status_code=400,
+        )
+        record_frontend_request(
+            session,
+            principal=principal,
+            route_name="save_operations_checks",
+            route_template="/operations/{slug}/checks",
+            method="POST",
+            response=response,
+            subject=FrontendRequestSubject(project_id=project.id),
+            request_fields=form,
+        )
+        session.commit()
+        return response
+    response = RedirectResponse(
+        f"/operations/{project.slug}/checks?saved={row.id}", status_code=303
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="save_operations_checks",
+        route_template="/operations/{slug}/checks",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id, check_configuration_id=row.id
+        ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
 @app.get("/work/{slug}", response_class=HTMLResponse)
 def coordinator_home(
     request: Request,
@@ -2941,11 +3190,16 @@ def ledger(
     project = _project(session, slug)
     # This page is its own publication, so it takes its own evaluation —
     # stated here rather than defaulted inside `browse`, where a caller who
-    # already held one could silently pay for a second.
+    # already held one could silently pay for a second. It reads under the
+    # project's effective declared check thresholds like every other reader.
     rows = browse(
         session,
         project.id,
-        evaluation=evaluate_project(session, project.id),
+        evaluation=evaluate_project(
+            session,
+            project.id,
+            thresholds=effective_thresholds(session, project.id),
+        ),
         org_id=org_id,
         resolution_strategy=resolution_strategy or None,
         ready={"yes": True, "no": False}.get(ready or ""),

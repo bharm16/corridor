@@ -128,6 +128,7 @@ _FRONTEND_SUBJECT_KEYS = frozenset(
         "artifact_id",
         "release_id",
         "report_run_id",
+        "check_configuration_id",
     }
 )
 _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
@@ -229,6 +230,21 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "/internal-report/{slug}/workbook.xlsx",
         "GET",
         frozenset({200}),
+    ),
+    "operations_checks": (
+        "/operations/{slug}/checks",
+        "GET",
+        frozenset({200}),
+    ),
+    "operations_checks_preview": (
+        "/operations/{slug}/checks/preview",
+        "POST",
+        frozenset({200, 400}),
+    ),
+    "save_operations_checks": (
+        "/operations/{slug}/checks",
+        "POST",
+        frozenset({303, 400}),
     ),
     "assign_owner": (
         "/dependencies/{dependency_id}/owner",
