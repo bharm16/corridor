@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Diagnose extraction failure — {{ document.filename }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#9a4d00; --ok:#067647; --bad:#b42318; }
+  * { box-sizing:border-box; } body { margin:0; color:#111; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:72rem; margin:2rem auto; padding:0 1.2rem 3rem; } h1 { margin:0; font-size:1.5rem; }
+  h2 { margin:2rem 0 .5rem; font-size:1.1rem; } .muted { color:var(--muted); }
+  .card { border:1px solid var(--line); border-radius:7px; padding:1rem; margin:.8rem 0; }
+  .banner { background:#eef2ff; border:1px solid #c7d2fe; padding:.6rem .8rem; border-radius:5px; }
+  .warning { color:var(--warn); background:#fffaeb; padding:.6rem .8rem; border-radius:5px; }
+  .failure { color:var(--bad); background:#fef3f2; padding:.6rem .8rem; border-radius:5px; }
+  .tag { display:inline-block; font-size:.78rem; padding:.05rem .4rem; border-radius:4px; border:1px solid var(--line); }
+  .supported { color:var(--ok); border-color:#067647; } .unsupported { color:var(--warn); border-color:#9a4d00; }
+  table { border-collapse:collapse; width:100%; } th,td { text-align:left; border-bottom:1px solid #eee; padding:.45rem; vertical-align:top; }
+  th { color:var(--muted); font-size:.82rem; } button { font:inherit; padding:.4rem .75rem; }
+  code { overflow-wrap:anywhere; } ul { margin:.3rem 0; }
+</style>
+<header><b>{{ project.name }}</b><span><a href="/operations/{{ project.slug }}">Back to processing operations</a></span></header>
+<main>
+  <h1>Diagnosing an extraction failure</h1>
+  <p class="muted">{{ document.filename }} · {{ document.doc_type }}{% if document.registry_id %} · {{ document.registry_id }}{% endif %} · attempt #{{ receipt.extraction_run_id }}</p>
+
+  <p class="banner" role="note">
+    This diagnosis is a model-drafted reading of the failure detail and the
+    permitted source pages. It is <b>not the record</b>. It <b>does not retry</b>
+    extraction, spend an extraction budget, change the document type, register
+    vocabulary, create a source, or lift a quarantine, and it does <b>not</b>
+    relabel the failure as a success or an abstention. Every observed fact below
+    cites the failure detail or a permitted page you can check. The recovery
+    decision stays yours.
+  </p>
+  <p class="muted">
+    Model <code>{{ receipt.model }}</code> · prompt <code>{{ receipt.prompt_version }}</code>
+    · validator <code>{{ receipt.validator_version }}</code> · requested by {{ receipt.requested_by }}
+  </p>
+
+  <h2>Deterministic failure detail</h2>
+  <p class="muted">The retained processing receipt, unchanged by this diagnosis.</p>
+  {% if quarantine %}<p class="warning">Held input: {{ quarantine.reason }}. This source document is not eligible for a recovery run.</p>{% endif %}
+  <section class="card">
+    <table><tbody>
+    {% for field, value in failure.items() %}<tr><th>{{ field }}</th><td><code>{{ value }}</code></td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+
+  {% if receipt.status == 'completed' and receipt.diagnosis_json %}
+    {% set diagnosis = receipt.diagnosis_json %}
+    <h2>Observed failure facts</h2>
+    <p class="muted">Quoted exactly from the failure detail above — facts, not conclusions.</p>
+    {% if diagnosis.observed_failure_facts %}
+      <table><thead><tr><th>Ref</th><th>Field</th><th>Value</th></tr></thead><tbody>
+      {% for fact in diagnosis.observed_failure_facts %}<tr><td>{{ fact.ref }}</td><td>{{ fact.field }}</td><td><code>{{ fact.value }}</code></td></tr>{% endfor %}
+      </tbody></table>
+    {% else %}<p class="muted">None were cited.</p>{% endif %}
+
+    <h2>Observed source facts</h2>
+    <p class="muted">Quoted from the permitted source pages for this document only.</p>
+    {% if diagnosis.observed_source_facts %}
+      <table><thead><tr><th>Ref</th><th>Page</th><th>Claim</th><th>Value</th></tr></thead><tbody>
+      {% for fact in diagnosis.observed_source_facts %}<tr><td>{{ fact.ref }}</td><td>{{ fact.page_no }}</td><td>{{ fact.claim_type }}</td><td><code>{{ fact.value }}</code></td></tr>{% endfor %}
+      </tbody></table>
+    {% else %}<p class="muted">None were cited.</p>{% endif %}
+
+    <h2>Hypotheses</h2>
+    <p class="muted">Diagnostic inferences, kept separate from the observed facts. Each says whether the source actually supports it.</p>
+    {% if diagnosis.hypotheses %}
+      {% for hyp in diagnosis.hypotheses %}
+        <section class="card">
+          <p>{% if hyp.support == 'source_supports' %}<span class="tag supported">source supports</span>{% else %}<span class="tag unsupported">source does not support</span>{% endif %} {{ hyp.statement }}</p>
+          <p class="muted">Rests on: {{ hyp.observed_refs | join(', ') }}</p>
+        </section>
+      {% endfor %}
+    {% else %}<p class="muted">No hypothesis was offered; the source did not support a conclusion.</p>{% endif %}
+
+    {% if diagnosis.unsupported_sequencing %}
+      <h2>Preserved as unsupported sequencing</h2>
+      <p class="muted">Cause-and-effect or ordering the source shows but does not resolve. Kept as unresolved rather than smoothed into a narrative.</p>
+      <ul>{% for item in diagnosis.unsupported_sequencing %}<li>{{ item.description }} — {{ item.note }} <span class="muted">({{ item.observed_refs | join(', ') }})</span></li>{% endfor %}</ul>
+    {% endif %}
+  {% else %}
+    <h2>No diagnosis was shown</h2>
+    <p class="warning">The bounded request ended as <b>{{ receipt.status | replace('_', ' ') }}</b>{% if receipt.reason %}: {{ receipt.reason }}{% endif %}. The deterministic failure detail above and the recovery paths on the operations screen are unaffected.</p>
+  {% endif %}
+
+  <h2>Recovery stays with the operator</h2>
+  <p class="muted">This diagnosis changes nothing. The safe recovery operations remain on the <a href="/operations/{{ project.slug }}">processing operations</a> screen; no generic retry is created here.</p>
+</main>

@@ -72,6 +72,28 @@
     </form>
   </details>
 
+  <details>
+    <summary>Failure-diagnosis model authority{% if failure_diagnosis_configuration %} — declared{% else %} — not declared{% endif %}</summary>
+    {% if failure_diagnosis_configuration %}
+      <p class="muted">Diagnosing a failed attempt may spend the declared bounded budget: model <code>{{ failure_diagnosis_configuration.model }}</code> · prompt <code>{{ failure_diagnosis_configuration.prompt_version }}</code> · at most {{ failure_diagnosis_configuration.max_input_tokens }} input / {{ failure_diagnosis_configuration.max_output_tokens }} output tokens · {{ failure_diagnosis_configuration.timeout_seconds }}s · one request, no retry. Declared by {{ failure_diagnosis_configuration.created_by }}.</p>
+    {% else %}
+      <p class="warning">No failure-diagnosis authority is declared. Until one is, requesting a diagnosis refuses before any model call.</p>
+    {% endif %}
+    <form method="post" action="/operations/{{ project.slug }}/failure-diagnosis/configuration">
+      {{ csrf_field() }}
+      <p><label>Model <input name="model" required></label></p>
+      <input type="hidden" name="prompt_version" value="{{ failure_diagnosis_prompt_version }}">
+      <p><label>Max input tokens <input name="max_input_tokens" type="number" min="1" max="200000" required></label>
+         <label>Max output tokens <input name="max_output_tokens" type="number" min="1" max="20000" required></label>
+         <label>Timeout seconds <input name="timeout_seconds" type="number" min="1" max="600" required></label></p>
+      <input type="hidden" name="max_requests" value="1">
+      <input type="hidden" name="retry_policy" value="none">
+      <input type="hidden" name="retention_policy" value="retained_indefinitely">
+      <input type="hidden" name="observation_context" value="internal_working_view">
+      <button>Declare failure-diagnosis authority</button>
+    </form>
+  </details>
+
   {% for row in documents %}
     <section class="card">
       <h3>{{ row.document.filename }}</h3>
@@ -84,8 +106,9 @@
           <td>#{{ run.id }}</td><td>{{ run.outcome }}{% if run.page_errors %} ({{ run.page_errors }} page errors){% endif %}{% if run.error_detail %}<br><span class="failure">Failure retained in the processing receipt.</span>{% endif %}</td>
           <td>Production database · {{ run.completed_at }}</td>
           <td>{{ run.prompt_version }}{% if run.model %} · {{ run.model }}{% endif %}<br>{% if run.extractor_config_sha256 %}<code>{{ run.extractor_config_sha256 }}</code>{% else %}<span class="warning">Legacy configuration unavailable — not sealed.</span>{% endif %}</td>
-          <td>{% if run.outcome == 'completed' and not run.page_errors and row.active_run_id != run.id %}<form method="post" action="/operations/{{ project.slug }}/runs/{{ row.document.id }}/declare">{{ csrf_field() }}<input type="hidden" name="extraction_run_id" value="{{ run.id }}"><input type="hidden" name="state_fingerprint" value="{{ row.offer_state }}"><button>Declare current</button></form>{% endif %}</td>
+          <td>{% if run.outcome == 'completed' and not run.page_errors and row.active_run_id != run.id %}<form method="post" action="/operations/{{ project.slug }}/runs/{{ row.document.id }}/declare">{{ csrf_field() }}<input type="hidden" name="extraction_run_id" value="{{ run.id }}"><input type="hidden" name="state_fingerprint" value="{{ row.offer_state }}"><button>Declare current</button></form>{% elif run.outcome != 'completed' %}<form method="post" action="/operations/{{ project.slug }}/runs/{{ row.document.id }}/diagnose">{{ csrf_field() }}<input type="hidden" name="extraction_run_id" value="{{ run.id }}"><input type="hidden" name="state_token" value="{{ row.failed_run_tokens[run.id] }}"><button>Diagnose failure (does not retry)</button></form>{% endif %}</td>
         </tr>{% endfor %}</tbody></table>
+        {% if row.diagnosis_offered %}<p class="muted">Optional, read-only. A diagnosis reads the failure detail and the permitted source pages, separates observed facts from hypotheses, and never retries or relabels the failure.</p>{% endif %}
       {% else %}<p class="muted">No processing attempt has been retained for this source document.</p>{% endif %}
       {% if row.explanation_offered %}
         <form method="post" action="/operations/{{ project.slug }}/runs/{{ row.document.id }}/explain">

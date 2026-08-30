@@ -21,7 +21,7 @@ pytestmark = pytest.mark.slow
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b230e4f5a6b7"
 REASON_PROJECTION_PREDECESSOR = "c249d7e1f4a3"
-HEAD = "f3a5c7d9e1b2"
+HEAD = "e361f1a2b3c4"
 WORK_LIST_PREDECESSOR = "e253a7c4d9e2"
 
 
