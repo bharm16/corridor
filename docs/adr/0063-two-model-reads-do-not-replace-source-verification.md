@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: superseded by ADR-0064
 ---
 
 # Two model reads do not replace source verification
