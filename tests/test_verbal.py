@@ -18,9 +18,12 @@ from corridor.external_statements import (
 )
 from corridor.models import (
     AuditLog,
+    CommitmentLineage,
+    CommitmentScopeMembership,
     Dependency,
     DependencyEvent,
     DependencyEventScope,
+    DependencyEventScopeDecision,
     DependencyEventTiming,
     DocPage,
     Document,
@@ -28,6 +31,7 @@ from corridor.models import (
     ExternalOrg,
     Project,
     ReportRun,
+    WorkDecision,
 )
 from corridor.principals import HumanPrincipal
 from access_support import seed_membership
@@ -38,7 +42,16 @@ from corridor.report import (
     build_report,
     render,
 )
-from corridor.verbal import VerbalRefusal, record_verbal
+from corridor.statement_lifecycle import observe_current_statement
+from corridor.verbal import (
+    StaleVerbalCorrection,
+    VerbalRefusal,
+    correct_verbal_scope,
+    record_verbal,
+    record_verbal_change,
+    record_verbal_statement,
+)
+from corridor.work_list import build_work_list, party_commitment_due_after
 from corridor.web.app import app, get_human_principal, get_session
 
 
@@ -759,3 +772,660 @@ def test_normal_report_change_marks_a_new_verbal_date(session, dependency):
     )
     assert isinstance(change[1].provenance, Verbal)
     assert isinstance(change[2].provenance, Verbal)
+
+
+# --- Recorded Verbal Statement at stated precision and scope (#335) -----------
+
+
+def _org_dependency(session, dependency, ref_code, title="Another conflict"):
+    """Another active Constraint for the same External Party."""
+    extra = Dependency(
+        project_id=dependency.project_id,
+        ref_code=ref_code,
+        dep_type="utility_relocation",
+        title=title,
+        external_org_id=dependency.external_org_id,
+    )
+    session.add(extra)
+    session.flush()
+    return extra
+
+
+def _memberships(session, event):
+    return set(
+        session.scalars(
+            select(CommitmentScopeMembership.dependency_id).where(
+                CommitmentScopeMembership.event_id == event.id
+            )
+        ).all()
+    )
+
+
+def test_a_verbal_preserves_month_precision_without_inventing_a_day(
+    session, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T said it will finish in January 2025.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.month("01/2025", 2025, 1),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+
+    assert event.source_kind == "verbal"
+    assert event.event_type == "commitment"
+    assert event.new_timing.precision == "month"
+    assert event.new_timing.text == "01/2025"
+    assert event.new_timing.start_date == date(2025, 1, 1)
+    assert event.new_timing.end_date == date(2025, 1, 31)
+    # A month never becomes a scalar exact-day claim on the Constraint.
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+    # Past due only after the last day of the month.
+    assert party_commitment_due_after(event.new_timing) == date(2025, 1, 31)
+
+
+def test_a_verbal_preserves_approximate_timing_as_words_only(session, dependency):
+    project = session.get(Project, dependency.project_id)
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T said relocation will finish around the end of May.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.approximate("end of May"),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+
+    assert event.new_timing.precision == "approximate"
+    assert event.new_timing.text == "end of May"
+    assert event.new_timing.start_date is None
+    assert event.new_timing.end_date is None
+    # Approximate wording never manufactures an overdue boundary.
+    assert party_commitment_due_after(event.new_timing) is None
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+
+
+def test_a_verbal_can_apply_to_several_named_constraints(session, dependency):
+    project = session.get(Project, dependency.project_id)
+    second = _org_dependency(session, dependency, "TEL-2")
+    third = _org_dependency(session, dependency, "TEL-3")
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T spoke about two of the conflicts.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+        scope=StatementScope.selected((dependency.id, second.id)),
+        principal=RECORDER,
+    )
+
+    assert _memberships(session, event) == {dependency.id, second.id}
+    session.refresh(dependency)
+    session.refresh(second)
+    session.refresh(third)
+    assert dependency.committed_date == date(2026, 8, 15)
+    assert second.committed_date == date(2026, 8, 15)
+    assert third.committed_date is None
+
+
+def test_all_active_snapshot_does_not_expand_when_a_constraint_is_added_later(
+    session, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    second = _org_dependency(session, dependency, "TEL-2")
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T spoke about all its current conflicts.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.month("March 2026", 2026, 3),
+        scope=StatementScope.all_active(),
+        principal=RECORDER,
+    )
+    assert _memberships(session, event) == {dependency.id, second.id}
+
+    # A later Constraint for the same party must not silently join the snapshot.
+    _org_dependency(session, dependency, "TEL-3")
+    assert _memberships(session, event) == {dependency.id, second.id}
+
+
+def test_unknown_scope_stays_party_level_with_no_constraint_effect(
+    session, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T made a party-level promise; scope not yet known.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-01-15", date(2026, 1, 15)),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+
+    assert event.scope_mode == "unknown"
+    assert _memberships(session, event) == set()
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+    # The party-level fact still surfaces as its own work with no Constraint.
+    work = build_work_list(session, project.id, today=date(2026, 6, 1))
+    item = next(
+        work_item
+        for work_item in work.immediate
+        if work_item.commitment_lineage_id == event.commitment_lineage_id
+    )
+    assert "unknown_scope" in item.attention_reason_codes
+    assert item.dependency_id is None
+    assert item.past_due is not None
+    assert item.past_due.due_after == date(2026, 1, 15)
+
+
+def test_a_stated_change_keeps_both_timings_and_derives_direction(
+    session, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    first = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T committed to March 2026.",
+        conversation_date=date(2026, 1, 8),
+        new_timing=StatementTiming.month("March 2026", 2026, 3),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+    change = record_verbal_change(
+        session,
+        commitment_lineage_id=first.commitment_lineage_id,
+        stated_party="AT&T",
+        description="AT&T now says May 16, 2026.",
+        conversation_date=date(2026, 4, 8),
+        new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+        principal=RECORDER,
+    )
+
+    assert change.event_type == "committed_date_change"
+    assert change.timing_direction == "later"
+    assert change.previous_timing.precision == "month"
+    assert change.previous_timing.start_date == date(2026, 3, 1)
+    assert change.new_timing.start_date == date(2026, 5, 16)
+    assert change.commitment_lineage_id == first.commitment_lineage_id
+    # The prior commitment is preserved, superseded, not rewritten.
+    assert session.get(DependencyEvent, first.id).description == (
+        "AT&T committed to March 2026."
+    )
+    assert change.supersedes_event_id == first.id
+    # Scope carried forward from the predecessor, not re-snapshotted.
+    assert _memberships(session, change) == {dependency.id}
+
+
+def test_a_fresh_verbal_is_a_commitment_even_when_a_cached_date_exists(
+    session, dependency
+):
+    """A fresh promise is never a change just because a scalar is cached."""
+    dependency.committed_date = date(2026, 3, 1)
+    session.flush()
+    project = session.get(Project, dependency.project_id)
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T's first attributable statement.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+
+    assert event.event_type == "commitment"
+    assert event.previous_timing is None
+    assert event.timing_direction is None
+
+
+def test_a_scope_correction_preserves_the_original_verbal_and_projects(
+    session, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="Party-level promise pending scope.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    observation = observe_current_statement(session, event.commitment_lineage_id)
+    decision = correct_verbal_scope(
+        session,
+        event_id=event.id,
+        scope=StatementScope.selected((dependency.id,)),
+        expected_scope_decision_id=observation.scope_decision.id,
+        principal=RECORDER,
+    )
+
+    assert decision.scope_mode == "selected"
+    assert decision.supersedes_scope_decision_id == observation.scope_decision.id
+    # The statement fact itself is untouched, only its scope decision appended.
+    assert session.get(DependencyEvent, event.id) is not None
+    session.refresh(dependency)
+    assert dependency.committed_date == date(2026, 8, 15)
+    audit = session.scalars(
+        select(AuditLog).where(
+            AuditLog.action == "correct_statement_scope",
+            AuditLog.entity_id == event.commitment_lineage_id,
+        )
+    ).one()
+    assert audit.actor == RECORDER.subject
+
+
+def test_a_scope_correction_refuses_a_stale_expected_decision(session, dependency):
+    project = session.get(Project, dependency.project_id)
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="Party-level promise pending scope.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    with pytest.raises(StaleVerbalCorrection, match="reload the newer state"):
+        correct_verbal_scope(
+            session,
+            event_id=event.id,
+            scope=StatementScope.selected((dependency.id,)),
+            expected_scope_decision_id=999999,
+            principal=RECORDER,
+        )
+    # Nothing changed: still party-level, still no membership.
+    assert _memberships(session, event) == set()
+
+
+def test_a_verbal_change_marks_the_plan_for_review_without_copying_to_constraints(
+    session, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    first = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T committed to March 2026.",
+        conversation_date=date(2026, 1, 8),
+        new_timing=StatementTiming.month("March 2026", 2026, 3),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+    lineage = session.get(CommitmentLineage, first.commitment_lineage_id)
+    # A statement-level plan lives on the lineage, never on the Constraint.
+    session.add(
+        WorkDecision(
+            commitment_lineage_id=lineage.id,
+            decision_type="assign_internal_owner",
+            field="internal_owner",
+            before_value=None,
+            after_value="Dana Fields",
+            recorded_by=RECORDER.subject,
+        )
+    )
+    lineage.internal_owner = "Dana Fields"
+    session.flush()
+
+    record_verbal_change(
+        session,
+        commitment_lineage_id=lineage.id,
+        stated_party="AT&T",
+        description="AT&T now says May 16, 2026.",
+        conversation_date=date(2026, 4, 8),
+        new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+        principal=RECORDER,
+    )
+
+    session.refresh(lineage)
+    assert lineage.plan_needs_review is True
+    # The plan stayed on the lineage; no Constraint-subject decision was copied.
+    constraint_decisions = session.scalars(
+        select(WorkDecision).where(WorkDecision.dependency_id == dependency.id)
+    ).all()
+    assert constraint_decisions == []
+
+
+def test_a_selected_verbal_scope_cannot_cross_projects(session, dependency):
+    project = session.get(Project, dependency.project_id)
+    other_project = Project(
+        slug="verbal-other",
+        name="Other",
+        is_synthetic=True,
+    )
+    other_org = ExternalOrg(name="Bell South", aliases=["Bell"])
+    session.add_all((other_project, other_org))
+    session.flush()
+    other_dependency = Dependency(
+        project_id=other_project.id,
+        ref_code="OTHER-1",
+        dep_type="utility_relocation",
+        title="Elsewhere",
+        external_org_id=other_org.id,
+    )
+    session.add(other_dependency)
+    session.flush()
+
+    with pytest.raises(VerbalRefusal, match="cross projects|another External Party"):
+        record_verbal_statement(
+            session,
+            project_id=project.id,
+            external_org_id=dependency.external_org_id,
+            stated_party="AT&T",
+            description="Crossing the project boundary.",
+            conversation_date=date(2026, 5, 8),
+            new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+            scope=StatementScope.selected((other_dependency.id,)),
+            principal=RECORDER,
+        )
+    assert session.scalars(
+        select(DependencyEvent).where(DependencyEvent.project_id == project.id)
+    ).all() == []
+
+
+def test_direct_db_bypass_of_a_verbal_without_a_conversation_date_is_rejected(
+    session, dependency
+):
+    """The extended guard still requires a verbal to carry its conversation date."""
+    project = session.get(Project, dependency.project_id)
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    with pytest.raises(IntegrityError, match="conversation date"):
+        with session.begin_nested():
+            event = DependencyEvent(
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_external_org_id=party.id,
+                scope_mode="unknown",
+                event_type="commitment",
+                source_kind="verbal",
+                stated_party="AT&T",
+                event_date=None,
+                description="bypass without a conversation date",
+                created_by=RECORDER.subject,
+            )
+            session.add(event)
+            session.flush()
+            session.add(
+                DependencyEventTiming(
+                    event_id=event.id,
+                    kind="new",
+                    text="2026-08-15",
+                    precision="day",
+                    start_date=date(2026, 8, 15),
+                    end_date=date(2026, 8, 15),
+                )
+            )
+            session.flush()
+            # Deferred constraint triggers validate the final shape at commit;
+            # force them to fire now so the bypass is caught in the test.
+            session.execute(text("set constraints all immediate"))
+
+
+def test_direct_db_bypass_of_a_committed_date_change_missing_a_previous_timing(
+    session, dependency
+):
+    """A change verbal with only a new timing is still refused by the guard."""
+    project = session.get(Project, dependency.project_id)
+    party = session.get(ExternalOrg, dependency.external_org_id)
+    with pytest.raises(IntegrityError, match="previous and new timings"):
+        with session.begin_nested():
+            event = DependencyEvent(
+                project_id=project.id,
+                affected_external_org_id=party.id,
+                stated_external_org_id=party.id,
+                scope_mode="unknown",
+                event_type="committed_date_change",
+                source_kind="verbal",
+                stated_party="AT&T",
+                event_date=date(2026, 5, 8),
+                description="a change that never states what changed",
+                created_by=RECORDER.subject,
+            )
+            session.add(event)
+            session.flush()
+            session.add(
+                DependencyEventTiming(
+                    event_id=event.id,
+                    kind="new",
+                    text="2026-08-15",
+                    precision="day",
+                    start_date=date(2026, 8, 15),
+                    end_date=date(2026, 8, 15),
+                )
+            )
+            session.flush()
+            session.execute(text("set constraints all immediate"))
+
+
+def test_http_records_a_party_level_month_verbal(session, client, dependency):
+    project = session.get(Project, dependency.project_id)
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/verbal",
+        data={
+            "stated_party": "AT&T",
+            "description": "AT&T made a party-level promise for January 2025.",
+            "conversation_date": date(2026, 5, 8).isoformat(),
+            "timing_precision": "month",
+            "committed_month": "2025-01",
+            "scope_mode": "unknown",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    event = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.project_id == project.id,
+            DependencyEvent.source_kind == "verbal",
+        )
+    ).one()
+    assert event.new_timing.precision == "month"
+    assert event.new_timing.start_date == date(2025, 1, 1)
+    assert event.scope_mode == "unknown"
+    assert _memberships(session, event) == set()
+    session.refresh(dependency)
+    assert dependency.committed_date is None
+
+
+def test_http_approximate_verbal_does_not_require_a_day(session, client, dependency):
+    project = session.get(Project, dependency.project_id)
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/verbal",
+        data={
+            "stated_party": "AT&T",
+            "description": "AT&T said roughly mid-year.",
+            "conversation_date": date(2026, 5, 8).isoformat(),
+            "timing_precision": "approximate",
+            "timing_text": "around mid-year",
+            "scope_mode": "this",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    event = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.project_id == project.id,
+            DependencyEvent.source_kind == "verbal",
+        )
+    ).one()
+    assert event.new_timing.precision == "approximate"
+    assert event.new_timing.text == "around mid-year"
+
+
+def test_http_records_several_constraints(session, client, dependency):
+    project = session.get(Project, dependency.project_id)
+    second = _org_dependency(session, dependency, "TEL-2")
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/verbal",
+        data={
+            "stated_party": "AT&T",
+            "description": "AT&T spoke about two conflicts.",
+            "conversation_date": date(2026, 5, 8).isoformat(),
+            "timing_precision": "day",
+            "committed_date": date(2026, 8, 15).isoformat(),
+            "scope_mode": "selected",
+            "scope_dependency_ids": [str(dependency.id), str(second.id)],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    event = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.project_id == project.id,
+            DependencyEvent.source_kind == "verbal",
+        )
+    ).one()
+    assert _memberships(session, event) == {dependency.id, second.id}
+
+
+def test_http_records_a_stated_change(session, client, dependency):
+    project = session.get(Project, dependency.project_id)
+    first = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T committed to March 2026.",
+        conversation_date=date(2026, 1, 8),
+        new_timing=StatementTiming.month("March 2026", 2026, 3),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+    session.commit()
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/verbal-change",
+        data={
+            "commitment_lineage_id": str(first.commitment_lineage_id),
+            "stated_party": "AT&T",
+            "description": "AT&T now says May 16, 2026.",
+            "conversation_date": date(2026, 4, 8).isoformat(),
+            "timing_precision": "day",
+            "committed_date": date(2026, 5, 16).isoformat(),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    change = session.scalars(
+        select(DependencyEvent).where(
+            DependencyEvent.event_type == "committed_date_change",
+            DependencyEvent.project_id == project.id,
+        )
+    ).one()
+    assert change.timing_direction == "later"
+    assert change.previous_timing.start_date == date(2026, 3, 1)
+
+
+def test_http_verbal_change_refuses_a_lineage_from_another_project(
+    session, client, dependency
+):
+    project = session.get(Project, dependency.project_id)
+    other_project = Project(slug="verbal-other-2", name="Other", is_synthetic=True)
+    other_org = ExternalOrg(name="Bell", aliases=["Bell"])
+    session.add_all((other_project, other_org))
+    session.flush()
+    other_dependency = Dependency(
+        project_id=other_project.id,
+        ref_code="OTHER-9",
+        dep_type="utility_relocation",
+        title="Elsewhere",
+        external_org_id=other_org.id,
+    )
+    session.add(other_dependency)
+    session.flush()
+    seed_membership(session, other_project, RECORDER)
+    foreign = record_verbal_statement(
+        session,
+        project_id=other_project.id,
+        external_org_id=other_org.id,
+        stated_party="Bell",
+        description="Bell committed elsewhere.",
+        conversation_date=date(2026, 1, 8),
+        new_timing=StatementTiming.day("2026-03-01", date(2026, 3, 1)),
+        scope=StatementScope.selected((other_dependency.id,)),
+        principal=RECORDER,
+    )
+    session.commit()
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/verbal-change",
+        data={
+            "commitment_lineage_id": str(foreign.commitment_lineage_id),
+            "stated_party": "Bell",
+            "description": "trying to reach another project's commitment",
+            "conversation_date": date(2026, 4, 8).isoformat(),
+            "timing_precision": "day",
+            "committed_date": date(2026, 5, 16).isoformat(),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    # The foreign commitment is untouched.
+    assert observe_current_statement(
+        session, foreign.commitment_lineage_id
+    ).event.id == foreign.id
+
+
+def test_http_corrects_verbal_scope(session, client, dependency):
+    project = session.get(Project, dependency.project_id)
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="Party-level promise pending scope.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2026-08-15", date(2026, 8, 15)),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    observation = observe_current_statement(session, event.commitment_lineage_id)
+    session.commit()
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/verbal-scope",
+        data={
+            "statement_event_id": str(event.id),
+            "expected_scope_decision_id": str(observation.scope_decision.id),
+            "scope_mode": "this",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert _memberships(session, event) == {dependency.id}
+    session.refresh(dependency)
+    assert dependency.committed_date == date(2026, 8, 15)

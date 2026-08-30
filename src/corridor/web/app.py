@@ -197,7 +197,14 @@ from corridor.frontend_request_receipts import (
     FrontendRequestSubject,
     record_frontend_request,
 )
-from corridor.verbal import VerbalRefusal, record_verbal
+from corridor.verbal import (
+    StaleVerbalCorrection,
+    VerbalRefusal,
+    correct_verbal_scope,
+    record_verbal_change,
+    record_verbal_statement,
+)
+from corridor.external_statements import StatementScope, StatementTiming
 from corridor.identity import document_numbering_schemes, party_canonical_names
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.source_intake import (
@@ -4724,6 +4731,61 @@ def _active_project_roster(session: Session, project_id: int):
     ).all()
 
 
+def _verbal_timing_from_form(
+    precision: str,
+    committed_date: date | None,
+    committed_month: str,
+    timing_text: str,
+) -> StatementTiming:
+    """Build the stated timing exactly at the precision the recorder chose.
+
+    The form never invents an exact day for a month or approximate promise:
+    each precision keeps only the wording and calendar bounds it actually
+    supports (ADR-0036).
+    """
+    words = timing_text.strip()
+    if precision == "day":
+        if committed_date is None:
+            raise HTTPException(400, "an exact-day promise needs the day the party gave")
+        return StatementTiming.day(words or committed_date.isoformat(), committed_date)
+    if precision == "month":
+        try:
+            month_start = date.fromisoformat(f"{committed_month.strip()}-01")
+        except ValueError as exc:
+            raise HTTPException(400, "a month promise needs a YYYY-MM month") from exc
+        return StatementTiming.month(
+            words or month_start.strftime("%B %Y"),
+            month_start.year,
+            month_start.month,
+        )
+    if precision == "approximate":
+        if not words:
+            raise HTTPException(
+                400, "an approximate promise needs the words the party used"
+            )
+        return StatementTiming.approximate(words)
+    raise HTTPException(400, f"unknown timing precision {precision!r}")
+
+
+def _verbal_scope_from_form(
+    scope_mode: str,
+    dependency: Dependency,
+    scope_dependency_ids: list[int],
+) -> StatementScope:
+    """Build the explicit scope decision the recorder chose, never inferred."""
+    if scope_mode == "this":
+        return StatementScope.selected((dependency.id,))
+    if scope_mode == "selected":
+        if not scope_dependency_ids:
+            raise HTTPException(400, "choose at least one Constraint, or a wider scope")
+        return StatementScope.selected(tuple(scope_dependency_ids))
+    if scope_mode == "all_active":
+        return StatementScope.all_active()
+    if scope_mode == "unknown":
+        return StatementScope.unknown()
+    raise HTTPException(400, f"unknown scope choice {scope_mode!r}")
+
+
 @app.post("/ledger/{slug}/{dependency_id}/verbal")
 def record_dependency_verbal(
     slug: str,
@@ -4731,23 +4793,114 @@ def record_dependency_verbal(
     stated_party: str = Form(...),
     description: str = Form(...),
     conversation_date: date = Form(...),
-    committed_date: date = Form(...),
+    timing_precision: str = Form("day"),
+    committed_date: date | None = Form(None),
+    committed_month: str = Form(""),
+    timing_text: str = Form(""),
+    scope_mode: str = Form("this"),
+    scope_dependency_ids: list[int] = Form(default_factory=list),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Record one attributable phone statement from this Dependency's page."""
+    """Record one attributable phone statement at its stated precision/scope."""
     project = _project(session, slug, principal, designation=access.COORDINATION)
     dependency = _project_dependency(session, project, dependency_id)
+    if dependency.external_org_id is None:
+        raise HTTPException(400, "this record has no resolved External Party")
+    new_timing = _verbal_timing_from_form(
+        timing_precision, committed_date, committed_month, timing_text
+    )
+    scope = _verbal_scope_from_form(scope_mode, dependency, scope_dependency_ids)
     try:
-        record_verbal(
+        record_verbal_statement(
             session,
-            dependency,
+            project_id=project.id,
+            external_org_id=dependency.external_org_id,
             stated_party=stated_party,
             description=description,
             conversation_date=conversation_date,
-            committed_date=committed_date,
+            new_timing=new_timing,
+            scope=scope,
             principal=principal,
         )
+    except VerbalRefusal as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/ledger/{slug}/{dependency_id}", status_code=303
+    )
+
+
+@app.post("/ledger/{slug}/{dependency_id}/verbal-change")
+def record_dependency_verbal_change(
+    slug: str,
+    dependency_id: int,
+    commitment_lineage_id: int = Form(...),
+    stated_party: str = Form(...),
+    description: str = Form(...),
+    conversation_date: date = Form(...),
+    timing_precision: str = Form("day"),
+    committed_date: date | None = Form(None),
+    committed_month: str = Form(""),
+    timing_text: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Record a stated change to what one existing commitment promised."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    _project_dependency(session, project, dependency_id)
+    lineage = session.get(CommitmentLineage, commitment_lineage_id)
+    if lineage is None or lineage.project_id != project.id:
+        raise HTTPException(404, "no such commitment in this project")
+    new_timing = _verbal_timing_from_form(
+        timing_precision, committed_date, committed_month, timing_text
+    )
+    try:
+        record_verbal_change(
+            session,
+            commitment_lineage_id=commitment_lineage_id,
+            stated_party=stated_party,
+            description=description,
+            conversation_date=conversation_date,
+            new_timing=new_timing,
+            principal=principal,
+        )
+    except VerbalRefusal as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/ledger/{slug}/{dependency_id}", status_code=303
+    )
+
+
+@app.post("/ledger/{slug}/{dependency_id}/verbal-scope")
+def correct_dependency_verbal_scope(
+    slug: str,
+    dependency_id: int,
+    statement_event_id: int = Form(...),
+    expected_scope_decision_id: int = Form(...),
+    scope_mode: str = Form(...),
+    scope_dependency_ids: list[int] = Form(default_factory=list),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Correct which Constraints a recorded verbal applies to, preserving it."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    dependency = _project_dependency(session, project, dependency_id)
+    event = session.get(DependencyEvent, statement_event_id)
+    if event is None or event.project_id != project.id:
+        raise HTTPException(404, "no such statement in this project")
+    scope = _verbal_scope_from_form(scope_mode, dependency, scope_dependency_ids)
+    try:
+        correct_verbal_scope(
+            session,
+            event_id=statement_event_id,
+            scope=scope,
+            expected_scope_decision_id=expected_scope_decision_id,
+            principal=principal,
+        )
+    except StaleVerbalCorrection as exc:
+        raise HTTPException(409, str(exc)) from exc
     except VerbalRefusal as exc:
         raise HTTPException(400, str(exc)) from exc
     session.commit()

@@ -35,7 +35,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f1c0d17e0a2b"
-HEAD = "e1f2a3b4c5d6"
+HEAD = "f3a5c7d9e1b2"
 
 _TABLES = {
     "assignment_notifications",

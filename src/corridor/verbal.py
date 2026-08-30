@@ -4,15 +4,25 @@ The earlier idea of a coordinator-only note left a material commitment outside
 the append-only history and unable to drive its existing projection. A verbal
 is instead a human-attributed DependencyEvent, not a second history beside the
 event chain. It carries the party as stated, the day of the conversation, and
-the date the party gave; its explicit source kind stops an absent citation from
-ever being mistaken for a declaration. The projected Committed Date still comes
-from the newest statement, exactly as it does for cited events.
+the timing the party gave; its explicit source kind stops an absent citation
+from ever being mistaken for a declaration. The projected Committed Date still
+comes from the newest statement, exactly as it does for cited events.
+
+The first version forced every call into one exact-day commitment scoped to one
+Constraint.  ADR-0036 accepts a richer shape: a verbal may preserve month or
+approximate timing, apply to one or several Constraints, stay party-level while
+its scope is unknown, or record a stated change of promised timing.  The stated
+organization is a separate fact from the recorder and from scope — a prefilled
+organization is confirmed, never inferred from which Constraint the coordinator
+was looking at.  The single-Constraint exact-day :func:`record_verbal` is kept
+as a convenience over the same atomic writer.
 """
 
 from __future__ import annotations
 
 from datetime import date
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
@@ -21,15 +31,29 @@ from corridor.external_statements import (
     StatementScope,
     StatementTiming,
     record_external_party_statement,
+    record_statement_scope_decision,
 )
 from corridor.identity import is_project_side_party, party_matches
-from corridor.models import Dependency, DependencyEvent, Project
+from corridor.models import (
+    CommitmentLineage,
+    CommitmentScopeDecision,
+    CommitmentScopeMembership,
+    Dependency,
+    DependencyEvent,
+    ExternalParty,
+    Project,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.statement_lifecycle import observe_current_statement
 
 
 class VerbalRefusal(ValueError):
     """A phone statement cannot become a commitment on this record."""
+
+
+class StaleVerbalCorrection(VerbalRefusal):
+    """The recorded verbal changed underneath a correction; reload and retry."""
 
 
 def record_verbal(
@@ -42,7 +66,11 @@ def record_verbal(
     committed_date: date,
     principal: HumanPrincipal,
 ) -> DependencyEvent:
-    """Append what the named External Party told the recorder on a call."""
+    """Append one exact-day phone commitment scoped to this one Dependency.
+
+    This is the single-Constraint convenience over the shared writer.  Richer
+    timing or scope goes through :func:`record_verbal_statement`.
+    """
     recorder = require_human_principal(principal)
     party = stated_party.strip()
     what_was_said = description.strip()
@@ -74,44 +102,381 @@ def record_verbal(
         raise VerbalRefusal(
             f"{party} is not this record's External Party or a registered alias"
         )
-
     if dependency.external_org_id is None:
         raise VerbalRefusal("this record has no resolved External Party")
+
+    return _append_verbal(
+        session,
+        recorder=recorder,
+        project=project,
+        external_org=session.get(ExternalParty, dependency.external_org_id),
+        stated_party=party,
+        description=what_was_said,
+        conversation_date=conversation_date,
+        new_timing=StatementTiming.day(committed_date.isoformat(), committed_date),
+        scope=StatementScope.selected((dependency.id,)),
+        audit_entity_type=audit.DEPENDENCY,
+        audit_entity_id=dependency.id,
+    )
+
+
+def record_verbal_statement(
+    session: Session,
+    *,
+    project_id: int,
+    external_org_id: int,
+    stated_party: str,
+    description: str,
+    conversation_date: date,
+    new_timing: StatementTiming,
+    scope: StatementScope,
+    principal: HumanPrincipal,
+) -> DependencyEvent:
+    """Append one attributable verbal Commitment at its stated precision/scope.
+
+    The stated organization is supplied explicitly and confirmed; it is never
+    inferred from the chosen scope.  Timing keeps its wording and precision, and
+    the coordinator's scope decision — one, several, all currently active, or
+    not yet known — is recorded exactly as chosen.  A new Commitment Lineage
+    holds the statement; this is not a change to an earlier promise.
+    """
+    recorder = require_human_principal(principal)
+    project, org, party, what_was_said = _resolve_verbal_subject(
+        session,
+        project_id=project_id,
+        external_org_id=external_org_id,
+        stated_party=stated_party,
+        description=description,
+        conversation_date=conversation_date,
+        new_timing=new_timing,
+    )
+    return _append_verbal(
+        session,
+        recorder=recorder,
+        project=project,
+        external_org=org,
+        stated_party=party,
+        description=what_was_said,
+        conversation_date=conversation_date,
+        new_timing=new_timing,
+        scope=scope,
+        audit_entity_type=audit.COMMITMENT_LINEAGE,
+        audit_entity_id=None,
+    )
+
+
+def record_verbal_change(
+    session: Session,
+    *,
+    commitment_lineage_id: int,
+    stated_party: str,
+    description: str,
+    conversation_date: date,
+    new_timing: StatementTiming,
+    principal: HumanPrincipal,
+) -> DependencyEvent:
+    """Append a stated Change to Promised Timing on one existing commitment.
+
+    The previous timing is the lineage's current attributable timing — both
+    timings are the same party's, so Corridor derives the change and its
+    direction rather than inventing an earlier promise from a cached date.  The
+    exact prior scope is carried forward as a snapshot; a change never
+    re-snapshots an all-active decision or copies the plan onto Constraints.
+    """
+    recorder = require_human_principal(principal)
+    if not isinstance(new_timing, StatementTiming):
+        raise VerbalRefusal("a verbal must carry the timing the party gave")
+    if not isinstance(conversation_date, date):
+        raise VerbalRefusal("a verbal must record the conversation date")
+    party = stated_party.strip()
+    what_was_said = description.strip()
+    if not party:
+        raise VerbalRefusal("a verbal must name the party who spoke")
+    if not what_was_said:
+        raise VerbalRefusal("a verbal must say what the party told you")
+
+    lineage = session.get(CommitmentLineage, commitment_lineage_id)
+    if lineage is None:
+        raise VerbalRefusal("the commitment being changed no longer exists")
+    project = session.get(Project, lineage.project_id)
+    if project is None:
+        raise VerbalRefusal("the record's project no longer exists")
+    lock_project(session, project.id)
+    observation = observe_current_statement(session, lineage.id)
+    if observation is None:
+        raise VerbalRefusal(
+            "only an attributable commitment can record a stated change"
+        )
+    current = observation.event
+    if (
+        current.stated_external_org_id is None
+        or current.new_timing is None
+        or observation.scope_decision is None
+    ):
+        raise VerbalRefusal(
+            "only an attributable commitment can record a stated change"
+        )
+    org = session.get(ExternalParty, current.stated_external_org_id)
+    if org is None:
+        raise VerbalRefusal("this record has no resolved External Party")
+    if is_project_side_party(project, party):
+        raise VerbalRefusal(
+            f"{party} is the project's own side — an action item, never an "
+            "External Party commitment"
+        )
+
+    previous = current.new_timing
+    previous_timing = StatementTiming(
+        text=previous.text,
+        precision=previous.precision,
+        start_date=previous.start_date,
+        end_date=previous.end_date,
+    )
+    scope_ids = tuple(
+        session.scalars(
+            select(CommitmentScopeMembership.dependency_id)
+            .where(
+                CommitmentScopeMembership.scope_decision_id
+                == observation.scope_decision.id
+            )
+            .order_by(CommitmentScopeMembership.dependency_id)
+        ).all()
+    )
+    scope = StatementScope(
+        "unknown" if observation.scope_decision.scope_mode == "unknown"
+        else "carried_forward",
+        scope_ids,
+    )
+    return _append_verbal(
+        session,
+        recorder=recorder,
+        project=project,
+        external_org=org,
+        stated_party=party,
+        description=what_was_said,
+        conversation_date=conversation_date,
+        new_timing=new_timing,
+        scope=scope,
+        previous_timing=previous_timing,
+        commitment_lineage_id=lineage.id,
+        scope_snapshot_dependency_ids=scope_ids,
+        audit_entity_type=audit.COMMITMENT_LINEAGE,
+        audit_entity_id=None,
+    )
+
+
+def correct_verbal_scope(
+    session: Session,
+    *,
+    event_id: int,
+    scope: StatementScope,
+    expected_scope_decision_id: int,
+    principal: HumanPrincipal,
+) -> CommitmentScopeDecision:
+    """Append one scope correction to a recorded verbal, preserving the original.
+
+    The statement fact is untouched; only which Constraints it applies to is
+    corrected.  A stale expected scope decision refuses the whole correction and
+    a no-op change records nothing attributable.
+    """
+    recorder = require_human_principal(principal)
+    event = session.get(DependencyEvent, event_id)
+    if event is None or event.source_kind != "verbal":
+        raise VerbalRefusal("there is no recorded verbal statement to correct")
+    if event.commitment_lineage_id is None:
+        raise VerbalRefusal("only an attributable verbal commitment has scope")
     try:
-        # The call record and its audit receipt are inseparable: a refusal
-        # must not preserve a Verbal whose attributable human act was lost.
         with session.begin_nested():
-            event = record_external_party_statement(
+            lock_project(session, event.project_id)
+            observation = observe_current_statement(
+                session, event.commitment_lineage_id
+            )
+            if observation is None or observation.event.id != event.id:
+                raise StaleVerbalCorrection(
+                    "the verbal statement changed; reload the newer state"
+                )
+            predecessor = observation.scope_decision
+            if predecessor is None or predecessor.id != expected_scope_decision_id:
+                raise StaleVerbalCorrection(
+                    "the verbal statement scope changed; reload the newer state"
+                )
+            if _scope_is_noop(session, event, predecessor, scope):
+                raise VerbalRefusal(
+                    "Commitment Scope already has this exact value; "
+                    "no correction was recorded"
+                )
+            decision = record_statement_scope_decision(
                 session,
-                project_id=project.id,
-                affected_external_org_id=dependency.external_org_id,
-                stated_party=party,
-                stated_external_org_id=dependency.external_org_id,
-                source_kind="verbal",
-                event_date=conversation_date,
-                description=what_was_said,
-                new_timing=StatementTiming.day(
-                    committed_date.isoformat(), committed_date
-                ),
-                scope=StatementScope.selected((dependency.id,)),
-                created_by=recorder.subject,
+                event_id=event.id,
+                scope=scope,
+                actor=recorder,
             )
             audit.record(
                 session,
                 principal=recorder,
-                action=audit.RECORD_VERBAL,
-                entity_type=audit.DEPENDENCY,
-                entity_id=dependency.id,
+                action=audit.CORRECT_STATEMENT_SCOPE,
+                entity_type=audit.COMMITMENT_LINEAGE,
+                entity_id=event.commitment_lineage_id,
+                before={"scope_decision_id": predecessor.id},
                 after={
-                    "dependency_event_id": event.id,
-                    "source_kind": event.source_kind,
-                    "stated_party": party,
-                    "conversation_date": conversation_date.isoformat(),
-                    "committed_date": event.new_timing.start_date.isoformat(),
-                    "event_type": event.event_type,
+                    "statement_event_id": event.id,
+                    "scope_decision_id": decision.id,
+                    "scope_mode": decision.scope_mode,
                 },
+            )
+            session.flush()
+    except StaleVerbalCorrection:
+        raise
+    except StatementRefusal as exc:
+        raise VerbalRefusal(str(exc)) from exc
+    return decision
+
+
+def _resolve_verbal_subject(
+    session: Session,
+    *,
+    project_id: int,
+    external_org_id: int,
+    stated_party: str,
+    description: str,
+    conversation_date: date,
+    new_timing: StatementTiming,
+) -> tuple[Project, ExternalParty, str, str]:
+    """Validate and return the shared verbal subject facts before an append."""
+    party = stated_party.strip()
+    what_was_said = description.strip()
+    if not party:
+        raise VerbalRefusal("a verbal must name the party who spoke")
+    if not what_was_said:
+        raise VerbalRefusal("a verbal must say what the party told you")
+    if not isinstance(conversation_date, date):
+        raise VerbalRefusal("a verbal must record the conversation date")
+    if not isinstance(new_timing, StatementTiming):
+        raise VerbalRefusal("a verbal must carry the timing the party gave")
+    project = session.get(Project, project_id)
+    if project is None:
+        raise VerbalRefusal("the record's project no longer exists")
+    lock_project(session, project.id)
+    org = session.get(ExternalParty, external_org_id)
+    if org is None:
+        raise VerbalRefusal("this record has no resolved External Party")
+    if is_project_side_party(project, party):
+        raise VerbalRefusal(
+            f"{party} is the project's own side — an action item, never an "
+            "External Party commitment"
+        )
+    return project, org, party, what_was_said
+
+
+def _append_verbal(
+    session: Session,
+    *,
+    recorder: HumanPrincipal,
+    project: Project,
+    external_org: ExternalParty | None,
+    stated_party: str,
+    description: str,
+    conversation_date: date,
+    new_timing: StatementTiming,
+    scope: StatementScope,
+    audit_entity_type: str,
+    audit_entity_id: int | None,
+    previous_timing: StatementTiming | None = None,
+    commitment_lineage_id: int | None = None,
+    scope_snapshot_dependency_ids: tuple[int, ...] | None = None,
+) -> DependencyEvent:
+    """Write one verbal statement and its audit receipt as one atomic act."""
+    if external_org is None:
+        raise VerbalRefusal("this record has no resolved External Party")
+    try:
+        # The call record and its audit receipt are inseparable: a refusal must
+        # not preserve a Verbal whose attributable human act was lost.
+        with session.begin_nested():
+            event = record_external_party_statement(
+                session,
+                project_id=project.id,
+                affected_external_org_id=external_org.id,
+                stated_party=stated_party,
+                stated_external_org_id=external_org.id,
+                source_kind="verbal",
+                event_date=conversation_date,
+                description=description,
+                new_timing=new_timing,
+                previous_timing=previous_timing,
+                scope=scope,
+                commitment_lineage_id=commitment_lineage_id,
+                created_by=recorder.subject,
+                _scope_snapshot_dependency_ids=scope_snapshot_dependency_ids,
+            )
+            recorded = event.new_timing
+            after = {
+                "dependency_event_id": event.id,
+                "commitment_lineage_id": event.commitment_lineage_id,
+                "source_kind": event.source_kind,
+                "stated_party": stated_party,
+                "conversation_date": conversation_date.isoformat(),
+                "event_type": event.event_type,
+                "timing_text": recorded.text,
+                "timing_precision": recorded.precision,
+                "scope_mode": event.scope_mode,
+            }
+            if recorded.precision == "day" and recorded.start_date is not None:
+                # The exact-day scalar stays in the receipt for the compatibility
+                # projection; a month or approximate promise records no invented
+                # calendar day.
+                after["committed_date"] = recorded.start_date.isoformat()
+            if previous_timing is not None:
+                after["timing_direction"] = event.timing_direction
+            audit.record(
+                session,
+                principal=recorder,
+                action=audit.RECORD_VERBAL,
+                entity_type=audit_entity_type,
+                entity_id=(
+                    audit_entity_id
+                    if audit_entity_id is not None
+                    else event.commitment_lineage_id
+                ),
+                after=after,
             )
             session.flush()
     except StatementRefusal as exc:
         raise VerbalRefusal(str(exc)) from exc
     return event
+
+
+def _scope_is_noop(
+    session: Session,
+    event: DependencyEvent,
+    predecessor: CommitmentScopeDecision,
+    requested: StatementScope,
+) -> bool:
+    """Whether a requested verbal scope would change nothing at all."""
+    if predecessor.scope_mode != requested.mode:
+        return False
+    current_ids = tuple(
+        session.scalars(
+            select(CommitmentScopeMembership.dependency_id)
+            .where(CommitmentScopeMembership.scope_decision_id == predecessor.id)
+            .order_by(CommitmentScopeMembership.dependency_id)
+        ).all()
+    )
+    if requested.mode == "unknown":
+        requested_ids: tuple[int, ...] = ()
+    elif requested.mode == "selected":
+        requested_ids = tuple(sorted(requested.dependency_ids))
+    elif requested.mode == "all_active":
+        requested_ids = tuple(
+            session.scalars(
+                select(Dependency.id)
+                .where(
+                    Dependency.project_id == event.project_id,
+                    Dependency.external_org_id == event.affected_external_org_id,
+                    Dependency.dismissed_at.is_(None),
+                )
+                .order_by(Dependency.id)
+            ).all()
+        )
+    else:
+        return False
+    return current_ids == requested_ids

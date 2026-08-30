@@ -151,9 +151,6 @@ def record_external_party_statement(
     affected = session.get(ExternalParty, affected_external_org_id)
     if affected is None:
         raise StatementRefusal("the affected and stated External Parties must exist")
-    if source_kind == "verbal":
-        if scope.mode != "selected" or len(scope.dependency_ids) != 1:
-            raise StatementRefusal("a Verbal must scope to exactly one Dependency")
     scope_actor = _scope_actor_subject(created_by)
     event_type = "committed_date_change" if previous_timing else "commitment"
     dependency_ids = (
@@ -494,13 +491,12 @@ def validate_external_party_statement_draft(
     _validate_timing(new_timing)
     if previous_timing is not None:
         _validate_timing(previous_timing)
-    if source_kind == "verbal":
-        if event_date is None:
-            raise StatementRefusal("a Verbal must preserve the conversation date")
-        if previous_timing is not None:
-            raise StatementRefusal("a Verbal cannot be a Committed Date Change")
-        if new_timing.precision != "day":
-            raise StatementRefusal("a Verbal must preserve one exact-day commitment")
+    if source_kind == "verbal" and event_date is None:
+        # A verbal keeps its one source-specific requirement: the recorder must
+        # know when the conversation happened.  Its timing precision and scope
+        # now follow the same rules as any other attributable statement
+        # (ADR-0033, ADR-0036).
+        raise StatementRefusal("a Verbal must preserve the conversation date")
     for cited_evidence in _all_cited_evidence(evidence, supporting_evidence):
         validate_cited_statement_evidence(session, cited_evidence, project.id)
     return project

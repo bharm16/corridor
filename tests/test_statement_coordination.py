@@ -53,7 +53,15 @@ from corridor.models import DependencyEventTiming
 from corridor.principals import HumanPrincipal
 from access_support import seed_membership
 from corridor.schedule_linking import flow_through_revisions, resolve_link
-from corridor.statement_lifecycle import current_lineage_statement
+from corridor.statement_lifecycle import (
+    current_lineage_statement,
+    observe_current_statement,
+)
+from corridor.verbal import (
+    correct_verbal_scope,
+    record_verbal_change,
+    record_verbal_statement,
+)
 from corridor.statement_suggestions import (
     declare_statement_suggestion_eligibility,
     declare_statement_suggestion_protection,
@@ -85,6 +93,7 @@ from corridor.statement_coordination import (
 )
 from corridor.work_decisions import (
     CoordinationSubject,
+    assign_internal_owner,
     current_deferral_decision,
     current_internal_owner_decision,
     current_next_action_decision,
@@ -3599,3 +3608,148 @@ def test_a_close_bound_to_another_subjects_action_is_refused(
     assert current_next_action_decision(
         session, other_subject
     ).after_value is not None
+
+
+# --- Recorded Verbal Statements as coordination subjects (#335) ---------------
+
+
+def _org_constraint(session, project, party, ref_code):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code=ref_code,
+        dep_type="utility_relocation",
+        title=f"Conflict {ref_code}",
+        external_org_id=party.id,
+    )
+    session.add(dependency)
+    session.flush()
+    return dependency
+
+
+def test_a_party_level_verbal_is_a_coordination_subject_with_a_lineage_plan(
+    session, project, party
+):
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=party.id,
+        stated_party=party.name,
+        description="Kinder Morgan made a party-level promise.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2027-01-15", date(2027, 1, 15)),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    subject = CoordinationSubject.statement(event.commitment_lineage_id)
+    assign_internal_owner(session, subject, "Dana Fields", principal=RECORDER)
+    set_next_action(
+        session,
+        subject,
+        "Confirm which conflicts the promise covers",
+        due_date=date(2026, 12, 1),
+        principal=RECORDER,
+    )
+
+    work = build_work_list(session, project.id, today=date(2026, 6, 1))
+    item = next(
+        work_item
+        for work_item in (*work.immediate, *work.backlog)
+        if work_item.commitment_lineage_id == event.commitment_lineage_id
+    )
+    # The plan is recognized on the lineage; only the scope stays open.
+    assert item.attention_reason_codes == ("unknown_scope",)
+    assert item.dependency_id is None
+    assert item.display_name == party.name
+    assert current_internal_owner_decision(session, subject).after_value == "Dana Fields"
+
+
+def test_a_verbal_stated_change_marks_the_lineage_plan_and_appears_in_work(
+    session, project, party
+):
+    dependency = _org_constraint(session, project, party, "KM-1")
+    first = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=party.id,
+        stated_party=party.name,
+        description="Kinder Morgan committed to March 2026.",
+        conversation_date=date(2026, 1, 8),
+        new_timing=StatementTiming.month("March 2026", 2026, 3),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+    lineage_id = first.commitment_lineage_id
+    subject = CoordinationSubject.statement(lineage_id)
+    assign_internal_owner(session, subject, "Dana Fields", principal=RECORDER)
+    set_next_action(
+        session, subject, "Chase the schedule", due_date=date(2026, 3, 1),
+        principal=RECORDER,
+    )
+
+    change = record_verbal_change(
+        session,
+        commitment_lineage_id=lineage_id,
+        stated_party=party.name,
+        description="Kinder Morgan now says May 16, 2026.",
+        conversation_date=date(2026, 4, 8),
+        new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+        principal=RECORDER,
+    )
+
+    lineage = session.get(CommitmentLineage, lineage_id)
+    session.refresh(lineage)
+    assert lineage.plan_needs_review is True
+    assert change.timing_direction == "later"
+    # The plan stays on the lineage; nothing is copied to the Constraint subject.
+    assert session.scalars(
+        select(WorkDecision).where(WorkDecision.dependency_id == dependency.id)
+    ).all() == []
+    # The change surfaces as work, keyed to the same lineage.
+    work = build_work_list(session, project.id, today=date(2026, 4, 20))
+    item = next(
+        work_item
+        for work_item in work.immediate
+        if work_item.commitment_lineage_id == lineage_id
+    )
+    assert "committed_date_change" in item.attention_reason_codes
+
+
+def test_a_verbal_scope_correction_preserves_the_statement_and_updates_work(
+    session, project, party
+):
+    dependency = _org_constraint(session, project, party, "KM-2")
+    event = record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=party.id,
+        stated_party=party.name,
+        description="Kinder Morgan promise pending scope.",
+        conversation_date=date(2026, 5, 8),
+        new_timing=StatementTiming.day("2027-01-15", date(2027, 1, 15)),
+        scope=StatementScope.unknown(),
+        principal=RECORDER,
+    )
+    before = build_work_list(session, project.id, today=date(2026, 6, 1))
+    assert "unknown_scope" in next(
+        item for item in before.immediate
+        if item.commitment_lineage_id == event.commitment_lineage_id
+    ).attention_reason_codes
+
+    observation = observe_current_statement(session, event.commitment_lineage_id)
+    decision = correct_verbal_scope(
+        session,
+        event_id=event.id,
+        scope=StatementScope.selected((dependency.id,)),
+        expected_scope_decision_id=observation.scope_decision.id,
+        principal=RECORDER,
+    )
+
+    assert decision.scope_mode == "selected"
+    # The original statement fact is preserved, only its scope decision appended.
+    assert current_lineage_statement(session, event.commitment_lineage_id).id == event.id
+    after = build_work_list(session, project.id, today=date(2026, 6, 1))
+    item = next(
+        work_item for work_item in after.immediate
+        if work_item.commitment_lineage_id == event.commitment_lineage_id
+    )
+    assert "unknown_scope" not in item.attention_reason_codes

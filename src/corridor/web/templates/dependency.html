@@ -476,12 +476,63 @@
       Record what the organization told you by phone or in conversation. It is appended under your identity,
       never cited as a document.
     </p>
-    <input name="stated_party" value="{{ view.org_name or '' }}" placeholder="organization you spoke to" required>
-    <input name="conversation_date" type="date" required>
-    <input name="committed_date" type="date" required>
-    <input name="description" placeholder="what they said" required>
+    <label>Organization that spoke (confirm)
+      <input name="stated_party" value="{{ view.org_name or '' }}" placeholder="organization you spoke to" required>
+    </label>
+    <label>Conversation date
+      <input name="conversation_date" type="date" required>
+    </label>
+    <fieldset>
+      <legend>What they promised, as stated</legend>
+      <label><input type="radio" name="timing_precision" value="day" checked> Exact day
+        <input name="committed_date" type="date"></label>
+      <label><input type="radio" name="timing_precision" value="month"> Month
+        <input name="committed_month" type="month"></label>
+      <label><input type="radio" name="timing_precision" value="approximate"> Approximate (words only)</label>
+      <input name="timing_text" placeholder="wording, e.g. &quot;end of May&quot; or &quot;01/2025&quot;">
+    </fieldset>
+    <fieldset>
+      <legend>Applies to</legend>
+      <label><input type="radio" name="scope_mode" value="this" checked> This Constraint</label>
+      <label><input type="radio" name="scope_mode" value="all_active"> All currently active Constraints for this organization</label>
+      <label><input type="radio" name="scope_mode" value="unknown"> Not yet known (party-level)</label>
+      <label><input type="radio" name="scope_mode" value="selected"> Several Constraints:</label>
+      {% for constraint in view.org_constraints %}
+        <label class="muted" style="display:block;font-size:.85rem">
+          <input type="checkbox" name="scope_dependency_ids" value="{{ constraint.id }}">
+          {{ constraint.ref_code }} — {{ constraint.title }}
+        </label>
+      {% endfor %}
+    </fieldset>
+    <label>What they said
+      <input name="description" placeholder="what they said" required>
+    </label>
     <button type="submit">Record verbal statement</button>
   </form>
+  {% if view.current_statement and view.current_statement.event
+        and view.current_statement.event.commitment_lineage_id %}
+  <form method="post" action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/verbal-change">
+    {{ csrf_field() }}
+    <p class="muted" style="font-size:.85rem">
+      Record a stated change to what this organization promised. Both the earlier and the new
+      timing are kept; Corridor derives the change and its direction.
+    </p>
+    <input type="hidden" name="commitment_lineage_id"
+           value="{{ view.current_statement.event.commitment_lineage_id }}">
+    <input name="stated_party" value="{{ view.org_name or '' }}" required>
+    <label>Conversation date
+      <input name="conversation_date" type="date" required>
+    </label>
+    <label><input type="radio" name="timing_precision" value="day" checked> Exact day
+      <input name="committed_date" type="date"></label>
+    <label><input type="radio" name="timing_precision" value="month"> Month
+      <input name="committed_month" type="month"></label>
+    <label><input type="radio" name="timing_precision" value="approximate"> Approximate</label>
+    <input name="timing_text" placeholder="new wording">
+    <input name="description" placeholder="what they now say" required>
+    <button type="submit">Record change to promised timing</button>
+  </form>
+  {% endif %}
   {% if view.events %}
     <table>
       <thead><tr><th>Said</th><th>Type</th><th>Source</th><th>{{ label('organization') }}</th><th>Description</th><th>By</th></tr></thead>
