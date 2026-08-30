@@ -23,7 +23,7 @@ from datetime import date, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor import audit
+from corridor import audit, notifications
 from corridor.models import (
     Assertion,
     Dependency,
@@ -530,6 +530,15 @@ def record_dispute_clarification(
     with session.begin_nested():
         owner = assign_internal_owner(
             session, dependency_id, roster.display_name, principal=recorder
+        )
+        # This clarification names an accountable person for the Constraint, so
+        # the committed assignment registers one new-assignment notification,
+        # atomically with the clarification (#351).
+        notifications.register_new_assignment_notification(
+            session,
+            assignment_decision=owner,
+            roster_entry=roster,
+            principal=recorder,
         )
         action = set_next_action(
             session,

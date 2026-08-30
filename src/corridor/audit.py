@@ -121,6 +121,11 @@ PRODUCT_PROVING_FRONTEND_REQUEST = "product_proving_frontend_request"
 # (#331).  The act names the project it is scoped to and the operator who made
 # it; a selectable assignee or an email address alone never grants access.
 ENROLL_PROJECT_MEMBER = "enroll_project_member"
+# The assigned person flagged that a new-assignment notification's assignment
+# looks incorrect (#351, ADR-0035).  It is an attributable marker, not a
+# mutation: the assignment and its Work Decision history stand until an
+# authorized person changes them, so this records feedback and changes nothing.
+FLAG_INCORRECT_ASSIGNMENT = "flag_incorrect_assignment"
 # One person confirmed the registration of one uploaded source Document through
 # the product (#349, ADR-0035). It is an AuditLog action rather than a second
 # table so the confirmation shares the exact transaction and write-set as the
@@ -200,6 +205,7 @@ ACTIONS = frozenset(
         AUTHORIZE_DEPENDENCY_ADMISSION,
         CLEAR_CONDITION,
         DISMISS_CONDITION,
+        FLAG_INCORRECT_ASSIGNMENT,
     }
 )
 

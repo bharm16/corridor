@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, aliased
 
 from sqlalchemy.exc import IntegrityError
 
-from corridor import audit
+from corridor import audit, notifications
 from corridor.models import (
     AuditLog,
     CommitmentLineage,
@@ -1024,6 +1024,16 @@ def save_follow_up_plan(
             )
             owner_changed = owner_decision.id != _decision_row_id(owner_tail)
             action_changed = action_decision.id != _decision_row_id(action_tail)
+            if owner_changed:
+                # A committed new assignment registers exactly one notification
+                # occurrence, atomically with this Save (#351). A rolled-back
+                # Save therefore leaves no dispatch.
+                notifications.register_new_assignment_notification(
+                    session,
+                    assignment_decision=owner_decision,
+                    roster_entry=roster_entry,
+                    principal=recorder,
+                )
             deferral_tail_after = _tail(session, subject, DEFERRAL)
             resumed_deferral = (
                 deferral_tail_after
