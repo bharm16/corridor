@@ -162,6 +162,7 @@
 
   <h2>Propose a change</h2>
   <form class="checks" method="post" action="/operations/{{ project.slug }}/checks">
+    {{ csrf_field() }}
     {% for row in supported %}
       <label for="f-{{ row.key }}">
         {{ row.label }} <span class="hint">({{ row.unit }}; {{ row.minimum }}–{{ row.maximum }})</span>

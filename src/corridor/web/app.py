@@ -2854,7 +2854,7 @@ def operations_checks(
     session: Session = Depends(get_session),
 ):
     """Inspect the supported thresholds and this project's effective checks."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     response = _render_operations_checks(
         request, session, project, saved_id=saved if saved and saved > 0 else None
     )
@@ -2880,7 +2880,7 @@ async def operations_checks_preview(
     session: Session = Depends(get_session),
 ):
     """Show the reading under a proposed configuration, writing nothing."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     form = await request.form()
     submitted = _submitted_check_thresholds(form)
     try:
@@ -2922,7 +2922,7 @@ async def save_operations_checks(
     session: Session = Depends(get_session),
 ):
     """Append a new retained configuration, or refuse an invalid proposal."""
-    project = _project(session, slug)
+    project = _project(session, slug, principal, designation=access.COORDINATION)
     form = await request.form()
     submitted = _submitted_check_thresholds(form)
     try:
