@@ -410,11 +410,16 @@ def deliver_project_assignment_notifications(
                         checking,
                         dispatch,
                         limitation=limitation,
-                        benign=(status == "superseded"),
                         owner=owner,
                         now=_aware_utc(clock.now()),
                     )
-                    counts["skipped"] += 1
+                    # A superseded assignment is a benign skip: its replacement
+                    # carries its own occurrence. A revoked membership or an
+                    # unresolved contact is a limitation the operator should see.
+                    if status == "superseded":
+                        counts["skipped"] += 1
+                    else:
+                        counts["failed"] += 1
                     continue
 
         if status != "current":
@@ -607,7 +612,6 @@ def _finalize_limitation(
     dispatch: AssignmentNotificationDispatch,
     *,
     limitation: str | None,
-    benign: bool,
     owner: str,
     now: datetime,
 ) -> None:
