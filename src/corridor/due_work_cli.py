@@ -89,6 +89,7 @@ def _parser() -> argparse.ArgumentParser:
     discovery.add_argument("--adapter-identity", required=True)
     discovery.add_argument("--source-manifest-id", required=True)
     discovery.add_argument("--index-url", required=True)
+    discovery.add_argument("--rid-link-text")
     discovery.add_argument(
         "--authorized-host",
         action="append",
@@ -304,6 +305,7 @@ def main(
                         adapter_identity=args.adapter_identity,
                         source_manifest_id=args.source_manifest_id,
                         index_url=args.index_url,
+                        rid_link_text=args.rid_link_text,
                         authorized_hosts=tuple(args.authorized_hosts),
                         sealed=args.sealed,
                         nested_archive_depth=args.nested_archive_depth,

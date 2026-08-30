@@ -160,9 +160,9 @@ carry-forward:
 #   make due-work ARGS="run-once --owner=runtime:<worker-id>"
 #   make due-work ARGS="recover --owner=runtime:<worker-id>"
 #   make due-work ARGS="status --project-slug=<project-slug>"
-# Enable one connected-location adapter (#350). Every gate-7 field is explicit;
-# a sealed rehearsal location is refused before any fetch:
-#   make due-work ARGS="configure-discovery <project-slug> --configuration-version=location-discovery-v1 --location-id=txdot-nhhip-3c2 --adapter-identity=http-index-v1 --source-manifest-id=nhhip-3c2 --index-url=https://www.example.gov/index.json --authorized-host=www.example.gov --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=120 --claim-ttl-seconds=600 --deadline-seconds=300 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
+# Enable one connected TxDOT RID/Box source (#350). Every gate-7 field is
+# explicit; a sealed rehearsal location is refused before any fetch:
+#   make due-work ARGS="configure-discovery <project-slug> --configuration-version=txdot-rid-box-v1 --location-id=txdot-nhhip-3c2-utilities --adapter-identity=txdot-rid-box-v1 --source-manifest-id=nhhip-3c2 --index-url=https://www.txdot.gov/business/road-bridge-maintenance/alternative-delivery/nhhip-3c2/rid.html --rid-link-text=Utilities --authorized-host=www.txdot.gov --authorized-host=txdot.box.com --authorized-host=txdot.app.box.com --authorized-host=app.box.com --authorized-host=public.boxcloud.com --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=120 --claim-ttl-seconds=600 --deadline-seconds=300 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
 due-work:
 	uv run python -m corridor.due_work_cli $(ARGS)
 

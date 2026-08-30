@@ -192,16 +192,25 @@ class UploadedSourceRow:
     confirmed_at: datetime
 
 
-def validate_and_stage(body: bytes, filename: str) -> StagedSource:
+def validate_and_stage(
+    body: bytes,
+    filename: str,
+    *,
+    max_bytes: int | None = None,
+) -> StagedSource:
     """Enforce the bounded limits and stage exact bytes; refuse before model work.
 
     Refuses an empty, oversized, wrong-suffix, or content-mismatched file with an
-    ``IntakeRefused`` and writes nothing. On acceptance the exact bytes land in the
-    content-addressed store keyed by their own hash — writing identical bytes twice
-    is a no-op, so a re-uploaded file is never duplicated and an earlier file is
-    never overwritten.
+    ``IntakeRefused`` and writes nothing. Upload and email callers use the 64 MiB
+    default; a connected location supplies its separately validated Gate-7 byte
+    bound. On acceptance the exact bytes land in the content-addressed store keyed
+    by their own hash — writing identical bytes twice is a no-op, so a re-uploaded
+    file is never duplicated and an earlier file is never overwritten.
     """
 
+    limit = MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
+    if limit < 1:
+        raise ValueError("source intake byte limit must be positive")
     safe = _safe_filename(filename)
     suffix = PurePosixPath(safe).suffix.lower()
     if suffix not in ACCEPTED_SUFFIXES:
@@ -212,11 +221,11 @@ def validate_and_stage(body: bytes, filename: str) -> StagedSource:
         )
     if not body:
         raise IntakeRefused("empty_file", f"{safe!r} is empty.")
-    if len(body) > MAX_UPLOAD_BYTES:
+    if len(body) > limit:
         raise IntakeRefused(
             "too_large",
             f"{safe!r} is {_mib(len(body))} MiB; the limit is "
-            f"{_mib(MAX_UPLOAD_BYTES)} MiB.",
+            f"{_mib(limit)} MiB.",
         )
     if not _content_matches_suffix(suffix, body):
         raise IntakeRefused(

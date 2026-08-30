@@ -12,9 +12,10 @@ import json
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from corridor.due_work_cli import main
-from corridor.models import Project
+from corridor.models import DueWorkSchedule, Project
 
 
 class ControlledClock:
@@ -154,6 +155,57 @@ def test_configure_discovery_retains_a_gate_7_connected_location(
     status = _payload(capsys)
     assert status["jobs"][0]["handler"] == "location_discovery"
     assert status["jobs"][0]["input_identity"]["kind"] == "connected_location-v1"
+
+
+def test_configure_txdot_discovery_retains_the_exact_rid_link(runtime_database, capsys):
+    factory = runtime_database.session_factory
+    clock = ControlledClock(datetime(2026, 8, 30, 17, 5, tzinfo=timezone.utc))
+    with factory() as setup:
+        project = Project(
+            slug=f"txdot-loc-{uuid4().hex}", name="TxDOT Location", is_synthetic=True
+        )
+        setup.add(project)
+        setup.commit()
+
+    argv = [
+        "configure-discovery",
+        project.slug,
+        "--configuration-version=txdot-rid-box-v1",
+        "--location-id=txdot-nhhip-utilities",
+        "--adapter-identity=txdot-rid-box-v1",
+        "--source-manifest-id=nhhip-3c2",
+        "--index-url=https://www.txdot.gov/example/rid.html",
+        "--rid-link-text=Utilities",
+        "--authorized-host=www.txdot.gov",
+        "--authorized-host=txdot.box.com",
+        "--authorized-host=txdot.app.box.com",
+        "--authorized-host=app.box.com",
+        "--authorized-host=public.boxcloud.com",
+        "--starts-at=2026-08-30T17:00:00+00:00",
+        "--cadence=hourly",
+        "--timezone=UTC",
+        "--missed-run-policy=latest_only",
+        "--retention-days=3650",
+        "--max-attempts=3",
+        "--backoff-seconds=120",
+        "--claim-ttl-seconds=600",
+        "--deadline-seconds=300",
+        "--concurrency-limit=1",
+        "--model-token-budget=0",
+        "--notification-budget=0",
+    ]
+    assert main(argv, session_factory=factory, clock=clock) == 0
+    _payload(capsys)
+
+    with factory() as session:
+        schedule = session.scalar(
+            select(DueWorkSchedule).where(
+                DueWorkSchedule.project_id == project.id,
+                DueWorkSchedule.handler_key == "location_discovery",
+            )
+        )
+        assert schedule.scope_json["rid_link_text"] == "Utilities"
+        assert schedule.scope_json["adapter_identity"] == "txdot-rid-box-v1"
 
 
 def _configure_reproof_argv(project_slug: str) -> list[str]:

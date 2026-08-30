@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy import func, select
 
 from corridor import audit
+from corridor import source_intake
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.due_work import (
@@ -43,7 +44,9 @@ from corridor.location_discovery import (
     effective_source_url,
     observe_references,
     operations_view,
+    parse_box_shared_file,
     parse_index,
+    parse_txdot_rid_box_link,
     recover_document_parse,
     reference_key,
 )
@@ -61,6 +64,13 @@ PRINCIPAL = HumanPrincipal("local:operator")
 LOCATION = "txdot-loc"
 HOST = "docs.example.gov"
 INDEX_URL = f"https://{HOST}/index.json"
+TXDOT_RID_URL = "https://www.txdot.gov/projects/example/rid.html"
+TXDOT_BOX_SHARE = "https://txdot.box.com/s/currentutilities"
+TXDOT_BOX_APP_SHARE = "https://txdot.app.box.com/s/currentutilities"
+TXDOT_BOX_ARCHIVE = (
+    "https://app.box.com/index.php?rm=box_download_shared_file"
+    "&shared_name=currentutilities&file_id=f_2406098312527"
+)
 NOW = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
 
 
@@ -134,6 +144,46 @@ def _index(entries: list[dict]) -> httpx.Response:
     )
 
 
+def _txdot_box_routes(archive: bytes) -> dict:
+    rid = _response(
+        b'<a href="https://txdot.box.com/s/currentutilities">Utilities</a>',
+        content_type="text/html; charset=utf-8",
+    )
+    box_page = _response(
+        b"""
+        <meta property="og:title" content="nhhip3c2-utilities-rid-20260814.zip | Powered by Box">
+        <script>Box.bootstrap = {"sharedName":"currentutilities","vanityName":"",
+        "itemID":2406098312527,"itemType":"file"};</script>
+        """,
+        content_type="text/html; charset=utf-8",
+    )
+
+    def ranged_archive(request: httpx.Request) -> httpx.Response:
+        value = request.headers.get("range")
+        if value is None:
+            return _response(archive, content_type="application/zip")
+        start_text, end_text = value.removeprefix("bytes=").split("-", 1)
+        start = int(start_text)
+        end = min(int(end_text), len(archive) - 1)
+        return httpx.Response(
+            206,
+            content=archive[start : end + 1],
+            headers={
+                "content-type": "application/zip",
+                "content-range": f"bytes {start}-{end}/{len(archive)}",
+            },
+        )
+
+    return {
+        TXDOT_RID_URL: rid,
+        TXDOT_BOX_SHARE: httpx.Response(
+            302, headers={"location": TXDOT_BOX_APP_SHARE}
+        ),
+        TXDOT_BOX_APP_SHARE: box_page,
+        TXDOT_BOX_ARCHIVE: ranged_archive,
+    }
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
@@ -161,7 +211,9 @@ def project(session):
 
 
 def _scope(project_id: int, *, sealed: bool = False, index_url: str = INDEX_URL,
-           hosts: frozenset[str] = frozenset({HOST})) -> LocationScope:
+           hosts: frozenset[str] = frozenset({HOST}),
+           adapter_identity: str = "http-index-v1",
+           rid_link_text: str | None = None) -> LocationScope:
     return LocationScope(
         location_id=LOCATION,
         project_id=project_id,
@@ -169,7 +221,25 @@ def _scope(project_id: int, *, sealed: bool = False, index_url: str = INDEX_URL,
         authorized_hosts=hosts,
         sealed=sealed,
         source_manifest_id="txdot-manifest",
-        adapter_identity="http-index-v1",
+        adapter_identity=adapter_identity,
+        rid_link_text=rid_link_text,
+    )
+
+
+def _txdot_scope(project_id: int) -> LocationScope:
+    return _scope(
+        project_id,
+        index_url=TXDOT_RID_URL,
+        hosts=frozenset(
+            {
+                "www.txdot.gov",
+                "txdot.box.com",
+                "txdot.app.box.com",
+                "app.box.com",
+            }
+        ),
+        adapter_identity="txdot-rid-box-v1",
+        rid_link_text="Utilities",
     )
 
 
@@ -189,6 +259,39 @@ def test_parse_index_reads_entries_and_refuses_malformed():
     for bad in (b"not json", b"[]", b'{"entries":[{"title":"no url"}]}'):
         with pytest.raises(LocationDiscoveryRefused):
             parse_index(bad)
+
+
+def test_txdot_rid_parser_selects_one_exact_box_link_and_refuses_ambiguity():
+    body = b"""
+    <table>
+      <tr><td><a href="https://txdot.box.com/s/agreementdocs">Agreements</a></td></tr>
+      <tr><td><a href="https://txdot.box.com/s/currentutilities"> Utilities </a></td></tr>
+    </table>
+    """
+    assert parse_txdot_rid_box_link(
+        body, index_url=TXDOT_RID_URL, link_text="Utilities"
+    ) == TXDOT_BOX_SHARE
+
+    ambiguous = body + b'<a href="https://txdot.box.com/s/other">Utilities</a>'
+    with pytest.raises(LocationDiscoveryRefused, match="exactly one"):
+        parse_txdot_rid_box_link(
+            ambiguous, index_url=TXDOT_RID_URL, link_text="Utilities"
+        )
+
+
+def test_box_shared_file_parser_binds_the_share_token_file_identity_and_name():
+    body = b"""
+    <meta property="og:title" content="nhhip3c2-utilities-rid-20260814.zip | Powered by Box">
+    <script>
+      Box.bootstrap = {"sharedName":"currentutilities","vanityName":"",
+      "itemID":2406098312527,"itemType":"file"};
+    </script>
+    """
+    shared = parse_box_shared_file(body, shared_url=TXDOT_BOX_APP_SHARE)
+    assert shared.shared_name == "currentutilities"
+    assert shared.item_id == 2406098312527
+    assert shared.filename == "nhhip3c2-utilities-rid-20260814.zip"
+    assert shared.archive_url == TXDOT_BOX_ARCHIVE
 
 
 def test_discovery_records_new_references_as_proposed_intake(session, project):
@@ -474,6 +577,69 @@ def test_pass_discovers_authorizes_and_registers_end_to_end(runtime_database, st
         assert attempt.outcome == "registered" and attempt.sha256 == document.sha256
 
 
+def test_txdot_box_adapter_discovers_real_archive_members_then_fetches_by_range(
+    runtime_database, store
+):
+    factory = runtime_database.session_factory
+    project_id = _project_in(factory)
+    matrix = _pdf("current matrix")
+    plan = _pdf("current utility strip map")
+    archive = _zip(
+        {
+            "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf": matrix,
+            "nhhip-3c2-utility-strip-maps-2-13-2026.pdf": plan,
+        }
+    )
+    routes = _txdot_box_routes(archive)
+
+    first = discover_and_process(
+        factory,
+        scope=_txdot_scope(project_id),
+        budgets=_budgets(),
+        client=_client(routes),
+        clock=FixedClock(),
+    )
+    assert first.references_observed == 2
+    assert first.new_references == 2
+    assert first.new_archive_urls == 1
+    assert first.registered == 0
+
+    source_url = effective_source_url(
+        TXDOT_BOX_ARCHIVE,
+        "nhhip-3c2-utility-strip-maps-2-13-2026.pdf",
+    )
+    key = reference_key(LOCATION, source_url)
+    with factory() as session:
+        with session.begin():
+            authorize_reference(
+                session,
+                project_id=project_id,
+                reference_key=key,
+                doc_type="plan",
+                principal=PRINCIPAL,
+                registry_id="nhhip-utility-strip-map-2026-02-13",
+                now=NOW,
+            )
+
+    second = discover_and_process(
+        factory,
+        scope=_txdot_scope(project_id),
+        budgets=_budgets(),
+        client=_client(routes),
+        clock=FixedClock(),
+    )
+    assert second.registered == 1
+    with factory() as session:
+        document = session.scalar(
+            select(Document).where(
+                Document.registry_id == "nhhip-utility-strip-map-2026-02-13"
+            )
+        )
+        assert document is not None
+        assert document.sha256 == hashlib.sha256(plan).hexdigest()
+        assert document.source_url == source_url
+
+
 def test_repeated_unchanged_pass_creates_no_new_document_or_attempt(runtime_database, store):
     factory = runtime_database.session_factory
     project_id = _project_in(factory)
@@ -629,6 +795,33 @@ def test_an_archive_member_is_extracted_and_registered(runtime_database, store):
     with factory() as s:
         document = s.scalar(select(Document).where(Document.project_id == project_id))
         assert document.sha256 == hashlib.sha256(body).hexdigest()
+
+
+def test_connected_member_uses_its_declared_size_bound_not_the_upload_default(
+    runtime_database, store, monkeypatch
+):
+    factory = runtime_database.session_factory
+    project_id = _project_in(factory)
+    archive_url = "https://docs.example.gov/large-current.zip"
+    member = "large-plan.pdf"
+    body = _pdf("large connected plan") + b"\0" * 4096
+    _authorize_in(factory, project_id, url=archive_url, member=member, doc_type="plan")
+    routes = {
+        INDEX_URL: _index([]),
+        archive_url: _response(_zip({member: body}), content_type="application/zip"),
+    }
+    monkeypatch.setattr(source_intake, "MAX_UPLOAD_BYTES", 1024)
+
+    result = discover_and_process(
+        factory,
+        scope=_scope(project_id),
+        budgets=_budgets(max_decompressed_bytes=1024 * 1024),
+        client=_client(routes),
+        clock=FixedClock(),
+    )
+
+    assert result.registered == 1
+    assert result.fetch_failures == 0
 
 
 def test_a_missing_archive_member_does_not_masquerade_as_a_document(runtime_database, store):
@@ -796,6 +989,40 @@ def test_configuration_is_gate7_validated_and_refuses_bad_scope(runtime_database
         with s.begin():
             with pytest.raises(DueWorkRefusal):
                 configure_location_discovery(s, declare(authorized_hosts=()), now=NOW)
+
+    # The TxDOT adapter names the exact RID link it is allowed to follow. A
+    # generic RID page with no selector is not an enabled connected location.
+    with factory() as s:
+        with s.begin():
+            txdot = declare(
+                configuration_version="loc-txdot-v1",
+                adapter_identity="txdot-rid-box-v1",
+                index_url=TXDOT_RID_URL,
+                authorized_hosts=(
+                    "www.txdot.gov",
+                    "txdot.box.com",
+                    "txdot.app.box.com",
+                    "app.box.com",
+                    "public.boxcloud.com",
+                ),
+                rid_link_text="Utilities",
+            )
+            schedule = configure_location_discovery(s, txdot, now=NOW)
+            assert schedule.scope_json["rid_link_text"] == "Utilities"
+
+    with factory() as s:
+        with s.begin():
+            with pytest.raises(DueWorkRefusal, match="RID link text"):
+                configure_location_discovery(
+                    s,
+                    declare(
+                        configuration_version="loc-txdot-missing-v1",
+                        adapter_identity="txdot-rid-box-v1",
+                        index_url=TXDOT_RID_URL,
+                        authorized_hosts=("www.txdot.gov",),
+                    ),
+                    now=NOW,
+                )
 
 
 def test_enqueue_validates_the_persisted_location_schedule(runtime_database):

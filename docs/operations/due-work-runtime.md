@@ -23,6 +23,15 @@ Run `make due-work ARGS="supervise --owner=runtime:<worker-id>
 `run-once`, `recover`, and `status` expose the same stored interfaces for bounded
 operations and diagnosis.
 
+Connected TxDOT document discovery uses `txdot-rid-box-v1`. Its declaration
+names the official RID page and one exact visible link such as `Utilities`.
+The adapter follows that link to the public Box shared-file page, binds the Box
+file identity stated there, and reads the ZIP directory and authorized members
+with bounded byte ranges. A changed Box share therefore becomes a new observed
+source without scraping arbitrary pages or treating a filename as a Document
+kind. New references remain proposed intake until Corridor Operations records
+the existing attributable authorization.
+
 Each hourly UTC `latest_only` occurrence has a stable identity. Claims have a
 bounded lease and deadline. A crashed worker's attempt is retained before a new
 owner retries it; a stale owner cannot finalize after recovery. Backoff and

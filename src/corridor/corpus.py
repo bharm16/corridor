@@ -758,7 +758,8 @@ def _open_archive(client: httpx.Client, url: str):
     probe = None
     for user_agent in (USER_AGENT, BROWSER_UA):
         probe = client.get(
-            url, headers={"user-agent": user_agent, "Range": "bytes=0-0"}
+            url,
+            headers={"user-agent": user_agent, "Range": "bytes=0-65535"},
         )
         if probe.status_code in (200, 206):
             return _HttpRangeFile(client, url, user_agent, probe), probe

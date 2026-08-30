@@ -10,16 +10,16 @@ standing project-processing handoff that product upload intake uses (#349,
 Constraint Record; extraction and Record Inclusion remain the standing pass's
 job, so a registered document is handed off exactly the way an uploaded one is.
 
-What the location contract is, and why it is explicit. The location publishes a
-structured JSON index of the references currently available. Parsing an explicit
-index rather than scraping an HTML page is the honest choice for a system whose
-whole point is not to guess: the index states each reference's URL and, for an
-archive member, its container; a title and a kind *hint* travel as the location's
-own advisory words and never become an accepted document fact. The concrete
-authorized host boundary, the sealed-holdout flag, and every resource budget are
-server-owned configuration validated before the adapter is ever enabled
-(``due_work.configure_location_discovery``); an unconfigured adapter scans
-nothing, and credentials never widen that scope.
+What the location contract is, and why it is explicit. ``http-index-v1`` reads a
+structured JSON index. ``txdot-rid-box-v1`` reads one exact named link from an
+official TxDOT RID page, binds the public Box page's stated shared-file identity,
+and enumerates that ZIP through bounded HTTP ranges. It does not crawl arbitrary
+HTML or infer a Document kind from a filename. A title and a kind *hint* remain
+the location's advisory words and never become an accepted document fact. The
+concrete authorized host boundary, the sealed-holdout flag, and every resource
+budget are server-owned configuration validated before the adapter is ever
+enabled (``due_work.configure_location_discovery``); an unconfigured adapter
+scans nothing, and credentials never widen that scope.
 
 Four honesty rules carry the design:
 
@@ -48,9 +48,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+from html.parser import HTMLParser
 import io
 import json
 from pathlib import Path, PurePosixPath
+import re
 from urllib.parse import urljoin, urlparse
 import zipfile
 
@@ -88,6 +90,17 @@ HANDLER_KEY = "location_discovery"
 LOCATION_DISCOVERY_ACTOR = "corridor:location-discovery"
 
 _MIB = 1024 * 1024
+_BOX_RANGE_PROBE_BYTES = 64 * 1024
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
+)
+_BOX_SHARED_FILE = re.compile(
+    r'"sharedName":"(?P<shared>[a-zA-Z0-9]+)"\s*,\s*'
+    r'"vanityName":"[^"]*"\s*,\s*'
+    r'"itemID":(?P<item_id>[0-9]+)\s*,\s*'
+    r'"itemType":"(?P<item_type>[^"]+)"'
+)
 
 
 class LocationDiscoveryRefused(ValueError):
@@ -152,6 +165,7 @@ class LocationScope:
     sealed: bool
     source_manifest_id: str
     adapter_identity: str
+    rid_link_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +176,16 @@ class IndexEntry:
     title: str | None = None
     member: str | None = None
     type_hint: str | None = None
+
+
+@dataclass(frozen=True)
+class BoxSharedFile:
+    """One public Box file identity stated by its own shared-file page."""
+
+    shared_name: str
+    item_id: int
+    filename: str
+    archive_url: str
 
 
 @dataclass(frozen=True)
@@ -292,6 +316,137 @@ def parse_index(body: bytes) -> tuple[IndexEntry, ...]:
             )
         )
     return tuple(entries)
+
+
+class _RIDLinkParser(HTMLParser):
+    """Collect anchor text and hrefs without executing or interpreting the page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._href: str | None = None
+        self._text: list[str] = []
+        self.links: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() != "a" or self._href is not None:
+            return
+        values = dict(attrs)
+        href = values.get("href")
+        if isinstance(href, str):
+            self._href = href
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a" or self._href is None:
+            return
+        self.links.append((" ".join("".join(self._text).split()), self._href))
+        self._href = None
+        self._text = []
+
+
+class _MetaTitleParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.open_graph_title: str | None = None
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() != "meta":
+            return
+        values = dict(attrs)
+        if values.get("property") == "og:title" and isinstance(
+            values.get("content"), str
+        ):
+            self.open_graph_title = values["content"]
+
+
+def parse_txdot_rid_box_link(
+    body: bytes,
+    *,
+    index_url: str,
+    link_text: str,
+) -> str:
+    """Select one exact public Box link from an official TxDOT RID page.
+
+    The operator declares the visible RID label, such as ``Utilities``. The
+    adapter follows exactly one matching link. Missing or repeated labels are a
+    retained failure instead of an arbitrary first-match choice.
+    """
+
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LocationDiscoveryRefused(
+            "malformed_rid_page", "TxDOT RID page is not UTF-8"
+        ) from exc
+    parser = _RIDLinkParser()
+    parser.feed(text)
+    wanted = " ".join(link_text.split())
+    matches = [urljoin(index_url, href) for label, href in parser.links if label == wanted]
+    if len(matches) != 1:
+        raise LocationDiscoveryRefused(
+            "rid_link_ambiguous",
+            f"TxDOT RID page must contain exactly one {wanted!r} link; found {len(matches)}",
+        )
+    parsed = urlparse(matches[0])
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"txdot.box.com", "txdot.app.box.com"}
+        or not re.fullmatch(r"/s/[a-zA-Z0-9]+/?", parsed.path)
+    ):
+        raise LocationDiscoveryRefused(
+            "invalid_box_share", "TxDOT RID link is not one public TxDOT Box share"
+        )
+    return matches[0]
+
+
+def parse_box_shared_file(body: bytes, *, shared_url: str) -> BoxSharedFile:
+    """Bind a public Box page to its stated file identity and ZIP filename."""
+
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LocationDiscoveryRefused(
+            "malformed_box_page", "Box shared-file page is not UTF-8"
+        ) from exc
+    identity = _BOX_SHARED_FILE.search(text)
+    title_parser = _MetaTitleParser()
+    title_parser.feed(text)
+    title = title_parser.open_graph_title
+    if identity is None or title is None:
+        raise LocationDiscoveryRefused(
+            "malformed_box_page", "Box page does not state one shared-file identity"
+        )
+    if identity.group("item_type") != "file":
+        raise LocationDiscoveryRefused(
+            "box_share_not_file", "Box share does not name one downloadable file"
+        )
+    shared_name = identity.group("shared")
+    path_token = urlparse(shared_url).path.rstrip("/").rsplit("/", 1)[-1]
+    if shared_name != path_token:
+        raise LocationDiscoveryRefused(
+            "box_share_identity_mismatch",
+            "Box page identity does not match the requested shared link",
+        )
+    filename = title.removesuffix(" | Powered by Box").strip()
+    if not filename.lower().endswith(".zip"):
+        raise LocationDiscoveryRefused(
+            "box_share_not_archive", "Box shared file is not a ZIP archive"
+        )
+    item_id = int(identity.group("item_id"))
+    archive_url = (
+        "https://app.box.com/index.php?rm=box_download_shared_file"
+        f"&shared_name={shared_name}&file_id=f_{item_id}"
+    )
+    return BoxSharedFile(
+        shared_name=shared_name,
+        item_id=item_id,
+        filename=filename,
+        archive_url=archive_url,
+    )
 
 
 def effective_source_url(url: str, member: str | None) -> str:
@@ -672,7 +827,7 @@ def _process_one_authorized_reference(
                 counters.fetch_failures += 1
                 return
             _register_fetched_bytes(
-                session, scope, row, fetched, attempted_at, counters
+                session, scope, row, fetched, attempted_at, budgets, counters
             )
 
 
@@ -682,13 +837,18 @@ def _register_fetched_bytes(
     row: DiscoveredReference,
     fetched: "_FetchedBytes",
     attempted_at: datetime,
+    budgets: DiscoveryBudgets,
     counters: _Counters,
 ) -> None:
     """Validate exact bytes, detect drift, and register — or retain the refusal."""
 
     filename = _reference_filename(row)
     try:
-        staged = validate_and_stage(fetched.body, filename)
+        staged = validate_and_stage(
+            fetched.body,
+            filename,
+            max_bytes=budgets.max_decompressed_bytes,
+        )
     except IntakeRefused as exc:
         _record_attempt(
             session,
@@ -799,6 +959,174 @@ class _FetchFailure:
     http_status: int | None = None
 
 
+class _RemoteArchiveError(OSError):
+    def __init__(self, failure: _FetchFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
+class _AuthorizedRangeFile:
+    """Seekable bounded HTTP file used by ``zipfile`` for one remote archive."""
+
+    def __init__(
+        self,
+        *,
+        scope: LocationScope,
+        url: str,
+        size: int,
+        budgets: DiscoveryBudgets,
+        client: httpx.Client,
+        counters: _Counters,
+    ) -> None:
+        self.scope = scope
+        self.url = url
+        self.size = size
+        self.budgets = budgets
+        self.client = client
+        self.counters = counters
+        self.position = 0
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.position
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self.position = offset
+        elif whence == 1:
+            self.position += offset
+        elif whence == 2:
+            self.position = self.size + offset
+        else:
+            raise ValueError(f"unsupported seek mode {whence}")
+        return self.position
+
+    def read(self, length: int = -1) -> bytes:
+        if length is None or length < 0:
+            length = self.size - self.position
+        if length <= 0 or self.position >= self.size:
+            return b""
+        end = min(self.position + length, self.size) - 1
+        start = self.position
+        got = _authorized_get(
+            self.scope,
+            self.url,
+            self.budgets,
+            self.client,
+            self.counters,
+            headers={
+                "Range": f"bytes={start}-{end}",
+                "User-Agent": _BROWSER_USER_AGENT,
+            },
+        )
+        if isinstance(got, _FetchFailure):
+            raise _RemoteArchiveError(got)
+        response, resolved_url = got
+        self.url = resolved_url
+        if response.status_code == 206:
+            body = response.content
+        elif response.status_code == 200 and len(response.content) == self.size:
+            body = response.content[start : end + 1]
+        else:
+            raise _RemoteArchiveError(
+                _FetchFailure(
+                    "range_not_supported",
+                    f"archive range returned {response.status_code}",
+                    resolved_url=resolved_url,
+                    http_status=response.status_code,
+                )
+            )
+        self.position += len(body)
+        return body
+
+
+@dataclass
+class _RemoteZip:
+    archive: zipfile.ZipFile
+    resolved_url: str
+
+
+def _open_remote_zip(
+    scope: LocationScope,
+    url: str,
+    budgets: DiscoveryBudgets,
+    client: httpx.Client,
+    counters: _Counters,
+) -> _RemoteZip | _FetchFailure:
+    """Open one authorized ZIP from a bounded 64 KiB range probe."""
+
+    got = _authorized_get(
+        scope,
+        url,
+        budgets,
+        client,
+        counters,
+        headers={
+            "Range": f"bytes=0-{_BOX_RANGE_PROBE_BYTES - 1}",
+            "User-Agent": _BROWSER_USER_AGENT,
+        },
+    )
+    if isinstance(got, _FetchFailure):
+        return got
+    response, resolved_url = got
+    if response.status_code == 200:
+        body = response.content
+        if len(body) > budgets.max_compressed_bytes:
+            return _FetchFailure(
+                "archive_too_large",
+                f"archive is {len(body)} bytes over the compressed budget",
+                resolved_url=resolved_url,
+                http_status=200,
+            )
+        handle = io.BytesIO(body)
+    elif response.status_code == 206:
+        content_range = response.headers.get("content-range", "")
+        try:
+            size = int(content_range.rsplit("/", 1)[-1])
+        except ValueError:
+            return _FetchFailure(
+                "invalid_range",
+                "archive range response does not state the total size",
+                resolved_url=resolved_url,
+                http_status=206,
+            )
+        if size > budgets.max_compressed_bytes:
+            return _FetchFailure(
+                "archive_too_large",
+                f"archive is {size} bytes over the compressed budget",
+                resolved_url=resolved_url,
+                http_status=206,
+            )
+        handle = _AuthorizedRangeFile(
+            scope=scope,
+            url=resolved_url,
+            size=size,
+            budgets=budgets,
+            client=client,
+            counters=counters,
+        )
+    else:
+        return _FetchFailure(
+            "http_status",
+            f"archive probe returned {response.status_code}",
+            resolved_url=resolved_url,
+            http_status=response.status_code,
+        )
+    try:
+        return _RemoteZip(zipfile.ZipFile(handle), resolved_url)
+    except _RemoteArchiveError as exc:
+        return exc.failure
+    except (OSError, zipfile.BadZipFile) as exc:
+        return _FetchFailure(
+            "not_an_archive",
+            f"container is not a ZIP archive: {exc}",
+            resolved_url=resolved_url,
+            http_status=response.status_code,
+        )
+
+
 def _fetch_reference_bytes(
     scope: LocationScope,
     row: DiscoveredReference,
@@ -863,37 +1191,16 @@ def _fetch_archive_member(
             f"member nesting depth {depth} exceeds the budget "
             f"{budgets.nested_archive_depth}",
         )
-    got = _authorized_get(scope, row.archive_url or "", budgets, client, counters)
-    if isinstance(got, _FetchFailure):
-        return got
-    response, resolved_url = got
-    if response.status_code != 200:
-        return _FetchFailure(
-            "http_status",
-            f"archive returned {response.status_code}",
-            resolved_url=resolved_url,
-            http_status=response.status_code,
-        )
-    body = response.content
-    if len(body) > budgets.max_compressed_bytes:
-        return _FetchFailure(
-            "archive_too_large",
-            f"archive is {len(body)} bytes over the compressed budget",
-            resolved_url=resolved_url,
-            http_status=200,
-        )
+    opened = _open_remote_zip(
+        scope, row.archive_url or "", budgets, client, counters
+    )
+    if isinstance(opened, _FetchFailure):
+        return opened
+    resolved_url = opened.resolved_url
     segments = member.split("::")
-    current = body
+    archive = opened.archive
+    current: bytes | None = None
     for index, segment in enumerate(segments):
-        try:
-            archive = zipfile.ZipFile(io.BytesIO(current))
-        except zipfile.BadZipFile as exc:
-            return _FetchFailure(
-                "not_an_archive",
-                f"container is not a zip archive: {exc}",
-                resolved_url=resolved_url,
-                http_status=200,
-            )
         try:
             info = archive.getinfo(segment)
         except KeyError:
@@ -911,7 +1218,21 @@ def _fetch_archive_member(
                 resolved_url=resolved_url,
                 http_status=200,
             )
-        current = archive.read(segment)
+        try:
+            current = archive.read(segment)
+        except _RemoteArchiveError as exc:
+            return exc.failure
+        if index + 1 < len(segments):
+            try:
+                archive = zipfile.ZipFile(io.BytesIO(current))
+            except zipfile.BadZipFile as exc:
+                return _FetchFailure(
+                    "not_an_archive",
+                    f"container is not a ZIP archive: {exc}",
+                    resolved_url=resolved_url,
+                    http_status=200,
+                )
+    assert current is not None
     return _FetchedBytes(
         body=current,
         resolved_url=f"{resolved_url}::{member}",
@@ -926,6 +1247,8 @@ def _authorized_get(
     budgets: DiscoveryBudgets,
     client: httpx.Client,
     counters: _Counters,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> tuple[httpx.Response, str] | _FetchFailure:
     """GET within the authorized host boundary, following redirects manually.
 
@@ -951,7 +1274,11 @@ def _authorized_get(
             )
         counters.requests += 1
         try:
-            response = client.get(current, follow_redirects=False)
+            response = client.get(
+                current,
+                follow_redirects=False,
+                headers=headers,
+            )
         except httpx.HTTPError as exc:
             return _FetchFailure("transport_error", str(exc), resolved_url=current)
         if response.status_code in (301, 302, 303, 307, 308):
@@ -1305,19 +1632,42 @@ def _fetch_index(
 ) -> tuple[tuple[IndexEntry, ...], bool] | None:
     """Fetch and parse the index, or record a failure and return None."""
 
-    got = _authorized_get(scope, scope.index_url, budgets, client, counters)
-    if isinstance(got, _FetchFailure):
+    def fail(reason: str, failure: _FetchFailure) -> None:
         _record_attempt(
             session,
             scope,
             reference_key=None,
             attempted_at=now,
             outcome="failed",
-            reason=f"index_fetch/{got.reason}: {got.message}",
-            resolved_url=got.resolved_url,
-            http_status=got.http_status,
+            reason=f"index_fetch/{reason}: {failure.message}",
+            resolved_url=failure.resolved_url,
+            http_status=failure.http_status,
             resumable=True,
         )
+
+    if scope.adapter_identity == "txdot-rid-box-v1":
+        discovered = _fetch_txdot_box_index(scope, budgets, client, counters)
+        if isinstance(discovered, _FetchFailure):
+            fail(discovered.reason, discovered)
+            return None
+        entries = discovered
+        truncated = len(entries) > budgets.max_references
+        return entries[: budgets.max_references], truncated
+
+    if scope.adapter_identity != "http-index-v1":
+        fail(
+            "unsupported_adapter",
+            _FetchFailure(
+                "unsupported_adapter",
+                f"adapter {scope.adapter_identity!r} is not installed",
+                resolved_url=scope.index_url,
+            ),
+        )
+        return None
+
+    got = _authorized_get(scope, scope.index_url, budgets, client, counters)
+    if isinstance(got, _FetchFailure):
+        fail(got.reason, got)
         return None
     response, resolved_url = got
     if response.status_code != 200 or (
@@ -1338,20 +1688,109 @@ def _fetch_index(
     try:
         entries = parse_index(response.content)
     except LocationDiscoveryRefused as exc:
-        _record_attempt(
-            session,
-            scope,
-            reference_key=None,
-            attempted_at=now,
-            outcome="failed",
-            reason=f"index_fetch/{exc.reason}: {exc}",
-            resolved_url=resolved_url,
-            http_status=200,
-            resumable=True,
+        fail(
+            exc.reason,
+            _FetchFailure(
+                exc.reason,
+                str(exc),
+                resolved_url=resolved_url,
+                http_status=200,
+            ),
         )
         return None
     truncated = len(entries) > budgets.max_references
     return entries[: budgets.max_references], truncated
+
+
+def _fetch_txdot_box_index(
+    scope: LocationScope,
+    budgets: DiscoveryBudgets,
+    client: httpx.Client,
+    counters: _Counters,
+) -> tuple[IndexEntry, ...] | _FetchFailure:
+    """Resolve one exact RID link and enumerate its public Box ZIP."""
+
+    got_rid = _authorized_get(
+        scope,
+        scope.index_url,
+        budgets,
+        client,
+        counters,
+        headers={"User-Agent": _BROWSER_USER_AGENT},
+    )
+    if isinstance(got_rid, _FetchFailure):
+        return got_rid
+    rid_response, rid_url = got_rid
+    if rid_response.status_code != 200:
+        return _FetchFailure(
+            "rid_http_status",
+            f"TxDOT RID page returned {rid_response.status_code}",
+            resolved_url=rid_url,
+            http_status=rid_response.status_code,
+        )
+    try:
+        share_url = parse_txdot_rid_box_link(
+            rid_response.content,
+            index_url=rid_url,
+            link_text=scope.rid_link_text or "",
+        )
+    except LocationDiscoveryRefused as exc:
+        return _FetchFailure(
+            exc.reason,
+            str(exc),
+            resolved_url=rid_url,
+            http_status=200,
+        )
+
+    got_share = _authorized_get(
+        scope,
+        share_url,
+        budgets,
+        client,
+        counters,
+        headers={"User-Agent": _BROWSER_USER_AGENT},
+    )
+    if isinstance(got_share, _FetchFailure):
+        return got_share
+    share_response, resolved_share_url = got_share
+    if share_response.status_code != 200:
+        return _FetchFailure(
+            "box_http_status",
+            f"Box shared-file page returned {share_response.status_code}",
+            resolved_url=resolved_share_url,
+            http_status=share_response.status_code,
+        )
+    try:
+        shared = parse_box_shared_file(
+            share_response.content,
+            shared_url=resolved_share_url,
+        )
+    except LocationDiscoveryRefused as exc:
+        return _FetchFailure(
+            exc.reason,
+            str(exc),
+            resolved_url=resolved_share_url,
+            http_status=200,
+        )
+
+    opened = _open_remote_zip(
+        scope,
+        shared.archive_url,
+        budgets,
+        client,
+        counters,
+    )
+    if isinstance(opened, _FetchFailure):
+        return opened
+    return tuple(
+        IndexEntry(
+            url=shared.archive_url,
+            member=info.filename,
+            title=PurePosixPath(info.filename).name,
+        )
+        for info in opened.archive.infolist()
+        if not info.is_dir()
+    )
 
 
 def _pass_budget_exhausted(
