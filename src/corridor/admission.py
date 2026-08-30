@@ -33,6 +33,7 @@ from corridor.event_admission import EventAdmissionResult, run_event_admission
 from corridor.extraction_runs import declare_single_run_documents_by_policy
 from corridor.models import Project, RecordInclusionRequest
 from corridor.record_inclusion import ReconcileResult
+from corridor.unreadable_cell_admission import process_unreadable_cell_upgrades
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,11 @@ def load_project(session: Session, project_id: int) -> LoadResult:
     declarations = declare_single_run_documents_by_policy(session, project_id)
     dependencies = run_dependency_admission(session, project_id)
     events = run_event_admission(session, project_id)
+    # A corroborating document landing is exactly what upgrades an unconfirmed
+    # unreadable-cell reading to corroborated (ADR-0064), and — only when the
+    # ADR-0050-gated class is active — admits it. A no-op when the project has no
+    # unreadable-cell readings, so ordinary loads are untouched.
+    process_unreadable_cell_upgrades(session, project_id)
     return LoadResult(
         declared_documents=len(declarations.declared),
         ambiguous_documents=declarations.ambiguous,
