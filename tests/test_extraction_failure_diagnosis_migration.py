@@ -19,7 +19,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
-PREDECESSOR = "d359a1b2c3e4"
+PREDECESSOR = "f3a5c7d9e1b2"
 HEAD = "e361f1a2b3c4"
 
 
