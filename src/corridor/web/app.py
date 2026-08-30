@@ -15,6 +15,7 @@ as unavailable rather than faked.
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 import secrets
 from datetime import date
@@ -220,9 +221,28 @@ from corridor.supersession_review import (
 )
 from corridor.models import (
     ActiveExtractionRun,
+    ActiveRunDeclaration,
+    DueWorkOccurrence,
+    DueWorkReceipt,
+    DueWorkSchedule,
     DependencyAdmissionOutcome,
+    DocumentQuarantine,
+    ExtractionRun,
     PolicyRun,
+    RecordInclusionRequest,
 )
+from corridor.extraction_runs import declare_active_run
+from corridor.extraction_runs import current_active_run_declaration, is_completed_run
+from corridor.event_admission import read_event_admission_policy_status
+from corridor.event_admission_acceptance import (
+    lift_unknown_scope_admission,
+    suspend_unknown_scope_admission,
+)
+from corridor.due_work import (
+    HANDLER_PROJECT_PROCESSING,
+    HANDLER_REVISION_RECONCILIATION,
+)
+from corridor.project_lock import lock_project
 from corridor.statement_coordination import (
     AdmittedStatementCoordination,
     CLOSURE_TARGET_GAP,
@@ -3074,6 +3094,330 @@ async def save_operations_checks(
         subject=FrontendRequestSubject(
             project_id=project.id, check_configuration_id=row.id
         ),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+# --- Processing operations (#344) -----------------------------------------
+
+
+def _operations_state_fingerprint(value: dict) -> str:
+    """Bind an operations form to the exact facts its screen rendered.
+
+    This is a stale-state guard, not an authorization token: every mutation
+    still obtains its scope and authority server-side.  A canonical digest
+    makes a changed declaration chain, completed-run set, proof, or permitted
+    policy action refuse rather than silently applying an obsolete choice.
+    """
+    return sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _run_offer_state(session: Session, document_id: int) -> str:
+    current = session.get(ActiveExtractionRun, document_id)
+    tail = current_active_run_declaration(session, document_id)
+    completed_ids = [
+        run.id
+        for run in session.scalars(
+            select(ExtractionRun)
+            .where(ExtractionRun.document_id == document_id)
+            .order_by(ExtractionRun.id)
+        )
+        if is_completed_run(run)
+    ]
+    return _operations_state_fingerprint(
+        {
+            "document_id": document_id,
+            "active_run_id": None if current is None else current.extraction_run_id,
+            "declaration_id": None if tail is None else tail.id,
+            "completed_run_ids": completed_ids,
+        }
+    )
+
+
+def _policy_offer_state(status) -> str:
+    return _operations_state_fingerprint(
+        {
+            "status": status.status,
+            "proof_status": status.proof_status,
+            "latest_receipt_id": status.latest_receipt_id,
+            "latest_action_id": status.latest_action_id,
+            "allowed_operations": list(status.allowed_operations),
+        }
+    )
+
+
+def _operations_processing_context(session: Session, project: Project) -> dict:
+    """Read the bounded operations facts without inventing a second authority.
+
+    The screen joins existing records only: Active Run declarations own the
+    chosen reading, Event Admission owns effective policy status, and Due Work
+    owns recovery state.  Keeping this composite read here prevents an operator
+    UI from reimplementing any of their safety decisions.
+    """
+    documents = session.scalars(
+        select(Document)
+        .where(Document.project_id == project.id)
+        .order_by(Document.doc_date, Document.id)
+    ).all()
+    quarantines = {
+        row.document_id: row
+        for row in session.scalars(
+            select(DocumentQuarantine)
+            .join(Document, Document.id == DocumentQuarantine.document_id)
+            .where(Document.project_id == project.id)
+        )
+    }
+    declared = {
+        row.document_id: row
+        for row in session.scalars(
+            select(ActiveExtractionRun)
+            .join(Document, Document.id == ActiveExtractionRun.document_id)
+            .where(Document.project_id == project.id)
+        )
+    }
+    history_by_document: dict[int, list[ActiveRunDeclaration]] = {}
+    for row in session.scalars(
+        select(ActiveRunDeclaration)
+        .join(Document, Document.id == ActiveRunDeclaration.document_id)
+        .where(Document.project_id == project.id)
+        .order_by(ActiveRunDeclaration.document_id, ActiveRunDeclaration.id)
+    ):
+        history_by_document.setdefault(row.document_id, []).append(row)
+    runs_by_document: dict[int, list[ExtractionRun]] = {}
+    for row in session.scalars(
+        select(ExtractionRun)
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(Document.project_id == project.id)
+        .order_by(ExtractionRun.document_id, ExtractionRun.id)
+    ):
+        runs_by_document.setdefault(row.document_id, []).append(row)
+
+    document_rows = []
+    for document in documents:
+        current = declared.get(document.id)
+        document_rows.append(
+            {
+                "document": document,
+                "active_run_id": current.extraction_run_id if current else None,
+                "runs": runs_by_document.get(document.id, []),
+                "history": history_by_document.get(document.id, []),
+                "quarantine": quarantines.get(document.id),
+                "offer_state": _run_offer_state(session, document.id),
+            }
+        )
+
+    schedules = session.scalars(
+        select(DueWorkSchedule)
+        .where(
+            DueWorkSchedule.project_id == project.id,
+            DueWorkSchedule.handler_key.in_(
+                (HANDLER_PROJECT_PROCESSING, HANDLER_REVISION_RECONCILIATION)
+            ),
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+        .order_by(DueWorkSchedule.handler_key, DueWorkSchedule.id.desc())
+    ).all()
+    schedule_ids = [schedule.id for schedule in schedules]
+    recovery_rows = []
+    if schedule_ids:
+        receipts_by_occurrence: dict[int, list[DueWorkReceipt]] = {}
+        for receipt in session.scalars(
+            select(DueWorkReceipt)
+            .where(DueWorkReceipt.project_id == project.id)
+            .order_by(DueWorkReceipt.occurrence_id, DueWorkReceipt.attempt_number)
+        ):
+            receipts_by_occurrence.setdefault(receipt.occurrence_id, []).append(receipt)
+        for occurrence in session.scalars(
+            select(DueWorkOccurrence)
+            .where(DueWorkOccurrence.scheduled_job_id.in_(schedule_ids))
+            .order_by(DueWorkOccurrence.id.desc())
+            .limit(50)
+        ):
+            recovery_rows.append(
+                {
+                    "occurrence": occurrence,
+                    "receipts": receipts_by_occurrence.get(occurrence.id, []),
+                }
+            )
+
+    handoff = session.get(RecordInclusionRequest, project.id)
+    event_policy = read_event_admission_policy_status(session, project.id)
+    return {
+        "documents": document_rows,
+        "event_policy": event_policy,
+        "policy_offer_state": _policy_offer_state(event_policy),
+        "record_inclusion_pending": (
+            handoff is not None and handoff.dirty_seq > handoff.reconciled_seq
+        ),
+        "schedules": schedules,
+        "recovery_rows": recovery_rows,
+    }
+
+
+def _render_processing_operations(
+    request: Request, session: Session, project: Project, *, notice: str | None = None
+):
+    return TEMPLATES.TemplateResponse(
+        request,
+        "operations.html",
+        {"project": project, "notice": notice, **_operations_processing_context(session, project)},
+    )
+
+
+@app.get("/operations/{slug}", response_class=HTMLResponse)
+def processing_operations(
+    request: Request,
+    slug: str,
+    notice: str | None = None,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Show only the existing, project-scoped technical operations."""
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    response = _render_processing_operations(request, session, project, notice=notice)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="processing_operations",
+        route_template="/operations/{slug}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/runs/{document_id}/declare")
+async def declare_operations_active_run(
+    request: Request,
+    slug: str,
+    document_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Append one permitted Current Production Run declaration.
+
+    The document, run, completed state, declaration chain, and the two durable
+    downstream handoffs are all revalidated by ``declare_active_run`` while the
+    project is locked.  Form values never name the operator.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project.id:
+        raise HTTPException(404, "no such source document")
+    form = await request.form()
+    run_id = _required_positive_http_id(form, "extraction_run_id")
+    offered_state = str(form.get("state_fingerprint") or "")
+    try:
+        lock_project(session, project.id)
+        if offered_state != _run_offer_state(session, document.id):
+            raise ValueError("the production-run choices changed; refresh first")
+        declaration = declare_active_run(
+            session, document.id, run_id, principal=principal
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(
+        f"/operations/{project.slug}?notice=declared-{declaration.id}", status_code=303
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="declare_operations_active_run",
+        route_template="/operations/{slug}/runs/{document_id}/declare",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/unknown-scope/suspend")
+async def suspend_operations_unknown_scope(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    form = await request.form()
+    reason = str(form.get("reason") or "")
+    try:
+        lock_project(session, project.id)
+        status = read_event_admission_policy_status(session, project.id)
+        if "suspend" not in status.allowed_operations:
+            raise ValueError("unknown-scope Event Admission is not active")
+        if str(form.get("state_fingerprint") or "") != _policy_offer_state(status):
+            raise ValueError("the policy status changed; refresh first")
+        suspend_unknown_scope_admission(
+            session,
+            project_id=project.id,
+            reason=reason,
+            recorded_by=principal.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(f"/operations/{project.slug}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="suspend_operations_unknown_scope",
+        route_template="/operations/{slug}/unknown-scope/suspend",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=form,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/unknown-scope/lift")
+async def lift_operations_unknown_scope(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    form = await request.form()
+    try:
+        lock_project(session, project.id)
+        status = read_event_admission_policy_status(session, project.id)
+        if "lift" not in status.allowed_operations:
+            raise ValueError("unknown-scope Event Admission is not suspended")
+        if str(form.get("state_fingerprint") or "") != _policy_offer_state(status):
+            raise ValueError("the policy status changed; refresh first")
+        lift_unknown_scope_admission(
+            session, project_id=project.id, recorded_by=principal.subject
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(f"/operations/{project.slug}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="lift_operations_unknown_scope",
+        route_template="/operations/{slug}/unknown-scope/lift",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
         request_fields=form,
     )
     session.commit()

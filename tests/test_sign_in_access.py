@@ -401,6 +401,26 @@ def test_a_member_cannot_reach_another_project(client, session, sender):
     assert client.get(f"/page-image/{other_doc.id}/1").status_code == 404
 
 
+def test_processing_operations_uses_the_verified_session_and_project_scope(
+    client, session, sender
+):
+    home = make_project(session, slug="operations-home", name="Operations Home")
+    other = make_project(session, slug="operations-other", name="Operations Other")
+    enroll(
+        session,
+        home,
+        "local:operator",
+        "operator@example.test",
+        [access.TECHNICAL_OPERATIONS],
+    )
+    sign_in(client, sender, "operator@example.test")
+
+    assert client.get(f"/operations/{home.slug}").status_code == 200
+    # A guessed slug remains indistinguishable from a project that does not
+    # exist; the session's valid principal grants no cross-project read.
+    assert client.get(f"/operations/{other.slug}").status_code == 404
+
+
 def test_a_member_can_read_their_own_source_image(client, session, sender):
     project = make_project(session)
     document = _document(session, project)
