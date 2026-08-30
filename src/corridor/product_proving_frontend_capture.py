@@ -277,6 +277,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "POST",
         frozenset({303}),
     ),
+    "clarify_documentation_review": (
+        "/dependencies/{dependency_id}/documentation/clarify",
+        "POST",
+        frozenset({303}),
+    ),
     "keep_unresolved_candidate": (
         "/candidates/{candidate_id}/keep-unresolved",
         "POST",
