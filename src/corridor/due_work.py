@@ -30,8 +30,12 @@ from corridor.models import (
     DueWorkSchedule,
     ExtractionRun,
     Project,
+    ProjectRosterEntry,
 )
-from corridor.notifications import ASSIGNMENT_NOTIFICATION_HANDLER
+from corridor.notifications import (
+    ASSIGNMENT_NOTIFICATION_HANDLER,
+    DUE_ACTION_NOTIFICATION_HANDLER,
+)
 
 
 HANDLER_PROCESSING_HEALTH = "processing_health"
@@ -42,6 +46,10 @@ HANDLER_LOCATION_DISCOVERY = "location_discovery"
 # (#351). The delivery logic and this key live in ``corridor.notifications``;
 # the runtime depends on that module, never the reverse.
 HANDLER_ASSIGNMENT_NOTIFICATION = ASSIGNMENT_NOTIFICATION_HANDLER
+# Derive and deliver the due-action categories — soon/past-due Next Action
+# reminders, urgent-overdue escalation, and daily summaries — through this same
+# runtime (#352). Same ownership rule as the assignment handler above.
+HANDLER_DUE_ACTION_NOTIFICATION = DUE_ACTION_NOTIFICATION_HANDLER
 HANDLER_EVENT_ADMISSION_REPROOF = "event_admission_reproof"
 HANDLER_EVIDENCE_OUTCOME_CAPTURE = "evidence_outcome_capture"
 # Retain a weekly Coordination Report reading and prepare its external PDF. The
@@ -51,6 +59,7 @@ HANDLER_REPORT_PUBLICATION = "report_publication"
 # The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
 # notification schedule must declare a positive request budget within this.
 _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
+_DUE_ACTION_NOTIFICATION_BUDGET_CEILING = 10_000
 # The upper safety ceiling for a declared model spend. A processing schedule
 # must declare a positive budget (never a silent zero); it may not exceed this.
 _PROJECT_PROCESSING_TOKEN_CEILING = 100_000_000
@@ -372,6 +381,81 @@ class AssignmentNotificationDeclaration:
             project_id=project_id,
             configuration_version=configuration_version,
             channel=channel,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=300,
+            deadline_seconds=120,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=notification_budget,
+        )
+
+
+@dataclass(frozen=True)
+class DueActionNotificationDeclaration:
+    """One validated gate-7 declaration that enables due-action delivery (#352).
+
+    This extends the assignment-notification declaration to the three derived
+    categories.  Beyond project/channel scope, cadence, timezone and date
+    boundary, retry, missed-run and retention, it declares the parameters the
+    derivation cannot invent: the ``urgent_overdue_days`` criterion for
+    escalation, the single ``escalation_roster_entry_id`` contact (``None`` leaves
+    escalation disabled and visible — never a substitute contact or an invented
+    urgency rule), and the daily-summary window (``summary_hour_utc`` and
+    ``summary_window_days``).  Like the assignment handler it reads no model, so
+    ``model_token_budget`` must be a declared zero and it declares a positive
+    ``notification_budget``.  Missing or invalid configuration leaves delivery
+    refused and disabled; a recipient still resolves only through the verified
+    contact for the accountable roster identity.
+    """
+
+    project_id: int
+    configuration_version: str
+    channel: str
+    urgent_overdue_days: int
+    escalation_roster_entry_id: int | None
+    summary_hour_utc: int
+    summary_window_days: int
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        urgent_overdue_days: int = 3,
+        escalation_roster_entry_id: int | None = None,
+        summary_hour_utc: int = 13,
+        summary_window_days: int = 1,
+        channel: str = "email",
+        notification_budget: int = 500,
+    ) -> "DueActionNotificationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            channel=channel,
+            urgent_overdue_days=urgent_overdue_days,
+            escalation_roster_entry_id=escalation_roster_entry_id,
+            summary_hour_utc=summary_hour_utc,
+            summary_window_days=summary_window_days,
             starts_at=starts_at,
             cadence="hourly",
             timezone_name="UTC",
@@ -879,6 +963,76 @@ def _assignment_notification_effectful(context: EffectfulContext) -> dict[str, A
     )
 
 
+def _due_action_notification_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Derive and deliver a project's due-action notifications for one tick (#352).
+
+    Each claimed tick re-derives the current soon/past-due conditions for the
+    whole subject population and converges them onto durable occurrences, then
+    sweeps the queued dispatches through the adapter — committing each dispatch
+    outcome durably and holding no transaction across the provider call.  The
+    daily summary is registered only on the one declared summary hour, keyed to
+    its exposed window, so a late or repeated tick neither backfills a missed day
+    nor replays history.  It reads no model, and the adapter defaults to a
+    non-sending capture so completing the code enables no real delivery.
+    """
+
+    from corridor import notifications
+
+    with context.session_factory() as reading:
+        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
+        if schedule is None:
+            raise DueWorkRefusal("Due Work schedule disappeared")
+        project_id = schedule.project_id
+        configuration_version = schedule.configuration_version
+        scope = dict(schedule.scope_json)
+        channel = scope.get("channel", "")
+        urgent_overdue_days = scope.get("urgent_overdue_days")
+        escalation_roster_entry_id = scope.get("escalation_roster_entry_id")
+        summary_hour_utc = scope.get("summary_hour_utc")
+        summary_window_days = scope.get("summary_window_days")
+        max_attempts = schedule.max_attempts
+        backoff_seconds = schedule.backoff_seconds
+        budget = schedule.notification_budget
+
+    now = _aware_utc(context.clock.now())
+    today = now.date()
+    register_summary = now.hour == summary_hour_utc
+    summary_window_end = today
+    summary_window_start = today - timedelta(days=summary_window_days - 1)
+
+    with context.session_factory() as registering:
+        with registering.begin():
+            notifications.register_due_action_notifications(
+                registering,
+                project_id=project_id,
+                configuration_version=configuration_version,
+                today=today,
+                urgent_overdue_days=urgent_overdue_days,
+                escalation_roster_entry_id=escalation_roster_entry_id,
+                channel=channel,
+                owner=context.claim.runtime_owner,
+                register_summary=register_summary,
+                summary_window_start=summary_window_start,
+                summary_window_end=summary_window_end,
+            )
+
+    adapter = notifications.resolve_delivery_adapter(channel)
+    return notifications.deliver_project_due_action_notifications(
+        context.session_factory,
+        project_id=project_id,
+        configuration_version=configuration_version,
+        channel=channel,
+        adapter=adapter,
+        clock=context.clock,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        budget=budget,
+        urgent_overdue_days=urgent_overdue_days,
+        escalation_roster_entry_id=escalation_roster_entry_id,
+        owner=context.claim.runtime_owner,
+    )
+
+
 def _event_admission_reproof_effectful(context: EffectfulContext) -> dict[str, Any]:
     """Run one bounded stale-class re-proof for a claimed occurrence.
 
@@ -988,6 +1142,15 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             model_token_budget=0,
             notification_budget=_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING,
             run_effectful=_assignment_notification_effectful,
+        ),
+        HANDLER_DUE_ACTION_NOTIFICATION: HandlerContract(
+            key=HANDLER_DUE_ACTION_NOTIFICATION,
+            scope_kind="one_project_due_action_notifications",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=_DUE_ACTION_NOTIFICATION_BUDGET_CEILING,
+            run_effectful=_due_action_notification_effectful,
         ),
         HANDLER_EVENT_ADMISSION_REPROOF: HandlerContract(
             key=HANDLER_EVENT_ADMISSION_REPROOF,
@@ -1413,6 +1576,101 @@ def configure_assignment_notification(
             "project_id": declaration.project_id,
             "channel": declaration.channel,
         },
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
+def configure_due_action_notification(
+    session: Session,
+    declaration: DueActionNotificationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 due-action-notification declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written, so nothing is derived or delivered until an authorized operator
+    records this gate-7 scope.  A declared escalation contact must be an active
+    roster identity of this project; leaving it unset is valid and leaves
+    escalation visibly disabled.  Enabling a new configuration disables the
+    project's prior due-action schedule while retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_due_action_notification_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    if declaration.escalation_roster_entry_id is not None:
+        roster = session.get(
+            ProjectRosterEntry, declaration.escalation_roster_entry_id
+        )
+        if (
+            roster is None
+            or roster.project_id != declaration.project_id
+            or not roster.active
+        ):
+            raise DueWorkRefusal(
+                "the escalation contact must be an active project roster identity"
+            )
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_DUE_ACTION_NOTIFICATION,
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_DUE_ACTION_NOTIFICATION,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_DUE_ACTION_NOTIFICATION,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_DUE_ACTION_NOTIFICATION,
+        configuration_version=declaration.configuration_version,
+        scope_json=configuration["scope"],
         configuration_json=configuration,
         configuration_sha256=configuration_sha256,
         input_identity_sha256=input_identity_sha256,
@@ -2529,6 +2787,132 @@ def _validated_assignment_notification_declaration(
     }
 
 
+def _validated_due_action_notification_declaration(
+    declaration: DueActionNotificationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal(
+            "due-action-notification starts_at must align to a UTC hour"
+        )
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if declaration.channel != "email":
+        raise DueWorkRefusal(
+            "due-action-notification supports only the email channel in this slice"
+        )
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "due-action-notification supports only hourly UTC latest-only scheduling"
+        )
+    # The urgent-overdue criterion and the daily-summary window must be declared
+    # explicitly and in range; a silent or out-of-range value refuses rather than
+    # inventing an urgency rule or a window.
+    if not 1 <= declaration.urgent_overdue_days <= 3650:
+        raise DueWorkRefusal(
+            "due-action-notification urgent-overdue threshold is invalid"
+        )
+    if (
+        isinstance(declaration.escalation_roster_entry_id, bool)
+        or (
+            declaration.escalation_roster_entry_id is not None
+            and (
+                not isinstance(declaration.escalation_roster_entry_id, int)
+                or declaration.escalation_roster_entry_id <= 0
+            )
+        )
+    ):
+        raise DueWorkRefusal(
+            "due-action-notification escalation contact mapping is invalid"
+        )
+    if not 0 <= declaration.summary_hour_utc <= 23:
+        raise DueWorkRefusal(
+            "due-action-notification daily-summary hour is invalid"
+        )
+    if not 1 <= declaration.summary_window_days <= 365:
+        raise DueWorkRefusal(
+            "due-action-notification daily-summary window is invalid"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 1 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and 1
+        <= declaration.notification_budget
+        <= _DUE_ACTION_NOTIFICATION_BUDGET_CEILING
+    ):
+        raise DueWorkRefusal(
+            "due-action-notification gate-7 resource declaration is invalid"
+        )
+    escalation_contact = (
+        "one_configured_roster_identity"
+        if declaration.escalation_roster_entry_id is not None
+        else "disabled"
+    )
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_DUE_ACTION_NOTIFICATION,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+            "urgent_overdue_days": declaration.urgent_overdue_days,
+            "escalation_roster_entry_id": declaration.escalation_roster_entry_id,
+            "summary_hour_utc": declaration.summary_hour_utc,
+            "summary_window_days": declaration.summary_window_days,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "project_due_action_notifications-v1",
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
+        # The recipient/contact mapping this delivery is authorized to use. A
+        # reminder recipient resolves only through the verified contact for the
+        # accountable roster identity; escalation uses the one declared contact.
+        "recipient_contact_source": "verified_person_identity-v1",
+        "urgent_overdue": {
+            "criterion": "action_overdue_days",
+            "threshold_days": declaration.urgent_overdue_days,
+            "escalation_contact": escalation_contact,
+        },
+        "daily_summary": {
+            "cadence": "daily",
+            "hour_utc": declaration.summary_hour_utc,
+            "window_days": declaration.summary_window_days,
+        },
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _validated_event_admission_reproof_declaration(
     declaration: EventAdmissionReproofDeclaration,
 ) -> dict[str, Any]:
@@ -2930,6 +3314,42 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
             "project_id": schedule.project_id,
             "channel": channel,
         }
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "channel": channel,
+            }
+        )
+    elif schedule.handler_key == HANDLER_DUE_ACTION_NOTIFICATION:
+        scope_json = schedule.scope_json
+        channel = scope_json.get("channel", "")
+        expected_config = _validated_due_action_notification_declaration(
+            DueActionNotificationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                channel=channel,
+                urgent_overdue_days=scope_json.get("urgent_overdue_days", 0),
+                escalation_roster_entry_id=scope_json.get(
+                    "escalation_roster_entry_id"
+                ),
+                summary_hour_utc=scope_json.get("summary_hour_utc", -1),
+                summary_window_days=scope_json.get("summary_window_days", 0),
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = expected_config["scope"]
         expected_input_identity = _sha256(
             {
                 "handler": schedule.handler_key,

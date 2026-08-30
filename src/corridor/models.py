@@ -5974,3 +5974,230 @@ class AssignmentNotificationFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class DueActionNotification(Base):
+    """One immutable due-action notification occurrence (#352, ADR-0032/0038).
+
+    This extends the #351 new-assignment occurrence to the three derived
+    categories of ADR-0034 decisions 39/48: a soon-due or past-due Next Action
+    reminder (``next_action_due``), an urgent-overdue escalation
+    (``next_action_escalation``), and a non-interrupting per-recipient daily
+    summary (``daily_summary``).  Unlike a new assignment, these conditions are
+    *derived* on each supervised tick from the subject's current authoritative
+    plan and the applicable existing check semantics, so the occurrence binds the
+    exact subject, current Next Action Work Decision identity, applicable
+    check/configuration identity, observation window, urgency band, and typed
+    recipient role.  The ``occurrence_key`` fingerprint deliberately excludes the
+    poll time, so an unchanged condition converges on one row rather than
+    becoming a new event on every poll; a genuinely new condition (a new plan
+    decision, a soon->overdue crossing, a new check configuration, or a new
+    summary window) is a new occurrence.  A daily summary carries no subject.
+    """
+
+    __tablename__ = "due_action_notifications"
+    __table_args__ = (
+        UniqueConstraint("occurrence_key", name="uq_due_action_notification_key"),
+        CheckConstraint(
+            "category in "
+            "('next_action_due', 'next_action_escalation', 'daily_summary')",
+            name="ck_due_action_notification_category",
+        ),
+        CheckConstraint(
+            "recipient_role in ('assignee', 'escalation', 'summary')",
+            name="ck_due_action_notification_role",
+        ),
+        CheckConstraint(
+            "urgency is null or urgency in ('soon', 'overdue', 'urgent_overdue')",
+            name="ck_due_action_notification_urgency",
+        ),
+        # The one shape rule that couples category to its bound fields.  A daily
+        # summary names a recipient and a window but no subject, plan, urgency or
+        # due date; a reminder or escalation names exactly one subject, its
+        # current Next Action decision, and an urgency band.
+        CheckConstraint(
+            "("
+            "category = 'daily_summary' and subject_kind is null "
+            "and dependency_id is null and commitment_lineage_id is null "
+            "and plan_decision_id is null and urgency is null "
+            "and action_due_date is null and recipient_role = 'summary' "
+            "and observation_start is not null and observation_end is not null"
+            ") or ("
+            "category in ('next_action_due', 'next_action_escalation') "
+            "and subject_kind in ('constraint', 'statement') "
+            "and plan_decision_id is not null and urgency is not null "
+            "and recipient_role in ('assignee', 'escalation') "
+            "and ("
+            "(subject_kind = 'constraint' and dependency_id is not null "
+            "and commitment_lineage_id is null) or "
+            "(subject_kind = 'statement' and commitment_lineage_id is not null "
+            "and dependency_id is null)"
+            ")"
+            ")",
+            name="ck_due_action_notification_shape",
+        ),
+        CheckConstraint(
+            "occurrence_key ~ '^[0-9a-f]{64}$'",
+            name="ck_due_action_notification_key_hex",
+        ),
+        CheckConstraint(
+            "length(trim(registered_by)) > 0",
+            name="ck_due_action_notification_actor",
+        ),
+        CheckConstraint(
+            "length(trim(recipient_principal_subject)) > 0",
+            name="ck_due_action_notification_recipient",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    subject_kind: Mapped[str | None] = mapped_column(String(16))
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    commitment_lineage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("commitment_lineages.id")
+    )
+    # The current Next Action Work Decision the finding was derived against — the
+    # plan identity that makes an unchanged condition converge and a changed plan
+    # a new occurrence (ADR-0038's independent Next Action chain tail).
+    plan_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id")
+    )
+    urgency: Mapped[str | None] = mapped_column(String(16))
+    action_due_date: Mapped[date | None] = mapped_column(Date)
+    # The applicable check/configuration identity (ruleset version and the
+    # effective threshold configuration) the finding was derived under.
+    check_identity: Mapped[str | None] = mapped_column(String(128))
+    # The observation window the occurrence covers.  For a reminder or escalation
+    # it is the single observation date; for a daily summary it is the exposed
+    # window the digest rolls up.
+    observation_start: Mapped[date | None] = mapped_column(Date)
+    observation_end: Mapped[date | None] = mapped_column(Date)
+    # The frozen, non-interrupting digest a daily summary exposes: its window and
+    # the eligible bounded counts for the recipient, never a replay of history.
+    # Null for a subject-bound reminder or escalation.
+    summary_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    recipient_role: Mapped[str] = mapped_column(String(16))
+    recipient_roster_entry_id: Mapped[int] = mapped_column(
+        ForeignKey("project_roster_entries.id")
+    )
+    recipient_principal_subject: Mapped[str] = mapped_column(String(128))
+    configuration_version: Mapped[str] = mapped_column(String(64))
+    occurrence_key: Mapped[str] = mapped_column(String(64))
+    registered_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DueActionNotificationDispatch(Base):
+    """Mutable delivery standing for one due-action occurrence (#352).
+
+    Identical delivery machinery to the #351 assignment dispatch: the occurrence
+    is immutable and this row carries the queued / completed / retry-due / failed
+    / uncertain state, the resolved verified contact (or a visible delivery
+    limitation), retained provider evidence, and bounded retry state.  Its
+    identity is immutable; only the delivery standing changes.
+    """
+
+    __tablename__ = "due_action_notification_dispatches"
+    __table_args__ = (
+        UniqueConstraint(
+            "notification_id", name="uq_due_action_dispatch_notification"
+        ),
+        CheckConstraint("channel = 'email'", name="ck_due_action_dispatch_channel"),
+        CheckConstraint(
+            "delivery_state in "
+            "('queued', 'completed', 'retry_due', 'failed', 'uncertain')",
+            name="ck_due_action_dispatch_state",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0", name="ck_due_action_dispatch_attempt_count"
+        ),
+        CheckConstraint(
+            "(delivery_state = 'retry_due' and next_attempt_at is not null) or "
+            "(delivery_state <> 'retry_due' and next_attempt_at is null)",
+            name="ck_due_action_dispatch_retry_shape",
+        ),
+        CheckConstraint(
+            "idempotency_key ~ '^[0-9a-f]{64}$'",
+            name="ck_due_action_dispatch_idempotency_hex",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    notification_id: Mapped[int] = mapped_column(
+        ForeignKey("due_action_notifications.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(16))
+    delivery_state: Mapped[str] = mapped_column(String(16))
+    recipient_contact: Mapped[str | None] = mapped_column(Text)
+    delivery_limitation: Mapped[str | None] = mapped_column(String(64))
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    provider_message_id: Mapped[str | None] = mapped_column(String(200))
+    provider_result_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DueActionNotificationAttempt(Base):
+    """Append-only record of one due-action delivery attempt (#352, ADR-0032).
+
+    Every sweep of a dispatch appends one row: what was attempted, the retained
+    provider result and idempotency evidence, and the explicit outcome —
+    including an ``uncertain`` outcome when an acknowledgment is unavailable and a
+    ``skipped`` outcome when the re-derived condition is no longer current (the
+    action completed, was cancelled or deferred, the plan changed, membership was
+    revoked, or a typed contact could not be resolved).  Nothing here is mutated.
+    """
+
+    __tablename__ = "due_action_notification_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "dispatch_id", "attempt_number", name="uq_due_action_attempt_number"
+        ),
+        CheckConstraint(
+            "outcome in "
+            "('completed', 'retry_due', 'failed', 'uncertain', 'skipped')",
+            name="ck_due_action_attempt_outcome",
+        ),
+        CheckConstraint(
+            "attempt_number > 0", name="ck_due_action_attempt_positive"
+        ),
+        CheckConstraint(
+            "length(trim(runtime_owner)) > 0",
+            name="ck_due_action_attempt_owner",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True)
+    dispatch_id: Mapped[int] = mapped_column(
+        ForeignKey("due_action_notification_dispatches.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(24))
+    recipient_contact: Mapped[str | None] = mapped_column(Text)
+    delivery_limitation: Mapped[str | None] = mapped_column(String(64))
+    provider_message_id: Mapped[str | None] = mapped_column(String(200))
+    provider_result_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    runtime_owner: Mapped[str] = mapped_column(String(128))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
