@@ -51,6 +51,7 @@ from corridor.models import (
     DocPage,
     Document,
     EvidenceLink,
+    ExternalOrg,
     ExtractionRun,
     OperativeSupport,
     Project,
@@ -656,6 +657,7 @@ def run_controlled_lane(
                 edited,
                 principal=_SIMULATED_PRINCIPAL,
             )
+        _establish_controlled_org(session, predecessor_candidate)
         dependency = accept_candidate(
             session,
             predecessor_candidate,
@@ -1490,6 +1492,28 @@ def _controlled_candidate(
     )
 
 
+def _establish_controlled_org(session: Session, candidate: Candidate) -> None:
+    """Register the External Organization a controlled candidate names.
+
+    The controlled corpus authors deterministic, non-placeholder organizations
+    ("Controlled Utility NNN", "Controlled Drift Utility", ...).  ADR-0051 ended
+    silent minting, so adjudication resolves a stated party only against a
+    registered organization; the harness establishes each corpus organization in
+    the registry before acceptance.  Get-or-create keeps it idempotent: a name
+    recurs across a lane's predecessor/successor rows and across lanes that share
+    a database.
+    """
+
+    payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    name = str(fields.get("external_org") or "").strip()
+    if not name:
+        return
+    if session.scalar(select(ExternalOrg).where(ExternalOrg.name == name)) is None:
+        session.add(ExternalOrg(name=name, org_type="utility", aliases=[]))
+        session.flush()
+
+
 def _create_controlled_successor(
     session: Session,
     project: Project,
@@ -1882,6 +1906,7 @@ def _exercise_policy_drift(session: Session) -> dict[str, Any]:
         predecessor_run.id,
         principal=_SIMULATED_PRINCIPAL,
     )
+    _establish_controlled_org(session, predecessor_candidate)
     dependency = accept_candidate(
         session,
         predecessor_candidate,
