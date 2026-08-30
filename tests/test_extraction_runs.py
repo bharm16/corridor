@@ -17,6 +17,7 @@ from corridor.models import (
     ExtractionRun,
     Project,
 )
+from corridor.record_inclusion import record_inclusion_pending
 
 extraction_runs = __import__("corridor.extraction_runs", fromlist=["*"])
 
@@ -915,6 +916,24 @@ def test_redeclaring_the_same_run_does_not_duplicate_history(session, project):
     ).all()
     assert len(declarations) == 1
     assert declarations[0].declared_by == DECLARER.subject
+
+
+def test_declaring_a_new_active_run_leaves_record_inclusion_pending(session, project):
+    """The newly operative candidates reach the durable load handoff."""
+    doc = add_matrix(session, project, "handoff.pdf", "9" * 64)
+    run = _completed_run(session, doc, "handoff")
+    # Simulate the prior completed-run handoff having already drained before a
+    # person chooses which of several readings is current.
+    from corridor.models import RecordInclusionRequest
+
+    pending = session.get(RecordInclusionRequest, project.id)
+    assert pending is not None
+    pending.reconciled_seq = pending.dirty_seq
+    session.flush()
+
+    extraction_runs.declare_active_run(session, doc.id, run.id, principal=DECLARER)
+
+    assert record_inclusion_pending(session, project.id) is True
 
 
 def test_the_current_declaration_is_the_chain_tail_not_an_id_order(
