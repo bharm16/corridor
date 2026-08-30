@@ -8,7 +8,7 @@ here reads only.
 """
 
 import hashlib
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 
 import pytest
@@ -260,8 +260,9 @@ def test_internal_entry_shows_current_facts_and_is_marked_internal(
     # Clearly not an external release, and it explains it advances no baseline.
     assert "not an approved external release" in body.lower()
     assert "ADR-0040" in body and "ADR-0053" in body
-    # The Evaluation date and ruleset are shown.
-    assert date.today().isoformat() in body
+    # The Evaluation date and ruleset are shown. build_report evaluates at the
+    # UTC date (report.py), so the expected date is UTC, not the local day.
+    assert datetime.now(timezone.utc).date().isoformat() in body
     assert "ruleset v0.4" in body
     # No approval control on the internal entry.
     assert "Prepare fixed PDF" not in body
@@ -329,11 +330,13 @@ def test_every_surface_reads_one_coherent_bound_reading(client, session, project
     covered = 3  # one overdue + two bare
 
     # Same evaluation date, ruleset, population across the view and the export.
-    assert meta["Evaluated on"] == date.today().isoformat()
+    # build_report evaluates at the UTC date (report.py), so expect UTC here.
+    evaluated_on = datetime.now(timezone.utc).date().isoformat()
+    assert meta["Evaluated on"] == evaluated_on
     assert meta["Ruleset version"] == "v0.4"
     assert meta["Records"] == covered
-    assert date.today().isoformat() in landing
-    assert date.today().isoformat() in alerts
+    assert evaluated_on in landing
+    assert evaluated_on in alerts
     assert "Covered constraints" in landing
     assert f"<dd>{covered}</dd>" in landing
 
