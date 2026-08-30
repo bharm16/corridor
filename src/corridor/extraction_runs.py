@@ -33,6 +33,7 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 from corridor.record_inclusion import request_record_inclusion
+from corridor.revision_reconciliation_request import request_revision_reconciliation
 from corridor.row_accounting import validate_row_accounting
 
 
@@ -402,6 +403,11 @@ def _declare(
             .values(extraction_run_id=extraction_run_id, declared_at=func.now())
         )
         session.expire(current)
+    # A changed Current Production Run changes which exact runs a revision pair
+    # compares, so it is a revision pair to reconsider. Bumping the durable
+    # watermark in this same transaction reaches reconciliation on commit and
+    # leaves nothing on rollback (#343).
+    request_revision_reconciliation(session, project_id, "active_run_declared")
     return run
 
 
