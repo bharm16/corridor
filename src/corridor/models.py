@@ -274,6 +274,170 @@ class Project(Base):
     )
 
 
+class IntakeProjectIdentifier(Base):
+    """One exact registered routing identifier for the shared intake address.
+
+    A project name is deliberately absent: names are presentation text, never a
+    routing key.  A caller records the agency-issued identifier (for example a
+    CSJ or contract number) and the router only compares its normalized exact
+    value.
+    """
+
+    __tablename__ = "intake_project_identifiers"
+    __table_args__ = (
+        UniqueConstraint("kind", "value_normalized", "project_id"),
+        CheckConstraint("length(trim(kind)) > 0", name="ck_intake_identifier_kind"),
+        CheckConstraint(
+            "length(trim(value_normalized)) > 0", name="ck_intake_identifier_value"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(48))
+    value_normalized: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundThread(Base):
+    """One header-connected conversation, never reconstructed by content."""
+
+    __tablename__ = "inbound_threads"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # Null is the honest unresolved state.  A triage answer fills this once;
+    # reply inheritance reads it but never guesses it.
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    # Binding to a Constraint is reserved for the exact matcher.  Email intake
+    # records the durable provenance seam without inferring a relationship.
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    bound_by_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inbound_messages.id", use_alter=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundMessage(Base):
+    """An immutable raw inbound email and the deterministic route it received."""
+
+    __tablename__ = "inbound_messages"
+    __table_args__ = (
+        UniqueConstraint("raw_sha256"),
+        UniqueConstraint("message_id", name="uq_inbound_message_message_id"),
+        CheckConstraint(
+            "raw_sha256 ~ '^[0-9a-f]{64}$'", name="ck_inbound_message_sha256"
+        ),
+        CheckConstraint(
+            "route_status in ('routed', 'triage')", name="ck_inbound_message_route"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    raw_sha256: Mapped[str] = mapped_column(String(64))
+    storage_path: Mapped[str] = mapped_column(Text)
+    message_id: Mapped[str | None] = mapped_column(Text)
+    sender: Mapped[str | None] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    headers_json: Mapped[dict] = mapped_column(JSONB)
+    body_text: Mapped[str] = mapped_column(Text)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("inbound_threads.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    route_status: Mapped[str] = mapped_column(String(16))
+    route_evidence_json: Mapped[dict] = mapped_column(JSONB)
+    # Filled when the routed message registers as a prose source Document.
+    # A triaged message stays unregistered until its thread routes; the raw
+    # bytes at storage_path are the crash-safe original either way.
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    # Per-attachment registration receipts: filename, sha256, and either the
+    # registered document id or the exact shared-intake refusal reason.
+    attachments_json: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundThreadReading(Base):
+    """The one durable outcome of reading a bound thread's conversation arc.
+
+    ADR-0062: a concluded conversation proposes exactly one claim (a pending
+    Candidate under ordinary admission, cited to the closing turn); an
+    unresolved conversation proposes zero claims and one open question in the
+    thread's own words.  One row per thread reading attempt over a fixed last
+    turn, so re-reading an unchanged thread is idempotent and a longer thread
+    reads again.
+    """
+
+    __tablename__ = "inbound_thread_readings"
+    __table_args__ = (
+        UniqueConstraint("thread_id", "closing_message_id"),
+        CheckConstraint(
+            "resolution in ('concluded', 'unresolved')",
+            name="ck_inbound_thread_reading_resolution",
+        ),
+        CheckConstraint(
+            "(resolution = 'concluded') = (candidate_id is not null)",
+            name="ck_inbound_thread_reading_claim",
+        ),
+        CheckConstraint(
+            "(resolution = 'unresolved') = (open_question is not null)",
+            name="ck_inbound_thread_reading_question",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(
+        ForeignKey("inbound_threads.id"), index=True
+    )
+    closing_message_id: Mapped[int] = mapped_column(ForeignKey("inbound_messages.id"))
+    resolution: Mapped[str] = mapped_column(String(16))
+    # The one proposed claim of a concluded conversation — a pending Candidate
+    # that enters the record only through ordinary admission.
+    candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidates.id"))
+    # The one open question of an unresolved conversation, in the thread's own
+    # words, on the standing owner's list for the bound row.
+    open_question: Mapped[str | None] = mapped_column(Text)
+    turn_context_json: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    prompt_version: Mapped[str | None] = mapped_column(String(64))
+    model: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundRouteTriage(Base):
+    """The one human routing residue for an ambiguous or blank thread."""
+
+    __tablename__ = "inbound_route_triage"
+    __table_args__ = (
+        UniqueConstraint("thread_id"),
+        CheckConstraint(
+            "state in ('pending', 'resolved')", name="ck_inbound_route_triage_state"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("inbound_threads.id"))
+    candidate_project_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), default=list, server_default="{}"
+    )
+    state: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    resolved_project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    resolved_by: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 # The three families that write records or move support under an
 # authorized policy (ADRs 0022, 0026, 0027). ADR-0028 joined their
 # approval and run tables — the shapes were identical, and copies drift —
