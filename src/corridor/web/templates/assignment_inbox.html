@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>My assignments — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#9a4d00; --ok:#067647; --bad:#b42318; }
+  * { box-sizing:border-box; } body { margin:0; color:#111; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:60rem; margin:2rem auto; padding:0 1.2rem 3rem; } h1 { margin:0 0 .3rem; font-size:1.55rem; }
+  .muted { color:var(--muted); } .notice { color:var(--ok); background:#f0fbf4; padding:.6rem .8rem; border-radius:5px; }
+  table { border-collapse:collapse; width:100%; margin-top:1rem; }
+  th,td { text-align:left; border-bottom:1px solid #eee; padding:.5rem; vertical-align:top; }
+  th { color:var(--muted); font-size:.82rem; }
+  .state { font-weight:600; } .limitation { color:var(--warn); font-size:.85rem; }
+  .flagged { color:var(--bad); font-weight:600; font-size:.85rem; }
+  form.flag { display:flex; gap:.4rem; margin:0; } form.flag input { font:inherit; padding:.3rem; }
+  button { font:inherit; padding:.35rem .7rem; }
+</style>
+<header><b>{{ project.name }}</b><span><a href="/work/{{ project.slug }}">Coordination work</a></span></header>
+<main>
+  <h1>My assignments</h1>
+  <p class="muted">New work assigned to you in this project, and whether the notification reached you.</p>
+  {% if notice == "flagged" %}<p class="notice">Thanks — a coordinator will review this assignment. It has not changed.</p>{% endif %}
+  {% if not items %}
+    <p class="muted">You have no assignment notifications in this project.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Assignment</th><th>Delivery</th><th>Looks wrong?</th></tr></thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td>{{ item.subject_label }}</td>
+        <td>
+          <span class="state">{{ item.delivery_status }}</span>
+          {% if item.delivery_limitation %}<div class="limitation">{{ item.delivery_limitation }}</div>{% endif %}
+        </td>
+        <td>
+          {% if item.flagged_incorrect %}
+            <span class="flagged">Flagged for review</span>
+          {% else %}
+            <form class="flag" method="post"
+                  action="/assignments/{{ project.slug }}/notifications/{{ item.notification_id }}/flag-incorrect">
+              {{ csrf_field() }}
+              <input type="text" name="note" placeholder="Why (optional)" maxlength="500">
+              <button type="submit">This isn't mine</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</main>

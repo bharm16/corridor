@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Assignment delivery — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#9a4d00; --ok:#067647; --bad:#b42318; }
+  * { box-sizing:border-box; } body { margin:0; color:#111; font:15px/1.5 system-ui,sans-serif; }
+  header { display:flex; justify-content:space-between; padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:72rem; margin:2rem auto; padding:0 1.2rem 3rem; } h1 { margin:0 0 .3rem; font-size:1.55rem; }
+  .muted { color:var(--muted); }
+  .notice { color:var(--ok); background:#f0fbf4; padding:.6rem .8rem; border-radius:5px; }
+  .warning { color:var(--warn); background:#fffaeb; padding:.6rem .8rem; border-radius:5px; }
+  .counts { display:flex; gap:1rem; flex-wrap:wrap; margin:1rem 0; }
+  .counts span { border:1px solid var(--line); border-radius:6px; padding:.4rem .7rem; }
+  table { border-collapse:collapse; width:100%; margin-top:1rem; }
+  th,td { text-align:left; border-bottom:1px solid #eee; padding:.5rem; vertical-align:top; }
+  th { color:var(--muted); font-size:.82rem; } .state { font-weight:600; }
+  .limitation { color:var(--warn); font-size:.85rem; } code { overflow-wrap:anywhere; }
+</style>
+<header><b>{{ project.name }}</b><span><a href="/operations/{{ project.slug }}">Processing operations</a></span></header>
+<main>
+  <h1>Assignment notification delivery</h1>
+  {% if view.delivery_enabled %}
+    <p class="notice">Real delivery is enabled by a recorded configuration.</p>
+  {% else %}
+    <p class="warning">Delivery is disabled: no gate-7 configuration is recorded, so notifications stay queued.</p>
+  {% endif %}
+  <div class="counts">
+    <span>Queued: {{ view.counts.queued }}</span>
+    <span>Delivered: {{ view.counts.completed }}</span>
+    <span>Retry due: {{ view.counts.retry_due }}</span>
+    <span>Failed: {{ view.counts.failed }}</span>
+    <span>Uncertain: {{ view.counts.uncertain }}</span>
+  </div>
+  {% if not view.deliveries %}
+    <p class="muted">No assignment notifications have been registered in this project.</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Subject</th><th>Recipient</th><th>State</th><th>Attempts</th><th>Last error</th></tr></thead>
+    <tbody>
+      {% for delivery in view.deliveries %}
+      <tr>
+        <td>{{ delivery.subject_label }}</td>
+        <td><code>{{ delivery.recipient }}</code></td>
+        <td>
+          <span class="state">{{ delivery.delivery_status }}</span>
+          {% if delivery.delivery_limitation %}<div class="limitation">{{ delivery.delivery_limitation }}</div>{% endif %}
+        </td>
+        <td>{{ delivery.attempt_count }}</td>
+        <td>{% if delivery.last_error_code %}<code>{{ delivery.last_error_code }}</code>{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</main>

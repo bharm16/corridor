@@ -151,6 +151,9 @@ carry-forward:
 # One supervised runtime owns production schedules and recovery. Configure every
 # gate-7 field explicitly, then run the supervisor separately from the web app:
 #   make due-work ARGS="configure-health <project-slug> --configuration-version=processing-health-v1 --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=60 --claim-ttl-seconds=300 --deadline-seconds=120 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
+# New-assignment notification delivery is gate-7 too: nothing is delivered until an
+# authorized operator records this, and completing the code enables no real sends.
+#   make due-work ARGS="configure-notifications <project-slug> --configuration-version=assignment-notification-v1 --channel=email --starts-at=2026-08-29T07:00:00+00:00 --cadence=hourly --timezone=UTC --missed-run-policy=latest_only --retention-days=3650 --max-attempts=3 --backoff-seconds=60 --claim-ttl-seconds=300 --deadline-seconds=120 --concurrency-limit=1 --model-token-budget=0 --notification-budget=500"
 #   make due-work ARGS="supervise --owner=runtime:<worker-id> --poll-seconds=5"
 # Bounded operational commands use the same durable interfaces:
 #   make due-work ARGS="run-once --owner=runtime:<worker-id>"
