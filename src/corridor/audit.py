@@ -99,6 +99,8 @@ RECORD_VERBAL = "record_verbal"
 DISMISS_DEPENDENCY = "dismiss_dependency"
 COORDINATE_STATEMENT = "coordinate_statement"
 UNDO_COORDINATED_STATEMENT = "undo_coordinated_statement"
+SAVE_FOLLOW_UP_PLAN = "save_follow_up_plan"
+UNDO_FOLLOW_UP_PLAN = "undo_follow_up_plan"
 CORRECT_STATEMENT_SCOPE = "correct_statement_scope"
 CORRECT_STATEMENT_FACTS = "correct_statement_facts"
 MARK_STATEMENT_NOT_RELEVANT = "mark_statement_not_relevant"
@@ -166,6 +168,8 @@ ACTIONS = frozenset(
         DISMISS_DEPENDENCY,
         COORDINATE_STATEMENT,
         UNDO_COORDINATED_STATEMENT,
+        SAVE_FOLLOW_UP_PLAN,
+        UNDO_FOLLOW_UP_PLAN,
         CORRECT_STATEMENT_SCOPE,
         CORRECT_STATEMENT_FACTS,
         MARK_STATEMENT_NOT_RELEVANT,
@@ -368,6 +372,26 @@ def record(
     session.add(entry)
     session.flush()
     return entry
+
+
+def references_typed_ids(value: object, referenced_ids: dict[str, set[int]]) -> bool:
+    """Whether appended audit detail names one of these exact typed ids.
+
+    Compensating commands use this to refuse an Undo after a later recorded
+    act depends on a result of the grouped Save.  The match is typed key to
+    integer id, never substring guessing, so unrelated numbers cannot block
+    a legitimate reversal.
+    """
+    if isinstance(value, dict):
+        return any(
+            key in referenced_ids
+            and isinstance(item, int)
+            and item in referenced_ids[key]
+            for key, item in value.items()
+        ) or any(references_typed_ids(item, referenced_ids) for item in value.values())
+    if isinstance(value, list):
+        return any(references_typed_ids(item, referenced_ids) for item in value)
+    return False
 
 
 def trail_for_dependency(session: Session, dependency_id: int) -> list[AuditLog]:

@@ -101,8 +101,10 @@ from corridor.models import (
     DependencyEventScopeDecision,
     DocPage,
     Document,
+    EventAdmissionOutcome,
     EvidenceLink,
     ExternalOrg,
+    FollowUpPlanReceipt,
     Milestone,
     MilestoneRegistration,
     Project,
@@ -191,13 +193,21 @@ from corridor.cohort import (
 from corridor.models import CohortReceipt, EventCohortReceipt
 from corridor.operative_support import resolve_operative_support
 from corridor.work_decisions import (
+    FOLLOW_UP_NEXT_ACTION_CHOICES,
+    UNKNOWN_DUE_DATE_REASONS,
     CoordinationSubject,
-    assign_internal_owner,
+    FollowUpPlanDraft,
+    FollowUpPlanPredecessors,
+    FollowUpPlanRefusal,
+    FollowUpPlanUndoRefusal,
+    StaleFollowUpPlan,
     cancel_next_action,
     complete_next_action,
+    current_follow_up_plan_receipt,
     current_internal_owner_decision,
     current_next_action_decision,
-    set_next_action,
+    save_follow_up_plan,
+    undo_follow_up_plan,
 )
 from corridor.supersession_review import (
     ReconfirmationUnavailable,
@@ -235,6 +245,11 @@ from corridor.statement_coordination import (
 from corridor.statement_lifecycle import (
     current_candidate_disposition,
     current_lineage_statement,
+)
+from corridor.statement_scope_match import (
+    ScopeMatchCandidate,
+    read_statement_scope_match_card,
+    scope_match_card_data,
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
 from corridor.work_list import build_work_list
@@ -1628,6 +1643,43 @@ def _statement_coordination_screen(
     )
     candidate_stated_party_id = candidate_facts.stated_party.visible_external_org_id
     candidate_timing = _candidate_statement_timing_view(candidate_facts)
+    # The narrowed-set card renders only what the matcher's own abstention
+    # receipt recorded (#370, ADR-0054).  This screen re-derives nothing: no
+    # recorded ambiguous abstention, no card, and the ordinary explicit scope
+    # choices below remain the only way to record scope.
+    scope_match_card = None
+    scope_abstention = session.scalar(
+        select(EventAdmissionOutcome)
+        .where(
+            EventAdmissionOutcome.candidate_id == candidate.id,
+            EventAdmissionOutcome.outcome == "abstained",
+        )
+        .order_by(EventAdmissionOutcome.id.desc())
+        .limit(1)
+    )
+    scope_card_data = (
+        scope_match_card_data(scope_abstention.eligibility_json)
+        if scope_abstention is not None
+        else None
+    )
+    if scope_card_data is not None:
+        scope_match_candidates = tuple(
+            ScopeMatchCandidate(
+                dependency_id=dependency.id,
+                ref_code=dependency.ref_code,
+                source_ref=dependency.source_ref,
+                title=dependency.title,
+                location=dependency.location_desc,
+                station_from=dependency.station_from,
+                station_to=dependency.station_to,
+            )
+            for dependency, _external_org_name in dependencies
+            if candidate_affected_party_id is not None
+            and dependency.external_org_id == candidate_affected_party_id
+        )
+        scope_match_card = read_statement_scope_match_card(
+            scope_card_data, scope_match_candidates
+        )
     disposition = current_candidate_disposition(session, candidate.id)
     not_relevant = (
         disposition
@@ -1670,6 +1722,7 @@ def _statement_coordination_screen(
                 candidate_evidence_available and candidate_timing["available"]
             ),
             "next_action_choices": STATEMENT_NEXT_ACTION_CHOICES,
+            "scope_match_card": scope_match_card,
             "candidate_evidence": candidate_evidence,
             "candidate_evidence_available": candidate_evidence_available,
             "candidate_evidence_unavailable_message": (
@@ -3260,6 +3313,7 @@ def queue(
                 **lane_context,
                 "rail": rail,
                 "coordinate_dependency": coordinate_dependency,
+                **_coordinate_plan_context(session, coordinate_dependency),
                 "lane_url": lane_url,
                 "summary_url": summary_url,
                 "next_coordinate_url": next_coordinate_url,
@@ -3340,6 +3394,7 @@ def queue(
                 else []
             ),
             "coordinate_dependency": coordinate_dependency,
+            **_coordinate_plan_context(session, coordinate_dependency),
             "lane_url": lane_url,
             "summary_url": summary_url,
             "next_coordinate_url": next_coordinate_url,
@@ -3493,6 +3548,21 @@ def dependency_detail(
     session: Session = Depends(get_session),
 ):
     project = _project(session, slug, principal)
+    return _dependency_detail_response(
+        request, session, project, dependency_id, return_to
+    )
+
+
+def _dependency_detail_response(
+    request: Request,
+    session: Session,
+    project: Project,
+    dependency_id: int,
+    return_to: str,
+    *,
+    plan_error: str | None = None,
+    status_code: int = 200,
+):
     try:
         view = load_dependency(session, dependency_id)
     except LookupError:
@@ -3520,6 +3590,11 @@ def dependency_detail(
             "view": view,
             "owner_decision": owner_decision,
             "action_decision": action_decision,
+            "plan_roster": _active_project_roster(session, project.id),
+            "plan_next_action_choices": FOLLOW_UP_NEXT_ACTION_CHOICES,
+            "plan_unknown_date_reasons": sorted(UNKNOWN_DUE_DATE_REASONS),
+            "plan_receipt": current_follow_up_plan_receipt(session, dependency_id),
+            "plan_error": plan_error,
             "sufficient_evidence_ids": {
                 item.evidence_link_id for item in support.readiness
             },
@@ -3532,7 +3607,39 @@ def dependency_detail(
             },
             "dismiss_reasons": DISMISS_REASONS,
         },
+        status_code=status_code,
     )
+
+
+def _coordinate_plan_context(session: Session, dependency: Dependency | None) -> dict:
+    """The roster-backed plan form context for the queue coordination strip."""
+    if dependency is None:
+        return {}
+    owner_decision = current_internal_owner_decision(session, dependency.id)
+    action_decision = current_next_action_decision(session, dependency.id)
+    return {
+        "plan_roster": _active_project_roster(session, dependency.project_id),
+        "plan_next_action_choices": FOLLOW_UP_NEXT_ACTION_CHOICES,
+        "plan_unknown_date_reasons": sorted(UNKNOWN_DUE_DATE_REASONS),
+        "coordinate_expected_internal_owner_decision_id": (
+            owner_decision.id if owner_decision else ""
+        ),
+        "coordinate_expected_next_action_decision_id": (
+            action_decision.id if action_decision else ""
+        ),
+    }
+
+
+def _active_project_roster(session: Session, project_id: int):
+    """The active project-team members a Follow-up Plan may assign."""
+    return session.scalars(
+        select(ProjectRosterEntry)
+        .where(
+            ProjectRosterEntry.project_id == project_id,
+            ProjectRosterEntry.active.is_(True),
+        )
+        .order_by(ProjectRosterEntry.display_name)
+    ).all()
 
 
 @app.post("/ledger/{slug}/{dependency_id}/verbal")
@@ -3606,47 +3713,95 @@ def settle(
     )
 
 
-@app.post("/dependencies/{dependency_id}/owner")
-def assign_owner(
+@app.post("/dependencies/{dependency_id}/plan")
+def save_dependency_follow_up_plan(
+    request: Request,
     dependency_id: int,
     slug: str = Form(...),
-    owner: str = Form(...),
+    internal_owner_roster_entry_id: str = Form(""),
+    next_action: str = Form(...),
+    action_due_date: str = Form(""),
+    action_due_date_unknown_reason: str = Form(""),
+    expected_internal_owner_decision_id: str = Form(""),
+    expected_next_action_decision_id: str = Form(""),
     redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Record a Work Decision assigning the Internal Owner (ADR-0025).
+    """One roster-backed Save for the whole Follow-up Plan (#333, ADR-0035).
 
-    One decision per submit. The rules belong to the Work Decision seam;
-    this route carries the HTTP.
+    The grouped rules — active-roster identity, structured Next Action, a
+    date or its structured unknown reason, atomicity, and the stale check —
+    belong to the Work Decision seam; this route carries the HTTP.  A stale
+    concurrent Save re-renders the newer state with nothing applied.
     """
     project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
     return_location = _safe_return(
         redirect_to, f"/ledger/{slug}/{dependency_id}"
     )
+    parsed_due_date = None
+    if action_due_date.strip():
+        try:
+            parsed_due_date = date.fromisoformat(action_due_date.strip())
+        except ValueError:
+            raise HTTPException(400, "an Action Due Date must be a date")
+    draft = FollowUpPlanDraft(
+        dependency_id=dependency_id,
+        internal_owner_roster_entry_id=_optional_form_id(
+            internal_owner_roster_entry_id
+        ),
+        next_action=next_action,
+        action_due_date=parsed_due_date,
+        action_due_date_unknown_reason=(
+            action_due_date_unknown_reason.strip() or None
+        ),
+        expected=FollowUpPlanPredecessors(
+            internal_owner_decision_id=_optional_form_id(
+                expected_internal_owner_decision_id
+            ),
+            next_action_decision_id=_optional_form_id(
+                expected_next_action_decision_id
+            ),
+        ),
+    )
     try:
-        decision = assign_internal_owner(
-            session, dependency_id, owner, principal=principal
+        result = save_follow_up_plan(session, draft, principal=principal)
+    except StaleFollowUpPlan as exc:
+        return _dependency_detail_response(
+            request,
+            session,
+            project,
+            dependency_id,
+            redirect_to,
+            plan_error=str(exc),
+            status_code=409,
         )
-    except ValueError as exc:
+    except FollowUpPlanRefusal as exc:
         raise HTTPException(400, str(exc))
     response = RedirectResponse(return_location, status_code=303)
     record_frontend_request(
         session,
         principal=principal,
-        route_name="assign_owner",
-        route_template="/dependencies/{dependency_id}/owner",
+        route_name="save_dependency_follow_up_plan",
+        route_template="/dependencies/{dependency_id}/plan",
         method="POST",
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
             dependency_id=dependency_id,
-            work_decision_id=decision.id,
+            work_decision_id=(
+                result.internal_owner_decision.id
+                if result.internal_owner_decision is not None
+                else result.next_action_decision.id
+            ),
         ),
         request_fields={
             "slug": slug,
-            "owner": owner,
+            "internal_owner_roster_entry_id": internal_owner_roster_entry_id,
+            "next_action": next_action,
+            "action_due_date": action_due_date,
+            "action_due_date_unknown_reason": action_due_date_unknown_reason,
             "redirect_to": redirect_to,
         },
     )
@@ -3654,63 +3809,41 @@ def assign_owner(
     return response
 
 
-@app.post("/dependencies/{dependency_id}/action")
-def record_next_action(
+@app.post("/dependencies/{dependency_id}/plan/undo")
+def undo_dependency_follow_up_plan(
     dependency_id: int,
     slug: str = Form(...),
-    action: str = Form(...),
-    due_date: str = Form(""),
-    due_date_unknown_reason: str = Form(""),
+    receipt_id: int = Form(...),
     redirect_to: str = Form(""),
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """One submit, one Work Decision: the action and its date together."""
+    """Append the grouped compensation for one immediately undoable plan Save."""
     project = _project(session, slug, principal, designation=access.COORDINATION)
-    _project_dependency(session, project, dependency_id)
+    dependency = _project_dependency(session, project, dependency_id)
     return_location = _safe_return(
         redirect_to, f"/ledger/{slug}/{dependency_id}"
     )
-    parsed = None
-    if due_date.strip():
-        try:
-            parsed = date.fromisoformat(due_date.strip())
-        except ValueError:
-            raise HTTPException(400, "an Action Due Date must be a date")
+    receipt = session.get(FollowUpPlanReceipt, receipt_id)
+    if receipt is None or receipt.dependency_id != dependency.id:
+        raise HTTPException(404, "no such grouped plan Save for this constraint")
     try:
-        decision = set_next_action(
-            session,
-            dependency_id,
-            action,
-            due_date=parsed,
-            due_date_unknown_reason=due_date_unknown_reason.strip() or None,
-            principal=principal,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    response = RedirectResponse(return_location, status_code=303)
-    record_frontend_request(
-        session,
-        principal=principal,
-        route_name="record_next_action",
-        route_template="/dependencies/{dependency_id}/action",
-        method="POST",
-        response=response,
-        subject=FrontendRequestSubject(
-            project_id=project.id,
-            dependency_id=dependency_id,
-            work_decision_id=decision.id,
-        ),
-        request_fields={
-            "slug": slug,
-            "action": action,
-            "due_date": due_date,
-            "due_date_unknown_reason": due_date_unknown_reason,
-            "redirect_to": redirect_to,
-        },
-    )
+        undo_follow_up_plan(session, receipt_id, principal=principal)
+    except FollowUpPlanUndoRefusal as exc:
+        raise HTTPException(409, str(exc))
     session.commit()
-    return response
+    return RedirectResponse(return_location, status_code=303)
+
+
+def _optional_form_id(value: str) -> int | None:
+    """A form's hidden identity: an integer, or None when the field is empty."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        raise HTTPException(400, "a form identity must be a whole number")
 
 
 @app.post("/dependencies/{dependency_id}/action/{outcome}")

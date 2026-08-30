@@ -198,6 +198,7 @@
       <fieldset>
         <legend>{{ label('applies_to') }}</legend>
         <p class="muted">Record only the constraints that the visible source passages and project record support. Keeping the links unknown preserves the organization's statement and changes no Constraint.</p>
+        {% if scope_match_card %}{% include "statement_scope_match_card.html" %}{% endif %}
         <label class="check"><input type="radio" name="scope_mode" value="unknown" required> Keep this statement with the organization. Applies to: not yet known</label>
         <label class="check"><input type="radio" name="scope_mode" value="selected"> I can identify one or more affected constraints</label>
         <label class="check"><input type="radio" name="scope_mode" value="all_active"> This statement applies to every active constraint for the selected organization</label>

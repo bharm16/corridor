@@ -79,6 +79,9 @@
   </p>
 
   <h2>{{ label('follow_up_plan') }}</h2>
+  {% if plan_error %}
+    <p class="error">{{ plan_error }}</p>
+  {% endif %}
   <p>
     {{ label('assigned_to') }}:
     {% if view.dependency.internal_owner %}
@@ -92,17 +95,6 @@
       <span class="muted">unassigned</span>
     {% endif %}
   </p>
-  <form class="inline" method="post"
-        action="/dependencies/{{ view.dependency.id }}/owner">
-    {{ csrf_field() }}
-    <input type="hidden" name="slug" value="{{ project.slug }}">
-    {% if return_to %}
-      <input type="hidden" name="redirect_to" value="{{ return_to }}">
-    {% endif %}
-    <input name="owner" placeholder="named person"
-           value="{{ view.dependency.internal_owner or '' }}">
-    <button type="submit">assign person</button>
-  </form>
   <p style="margin-top:.7rem">
     Next Action:
     {% if view.dependency.next_action %}
@@ -121,24 +113,53 @@
     {% endif %}
   </p>
   <form class="inline" method="post"
-        action="/dependencies/{{ view.dependency.id }}/action">
+        action="/dependencies/{{ view.dependency.id }}/plan">
     {{ csrf_field() }}
     <input type="hidden" name="slug" value="{{ project.slug }}">
     {% if return_to %}
       <input type="hidden" name="redirect_to" value="{{ return_to }}">
     {% endif %}
-    <input name="action" placeholder="what happens next"
-           value="{{ view.dependency.next_action or '' }}">
-    <input name="due_date" type="date"
-           value="{{ view.dependency.action_due_date or '' }}">
-    <select name="due_date_unknown_reason">
-      <option value="">if no date, why?</option>
-      <option value="awaiting_external_information">awaiting external information</option>
-      <option value="awaiting_schedule_information">awaiting schedule information</option>
-      <option value="date_not_yet_known">date not yet known</option>
+    <input type="hidden" name="expected_internal_owner_decision_id"
+           value="{{ owner_decision.id if owner_decision else '' }}">
+    <input type="hidden" name="expected_next_action_decision_id"
+           value="{{ action_decision.id if action_decision else '' }}">
+    <select name="internal_owner_roster_entry_id" required>
+      <option value="">{{ label('assigned_to') }} — choose a project-team member</option>
+      {% for member in plan_roster %}
+        <option value="{{ member.id }}">{{ member.display_name }}</option>
+      {% endfor %}
     </select>
-    <button type="submit">set action</button>
+    <select name="next_action" required>
+      <option value="">Next Action — choose the project response</option>
+      {% for choice in plan_next_action_choices %}
+        <option value="{{ choice }}">{{ choice }}</option>
+      {% endfor %}
+    </select>
+    <input name="action_due_date" type="date"
+           value="{{ view.dependency.action_due_date or '' }}">
+    <select name="action_due_date_unknown_reason">
+      <option value="">if no date, why?</option>
+      {% for reason in plan_unknown_date_reasons %}
+        <option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Save {{ label('follow_up_plan') }}</button>
   </form>
+  {% if not plan_roster %}
+    <p class="muted">No active project-team member is available to assign. Add the person to the project roster first.</p>
+  {% endif %}
+  {% if plan_receipt %}
+    <form class="inline" method="post"
+          action="/dependencies/{{ view.dependency.id }}/plan/undo">
+      {{ csrf_field() }}
+      <input type="hidden" name="slug" value="{{ project.slug }}">
+      {% if return_to %}
+        <input type="hidden" name="redirect_to" value="{{ return_to }}">
+      {% endif %}
+      <input type="hidden" name="receipt_id" value="{{ plan_receipt.id }}">
+      <button type="submit">Undo the last plan Save</button>
+    </form>
+  {% endif %}
   {% if view.dependency.next_action %}
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/complete">

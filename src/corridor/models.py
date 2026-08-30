@@ -3267,6 +3267,94 @@ class StatementCoordinationReversalEffect(Base):
     )
 
 
+class FollowUpPlanReceipt(Base):
+    """The immutable grouping identity for one Constraint Follow-up Plan Save.
+
+    The named rows remain independent append-only Work Decisions (ADR-0038);
+    this receipt only states which decisions one Save committed together,
+    which predecessors the screen had read, and which exact roster row
+    supplied the rendered Assigned To name.  No statement is manufactured to
+    give a Constraint a grouping receipt (#333).
+    """
+
+    __tablename__ = "follow_up_plan_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "internal_owner_decision_id is not null "
+            "or next_action_decision_id is not null",
+            name="ck_follow_up_plan_receipt_one_result",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(expected_predecessors_json) = 'object'",
+            name="ck_follow_up_plan_receipt_predecessors_object",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_follow_up_plan_receipt_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(
+        ForeignKey("dependencies.id"), index=True
+    )
+    internal_owner_roster_entry_id: Mapped[int] = mapped_column(
+        ForeignKey("project_roster_entries.id")
+    )
+    internal_owner_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    next_action_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    resumed_deferral_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"), unique=True)
+    expected_predecessors_json: Mapped[dict] = mapped_column(JSONB)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class FollowUpPlanReversal(Base):
+    """The attributable compensating act for one grouped plan Save.
+
+    Undo never edits or deletes the original decisions.  It appends one
+    reversal Work Decision per grouped chain, restoring each predecessor
+    value, and this row names those appended reversals so the grouped act
+    stays auditable as one.
+    """
+
+    __tablename__ = "follow_up_plan_reversals"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_follow_up_plan_reversal_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("follow_up_plan_receipts.id"), unique=True
+    )
+    internal_owner_reversal_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    next_action_reversal_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    deferral_reversal_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"), unique=True)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ReconfirmationReceipt(Base):
     """Immutable binding behind one human Reconfirmation audit entry.
 

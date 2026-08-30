@@ -34,8 +34,10 @@ from corridor.models import (
     DependencyEventScopeDecision,
     DocPage,
     Document,
+    EventAdmissionOutcome,
     ExternalOrg,
     ExtractionMeasurementCaseState,
+    PolicyRun,
     Milestone,
     Project,
     ProjectRosterEntry,
@@ -428,6 +430,161 @@ def test_command_records_each_explicit_scope_mode(
             DependencyEvent.commitment_lineage_id == result.event.commitment_lineage_id
         )
     ) == 1
+
+
+def _seed_scope_match_abstention(session, project, candidate, dependency_ids):
+    """Record the matcher's own ambiguous abstention receipt (#370, ADR-0054)."""
+    run = PolicyRun(
+        project_id=project.id,
+        family="event-admission",
+        policy_approval_id=None,
+        policy_version="event-admission-identifying-language-test",
+        policy_sha256="0" * 64,
+        abstention_reason_version="event-admission-abstentions-test",
+        applied_count=0,
+        abstained_count=1,
+    )
+    session.add(run)
+    session.flush([run])
+    outcome = EventAdmissionOutcome(
+        policy_run_id=run.id,
+        candidate_id=candidate.id,
+        outcome="abstained",
+        reason="scope_matches_several_constraints",
+        eligibility_json={
+            "input": {"candidate_id": candidate.id},
+            "verdict": "scope_matches_several_constraints",
+            "card": {
+                "candidate_dependency_ids": list(dependency_ids),
+                "matched_details": ["12-inch gas main", "Station 6608+70"],
+                "evidence_applied": {
+                    "matched_terms": ["12-inch gas main", "Station 6608+70"],
+                    "station_dependency_ids": list(dependency_ids),
+                },
+                "choice_modes": ["each", "both_all_listed"],
+            },
+        },
+        eligibility_sha256="0" * 64,
+    )
+    session.add(outcome)
+    session.flush([outcome])
+    return outcome
+
+
+def _narrowed_scope_candidate(session, project, party, tmp_path=None):
+    quote = (
+        "Kinder Morgan will relocate the 12-inch gas main at Station 6608+70."
+    )
+    document = _document(session, project, "narrowed-scope.pdf", quote)
+    if tmp_path is not None:
+        _register_page_image(session, document, tmp_path / "narrowed-scope.png")
+    return _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "commitment",
+            "external_org": party.name,
+            "stated_party": party.name,
+            "description": quote,
+            "committed_date": {
+                "text": "June 1, 2026",
+                "precision": "day",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-01",
+            },
+        },
+    )
+
+
+def test_coordinate_screen_renders_the_matchers_recorded_narrowed_set(
+    session, project, party, roster_entry, tmp_path
+):
+    candidate = _narrowed_scope_candidate(session, project, party, tmp_path)
+    first = _dependency(session, project, party, "PL41", "12-inch gas main")
+    first.location_desc = "Station 6608+70"
+    second = _dependency(session, project, party, "PL52", "12-inch gas main")
+    second.location_desc = "Station 6608+70"
+    _dependency(session, project, party, "PL99", "Water main")
+    session.flush()
+    _seed_scope_match_abstention(session, project, candidate, (first.id, second.id))
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            page = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert page.status_code == 200
+    assert "Several constraints match this statement" in page.text
+    card = page.text.split("Several constraints match this statement", 1)[1].split(
+        "</section>", 1
+    )[0]
+    assert "PL41" in card
+    assert "PL52" in card
+    assert "PL99" not in card
+    # The matcher's applied details and the source page image render as facts.
+    assert "12-inch gas main" in card
+    assert "/page-image/" in card
+    assert f"applies to all 2 listed constraints" in card
+    # The card never selects: no scope radio or constraint checkbox is checked
+    # on load.  The card's buttons only fill a choice on an explicit human
+    # click, so the served HTML carries no `checked` on any of these inputs.
+    assert "no choice is preselected" in card.lower()
+    input_tags = [
+        fragment.split(">", 1)[0] for fragment in page.text.split("<input")[1:]
+    ]
+    scope_inputs = [
+        tag
+        for tag in input_tags
+        if 'name="scope_mode"' in tag or 'name="dependency_id"' in tag
+    ]
+    assert scope_inputs
+    assert all("checked" not in tag for tag in scope_inputs)
+
+
+def test_coordinate_screen_shows_no_card_without_a_recorded_abstention_card(
+    session, project, party, roster_entry
+):
+    candidate = _narrowed_scope_candidate(session, project, party)
+    first = _dependency(session, project, party, "PL41", "12-inch gas main")
+    second = _dependency(session, project, party, "PL52", "12-inch gas main")
+    session.flush()
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            no_abstention = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            # A malformed or single-survivor card is not a narrowed set; the
+            # screen re-derives nothing from it.
+            _seed_scope_match_abstention(session, project, candidate, (first.id,))
+            malformed = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+            # A card naming a row that is no longer an active constraint of
+            # this organization is stale and renders nothing.  A recorded
+            # abstention is immutable, so this is a newer receipt the screen
+            # reads as the current one, not an edit of the earlier outcome.
+            _seed_scope_match_abstention(
+                session, project, candidate, (first.id, second.id + 1000)
+            )
+            stale = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    for page in (no_abstention, malformed, stale):
+        assert page.status_code == 200
+        assert "Several constraints match this statement" not in page.text
 
 
 def test_command_rolls_back_every_result_when_a_late_milestone_refuses(
