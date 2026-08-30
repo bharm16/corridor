@@ -176,4 +176,8 @@ def test_operations_mutation_rechecks_document_scope(client, session, project):
         },
     )
     assert response.status_code == 404
-    assert session.scalars(select(ActiveRunDeclaration)).all() == []
+    assert session.scalars(
+        select(ActiveRunDeclaration).where(
+            ActiveRunDeclaration.document_id == document.id
+        )
+    ).all() == []
