@@ -35,8 +35,6 @@ from corridor.extraction_runs import (
     active_run_for_document,
     current_active_run_declaration,
 )
-from corridor.merge import parse_station
-from corridor.statement_matching import dependency_match_signals, match_score
 from corridor.models import (
     Candidate,
     Dependency,
@@ -49,6 +47,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
 )
+from corridor.statement_matcher import shortlist_dependencies
 from corridor.statement_lifecycle import current_statement_event_filter
 from corridor.verify import literal_quote_on_page
 
@@ -548,20 +547,18 @@ class InvestigationTools:
             )
             .order_by(Dependency.ref_code, Dependency.id)
         ).all()
-        source_station = parse_station(station_text)
-        source_stations = (source_station,) if source_station is not None else ()
-        term_keys = tuple(_normalize(term) for term in terms if _normalize(term))
-        ranked: list[tuple[int, str, Dependency, tuple[str, ...]]] = []
-        for dependency in dependencies:
-            signals, term_hits = dependency_match_signals(
-                dependency, source_stations=source_stations, term_keys=term_keys
-            )
-            ranked.append(
-                (match_score(signals, term_hits), dependency.ref_code, dependency, signals)
-            )
-        ranked.sort(key=lambda row: (-row[0], row[1], row[2].id))
+        shared = shortlist_dependencies(
+            dependencies, station_text=station_text, terms=terms
+        )
+        by_id = {dependency.id: dependency for dependency in dependencies}
         options = []
-        for _, _, dependency, signals in ranked[:limit]:
+        for result in shared[:limit]:
+            dependency = by_id[result.dependency_id]
+            signals = ["registered_party_match"]
+            if "station_containment" in result.signals:
+                signals.append("station_overlap")
+            if any(signal.startswith("term:") for signal in result.signals):
+                signals.append("source_term_match")
             dependency_ref = self.__bound.dependency_ref_by_id[dependency.id]
             self.__issued_dependency_refs.add(dependency_ref)
             options.append(

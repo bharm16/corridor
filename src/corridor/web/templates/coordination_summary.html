@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Coordination summary — {{ project.name }}</title>
+<style>
+  body { max-width:56rem; margin:2rem auto; padding:0 1rem; font:15px/1.5 system-ui,sans-serif; color:#111; }
+  .banner { background:#fffaeb; border:1px solid #fedf89; color:#8a4700; padding:.7rem; border-radius:5px; }
+  pre { white-space:pre-wrap; overflow-wrap:anywhere; border:1px solid #ddd; padding:1rem; border-radius:5px; }
+</style>
+<p><a href="/internal-report/{{ project.slug }}">Back to internal working report</a></p>
+<h1>Coordination summary — AI draft</h1>
+<p class="banner">This is an AI draft from the retained Project Record reading. It is not a human approval, Documentation Review, project decision, notification, or external release. Later project changes are not included.</p>
+<dl>
+  <dt>Request outcome</dt><dd>{{ receipt.status|replace('_', ' ') }}</dd>
+  <dt>Checks as of</dt><dd>{{ receipt.evaluated_on }} · ruleset {{ receipt.ruleset_version }}</dd>
+  <dt>Source mode</dt><dd>{{ receipt.provenance_mode|replace('_', ' ') }}</dd>
+</dl>
+{% if receipt.summary_markdown %}
+  <pre>{{ receipt.summary_markdown }}</pre>
+{% else %}
+  <p class="banner">No draft is shown: {{ receipt.reason }}</p>
+{% endif %}

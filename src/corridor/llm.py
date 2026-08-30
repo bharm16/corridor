@@ -109,6 +109,7 @@ class OpenAIClient:
         max_workers: int = DEFAULT_WORKERS,
         effort: str = "none",
         flex: bool = False,
+        max_output_tokens: int | None = None,
     ):
         self.model = model or settings.llm_model
         self.api_key = api_key or settings.openai_api_key
@@ -122,6 +123,7 @@ class OpenAIClient:
                 f"{', '.join(EFFORTS)}"
             )
         self.effort = effort
+        self.max_output_tokens = max_output_tokens
         # One key per client, so a run's requests share a cached prefix.
         # Deliberately not sharded across workers: the provider suggests
         # roughly 15 requests a minute per key, and eight workers will
@@ -180,6 +182,8 @@ class OpenAIClient:
             "store": False,
             "prompt_cache_key": self.cache_key,
         }
+        if self.max_output_tokens is not None:
+            payload["max_output_tokens"] = self.max_output_tokens
         if logprobs:
             payload["include"] = ["message.output_text.logprobs"]
         if self.flex:

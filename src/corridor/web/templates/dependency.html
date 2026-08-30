@@ -39,6 +39,21 @@
             cursor:pointer; }
   .settle .lead { color:#7a2e0e; }
   .pill.settled { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
+  .dispute-summary { margin:.5rem .6rem; border:1px solid #fedf89; border-radius:4px;
+                      background:#fffdf5; padding:.65rem; }
+  .dispute-summary h3 { margin:0 0 .35rem; font-size:.9rem; }
+  .dispute-summary .why { color:#7a2e0e; margin:.35rem 0; }
+  .dispute-summary .claim { padding:.4rem 0; }
+  .dispute-summary .claim .src { min-width:0; flex:1; }
+  .dispute-summary .quote { display:block; font-family:ui-monospace,monospace;
+                             font-size:.8rem; margin:.2rem 0; }
+  .timeline { margin:.6rem 0; padding:.45rem .6rem; border-left:3px solid #ddd; }
+  .timeline ol { margin:.35rem 0; padding-left:1.3rem; }
+  .timeline li { margin:.35rem 0; }
+  .graphical-claims { display:flex; gap:.6rem; flex-wrap:wrap; margin:.5rem 0; }
+  .graphical-claims img { max-width:18rem; max-height:14rem; border:1px solid var(--line); }
+  .clarify { margin-top:.5rem; padding-top:.5rem; border-top:1px solid #fedf89; }
+  .clarify label { display:block; margin:.35rem 0; }
   .dismiss { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:1.2rem; }
   .dismiss button { font:inherit; font-size:.82rem; padding:.2rem .6rem;
                     border:1px solid var(--line); border-radius:4px;
@@ -70,12 +85,16 @@
     {{ view.org_name or 'no organization identified' }} ·
     {{ view.dependency.station_from or '—' }}{% if view.dependency.station_to %} → {{ view.dependency.station_to }}{% endif %} ·
     {% if view.dependency.resolution_strategy %}{{ resolution_strategy_label(view.dependency.resolution_strategy) }}{% else %}no resolution method recorded{% endif %}
-    <span class="pill {{ 'ready' if view.is_ready else 'notready' }}">{{ documentation_review_label(view.is_ready) }}</span>
+    <span class="pill {{ 'ready' if view.is_ready else 'notready' }}">{% if checklist.uses_standard_checklist %}{% if view.is_ready %}Documentation fields complete{% else %}Documentation fields not complete{% endif %}{% else %}{{ documentation_review_label(view.is_ready) }}{% endif %}</span>
     {% if view.contradictions %}<span class="pill contra">Sources disagree on {{ view.contradictions|length }} field(s)</span>{% endif %}
   </p>
   <p class="muted" style="font-size:.85rem">
     Most recent supporting document {{ view.last_evidenced_at or 'not available' }} ·
-    {{ label('required_documents') }}: {{ view.dependency.evidence_required or 'Not specified' }}
+    {% if checklist.uses_standard_checklist %}
+      Standard fields selected from the recorded resolution method and cost responsibility.
+    {% else %}
+      {{ label('required_documents') }}: {{ view.dependency.evidence_required or 'Not specified' }}
+    {% endif %}
   </p>
 
   <h2>{{ label('follow_up_plan') }}</h2>
@@ -213,17 +232,49 @@
         <div class="claim">
           <span class="src">
             {{ a.filename or 'unknown document' }}{% if a.page_no %} p.{{ a.page_no }}{% endif %}
+            {% if a.document_date %} · {{ a.document_date }}{% else %} · date unavailable{% endif %}
+            {% if a.text_source %} · {{ a.text_source|replace('_', ' ') }}{% endif %}
             {% if not a.verified %}<span class="pill unver">unverified</span>{% endif %}
           </span>
           <span class="value">{{ a.value or '—' }}</span>
-          <span class="q">{{ (a.quote or '')[:90] }}</span>
+          <span class="q">{{ a.quote or '' }}</span>
+          {% if a.document_id and a.page_no and a.image_available %}
+            <a href="/page-image/{{ a.document_id }}/{{ a.page_no }}">View source page</a>
+          {% elif a.document_id and a.page_no %}
+            <span class="muted">Page image unavailable; cited text shown.</span>
+          {% endif %}
         </div>
       {% endfor %}
       {% if f.name in disputes %}
-        {# Both claims are listed directly above, so the choice is made
-           while looking at them rather than from memory. A settled field
-           keeps its form because a mistaken settlement is corrected by
-           settling again (ADR-0031), never by editing history. #}
+        {% set assessment = dispute_assessments.get(f.name) %}
+        {% set timeline = dispute_timelines.get(f.name) %}
+        <section class="dispute-summary" aria-label="Source discrepancy summary">
+          <h3>Sources disagree — choose the project record conclusion</h3>
+          {% if assessment %}<p class="why">Why this remains contested: {{ assessment.why }}</p>{% endif %}
+          <p class="muted">This affects the record field {{ field_label(f.name) }}. A person records the conclusion; source claims stay preserved.</p>
+          {% if f.assertions|selectattr('document_type', 'equalto', 'plan')|list %}
+            <div class="graphical-claims">
+              {% for a in f.assertions if a.document_type == 'plan' %}
+                {% if a.document_id and a.page_no and a.image_available %}
+                  <figure><img src="/page-image/{{ a.document_id }}/{{ a.page_no }}" alt="{{ a.filename }} page {{ a.page_no }}"><figcaption>{{ a.filename }} p.{{ a.page_no }}</figcaption></figure>
+                {% else %}
+                  <p class="muted">{{ a.filename or 'Plan source' }} page image unavailable; the cited quote remains the available evidence.</p>
+                {% endif %}
+              {% endfor %}
+            </div>
+          {% endif %}
+          {% if timeline %}
+            <div class="timeline">
+              <b>Timeline — machine reading, not a conclusion</b>
+              <p>{{ timeline.drafted_reading }}</p>
+              <ol>
+                {% for mention in timeline.mentions %}
+                  <li><b>{{ mention.value or '—' }}</b> · {{ mention.classification|replace('_', ' ') }} · {{ mention.document_name }}{% if mention.document_date %} · {{ mention.document_date }}{% endif %}<br><span class="quote">“{{ mention.quote }}”</span></li>
+                {% endfor %}
+              </ol>
+            </div>
+          {% endif %}
+        </section>
         <div class="settle">
           <span class="lead">{% if f.settled %}Change the recorded
             conclusion?{% else %}Record the conclusion for this field{% endif %}</span>
@@ -244,10 +295,40 @@
             <input type="hidden" name="field_name" value="{{ f.name }}">
             <input type="hidden" name="saw_claim_id"
                    value="{{ disputes[f.name].newest_claim_id }}">
-            <input type="text" name="value" placeholder="or type the right value">
+            <input type="text" name="value" placeholder="different supported conclusion">
             <button>{{ label('record_conclusion') }}</button>
           </form>
+          <form class="clarify" method="post"
+                action="/ledger/{{ project.slug }}/{{ view.dependency.id }}/clarify">
+    {{ csrf_field() }}
+            <input type="hidden" name="field_name" value="{{ f.name }}">
+            <b>Needs clarification — keep the discrepancy open</b>
+            <label>Assign to
+              <select name="internal_owner_roster_entry_id" required>
+                <option value="">Choose a project-team member</option>
+                {% for member in roster %}<option value="{{ member.id }}">{{ member.display_name }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Next Action <input name="next_action" required placeholder="Ask the source to confirm the cited value"></label>
+            <label>Action Due Date <input type="date" name="due_date"></label>
+            <label>If unknown, reason
+              <select name="due_date_unknown_reason">
+                <option value="">Choose only when no date is known</option>
+                <option value="awaiting_external_information">awaiting external information</option>
+                <option value="awaiting_schedule_information">awaiting schedule information</option>
+                <option value="date_not_yet_known">date not yet known</option>
+              </select>
+            </label>
+            <button>Record follow-up without settling</button>
+          </form>
         </div>
+      {% elif f.name in dispute_amendments %}
+        <section class="dispute-summary" aria-label="Stale executed agreement">
+          <h3>Field data changed under an executed agreement — flag for amendment</h3>
+          <p class="why">{{ dispute_amendments[f.name].why }}</p>
+          <p class="muted">This is coordination work, not a pick-one verdict:
+            both cited quotes stay above, and no conclusion is recorded here.</p>
+        </section>
       {% endif %}
     </div>
   {% else %}
@@ -311,6 +392,63 @@
     <p class="muted">No statements yet. Commitments and changes to promised timing are appended here; earlier statements remain in history.</p>
   {% endif %}
 
+  {% if checklist.uses_standard_checklist %}
+    <h2>Standard documentation checklist</h2>
+    <p class="muted">Ready is derived from the current cited fields below. It is not a completion claim, Contract Acceptance, or permission to perform construction.</p>
+    <table>
+      <thead><tr><th>Required field</th><th>Current cited basis</th><th>State</th></tr></thead>
+      <tbody>
+        {% for field in checklist.fields %}
+          <tr>
+            <td>{{ field.label }}</td>
+            <td>
+              {% for link, doc in view.evidence if link.id in field.evidence_link_ids or link.id in field.candidate_evidence_link_ids or link.id in field.conditional_evidence_link_ids %}
+                <div>{{ doc.filename }} p.{{ link.page_no }} — <span class="q">{{ link.quote[:160] }}</span>
+                  <a href="/page-image/{{ doc.id }}/{{ link.page_no }}">open the letter</a></div>
+              {% else %}
+                <span class="muted">No current cited passage fills this field.</span>
+              {% endfor %}
+            </td>
+            <td>
+              {% if field.complete %}
+                <span class="pill ready">complete</span>
+              {% elif field.machine %}
+                <span class="pill contra">not yet</span>
+              {% else %}
+                {% for link, doc in view.evidence if link.id in field.candidate_evidence_link_ids %}
+                  <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/documentation/confirm-approval">
+    {{ csrf_field() }}
+                    <input type="hidden" name="slug" value="{{ project.slug }}">
+                    <input type="hidden" name="evidence_link_id" value="{{ link.id }}">
+                    <button type="submit">Confirm: this letter approves the relocation — “{{ link.quote[:120] }}”</button>
+                  </form>
+                {% endfor %}
+                {% for link, doc in view.evidence if link.id in field.conditional_evidence_link_ids %}
+                  <div><span class="pill contra">recorded as conditional</span>
+                    waiting on: <span class="q">“{{ link.quote[:160] }}”</span></div>
+                  <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/documentation/confirm-approval">
+    {{ csrf_field() }}
+                    <input type="hidden" name="slug" value="{{ project.slug }}">
+                    <input type="hidden" name="evidence_link_id" value="{{ link.id }}">
+                    <input type="hidden" name="condition_immaterial" value="true">
+                    <button type="submit">Record as approval — the quoted condition is immaterial</button>
+                  </form>
+                {% endfor %}
+                {% if not field.candidate_evidence_link_ids and not field.conditional_evidence_link_ids %}
+                  <span class="pill contra">not yet</span>
+                {% endif %}
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="3" class="muted">No external documentation fields are required by the recorded selectors.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% elif checklist.legacy_mark_remains_effective %}
+    <p class="muted">A retained historical sufficiency mark remains effective until a structured documentation confirmation replaces it.</p>
+  {% endif %}
+
   <h2>Supporting documents</h2>
   <table>
     <thead><tr><th>Source document</th><th>Page</th><th>Cited passage</th><th>Source passage check</th><th>Documentation review</th></tr></thead>
@@ -323,15 +461,19 @@
           <td>{% if link.verified %}<span class="pill ready">yes</span>
               {% else %}<span class="pill unver">no</span>{% endif %}</td>
           <td>
-            <form class="inline" method="post"
-                  action="/dependencies/{{ view.dependency.id }}/evidence/{{ link.id }}/satisfies">
+            {% if checklist.uses_standard_checklist %}
+              <span class="muted">Read through the standard checklist above.</span>
+            {% else %}
+              <form class="inline" method="post"
+                    action="/dependencies/{{ view.dependency.id }}/evidence/{{ link.id }}/satisfies">
     {{ csrf_field() }}
-              <input type="hidden" name="slug" value="{{ project.slug }}">
-              <button {% if not link.verified %}disabled
-                title="The cited passage must be found in the source before these documents can be marked sufficient."{% endif %}>
-                {% if link.id in sufficient_evidence_ids %}Remove sufficiency mark{% else %}Mark documents sufficient{% endif %}
-              </button>
-            </form>
+                <input type="hidden" name="slug" value="{{ project.slug }}">
+                <button {% if not link.verified %}disabled
+                  title="The cited passage must be found in the source before these documents can be marked sufficient."{% endif %}>
+                  {% if link.id in sufficient_evidence_ids %}Remove sufficiency mark{% else %}Mark documents sufficient{% endif %}
+                </button>
+              </form>
+            {% endif %}
           </td>
         </tr>
       {% else %}

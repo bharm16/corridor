@@ -26,8 +26,10 @@ from corridor.db import Session, engine
 from corridor.models import (
     AuditLog,
     Dependency,
+    DocumentationFieldConfirmation,
     DocPage,
     Document,
+    EvidenceLink,
     PersonIdentity,
     Project,
     SignInToken,
@@ -401,6 +403,26 @@ def test_a_member_cannot_reach_another_project(client, session, sender):
     assert client.get(f"/page-image/{other_doc.id}/1").status_code == 404
 
 
+def test_processing_operations_uses_the_verified_session_and_project_scope(
+    client, session, sender
+):
+    home = make_project(session, slug="operations-home", name="Operations Home")
+    other = make_project(session, slug="operations-other", name="Operations Other")
+    enroll(
+        session,
+        home,
+        "local:operator",
+        "operator@example.test",
+        [access.TECHNICAL_OPERATIONS],
+    )
+    sign_in(client, sender, "operator@example.test")
+
+    assert client.get(f"/operations/{home.slug}").status_code == 200
+    # A guessed slug remains indistinguishable from a project that does not
+    # exist; the session's valid principal grants no cross-project read.
+    assert client.get(f"/operations/{other.slug}").status_code == 404
+
+
 def test_a_member_can_read_their_own_source_image(client, session, sender):
     project = make_project(session)
     document = _document(session, project)
@@ -483,6 +505,70 @@ def test_documentation_review_alone_cannot_coordinate(client, session, sender):
         {"slug": project.slug},
     )
     assert review.status_code != 403
+
+
+def test_only_documentation_reviewer_can_confirm_a_cited_approval(
+    client, session, sender
+):
+    project = make_project(session, slug="document-review")
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-ACCESS-1",
+        dep_type="utility_relocation",
+        title="Approval confirmation",
+        resolution_strategy="relocate",
+    )
+    document = Document(
+        project_id=project.id,
+        sha256="document-review-approval",
+        filename="approval.pdf",
+        doc_type="agreement",
+        parse_status="parsed",
+    )
+    session.add_all((dependency, document))
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=document.id,
+            page_no=1,
+            text="The relocation is approved.",
+        )
+    )
+    evidence = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="The relocation is approved.",
+        verified=True,
+    )
+    session.add(evidence)
+    session.flush()
+    enroll(session, project, "local:coordinator", "coord@example.test", [access.COORDINATION])
+    enroll(
+        session,
+        project,
+        "local:dana",
+        "reviewer@example.test",
+        [access.DOCUMENTATION_REVIEW],
+    )
+
+    sign_in(client, sender, "coord@example.test")
+    refused = authed_post(
+        client,
+        f"/dependencies/{dependency.id}/documentation/confirm-approval",
+        {"slug": project.slug, "evidence_link_id": evidence.id},
+    )
+    assert refused.status_code == 403
+    assert session.scalar(select(func.count()).select_from(DocumentationFieldConfirmation)) == 0
+
+    sign_in(client, sender, "reviewer@example.test")
+    confirmed = authed_post(
+        client,
+        f"/dependencies/{dependency.id}/documentation/confirm-approval",
+        {"slug": project.slug, "evidence_link_id": evidence.id},
+    )
+    assert confirmed.status_code == 303
+    assert session.scalar(select(func.count()).select_from(DocumentationFieldConfirmation)) == 1
 
 
 def test_external_release_alone_cannot_coordinate(client, session, sender):
