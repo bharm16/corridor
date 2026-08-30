@@ -18,7 +18,6 @@ from sqlalchemy import func, select
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
-from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -43,6 +42,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.verbal import record_verbal
+from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
@@ -71,11 +71,10 @@ def client(session):
 
 
 @pytest.fixture
-def client_without_principal(session, monkeypatch):
-    """Exercise the real fail-closed deployment identity dependency."""
+def client_without_session(session):
+    """No signed-in session: exercise the real fail-closed identity gate (#331)."""
     from corridor.web.app import app, get_session
 
-    monkeypatch.setattr(settings, "human_principal", "")
     app.dependency_overrides.clear()
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as c:
@@ -88,6 +87,7 @@ def project(session):
     project = Project(slug="internal-report-test", name="Internal Report Test", is_synthetic=True)
     session.add(project)
     session.flush()
+    seed_membership(session, project, TEST_PRINCIPAL)
     return project
 
 
@@ -627,10 +627,10 @@ def test_new_routes_write_a_project_access_receipt(client, session, project):
     ],
 )
 def test_new_routes_fail_closed_without_a_seeded_identity(
-    client_without_principal, project, path
+    client_without_session, project, path
 ):
-    response = client_without_principal.get(path.format(slug=project.slug))
-    assert response.status_code == 503
+    response = client_without_session.get(path.format(slug=project.slug))
+    assert response.status_code == 401
 
 
 def test_unknown_project_is_not_found(client, session, project):

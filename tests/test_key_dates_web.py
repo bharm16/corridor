@@ -7,12 +7,12 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.milestones import import_xer, preview_import
 from corridor.models import Milestone, MilestoneRegistration, Project
 from corridor.principals import HumanPrincipal
 from corridor.web.app import app, get_human_principal, get_session
+from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
@@ -52,9 +52,8 @@ def client(session):
 
 
 @pytest.fixture
-def client_without_principal(session, monkeypatch):
-    """Exercise the real fail-closed deployment-identity dependency."""
-    monkeypatch.setattr(settings, "human_principal", "")
+def client_without_session(session):
+    """No signed-in session: exercise the real fail-closed identity gate (#331)."""
     app.dependency_overrides.clear()
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as c:
@@ -67,6 +66,7 @@ def project(session):
     p = Project(slug="kd-web", name="Key Dates Web", is_synthetic=True)
     session.add(p)
     session.flush()
+    seed_membership(session, p, TEST_PRINCIPAL)
     return p
 
 
@@ -128,14 +128,14 @@ def test_confirm_imports_under_the_configured_person(client, session, project):
     assert codes(session, project) == {"UTIL-CLEAR", "LET"}
 
 
-def test_confirm_is_unavailable_without_a_configured_principal(
-    client_without_principal, session, project
+def test_confirm_is_unavailable_without_a_signed_in_session(
+    client_without_session, session, project
 ):
     fields = _confirm_fields(session, project, CSV)
-    response = client_without_principal.post(
+    response = client_without_session.post(
         f"/key-dates/{project.slug}/confirm", data=fields, follow_redirects=False
     )
-    assert response.status_code == 503
+    assert response.status_code == 401
     assert codes(session, project) == set()
 
 
