@@ -656,7 +656,7 @@ def test_registering_a_successor_immediately_creates_provenance_review_work(
 
     assert exception.quantity_days == 11
     assert replacement_date.isoformat() in exception.detail
-    assert "re-confirmation" in exception.detail
+    assert "replaced by a newer revision and is no longer current" in exception.detail
     assert "overdue" not in exception.detail.lower()
     assert format_exception_label(exception) == (
         "Supporting document replaced 11d"
