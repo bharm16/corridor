@@ -103,6 +103,7 @@ def runtime_database():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_due_work_test_",
+        reuse_migrated_template=True,
     ) as database:
         yield database
 

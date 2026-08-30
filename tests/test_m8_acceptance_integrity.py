@@ -201,11 +201,9 @@ def test_guarded_upgrade_rejects_a_database_outside_the_disposable_prefix(monkey
 
 def test_read_migration_head_rejects_multiple_current_revisions(monkeypatch):
     monkeypatch.setattr(
-        acceptance_database.subprocess,
-        "run",
-        lambda *_args, **_kwargs: type(
-            "Completed", (), {"returncode": 0, "stdout": "aaa111 (head)\nbbb222 (head)\n", "stderr": ""}
-        )(),
+        acceptance_database,
+        "create_engine",
+        lambda *_args, **_kwargs: _StampedEngine(("aaa111", "bbb222")),
     )
 
     with pytest.raises(AcceptanceError, match="exactly one Alembic revision"):
@@ -214,6 +212,68 @@ def test_read_migration_head_rejects_multiple_current_revisions(monkeypatch):
             repo_root=REPO_ROOT,
             error_cls=AcceptanceError,
         )
+
+
+def test_read_migration_head_returns_the_single_stamped_revision(monkeypatch):
+    monkeypatch.setattr(
+        acceptance_database,
+        "create_engine",
+        lambda *_args, **_kwargs: _StampedEngine(("aaa111",)),
+    )
+
+    assert (
+        acceptance_database.read_migration_head(
+            settings.database_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+        )
+        == "aaa111"
+    )
+
+
+def test_read_migration_head_reports_an_unreadable_database(monkeypatch):
+    monkeypatch.setattr(
+        acceptance_database,
+        "create_engine",
+        lambda *_args, **_kwargs: _StampedEngine(None),
+    )
+
+    with pytest.raises(AcceptanceError, match="could not read Alembic head"):
+        acceptance_database.read_migration_head(
+            settings.database_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+        )
+
+
+class _StampedConnection:
+    """One connection reporting the rows an ``alembic_version`` table holds."""
+
+    def __init__(self, revisions):
+        self._revisions = revisions
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def scalars(self, _statement):
+        if self._revisions is None:
+            raise RuntimeError("relation \"alembic_version\" does not exist")
+        return iter(self._revisions)
+
+
+class _StampedEngine:
+    def __init__(self, revisions):
+        self._revisions = revisions
+        self.disposed = False
+
+    def connect(self):
+        return _StampedConnection(self._revisions)
+
+    def dispose(self):
+        self.disposed = True
 
 
 def test_bundle_verifier_rejects_unmanifested_nested_content(tmp_path):

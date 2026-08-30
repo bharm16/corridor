@@ -8,6 +8,7 @@ before any provisioned database reaches an experimental workflow.
 
 from __future__ import annotations
 
+import atexit
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -64,8 +65,15 @@ def provision_disposable_postgres(
     error_cls: type[Exception],
     database_prefix: str,
     migration_revision: str = "head",
+    reuse_migrated_template: bool = False,
 ) -> Iterator[ProvisionedDatabase]:
-    """Create, migrate to one revision, and destroy a guarded PostgreSQL database."""
+    """Create, migrate to one revision, and destroy a guarded PostgreSQL database.
+
+    ``reuse_migrated_template`` copies a per-process template that this module
+    already migrated, instead of replaying the Alembic chain per database. It
+    applies only to ``head``; an exact historical pin always replays the chain,
+    because rehearsing the chain is the point of a pinned revision.
+    """
 
     parsed = make_url(admin_url)
     if parsed.get_backend_name() != "postgresql":
@@ -85,16 +93,33 @@ def provision_disposable_postgres(
         with admin_engine.connect() as connection:
             version = connection.scalar(text("show server_version"))
         require_postgres_16(version, error_cls=error_cls)
+        template_name: str | None = None
+        if reuse_migrated_template and migration_revision == "head":
+            template_name = _ensure_migrated_template(
+                admin_engine,
+                parsed,
+                repo_root=repo_root,
+                error_cls=error_cls,
+            )
         with admin_engine.connect() as connection:
-            connection.execute(text(f'create database "{database_name}"'))
+            if template_name is None:
+                connection.execute(text(f'create database "{database_name}"'))
+            else:
+                connection.execute(
+                    text(
+                        f'create database "{database_name}" '
+                        f'template "{template_name}"'
+                    )
+                )
             database_created = True
         database_url = parsed.set(database=database_name)
-        _apply_schema_migrations(
-            database_url,
-            repo_root=repo_root,
-            error_cls=error_cls,
-            revision=migration_revision,
-        )
+        if template_name is None:
+            _apply_schema_migrations(
+                database_url,
+                repo_root=repo_root,
+                error_cls=error_cls,
+                revision=migration_revision,
+            )
         database_engine = create_engine(
             database_url,
             poolclass=NullPool,
@@ -176,42 +201,141 @@ def read_migration_head(
     repo_root: Path,
     error_cls: type[Exception],
 ) -> str:
-    environment = {
-        **os.environ,
-        "DATABASE_URL": str(database_url),
-    }
-    completed = subprocess.run(
-        [
-            "uv",
-            "run",
-            "alembic",
-            "current",
-        ],
-        cwd=repo_root,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
+    """Read the stamped revision from the target database itself.
+
+    Shelling out to ``alembic current`` was rejected because it costs a full
+    interpreter start per call and this runs once per provisioned database.
+    ``alembic current`` reports exactly the rows of ``alembic_version``, so the
+    query answers the same question. ``repo_root`` stays in the signature
+    because callers name the repository that owns the migration chain.
+    """
+
+    del repo_root
+    engine = create_engine(
+        make_url(str(database_url)),
+        poolclass=NullPool,
+        future=True,
     )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip().splitlines()
-        raise error_cls(
-            "could not read Alembic head"
-            + (f": {detail[-1]}" if detail else "")
-        )
-    revisions = []
-    for line in completed.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        match = re.match(r"^([0-9a-f]+) \(", line)
-        if match:
-            revisions.append(match.group(1))
-        else:
-            revisions.append(line.split()[0])
+    try:
+        with engine.connect() as connection:
+            revisions = list(
+                connection.scalars(text("select version_num from alembic_version"))
+            )
+    except Exception as exc:
+        raise error_cls(f"could not read Alembic head: {exc}") from exc
+    finally:
+        engine.dispose()
     if len(revisions) != 1:
         raise error_cls("could not determine exactly one Alembic revision")
-    return revisions[0]
+    return str(revisions[0])
+
+
+_TEMPLATE_PREFIX = "corridor_migrated_template_"
+_migrated_templates: dict[str, str] = {}
+
+
+def _ensure_migrated_template(
+    admin_engine,
+    admin_url: URL,
+    *,
+    repo_root: Path,
+    error_cls: type[Exception],
+) -> str:
+    """Migrate one reusable template per process and reuse it for every copy.
+
+    Replaying the whole chain per disposable database dominated the runtime
+    suite. PostgreSQL copies an already-migrated template in constant time, and
+    the template is still built by the real chain, so a copied database is
+    indistinguishable from a migrated one.
+    """
+
+    cache_key = admin_url.render_as_string(hide_password=False)
+    cached = _migrated_templates.get(cache_key)
+    if cached is not None:
+        return cached
+
+    template_name = f"{_TEMPLATE_PREFIX}{os.getpid()}_{uuid4().hex[:8]}"
+    with admin_engine.connect() as connection:
+        _drop_abandoned_templates(connection)
+        connection.execute(text(f'drop database if exists "{template_name}"'))
+        connection.execute(text(f'create database "{template_name}"'))
+    try:
+        _apply_schema_migrations(
+            admin_url.set(database=template_name),
+            repo_root=repo_root,
+            error_cls=error_cls,
+            revision="head",
+        )
+    except BaseException:
+        _drop_template(cache_key, template_name)
+        raise
+    _migrated_templates[cache_key] = template_name
+    atexit.register(_drop_template, cache_key, template_name)
+    return template_name
+
+
+def _drop_abandoned_templates(connection) -> None:
+    """Reclaim templates left behind by a test process that was killed outright.
+
+    ``atexit`` covers an orderly exit, but a killed xdist worker never runs it.
+    Only a template whose owning process is gone is dropped, so a sibling worker
+    building its own template at this moment is never taken out from under it.
+    """
+
+    names = connection.scalars(
+        text("select datname from pg_database where datname like :prefix"),
+        {"prefix": f"{_TEMPLATE_PREFIX}%"},
+    ).all()
+    for name in names:
+        owner_pid = _template_owner_pid(str(name))
+        if owner_pid is None or _process_is_running(owner_pid):
+            continue
+        try:
+            connection.execute(text(f'drop database if exists "{name}"'))
+        except Exception:
+            continue
+
+
+def _template_owner_pid(template_name: str) -> int | None:
+    match = re.fullmatch(rf"{_TEMPLATE_PREFIX}(\d+)_[0-9a-f]+", template_name)
+    return int(match.group(1)) if match else None
+
+
+def _process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _drop_template(admin_url_text: str, template_name: str) -> None:
+    """Destroy a process template, tolerating an already-torn-down server."""
+
+    _migrated_templates.pop(admin_url_text, None)
+    try:
+        engine = create_engine(
+            make_url(admin_url_text),
+            isolation_level="AUTOCOMMIT",
+            poolclass=NullPool,
+            future=True,
+        )
+        try:
+            with engine.connect() as connection:
+                connection.execute(
+                    text(
+                        "select pg_terminate_backend(pid) from pg_stat_activity "
+                        "where datname = :name and pid <> pg_backend_pid()"
+                    ),
+                    {"name": template_name},
+                )
+                connection.execute(text(f'drop database if exists "{template_name}"'))
+        finally:
+            engine.dispose()
+    except Exception:
+        pass
 
 
 def upgrade_provisioned_postgres(
