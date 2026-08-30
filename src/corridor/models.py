@@ -274,6 +274,170 @@ class Project(Base):
     )
 
 
+class IntakeProjectIdentifier(Base):
+    """One exact registered routing identifier for the shared intake address.
+
+    A project name is deliberately absent: names are presentation text, never a
+    routing key.  A caller records the agency-issued identifier (for example a
+    CSJ or contract number) and the router only compares its normalized exact
+    value.
+    """
+
+    __tablename__ = "intake_project_identifiers"
+    __table_args__ = (
+        UniqueConstraint("kind", "value_normalized", "project_id"),
+        CheckConstraint("length(trim(kind)) > 0", name="ck_intake_identifier_kind"),
+        CheckConstraint(
+            "length(trim(value_normalized)) > 0", name="ck_intake_identifier_value"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(48))
+    value_normalized: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundThread(Base):
+    """One header-connected conversation, never reconstructed by content."""
+
+    __tablename__ = "inbound_threads"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # Null is the honest unresolved state.  A triage answer fills this once;
+    # reply inheritance reads it but never guesses it.
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    # Binding to a Constraint is reserved for the exact matcher.  Email intake
+    # records the durable provenance seam without inferring a relationship.
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    bound_by_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inbound_messages.id", use_alter=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundMessage(Base):
+    """An immutable raw inbound email and the deterministic route it received."""
+
+    __tablename__ = "inbound_messages"
+    __table_args__ = (
+        UniqueConstraint("raw_sha256"),
+        UniqueConstraint("message_id", name="uq_inbound_message_message_id"),
+        CheckConstraint(
+            "raw_sha256 ~ '^[0-9a-f]{64}$'", name="ck_inbound_message_sha256"
+        ),
+        CheckConstraint(
+            "route_status in ('routed', 'triage')", name="ck_inbound_message_route"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    raw_sha256: Mapped[str] = mapped_column(String(64))
+    storage_path: Mapped[str] = mapped_column(Text)
+    message_id: Mapped[str | None] = mapped_column(Text)
+    sender: Mapped[str | None] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    headers_json: Mapped[dict] = mapped_column(JSONB)
+    body_text: Mapped[str] = mapped_column(Text)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("inbound_threads.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    route_status: Mapped[str] = mapped_column(String(16))
+    route_evidence_json: Mapped[dict] = mapped_column(JSONB)
+    # Filled when the routed message registers as a prose source Document.
+    # A triaged message stays unregistered until its thread routes; the raw
+    # bytes at storage_path are the crash-safe original either way.
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    # Per-attachment registration receipts: filename, sha256, and either the
+    # registered document id or the exact shared-intake refusal reason.
+    attachments_json: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundThreadReading(Base):
+    """The one durable outcome of reading a bound thread's conversation arc.
+
+    ADR-0062: a concluded conversation proposes exactly one claim (a pending
+    Candidate under ordinary admission, cited to the closing turn); an
+    unresolved conversation proposes zero claims and one open question in the
+    thread's own words.  One row per thread reading attempt over a fixed last
+    turn, so re-reading an unchanged thread is idempotent and a longer thread
+    reads again.
+    """
+
+    __tablename__ = "inbound_thread_readings"
+    __table_args__ = (
+        UniqueConstraint("thread_id", "closing_message_id"),
+        CheckConstraint(
+            "resolution in ('concluded', 'unresolved')",
+            name="ck_inbound_thread_reading_resolution",
+        ),
+        CheckConstraint(
+            "(resolution = 'concluded') = (candidate_id is not null)",
+            name="ck_inbound_thread_reading_claim",
+        ),
+        CheckConstraint(
+            "(resolution = 'unresolved') = (open_question is not null)",
+            name="ck_inbound_thread_reading_question",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(
+        ForeignKey("inbound_threads.id"), index=True
+    )
+    closing_message_id: Mapped[int] = mapped_column(ForeignKey("inbound_messages.id"))
+    resolution: Mapped[str] = mapped_column(String(16))
+    # The one proposed claim of a concluded conversation — a pending Candidate
+    # that enters the record only through ordinary admission.
+    candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidates.id"))
+    # The one open question of an unresolved conversation, in the thread's own
+    # words, on the standing owner's list for the bound row.
+    open_question: Mapped[str | None] = mapped_column(Text)
+    turn_context_json: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    prompt_version: Mapped[str | None] = mapped_column(String(64))
+    model: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InboundRouteTriage(Base):
+    """The one human routing residue for an ambiguous or blank thread."""
+
+    __tablename__ = "inbound_route_triage"
+    __table_args__ = (
+        UniqueConstraint("thread_id"),
+        CheckConstraint(
+            "state in ('pending', 'resolved')", name="ck_inbound_route_triage_state"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("inbound_threads.id"))
+    candidate_project_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(BigInteger), default=list, server_default="{}"
+    )
+    state: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    resolved_project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    resolved_by: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 # The three families that write records or move support under an
 # authorized policy (ADRs 0022, 0026, 0027). ADR-0028 joined their
 # approval and run tables — the shapes were identical, and copies drift —
@@ -1881,6 +2045,82 @@ class ProjectCheckConfiguration(Base):
     )
 
 
+class CoordinationSummaryConfiguration(Base):
+    """One explicit, server-owned authorization for bounded summary drafting.
+
+    Unlike ordinary report reading, a Coordination Summary can spend model
+    budget.  Therefore no supported default exists: an attributable project
+    declaration names every input, model, time, retry, retention, and
+    observation bound before a request is allowed.  Rows are append-only so a
+    retained draft always names the rules under which it was obtained.
+    """
+
+    __tablename__ = "coordination_summary_configurations"
+    __table_args__ = (
+        CheckConstraint("source_scope in ('all_sources', 'documents_only')", name="ck_summary_config_source_scope"),
+        CheckConstraint("max_input_tokens between 1 and 200000", name="ck_summary_config_input_budget"),
+        CheckConstraint("max_output_tokens between 1 and 20000", name="ck_summary_config_output_budget"),
+        CheckConstraint("timeout_seconds between 1 and 600", name="ck_summary_config_timeout"),
+        CheckConstraint("max_requests = 1", name="ck_summary_config_one_request"),
+        CheckConstraint("retry_policy = 'none'", name="ck_summary_config_no_retry"),
+        CheckConstraint("retention_policy = 'retained_indefinitely'", name="ck_summary_config_retention"),
+        CheckConstraint("length(trim(model)) > 0", name="ck_summary_config_model"),
+        CheckConstraint("length(trim(prompt_version)) > 0", name="ck_summary_config_prompt"),
+        CheckConstraint("length(trim(observation_context)) > 0", name="ck_summary_config_context"),
+        CheckConstraint("length(trim(created_by)) > 0", name="ck_summary_config_actor"),
+        Index("ix_coordination_summary_configurations_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    source_scope: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    max_input_tokens: Mapped[int] = mapped_column(Integer)
+    max_output_tokens: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    max_requests: Mapped[int] = mapped_column(Integer)
+    retry_policy: Mapped[str] = mapped_column(String(32))
+    retention_policy: Mapped[str] = mapped_column(String(64))
+    observation_context: Mapped[str] = mapped_column(String(128))
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CoordinationSummaryRequest(Base):
+    """Immutable receipt for one bounded, non-authoritative draft attempt."""
+
+    __tablename__ = "coordination_summary_requests"
+    __table_args__ = (
+        UniqueConstraint("configuration_id", "reading_sha256", name="uq_summary_request_reading"),
+        CheckConstraint(
+            "status in ('completed', 'empty_input', 'budget_exhausted', 'timeout', "
+            "'transport_failure', 'validation_refused')",
+            name="ck_summary_request_status",
+        ),
+        CheckConstraint("reading_sha256 ~ '^[0-9a-f]{64}$'", name="ck_summary_request_reading_sha"),
+        CheckConstraint("length(trim(requested_by)) > 0", name="ck_summary_request_actor"),
+        Index("ix_coordination_summary_requests_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    configuration_id: Mapped[int] = mapped_column(ForeignKey("coordination_summary_configurations.id"))
+    requested_by: Mapped[str] = mapped_column(String(128))
+    reading_sha256: Mapped[str] = mapped_column(String(64))
+    project_reading_json: Mapped[dict] = mapped_column(JSONB)
+    evaluated_on: Mapped[date] = mapped_column(Date)
+    ruleset_version: Mapped[str] = mapped_column(String(32))
+    statement_publication_fingerprint: Mapped[str] = mapped_column(String(64))
+    provenance_mode: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    summary_markdown: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ExternalReportArtifact(Base):
     """One immutable, already-rendered External Report PDF.
 
@@ -2233,6 +2473,15 @@ class Dependency(Base):
     )
     committed_date: Mapped[date | None] = mapped_column(Date)
     need_date: Mapped[date | None] = mapped_column(Date)
+    # A source-proven selector, not a judgment.  ADR-0052 uses it with the
+    # resolution method to select the standard documentation fields that are
+    # required at read time.  ``reimbursable`` is the one currently modeled
+    # value; unknown or absent source wording deliberately selects nothing.
+    # Deferred like milestone_registration_id: migration rehearsals load
+    # Dependency rows on databases pinned before this column existed.
+    cost_responsibility: Mapped[str | None] = mapped_column(
+        String(64), deferred=True
+    )
     # Free text in v0: what closes this. A reviewer judges whether a given
     # piece of evidence meets it. Promoting this to a typed taxonomy waits
     # until real adjudications show what closure documents look like
@@ -2767,6 +3016,56 @@ class DependencyEvidenceSufficiency(Base):
     )
 
 
+class DocumentationFieldConfirmation(Base):
+    """One append-only human confirmation of a cited interpretation field.
+
+    Machine checklist fields are predicates over current cited documents and
+    therefore have no stored checkmark.  This row exists only for the small
+    interpretive residue ADR-0052 retains: a named person confirmed the
+    system's cited reading of one exact current document.  A later source or
+    supersession does not overwrite the row; it simply stops making the old
+    confirmation applicable when the checklist is read.
+    """
+
+    __tablename__ = "documentation_field_confirmations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dependency_id", "evidence_link_id"],
+            ["evidence_links.dependency_id", "evidence_links.id"],
+            name="fk_documentation_confirmation_owned_evidence",
+        ),
+        CheckConstraint(
+            "field_name = 'approval_interpretation'",
+            name="ck_documentation_confirmation_known_field",
+        ),
+        CheckConstraint(
+            "classification in ('approved', 'conditional')",
+            name="ck_documentation_confirmation_known_classification",
+        ),
+        CheckConstraint(
+            "conclusion = 'approved'",
+            name="ck_documentation_confirmation_known_conclusion",
+        ),
+        CheckConstraint(
+            "length(trim(confirmed_by)) > 0",
+            name="ck_documentation_confirmation_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    evidence_link_id: Mapped[int] = mapped_column(BigInteger)
+    field_name: Mapped[str] = mapped_column(String(64))
+    # This preserves the exact machine reading the person was shown; it is
+    # deliberately not a grant for the model to write a project conclusion.
+    classification: Mapped[str] = mapped_column(String(64))
+    conclusion: Mapped[str] = mapped_column(String(64))
+    confirmed_by: Mapped[str] = mapped_column(Text)
+    confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class OperativeSupport(Base):
     """A human designation of which Evidence supports a publication scope.
 
@@ -2894,6 +3193,85 @@ class MilestoneRegistration(Base):
     )
 
 
+class KeyDateDraftReceipt(Base):
+    """One bounded, source-bound, non-authoritative Key date drafting attempt.
+
+    This receipt deliberately has no relationship to ``Milestone`` or
+    ``Dependency``.  A model can leave a draft here, but only the existing
+    human import and linking commands can change the Project Record.
+    """
+
+    __tablename__ = "key_date_draft_receipts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "source_document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_key_date_draft_receipts_source_same_project",
+        ),
+        CheckConstraint(
+            "status in ('drafted', 'abstained', 'failed')",
+            name="ck_key_date_draft_receipts_status",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_key_date_draft_receipts_source_sha256",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(allowed_pages_json) = 'array' and "
+            "jsonb_typeof(configuration_json) = 'object' and "
+            "jsonb_typeof(budget_json) = 'object' and "
+            "jsonb_typeof(usage_json) = 'object' and "
+            "jsonb_typeof(unresolved_json) = 'array' and "
+            "jsonb_typeof(sequencing_json) = 'array'",
+            name="ck_key_date_draft_receipts_json",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    allowed_pages_json: Mapped[list] = mapped_column(JSONB)
+    requested_by: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(128))
+    detail: Mapped[str | None] = mapped_column(Text)
+    configuration_json: Mapped[dict] = mapped_column(JSONB)
+    budget_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    unresolved_json: Mapped[list] = mapped_column(JSONB)
+    sequencing_json: Mapped[list] = mapped_column(JSONB)
+    non_authoritative: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class KeyDateDraftRowReceipt(Base):
+    """One validated day-precise row retained beside its draft receipt."""
+
+    __tablename__ = "key_date_draft_row_receipts"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", "ordinal", name="uq_key_date_draft_row_ordinal"),
+        CheckConstraint("precision = 'day'", name="ck_key_date_draft_row_precision"),
+        CheckConstraint("source_page > 0", name="ck_key_date_draft_row_source_page"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("key_date_draft_receipts.id"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    code: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(Text)
+    need_date: Mapped[date] = mapped_column(Date)
+    precision: Mapped[str] = mapped_column(String(16))
+    source_page: Mapped[int] = mapped_column(Integer)
+    source_quote: Mapped[str] = mapped_column(Text)
+
+
 class RetiredDependencyStatus(Base):
     """The unauthoritative legacy status preserved when ADR-0044 retired it."""
 
@@ -2975,6 +3353,77 @@ class Candidate(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class StatementSuggestionEligibilityDeclaration(Base):
+    """One explicit approval to expose deterministic statement ordering."""
+
+    __tablename__ = "statement_suggestion_eligibility_declarations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(contract_version)) > 0",
+            name="ck_statement_suggestion_eligibility_contract",
+        ),
+        UniqueConstraint(
+            "candidate_id", name="uq_statement_suggestion_eligibility_candidate"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    contract_version: Mapped[str] = mapped_column(String(128))
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class StatementSuggestionProtection(Base):
+    """One declared cohort window during which statement ordering is withheld."""
+
+    __tablename__ = "statement_suggestion_protections"
+    __table_args__ = (
+        CheckConstraint(
+            "kind in ('shadow_cohort', 'no_agent_baseline')",
+            name="ck_statement_suggestion_protection_kind",
+        ),
+        CheckConstraint(
+            "length(trim(observation_contract)) > 0",
+            name="ck_statement_suggestion_protection_contract",
+        ),
+        UniqueConstraint(
+            "candidate_id",
+            "kind",
+            "observation_contract",
+            name="uq_statement_suggestion_protection_window",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    observation_contract: Mapped[str] = mapped_column(String(128))
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class StatementSuggestionProtectionEnd(Base):
+    """Append-only conclusion of one declared suggestion-protection window."""
+
+    __tablename__ = "statement_suggestion_protection_ends"
+    __table_args__ = (
+        UniqueConstraint(
+            "protection_id", name="uq_statement_suggestion_protection_end"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    protection_id: Mapped[int] = mapped_column(
+        ForeignKey("statement_suggestion_protections.id"), index=True
+    )
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class EvidenceInvestigationRun(Base):
@@ -3362,6 +3811,94 @@ class StatementCoordinationReversalEffect(Base):
     )
 
 
+class FollowUpPlanReceipt(Base):
+    """The immutable grouping identity for one Constraint Follow-up Plan Save.
+
+    The named rows remain independent append-only Work Decisions (ADR-0038);
+    this receipt only states which decisions one Save committed together,
+    which predecessors the screen had read, and which exact roster row
+    supplied the rendered Assigned To name.  No statement is manufactured to
+    give a Constraint a grouping receipt (#333).
+    """
+
+    __tablename__ = "follow_up_plan_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "internal_owner_decision_id is not null "
+            "or next_action_decision_id is not null",
+            name="ck_follow_up_plan_receipt_one_result",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(expected_predecessors_json) = 'object'",
+            name="ck_follow_up_plan_receipt_predecessors_object",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_follow_up_plan_receipt_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(
+        ForeignKey("dependencies.id"), index=True
+    )
+    internal_owner_roster_entry_id: Mapped[int] = mapped_column(
+        ForeignKey("project_roster_entries.id")
+    )
+    internal_owner_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    next_action_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    resumed_deferral_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"), unique=True)
+    expected_predecessors_json: Mapped[dict] = mapped_column(JSONB)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class FollowUpPlanReversal(Base):
+    """The attributable compensating act for one grouped plan Save.
+
+    Undo never edits or deletes the original decisions.  It appends one
+    reversal Work Decision per grouped chain, restoring each predecessor
+    value, and this row names those appended reversals so the grouped act
+    stays auditable as one.
+    """
+
+    __tablename__ = "follow_up_plan_reversals"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_follow_up_plan_reversal_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("follow_up_plan_receipts.id"), unique=True
+    )
+    internal_owner_reversal_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    next_action_reversal_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    deferral_reversal_decision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_decisions.id"), unique=True
+    )
+    audit_log_id: Mapped[int] = mapped_column(ForeignKey("audit_log.id"), unique=True)
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ReconfirmationReceipt(Base):
     """Immutable binding behind one human Reconfirmation audit entry.
 
@@ -3633,6 +4170,56 @@ class DisputeSettlement(Base):
     settled_by: Mapped[str] = mapped_column(Text)
     covers_assertion_id: Mapped[int] = mapped_column(BigInteger)
     settled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DisputeHistoryResolution(Base):
+    """One append-only ADR-0061 chronology outcome, never a human verdict.
+
+    A physical source can be shown to be stale from the record's own change
+    history.  That is a mechanical conclusion with a different authority from
+    ``DisputeSettlement``: it must never look like a person chose a value.  A
+    stale executed agreement is retained in this same chronology history, but
+    its ``contractual_amendment`` outcome deliberately does *not* settle the
+    field; it creates coordination work instead.
+    """
+
+    __tablename__ = "dispute_history_resolutions"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome in ('physical_superseded', 'contractual_amendment')",
+            name="ck_dispute_history_resolutions_outcome",
+        ),
+        CheckConstraint(
+            "older_assertion_id <> newer_assertion_id",
+            name="ck_dispute_history_resolutions_distinct_assertions",
+        ),
+        CheckConstraint(
+            "length(trim(rule_version)) > 0",
+            name="ck_dispute_history_resolutions_rule_version",
+        ),
+        UniqueConstraint(
+            "dependency_id",
+            "field_name",
+            "covers_assertion_id",
+            name="uq_dispute_history_resolutions_coverage",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    field_name: Mapped[str] = mapped_column(String(64))
+    older_assertion_id: Mapped[int] = mapped_column(ForeignKey("assertions.id"))
+    newer_assertion_id: Mapped[int] = mapped_column(ForeignKey("assertions.id"))
+    # This is intentionally the exact newest Assertion the rule saw.  A later
+    # assertion reopens a physical conclusion by the same coverage rule a
+    # human settlement already uses.
+    covers_assertion_id: Mapped[int] = mapped_column(BigInteger)
+    outcome: Mapped[str] = mapped_column(String(32))
+    rule_version: Mapped[str] = mapped_column(String(64))
+    why: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

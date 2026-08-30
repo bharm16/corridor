@@ -20,7 +20,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "d256f1a8b4c7"
-HEAD = "b4d1e2f3a5c6"
+HEAD = "c345a9f1d2e3"
 
 
 def _upgrade(database_url: str, target: str) -> None:
@@ -171,6 +171,28 @@ def test_evidence_investigator_schema_is_one_linear_head_on_a_fresh_database():
                     "principal",
                     "observed_at",
                 ]
+                assert _columns(
+                    connection, "statement_suggestion_eligibility_declarations"
+                ) == [
+                    "id",
+                    "project_id",
+                    "candidate_id",
+                    "contract_version",
+                    "declared_at",
+                ]
+                assert _columns(connection, "statement_suggestion_protections") == [
+                    "id",
+                    "project_id",
+                    "candidate_id",
+                    "kind",
+                    "observation_contract",
+                    "declared_at",
+                ]
+                assert _columns(connection, "statement_suggestion_protection_ends") == [
+                    "id",
+                    "protection_id",
+                    "ended_at",
+                ]
                 assert _constraint_columns(
                     connection, "uq_evidence_investigation_shadow_case_identity"
                 ) == [
@@ -192,6 +214,12 @@ def test_evidence_investigator_schema_is_one_linear_head_on_a_fresh_database():
                     "evidence_investigation_shadow_outcomes_append_only",
                     "evidence_investigation_evaluation_receipts_append_only",
                     "evidence_investigation_candidate_review_starts_append_only",
+                    "statement_suggestion_eligibility_declarations_immutable",
+                    "statement_suggestion_protections_immutable",
+                    "statement_suggestion_protection_ends_immutable",
+                    "statement_suggestion_eligibility_declarations_reject_truncate",
+                    "statement_suggestion_protections_reject_truncate",
+                    "statement_suggestion_protection_ends_reject_truncate",
                 ):
                     assert connection.scalar(
                         text(

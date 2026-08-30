@@ -2807,51 +2807,6 @@ def test_an_unplaceable_statement_is_kept_and_named(session, project, admitted):
     assert waiting["event_date"] == "2025-01-16"
 
 
-def test_attaching_places_the_statement_a_human_names(
-    session, project, admitted
-):
-    from corridor.event_admission import attach_statement, waiting_statements
-
-    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
-    run_event_admission(session, project.id)
-
-    event = attach_statement(
-        session, candidate, admitted, principal=OPERATOR
-    )
-
-    assert event.event_type == "commitment"
-    assert event.created_by == OPERATOR.subject
-    session.refresh(candidate)
-    assert candidate.state == "accepted"
-    assert waiting_statements(session, project.id) == []
-
-
-def test_attaching_uses_the_candidate_payload_re_read_under_the_project_lock(
-    session, project, admitted
-):
-    """A reviewed edit committed after the initial read is the attached fact."""
-    from corridor.event_admission import attach_statement
-
-    [candidate] = _minutes_with(
-        session, project, [_event(ref="PL99", committed_date="2025-06-01")]
-    )
-    run_event_admission(session, project.id)
-    edited_payload = json.loads(json.dumps(candidate.payload_json))
-    edited_payload["fields"]["committed_date"] = "2025-07-15"
-    session.execute(
-        text(
-            "update candidates set payload_json = cast(:payload as jsonb) "
-            "where id = :candidate_id"
-        ),
-        {"payload": json.dumps(edited_payload), "candidate_id": candidate.id},
-    )
-    assert candidate.payload_json["fields"]["committed_date"] == "2025-06-01"
-
-    event = attach_statement(session, candidate, admitted, principal=OPERATOR)
-
-    assert event.new_timing.start_date == date(2025, 7, 15)
-
-
 def test_the_pile_disables_attach_when_cited_evidence_is_outside_the_project(
     session, project, admitted
 ):
@@ -2867,194 +2822,6 @@ def test_the_pile_disables_attach_when_cited_evidence_is_outside_the_project(
     [waiting] = waiting_statements(session, project.id)
 
     assert waiting["attachable"] is False
-
-
-def test_refused_statement_placement_leaves_the_candidate_and_event_unchanged(
-    session, project, admitted
-):
-    """An audit refusal must unwind the event a human placement just created."""
-    from corridor.event_admission import attach_statement
-
-    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
-    run_event_admission(session, project.id)
-    session.execute(
-        text(
-            """
-            create function refuse_test_statement_attachment_audit()
-            returns trigger
-            language plpgsql
-            as $$
-            begin
-                if new.action = 'attach_statement' then
-                    raise exception 'statement attachment audit refused' using errcode = '23514';
-                end if;
-                return new;
-            end;
-            $$;
-            """
-        )
-    )
-    session.execute(
-        text(
-            """
-            create trigger refuse_test_statement_attachment_audit
-            before insert on audit_log
-            for each row execute function refuse_test_statement_attachment_audit();
-            """
-        )
-    )
-
-    with pytest.raises(IntegrityError, match="statement attachment audit refused"):
-        attach_statement(session, candidate, admitted, principal=OPERATOR)
-
-    assert _events_on(session, admitted.id) == []
-    assert session.scalars(
-        select(AuditLog).where(
-            AuditLog.entity_id == admitted.id,
-            AuditLog.action == "attach_statement",
-        )
-    ).all() == []
-    session.refresh(candidate)
-    session.refresh(admitted)
-    assert candidate.state == "pending"
-    assert admitted.committed_date is None
-
-
-def test_attaching_holds_the_masquerade_boundary(session, project, admitted):
-    """A project-side actor stating a delivery date is an action item,
-    never an External Party's commitment — a human naming a record does
-    not change that (ADR-0026)."""
-    from corridor.event_admission import StatementUnplaceable, attach_statement
-
-    [candidate] = _minutes_with(
-        session,
-        project,
-        [_event(org=PIPELINE, stated_party=PROJECT_SIDE, ref="PL99")],
-    )
-    run_event_admission(session, project.id)
-
-    with pytest.raises(StatementUnplaceable, match="own side"):
-        attach_statement(session, candidate, admitted, principal=OPERATOR)
-    session.refresh(candidate)
-    assert candidate.state == "pending"
-
-
-def test_attaching_refuses_an_unreadable_date(session, project, admitted):
-    from corridor.event_admission import StatementUnplaceable, attach_statement
-
-    [candidate] = _minutes_with(
-        session, project, [_event(event_date="the third of never", ref="PL99")]
-    )
-    run_event_admission(session, project.id)
-
-    with pytest.raises(StatementUnplaceable, match="date"):
-        attach_statement(session, candidate, admitted, principal=OPERATOR)
-
-
-def test_attaching_is_an_attributable_human_act(session, project, admitted):
-    from corridor.event_admission import attach_statement
-
-    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
-    run_event_admission(session, project.id)
-
-    with pytest.raises(InvalidHumanPrincipal):
-        attach_statement(
-            session, candidate, admitted, principal="system:batch"
-        )
-
-
-def test_an_attached_commitment_moves_the_committed_date(
-    session, project, admitted
-):
-    """The projection is the same one the policy path feeds."""
-    from corridor.event_admission import attach_statement
-
-    [candidate] = _minutes_with(
-        session,
-        project,
-        [_event(ref="PL99", committed_date="2025-06-03")],
-    )
-    run_event_admission(session, project.id)
-    attach_statement(session, candidate, admitted, principal=OPERATOR)
-
-    session.refresh(admitted)
-    assert admitted.committed_date == date(2025, 6, 3)
-
-
-def test_a_statement_cannot_attach_to_another_projects_record(
-    session, project, admitted
-):
-    from corridor.event_admission import StatementUnplaceable, attach_statement
-    from corridor.models import Project as ProjectModel
-
-    other = ProjectModel(
-        slug="statement-other", name="Other", is_synthetic=True
-    )
-    session.add(other)
-    session.flush()
-    stray = Dependency(
-        project_id=other.id,
-        ref_code="DEP-00001",
-        source_ref="PL99",
-        dep_type="utility_relocation",
-        title="elsewhere",
-    )
-    session.add(stray)
-    session.flush()
-
-    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
-    run_event_admission(session, project.id)
-
-    with pytest.raises(StatementUnplaceable, match="another project"):
-        attach_statement(session, candidate, stray, principal=OPERATOR)
-
-
-def test_attaching_refuses_a_quote_never_found_on_its_page(
-    session, project, admitted
-):
-    """The policy's first refusal. Without it a Committed Date could be
-    published from a citation the system had already disproved."""
-    from corridor.event_admission import StatementUnplaceable, attach_statement
-
-    [candidate] = _minutes_with(
-        session, project, [_event(ref="PL99")], verified=False
-    )
-    run_event_admission(session, project.id)
-
-    with pytest.raises(StatementUnplaceable, match="not found on its page"):
-        attach_statement(session, candidate, admitted, principal=OPERATOR)
-    session.refresh(admitted)
-    assert admitted.committed_date is None
-
-
-def test_attaching_refuses_a_candidate_outside_its_declared_run(
-    session, project, admitted
-):
-    """The scope every other human write goes through; attaching by hand
-    was the one path that skipped it."""
-    from corridor.event_admission import StatementUnplaceable, attach_statement
-
-    minutes = _document(
-        session, project, filename="stray-minutes.pdf", doc_type="minutes"
-    )
-    stray = _candidate(minutes, kind="event", fields=_event(ref="PL99"))
-    session.add(stray)
-    session.flush()  # never attached to an ExtractionRun
-
-    with pytest.raises(StatementUnplaceable):
-        attach_statement(session, stray, admitted, principal=OPERATOR)
-
-
-def test_attaching_refuses_a_dismissed_record(session, project, admitted):
-    from corridor.adjudicate import dismiss_dependency
-    from corridor.event_admission import StatementUnplaceable, attach_statement
-
-    [candidate] = _minutes_with(session, project, [_event(ref="PL99")])
-    run_event_admission(session, project.id)
-    dismiss_dependency(session, admitted, "duplicate", principal=OPERATOR)
-
-    with pytest.raises(StatementUnplaceable, match="dismissed"):
-        attach_statement(session, candidate, admitted, principal=OPERATOR)
 
 
 def test_the_pile_offers_only_what_can_actually_be_placed(
@@ -3180,11 +2947,7 @@ def test_the_pile_and_mutation_refuse_the_same_invalid_statement_draft(
     session, project, admitted, fields, reason
 ):
     """A preview must not offer a writer-rejected statement as attachable."""
-    from corridor.event_admission import (
-        StatementUnplaceable,
-        attach_statement,
-        waiting_statements,
-    )
+    from corridor.event_admission import waiting_statements
 
     [candidate] = _minutes_with(session, project, [fields])
     result = run_event_admission(session, project.id)
@@ -3192,8 +2955,6 @@ def test_the_pile_and_mutation_refuse_the_same_invalid_statement_draft(
     assert result.admitted_count == 0
     [waiting] = waiting_statements(session, project.id)
     assert waiting["attachable"] is False
-    with pytest.raises(StatementUnplaceable, match=reason):
-        attach_statement(session, candidate, admitted, principal=OPERATOR)
     assert _events_on(session, admitted.id) == []
     session.refresh(candidate)
     assert candidate.state == "pending"

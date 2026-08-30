@@ -133,14 +133,14 @@ def _statement_publication(session, project_id):
 
 
 @pytest.mark.parametrize(
-    ("strategy", "strategy_label"),
+    ("strategy", "strategy_label", "documentation_review"),
     [
-        ("protect_in_place", "Protect in place"),
-        ("policy_exception", "Exception to policy"),
+        ("protect_in_place", "Protect in place", "Documents marked sufficient"),
+        ("policy_exception", "Exception to policy", "Not confirmed"),
     ],
 )
 def test_the_xlsx_keeps_the_citation_columns(
-    session, project, tmp_path, strategy, strategy_label
+    session, project, tmp_path, strategy, strategy_label, documentation_review
 ):
     """A spreadsheet that drops the provenance is just the matrix they had."""
     dependency = session.scalars(
@@ -190,7 +190,7 @@ def test_the_xlsx_keeps_the_citation_columns(
     assert row["Supporting document"] == "Ready_Milestone_Evidence.pdf"
     assert row["Cited passage"] == source_text
     assert row["Documents required for this condition"] == source_text
-    assert row["Documentation review"] == "Not confirmed"
+    assert row["Documentation review"] == documentation_review
     assert row["Resolution method"] == strategy_label
     assert dependency.resolution_strategy == strategy
 

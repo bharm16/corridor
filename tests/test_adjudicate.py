@@ -2042,13 +2042,27 @@ def test_accepting_an_agreement_obligation_states_what_it_obligated(
     assert dependency.dep_type == "agreement"
     assert dependency.title == AGREEMENT_FIELDS["title"]
     assert dependency.committed_date is None
-    assert dependency.evidence_required == AGREEMENT_FIELDS["evidence_required"]
+    # ADR-0052 retires the free-text closure prompt from the Project Record;
+    # the source wording remains on the accepted Candidate Assertion instead.
+    assert dependency.evidence_required is None
     assert dependency.notes == AGREEMENT_FIELDS["obligation"]
     assert dependency.station_from is None
     assert dependency.station_to is None
     assert dependency.source_ref is None
     assert dependency.resolution_strategy is None
     assert dependency.external_org_id is not None
+
+
+def test_source_cost_responsibility_selects_the_standard_checklist(session, document):
+    candidate = make_candidate(
+        session,
+        document,
+        fields={**FIELDS, "cost_responsibility": "reimbursable"},
+    )
+
+    dependency = accept_candidate(session, candidate, principal=BRYCE)
+
+    assert dependency.cost_responsibility == "reimbursable"
 
 
 def test_a_matrix_candidate_still_materializes_as_a_relocation(

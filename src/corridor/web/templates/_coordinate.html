@@ -3,7 +3,9 @@
   just admitted; the owner box has focus so a name is one keystroke away,
   and skipping is always allowed — the gaps stay visible as MISSING_OWNER
   and MISSING_ACTION facts rather than falling through silently.
-  Each save is its own Work Decision (ADR-0025): two forms, two submits.
+  One roster-backed Save records the whole Follow-up Plan atomically; the
+  separate append-only Work Decisions and their grouping receipt are the
+  record behind it (#333, ADR-0035, ADR-0038).
 #}
 {% if coordinate_dependency %}
 <div class="coordinate">
@@ -22,34 +24,36 @@
   </div>
   <div class="coordinate-forms">
     <form method="post"
-          action="/dependencies/{{ coordinate_dependency.id }}/owner">
-    {{ csrf_field() }}
-      <input type="hidden" name="slug" value="{{ project.slug }}">
-      <input type="hidden" name="redirect_to"
-             value="{{ lane_url }}&coordinate={{ coordinate_dependency.id }}">
-      <input name="owner" placeholder="assigned to (named project person)"
-             value="{{ coordinate_dependency.internal_owner or '' }}"
-             {% if not coordinate_dependency.internal_owner %}autofocus{% endif %}>
-      <button type="submit">assign</button>
-    </form>
-    <form method="post"
-          action="/dependencies/{{ coordinate_dependency.id }}/action">
+          action="/dependencies/{{ coordinate_dependency.id }}/plan">
     {{ csrf_field() }}
       <input type="hidden" name="slug" value="{{ project.slug }}">
       <input type="hidden" name="redirect_to" value="{{ lane_url }}">
-      <input name="action" placeholder="next action"
-             value="{{ coordinate_dependency.next_action or '' }}"
-             {% if coordinate_dependency.internal_owner and not coordinate_dependency.next_action %}autofocus{% endif %}>
-      <input name="due_date" type="date"
-             value="{{ coordinate_dependency.action_due_date or '' }}"
-             {% if coordinate_dependency.internal_owner and coordinate_dependency.next_action and not coordinate_dependency.action_due_date and not coordinate_dependency.action_due_date_reason %}autofocus{% endif %}>
-      <select name="due_date_unknown_reason">
-        <option value="">if no date, why?</option>
-        <option value="awaiting_external_information">awaiting external information</option>
-        <option value="awaiting_schedule_information">awaiting schedule information</option>
-        <option value="date_not_yet_known">date not yet known</option>
+      <input type="hidden" name="expected_internal_owner_decision_id"
+             value="{{ coordinate_expected_internal_owner_decision_id }}">
+      <input type="hidden" name="expected_next_action_decision_id"
+             value="{{ coordinate_expected_next_action_decision_id }}">
+      <select name="internal_owner_roster_entry_id" required
+              {% if not coordinate_dependency.internal_owner %}autofocus{% endif %}>
+        <option value="">assigned to — choose a project-team member</option>
+        {% for member in plan_roster %}
+          <option value="{{ member.id }}">{{ member.display_name }}</option>
+        {% endfor %}
       </select>
-      <button type="submit">set action</button>
+      <select name="next_action" required>
+        <option value="">next action — choose the project response</option>
+        {% for choice in plan_next_action_choices %}
+          <option value="{{ choice }}">{{ choice }}</option>
+        {% endfor %}
+      </select>
+      <input name="action_due_date" type="date"
+             value="{{ coordinate_dependency.action_due_date or '' }}">
+      <select name="action_due_date_unknown_reason">
+        <option value="">if no date, why?</option>
+        {% for reason in plan_unknown_date_reasons %}
+          <option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">save plan</button>
     </form>
   </div>
 </div>

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
@@ -41,6 +42,7 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventScope,
     DependencyEventScopeDecision,
+    DocPage,
     Document,
     EvidenceLink,
     ExternalOrg,
@@ -60,6 +62,10 @@ class AssertionView:
     page_no: int | None
     quote: str | None
     verified: bool
+    document_date: date | None
+    text_source: str | None
+    document_type: str | None
+    image_available: bool
 
 
 @dataclass
@@ -369,9 +375,14 @@ def load_dependency(
         org_name = org.name if org else None
 
     rows = session.execute(
-        select(Assertion, EvidenceLink, Document)
+        select(Assertion, EvidenceLink, Document, DocPage)
         .outerjoin(EvidenceLink, Assertion.evidence_link_id == EvidenceLink.id)
         .outerjoin(Document, EvidenceLink.document_id == Document.id)
+        .outerjoin(
+            DocPage,
+            (DocPage.document_id == EvidenceLink.document_id)
+            & (DocPage.page_no == EvidenceLink.page_no),
+        )
         .where(Assertion.dependency_id == dependency_id)
         .order_by(Assertion.field_name, Assertion.id)
     ).all()
@@ -380,7 +391,7 @@ def load_dependency(
         dependency_id, set()
     )
     by_field: dict[str, FieldView] = {}
-    for assertion, link, document in rows:
+    for assertion, link, document, page in rows:
         view = by_field.setdefault(
             assertion.field_name,
             FieldView(assertion.field_name, settled=assertion.field_name in settled),
@@ -394,6 +405,10 @@ def load_dependency(
                 page_no=link.page_no if link else None,
                 quote=link.quote if link else None,
                 verified=bool(link.verified) if link else False,
+                document_date=document.doc_date if document else None,
+                text_source=page.text_source if page else None,
+                document_type=document.doc_type if document else None,
+                image_available=bool(page and page.image_path and Path(page.image_path).is_file()),
             )
         )
 

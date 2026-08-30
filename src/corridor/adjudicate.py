@@ -51,6 +51,7 @@ from corridor.measurement_cases import (
     record_candidate_correction_case,
     record_do_not_add_case,
 )
+from corridor.disputes import apply_staleness_resolutions
 from corridor.project_lock import lock_project
 from corridor.supersession_review import ordinary_candidate_for_update
 
@@ -412,6 +413,7 @@ def accept_candidate(
         },
     )
     session.flush()
+    apply_staleness_resolutions(session, dependency.id)
     return dependency
 
 
@@ -492,6 +494,8 @@ def admit_dependency_by_policy(
             },
         )
     session.flush()
+    assert dependency is not None
+    apply_staleness_resolutions(session, dependency.id)
     return dependency
 
 
@@ -899,6 +903,7 @@ def merge_candidate(
         },
     )
     session.flush()
+    apply_staleness_resolutions(session, dependency.id)
     return dependency
 
 
@@ -1078,6 +1083,7 @@ def _materialize(
             # None when the document asserted no strategy this layout's
             # vocabulary recognises (ADR-0009).
             resolution_strategy=_asserted_strategy(session, candidate, fields),
+            cost_responsibility=fields.get("cost_responsibility"),
             **common,
         )
 
@@ -1094,7 +1100,11 @@ def _materialize(
             dep_type="agreement",
             title=title,
             notes=obligation,
-            evidence_required=fields.get("evidence_required"),
+            # The historical free-text closure prompt is retained only on the
+            # Extracted Proposal/audit chain.  ADR-0052 retired it from the
+            # Project Record; standard selectors and cited fields now govern
+            # documentation readiness.
+            cost_responsibility=fields.get("cost_responsibility"),
             **common,
         )
 

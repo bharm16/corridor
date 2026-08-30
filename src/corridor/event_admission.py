@@ -297,6 +297,32 @@ class UnknownScopeWriteIntegrity(RuntimeError):
     """An eligible row could not produce its exact protected write set."""
 
 
+def unknown_scope_candidate_preparer(
+    session: Session, project: Project
+):
+    """Return the public read-and-validate seam for sibling scope rules.
+
+    The unknown-scope policy owns statement facts, duplicate history, and its
+    validation boundary.  A newer deterministic scope rule may reuse that
+    expensive preparation, but receives only a callable verdict seam rather
+    than this module's private registries or evaluators.  The closure shares
+    one pre-write registry across its batch, preserving the normal policy's
+    duplicate discipline without creating an import cycle.
+    """
+    registry = _commitment_registry(session, project.id)
+
+    def prepare(candidate: Candidate) -> str | UnknownScopeAdmission | UnknownScopeDuplicate:
+        return _evaluate_unknown_scope(
+            session,
+            project,
+            candidate,
+            input_receipt={},
+            commitment_registry=registry,
+        )
+
+    return prepare
+
+
 def _validated_write_candidate_ids(
     session: Session,
     *,
@@ -338,6 +364,7 @@ def run_event_admission(
     *,
     policy_version: str | None = None,
     write_candidate_ids: Sequence[int] | None = None,
+    _withheld_candidate_ids: tuple[int, ...] | None = None,
 ) -> EventAdmissionResult:
     """Attach what the minutes say to the conflicts they name.
 
@@ -354,6 +381,30 @@ def run_event_admission(
         project_id=project_id,
         write_candidate_ids=write_candidate_ids,
     )
+    # ADR-0054's newer exact scope tier runs ahead of the existing policies:
+    # once it has a passing ADR-0050 replay it claims only its sole-survivor
+    # cases and holds its narrowed sets pending, and the existing policies
+    # retain every remaining Candidate.  The tier is inert on zero history or
+    # a contradiction, so this ordinary entry point cannot silently enable it.
+    if policy_version is None and write_scope is None and _withheld_candidate_ids is None:
+        from corridor.statement_scope_matching import run_identifying_language_admission
+
+        scoped = run_identifying_language_admission(
+            session,
+            project,
+            prepare_candidate=unknown_scope_candidate_preparer(session, project),
+        )
+        remainder = run_event_admission(
+            session,
+            project_id,
+            _withheld_candidate_ids=scoped.withheld_candidate_ids,
+        )
+        return EventAdmissionResult(
+            run_id=remainder.run_id,
+            admitted_count=scoped.admitted_count + remainder.admitted_count,
+            abstained_count=remainder.abstained_count,
+            abstentions=remainder.abstentions,
+        )
     selected_version = policy_version or normal_event_admission_policy_version(
         session, project_id
     )
@@ -384,6 +435,7 @@ def run_event_admission(
             project_id,
             policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
             write_candidate_ids=extension_scope,
+            _withheld_candidate_ids=_withheld_candidate_ids,
         )
         return EventAdmissionResult(
             run_id=extension.run_id,
@@ -396,6 +448,7 @@ def run_event_admission(
             session,
             project,
             write_candidate_ids=write_scope,
+            withheld_candidate_ids=_withheld_candidate_ids or (),
         )
     if selected_version != EVENT_ADMISSION_POLICY_VERSION:
         raise ValueError(f"unsupported Event Admission policy {selected_version!r}")
@@ -657,6 +710,7 @@ def _run_unknown_scope_admission(
     project: Project,
     *,
     write_candidate_ids: Sequence[int] | None = None,
+    withheld_candidate_ids: tuple[int, ...] = (),
 ) -> EventAdmissionResult:
     """Apply only ADR-0042's exact party-level Commitment class."""
     lock_project(session, project.id)
@@ -678,6 +732,16 @@ def _run_unknown_scope_admission(
         writable_ids = set(write_candidate_ids)
         candidates = [
             candidate for candidate in candidates if candidate.id in writable_ids
+        ]
+    if withheld_candidate_ids:
+        # ADR-0054's exact tier narrowed these Candidates to a set of several
+        # Constraints this run.  Its narrowed-set abstention is their record;
+        # admitting them here with Applies To not yet known would erase the
+        # narrowed card and hide the one human decision that remains.  They
+        # stay visibly pending instead.
+        withheld = set(withheld_candidate_ids)
+        candidates = [
+            candidate for candidate in candidates if candidate.id not in withheld
         ]
     prior_abstentions: dict[int, list[EventAdmissionOutcome]] = {}
     for outcome in session.scalars(
@@ -1924,9 +1988,9 @@ def waiting_statements(
                 "committed_date": fields.get("committed_date"),
                 "conflict_ref": fields.get("conflict_ref"),
                 "description": fields.get("description"),
-                # Whether attach could possibly take it: the checks that
-                # depend on the statement alone use the same preparation as
-                # attach_statement. An enabled button that 409s teaches a
+                # Whether guided coordination could possibly place it: the
+                # checks that depend on the statement alone use this shared
+                # preparation. An enabled action that later refuses teaches a
                 # reviewer the pile is broken; a disabled one with the
                 # reason beside it teaches them what the statement lacks.
                 "attachable": attachable,
@@ -2025,102 +2089,3 @@ def _prepare_statement_placement(
         description=str(fields.get("description") or ""),
         evidence=evidence,
     )
-
-
-def attach_statement(
-    session: Session,
-    candidate: Candidate,
-    dependency: Dependency,
-    *,
-    principal: HumanPrincipal,
-) -> DependencyEvent:
-    """Put an unplaced statement on the record a human says it belongs to.
-
-    Acceptance builds a Dependency and refuses an event outright; this is
-    the gesture that message has always pointed at. What the policy could
-    not prove — which record the statement names — a human supplies by
-    naming it, and everything the policy would still have refused is
-    refused here too: an unparseable date, a type outside the policy, and
-    above all the masquerade boundary, because a project-side actor
-    stating a delivery date is an internal action item and never an
-    External Party's commitment (ADR-0026).
-    """
-    attacher = require_human_principal(principal)
-    if candidate.project_id != dependency.project_id:
-        raise StatementUnplaceable(
-            "a statement cannot attach to another project's record"
-        )
-    # The Candidate is mutable reviewer work until this act. Its state,
-    # payload, and action scope must all be re-read after the project lock;
-    # preparing first could write a stale pre-lock edit.
-    from corridor.adjudicate import require_candidate_action_scope
-
-    try:
-        require_candidate_action_scope(
-            session, candidate, historical_document_id=None
-        )
-    except Exception as exc:
-        raise StatementUnplaceable(str(exc)) from exc
-    project = session.get(Project, dependency.project_id, populate_existing=True)
-    if project is None:
-        raise StatementUnplaceable(
-            f"dependency {dependency.id} belongs to no registered project"
-        )
-    # Re-read under the lock — the caller loaded this row before taking
-    # it, and a dismissal committed in between must refuse this attach,
-    # not race it. The same stale-read the dismiss path re-reads for.
-    session.refresh(dependency)
-    if dependency.dismissed_at is not None:
-        raise StatementUnplaceable(
-            f"{dependency.ref_code} was dismissed — a statement cannot "
-            "attach to a record nobody is working"
-        )
-    prepared = _prepare_statement_placement(session, project, candidate)
-
-    if prepared.affected_party and not identity.party_matches(
-        session, dependency, prepared.affected_party
-    ):
-        raise StatementUnplaceable(
-            "the statement's affected External Party does not match this record"
-        )
-    if dependency.external_org_id is None:
-        raise StatementUnplaceable("this record has no resolved External Party")
-
-    try:
-        # The accepted Candidate and its audit receipt are one human act with
-        # the event. A late refusal must not preserve the event while leaving
-        # the source Candidate pending or unaudited.
-        with session.begin_nested():
-            event = record_external_party_statement(
-                session,
-                project_id=project.id,
-                affected_external_org_id=dependency.external_org_id,
-                stated_party=prepared.stated_party,
-                stated_external_org_id=prepared.stated_external_org_id,
-                source_kind="cited",
-                event_date=prepared.event_date,
-                description=prepared.description,
-                new_timing=prepared.new_timing,
-                previous_timing=prepared.previous_timing,
-                scope=StatementScope.selected((dependency.id,)),
-                created_by=attacher.subject,
-                evidence=prepared.evidence,
-            )
-            candidate.state = "accepted"
-            candidate.adjudicated_at = datetime.now(timezone.utc)
-            audit.record(
-                session,
-                principal=attacher,
-                action=audit.ATTACH_STATEMENT,
-                entity_type=audit.DEPENDENCY,
-                entity_id=dependency.id,
-                after={
-                    "candidate_id": candidate.id,
-                    "dependency_event_id": event.id,
-                    "event_type": prepared.event_type,
-                },
-            )
-            session.flush()
-    except StatementRefusal as exc:
-        raise StatementUnplaceable(str(exc)) from exc
-    return event

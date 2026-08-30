@@ -185,7 +185,35 @@ def ingest_document(
 def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path | None, str]]:
     if path.suffix.lower() in SPREADSHEET_SUFFIXES:
         return _extract_sheets(path)
+    if path.suffix.lower() == ".eml":
+        return _extract_message(path)
     return _extract_pages(path, images_dir)
+
+
+def _extract_message(path: Path) -> list[tuple[int, str, None, str]]:
+    """One page holding a stored raw message's plain-text body.
+
+    Email intake (#372, ADR-0058) stores the complete original message
+    byte-exact; the body is written evidence that flows through the ordinary
+    prose statement path, so it needs a registered page a quote can verify
+    against. The exact transmitted text is the page — no image exists, and
+    "text_layer" is honest: this is the text the source itself carried.
+    """
+    from email import policy
+    from email.parser import BytesParser
+
+    message = BytesParser(policy=policy.default).parsebytes(path.read_bytes())
+    body = ""
+    if message.is_multipart():
+        for part in message.walk():
+            if part.get_content_type() == "text/plain" and not part.get_filename():
+                body = str(part.get_content() or "")
+                break
+    elif message.get_content_type() == "text/plain":
+        body = str(message.get_content() or "")
+    if not body.strip():
+        raise ValueError(f"{path.name}: no plain-text body")
+    return [(1, body, None, "text_layer")]
 
 
 def _extract_sheets(path: Path) -> list[tuple[int, str, None, str]]:

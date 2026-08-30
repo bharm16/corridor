@@ -1,0 +1,44 @@
+<section class="scope-match-card" aria-labelledby="scope-match-heading">
+  <h3 id="scope-match-heading">Several constraints match this statement</h3>
+  <p class="muted">Corridor narrowed the choices from the statement's own identifying language. It has not selected one; no choice is preselected.</p>
+  <p><b>Matched details:</b>
+    {% for detail in scope_match_card.matched_details %}<span class="quote">{{ detail }}</span>{% if not loop.last %} · {% endif %}{% else %}<span class="muted">recorded with the matcher's abstention</span>{% endfor %}
+  </p>
+  <ul class="scope-match-candidates">
+    {% for candidate in scope_match_card.candidates %}
+      <li>
+        <button type="button" class="scope-match-choice" data-scope-match-dependency="{{ candidate.dependency_id }}">
+          {{ candidate.ref_code }} — {{ candidate.title }}{% if candidate.location %} · {{ candidate.location }}{% endif %}{% if candidate.station_from or candidate.station_to %} · Station {{ candidate.station_from or '?' }} to {{ candidate.station_to or '?' }}{% endif %}
+        </button>
+      </li>
+    {% endfor %}
+  </ul>
+  <button type="button" class="scope-match-choice" id="scope-match-all-listed"
+          data-scope-match-all="{{ scope_match_card.candidate_dependency_ids|join(',') }}">
+    This statement applies to all {{ scope_match_card.candidates|length }} listed constraints
+  </button>
+  {% for evidence in candidate_evidence %}
+    {% if evidence.has_page_image and loop.first %}
+      <p class="muted">The source page the matched details came from:</p>
+      <img class="page-image" src="/page-image/{{ evidence.document_id }}/{{ evidence.page_no }}" alt="Registered source page {{ evidence.page_no }}" loading="lazy">
+    {% endif %}
+  {% endfor %}
+</section>
+<script>
+  (function () {
+    const selectedMode = document.querySelector('input[name="scope_mode"][value="selected"]');
+    function choose(ids) {
+      if (!selectedMode) return;
+      selectedMode.checked = true;
+      selectedMode.dispatchEvent(new Event('change', { bubbles: true }));
+      for (const box of document.querySelectorAll('input[name="dependency_id"]')) {
+        box.checked = ids.includes(box.value);
+      }
+    }
+    for (const button of document.querySelectorAll('[data-scope-match-dependency]')) {
+      button.addEventListener('click', () => choose([button.dataset.scopeMatchDependency]));
+    }
+    const allListed = document.querySelector('[data-scope-match-all]');
+    if (allListed) allListed.addEventListener('click', () => choose(allListed.dataset.scopeMatchAll.split(',')));
+  })();
+</script>
