@@ -299,6 +299,7 @@ class LocationDiscoveryDeclaration:
     concurrency_limit: int
     model_token_budget: int
     notification_budget: int
+    rid_link_text: str | None = None
 
     @classmethod
     def released_hourly(
@@ -313,6 +314,7 @@ class LocationDiscoveryDeclaration:
         authorized_hosts: tuple[str, ...],
         sealed: bool = False,
         starts_at: datetime,
+        rid_link_text: str | None = None,
     ) -> "LocationDiscoveryDeclaration":
         return cls(
             project_id=project_id,
@@ -341,6 +343,7 @@ class LocationDiscoveryDeclaration:
             concurrency_limit=1,
             model_token_budget=0,
             notification_budget=0,
+            rid_link_text=rid_link_text,
         )
 
 
@@ -965,6 +968,7 @@ def _location_discovery_effectful(context: EffectfulContext) -> dict[str, Any]:
         sealed=bool(scope_json.get("sealed")),
         source_manifest_id=scope_json["source_manifest_id"],
         adapter_identity=scope_json["adapter_identity"],
+        rid_link_text=scope_json.get("rid_link_text"),
     )
     budgets = DiscoveryBudgets(
         max_references=scope_json["enumeration_limit"],
@@ -2825,6 +2829,22 @@ def _validated_location_discovery_declaration(
         raise DueWorkRefusal("location-discovery location identity is invalid")
     if not _EXTRACTOR_IDENTITY.fullmatch(declaration.adapter_identity):
         raise DueWorkRefusal("location-discovery adapter identity is invalid")
+    if declaration.adapter_identity not in {
+        "http-index-v1",
+        "txdot-rid-box-v1",
+    }:
+        raise DueWorkRefusal("location-discovery adapter is not installed")
+    rid_link_text = (
+        declaration.rid_link_text.strip()
+        if isinstance(declaration.rid_link_text, str)
+        else None
+    )
+    if declaration.adapter_identity == "txdot-rid-box-v1" and (
+        not rid_link_text or len(rid_link_text) > 128
+    ):
+        raise DueWorkRefusal("location-discovery TxDOT RID link text is invalid")
+    if declaration.adapter_identity == "http-index-v1" and rid_link_text is not None:
+        raise DueWorkRefusal("http-index-v1 does not accept TxDOT RID link text")
     if not _LOCATION_IDENTITY.fullmatch(declaration.source_manifest_id):
         raise DueWorkRefusal("location-discovery source manifest identity is invalid")
     hosts = tuple(dict.fromkeys(declaration.authorized_hosts))
@@ -2886,6 +2906,8 @@ def _validated_location_discovery_declaration(
         "request_limit": declaration.request_limit,
         "document_limit": declaration.document_limit,
     }
+    if rid_link_text is not None:
+        scope["rid_link_text"] = rid_link_text
     return {
         "schema_version": "due-work-gate-7-v1",
         "handler": HANDLER_LOCATION_DISCOVERY,
@@ -3557,6 +3579,7 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
                 enumeration_limit=scope_json.get("enumeration_limit", 0),
                 request_limit=scope_json.get("request_limit", 0),
                 document_limit=scope_json.get("document_limit", 0),
+                rid_link_text=scope_json.get("rid_link_text"),
                 starts_at=schedule.starts_at,
                 cadence=schedule.cadence,
                 timezone_name=schedule.timezone_name,

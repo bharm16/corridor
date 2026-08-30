@@ -85,6 +85,7 @@ def test_nhhip_manifest_declares_the_five_revision_chain_from_the_rid_index():
         source.supersession
         for source in manifest.sources
         if source.supersession is not None
+        and source.supersession.predecessor_registry_id.startswith("nhhip-ucm-")
     ]
 
     assert [
@@ -127,6 +128,41 @@ def test_nhhip_manifest_declares_the_five_revision_chain_from_the_rid_index():
         ),
     ]
 
+
+def test_nhhip_manifest_tracks_the_current_rid_and_supported_utility_sources():
+    manifest = load_manifest("corpus/manifest.yaml")
+    by_registry = {
+        source.registry_id: source
+        for source in manifest.sources
+        if source.registry_id is not None
+    }
+
+    current_rid = by_registry["nhhip-rid-index-2026-08-14"]
+    assert current_rid.url.endswith("nhhip-3c2-rid-index-20260814.pdf")
+    assert current_rid.doc_date == date(2026, 8, 14)
+
+    expected = {
+        "nhhip-utility-strip-map-2025-12-15",
+        "nhhip-utility-strip-map-2026-02-13",
+        "nhhip-utilities-its-transtar-2026-02-13",
+        "nhhip-utilities-storm-drain-2026-02-13",
+        "nhhip-utilities-txdot-electric-2026-02-13",
+    }
+    assert expected <= set(by_registry)
+    assert all(
+        "shared_name=51c7p764gr6pxivj2ati0qktrz7bq6w3" in by_registry[key].url
+        for key in expected
+    )
+    assert all(by_registry[key].doc_type == "plan" for key in expected)
+
+    strip_map = by_registry["nhhip-utility-strip-map-2025-12-15"]
+    assert strip_map.supersession is not None
+    assert strip_map.supersession.successor_registry_id == (
+        "nhhip-utility-strip-map-2026-02-13"
+    )
+    assert strip_map.supersession.source_registry_id == (
+        "nhhip-rid-index-2026-08-14"
+    )
 
 def test_supersession_declarations_survive_into_the_generated_lockfile(tmp_path):
     manifest_text = """
@@ -651,6 +687,30 @@ def test_archive_member_is_extracted_and_hashed(tmp_path):
     assert Path(rec["local_path"]).read_bytes() == UCM_BYTES
 
 
+def test_box_archive_probe_uses_a_real_range_not_a_one_byte_request(tmp_path):
+    """Current Box archives reject bytes=0-0 but accept an ordinary 64 KiB range."""
+    archive = make_zip({"ucm-2-13-2026.pdf": UCM_BYTES})
+    inner = ranged_transport({"https://example.gov/utilities.zip": archive})
+    observed: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.headers.get("range")
+        observed.append(value)
+        if value == "bytes=0-0":
+            return httpx.Response(500, content=b"Box rejected one-byte range")
+        return inner.handle_request(request)
+
+    summary = run_with(
+        tmp_path,
+        ARCHIVE_MANIFEST,
+        httpx.MockTransport(handler),
+    )
+
+    assert summary.failed == []
+    assert summary.fetched
+    assert observed[0] == "bytes=0-65535"
+
+
 def test_unchanged_archive_member_is_skipped_via_crc(tmp_path):
     archive = make_zip({"ucm-2-13-2026.pdf": UCM_BYTES})
     bodies = {"https://example.gov/utilities.zip": archive}
@@ -772,7 +832,7 @@ def test_one_archive_is_opened_once_for_many_members(tmp_path):
     inner = ranged_transport({"https://example.gov/utilities.zip": archive})
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.headers.get("range") == "bytes=0-0":
+        if request.headers.get("range") == "bytes=0-65535":
             probes.append(str(request.url))
         return inner.handler(request)
 
@@ -862,7 +922,7 @@ def test_the_inner_archive_is_read_once_for_many_members(tmp_path):
     # The inner zip member is one contiguous span of the outer archive; it
     # must be ranged out of it exactly once, however many nested members
     # the manifest names.
-    # (Probe requests are bytes=0-0; the directory reads are small tail
+    # (Probe requests are bytes=0-65535; the directory reads are small tail
     # ranges; the inner-zip read is the only large one.)
     large = [r for r in inner_reads if r and _range_span(r) > 200_000]
     assert len(large) == 1, f"inner zip read {len(large)} times: {large}"

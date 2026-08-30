@@ -7,8 +7,10 @@ project: nhhip-3c2
 agency: TxDOT
 
 sources:
-  # The RID index is itself evidence: it records each document's issuance
-  # date and its "Replaced on" supersession chain.
+  # RID indexes are themselves evidence: they record each document's issuance
+  # date and its "Replaced on" supersession chain. Keep the May index because
+  # it supports the already-declared matrix chain even though TxDOT later
+  # replaced its public URL; the August index records the current source set.
   - registry_id: nhhip-rid-index-2026-05-01
     url: https://www.txdot.gov/content/dam/docs/division/ald/nhhip-3c-2/nhhip-3c2-rid-index-20260501.pdf
     doc_type: other
@@ -16,10 +18,17 @@ sources:
     title: "Reference Information Documents (RID) Index"
     doc_date: 2026-05-01
 
+  - registry_id: nhhip-rid-index-2026-08-14
+    url: https://www.txdot.gov/content/dam/docs/division/ald/nhhip-3c-2/nhhip-3c2-rid-index-20260814.pdf
+    doc_type: other
+    role: evidence
+    title: "Reference Information Documents (RID) Index (8/14/2026)"
+    doc_date: 2026-08-14
+
   # Utility Conflict Matrix, five dated revisions. Note the layout is not
   # stable across them — see corpus-acquisition-spec.md §7.6.
   - registry_id: nhhip-ucm-2025-06-20
-    url: &utilities https://app.box.com/index.php?rm=box_download_shared_file&shared_name=6b8aefdir8164dmbfd7tc12ekq2db8cz&file_id=f_2214783167875
+    url: &utilities https://app.box.com/index.php?rm=box_download_shared_file&shared_name=51c7p764gr6pxivj2ati0qktrz7bq6w3&file_id=f_2406098312527
     member: nhhip-seg3c2-utilities-inventory.pdf
     doc_type: matrix
     role: spine
@@ -86,6 +95,55 @@ sources:
     title: "Utility Conflict Matrix (2/13/2026)"
     doc_date: 2026-02-13
     notes: "707 rows, 14 owners. Current revision. Data Source column dropped again."
+
+  # Utility plans and owner-system extracts that the current RID index names.
+  # These are Supporting Documentation candidates. Registration does not state
+  # that a Utility Conflict is resolved or that construction can start.
+  - registry_id: nhhip-utility-strip-map-2025-12-15
+    url: *utilities
+    member: nhhip-3c2-utility-strip-maps-12-15-2025.pdf
+    doc_type: plan
+    role: evidence
+    title: "Utility Strip Maps (12/15/2025)"
+    doc_date: 2025-12-15
+    supersession:
+      successor: nhhip-utility-strip-map-2026-02-13
+      replacement_date: 2026-02-13
+      source:
+        document: nhhip-rid-index-2026-08-14
+        page: 4
+
+  - registry_id: nhhip-utility-strip-map-2026-02-13
+    url: *utilities
+    member: nhhip-3c2-utility-strip-maps-2-13-2026.pdf
+    doc_type: plan
+    role: evidence
+    title: "Utility Strip Maps (2/13/2026)"
+    doc_date: 2026-02-13
+
+  - registry_id: nhhip-utilities-its-transtar-2026-02-13
+    url: *utilities
+    member: nhhip-seg3c2-utilities-its-transtar-2-13-2026.pdf
+    doc_type: plan
+    role: evidence
+    title: "Utilities ITS Transtar"
+    doc_date: 2026-02-13
+
+  - registry_id: nhhip-utilities-storm-drain-2026-02-13
+    url: *utilities
+    member: nhhip-seg3c2-utilities-storm-drain-2-13-2026.pdf
+    doc_type: plan
+    role: evidence
+    title: "Utilities Storm Drain"
+    doc_date: 2026-02-13
+
+  - registry_id: nhhip-utilities-txdot-electric-2026-02-13
+    url: *utilities
+    member: nhhip-seg3c2-utilities-txdot-electric-2-13-2026.pdf
+    doc_type: plan
+    role: evidence
+    title: "Utilities TxDOT Electric"
+    doc_date: 2026-02-13
 
   # Executed agreements with the external parties. These are what
   # `evidence_required` will eventually point at: the documents that close
