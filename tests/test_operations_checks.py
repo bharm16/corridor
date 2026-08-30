@@ -24,6 +24,8 @@ from corridor.report_release import (
     retrieve_prepared_external_report,
 )
 
+from access_support import seed_membership
+
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
 
@@ -50,10 +52,11 @@ def client(session):
 
 
 @pytest.fixture
-def client_without_principal(session, monkeypatch):
+def client_without_principal(session):
+    # No get_human_principal override: an anonymous request (no session) is
+    # refused before any handler runs (#331).
     from corridor.web.app import app, get_session
 
-    monkeypatch.setattr(settings, "human_principal", "")
     app.dependency_overrides.clear()
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as c:
@@ -66,6 +69,7 @@ def project(session):
     p = Project(slug="ops-checks", name="Ops Checks", is_synthetic=True)
     session.add(p)
     session.flush()
+    seed_membership(session, p, TEST_PRINCIPAL)
     return p
 
 
@@ -321,7 +325,7 @@ def test_routes_fail_closed_without_a_seeded_identity(
     caller = getattr(client_without_principal, method)
     url = path.format(slug=project.slug)
     response = caller(url, data=data) if data is not None else caller(url)
-    assert response.status_code == 503
+    assert response.status_code == 401
 
 
 def test_configuration_does_not_cross_projects(client, session):
@@ -329,6 +333,8 @@ def test_configuration_does_not_cross_projects(client, session):
     b = Project(slug="ops-b", name="B", is_synthetic=True)
     session.add_all((a, b))
     session.flush()
+    seed_membership(session, a, TEST_PRINCIPAL)
+    seed_membership(session, b, TEST_PRINCIPAL)
     client.post(f"/operations/{a.slug}/checks", data=_valid_form())
 
     body_b = client.get(f"/operations/{b.slug}/checks").text
