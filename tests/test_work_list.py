@@ -36,12 +36,15 @@ from corridor.models import (
     EvidenceLink,
     EventAdmissionOutcome,
     ExternalOrg,
+    Milestone,
     PolicyRun,
     Project,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
 )
+from corridor.milestones import import_csv
 from corridor.principals import HumanPrincipal
+from corridor.schedule_linking import flow_through_revisions, resolve_link
 from corridor.statement_coordination import (
     assign_admitted_statement_owner,
     read_admitted_statement_coordination,
@@ -1944,3 +1947,52 @@ def test_admitted_scope_route_refuses_even_when_selected_dependencies_are_missin
     assert response.status_code == 400
     body = response.text
     assert "Use Correct to change which constraints an already recorded statement applies to." in body
+
+
+def test_a_schedule_revision_surfaces_the_required_by_move_as_attention(
+    session, project, tmp_path
+):
+    """ADR-0057 #371: a moved Required By basis is attention with old/new dates."""
+    path = tmp_path / "schedule.csv"
+    path.write_text(
+        "code,name,need_date\n"
+        "UTIL-RELO-A,Utility relocations 100+00 to 150+00,2026-11-01\n"
+    )
+    import_csv(session, project_id=project.id, path=path)
+    milestone = session.scalars(
+        select(Milestone).where(
+            Milestone.project_id == project.id, Milestone.code == "UTIL-RELO-A"
+        )
+    ).one()
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="C1",
+        dep_type="utility_relocation",
+        title="12-inch water line",
+        station_from="120+00",
+    )
+    session.add(dependency)
+    session.flush()
+    resolve_link(
+        session, dependency, milestone, principal=HumanPrincipal("local:alice")
+    )
+
+    # A schedule revision moves the governing activity's date earlier — the
+    # window tightens — and it flows through with no approval question.
+    path.write_text(
+        "code,name,need_date\n"
+        "UTIL-RELO-A,Utility relocations 100+00 to 150+00,2026-09-15\n"
+    )
+    import_csv(session, project_id=project.id, path=path)
+    flow_through_revisions(session, project.id)
+
+    work = build_work_list(session, project.id, today=date(2026, 6, 1))
+    items = work.immediate + work.backlog
+    dependency_items = [item for item in items if item.dependency_id == dependency.id]
+    assert len(dependency_items) == 1
+    item = dependency_items[0]
+    assert "required_by_advanced" in item.attention_reason_codes
+    assert item.required_by_move is not None
+    assert item.required_by_move.prior_need_date == date(2026, 11, 1)
+    assert item.required_by_move.new_need_date == date(2026, 9, 15)
+    assert item.required_by_move.activity_code == "UTIL-RELO-A"

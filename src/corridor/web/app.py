@@ -249,6 +249,8 @@ _WORK_REASON_COPY = {
     "committed_date_change": "The organization changed its promised timing.",
     "milestone_impact_unknown": "The effect on key dates is not yet known.",
     "disputed_date": "Sources disagree about a current date.",
+    "required_by_advanced": "A schedule revision moved this constraint's Required By date.",
+    "key_date_decision_affected": "A schedule revision moved a key date a recorded decision referenced.",
     "unknown_scope": "Applies to: not yet known.",
     "unplaced_statement": "Clarify the organization's statement and which constraints it applies to.",
     "missing_internal_owner": "Assign a project person for this Commitment.",
