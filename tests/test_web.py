@@ -2328,6 +2328,128 @@ def test_documentation_review_labels_preserve_source_wording_and_current_mark(
     assert 'name="ready"' in listing.text
 
 
+def test_standard_documentation_checklist_allows_only_a_cited_approval_confirmation(
+    client, session, project, document
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-STANDARD-DOCUMENTATION",
+        dep_type="utility_relocation",
+        title="Standard documentation",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document.filename = "relocation-approval.pdf"
+    page = session.scalar(
+        select(DocPage).where(DocPage.document_id == document.id, DocPage.page_no == 1)
+    )
+    page.text = "The as-built package is on file. The relocation is approved."
+    as_built = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="The as-built package is on file.",
+        verified=True,
+    )
+    approval = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="The relocation is approved.",
+        verified=True,
+    )
+    session.add_all((as_built, approval))
+    session.flush()
+    detail = f"/ledger/{project.slug}/{dependency.id}"
+
+    before = client.get(detail)
+    assert before.status_code == 200
+    assert "Standard documentation checklist" in before.text
+    assert "Confirm: this letter approves the relocation" in before.text
+    assert "Mark documents sufficient" not in before.text
+
+    bypass = client.post(
+        f"/dependencies/{dependency.id}/evidence/{as_built.id}/satisfies",
+        data={"slug": project.slug},
+        follow_redirects=False,
+    )
+    assert bypass.status_code == 409
+
+    confirmed = client.post(
+        f"/dependencies/{dependency.id}/documentation/confirm-approval",
+        data={"slug": project.slug, "evidence_link_id": approval.id},
+    )
+    assert confirmed.status_code == 200
+    assert "complete" in confirmed.text
+    assert "Documentation fields complete" in confirmed.text
+
+
+def test_a_conditional_letter_shows_its_quoted_condition_and_only_the_override_click(
+    client, session, project, document
+):
+    """ADR-0060: conditional records itself; the only click is the override."""
+
+    condition = "The relocation is approved pending final inspection of segment B."
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-CONDITIONAL-LETTER",
+        dep_type="utility_relocation",
+        title="Conditional letter",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    page = session.scalar(
+        select(DocPage).where(DocPage.document_id == document.id, DocPage.page_no == 1)
+    )
+    page.text = f"The as-built package is on file. {condition}"
+    as_built = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="The as-built package is on file.",
+        verified=True,
+    )
+    hedged = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote=condition,
+        verified=True,
+    )
+    session.add_all((as_built, hedged))
+    session.flush()
+
+    before = client.get(f"/ledger/{project.slug}/{dependency.id}")
+    assert before.status_code == 200
+    text = unescape(before.text)
+    assert "recorded as conditional" in text
+    assert "waiting on:" in text
+    assert condition in text
+    assert "Record as approval — the quoted condition is immaterial" in text
+    assert f"/page-image/{document.id}/1" in before.text
+    assert "Documentation fields not complete" in before.text
+
+    plain_confirm = client.post(
+        f"/dependencies/{dependency.id}/documentation/confirm-approval",
+        data={"slug": project.slug, "evidence_link_id": hedged.id},
+        follow_redirects=False,
+    )
+    assert plain_confirm.status_code == 409
+
+    overridden = client.post(
+        f"/dependencies/{dependency.id}/documentation/confirm-approval",
+        data={
+            "slug": project.slug,
+            "evidence_link_id": hedged.id,
+            "condition_immaterial": "true",
+        },
+    )
+    assert overridden.status_code == 200
+    assert "Documentation fields complete" in overridden.text
+
+
 def two_overdue(session, project):
     """Two overdue records; one critical, one whose document said nothing."""
     from datetime import date, timedelta

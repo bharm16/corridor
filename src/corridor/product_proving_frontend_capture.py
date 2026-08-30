@@ -277,6 +277,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "POST",
         frozenset({303}),
     ),
+    "confirm_documentation_approval": (
+        "/dependencies/{dependency_id}/documentation/confirm-approval",
+        "POST",
+        frozenset({303}),
+    ),
     "keep_unresolved_candidate": (
         "/candidates/{candidate_id}/keep-unresolved",
         "POST",

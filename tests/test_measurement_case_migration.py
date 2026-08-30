@@ -27,7 +27,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "e319f8a0b2c5"
-HEAD = "c346a6d1e2f3"
+HEAD = "c347a5c6d7e8"
 
 
 def _url(database) -> str:

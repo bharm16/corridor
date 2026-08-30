@@ -18,7 +18,7 @@ pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b4d1e2f3a5c6"
-HEAD = "c346a6d1e2f3"
+HEAD = "c347a5c6d7e8"
 
 
 def _upgrade(database_url: str, target: str) -> None:

@@ -2378,6 +2378,15 @@ class Dependency(Base):
     )
     committed_date: Mapped[date | None] = mapped_column(Date)
     need_date: Mapped[date | None] = mapped_column(Date)
+    # A source-proven selector, not a judgment.  ADR-0052 uses it with the
+    # resolution method to select the standard documentation fields that are
+    # required at read time.  ``reimbursable`` is the one currently modeled
+    # value; unknown or absent source wording deliberately selects nothing.
+    # Deferred like milestone_registration_id: migration rehearsals load
+    # Dependency rows on databases pinned before this column existed.
+    cost_responsibility: Mapped[str | None] = mapped_column(
+        String(64), deferred=True
+    )
     # Free text in v0: what closes this. A reviewer judges whether a given
     # piece of evidence meets it. Promoting this to a typed taxonomy waits
     # until real adjudications show what closure documents look like
@@ -2908,6 +2917,56 @@ class DependencyEvidenceSufficiency(Base):
         ForeignKey("dependency_event_scopes.id")
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DocumentationFieldConfirmation(Base):
+    """One append-only human confirmation of a cited interpretation field.
+
+    Machine checklist fields are predicates over current cited documents and
+    therefore have no stored checkmark.  This row exists only for the small
+    interpretive residue ADR-0052 retains: a named person confirmed the
+    system's cited reading of one exact current document.  A later source or
+    supersession does not overwrite the row; it simply stops making the old
+    confirmation applicable when the checklist is read.
+    """
+
+    __tablename__ = "documentation_field_confirmations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dependency_id", "evidence_link_id"],
+            ["evidence_links.dependency_id", "evidence_links.id"],
+            name="fk_documentation_confirmation_owned_evidence",
+        ),
+        CheckConstraint(
+            "field_name = 'approval_interpretation'",
+            name="ck_documentation_confirmation_known_field",
+        ),
+        CheckConstraint(
+            "classification in ('approved', 'conditional')",
+            name="ck_documentation_confirmation_known_classification",
+        ),
+        CheckConstraint(
+            "conclusion = 'approved'",
+            name="ck_documentation_confirmation_known_conclusion",
+        ),
+        CheckConstraint(
+            "length(trim(confirmed_by)) > 0",
+            name="ck_documentation_confirmation_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    evidence_link_id: Mapped[int] = mapped_column(BigInteger)
+    field_name: Mapped[str] = mapped_column(String(64))
+    # This preserves the exact machine reading the person was shown; it is
+    # deliberately not a grant for the model to write a project conclusion.
+    classification: Mapped[str] = mapped_column(String(64))
+    conclusion: Mapped[str] = mapped_column(String(64))
+    confirmed_by: Mapped[str] = mapped_column(Text)
+    confirmed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

@@ -84,6 +84,7 @@ SET_MILESTONE_IMPACT = "set_milestone_impact"
 DEFER_WORK = "defer_work"
 RESUME_WORK = "resume_work"
 MARK_SATISFIES_REQUIREMENT = "mark_satisfies_requirement"
+CONFIRM_DOCUMENTATION_INTERPRETATION = "confirm_documentation_interpretation"
 LINK_MILESTONE = "link_milestone"
 CREATE_MILESTONE = "create_milestone"
 REVISE_MILESTONE = "revise_milestone"
@@ -153,6 +154,7 @@ ACTIONS = frozenset(
         DEFER_WORK,
         RESUME_WORK,
         MARK_SATISFIES_REQUIREMENT,
+        CONFIRM_DOCUMENTATION_INTERPRETATION,
         LINK_MILESTONE,
         CREATE_MILESTONE,
         REVISE_MILESTONE,
