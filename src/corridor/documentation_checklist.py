@@ -20,12 +20,13 @@ first structured confirmation takes over; they are never rewritten.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date
 import re
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from corridor import audit, condition_tracking
 from corridor.condition_tracking import ConditionEntry, ConditionLink, FieldCandidate
@@ -170,12 +171,6 @@ def read_checklist(
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
         raise LookupError(f"no dependency {dependency_id}")
-    required = required_field_names(dependency)
-    # Only selector values with an adopted field mapping take over from
-    # legacy history.  ``protect_in_place`` is the explicitly complete
-    # zero-external-field case; an unmodeled strategy (for example a policy
-    # exception) must not accidentally become Ready through vacuous truth.
-    has_selector = bool(required) or dependency.resolution_strategy == "protect_in_place"
     if legacy_ready is None:
         legacy_ready = _legacy_ready(session, dependency_id)
     confirmations = tuple(
@@ -185,8 +180,84 @@ def read_checklist(
             .order_by(DocumentationFieldConfirmation.id)
         ).all()
     )
-    uses_standard = has_selector and (not legacy_ready or bool(confirmations))
     evidence = _current_verified_evidence(session, dependency_id)
+    return _build_checklist(
+        session,
+        dependency,
+        legacy_ready=legacy_ready,
+        confirmations=confirmations,
+        evidence=evidence,
+    )
+
+
+def read_checklists(
+    session: Session,
+    dependency_ids: Iterable[int],
+    *,
+    legacy_ready_by_dependency: Mapping[int, bool],
+) -> dict[int, DocumentationChecklist]:
+    """Read many checklist inputs once for project-wide readers."""
+    ids = tuple(dict.fromkeys(dependency_ids))
+    if not ids:
+        return {}
+    if set(legacy_ready_by_dependency) != set(ids):
+        raise ValueError(
+            "batch checklist reads require complete legacy readiness inputs"
+        )
+    dependencies = tuple(
+        session.scalars(
+            select(Dependency)
+            .options(undefer(Dependency.cost_responsibility))
+            .where(Dependency.id.in_(ids))
+            .order_by(Dependency.id)
+        ).all()
+    )
+    if {dependency.id for dependency in dependencies} != set(ids):
+        raise LookupError("one or more constraints do not exist")
+
+    confirmations_by_dependency: dict[
+        int, list[DocumentationFieldConfirmation]
+    ] = {dependency_id: [] for dependency_id in ids}
+    for confirmation in session.scalars(
+        select(DocumentationFieldConfirmation)
+        .where(DocumentationFieldConfirmation.dependency_id.in_(ids))
+        .order_by(
+            DocumentationFieldConfirmation.dependency_id,
+            DocumentationFieldConfirmation.id,
+        )
+    ):
+        confirmations_by_dependency[confirmation.dependency_id].append(confirmation)
+    evidence_by_dependency = _current_verified_evidence_many(session, ids)
+
+    return {
+        dependency.id: _build_checklist(
+            session,
+            dependency,
+            legacy_ready=legacy_ready_by_dependency.get(dependency.id, False),
+            confirmations=tuple(confirmations_by_dependency[dependency.id]),
+            evidence=evidence_by_dependency[dependency.id],
+        )
+        for dependency in dependencies
+    }
+
+
+def _build_checklist(
+    session: Session,
+    dependency: Dependency,
+    *,
+    legacy_ready: bool,
+    confirmations: tuple[DocumentationFieldConfirmation, ...],
+    evidence: tuple[_CurrentEvidence, ...],
+) -> DocumentationChecklist:
+    """Assemble one checklist from already-frozen current inputs."""
+    dependency_id = dependency.id
+    required = required_field_names(dependency)
+    # Only selector values with an adopted field mapping take over from
+    # legacy history.  ``protect_in_place`` is the explicitly complete
+    # zero-external-field case; an unmodeled strategy (for example a policy
+    # exception) must not accidentally become Ready through vacuous truth.
+    has_selector = bool(required) or dependency.resolution_strategy == "protect_in_place"
+    uses_standard = has_selector and (not legacy_ready or bool(confirmations))
     fields = tuple(
         _field_state(name, evidence, confirmations) for name in required
     )
@@ -526,28 +597,44 @@ def _legacy_ready(session: Session, dependency_id: int) -> bool:
 def _current_verified_evidence(
     session: Session, dependency_id: int
 ) -> tuple[_CurrentEvidence, ...]:
-    return tuple(
-        _CurrentEvidence(
-            link.id,
-            link.quote,
-            document.doc_type,
-            document.id,
-            document.filename,
-            link.page_no,
+    return _current_verified_evidence_many(session, (dependency_id,))[dependency_id]
+
+
+def _current_verified_evidence_many(
+    session: Session, dependency_ids: Iterable[int]
+) -> dict[int, tuple[_CurrentEvidence, ...]]:
+    ids = tuple(dict.fromkeys(dependency_ids))
+    by_dependency: dict[int, list[_CurrentEvidence]] = {
+        dependency_id: [] for dependency_id in ids
+    }
+    if not ids:
+        return {}
+    for dependency_id, link, document in session.execute(
+        select(Dependency.id, EvidenceLink, Document)
+        .join(EvidenceLink, EvidenceLink.dependency_id == Dependency.id)
+        .join(Document, EvidenceLink.document_id == Document.id)
+        .where(
+            Dependency.id.in_(ids),
+            EvidenceLink.verified.is_(True),
+            Document.superseded_by.is_(None),
+            Document.project_id == Dependency.project_id,
         )
-        for link, document in session.execute(
-            select(EvidenceLink, Document)
-            .join(Document, EvidenceLink.document_id == Document.id)
-            .join(Dependency, EvidenceLink.dependency_id == Dependency.id)
-            .where(
-                EvidenceLink.dependency_id == dependency_id,
-                EvidenceLink.verified.is_(True),
-                Document.superseded_by.is_(None),
-                Document.project_id == Dependency.project_id,
+        .order_by(Dependency.id, EvidenceLink.id)
+    ).all():
+        by_dependency[dependency_id].append(
+            _CurrentEvidence(
+                link.id,
+                link.quote,
+                document.doc_type,
+                document.id,
+                document.filename,
+                link.page_no,
             )
-            .order_by(EvidenceLink.id)
-        ).all()
-    )
+        )
+    return {
+        dependency_id: tuple(evidence)
+        for dependency_id, evidence in by_dependency.items()
+    }
 
 
 def _field_state(

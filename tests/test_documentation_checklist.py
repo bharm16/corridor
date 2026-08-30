@@ -13,6 +13,7 @@ from corridor.documentation_checklist import (
     DocumentationConfirmationRefusal,
     confirm_interpretation,
     read_checklist,
+    read_checklists,
     record_documentation_clarification,
 )
 from corridor.ledger import mark_satisfies
@@ -82,6 +83,24 @@ def _support(session, dependency, document, quote: str, *, verified: bool = True
     session.add(link)
     session.flush()
     return link
+
+
+def test_batch_checklist_requires_complete_legacy_readiness_inputs(session, project):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-batch-input",
+        dep_type="utility_relocation",
+        title="Legacy readiness input",
+    )
+    session.add(dependency)
+    session.flush()
+
+    with pytest.raises(ValueError, match="complete legacy readiness"):
+        read_checklists(
+            session,
+            (dependency.id,),
+            legacy_ready_by_dependency={},
+        )
 
 
 def test_relocation_checklist_derives_machine_field_and_requires_cited_confirmation(

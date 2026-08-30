@@ -27,6 +27,7 @@ from corridor.due_work import (
     StaleDueWorkClaim,
     claim_due_work,
     complete_due_work,
+    configure_due_work,
     configure_processing_health,
     due_work_status,
     enqueue_due_work,
@@ -89,7 +90,7 @@ def _scheduled_project(factory, now: datetime, **overrides):
             starts_at=now.replace(minute=0, second=0, microsecond=0),
         )
         declaration = replace(declaration, **overrides)
-        schedule = configure_processing_health(
+        schedule = configure_due_work(
             setup,
             declaration,
             now=now,

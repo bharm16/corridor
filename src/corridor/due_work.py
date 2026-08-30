@@ -780,6 +780,8 @@ class HandlerContract:
     max_result_bytes: int
     model_token_budget: int
     notification_budget: int
+    declaration_type: type | None = None
+    configure: Callable[[Session, object, datetime], DueWorkSchedule] | None = None
     # A read-only handler runs inside a `reading` session and returns a result
     # dict the runtime finalizes. An effectful handler owns its own durable
     # commits and instead takes an `EffectfulContext`; exactly one is set.
@@ -1228,6 +1230,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=0,
+            declaration_type=ProcessingHealthDeclaration,
+            configure=lambda session, declaration, now: configure_processing_health(
+                session, declaration, now=now
+            ),
             run=_processing_health,
         ),
         HANDLER_PROJECT_PROCESSING: HandlerContract(
@@ -1237,6 +1243,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=8192,
             model_token_budget=_PROJECT_PROCESSING_TOKEN_CEILING,
             notification_budget=0,
+            declaration_type=ProjectProcessingDeclaration,
+            configure=lambda session, declaration, now: configure_project_processing(
+                session, declaration, now=now
+            ),
             run_effectful=_project_processing_effectful,
         ),
         HANDLER_REVISION_RECONCILIATION: HandlerContract(
@@ -1246,6 +1256,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=0,
+            declaration_type=RevisionReconciliationDeclaration,
+            configure=lambda session, declaration, now: configure_revision_reconciliation(
+                session, declaration, now=now
+            ),
             run_effectful=_revision_reconciliation_effectful,
         ),
         HANDLER_LOCATION_DISCOVERY: HandlerContract(
@@ -1255,6 +1269,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=0,
+            declaration_type=LocationDiscoveryDeclaration,
+            configure=lambda session, declaration, now: configure_location_discovery(
+                session, declaration, now=now
+            ),
             run_effectful=_location_discovery_effectful,
         ),
         HANDLER_ASSIGNMENT_NOTIFICATION: HandlerContract(
@@ -1264,6 +1282,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING,
+            declaration_type=AssignmentNotificationDeclaration,
+            configure=lambda session, declaration, now: configure_assignment_notification(
+                session, declaration, now=now
+            ),
             run_effectful=_assignment_notification_effectful,
         ),
         HANDLER_DUE_ACTION_NOTIFICATION: HandlerContract(
@@ -1273,6 +1295,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=_DUE_ACTION_NOTIFICATION_BUDGET_CEILING,
+            declaration_type=DueActionNotificationDeclaration,
+            configure=lambda session, declaration, now: configure_due_action_notification(
+                session, declaration, now=now
+            ),
             run_effectful=_due_action_notification_effectful,
         ),
         HANDLER_DOCUMENT_NOTIFICATION: HandlerContract(
@@ -1282,6 +1308,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=_DOCUMENT_NOTIFICATION_BUDGET_CEILING,
+            declaration_type=DocumentNotificationDeclaration,
+            configure=lambda session, declaration, now: configure_document_notification(
+                session, declaration, now=now
+            ),
             run_effectful=_document_notification_effectful,
         ),
         HANDLER_EVENT_ADMISSION_REPROOF: HandlerContract(
@@ -1291,6 +1321,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=0,
+            declaration_type=EventAdmissionReproofDeclaration,
+            configure=lambda session, declaration, now: configure_event_admission_reproof(
+                session, declaration, now=now
+            ),
             run_effectful=_event_admission_reproof_effectful,
         ),
         HANDLER_EVIDENCE_OUTCOME_CAPTURE: HandlerContract(
@@ -1300,6 +1334,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=0,
+            declaration_type=EvidenceOutcomeCaptureDeclaration,
+            configure=lambda session, declaration, now: configure_evidence_outcome_capture(
+                session, declaration, now=now
+            ),
             run_effectful=_evidence_outcome_capture_effectful,
         ),
         HANDLER_REPORT_PUBLICATION: HandlerContract(
@@ -1309,6 +1347,10 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             max_result_bytes=4096,
             model_token_budget=0,
             notification_budget=0,
+            declaration_type=ReportPublicationDeclaration,
+            configure=lambda session, declaration, now: configure_report_publication(
+                session, declaration, now=now
+            ),
             run_effectful=_report_publication_effectful,
         ),
     }
@@ -1323,71 +1365,20 @@ def configure_processing_health(
 ) -> DueWorkSchedule:
     """Validate and retain one enabled gate-7 processing-health declaration."""
 
-    now = _aware_utc(now)
     configuration = _validated_health_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_PROCESSING_HEALTH,
+        configuration=configuration,
+        scope={"project_id": declaration.project_id},
+        input_identity={
             "handler": HANDLER_PROCESSING_HEALTH,
             "project_id": declaration.project_id,
             "source": "stored_processing_facts-v1",
-        }
+        },
     )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_PROCESSING_HEALTH,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_PROCESSING_HEALTH,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_PROCESSING_HEALTH,
-        configuration_version=declaration.configuration_version,
-        scope_json={"project_id": declaration.project_id},
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
-    )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_project_processing(
@@ -1404,74 +1395,24 @@ def configure_project_processing(
     retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_processing_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    scope = {
+        "project_id": declaration.project_id,
+        "extractor_identity": declaration.extractor_identity,
+    }
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_PROJECT_PROCESSING,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_PROJECT_PROCESSING,
             "project_id": declaration.project_id,
             "extractor_identity": declaration.extractor_identity,
-        }
-    )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_PROJECT_PROCESSING,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_PROJECT_PROCESSING,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_PROJECT_PROCESSING,
-        configuration_version=declaration.configuration_version,
-        scope_json={
-            "project_id": declaration.project_id,
-            "extractor_identity": declaration.extractor_identity,
         },
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
     )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_revision_reconciliation(
@@ -1488,76 +1429,26 @@ def configure_revision_reconciliation(
     revision schedule while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_revision_reconciliation_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    scope = {
+        "project_id": declaration.project_id,
+        "matcher_identity": declaration.matcher_identity,
+        "support_rule_identity": declaration.support_rule_identity,
+    }
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_REVISION_RECONCILIATION,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_REVISION_RECONCILIATION,
             "project_id": declaration.project_id,
             "matcher_identity": declaration.matcher_identity,
             "support_rule_identity": declaration.support_rule_identity,
-        }
-    )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_REVISION_RECONCILIATION,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_REVISION_RECONCILIATION,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_REVISION_RECONCILIATION,
-        configuration_version=declaration.configuration_version,
-        scope_json={
-            "project_id": declaration.project_id,
-            "matcher_identity": declaration.matcher_identity,
-            "support_rule_identity": declaration.support_rule_identity,
         },
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
     )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_location_discovery(
@@ -1574,75 +1465,24 @@ def configure_location_discovery(
     the same location while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_location_discovery_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
     scope = configuration["scope"]
-    input_identity_sha256 = _sha256(
-        {
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_LOCATION_DISCOVERY,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_LOCATION_DISCOVERY,
             "project_id": declaration.project_id,
             "location_id": declaration.location_id,
             "adapter_identity": declaration.adapter_identity,
             "source_manifest_id": declaration.source_manifest_id,
-        }
+        },
+        disable_same_input_only=True,
     )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_LOCATION_DISCOVERY,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_LOCATION_DISCOVERY,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_LOCATION_DISCOVERY,
-        configuration_version=declaration.configuration_version,
-        scope_json=scope,
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
-    )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_assignment_notification(
@@ -1660,74 +1500,21 @@ def configure_assignment_notification(
     schedule while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_assignment_notification_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    scope = {"project_id": declaration.project_id, "channel": declaration.channel}
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_ASSIGNMENT_NOTIFICATION,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_ASSIGNMENT_NOTIFICATION,
             "project_id": declaration.project_id,
             "channel": declaration.channel,
-        }
-    )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_ASSIGNMENT_NOTIFICATION,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_ASSIGNMENT_NOTIFICATION,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_ASSIGNMENT_NOTIFICATION,
-        configuration_version=declaration.configuration_version,
-        scope_json={
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
         },
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
     )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_due_action_notification(
@@ -1746,7 +1533,6 @@ def configure_due_action_notification(
     project's prior due-action schedule while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_due_action_notification_declaration(declaration)
     if session.get(Project, declaration.project_id) is None:
         raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
@@ -1762,67 +1548,19 @@ def configure_due_action_notification(
             raise DueWorkRefusal(
                 "the escalation contact must be an active project roster identity"
             )
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_DUE_ACTION_NOTIFICATION,
+        configuration=configuration,
+        scope=configuration["scope"],
+        input_identity={
             "handler": HANDLER_DUE_ACTION_NOTIFICATION,
             "project_id": declaration.project_id,
             "channel": declaration.channel,
-        }
+        },
     )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_DUE_ACTION_NOTIFICATION,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_DUE_ACTION_NOTIFICATION,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_DUE_ACTION_NOTIFICATION,
-        configuration_version=declaration.configuration_version,
-        scope_json=configuration["scope"],
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
-    )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_document_notification(
@@ -1840,74 +1578,21 @@ def configure_document_notification(
     notification schedule while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_document_notification_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    scope = {"project_id": declaration.project_id, "channel": declaration.channel}
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_DOCUMENT_NOTIFICATION,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_DOCUMENT_NOTIFICATION,
             "project_id": declaration.project_id,
             "channel": declaration.channel,
-        }
-    )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_DOCUMENT_NOTIFICATION,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_DOCUMENT_NOTIFICATION,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_DOCUMENT_NOTIFICATION,
-        configuration_version=declaration.configuration_version,
-        scope_json={
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
         },
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
     )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_event_admission_reproof(
@@ -1924,78 +1609,28 @@ def configure_event_admission_reproof(
     schedule while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_event_admission_reproof_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    scope = {
+        "project_id": declaration.project_id,
+        "policy_version": declaration.policy_version,
+        "reason_version": declaration.reason_version,
+        "selection_rule": declaration.selection_rule,
+    }
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_EVENT_ADMISSION_REPROOF,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_EVENT_ADMISSION_REPROOF,
             "project_id": declaration.project_id,
             "policy_version": declaration.policy_version,
             "reason_version": declaration.reason_version,
             "selection_rule": declaration.selection_rule,
-        }
-    )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_EVENT_ADMISSION_REPROOF,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_EVENT_ADMISSION_REPROOF,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_EVENT_ADMISSION_REPROOF,
-        configuration_version=declaration.configuration_version,
-        scope_json={
-            "project_id": declaration.project_id,
-            "policy_version": declaration.policy_version,
-            "reason_version": declaration.reason_version,
-            "selection_rule": declaration.selection_rule,
         },
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
     )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_evidence_outcome_capture(
@@ -2015,77 +1650,27 @@ def configure_evidence_outcome_capture(
     while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_evidence_outcome_capture_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    scope = {
+        "project_id": declaration.project_id,
+        "cohort_id": declaration.cohort_id,
+        "observation_contract_sha256": declaration.observation_contract_sha256,
+    }
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_EVIDENCE_OUTCOME_CAPTURE,
             "project_id": declaration.project_id,
             "cohort_id": declaration.cohort_id,
             "observation_contract_sha256": declaration.observation_contract_sha256,
-        }
-    )
-    existing = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-            DueWorkSchedule.configuration_version
-            == declaration.configuration_version,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-        )
-    )
-    if existing is not None:
-        if existing.configuration_sha256 != configuration_sha256:
-            raise DueWorkRefusal(
-                "configuration version already names different Due Work rules"
-            )
-        return existing
-
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-    ).all()
-    for prior in active:
-        prior.disabled_at = now
-
-    public_id = f"due-job:{configuration_sha256[:24]}"
-    schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-        configuration_version=declaration.configuration_version,
-        scope_json={
-            "project_id": declaration.project_id,
-            "cohort_id": declaration.cohort_id,
-            "observation_contract_sha256": declaration.observation_contract_sha256,
         },
-        configuration_json=configuration,
-        configuration_sha256=configuration_sha256,
-        input_identity_sha256=input_identity_sha256,
-        starts_at=declaration.starts_at,
-        cadence=declaration.cadence,
-        timezone_name=declaration.timezone_name,
-        missed_run_policy=declaration.missed_run_policy,
-        retention_days=declaration.retention_days,
-        max_attempts=declaration.max_attempts,
-        backoff_seconds=declaration.backoff_seconds,
-        claim_ttl_seconds=declaration.claim_ttl_seconds,
-        deadline_seconds=declaration.deadline_seconds,
-        concurrency_limit=declaration.concurrency_limit,
-        model_token_budget=declaration.model_token_budget,
-        notification_budget=declaration.notification_budget,
-        enabled_at=now,
+        disable_same_input_only=True,
     )
-    session.add(schedule)
-    session.flush([schedule])
-    return schedule
 
 
 def configure_report_publication(
@@ -2102,23 +1687,68 @@ def configure_report_publication(
     schedule for this output identity while retaining it for audit.
     """
 
-    now = _aware_utc(now)
     configuration = _validated_report_publication_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(
-        {
+    scope = {
+        "project_id": declaration.project_id,
+        "provenance_mode": declaration.provenance_mode,
+        "prepare_external_pdf": declaration.prepare_external_pdf,
+    }
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_REPORT_PUBLICATION,
+        configuration=configuration,
+        scope=scope,
+        input_identity={
             "handler": HANDLER_REPORT_PUBLICATION,
             "project_id": declaration.project_id,
             "provenance_mode": declaration.provenance_mode,
             "prepare_external_pdf": declaration.prepare_external_pdf,
-        }
+        },
+        disable_same_input_only=True,
     )
+
+
+def configure_due_work(
+    session: Session,
+    declaration: object,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain any server-owned Due Work declaration."""
+    for contract in HANDLER_REGISTRY.values():
+        if (
+            contract.declaration_type is not None
+            and isinstance(declaration, contract.declaration_type)
+            and contract.configure is not None
+        ):
+            return contract.configure(session, declaration, now)
+    raise DueWorkRefusal("Due Work declaration is not server-owned")
+
+
+def _retain_due_work_schedule(
+    session: Session,
+    declaration: object,
+    *,
+    now: datetime,
+    handler_key: str,
+    configuration: dict[str, Any],
+    scope: dict[str, Any],
+    input_identity: dict[str, Any],
+    disable_same_input_only: bool = False,
+) -> DueWorkSchedule:
+    """Own idempotency, supersession, and persistence for every declaration."""
+    now = _aware_utc(now)
+    project_id = declaration.project_id
+    if session.get(Project, project_id) is None:
+        raise DueWorkRefusal(f"project {project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(input_identity)
     existing = session.scalar(
         select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_REPORT_PUBLICATION,
+            DueWorkSchedule.project_id == project_id,
+            DueWorkSchedule.handler_key == handler_key,
             DueWorkSchedule.configuration_version
             == declaration.configuration_version,
             DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
@@ -2131,28 +1761,24 @@ def configure_report_publication(
             )
         return existing
 
-    active = session.scalars(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == declaration.project_id,
-            DueWorkSchedule.handler_key == HANDLER_REPORT_PUBLICATION,
-            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
-            DueWorkSchedule.disabled_at.is_(None),
+    active_query = select(DueWorkSchedule).where(
+        DueWorkSchedule.project_id == project_id,
+        DueWorkSchedule.handler_key == handler_key,
+        DueWorkSchedule.disabled_at.is_(None),
+    )
+    if disable_same_input_only:
+        active_query = active_query.where(
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256
         )
-    ).all()
-    for prior in active:
+    for prior in session.scalars(active_query).all():
         prior.disabled_at = now
 
-    public_id = f"due-job:{configuration_sha256[:24]}"
     schedule = DueWorkSchedule(
-        public_id=public_id,
-        project_id=declaration.project_id,
-        handler_key=HANDLER_REPORT_PUBLICATION,
+        public_id=f"due-job:{configuration_sha256[:24]}",
+        project_id=project_id,
+        handler_key=handler_key,
         configuration_version=declaration.configuration_version,
-        scope_json={
-            "project_id": declaration.project_id,
-            "provenance_mode": declaration.provenance_mode,
-            "prepare_external_pdf": declaration.prepare_external_pdf,
-        },
+        scope_json=scope,
         configuration_json=configuration,
         configuration_sha256=configuration_sha256,
         input_identity_sha256=input_identity_sha256,

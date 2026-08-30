@@ -22,6 +22,7 @@ from corridor.revision_comparison import (
     DEFAULT_MATCHER_VERSION,
     RevisionComparisonReadback,
     create_revision_comparison,
+    list_revision_comparisons,
     read_revision_comparison,
 )
 
@@ -32,6 +33,47 @@ class RevisionProcessingResult:
 
     comparison: RevisionComparisonReadback
     carry_forward: AutomaticCarryForwardResult
+
+
+@dataclass(frozen=True)
+class VerifiedRevisionPair:
+    """One created-or-reused comparison after integrity readback."""
+
+    comparison: RevisionComparisonReadback
+    created: bool
+
+
+def obtain_verified_revision_pair(
+    session: Session,
+    *,
+    predecessor_extraction_run_id: int,
+    successor_extraction_run_id: int,
+    matcher_version: str = DEFAULT_MATCHER_VERSION,
+    matcher_config: dict[str, Any] | None = None,
+) -> VerifiedRevisionPair:
+    """Create or reuse one exact comparison and verify its retained bytes."""
+    existing_ids = {
+        comparison.id
+        for comparison in list_revision_comparisons(
+            session,
+            predecessor_extraction_run_id,
+            successor_extraction_run_id,
+        )
+    }
+    comparison = create_revision_comparison(
+        session,
+        predecessor_extraction_run_id=predecessor_extraction_run_id,
+        successor_extraction_run_id=successor_extraction_run_id,
+        matcher_version=matcher_version,
+        matcher_config=(
+            matcher_config if matcher_config is not None else DEFAULT_MATCHER_CONFIG
+        ),
+        require_unambiguous_pair_history=True,
+    )
+    return VerifiedRevisionPair(
+        comparison=read_revision_comparison(session, comparison.id),
+        created=comparison.id not in existing_ids,
+    )
 
 
 def process_revision_pair(
@@ -45,23 +87,19 @@ def process_revision_pair(
 ) -> RevisionProcessingResult:
     """Create or reuse, read-verify, then route Carry-Forward for one pair."""
 
-    comparison = create_revision_comparison(
+    verified = obtain_verified_revision_pair(
         session,
         predecessor_extraction_run_id=predecessor_extraction_run_id,
         successor_extraction_run_id=successor_extraction_run_id,
         matcher_version=matcher_version,
-        matcher_config=(
-            matcher_config if matcher_config is not None else DEFAULT_MATCHER_CONFIG
-        ),
-        require_unambiguous_pair_history=True,
+        matcher_config=matcher_config,
     )
-    readback = read_revision_comparison(session, comparison.id)
     carry_forward = run_automatic_carry_forward(
         session,
-        readback.comparison.project_id,
+        verified.comparison.comparison.project_id,
         _runtime=automatic_carry_forward_runtime,
     )
     return RevisionProcessingResult(
-        comparison=readback,
+        comparison=verified.comparison,
         carry_forward=carry_forward,
     )

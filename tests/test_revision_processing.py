@@ -29,7 +29,10 @@ from corridor.revision_comparison import (
     create_revision_comparison,
     list_revision_comparisons,
 )
-from corridor.revision_processing import process_revision_pair
+from corridor.revision_processing import (
+    obtain_verified_revision_pair,
+    process_revision_pair,
+)
 from corridor.supersession import (
     SupersessionDeclaration,
     register_supersessions,
@@ -264,6 +267,25 @@ def test_process_revision_pair_reuses_one_identical_verified_comparison(session)
             scenario["successor_run"].id,
         )
     ] == [first.comparison.comparison.id]
+
+
+def test_verified_pair_seam_reports_creation_then_reuse(session):
+    scenario = _seed_transition(session)
+
+    first = obtain_verified_revision_pair(
+        session,
+        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        successor_extraction_run_id=scenario["successor_run"].id,
+    )
+    second = obtain_verified_revision_pair(
+        session,
+        predecessor_extraction_run_id=scenario["predecessor_run"].id,
+        successor_extraction_run_id=scenario["successor_run"].id,
+    )
+
+    assert first.created is True
+    assert second.created is False
+    assert second.comparison.comparison.id == first.comparison.comparison.id
 
 
 @pytest.mark.parametrize(

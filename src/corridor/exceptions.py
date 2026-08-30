@@ -14,13 +14,13 @@ worth hearing about loudly.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from types import MappingProxyType
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from corridor.dependency_events import (
     StatementPublication,
@@ -242,7 +242,8 @@ def evaluate(
             session, (dependency.id for dependency in dependencies)
         )
 
-    found: list[Exception_] = []
+    committed_dates_by_dependency: dict[int, date | None] = {}
+    closed_by_dependency: dict[int, bool] = {}
     for dependency in dependencies:
         if statement_publication is not None:
             published = statement_publication.by_dependency[dependency.id]
@@ -256,21 +257,26 @@ def evaluate(
             statement = current_statements.get(dependency.id)
             projected_date = statement.effective_date if statement is not None else None
             is_closed = statement.is_closed if statement is not None else False
-        committed_date = (
+        committed_dates_by_dependency[dependency.id] = (
             projected_date
             if committed_dates is None
             else committed_dates.get(dependency.id, projected_date)
         )
+        closed_by_dependency[dependency.id] = is_closed
+
+    facts_by_dependency = _gather_many(
+        session,
+        dependencies,
+        closed_by_dependency=closed_by_dependency,
+    )
+    found: list[Exception_] = []
+    for dependency in dependencies:
         found.extend(
             _apply(
-                _gather(
-                    session,
-                    dependency,
-                    is_closed=is_closed,
-                ),
+                facts_by_dependency[dependency.id],
                 today,
                 thresholds,
-                committed_date=committed_date,
+                committed_date=committed_dates_by_dependency[dependency.id],
             )
         )
     # A filing order, not a verdict: stable so two runs render identically,
@@ -348,7 +354,9 @@ def evaluate_project(
     today = today or date.today()
     thresholds = thresholds or Thresholds()
     dependencies = session.scalars(
-        select(Dependency).where(
+        select(Dependency)
+        .options(undefer(Dependency.cost_responsibility))
+        .where(
             Dependency.project_id == project_id,
             Dependency.dismissed_at.is_(None),
         )
@@ -502,20 +510,43 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
 
 
 def _gather(session: Session, dependency: Dependency, *, is_closed: bool) -> _Facts:
-    support = resolve_operative_support(session, [dependency.id])[dependency.id]
+    return _gather_many(
+        session,
+        (dependency,),
+        closed_by_dependency={dependency.id: is_closed},
+    )[dependency.id]
 
-    contradicted = contradicted_fields(session, [dependency.id]).get(dependency.id, [])
 
-    return _Facts(
-        dependency=dependency,
-        is_ready=support.is_ready,
-        readiness_lapsed=bool(support.readiness and not support.current_readiness),
-        has_verified_evidence=bool(support.verified_evidence_count),
-        last_evidenced_at=support.last_evidenced_at,
-        has_closure=is_closed,
-        contradicted_fields=contradicted,
-        superseded_scopes=support.superseded_scopes,
-    )
+def _gather_many(
+    session: Session,
+    dependencies: Iterable[Dependency],
+    *,
+    closed_by_dependency: Mapping[int, bool],
+) -> dict[int, _Facts]:
+    """Gather the project-wide inputs once before pure rule application."""
+    rows = tuple(dependencies)
+    ids = tuple(dependency.id for dependency in rows)
+    support_by_dependency = resolve_operative_support(session, ids)
+    contradicted_by_dependency = contradicted_fields(session, ids)
+
+    return {
+        dependency.id: _Facts(
+            dependency=dependency,
+            is_ready=support_by_dependency[dependency.id].is_ready,
+            readiness_lapsed=bool(
+                support_by_dependency[dependency.id].readiness
+                and not support_by_dependency[dependency.id].current_readiness
+            ),
+            has_verified_evidence=bool(
+                support_by_dependency[dependency.id].verified_evidence_count
+            ),
+            last_evidenced_at=support_by_dependency[dependency.id].last_evidenced_at,
+            has_closure=closed_by_dependency.get(dependency.id, False),
+            contradicted_fields=contradicted_by_dependency.get(dependency.id, []),
+            superseded_scopes=support_by_dependency[dependency.id].superseded_scopes,
+        )
+        for dependency in rows
+    }
 
 
 def _apply(

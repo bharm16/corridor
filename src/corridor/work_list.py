@@ -19,13 +19,11 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.dependency_events import current_scope_decision_filter
-from corridor.event_admission import waiting_statements
-from corridor.external_statements import (
-    CitedStatementEvidence,
-    StatementRefusal,
-    validate_cited_statement_evidence,
+from corridor.dependency_events import (
+    closed_party_commitment_lineages,
+    current_scope_decision_filter,
 )
+from corridor.event_admission import waiting_statements
 from corridor.disputes import contradicted_fields, contractual_amendment_field_names
 from corridor.models import (
     Candidate,
@@ -204,7 +202,7 @@ def build_work_list(
     unknown timing therefore produce no past-due Derivation at all.
     """
     evaluated_on = today or date.today()
-    closed_lineages = _closed_commitment_lineages(session, project_id)
+    closed_lineages = closed_party_commitment_lineages(session, project_id)
     # Key dates a schedule revision moved — for surfacing impact on any recorded
     # decision that referenced them (ADR-0057), never as an approval question.
     moved_dates = moved_key_dates(session, project_id)
@@ -583,25 +581,6 @@ def _dependency_items(
     return tuple(items)
 
 
-def _closed_commitment_lineages(session: Session, project_id: int) -> frozenset[int]:
-    """Only a provenance-backed closure of this exact lineage ends past due work."""
-    closures = session.scalars(
-        select(ExternalPartyStatement).where(
-            ExternalPartyStatement.project_id == project_id,
-            ExternalPartyStatement.event_type == "closure",
-            ExternalPartyStatement.closes_commitment_lineage_id.is_not(None),
-            ExternalPartyStatement.attribution_state == "resolved",
-            ExternalPartyStatement.stated_external_org_id.is_not(None),
-            current_statement_event_filter(ExternalPartyStatement.id),
-        )
-    ).all()
-    return frozenset(
-        closure.closes_commitment_lineage_id
-        for closure in closures
-        if _is_provenance_backed_closure(session, closure)
-    )
-
-
 def _source_candidate_ids(session: Session, project_id: int) -> dict[int, int]:
     """Link accepted cards back to their existing guided statement screen."""
     admitted_rows = session.execute(
@@ -706,42 +685,6 @@ def _statement_work_state(session: Session, rows) -> _StatementWorkState:
         receipts_by_decision=receipts_by_decision,
         observations_by_lineage=observe_current_statements(session, lineage_ids),
     )
-
-
-def _is_provenance_backed_closure(
-    session: Session, closure: ExternalPartyStatement
-) -> bool:
-    """A cited closure must still match its registered page and quote exactly."""
-    if closure.source_kind == "verbal":
-        return closure.event_date is not None
-    if closure.source_kind != "cited":
-        return False
-    evidence_rows = session.execute(
-        select(EvidenceLink)
-        .join(
-            StatementEvidence,
-            StatementEvidence.evidence_link_id == EvidenceLink.id,
-        )
-        .where(
-            StatementEvidence.event_id == closure.id,
-            EvidenceLink.verified.is_(True),
-        )
-    ).scalars()
-    for evidence in evidence_rows:
-        try:
-            validate_cited_statement_evidence(
-                session,
-                CitedStatementEvidence(
-                    evidence.document_id,
-                    evidence.page_no,
-                    evidence.quote,
-                ),
-                closure.project_id,
-            )
-        except StatementRefusal:
-            continue
-        return True
-    return False
 
 
 def _candidate_items(

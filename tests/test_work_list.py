@@ -9,7 +9,10 @@ from sqlalchemy import event, select
 
 from corridor import policy
 from corridor.db import Session, engine
-from corridor.dependency_events import current_scope_decision_filter
+from corridor.dependency_events import (
+    closed_party_commitment_lineages,
+    current_scope_decision_filter,
+)
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.event_admission import UNKNOWN_SCOPE_POLICY_VERSION, run_event_admission
 from corridor.external_statements import (
@@ -808,8 +811,10 @@ def test_verified_closure_ends_only_the_linked_party_level_past_due_fact(
     without_verified_closure = build_work_list(
         session, project.id, today=date(2025, 2, 1)
     )
+    assert closed_party_commitment_lineages(session, project.id) == frozenset()
     assert without_verified_closure.immediate == ()
     assert len(without_verified_closure.backlog) == 1
+    assert without_verified_closure.backlog[0].past_due is not None
 
     record_external_party_closure(
         session,
@@ -824,6 +829,9 @@ def test_verified_closure_ends_only_the_linked_party_level_past_due_fact(
 
     work_list = build_work_list(session, project.id, today=date(2025, 2, 1))
 
+    assert closed_party_commitment_lineages(session, project.id) == frozenset(
+        {statement.commitment_lineage_id}
+    )
     assert work_list.immediate == ()
     assert len(work_list.backlog) == 1
     assert work_list.backlog[0].past_due is None

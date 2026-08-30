@@ -25,13 +25,7 @@ from corridor.due_work import (
     ProcessingHealthDeclaration,
     ProjectProcessingDeclaration,
     ReportPublicationDeclaration,
-    configure_assignment_notification,
-    configure_document_notification,
-    configure_event_admission_reproof,
-    configure_location_discovery,
-    configure_processing_health,
-    configure_project_processing,
-    configure_report_publication,
+    configure_due_work,
     due_work_status,
     enqueue_due_work,
     run_due_work_once,
@@ -45,46 +39,117 @@ class SystemClock:
         return datetime.now(timezone.utc)
 
 
+def _common_declaration_kwargs(args, project_id: int) -> dict:
+    return {
+        "project_id": project_id,
+        "configuration_version": args.configuration_version,
+        "starts_at": _datetime(args.starts_at),
+        "cadence": args.cadence,
+        "timezone_name": args.timezone_name,
+        "missed_run_policy": args.missed_run_policy,
+        "retention_days": args.retention_days,
+        "max_attempts": args.max_attempts,
+        "backoff_seconds": args.backoff_seconds,
+        "claim_ttl_seconds": args.claim_ttl_seconds,
+        "deadline_seconds": args.deadline_seconds,
+        "concurrency_limit": args.concurrency_limit,
+        "model_token_budget": args.model_token_budget,
+        "notification_budget": args.notification_budget,
+    }
+
+
+def _health_declaration(args, project_id: int):
+    return ProcessingHealthDeclaration(**_common_declaration_kwargs(args, project_id))
+
+
+def _processing_declaration(args, project_id: int):
+    return ProjectProcessingDeclaration(
+        **_common_declaration_kwargs(args, project_id),
+        extractor_identity=args.extractor_identity,
+    )
+
+
+def _discovery_declaration(args, project_id: int):
+    return LocationDiscoveryDeclaration(
+        **_common_declaration_kwargs(args, project_id),
+        location_id=args.location_id,
+        adapter_identity=args.adapter_identity,
+        source_manifest_id=args.source_manifest_id,
+        index_url=args.index_url,
+        rid_link_text=args.rid_link_text,
+        authorized_hosts=tuple(args.authorized_hosts),
+        sealed=args.sealed,
+        nested_archive_depth=args.nested_archive_depth,
+        max_archive_compressed_mib=args.max_archive_compressed_mib,
+        max_member_decompressed_mib=args.max_member_decompressed_mib,
+        enumeration_limit=args.enumeration_limit,
+        request_limit=args.request_limit,
+        document_limit=args.document_limit,
+    )
+
+
+def _assignment_notification_declaration(args, project_id: int):
+    return AssignmentNotificationDeclaration(
+        **_common_declaration_kwargs(args, project_id), channel=args.channel
+    )
+
+
+def _document_notification_declaration(args, project_id: int):
+    return DocumentNotificationDeclaration(
+        **_common_declaration_kwargs(args, project_id), channel=args.channel
+    )
+
+
+def _reproof_declaration(args, project_id: int):
+    return EventAdmissionReproofDeclaration(
+        **_common_declaration_kwargs(args, project_id),
+        policy_version=args.policy_version,
+        reason_version=args.reason_version,
+        selection_rule=args.selection_rule,
+        clone_budget=args.clone_budget,
+    )
+
+
+def _publication_declaration(args, project_id: int):
+    return ReportPublicationDeclaration(
+        **_common_declaration_kwargs(args, project_id),
+        provenance_mode=args.provenance_mode,
+        prepare_external_pdf=args.prepare_external_pdf,
+        comparison_window_policy=args.comparison_window_policy,
+    )
+
+
+def _add_schedule_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("project_slug")
+    command.add_argument("--configuration-version", required=True)
+    command.add_argument("--starts-at", required=True)
+    command.add_argument("--cadence", required=True)
+    command.add_argument("--timezone", required=True, dest="timezone_name")
+    command.add_argument("--missed-run-policy", required=True)
+    command.add_argument("--retention-days", required=True, type=int)
+    command.add_argument("--max-attempts", required=True, type=int)
+    command.add_argument("--backoff-seconds", required=True, type=int)
+    command.add_argument("--claim-ttl-seconds", required=True, type=int)
+    command.add_argument("--deadline-seconds", required=True, type=int)
+    command.add_argument("--concurrency-limit", required=True, type=int)
+    command.add_argument("--model-token-budget", required=True, type=int)
+    command.add_argument("--notification-budget", required=True, type=int)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="due-work")
     commands = parser.add_subparsers(dest="command", required=True)
 
     configure = commands.add_parser("configure-health")
-    configure.add_argument("project_slug")
-    configure.add_argument("--configuration-version", required=True)
-    configure.add_argument("--starts-at", required=True)
-    configure.add_argument("--cadence", required=True)
-    configure.add_argument("--timezone", required=True, dest="timezone_name")
-    configure.add_argument("--missed-run-policy", required=True)
-    configure.add_argument("--retention-days", required=True, type=int)
-    configure.add_argument("--max-attempts", required=True, type=int)
-    configure.add_argument("--backoff-seconds", required=True, type=int)
-    configure.add_argument("--claim-ttl-seconds", required=True, type=int)
-    configure.add_argument("--deadline-seconds", required=True, type=int)
-    configure.add_argument("--concurrency-limit", required=True, type=int)
-    configure.add_argument("--model-token-budget", required=True, type=int)
-    configure.add_argument("--notification-budget", required=True, type=int)
+    _add_schedule_arguments(configure)
+    configure.set_defaults(declaration_builder=_health_declaration)
 
     processing = commands.add_parser("configure-processing")
-    processing.add_argument("project_slug")
-    processing.add_argument("--configuration-version", required=True)
     processing.add_argument("--extractor-identity", required=True)
-    processing.add_argument("--starts-at", required=True)
-    processing.add_argument("--cadence", required=True)
-    processing.add_argument("--timezone", required=True, dest="timezone_name")
-    processing.add_argument("--missed-run-policy", required=True)
-    processing.add_argument("--retention-days", required=True, type=int)
-    processing.add_argument("--max-attempts", required=True, type=int)
-    processing.add_argument("--backoff-seconds", required=True, type=int)
-    processing.add_argument("--claim-ttl-seconds", required=True, type=int)
-    processing.add_argument("--deadline-seconds", required=True, type=int)
-    processing.add_argument("--concurrency-limit", required=True, type=int)
-    processing.add_argument("--model-token-budget", required=True, type=int)
-    processing.add_argument("--notification-budget", required=True, type=int)
+    _add_schedule_arguments(processing)
+    processing.set_defaults(declaration_builder=_processing_declaration)
 
     discovery = commands.add_parser("configure-discovery")
-    discovery.add_argument("project_slug")
-    discovery.add_argument("--configuration-version", required=True)
     discovery.add_argument("--location-id", required=True)
     discovery.add_argument("--adapter-identity", required=True)
     discovery.add_argument("--source-manifest-id", required=True)
@@ -104,76 +169,38 @@ def _parser() -> argparse.ArgumentParser:
     discovery.add_argument("--enumeration-limit", type=int, default=500)
     discovery.add_argument("--request-limit", type=int, default=200)
     discovery.add_argument("--document-limit", type=int, default=100)
-    discovery.add_argument("--starts-at", required=True)
-    discovery.add_argument("--cadence", required=True)
-    discovery.add_argument("--timezone", required=True, dest="timezone_name")
-    discovery.add_argument("--missed-run-policy", required=True)
-    discovery.add_argument("--retention-days", required=True, type=int)
-    discovery.add_argument("--max-attempts", required=True, type=int)
-    discovery.add_argument("--backoff-seconds", required=True, type=int)
-    discovery.add_argument("--claim-ttl-seconds", required=True, type=int)
-    discovery.add_argument("--deadline-seconds", required=True, type=int)
-    discovery.add_argument("--concurrency-limit", required=True, type=int)
-    discovery.add_argument("--model-token-budget", required=True, type=int)
-    discovery.add_argument("--notification-budget", required=True, type=int)
+    _add_schedule_arguments(discovery)
+    discovery.set_defaults(
+        declaration_builder=_discovery_declaration,
+        payload_extra=lambda args: {
+            "location_id": args.location_id,
+            "sealed": args.sealed,
+        },
+    )
 
     notifications = commands.add_parser("configure-notifications")
-    notifications.add_argument("project_slug")
-    notifications.add_argument("--configuration-version", required=True)
     notifications.add_argument("--channel", required=True)
-    notifications.add_argument("--starts-at", required=True)
-    notifications.add_argument("--cadence", required=True)
-    notifications.add_argument("--timezone", required=True, dest="timezone_name")
-    notifications.add_argument("--missed-run-policy", required=True)
-    notifications.add_argument("--retention-days", required=True, type=int)
-    notifications.add_argument("--max-attempts", required=True, type=int)
-    notifications.add_argument("--backoff-seconds", required=True, type=int)
-    notifications.add_argument("--claim-ttl-seconds", required=True, type=int)
-    notifications.add_argument("--deadline-seconds", required=True, type=int)
-    notifications.add_argument("--concurrency-limit", required=True, type=int)
-    notifications.add_argument("--model-token-budget", required=True, type=int)
-    notifications.add_argument("--notification-budget", required=True, type=int)
+    _add_schedule_arguments(notifications)
+    notifications.set_defaults(
+        declaration_builder=_assignment_notification_declaration
+    )
 
     document_notifications = commands.add_parser("configure-document-notifications")
-    document_notifications.add_argument("project_slug")
-    document_notifications.add_argument("--configuration-version", required=True)
     document_notifications.add_argument("--channel", required=True)
-    document_notifications.add_argument("--starts-at", required=True)
-    document_notifications.add_argument("--cadence", required=True)
-    document_notifications.add_argument("--timezone", required=True, dest="timezone_name")
-    document_notifications.add_argument("--missed-run-policy", required=True)
-    document_notifications.add_argument("--retention-days", required=True, type=int)
-    document_notifications.add_argument("--max-attempts", required=True, type=int)
-    document_notifications.add_argument("--backoff-seconds", required=True, type=int)
-    document_notifications.add_argument("--claim-ttl-seconds", required=True, type=int)
-    document_notifications.add_argument("--deadline-seconds", required=True, type=int)
-    document_notifications.add_argument("--concurrency-limit", required=True, type=int)
-    document_notifications.add_argument("--model-token-budget", required=True, type=int)
-    document_notifications.add_argument("--notification-budget", required=True, type=int)
+    _add_schedule_arguments(document_notifications)
+    document_notifications.set_defaults(
+        declaration_builder=_document_notification_declaration
+    )
 
     reproof = commands.add_parser("configure-reproof")
-    reproof.add_argument("project_slug")
-    reproof.add_argument("--configuration-version", required=True)
     reproof.add_argument("--policy-version", required=True)
     reproof.add_argument("--reason-version", required=True)
     reproof.add_argument("--selection-rule", required=True)
-    reproof.add_argument("--starts-at", required=True)
-    reproof.add_argument("--cadence", required=True)
-    reproof.add_argument("--timezone", required=True, dest="timezone_name")
-    reproof.add_argument("--missed-run-policy", required=True)
-    reproof.add_argument("--retention-days", required=True, type=int)
-    reproof.add_argument("--max-attempts", required=True, type=int)
-    reproof.add_argument("--backoff-seconds", required=True, type=int)
-    reproof.add_argument("--claim-ttl-seconds", required=True, type=int)
-    reproof.add_argument("--deadline-seconds", required=True, type=int)
-    reproof.add_argument("--concurrency-limit", required=True, type=int)
-    reproof.add_argument("--model-token-budget", required=True, type=int)
-    reproof.add_argument("--notification-budget", required=True, type=int)
     reproof.add_argument("--clone-budget", required=True, type=int)
+    _add_schedule_arguments(reproof)
+    reproof.set_defaults(declaration_builder=_reproof_declaration)
 
     publication = commands.add_parser("configure-publication")
-    publication.add_argument("project_slug")
-    publication.add_argument("--configuration-version", required=True)
     publication.add_argument(
         "--provenance-mode",
         required=True,
@@ -186,19 +213,9 @@ def _parser() -> argparse.ArgumentParser:
     external.add_argument(
         "--internal-snapshot-only", dest="prepare_external_pdf", action="store_false"
     )
-    publication.add_argument("--starts-at", required=True)
-    publication.add_argument("--cadence", required=True)
-    publication.add_argument("--timezone", required=True, dest="timezone_name")
-    publication.add_argument("--missed-run-policy", required=True)
     publication.add_argument("--comparison-window-policy", required=True)
-    publication.add_argument("--retention-days", required=True, type=int)
-    publication.add_argument("--max-attempts", required=True, type=int)
-    publication.add_argument("--backoff-seconds", required=True, type=int)
-    publication.add_argument("--claim-ttl-seconds", required=True, type=int)
-    publication.add_argument("--deadline-seconds", required=True, type=int)
-    publication.add_argument("--concurrency-limit", required=True, type=int)
-    publication.add_argument("--model-token-budget", required=True, type=int)
-    publication.add_argument("--notification-budget", required=True, type=int)
+    _add_schedule_arguments(publication)
+    publication.set_defaults(declaration_builder=_publication_declaration)
 
     commands.add_parser("tick")
     for name in ("run-once", "recover"):
@@ -229,27 +246,13 @@ def main(
     clock = clock or SystemClock()
 
     try:
-        if args.command == "configure-health":
+        declaration_builder = getattr(args, "declaration_builder", None)
+        if declaration_builder is not None:
             with session_factory() as session:
                 with session.begin():
                     project = _project(session, args.project_slug)
-                    declaration = ProcessingHealthDeclaration(
-                        project_id=project.id,
-                        configuration_version=args.configuration_version,
-                        starts_at=_datetime(args.starts_at),
-                        cadence=args.cadence,
-                        timezone_name=args.timezone_name,
-                        missed_run_policy=args.missed_run_policy,
-                        retention_days=args.retention_days,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        claim_ttl_seconds=args.claim_ttl_seconds,
-                        deadline_seconds=args.deadline_seconds,
-                        concurrency_limit=args.concurrency_limit,
-                        model_token_budget=args.model_token_budget,
-                        notification_budget=args.notification_budget,
-                    )
-                    schedule = configure_processing_health(
+                    declaration = declaration_builder(args, project.id)
+                    schedule = configure_due_work(
                         session,
                         declaration,
                         now=clock.now(),
@@ -261,223 +264,9 @@ def main(
                         "configuration_sha256": schedule.configuration_sha256,
                         "enabled": schedule.disabled_at is None,
                     }
-        elif args.command == "configure-processing":
-            with session_factory() as session:
-                with session.begin():
-                    project = _project(session, args.project_slug)
-                    declaration = ProjectProcessingDeclaration(
-                        project_id=project.id,
-                        configuration_version=args.configuration_version,
-                        extractor_identity=args.extractor_identity,
-                        starts_at=_datetime(args.starts_at),
-                        cadence=args.cadence,
-                        timezone_name=args.timezone_name,
-                        missed_run_policy=args.missed_run_policy,
-                        retention_days=args.retention_days,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        claim_ttl_seconds=args.claim_ttl_seconds,
-                        deadline_seconds=args.deadline_seconds,
-                        concurrency_limit=args.concurrency_limit,
-                        model_token_budget=args.model_token_budget,
-                        notification_budget=args.notification_budget,
-                    )
-                    schedule = configure_project_processing(
-                        session,
-                        declaration,
-                        now=clock.now(),
-                    )
-                    payload = {
-                        "command": args.command,
-                        "job_id": schedule.public_id,
-                        "project_id": project.id,
-                        "configuration_sha256": schedule.configuration_sha256,
-                        "enabled": schedule.disabled_at is None,
-                    }
-        elif args.command == "configure-discovery":
-            with session_factory() as session:
-                with session.begin():
-                    project = _project(session, args.project_slug)
-                    declaration = LocationDiscoveryDeclaration(
-                        project_id=project.id,
-                        configuration_version=args.configuration_version,
-                        location_id=args.location_id,
-                        adapter_identity=args.adapter_identity,
-                        source_manifest_id=args.source_manifest_id,
-                        index_url=args.index_url,
-                        rid_link_text=args.rid_link_text,
-                        authorized_hosts=tuple(args.authorized_hosts),
-                        sealed=args.sealed,
-                        nested_archive_depth=args.nested_archive_depth,
-                        max_archive_compressed_mib=args.max_archive_compressed_mib,
-                        max_member_decompressed_mib=args.max_member_decompressed_mib,
-                        enumeration_limit=args.enumeration_limit,
-                        request_limit=args.request_limit,
-                        document_limit=args.document_limit,
-                        starts_at=_datetime(args.starts_at),
-                        cadence=args.cadence,
-                        timezone_name=args.timezone_name,
-                        missed_run_policy=args.missed_run_policy,
-                        retention_days=args.retention_days,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        claim_ttl_seconds=args.claim_ttl_seconds,
-                        deadline_seconds=args.deadline_seconds,
-                        concurrency_limit=args.concurrency_limit,
-                        model_token_budget=args.model_token_budget,
-                        notification_budget=args.notification_budget,
-                    )
-                    schedule = configure_location_discovery(
-                        session,
-                        declaration,
-                        now=clock.now(),
-                    )
-                    payload = {
-                        "command": args.command,
-                        "job_id": schedule.public_id,
-                        "project_id": project.id,
-                        "location_id": args.location_id,
-                        "configuration_sha256": schedule.configuration_sha256,
-                        "sealed": args.sealed,
-                        "enabled": schedule.disabled_at is None,
-                    }
-        elif args.command == "configure-notifications":
-            with session_factory() as session:
-                with session.begin():
-                    project = _project(session, args.project_slug)
-                    declaration = AssignmentNotificationDeclaration(
-                        project_id=project.id,
-                        configuration_version=args.configuration_version,
-                        channel=args.channel,
-                        starts_at=_datetime(args.starts_at),
-                        cadence=args.cadence,
-                        timezone_name=args.timezone_name,
-                        missed_run_policy=args.missed_run_policy,
-                        retention_days=args.retention_days,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        claim_ttl_seconds=args.claim_ttl_seconds,
-                        deadline_seconds=args.deadline_seconds,
-                        concurrency_limit=args.concurrency_limit,
-                        model_token_budget=args.model_token_budget,
-                        notification_budget=args.notification_budget,
-                    )
-                    schedule = configure_assignment_notification(
-                        session,
-                        declaration,
-                        now=clock.now(),
-                    )
-                    payload = {
-                        "command": args.command,
-                        "job_id": schedule.public_id,
-                        "project_id": project.id,
-                        "configuration_sha256": schedule.configuration_sha256,
-                        "enabled": schedule.disabled_at is None,
-                    }
-        elif args.command == "configure-document-notifications":
-            with session_factory() as session:
-                with session.begin():
-                    project = _project(session, args.project_slug)
-                    declaration = DocumentNotificationDeclaration(
-                        project_id=project.id,
-                        configuration_version=args.configuration_version,
-                        channel=args.channel,
-                        starts_at=_datetime(args.starts_at),
-                        cadence=args.cadence,
-                        timezone_name=args.timezone_name,
-                        missed_run_policy=args.missed_run_policy,
-                        retention_days=args.retention_days,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        claim_ttl_seconds=args.claim_ttl_seconds,
-                        deadline_seconds=args.deadline_seconds,
-                        concurrency_limit=args.concurrency_limit,
-                        model_token_budget=args.model_token_budget,
-                        notification_budget=args.notification_budget,
-                    )
-                    schedule = configure_document_notification(
-                        session,
-                        declaration,
-                        now=clock.now(),
-                    )
-                    payload = {
-                        "command": args.command,
-                        "job_id": schedule.public_id,
-                        "project_id": project.id,
-                        "configuration_sha256": schedule.configuration_sha256,
-                        "enabled": schedule.disabled_at is None,
-                    }
-        elif args.command == "configure-reproof":
-            with session_factory() as session:
-                with session.begin():
-                    project = _project(session, args.project_slug)
-                    declaration = EventAdmissionReproofDeclaration(
-                        project_id=project.id,
-                        configuration_version=args.configuration_version,
-                        policy_version=args.policy_version,
-                        reason_version=args.reason_version,
-                        selection_rule=args.selection_rule,
-                        starts_at=_datetime(args.starts_at),
-                        cadence=args.cadence,
-                        timezone_name=args.timezone_name,
-                        missed_run_policy=args.missed_run_policy,
-                        retention_days=args.retention_days,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        claim_ttl_seconds=args.claim_ttl_seconds,
-                        deadline_seconds=args.deadline_seconds,
-                        concurrency_limit=args.concurrency_limit,
-                        model_token_budget=args.model_token_budget,
-                        notification_budget=args.notification_budget,
-                        clone_budget=args.clone_budget,
-                    )
-                    schedule = configure_event_admission_reproof(
-                        session,
-                        declaration,
-                        now=clock.now(),
-                    )
-                    payload = {
-                        "command": args.command,
-                        "job_id": schedule.public_id,
-                        "project_id": project.id,
-                        "configuration_sha256": schedule.configuration_sha256,
-                        "enabled": schedule.disabled_at is None,
-                    }
-        elif args.command == "configure-publication":
-            with session_factory() as session:
-                with session.begin():
-                    project = _project(session, args.project_slug)
-                    declaration = ReportPublicationDeclaration(
-                        project_id=project.id,
-                        configuration_version=args.configuration_version,
-                        provenance_mode=args.provenance_mode,
-                        prepare_external_pdf=args.prepare_external_pdf,
-                        starts_at=_datetime(args.starts_at),
-                        cadence=args.cadence,
-                        timezone_name=args.timezone_name,
-                        missed_run_policy=args.missed_run_policy,
-                        comparison_window_policy=args.comparison_window_policy,
-                        retention_days=args.retention_days,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        claim_ttl_seconds=args.claim_ttl_seconds,
-                        deadline_seconds=args.deadline_seconds,
-                        concurrency_limit=args.concurrency_limit,
-                        model_token_budget=args.model_token_budget,
-                        notification_budget=args.notification_budget,
-                    )
-                    schedule = configure_report_publication(
-                        session,
-                        declaration,
-                        now=clock.now(),
-                    )
-                    payload = {
-                        "command": args.command,
-                        "job_id": schedule.public_id,
-                        "project_id": project.id,
-                        "configuration_sha256": schedule.configuration_sha256,
-                        "enabled": schedule.disabled_at is None,
-                    }
+                    payload_extra = getattr(args, "payload_extra", None)
+                    if payload_extra is not None:
+                        payload.update(payload_extra(args))
         elif args.command == "tick":
             with session_factory() as session:
                 with session.begin():

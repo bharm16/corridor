@@ -70,10 +70,8 @@ from corridor.record_inclusion import request_record_inclusion
 from corridor.revision_comparison import (
     DEFAULT_MATCHER_VERSION,
     RevisionComparisonError,
-    create_revision_comparison,
-    list_revision_comparisons,
-    read_revision_comparison,
 )
+from corridor.revision_processing import obtain_verified_revision_pair
 from corridor.revision_reconciliation_request import revision_reconciliation_pending
 
 
@@ -270,23 +268,17 @@ def reconcile_project_revisions(
             reused = 0
             failures: list[RevisionComparisonFailure] = []
             for pair in pairs:
-                prior_ids = {
-                    comparison.id
-                    for comparison in list_revision_comparisons(
-                        session,
-                        pair.predecessor_extraction_run_id,
-                        pair.successor_extraction_run_id,
-                    )
-                }
                 try:
-                    comparison = create_revision_comparison(
+                    verified = obtain_verified_revision_pair(
                         session,
-                        pair.predecessor_extraction_run_id,
-                        pair.successor_extraction_run_id,
+                        predecessor_extraction_run_id=(
+                            pair.predecessor_extraction_run_id
+                        ),
+                        successor_extraction_run_id=(
+                            pair.successor_extraction_run_id
+                        ),
                         matcher_version=matcher_version,
-                        require_unambiguous_pair_history=True,
                     )
-                    read_revision_comparison(session, comparison.id)
                 except RevisionComparisonError as exc:
                     failures.append(
                         RevisionComparisonFailure(
@@ -300,10 +292,10 @@ def reconcile_project_revisions(
                         )
                     )
                     continue
-                if comparison.id in prior_ids:
-                    reused += 1
-                else:
+                if verified.created:
                     created += 1
+                else:
+                    reused += 1
 
             carry = run_automatic_carry_forward(session, project_id)
             requested_record_inclusion = bool(carry.carried)

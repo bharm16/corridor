@@ -26,16 +26,21 @@ source-wide trace, no chain of thought, no claim of human decision authorship.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
-import json
 from pathlib import Path
-import time
 from typing import Callable
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.bounded_explanation import (
+    BoundedExplanationPlan,
+    budget_snapshot,
+    canonical_json as _canonical,
+    content_sha256 as _sha,
+    execute_bounded_explanation,
+    sanitize_text,
+)
 from corridor.extraction_runs import (
     current_active_run_declaration,
     is_completed_run,
@@ -198,31 +203,6 @@ class PreparedRunExplanation:
     read_fingerprint: str
     comparison_sha256: str
     runs: tuple[dict, ...]
-
-
-def sanitize_text(value: object, *, max_len: int = _MAX_TEXT) -> str:
-    """Strip control characters and bound length before storing or rendering.
-
-    Rendered HTML escaping is the template's job; this removes control bytes and
-    caps length so neither source nor model text can smuggle terminal control
-    sequences or an unbounded dump into a retained receipt.
-    """
-    text = "" if value is None else str(value)
-    text = "".join(
-        ch for ch in text if ch in "\n\t" or (ch >= " " and ch != "\x7f")
-    )
-    text = text.strip()
-    return text[:max_len]
-
-
-def _canonical(payload: object) -> str:
-    return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
-    )
-
-
-def _sha(payload: object) -> str:
-    return sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
 def declare_configuration(
@@ -667,13 +647,7 @@ def _has_authority_phrase(text: str) -> bool:
 
 
 def _budget(configuration: ProductionRunExplanationConfiguration) -> dict:
-    return {
-        "max_input_tokens": configuration.max_input_tokens,
-        "max_output_tokens": configuration.max_output_tokens,
-        "timeout_seconds": configuration.timeout_seconds,
-        "max_requests": configuration.max_requests,
-        "retry_policy": configuration.retry_policy,
-    }
+    return budget_snapshot(configuration)
 
 
 def _store(
@@ -761,122 +735,33 @@ def request_run_explanation(
     if existing is not None:
         return existing
 
-    system_prompt = PROMPT.read_text()
-    user_message = _user_message(prepared)
-    estimated_input_tokens = (len(system_prompt) + len(user_message) + 3) // 4
-    if estimated_input_tokens > configuration.max_input_tokens:
-        return _store(
-            session,
-            prepared=prepared,
+    outcome = execute_bounded_explanation(
+        BoundedExplanationPlan(
             configuration=configuration,
-            principal=principal,
-            adapter="none",
-            adapter_contract_version=None,
-            status="budget_exhausted",
-            reason=(
-                f"input estimate {estimated_input_tokens} exceeds declared "
-                f"budget {configuration.max_input_tokens}; no model call was made"
-            ),
-            explanation_json=None,
-            execution_lineage_json=None,
-            usage_json={"estimated_input_tokens": estimated_input_tokens},
+            client_factory=client_factory,
+            system_prompt=PROMPT.read_text(),
+            user_message=_user_message(prepared),
+            schema=EXPLANATION_SCHEMA,
+            is_current=lambda: _read_fingerprint(
+                session,
+                document_id,
+                competing_production_runs(session, document_id),
+            )
+            == prepared.read_fingerprint,
+            stale_reason="the competing runs changed during the request",
+            validate=lambda result: validate_explanation(prepared.runs, result),
         )
-
-    client = client_factory(configuration)
-    adapter = sanitize_text(
-        getattr(client, "adapter", type(client).__name__), max_len=64
     )
-    adapter_contract_version = getattr(client, "adapter_contract_version", None)
-    if adapter_contract_version is not None:
-        adapter_contract_version = sanitize_text(adapter_contract_version, max_len=128)
-    started = time.monotonic()
-    try:
-        result = client.complete(
-            system=system_prompt, user=user_message, schema=EXPLANATION_SCHEMA
-        )
-    except TimeoutError as exc:
-        return _store(
-            session,
-            prepared=prepared,
-            configuration=configuration,
-            principal=principal,
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="timeout",
-            reason=f"model request exceeded declared time budget: {exc}",
-            explanation_json=None,
-            execution_lineage_json=None,
-            usage_json={"estimated_input_tokens": estimated_input_tokens},
-        )
-    except Exception as exc:  # adapter errors remain a receipt, never a hidden retry
-        return _store(
-            session,
-            prepared=prepared,
-            configuration=configuration,
-            principal=principal,
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="transport_failure",
-            reason=f"model transport failed: {type(exc).__name__}: {exc}",
-            explanation_json=None,
-            execution_lineage_json=None,
-            usage_json={"estimated_input_tokens": estimated_input_tokens},
-        )
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-    lineage = {
-        "adapter": adapter,
-        "adapter_contract_version": adapter_contract_version,
-        "request_sha256": _sha([system_prompt, user_message]),
-        "result_sha256": _sha(result),
-        "elapsed_ms": elapsed_ms,
-    }
-    reported_usage = getattr(client, "last_usage", None)
-    usage_json = {
-        "estimated_input_tokens": estimated_input_tokens,
-        "reported": reported_usage if isinstance(reported_usage, dict) else {},
-    }
-
-    competing = competing_production_runs(session, document_id)
-    if _read_fingerprint(session, document_id, competing) != prepared.read_fingerprint:
-        return _store(
-            session,
-            prepared=prepared,
-            configuration=configuration,
-            principal=principal,
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="stale_input",
-            reason="the competing runs changed during the request",
-            explanation_json=None,
-            execution_lineage_json=lineage,
-            usage_json=usage_json,
-        )
-
-    validated, error = validate_explanation(prepared.runs, result)
-    if error is not None:
-        return _store(
-            session,
-            prepared=prepared,
-            configuration=configuration,
-            principal=principal,
-            adapter=adapter,
-            adapter_contract_version=adapter_contract_version,
-            status="validation_refused",
-            reason=error,
-            explanation_json=None,
-            execution_lineage_json=lineage,
-            usage_json=usage_json,
-        )
     return _store(
         session,
         prepared=prepared,
         configuration=configuration,
         principal=principal,
-        adapter=adapter,
-        adapter_contract_version=adapter_contract_version,
-        status="completed",
-        reason=None,
-        explanation_json=validated,
-        execution_lineage_json=lineage,
-        usage_json=usage_json,
+        adapter=outcome.adapter,
+        adapter_contract_version=outcome.adapter_contract_version,
+        status=outcome.status,
+        reason=outcome.reason,
+        explanation_json=outcome.output_json,
+        execution_lineage_json=outcome.execution_lineage_json,
+        usage_json=outcome.usage_json,
     )

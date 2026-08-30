@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from corridor import audit
 from corridor.dependency_events import current_statement_evidence_memberships
-from corridor.documentation_checklist import read_checklist
+from corridor.documentation_checklist import read_checklists
 from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
@@ -495,6 +495,19 @@ def resolve_operative_support(
     ):
         designations.setdefault(designation.dependency_id, []).append(designation)
 
+    legacy_ready_by_dependency = {
+        dependency_id: any(
+            item.verified and item.satisfies_requirement and item.is_current
+            for item in evidence_by_dependency.get(dependency_id, ())
+        )
+        for dependency_id in ids
+    }
+    checklists = read_checklists(
+        session,
+        ids,
+        legacy_ready_by_dependency=legacy_ready_by_dependency,
+    )
+
     resolved: dict[int, ResolvedSupport] = {}
     for dependency_id in ids:
         evidence = evidence_by_dependency.get(dependency_id, [])
@@ -577,11 +590,7 @@ def resolve_operative_support(
                 )
             )
         dates = tuple(item.evidence_date for item in verified if item.evidence_date)
-        checklist = read_checklist(
-            session,
-            dependency_id,
-            legacy_ready=bool(current_readiness),
-        )
+        checklist = checklists[dependency_id]
         resolved[dependency_id] = ResolvedSupport(
             dependency_id=dependency_id,
             publication=publication,

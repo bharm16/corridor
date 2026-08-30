@@ -2,7 +2,7 @@ import hashlib
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from corridor.db import Session, engine
 from corridor.exceptions import (
@@ -1330,3 +1330,40 @@ def test_an_evaluation_reuses_a_supplied_statement_publication_without_rereading
     )
 
     assert evaluation.statement_publication is publication
+
+
+def test_project_evaluation_gathers_constraint_facts_in_bounded_queries(
+    session, project
+):
+    """A larger Project Record still crosses the Evaluation seam once."""
+    small = Project(
+        slug="exc-query-baseline",
+        name="Exception query baseline",
+        is_synthetic=True,
+    )
+    session.add(small)
+    session.flush()
+    make_dep(session, small, ref="DEP-scale-baseline")
+    for index in range(25):
+        make_dep(session, project, ref=f"DEP-scale-{index:02d}")
+
+    connection = session.connection()
+
+    def evaluate_with_count(project_id):
+        statement_count = 0
+
+        def count_statement(*_args):
+            nonlocal statement_count
+            statement_count += 1
+
+        event.listen(connection, "before_cursor_execute", count_statement)
+        try:
+            return evaluate_project(session, project_id, today=TODAY), statement_count
+        finally:
+            event.remove(connection, "before_cursor_execute", count_statement)
+
+    _, baseline_count = evaluate_with_count(small.id)
+    evaluation, scaled_count = evaluate_with_count(project.id)
+
+    assert len(evaluation.committed_dates) == 25
+    assert scaled_count <= baseline_count + 5
