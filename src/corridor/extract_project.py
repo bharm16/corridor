@@ -156,7 +156,7 @@ def extract_project(
             raise UnknownDocument(
                 f"no document in {project.slug!r} carries identity {identity}"
             )
-        if not _extractable_document(named):
+        if not extractable_document(named):
             raise UnextractableDocument(
                 f"{document_registry_id!r} is {named.doc_type!r}; extraction "
                 "reads matrices and registered plan spreadsheets"
@@ -168,7 +168,7 @@ def extract_project(
             .where(Document.project_id == project.id)
             .order_by(Document.doc_date, Document.id)
         ).all()
-        documents = [document for document in registered if _extractable_document(document)]
+        documents = [document for document in registered if extractable_document(document)]
 
     done_by_version: dict[str, set[int]] = {}
     outcomes = []
@@ -387,7 +387,7 @@ def extract_project(
     return outcomes
 
 
-def _extractable_document(document: Document) -> bool:
+def extractable_document(document: Document) -> bool:
     return document.doc_type == "matrix" or (
         document.doc_type == "plan"
         and Path(document.filename).suffix.lower() in SPREADSHEET_SUFFIXES
