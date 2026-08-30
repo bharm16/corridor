@@ -32,27 +32,41 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from corridor.geometry import NoMatrixFound
-from corridor.vocabulary import REQUIRED, TEMPLATE_FIELDS
+from corridor.vocabulary import REQUIRED, TEMPLATE_FIELDS, UCM_CONFLICT_LIST_HEADINGS
 
 # How deep a header can sit. The published template puts a merged title
-# band on row 1 and the real headings on row 2; nothing in this corpus goes
-# deeper, and a "header" found ten rows down is a data row that happens to
-# read like one.
-HEADER_SEARCH_ROWS = 6
+# band on row 1 and the real headings on row 2. I-35 NEX South's "UCM -
+# Utility Conflict List" workbook is deeper: a title, then five rows of
+# project identification (owner, CCSJ, description, route, developed/reviewed
+# by), then the column header on row 8 (#365). Bounded so a "header" found
+# far down is a data row that happens to read like one, not searched
+# open-endedly.
+HEADER_SEARCH_ROWS = 8
 
 # ...and how many canonical fields a row must name to be the header rather
 # than a title band. A band populates one cell of the row it spans, which
 # is the shape being excluded.
 MIN_HEADER_FIELDS = 2
 
-# canonical field -> the template column it holds, inverted for lookup by
-# printed heading. Built from `TEMPLATE_FIELDS` rather than restated, so a
-# spreadsheet and a printed page cannot drift into two vocabularies — the
-# whole argument of ADR-0005 is that they are one document in two forms.
+# printed heading -> canonical field, for lookup by the name a form prints.
+# The template half is inverted from `TEMPLATE_FIELDS` rather than restated,
+# so a spreadsheet and a printed page cannot drift into two vocabularies —
+# the whole argument of ADR-0005 is that they are one document in two forms.
+# The second half is the exact headings of TxDOT's earlier "UCM - Utility
+# Conflict List" form (I-35 NEX South, #365), added on the same terms: an
+# exact column name read from the form's own data dictionary, never a synonym.
+# Distinct forms name a field differently, and one sheet never carries two of
+# those names — `column_mapping` maps each canonical field once regardless.
 _BY_HEADING = {
     " ".join(column.split()).casefold(): field
     for field, column in TEMPLATE_FIELDS.items()
 }
+_BY_HEADING.update(
+    {
+        " ".join(heading.split()).casefold(): field
+        for heading, field in UCM_CONFLICT_LIST_HEADINGS.items()
+    }
+)
 
 
 class NoConflictSheet(NoMatrixFound):

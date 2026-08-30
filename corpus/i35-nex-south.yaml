@@ -1,0 +1,58 @@
+# I-35 NEX South — TxDOT I-35 Northeast Expansion (NEX) South design-build,
+# Bexar County (San Antonio), I-35 from FM 1103 to AT&T Center Drive.
+#
+# Curated intent. Hand-edited; `make corpus corpus/i35-nex-south.yaml` writes
+# the outcome to i35-nex-south.lock.json.
+#
+# This is the project ADR-0005 describes: TxDOT publishes the Utility Conflict
+# Matrix as the structured original — an .xlsx workbook — rather than a
+# printout of one. The utilities archive holds two conflict workbooks (both
+# registered below) plus SUE test-hole PDFs, an interlocal agreement, a lights
+# workflow, and MicroStation .dgn design files. Both matrices are the earlier
+# TxDOT "UCM - Utility Conflict List" form, not the Utility Conflict Analysis
+# Template in corpus/cross-agency.yaml; their columns are named by the
+# workbook's own `Field_Column Descriptions` sheet and read natively with no
+# model (ADR-0005, corridor.sheets). Every archive member was verified by
+# central-directory listing in
+# docs/research/spreadsheet-source-availability-2026-08-28.md; the archive
+# holds no PDF rendering of either matrix, so there is no structured/printed
+# rendition pair to declare (docs/operations/i35-nex-south-intake.md, #365).
+project: i35-nex-south
+name: I-35 NEX South
+agency: TxDOT
+
+sources:
+  # The finalized conflict list. `22.02.07` in the filename is the published
+  # revision date (2/7/2022); the workbook's own header records it was first
+  # developed 4/8/2020 and reviewed 4/14/2020 by the TxDOT utility
+  # coordinator. 71 conflict rows across San Antonio owners (CPS Electric,
+  # Charter/Spectrum, and others).
+  - registry_id: i35nexso-ucm-2022-02-07
+    url: &utilities https://app.box.com/index.php?rm=box_download_shared_file&shared_name=nj56xaqh2dqoj88euo0zqndyk8mfw0a3&file_id=f_1793826942528
+    member: "Utilities/I-35_NEX_SOUTH_UCM_22.02.07.xlsx"
+    doc_type: matrix
+    role: spine
+    title: "Utility Conflict List (UCM, 2/7/2022)"
+    doc_date: 2022-02-07
+    notes: >-
+      Structured original (ADR-0005). Read natively as cells, no model. 15 of
+      its 24 columns map to the canonical vocabulary; the other nine (line
+      style, size/material, base-or-ultimate, highway alignment, test hole
+      no./depth, drawing/sheet no., estimated resolution date, resolution
+      status) are reported as unmapped, never guessed.
+
+  # The potential-conflict list. Undated in the archive (no filename date).
+  # Same form and columns as the UCM above; the acquisition spec notes the two
+  # workbooks are a contradiction test case (potential vs finalized conflicts),
+  # not a dated supersession series — so no Supersession is declared here.
+  - registry_id: i35nexso-potential-utility-conflicts
+    url: *utilities
+    member: "Utilities/I-35 NEX_SOUTH_Potential_Utility_Conflicts.xlsx"
+    doc_type: matrix
+    role: spine
+    title: "Potential Utility Conflict List (UCM)"
+    notes: >-
+      Structured original (ADR-0005). Same "UCM - Utility Conflict List" form
+      and column layout as the finalized list; 68 potential-conflict rows.
+      Read natively as cells, no model; the same nine columns are reported as
+      unmapped.
