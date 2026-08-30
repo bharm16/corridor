@@ -135,6 +135,7 @@ from corridor.models import (
     CoordinationSummaryRequest,
     ProductionRunExplanationConfiguration,
     ProductionRunExplanationRequest,
+    ExtractionFailureDiagnosisRequest,
 )
 from corridor.coordination_summary import (
     ConfigurationRequired,
@@ -153,6 +154,17 @@ from corridor.production_run_explanation import (
     current_configuration as current_run_explanation_configuration,
     declare_configuration as declare_run_explanation_configuration,
     request_run_explanation,
+)
+from corridor.extraction_failure_diagnosis import (
+    PROMPT_VERSION as FAILURE_DIAGNOSIS_PROMPT_VERSION,
+    ConfigurationRequired as FailureDiagnosisConfigurationRequired,
+    FailureDiagnosisRefused,
+    InvalidDiagnosisConfiguration,
+    current_configuration as current_failure_diagnosis_configuration,
+    declare_configuration as declare_failure_diagnosis_configuration,
+    failed_extraction_runs,
+    failure_diagnosis_state_token,
+    request_failure_diagnosis,
 )
 from corridor.milestones import (
     MalformedMilestoneCsv,
@@ -450,6 +462,20 @@ def get_coordination_summary_client_factory():
 
 def get_run_explanation_client_factory():
     """Build an explanation adapter only after declared spend authority exists."""
+    from corridor.llm import OpenAIClient
+
+    def build(configuration):
+        return OpenAIClient(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+        )
+
+    return build
+
+
+def get_failure_diagnosis_client_factory():
+    """Build a diagnosis adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
     def build(configuration):
@@ -3612,6 +3638,7 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
     for document in documents:
         current = declared.get(document.id)
         competing = competing_production_runs(session, document.id)
+        failed_runs = failed_extraction_runs(session, document.id)
         document_rows.append(
             {
                 "document": document,
@@ -3625,6 +3652,13 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
                 "competing_run_ids": [run.id for run in competing],
                 "explanation_offered": len(competing) >= 2,
                 "explain_state": competing_runs_state_token(session, document.id),
+                # A diagnosis is offered per failed attempt; the token binds the
+                # exact run and failure context the operator is looking at.
+                "diagnosis_offered": bool(failed_runs),
+                "failed_run_tokens": {
+                    run.id: failure_diagnosis_state_token(session, document.id, run)
+                    for run in failed_runs
+                },
             }
         )
 
@@ -3683,6 +3717,10 @@ def _operations_processing_context(session: Session, project: Project) -> dict:
         ),
         "run_explanation_prompt_version": RUN_EXPLANATION_PROMPT_VERSION,
         "support_update_failures": support_update_failures,
+        "failure_diagnosis_configuration": current_failure_diagnosis_configuration(
+            session, project.id
+        ),
+        "failure_diagnosis_prompt_version": FAILURE_DIAGNOSIS_PROMPT_VERSION,
     }
 
 
@@ -3909,6 +3947,140 @@ def read_run_explanation(
             "competing_runs": competing_production_runs(session, document.id),
             "current_active_run_id": current.extraction_run_id if current else None,
             "offer_state": _run_offer_state(session, document.id),
+        },
+    )
+
+
+@app.post("/operations/{slug}/failure-diagnosis/configuration")
+async def declare_failure_diagnosis_configuration_route(
+    slug: str,
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Declare bounded failure-diagnosis authority; this is technical operations.
+
+    A missing or incomplete declaration is exactly why a diagnosis refuses
+    before any model call — there is no environment or default fallback.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    form = await request.form()
+    try:
+        declare_failure_diagnosis_configuration(
+            session,
+            project_id=project.id,
+            principal=principal,
+            model=str(form.get("model", "")),
+            prompt_version=str(form.get("prompt_version", "")),
+            max_input_tokens=int(str(form.get("max_input_tokens", ""))),
+            max_output_tokens=int(str(form.get("max_output_tokens", ""))),
+            timeout_seconds=int(str(form.get("timeout_seconds", ""))),
+            max_requests=int(str(form.get("max_requests", ""))),
+            retry_policy=str(form.get("retry_policy", "")),
+            retention_policy=str(form.get("retention_policy", "")),
+            observation_context=str(form.get("observation_context", "")),
+        )
+    except (ValueError, InvalidDiagnosisConfiguration) as exc:
+        raise HTTPException(
+            400, f"failure-diagnosis configuration refused: {exc}"
+        ) from exc
+    session.commit()
+    return RedirectResponse(f"/operations/{project.slug}", status_code=303)
+
+
+@app.post("/operations/{slug}/runs/{document_id}/diagnose")
+async def diagnose_operations_failed_run(
+    request: Request,
+    slug: str,
+    document_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    client_factory=Depends(get_failure_diagnosis_client_factory),
+):
+    """Run one explicit, read-only diagnosis of one failed extraction attempt.
+
+    The failure receipt, run outcome, and quarantine are untouched: this only
+    reads the immutable failure detail and the permitted source pages and stores
+    a non-authoritative diagnosis. It never retries or relabels the failure.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project.id:
+        raise HTTPException(404, "no such source document")
+    form = await request.form()
+    expected_run_id = _required_positive_http_id(form, "extraction_run_id")
+    state_token = str(form.get("state_token") or "")
+    try:
+        receipt = request_failure_diagnosis(
+            session,
+            project_id=project.id,
+            document_id=document.id,
+            principal=principal,
+            client_factory=client_factory,
+            expected_run_id=expected_run_id,
+            state_token=state_token,
+        )
+    except FailureDiagnosisRefused as exc:
+        raise HTTPException(
+            404 if exc.reason in ("cross_project", "no_such_run") else 409,
+            exc.detail,
+        ) from exc
+    except FailureDiagnosisConfigurationRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/operations/{project.slug}/runs/{document.id}/diagnosis/{receipt.public_id}",
+        status_code=303,
+    )
+
+
+@app.get(
+    "/operations/{slug}/runs/{document_id}/diagnosis/{public_id}",
+    response_class=HTMLResponse,
+)
+def read_failure_diagnosis(
+    request: Request,
+    slug: str,
+    document_id: int,
+    public_id: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read one retained non-authoritative diagnosis; a GET never spends.
+
+    The deterministic failure detail and the safe operator recovery paths stay
+    available whether the diagnosis completed, refused, or could not help — the
+    failure is never relabelled and the record stays with the operator.
+    """
+    project = _project(
+        session, slug, principal, designation=access.TECHNICAL_OPERATIONS
+    )
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project.id:
+        raise HTTPException(404, "no such source document")
+    receipt = session.scalars(
+        select(ExtractionFailureDiagnosisRequest).where(
+            ExtractionFailureDiagnosisRequest.public_id == public_id,
+            ExtractionFailureDiagnosisRequest.project_id == project.id,
+            ExtractionFailureDiagnosisRequest.document_id == document.id,
+        )
+    ).first()
+    if receipt is None:
+        raise HTTPException(404, "no failure diagnosis for this document")
+    return TEMPLATES.TemplateResponse(
+        request,
+        "extraction_failure_diagnosis.html",
+        {
+            "project": project,
+            "document": document,
+            "receipt": receipt,
+            "failure": (receipt.source_context_json or {}).get("failure", {}),
+            "pages": (receipt.source_context_json or {}).get("pages", []),
+            "quarantine": session.get(DocumentQuarantine, document.id),
         },
     )
 

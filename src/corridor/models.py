@@ -2432,6 +2432,162 @@ class ProductionRunExplanationRequest(Base):
     )
 
 
+class ExtractionFailureDiagnosisConfiguration(Base):
+    """One explicit, server-owned authorization for a bounded failure diagnosis.
+
+    Diagnosing an unreadable, no-matrix, quarantined, or otherwise failed
+    Extraction Run can spend model budget, so it has no supported default: an
+    attributable technical-operations declaration names the model, prompt, and
+    the time, input, output, retry, retention, and observation bounds before any
+    diagnosis request is allowed. Rows are append-only so a retained diagnosis
+    always names the rules it ran under (ADR-0011, ADR-0034).
+    """
+
+    __tablename__ = "extraction_failure_diagnosis_configurations"
+    __table_args__ = (
+        CheckConstraint(
+            "max_input_tokens between 1 and 200000",
+            name="ck_failure_diagnosis_config_input_budget",
+        ),
+        CheckConstraint(
+            "max_output_tokens between 1 and 20000",
+            name="ck_failure_diagnosis_config_output_budget",
+        ),
+        CheckConstraint(
+            "timeout_seconds between 1 and 600",
+            name="ck_failure_diagnosis_config_timeout",
+        ),
+        CheckConstraint(
+            "max_requests = 1", name="ck_failure_diagnosis_config_one_request"
+        ),
+        CheckConstraint(
+            "retry_policy = 'none'", name="ck_failure_diagnosis_config_no_retry"
+        ),
+        CheckConstraint(
+            "retention_policy = 'retained_indefinitely'",
+            name="ck_failure_diagnosis_config_retention",
+        ),
+        CheckConstraint(
+            "length(trim(model)) > 0", name="ck_failure_diagnosis_config_model"
+        ),
+        CheckConstraint(
+            "length(trim(prompt_version)) > 0",
+            name="ck_failure_diagnosis_config_prompt",
+        ),
+        CheckConstraint(
+            "length(trim(observation_context)) > 0",
+            name="ck_failure_diagnosis_config_context",
+        ),
+        CheckConstraint(
+            "length(trim(created_by)) > 0", name="ck_failure_diagnosis_config_actor"
+        ),
+        Index("ix_failure_diagnosis_configurations_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    max_input_tokens: Mapped[int] = mapped_column(Integer)
+    max_output_tokens: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    max_requests: Mapped[int] = mapped_column(Integer)
+    retry_policy: Mapped[str] = mapped_column(String(32))
+    retention_policy: Mapped[str] = mapped_column(String(64))
+    observation_context: Mapped[str] = mapped_column(String(128))
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExtractionFailureDiagnosisRequest(Base):
+    """Immutable receipt for one bounded, non-authoritative failure diagnosis.
+
+    The receipt binds the exact failed Extraction Run it diagnosed, retains the
+    frozen deterministic failure facts and permitted-page metadata it read (the
+    context a human checks the diagnosis against), and stores only the validated
+    diagnosis plus a redacted execution lineage — never raw source-wide text, a
+    chain of thought, or any claim of human decision authorship. It never retries
+    extraction, relabels the failure, or removes a quarantine; the original
+    Extraction Run outcome, error, and receipt are untouched (ADR-0011).
+    """
+
+    __tablename__ = "extraction_failure_diagnosis_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "configuration_id",
+            "input_sha256",
+            name="uq_failure_diagnosis_request_input",
+        ),
+        CheckConstraint(
+            "status in ('completed', 'budget_exhausted', 'timeout', "
+            "'transport_failure', 'validation_refused', 'stale_input')",
+            name="ck_failure_diagnosis_request_status",
+        ),
+        CheckConstraint(
+            "input_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_failure_diagnosis_request_input_sha",
+        ),
+        CheckConstraint(
+            "state_token ~ '^[0-9a-f]{64}$'",
+            name="ck_failure_diagnosis_request_state_token",
+        ),
+        CheckConstraint(
+            "length(trim(requested_by)) > 0",
+            name="ck_failure_diagnosis_request_actor",
+        ),
+        CheckConstraint(
+            "length(trim(adapter)) > 0", name="ck_failure_diagnosis_request_adapter"
+        ),
+        CheckConstraint(
+            "non_authoritative", name="ck_failure_diagnosis_request_non_auth"
+        ),
+        Index("ix_failure_diagnosis_requests_project_id", "project_id"),
+        Index("ix_failure_diagnosis_requests_document_id", "document_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    extraction_run_id: Mapped[int] = mapped_column(ForeignKey("extraction_runs.id"))
+    configuration_id: Mapped[int] = mapped_column(
+        ForeignKey("extraction_failure_diagnosis_configurations.id")
+    )
+    requested_by: Mapped[str] = mapped_column(String(128))
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    state_token: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    adapter: Mapped[str] = mapped_column(String(64))
+    adapter_contract_version: Mapped[str | None] = mapped_column(String(128))
+    tool_contract_version: Mapped[str] = mapped_column(String(128))
+    validator_version: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    # The frozen deterministic failure facts and permitted-page metadata this
+    # diagnosis read: the checkable context, not a raw source-wide trace.
+    source_context_json: Mapped[dict] = mapped_column(JSONB)
+    # The validated, non-authoritative diagnosis, or null when none was kept.
+    diagnosis_json: Mapped[dict | None] = mapped_column(JSONB)
+    # Redacted transport metadata (hashes, usage, timing) — no prompt, response,
+    # or chain-of-thought text.
+    execution_lineage_json: Mapped[dict | None] = mapped_column(JSONB)
+    read_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    budget_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    non_authoritative: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ExternalReportArtifact(Base):
     """One immutable, already-rendered External Report PDF.
 
