@@ -47,6 +47,7 @@ from corridor.measurement_cases import (
     record_candidate_correction_case,
     record_do_not_add_case,
 )
+from corridor.disputes import apply_staleness_resolutions
 from corridor.project_lock import lock_project
 from corridor.supersession_review import ordinary_candidate_for_update
 
@@ -404,6 +405,7 @@ def accept_candidate(
         },
     )
     session.flush()
+    apply_staleness_resolutions(session, dependency.id)
     return dependency
 
 
@@ -483,6 +485,8 @@ def admit_dependency_by_policy(
             },
         )
     session.flush()
+    assert dependency is not None
+    apply_staleness_resolutions(session, dependency.id)
     return dependency
 
 
@@ -890,6 +894,7 @@ def merge_candidate(
         },
     )
     session.flush()
+    apply_staleness_resolutions(session, dependency.id)
     return dependency
 
 

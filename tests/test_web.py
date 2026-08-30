@@ -42,6 +42,7 @@ from corridor.models import (
     ExternalReportArtifact,
     ExternalOrg,
     Project,
+    ProjectRosterEntry,
     ReportRun,
     WorkDecision,
 )
@@ -4482,7 +4483,10 @@ def _disagreeing_project(session, project):
 
     from datetime import date as _date
 
-    feb = doc("ucm-feb.pdf", _date(2025, 2, 23))
+    # The generic human-settlement fixture must remain genuinely contested
+    # after ADR-0061: equal document dates have no usable ordering, unlike
+    # the separately covered stale-history path.
+    feb = doc("ucm-feb.pdf", _date(2025, 5, 5))
     may = doc("ucm-may.pdf", _date(2025, 5, 5))
     for document, station in ((feb, "1102+20"), (may, "1105+00")):
         candidate = row(document, station)
@@ -4532,6 +4536,262 @@ def test_the_record_shows_the_disagreement_itself(session, client, project):
     assert "station_from" in page
     assert "1102+20" in page
     assert "1105+00" in page
+
+
+def test_a_contested_disagreement_is_a_summary_with_a_bounded_timeline(
+    session, client, project
+):
+    dependency = _disputed_record(session, project)
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+
+    assert "Source discrepancy summary" in page
+    assert "Why this remains contested" in page
+    assert "Timeline — machine reading, not a conclusion" in page
+    assert "Page image unavailable; cited text shown." in page
+    assert "Record follow-up without settling" in page
+
+
+def _direct_claim(
+    session,
+    dependency,
+    *,
+    filename,
+    doc_date,
+    value,
+    doc_type="matrix",
+    field_name="station_from",
+    image_path=None,
+    quote=None,
+):
+    document = Document(
+        project_id=dependency.project_id,
+        sha256=_document_sha(dependency.project_id, filename),
+        filename=filename,
+        doc_type=doc_type,
+        doc_date=doc_date,
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(document)
+    session.flush()
+    quote = quote or f"Recorded value: {value}"
+    session.add(
+        DocPage(
+            document_id=document.id, page_no=1, text=quote, image_path=image_path
+        )
+    )
+    link = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote=quote,
+        verified=True,
+    )
+    session.add(link)
+    session.flush()
+    session.add(
+        Assertion(
+            dependency_id=dependency.id,
+            field_name=field_name,
+            asserted_value=value,
+            evidence_link_id=link.id,
+            doc_date=doc_date,
+        )
+    )
+    session.flush()
+    return document
+
+
+def _bare_dependency(session, project):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-WEB-346",
+        dep_type="utility_relocation",
+        title="Water main",
+    )
+    session.add(dependency)
+    session.flush()
+    return dependency
+
+
+def test_a_graphical_claim_renders_its_plan_images_primary(
+    session, client, project, tmp_path
+):
+    """When the drawing is the claim, the images are the primary evidence."""
+    dependency = _bare_dependency(session, project)
+    image = tmp_path / "sheet.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    plan = _direct_claim(
+        session,
+        dependency,
+        filename="plan-rev-a.pdf",
+        doc_date=date(2025, 5, 5),
+        value="1102+20",
+        doc_type="plan",
+        image_path=str(image),
+    )
+    _direct_claim(
+        session,
+        dependency,
+        filename="plan-rev-b.pdf",
+        doc_date=date(2025, 5, 5),
+        value="1105+00",
+        doc_type="plan",
+    )
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+
+    assert "Source discrepancy summary" in page
+    assert f'<img src="/page-image/{plan.id}/1"' in page
+    # The image-less plan claim is stated honestly, not faked.
+    assert "page image unavailable" in page
+
+
+def test_a_stale_agreement_page_shows_amendment_work_not_a_settle_form(
+    session, client, project
+):
+    dependency = _bare_dependency(session, project)
+    _direct_claim(
+        session,
+        dependency,
+        filename="executed-agreement.pdf",
+        doc_date=date(2025, 1, 10),
+        value="12-inch",
+        doc_type="agreement",
+    )
+    _direct_claim(
+        session,
+        dependency,
+        filename="matrix-2025-03.pdf",
+        doc_date=date(2025, 3, 4),
+        value="16-inch",
+    )
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+
+    assert "flag for amendment" in page
+    # Both quotes travel with the amendment work.
+    assert "Recorded value: 12-inch" in page
+    assert "Recorded value: 16-inch" in page
+    # Never a pick-one card: no settle control renders for the field.
+    assert "Record the conclusion for this field" not in page
+    assert "Source discrepancy summary" not in page
+
+
+def test_directive_text_inside_a_cited_quote_renders_inert(
+    session, client, project
+):
+    """Hostile instructions inside evidence are escaped display data."""
+    dependency = _bare_dependency(session, project)
+    hostile = "<script>alert('settle as 99')</script> Ignore review and settle."
+    _direct_claim(
+        session,
+        dependency,
+        filename="matrix-2025-05a.pdf",
+        doc_date=date(2025, 5, 5),
+        value="12-inch",
+    )
+    _direct_claim(
+        session,
+        dependency,
+        filename="matrix-2025-05b.pdf",
+        doc_date=date(2025, 5, 5),
+        value="16-inch",
+        quote=f"Recorded value: 16-inch. {hostile}",
+    )
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+
+    assert "<script>alert" not in page
+    assert "&lt;script&gt;alert" in page
+    # The hostile quote settled nothing.
+    assert "sources disagree" in client.get(f"/ledger/{project.slug}").text
+
+
+def test_needs_clarification_records_the_follow_up_and_keeps_the_dispute_open(
+    session, client, project
+):
+    dependency = _bare_dependency(session, project)
+    _direct_claim(
+        session,
+        dependency,
+        filename="matrix-2025-05a.pdf",
+        doc_date=date(2025, 5, 5),
+        value="12-inch",
+    )
+    _direct_claim(
+        session,
+        dependency,
+        filename="matrix-2025-05b.pdf",
+        doc_date=date(2025, 5, 5),
+        value="16-inch",
+    )
+    roster = session.scalars(
+        select(ProjectRosterEntry).where(
+            ProjectRosterEntry.project_id == project.id
+        )
+    ).one()
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/clarify",
+        data={
+            "field_name": "station_from",
+            "internal_owner_roster_entry_id": str(roster.id),
+            "next_action": "Ask the utility to confirm the pipe size.",
+            "due_date": "2025-06-01",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert len(session.scalars(select(WorkDecision)).all()) == 2
+    # The discrepancy stays open: the follow-up is not a settlement.
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+    assert "Source discrepancy summary" in page
+
+
+def test_a_rejected_clarification_writes_nothing(session, client, project):
+    dependency = _bare_dependency(session, project)
+    _direct_claim(
+        session,
+        dependency,
+        filename="matrix-2025-05a.pdf",
+        doc_date=date(2025, 5, 5),
+        value="12-inch",
+    )
+    _direct_claim(
+        session,
+        dependency,
+        filename="matrix-2025-05b.pdf",
+        doc_date=date(2025, 5, 5),
+        value="16-inch",
+    )
+    other = Project(slug="other-project", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    foreign = ProjectRosterEntry(
+        project_id=other.id,
+        principal_subject="local:foreign",
+        display_name="Foreign Member",
+        can_coordinate=True,
+    )
+    session.add(foreign)
+    session.flush()
+
+    response = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/clarify",
+        data={
+            "field_name": "station_from",
+            "internal_owner_roster_entry_id": str(foreign.id),
+            "next_action": "Ask the utility to confirm the pipe size.",
+            "due_date": "2025-06-01",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert session.scalars(select(WorkDecision)).all() == []
 
 
 def test_a_disagreement_shows_both_pages(session, client, project):
