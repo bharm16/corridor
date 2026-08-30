@@ -4360,7 +4360,10 @@ def _disagreeing_project(session, project):
 
     from datetime import date as _date
 
-    feb = doc("ucm-feb.pdf", _date(2025, 2, 23))
+    # The generic human-settlement fixture must remain genuinely contested
+    # after ADR-0061: equal document dates have no usable ordering, unlike
+    # the separately covered stale-history path.
+    feb = doc("ucm-feb.pdf", _date(2025, 5, 5))
     may = doc("ucm-may.pdf", _date(2025, 5, 5))
     for document, station in ((feb, "1102+20"), (may, "1105+00")):
         candidate = row(document, station)
@@ -4410,6 +4413,20 @@ def test_the_record_shows_the_disagreement_itself(session, client, project):
     assert "station_from" in page
     assert "1102+20" in page
     assert "1105+00" in page
+
+
+def test_a_contested_disagreement_is_a_summary_with_a_bounded_timeline(
+    session, client, project
+):
+    dependency = _disputed_record(session, project)
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}").text
+
+    assert "Source discrepancy summary" in page
+    assert "Why this remains contested" in page
+    assert "Timeline — machine reading, not a conclusion" in page
+    assert "Page image unavailable; cited text shown." in page
+    assert "Record follow-up without settling" in page
 
 
 def test_a_disagreement_shows_both_pages(session, client, project):

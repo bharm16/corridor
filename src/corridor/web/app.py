@@ -137,8 +137,11 @@ from corridor.disputes import (
     DisputeMovedOn,
     NoSuchDispute,
     disputes_for,
+    history_assessments_for,
+    record_dispute_clarification,
     settle_dispute,
 )
+from corridor.dispute_timeline import build_dispute_timeline
 from corridor.event_admission import (
     StatementUnplaceable,
     attach_statement,
@@ -288,6 +291,9 @@ _WORK_REASON_COPY = {
     "committed_date_change": "The organization changed its promised timing.",
     "milestone_impact_unknown": "The effect on key dates is not yet known.",
     "disputed_date": "Sources disagree about a current date.",
+    "contractual_amendment": (
+        "Field data changed under an executed agreement — flag the agreement for amendment."
+    ),
     "required_by_advanced": "A schedule revision moved this constraint's Required By date.",
     "key_date_decision_affected": "A schedule revision moved a key date a recorded decision referenced.",
     "unknown_scope": "Applies to: not yet known.",
@@ -3512,6 +3518,33 @@ def dependency_detail(
     owner_decision = current_internal_owner_decision(session, dependency_id)
     action_decision = current_next_action_decision(session, dependency_id)
     support = resolve_operative_support(session, (dependency_id,))[dependency_id]
+    all_assessments = {
+        assessment.field_name: assessment
+        for assessment in history_assessments_for(session, dependency_id)
+    }
+    disputes = {
+        dispute.field_name: dispute
+        for dispute in disputes_for(session, dependency_id, include_settled=True)
+        if all_assessments.get(dispute.field_name, None) is None
+        or all_assessments[dispute.field_name].outcome != "contractual_amendment"
+    }
+    assessments = {
+        field_name: assessment
+        for field_name, assessment in all_assessments.items()
+        if assessment.field_name in disputes
+    }
+    timelines = {
+        field_name: build_dispute_timeline(session, dependency_id, field_name)
+        for field_name in disputes
+    }
+    roster = session.scalars(
+        select(ProjectRosterEntry)
+        .where(
+            ProjectRosterEntry.project_id == project.id,
+            ProjectRosterEntry.active.is_(True),
+        )
+        .order_by(ProjectRosterEntry.display_name, ProjectRosterEntry.id)
+    ).all()
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
@@ -3524,12 +3557,10 @@ def dependency_detail(
                 item.evidence_link_id for item in support.readiness
             },
             "return_to": safe_return,
-            "disputes": {
-                d.field_name: d
-                for d in disputes_for(
-                    session, dependency_id, include_settled=True
-                )
-            },
+            "disputes": disputes,
+            "dispute_assessments": assessments,
+            "dispute_timelines": timelines,
+            "roster": roster,
             "dismiss_reasons": DISMISS_REASONS,
         },
     )
@@ -3604,6 +3635,61 @@ def settle(
     return RedirectResponse(
         f"/ledger/{slug}/{dependency_id}", status_code=303
     )
+
+
+@app.post("/ledger/{slug}/{dependency_id}/clarify")
+def clarify_dispute(
+    slug: str,
+    dependency_id: int,
+    field_name: str = Form(...),
+    internal_owner_roster_entry_id: int = Form(...),
+    next_action: str = Form(...),
+    due_date: date | None = Form(None),
+    due_date_unknown_reason: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Keep a source discrepancy open and record the coordinated follow-up."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    _project_dependency(session, project, dependency_id)
+    try:
+        clarification = record_dispute_clarification(
+            session,
+            dependency_id,
+            field_name,
+            roster_entry_id=internal_owner_roster_entry_id,
+            next_action=next_action,
+            due_date=due_date,
+            due_date_unknown_reason=due_date_unknown_reason.strip() or None,
+            principal=principal,
+        )
+    except NoSuchDispute as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="clarify_dispute",
+        route_template="/ledger/{slug}/{dependency_id}/clarify",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            dependency_id=dependency_id,
+            work_decision_id=clarification.next_action_decision_id,
+        ),
+        request_fields={
+            "field_name": field_name,
+            "internal_owner_roster_entry_id": str(internal_owner_roster_entry_id),
+            "next_action": next_action,
+            "due_date": due_date.isoformat() if due_date else "",
+            "due_date_unknown_reason": due_date_unknown_reason,
+        },
+    )
+    session.commit()
+    return response
 
 
 @app.post("/dependencies/{dependency_id}/owner")
