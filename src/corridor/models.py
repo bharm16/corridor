@@ -3361,6 +3361,16 @@ class DocumentationFieldConfirmation(Base):
             "length(trim(confirmed_by)) > 0",
             name="ck_documentation_confirmation_actor",
         ),
+        # ADR-0060's optional override counts a hedge as immaterial.  It is
+        # only meaningful on a conditional letter and must durably record the
+        # exact hedge it overrode (the deposition answer for why a hedged
+        # letter counted as approval), beside who did it and when (#373).
+        CheckConstraint(
+            "condition_immaterial = false or ("
+            "classification = 'conditional' and overridden_condition_text is not null "
+            "and length(trim(overridden_condition_text)) > 0)",
+            name="ck_documentation_confirmation_override_records_hedge",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -3372,7 +3382,94 @@ class DocumentationFieldConfirmation(Base):
     classification: Mapped[str] = mapped_column(String(64))
     conclusion: Mapped[str] = mapped_column(String(64))
     confirmed_by: Mapped[str] = mapped_column(Text)
+    # False for the clean-letter confirm; True only when this row is the
+    # optional ADR-0060 override that counts the quoted hedge as immaterial.
+    condition_immaterial: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    # The exact hedge the override treated as immaterial, retained verbatim.
+    overridden_condition_text: Mapped[str | None] = mapped_column(Text)
     confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ConditionResolution(Base):
+    """One append-only attributable act that resolves an open condition.
+
+    ADR-0060 makes a condition a field in its own words: the entry itself is
+    derived at read time from the conditional letter, never a stored checkmark
+    (exactly like every other machine field, ADR-0052).  What *is* stored is
+    the small set of acts that move an open condition toward Ready — a person
+    clearing it against a cited later passage or a recorded verbal, the
+    exact-and-mechanical automatic clear, and a person dismissing a
+    misdetection with a reason.  Nothing here can be produced by a
+    misdetection alone, and a dismissal only ever removes a spurious blocker;
+    neither direction can manufacture a false Ready.
+
+    The composite foreign key to ``evidence_links(dependency_id, id)`` is the
+    database-level guarantee that a resolution is about its own Constraint's
+    letter, the same bypass boundary the checklist confirmations use.
+    """
+
+    __tablename__ = "condition_resolutions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dependency_id", "evidence_link_id"],
+            ["evidence_links.dependency_id", "evidence_links.id"],
+            name="fk_condition_resolution_owned_evidence",
+        ),
+        ForeignKeyConstraint(
+            ["basis_evidence_link_id"],
+            ["evidence_links.id"],
+            name="fk_condition_resolution_basis_evidence",
+        ),
+        ForeignKeyConstraint(
+            ["basis_event_id"],
+            ["dependency_events.id"],
+            name="fk_condition_resolution_basis_event",
+        ),
+        CheckConstraint(
+            "kind in ('cleared', 'dismissed')",
+            name="ck_condition_resolution_kind",
+        ),
+        CheckConstraint(
+            "length(trim(condition_text)) > 0",
+            name="ck_condition_resolution_text",
+        ),
+        CheckConstraint(
+            "length(trim(resolved_by)) > 0",
+            name="ck_condition_resolution_actor",
+        ),
+        CheckConstraint(
+            "kind <> 'cleared' or basis_evidence_link_id is not null "
+            "or basis_event_id is not null",
+            name="ck_condition_resolution_clear_has_basis",
+        ),
+        CheckConstraint(
+            "kind <> 'dismissed' or (reason is not null and length(trim(reason)) > 0)",
+            name="ck_condition_resolution_dismissal_has_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dependency_id: Mapped[int] = mapped_column(ForeignKey("dependencies.id"))
+    # The source conditional letter passage this act is about.
+    evidence_link_id: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(32))
+    # A durable verbatim copy of the exact words resolved — legible after a
+    # later supersession, and never anything but stored data.
+    condition_text: Mapped[str] = mapped_column(Text)
+    # A clear cites its basis: a later verified passage and/or a recorded
+    # verbal statement.  A dismissal carries no basis, only a reason.
+    basis_evidence_link_id: Mapped[int | None] = mapped_column(BigInteger)
+    basis_event_id: Mapped[int | None] = mapped_column(BigInteger)
+    reason: Mapped[str | None] = mapped_column(Text)
+    # The exact-and-mechanical automatic clear keeps its reproducible receipt
+    # here (ADR-0050); a human act leaves it null.
+    receipt_json: Mapped[dict | None] = mapped_column(JSONB)
+    resolved_by: Mapped[str] = mapped_column(String(128))
+    resolved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

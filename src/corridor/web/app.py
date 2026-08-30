@@ -93,6 +93,12 @@ from corridor.ledger import (
     load_dependency,
     mark_satisfies,
 )
+from corridor.condition_tracking import (
+    ConditionResolutionRefusal,
+    clear_condition,
+    dismiss_condition,
+    propose_condition_clears,
+)
 from corridor.documentation_checklist import (
     DocumentationClarificationRefusal,
     DocumentationConfirmationRefusal,
@@ -4503,6 +4509,9 @@ def _dependency_detail_response(
     checklist = read_checklist(
         session, dependency_id, legacy_ready=support.current_readiness != ()
     )
+    condition_proposals = propose_condition_clears(
+        session, dependency_id, checklist.conditions
+    )
     all_assessments = {
         assessment.field_name: assessment
         for assessment in history_assessments_for(session, dependency_id)
@@ -4577,6 +4586,7 @@ def _dependency_detail_response(
                 item.evidence_link_id for item in support.readiness
             },
             "checklist": checklist,
+            "condition_proposals": condition_proposals,
             "return_to": safe_return,
             "disputes": disputes,
             "dispute_assessments": assessments,
@@ -5151,6 +5161,75 @@ def clarify_documentation_review(
     )
     session.commit()
     return response
+@app.post("/dependencies/{dependency_id}/conditions/clear")
+def clear_documentation_condition(
+    dependency_id: int,
+    slug: str = Form(...),
+    evidence_link_id: int = Form(...),
+    basis_evidence_link_id: int | None = Form(None),
+    basis_event_id: int | None = Form(None),
+    reason: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Record that a cited later passage or a recorded verbal met a condition.
+
+    ADR-0060's judgment path for a generic condition: a Documentation Reviewer
+    confirms the clear against a source they cite, both quotes on the screen.
+    The rule that the basis must be a verified passage or a recorded statement
+    in this project belongs to the Ledger; this route only carries the HTTP.
+    """
+    project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
+    dependency = _project_dependency(session, project, dependency_id)
+    entries = read_checklist(session, dependency_id).conditions
+    try:
+        clear_condition(
+            session,
+            dependency,
+            evidence_link_id,
+            principal=principal,
+            entries=entries,
+            basis_evidence_link_id=basis_evidence_link_id,
+            basis_event_id=basis_event_id,
+            reason=reason or None,
+        )
+    except ConditionResolutionRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+
+
+@app.post("/dependencies/{dependency_id}/conditions/dismiss")
+def dismiss_documentation_condition(
+    dependency_id: int,
+    slug: str = Form(...),
+    evidence_link_id: int = Form(...),
+    reason: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Retire a misdetected condition attributably, with a reason.
+
+    Erring safe (ADR-0060): a person states why the condition was not real.
+    Dismissal only removes a spurious blocker; it never fills the approval
+    field, so no misdetection can produce Ready.
+    """
+    project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
+    dependency = _project_dependency(session, project, dependency_id)
+    entries = read_checklist(session, dependency_id).conditions
+    try:
+        dismiss_condition(
+            session,
+            dependency,
+            evidence_link_id,
+            principal=principal,
+            entries=entries,
+            reason=reason,
+        )
+    except ConditionResolutionRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
 
 @app.get("/page-image/{document_id}/{page_no}")

@@ -138,6 +138,14 @@ RECOVER_DOCUMENT_PARSE = "recover_document_parse"
 # append-only and still holds entries that carry them.
 AUTHORIZE_EVENT_ADMISSION = "authorize_event_admission"
 AUTHORIZE_DEPENDENCY_ADMISSION = "authorize_dependency_admission"
+# ADR-0060 / #373. A condition is a field in its own words; these are the acts
+# that move an open condition toward Ready. CLEAR_CONDITION covers a person's
+# cited or verbal clear and the exact-and-mechanical automatic clear (recorded
+# under the machine actor); DISMISS_CONDITION is a person retiring a
+# misdetection with a reason. The entry itself is derived, so there is no
+# "record condition" action — nothing is written to raise a condition.
+CLEAR_CONDITION = "clear_condition"
+DISMISS_CONDITION = "dismiss_condition"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 DEPENDENCY_ADMISSION_ACTOR = "corridor:dependency-admission"
@@ -190,6 +198,8 @@ ACTIONS = frozenset(
         AUTHORIZE_DISCOVERED_REFERENCE,
         RECOVER_DOCUMENT_PARSE,
         AUTHORIZE_DEPENDENCY_ADMISSION,
+        CLEAR_CONDITION,
+        DISMISS_CONDITION,
     }
 )
 

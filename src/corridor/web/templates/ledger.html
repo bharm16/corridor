@@ -96,6 +96,10 @@
           <td>{{ resolution_strategy_label(r.dependency.resolution_strategy) if r.dependency.resolution_strategy else '—' }}</td>
           <td>
             <span class="pill {{ 'ready' if r.is_ready else 'notready' }}">{{ documentation_review_label(r.is_ready) }}</span>
+            {% for c in r.open_conditions %}
+              <div class="muted">waiting on: <span class="q">“{{ c.condition_text }}”</span>
+                <a href="/page-image/{{ c.document_id }}/{{ c.page_no }}">letter</a></div>
+            {% endfor %}
           </td>
           {# Who is chasing it, what happens next, and what the party
              promised — the three things a coordinator opens a row to find

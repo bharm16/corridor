@@ -589,6 +589,74 @@
         <button>Record follow-up without confirming</button>
       </form>
     {% endif %}
+    {% if checklist.conditions %}
+      <h3>Conditions on this approval</h3>
+      <p class="muted">A hedged letter records as conditional by itself and keeps this Constraint not Ready — no click needed. Each condition is tracked in the company's own words until its own evidence arrives (ADR-0060).</p>
+      <table>
+        <thead><tr><th>Condition, in their words</th><th>Waiting on</th><th>State</th></tr></thead>
+        <tbody>
+          {% for c in checklist.conditions %}
+            <tr>
+              <td>
+                <span class="q">“{{ c.condition_text }}”</span><br>
+                <a href="/page-image/{{ c.document_id }}/{{ c.page_no }}">open the letter</a>
+                <span class="muted">— {{ c.document_filename }} p.{{ c.page_no }}</span>
+              </td>
+              <td>
+                {% if c.target.kind == 'field' %}
+                  <span class="pill">linked to this Constraint's “{{ c.target.field_name }}” field</span>
+                {% elif c.target.kind == 'row' %}
+                  <span class="pill">linked to {{ c.target.ref_code }} completing its work</span>
+                {% else %}
+                  <span class="muted">not yet matched — tracked generically</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if c.state == 'open' %}
+                  <span class="pill contra">open</span>
+                  {% if c.target.kind == 'generic' %}
+                    <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/conditions/clear">
+                      {{ csrf_field() }}
+                      <input type="hidden" name="slug" value="{{ project.slug }}">
+                      <input type="hidden" name="evidence_link_id" value="{{ c.evidence_link_id }}">
+                      <label>met by
+                        <select name="basis_evidence_link_id">
+                          <option value="">— cite a later passage —</option>
+                          {% for link, doc in view.evidence if link.verified and link.id != c.evidence_link_id %}
+                            <option value="{{ link.id }}">{{ doc.filename }} p.{{ link.page_no }}: “{{ link.quote[:80] }}”</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      <input type="text" name="reason" placeholder="what you learned (optional)">
+                      <button type="submit">Clear — this passage meets the condition</button>
+                    </form>
+                    <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/conditions/dismiss">
+                      {{ csrf_field() }}
+                      <input type="hidden" name="slug" value="{{ project.slug }}">
+                      <input type="hidden" name="evidence_link_id" value="{{ c.evidence_link_id }}">
+                      <input type="text" name="reason" placeholder="why this was not a real condition" required>
+                      <button type="submit">Dismiss as misdetected</button>
+                    </form>
+                    {% for p in condition_proposals if p.evidence_link_id == c.evidence_link_id %}
+                      <div class="muted">proposed clear — a later passage matches: “{{ p.basis_quote[:120] }}” ({{ p.basis_document_filename }} p.{{ p.basis_page_no }})</div>
+                    {% endfor %}
+                  {% endif %}
+                {% elif c.state == 'cleared' %}
+                  <span class="pill ready">cleared</span>
+                  {% if c.resolution_kind == 'linked_field' %}<span class="muted">its linked field filled</span>
+                  {% elif c.resolution_kind == 'linked_row' %}<span class="muted">its linked row completed</span>
+                  {% elif c.resolution_kind == 'override' %}<span class="muted">counted as immaterial</span>
+                  {% elif c.resolved_by %}<span class="muted">by {{ c.resolved_by }}</span>{% endif %}
+                {% else %}
+                  <span class="pill">dismissed as misdetected{% if c.resolved_by %} by {{ c.resolved_by }}{% endif %}</span>
+                  {% if c.resolution_reason %}<div class="muted">“{{ c.resolution_reason }}”</div>{% endif %}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
   {% elif checklist.legacy_mark_remains_effective %}
     <p class="muted">A retained historical sufficiency mark remains effective until a structured documentation confirmation replaces it.</p>
   {% endif %}

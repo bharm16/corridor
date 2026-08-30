@@ -20,14 +20,15 @@ first structured confirmation takes over; they are never rewritten.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor import audit
+from corridor import audit, condition_tracking
+from corridor.condition_tracking import ConditionEntry, ConditionLink, FieldCandidate
 from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
@@ -53,8 +54,20 @@ _FIELD_LABELS = {
     EXECUTED_AGREEMENT_REFERENCE: "Executed agreement reference is on file",
 }
 
+# The identifying words a condition may use to name one of this Constraint's
+# own required fields (ADR-0060 tier 1: "once we receive the executed
+# agreement" -> the agreement field).  Only fields other than the approval
+# interpretation itself are link targets — a condition never links to the very
+# field whose hedge produced it.  Matched verbatim, one target only.
+_FIELD_CONDITION_TERMS = {
+    EXECUTED_AGREEMENT_REFERENCE: ("executed agreement", "agreement"),
+    AS_BUILT: ("as-built", "as built"),
+    ABANDONMENT_DOCUMENTATION: ("abandonment",),
+}
+
 _HEDGE = re.compile(
-    r"\b(pending|subject to|conditional|conditioned|after|until|provided that)\b",
+    r"\b(pending|subject to|conditional|conditioned|after|until|once|"
+    r"contingent|provided that)\b",
     re.IGNORECASE,
 )
 _NEGATED_APPROVAL = re.compile(r"\b(not|not yet|never)\s+approved\b", re.IGNORECASE)
@@ -100,6 +113,11 @@ class DocumentationChecklist:
     uses_standard_checklist: bool
     legacy_mark_remains_effective: bool
     is_ready: bool
+    # ADR-0060 condition entries derived from this Constraint's conditional
+    # letters — quoted verbatim, linked where their words name one target, and
+    # each carrying whether it is still open (blocking Ready), cleared, or
+    # dismissed.  Empty unless a conditional letter is on file.
+    conditions: tuple[ConditionEntry, ...] = ()
 
     def field(self, name: str) -> ChecklistField:
         for field in self.fields:
@@ -107,12 +125,19 @@ class DocumentationChecklist:
                 return field
         raise KeyError(name)
 
+    @property
+    def open_conditions(self) -> tuple[ConditionEntry, ...]:
+        return tuple(entry for entry in self.conditions if entry.is_open)
+
 
 @dataclass(frozen=True)
 class _CurrentEvidence:
     link_id: int
     quote: str
     document_type: str
+    document_id: int
+    document_filename: str
+    page_no: int
 
 
 def required_field_names(dependency: Dependency) -> tuple[str, ...]:
@@ -173,12 +198,149 @@ def read_checklist(
             legacy_mark_remains_effective=legacy_ready,
             is_ready=legacy_ready,
         )
+    conditions = _derive_conditions(session, dependency, fields, evidence)
+    # ADR-0060: a hedged letter's approval is met once every condition it
+    # raised is *cleared* — by a filled linked field, a completed linked row,
+    # a cited/verbal clear, or the gated mechanical clear.  A *dismissed*
+    # misdetection is deliberately not a clear, so no misdetection can fill the
+    # approval field or produce Ready; the person must still override or
+    # confirm the letter if they judge it an approval.
+    approval_cleared = bool(conditions) and all(
+        entry.state == "cleared" for entry in conditions
+    )
+    if approval_cleared:
+        fields = tuple(
+            replace(field, complete=True)
+            if field.name == APPROVAL_INTERPRETATION
+            else field
+            for field in fields
+        )
+    is_ready = all(field.complete for field in fields) and not any(
+        entry.is_open for entry in conditions
+    )
     return DocumentationChecklist(
         dependency_id=dependency_id,
         fields=fields,
         uses_standard_checklist=True,
         legacy_mark_remains_effective=False,
-        is_ready=all(field.complete for field in fields),
+        is_ready=is_ready,
+        conditions=conditions,
+    )
+
+
+def condition_entries_for(
+    session: Session, dependency_id: int
+) -> tuple[ConditionEntry, ...]:
+    """The derived condition entries for a Constraint (see ADR-0060).
+
+    The checklist is the single place that derives conditions, so callers that
+    want just the entries come through here.
+    """
+    return read_checklist(session, dependency_id).conditions
+
+
+def run_condition_clearing_admission(
+    session: Session, project_id: int
+) -> condition_tracking.ConditionClearRun:
+    """Auto-clear generic open conditions the mechanical rule proves met.
+
+    This is the one part of #373 that moves a condition *toward* Ready
+    automatically, so it expands automatic Record Inclusion and is ADR-0050
+    replay-gated: inert until this project's own recorded human clears vouch
+    for the rule (a fresh project has none and is therefore inactive — the
+    ship-inactive posture of #370/#371).  It writes only exact-and-mechanical,
+    sole-passage clears under the machine actor, with a reproducible receipt,
+    and is idempotent — a condition already resolved is skipped, so re-running
+    clears nothing new.
+
+    It lives here because deriving a condition entry needs the checklist; it
+    reuses ``condition_tracking`` for the replay, the mechanical match, and the
+    shared append so no logic is duplicated.
+    """
+    replay = condition_tracking.replay_matches_human_condition_clears(
+        session, project_id
+    )
+    if not replay.passed:
+        return condition_tracking.ConditionClearRun(0, replay)
+    lock_project(session, project_id)
+    dependency_ids = session.scalars(
+        select(Dependency.id).where(
+            Dependency.project_id == project_id,
+            Dependency.dismissed_at.is_(None),
+        )
+    ).all()
+    cleared = 0
+    for dependency_id in dependency_ids:
+        for entry in condition_entries_for(session, dependency_id):
+            if not entry.is_open or entry.target.kind != "generic":
+                continue
+            matches = condition_tracking.mechanical_matches(
+                session, dependency_id, entry.evidence_link_id, entry.condition_text
+            )
+            if len(matches) != 1:
+                continue
+            dependency = session.get(Dependency, dependency_id)
+            receipt = {
+                "policy_version": condition_tracking.CLEARING_POLICY_VERSION,
+                "replay_case_count": replay.case_count,
+                "condition_evidence_link_id": entry.evidence_link_id,
+                "basis_evidence_link_id": matches[0],
+                "condition_text": entry.condition_text,
+            }
+            condition_tracking.append_condition_clear(
+                session,
+                dependency=dependency,
+                entry=entry,
+                basis_evidence_link_id=matches[0],
+                basis_event_id=None,
+                reason=None,
+                resolved_by=condition_tracking.MACHINE_ACTOR,
+                receipt_json=receipt,
+            )
+            audit.record(
+                session,
+                actor=condition_tracking.MACHINE_ACTOR,
+                action=audit.CLEAR_CONDITION,
+                entity_type=audit.DEPENDENCY,
+                entity_id=dependency_id,
+                after=receipt,
+            )
+            cleared += 1
+    session.flush()
+    return condition_tracking.ConditionClearRun(cleared, replay)
+
+
+def _derive_conditions(
+    session: Session,
+    dependency: Dependency,
+    fields: tuple[ChecklistField, ...],
+    evidence: tuple[_CurrentEvidence, ...],
+) -> tuple[ConditionEntry, ...]:
+    """Build the conditional-letter links and field candidates, then derive."""
+    approval = next(
+        (field for field in fields if field.name == APPROVAL_INTERPRETATION), None
+    )
+    if approval is None or not approval.conditional_evidence_link_ids:
+        return ()
+    by_id = {item.link_id: item for item in evidence}
+    conditional_links = tuple(
+        ConditionLink(
+            evidence_link_id=item.link_id,
+            condition_text=item.quote,
+            document_id=item.document_id,
+            document_filename=item.document_filename,
+            page_no=item.page_no,
+        )
+        for link_id in approval.conditional_evidence_link_ids
+        if (item := by_id.get(link_id)) is not None
+    )
+    field_candidates = tuple(
+        FieldCandidate(field.name, _FIELD_CONDITION_TERMS.get(field.name, ()), field.complete)
+        for field in fields
+        if field.name != APPROVAL_INTERPRETATION
+    )
+    return condition_tracking.derive_condition_entries(
+        session, dependency, conditional_links, field_candidates
     )
 
 
@@ -235,6 +397,10 @@ def confirm_interpretation(
         raise DocumentationConfirmationRefusal(
             "the cited passage does not state an approval"
         )
+    # ADR-0060: the override durably records the exact hedge it counted as
+    # immaterial, beside who did it and when (the deposition answer #373 AC6
+    # asks for).  A clean-letter confirm carries no overridden hedge.
+    overridden = selected.quote if condition_immaterial else None
     confirmation = DocumentationFieldConfirmation(
         dependency_id=dependency_id,
         evidence_link_id=evidence_link_id,
@@ -242,6 +408,8 @@ def confirm_interpretation(
         classification=classification,
         conclusion="approved",
         confirmed_by=principal.subject,
+        condition_immaterial=condition_immaterial,
+        overridden_condition_text=overridden,
     )
     session.add(confirmation)
     audit.record(
@@ -359,7 +527,14 @@ def _current_verified_evidence(
     session: Session, dependency_id: int
 ) -> tuple[_CurrentEvidence, ...]:
     return tuple(
-        _CurrentEvidence(link.id, link.quote, document.doc_type)
+        _CurrentEvidence(
+            link.id,
+            link.quote,
+            document.doc_type,
+            document.id,
+            document.filename,
+            link.page_no,
+        )
         for link, document in session.execute(
             select(EvidenceLink, Document)
             .join(Document, EvidenceLink.document_id == Document.id)
