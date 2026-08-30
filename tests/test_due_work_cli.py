@@ -156,6 +156,92 @@ def test_configure_discovery_retains_a_gate_7_connected_location(
     assert status["jobs"][0]["input_identity"]["kind"] == "connected_location-v1"
 
 
+def _configure_reproof_argv(project_slug: str) -> list[str]:
+    return [
+        "configure-reproof",
+        project_slug,
+        "--configuration-version=event-admission-reproof-v1",
+        "--policy-version=event-admission-v3-unknown-scope",
+        "--reason-version=event-admission-abstentions-v5",
+        "--selection-rule=current-active-run-pending-event-candidates-v1",
+        "--starts-at=2026-08-30T08:00:00+00:00",
+        "--cadence=hourly",
+        "--timezone=UTC",
+        "--missed-run-policy=latest_only",
+        "--retention-days=3650",
+        "--max-attempts=2",
+        "--backoff-seconds=300",
+        "--claim-ttl-seconds=1800",
+        "--deadline-seconds=1800",
+        "--concurrency-limit=1",
+        "--model-token-budget=0",
+        "--notification-budget=0",
+        "--clone-budget=3",
+    ]
+
+
+def test_configure_reproof_declares_a_bounded_recovery_schedule(
+    runtime_database, capsys
+):
+    factory = runtime_database.session_factory
+    clock = ControlledClock(datetime(2026, 8, 30, 8, 5, tzinfo=timezone.utc))
+    with factory() as setup:
+        project = Project(
+            slug=f"reproof-cli-{uuid4().hex}",
+            name="Re-proof CLI",
+            is_synthetic=True,
+            project_side_parties=["LJA"],
+        )
+        setup.add(project)
+        setup.commit()
+
+    assert main(
+        _configure_reproof_argv(project.slug), session_factory=factory, clock=clock
+    ) == 0
+    configured = _payload(capsys)
+    assert configured["enabled"] is True
+    assert configured["job_id"].startswith("due-job:")
+
+    assert main(
+        ["status", f"--project-slug={project.slug}"],
+        session_factory=factory,
+        clock=clock,
+    ) == 0
+    status = _payload(capsys)
+    assert status["jobs"][0]["handler"] == "event_admission_reproof"
+    assert status["jobs"][0]["input_identity"] == {
+        "kind": "one_project_event_admission_class-v1",
+        "project_id": project.id,
+        "policy_version": "event-admission-v3-unknown-scope",
+        "reason_version": "event-admission-abstentions-v5",
+        "selection_rule": "current-active-run-pending-event-candidates-v1",
+    }
+    assert status["jobs"][0]["model_token_budget"] == 0
+
+
+def test_configure_reproof_refuses_a_silent_nonzero_model_budget(
+    runtime_database, capsys
+):
+    factory = runtime_database.session_factory
+    clock = ControlledClock(datetime(2026, 8, 30, 8, 5, tzinfo=timezone.utc))
+    with factory() as setup:
+        project = Project(
+            slug=f"reproof-cli-bad-{uuid4().hex}",
+            name="Re-proof CLI Bad",
+            is_synthetic=True,
+            project_side_parties=["LJA"],
+        )
+        setup.add(project)
+        setup.commit()
+
+    argv = [
+        arg if arg != "--model-token-budget=0" else "--model-token-budget=1000"
+        for arg in _configure_reproof_argv(project.slug)
+    ]
+    assert main(argv, session_factory=factory, clock=clock) == 1
+    assert "resource declaration is invalid" in capsys.readouterr().err
+
+
 def test_configure_refuses_an_incomplete_gate_7_declaration(capsys):
     assert main(["configure-health", "project"]) == 2
     assert "required" in capsys.readouterr().err
