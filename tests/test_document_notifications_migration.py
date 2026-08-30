@@ -1,16 +1,15 @@
-"""Fresh and predecessor rehearsals for due-action-notification persistence (#352).
+"""Fresh and predecessor rehearsals for document-notification persistence (#353).
 
 A stamped development database can report the expected head while missing a
 trigger or a constraint, so these tests provision disposable databases: one
 fresh to head to prove the schema objects and immutability triggers exist, and
-one from the predecessor to head to prove a pre-existing project and roster
-survive the upgrade, a derived occurrence can be recorded, its record is
-immutable, and the history-preserving downgrade refuses to erase it.
+one from the predecessor to head to prove a pre-existing project survives the
+upgrade, a new occurrence registers, its record is immutable, and the
+history-preserving downgrade refuses to erase it.
 """
 
 from __future__ import annotations
 
-from datetime import date
 import os
 from pathlib import Path
 import subprocess
@@ -23,24 +22,27 @@ from sqlalchemy.orm import Session
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
-from corridor.models import DueActionNotification
+from corridor.models import (
+    DocumentNotification,
+    DocumentNotificationDispatch,
+)
 
 
 pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
-PREDECESSOR = "f362a1b2c3d4"
+PREDECESSOR = "a1b2c3d4e5f6"
 HEAD = "b7d3f9a1c2e5"
 
 _TABLES = {
-    "due_action_notifications",
-    "due_action_notification_dispatches",
-    "due_action_notification_attempts",
+    "document_notifications",
+    "document_notification_dispatches",
+    "document_notification_attempts",
 }
 _TRIGGERS = {
-    "due_action_notifications_are_immutable",
-    "due_action_dispatch_identity_is_immutable",
-    "due_action_attempts_are_immutable",
+    "document_notifications_are_immutable",
+    "document_dispatch_identity_is_immutable",
+    "document_attempts_are_immutable",
 }
 
 
@@ -62,12 +64,12 @@ def _database_url(database) -> str:
     )
 
 
-def test_fresh_head_has_the_due_action_schema_and_triggers():
+def test_fresh_head_has_the_document_notification_schema_and_triggers():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="due_action_fresh_",
+        database_prefix="docnotif_fresh_",
     ) as database:
         engine = create_engine(_database_url(database))
         try:
@@ -81,7 +83,7 @@ def test_fresh_head_has_the_due_action_schema_and_triggers():
                         text(
                             "select table_name from information_schema.tables "
                             "where table_schema='public' "
-                            "and table_name like 'due_action_notification%'"
+                            "and table_name like 'document_notification%'"
                         )
                     ).all()
                 )
@@ -90,7 +92,7 @@ def test_fresh_head_has_the_due_action_schema_and_triggers():
                     connection.scalars(
                         text(
                             "select tgname from pg_trigger where not tgisinternal "
-                            "and tgname like 'due_action_%'"
+                            "and tgname like 'document_%'"
                         )
                     ).all()
                 )
@@ -99,12 +101,12 @@ def test_fresh_head_has_the_due_action_schema_and_triggers():
             engine.dispose()
 
 
-def test_predecessor_upgrade_records_and_protects_due_action_history():
+def test_predecessor_upgrade_registers_and_protects_history():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="due_action_predecessor_",
+        database_prefix="docnotif_predecessor_",
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _database_url(database)
@@ -114,16 +116,15 @@ def test_predecessor_upgrade_records_and_protects_due_action_history():
                 project_id = connection.scalar(
                     text(
                         "insert into projects (slug, name, is_synthetic) "
-                        "values ('due-action-predecessor', 'Due action', true) "
+                        "values ('docnotif-predecessor', 'Doc notif predecessor', true) "
                         "returning id"
                     )
                 )
-                roster_id = connection.scalar(
+                dependency_id = connection.scalar(
                     text(
-                        "insert into project_roster_entries "
-                        "(project_id, principal_subject, display_name, active) "
-                        "values (:project_id, 'local:due-action-recipient', "
-                        "'Summary Recipient', true) returning id"
+                        "insert into dependencies (project_id, ref_code, dep_type, title) "
+                        "values (:project_id, 'DN-1', 'utility_relocation', 'Historic') "
+                        "returning id"
                     ),
                     {"project_id": project_id},
                 )
@@ -143,34 +144,55 @@ def test_predecessor_upgrade_records_and_protects_due_action_history():
                     session.scalar(text("select version_num from alembic_version"))
                     == HEAD
                 )
-                # A derived daily-summary occurrence and its dispatch record.
-                occurrence = DueActionNotification(
-                    public_id="due-action-notification:migration-rehearsal",
+                # The pre-existing project and dependency survived the upgrade.
+                assert (
+                    session.scalar(
+                        text("select count(*) from dependencies where id=:id"),
+                        {"id": dependency_id},
+                    )
+                    == 1
+                )
+                # A new occurrence registers against the preserved subject and
+                # carries an authentic proven-transition identity.
+                notification = DocumentNotification(
+                    public_id="document-notification:migration",
                     project_id=project_id,
-                    category="daily_summary",
-                    recipient_role="summary",
-                    recipient_roster_entry_id=roster_id,
-                    recipient_principal_subject="local:due-action-recipient",
-                    observation_start=date(2026, 8, 30),
-                    observation_end=date(2026, 8, 30),
-                    summary_json={"counts": {"overdue": 1}},
-                    configuration_version="due-action-notification-v1",
-                    occurrence_key="a" * 64,
+                    category="document_change",
+                    subject_kind="constraint",
+                    dependency_id=dependency_id,
+                    recipient_principal_subject="local:migration-owner",
+                    recipient_role="current_assignee",
+                    comparison_id=1,
+                    finding_id=1,
+                    reason_code="comparison_changed",
+                    occurrence_key="0" * 64,
                     registered_by="runtime:migration",
                 )
-                session.add(occurrence)
+                session.add(notification)
+                session.flush([notification])
+                session.add(
+                    DocumentNotificationDispatch(
+                        public_id="document-dispatch:migration",
+                        notification_id=notification.id,
+                        project_id=project_id,
+                        channel="email",
+                        delivery_state="queued",
+                        attempt_count=0,
+                        idempotency_key="f" * 64,
+                    )
+                )
                 session.commit()
 
                 # The occurrence is immutable.
                 with pytest.raises(ProgrammingError), session.begin_nested():
                     session.execute(
-                        update(DueActionNotification)
-                        .where(DueActionNotification.id == occurrence.id)
-                        .values(category="daily_summary")
+                        update(DocumentNotification)
+                        .where(DocumentNotification.id == notification.id)
+                        .values(reason_code="comparison_dropped")
                     )
                 assert (
                     session.scalar(
-                        select(func.count()).select_from(DueActionNotification)
+                        select(func.count()).select_from(DocumentNotification)
                     )
                     == 1
                 )
@@ -179,6 +201,6 @@ def test_predecessor_upgrade_records_and_protects_due_action_history():
 
         refused = _run_alembic(database_url, "downgrade", PREDECESSOR)
         assert refused.returncode != 0
-        assert "cannot erase retained due action notification history" in (
+        assert "cannot erase retained document notification history" in (
             refused.stdout + refused.stderr
         )
