@@ -83,6 +83,16 @@ ROUTE_CONTRACTS: Mapping[str, tuple[str, str, frozenset[int]]] = {
     "release_report": ("/reports/{slug}/release", "POST", frozenset({201})),
     "coordinator_home": ("/work/{slug}", "GET", frozenset({200})),
     "queue": ("/queue/{slug}", "GET", frozenset({200})),
+    "internal_report": ("/internal-report/{slug}", "GET", frozenset({200})),
+    "internal_report_full": (
+        "/internal-report/{slug}/full", "GET", frozenset({200})
+    ),
+    "internal_report_alerts": (
+        "/internal-report/{slug}/alerts/{rule}", "GET", frozenset({200})
+    ),
+    "internal_report_workbook": (
+        "/internal-report/{slug}/workbook.xlsx", "GET", frozenset({200})
+    ),
     "assign_owner": (
         "/dependencies/{dependency_id}/owner", "POST", frozenset({303})
     ),

@@ -79,6 +79,7 @@ def to_xlsx(
     *,
     evaluation: Evaluation,
     statement_publication: StatementPublication,
+    internal_working_copy: bool = False,
 ) -> Path:
     """The ledger as a workbook, at the evaluation the report published.
 
@@ -87,6 +88,12 @@ def to_xlsx(
     the paired statement publication supplies date and provenance cells.
     Refusing a mismatched pair prevents either side from taking a second
     reading that disagrees with the report it was sent alongside.
+
+    `internal_working_copy` marks the provenance sheet as an internal working
+    download rather than an approved external release. It defaults off so the
+    bytes stay identical for every existing caller; ADR-0040 seals only a PDF
+    for external release, so no XLSX is ever an approved external artifact, and
+    the marker states that plainly on the copy a coordinator pulls for itself.
     """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
@@ -185,6 +192,16 @@ def to_xlsx(
     meta.append(
         ["Note", "Constraint alerts are calculated from the stated check, not stored."]
     )
+    if internal_working_copy:
+        # ADR-0040: external release seals a fixed PDF, never a workbook. This
+        # copy is an internal working download, so it says so on the sheet that
+        # names what produced it rather than trusting a filename to travel.
+        meta.append(
+            [
+                "Working view",
+                "Internal working copy — not an approved external release.",
+            ]
+        )
     meta.column_dimensions["A"].width = 18
     meta.column_dimensions["B"].width = 60
 
