@@ -2740,6 +2740,160 @@ class RevisionChangeExplanationRequest(Base):
     )
 
 
+class SourceIntakeDraftConfiguration(Base):
+    """One explicit, server-owned authorization for a bounded intake draft (#362).
+
+    Drafting source-bound intake metadata and replacement proposals can spend
+    model budget, so it has no supported default: an attributable coordination
+    declaration names the model, prompt, and the time, input, output, retry,
+    retention, and observation bounds before any draft request is allowed. Rows
+    are append-only so a retained draft always names the rules it ran under.
+    """
+
+    __tablename__ = "source_intake_draft_configurations"
+    __table_args__ = (
+        CheckConstraint(
+            "max_input_tokens between 1 and 200000",
+            name="ck_intake_draft_config_input_budget",
+        ),
+        CheckConstraint(
+            "max_output_tokens between 1 and 20000",
+            name="ck_intake_draft_config_output_budget",
+        ),
+        CheckConstraint(
+            "timeout_seconds between 1 and 600",
+            name="ck_intake_draft_config_timeout",
+        ),
+        CheckConstraint("max_requests = 1", name="ck_intake_draft_config_one_request"),
+        CheckConstraint("retry_policy = 'none'", name="ck_intake_draft_config_no_retry"),
+        CheckConstraint(
+            "retention_policy = 'retained_indefinitely'",
+            name="ck_intake_draft_config_retention",
+        ),
+        CheckConstraint("length(trim(model)) > 0", name="ck_intake_draft_config_model"),
+        CheckConstraint(
+            "length(trim(prompt_version)) > 0", name="ck_intake_draft_config_prompt"
+        ),
+        CheckConstraint(
+            "length(trim(observation_context)) > 0",
+            name="ck_intake_draft_config_context",
+        ),
+        CheckConstraint(
+            "length(trim(created_by)) > 0", name="ck_intake_draft_config_actor"
+        ),
+        Index("ix_intake_draft_configurations_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    max_input_tokens: Mapped[int] = mapped_column(Integer)
+    max_output_tokens: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    max_requests: Mapped[int] = mapped_column(Integer)
+    retry_policy: Mapped[str] = mapped_column(String(32))
+    retention_policy: Mapped[str] = mapped_column(String(64))
+    observation_context: Mapped[str] = mapped_column(String(128))
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SourceIntakeDraftRequest(Base):
+    """Immutable receipt for one bounded, non-authoritative intake draft (#362).
+
+    The receipt binds the exact staged bytes it read (by their own hash, never a
+    registered Document id — a draft identity stays distinct from a registered
+    one), retains the frozen readable surface it was checked against (the
+    permitted page text and the registry identities a curator verifies each
+    suggestion against), and stores only the validated proposals plus a redacted
+    execution lineage — never raw source-wide text, a chain of thought, or any
+    claim of human decision authorship. It registers no Document and declares no
+    Supersession.
+    """
+
+    __tablename__ = "source_intake_draft_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "configuration_id",
+            "source_sha256",
+            name="uq_intake_draft_request_source",
+        ),
+        CheckConstraint(
+            "status in ('completed', 'budget_exhausted', 'timeout', "
+            "'transport_failure', 'validation_refused', 'stale_input')",
+            name="ck_intake_draft_request_status",
+        ),
+        CheckConstraint(
+            "staged_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_intake_draft_request_staged_sha",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_intake_draft_request_source_sha",
+        ),
+        CheckConstraint(
+            "state_token ~ '^[0-9a-f]{64}$'",
+            name="ck_intake_draft_request_state_token",
+        ),
+        CheckConstraint(
+            "length(trim(requested_by)) > 0", name="ck_intake_draft_request_actor"
+        ),
+        CheckConstraint(
+            "length(trim(adapter)) > 0", name="ck_intake_draft_request_adapter"
+        ),
+        CheckConstraint("non_authoritative", name="ck_intake_draft_request_non_auth"),
+        Index("ix_intake_draft_requests_project_id", "project_id"),
+        Index("ix_intake_draft_requests_staged_sha256", "staged_sha256"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    # The staged byte identity this draft read — the draft's own identity, kept
+    # deliberately separate from any registered Document.
+    staged_sha256: Mapped[str] = mapped_column(String(64))
+    filename: Mapped[str] = mapped_column(Text)
+    declared_doc_type: Mapped[str] = mapped_column(String(64))
+    configuration_id: Mapped[int] = mapped_column(
+        ForeignKey("source_intake_draft_configurations.id")
+    )
+    requested_by: Mapped[str] = mapped_column(String(128))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    state_token: Mapped[str] = mapped_column(String(64))
+    permitted_pages_json: Mapped[list] = mapped_column(JSONB)
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    adapter: Mapped[str] = mapped_column(String(64))
+    adapter_contract_version: Mapped[str | None] = mapped_column(String(128))
+    tool_contract_version: Mapped[str] = mapped_column(String(128))
+    validator_version: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    # The frozen readable surface this draft read: permitted page text and the
+    # registry identities, the context a human checks each proposal against.
+    source_json: Mapped[dict] = mapped_column(JSONB)
+    # The validated, non-authoritative proposals, or null when none were kept.
+    proposals_json: Mapped[dict | None] = mapped_column(JSONB)
+    # Redacted transport metadata (hashes, usage, timing) — no prompt, response,
+    # or chain-of-thought text.
+    execution_lineage_json: Mapped[dict | None] = mapped_column(JSONB)
+    read_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    budget_json: Mapped[dict] = mapped_column(JSONB)
+    usage_json: Mapped[dict] = mapped_column(JSONB)
+    non_authoritative: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ExternalReportArtifact(Base):
     """One immutable, already-rendered External Report PDF.
 

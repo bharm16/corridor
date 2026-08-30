@@ -137,6 +137,7 @@ from corridor.models import (
     ProductionRunExplanationRequest,
     ExtractionFailureDiagnosisRequest,
     RevisionChangeExplanationRequest,
+    SourceIntakeDraftRequest,
 )
 from corridor.coordination_summary import (
     ConfigurationRequired,
@@ -241,6 +242,18 @@ from corridor.source_intake import (
     preview_intake,
     validate_and_stage,
 )
+from corridor.source_intake_draft import (
+    PROMPT_VERSION as INTAKE_DRAFT_PROMPT_VERSION,
+    ConfigurationRequired as IntakeDraftConfigurationRequired,
+    IntakeDraftRefused,
+    InvalidDraftConfiguration,
+    StagedDraftSource,
+    current_configuration as current_intake_draft_configuration,
+    declare_configuration as declare_intake_draft_configuration,
+    intake_draft_state_token,
+    request_intake_draft,
+)
+from corridor.storage import staged_file
 from corridor.presentation import (
     documentation_review_label,
     field_label,
@@ -503,6 +516,20 @@ def get_failure_diagnosis_client_factory():
 
 def get_revision_change_explanation_client_factory():
     """Build a revision-change adapter only after declared spend authority exists."""
+    from corridor.llm import OpenAIClient
+
+    def build(configuration):
+        return OpenAIClient(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+        )
+
+    return build
+
+
+def get_intake_draft_client_factory():
+    """Build an intake-draft adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
     def build(configuration):
@@ -6490,7 +6517,158 @@ def source_upload_preview(
     return TEMPLATES.TemplateResponse(
         request,
         "source_preview.html",
-        {"project": project, "preview": preview},
+        {
+            "project": project,
+            "preview": preview,
+            # The optional, explicitly requested draft of source-bound
+            # suggestions (#362). Offered only once bounded spend authority is
+            # declared; requesting it is a separate, attributable act.
+            "draft_configured": current_intake_draft_configuration(
+                session, project.id
+            )
+            is not None,
+            "draft_state_token": intake_draft_state_token(
+                session, project.id, staged.sha256
+            ),
+        },
+    )
+
+
+@app.post("/projects/{slug}/sources/draft-configuration")
+async def declare_intake_draft_configuration_route(
+    slug: str,
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Declare bounded intake-draft authority; a missing one refuses a draft.
+
+    There is no environment or default fallback: drafting source-bound
+    suggestions spends model budget, so an attributable coordination declaration
+    names the model, prompt, and every bound before any draft request is allowed.
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    form = await request.form()
+    try:
+        declare_intake_draft_configuration(
+            session,
+            project_id=project.id,
+            principal=principal,
+            model=str(form.get("model", "")),
+            prompt_version=str(form.get("prompt_version", "")),
+            max_input_tokens=int(str(form.get("max_input_tokens", ""))),
+            max_output_tokens=int(str(form.get("max_output_tokens", ""))),
+            timeout_seconds=int(str(form.get("timeout_seconds", ""))),
+            max_requests=int(str(form.get("max_requests", ""))),
+            retry_policy=str(form.get("retry_policy", "")),
+            retention_policy=str(form.get("retention_policy", "")),
+            observation_context=str(form.get("observation_context", "")),
+        )
+    except (ValueError, InvalidDraftConfiguration) as exc:
+        raise HTTPException(
+            400, f"intake-draft configuration refused: {exc}"
+        ) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/projects/{project.slug}/sources/upload", status_code=303
+    )
+
+
+@app.post("/projects/{slug}/sources/draft")
+async def source_intake_draft_request(
+    request: Request,
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    client_factory=Depends(get_intake_draft_client_factory),
+):
+    """Run one explicit, read-only draft of source-bound intake suggestions.
+
+    It reads the exact staged bytes' permitted pages and the project's registered
+    identities, then stores a non-authoritative receipt. It registers no
+    document and declares no Supersession — confirmation stays the ordinary
+    /sources/confirm act, which reconstructs its binding independently.
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    form = await request.form()
+    sha256 = str(form.get("sha256") or "")
+    filename = str(form.get("filename") or "")
+    doc_type = str(form.get("doc_type") or "")
+    state_token = str(form.get("state_token") or "")
+    raw_pages = str(form.get("permitted_pages") or "").strip()
+    try:
+        permitted_pages = tuple(
+            int(part) for part in raw_pages.split(",") if part.strip()
+        )
+    except ValueError as exc:
+        raise HTTPException(400, "permitted_pages must be integers") from exc
+    path = staged_file(sha256)
+    if path is None:
+        raise HTTPException(
+            409, "the staged bytes are no longer available; re-upload the source"
+        )
+    staged = StagedDraftSource(
+        sha256=sha256,
+        filename=filename,
+        suffix=path.suffix.lower(),
+        stored_path=path,
+        doc_type=doc_type,
+    )
+    try:
+        receipt = request_intake_draft(
+            session,
+            project_id=project.id,
+            staged=staged,
+            principal=principal,
+            client_factory=client_factory,
+            expected_sha256=sha256,
+            permitted_pages=permitted_pages,
+            state_token=state_token,
+        )
+    except IntakeDraftRefused as exc:
+        raise HTTPException(409, exc.detail) from exc
+    except IntakeDraftConfigurationRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/projects/{project.slug}/sources/drafts/{receipt.public_id}",
+        status_code=303,
+    )
+
+
+@app.get(
+    "/projects/{slug}/sources/drafts/{public_id}", response_class=HTMLResponse
+)
+def read_source_intake_draft(
+    request: Request,
+    slug: str,
+    public_id: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read one retained non-authoritative draft; a GET never spends.
+
+    The suggestions are shown with the source passage each was read from and any
+    uncertainty. Nothing here is preselected or registered: the ordinary
+    registration controls stay the person's, independently reconstructed.
+    """
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    receipt = session.scalars(
+        select(SourceIntakeDraftRequest).where(
+            SourceIntakeDraftRequest.public_id == public_id,
+            SourceIntakeDraftRequest.project_id == project.id,
+        )
+    ).first()
+    if receipt is None:
+        raise HTTPException(404, "no intake draft for this project")
+    return TEMPLATES.TemplateResponse(
+        request,
+        "source_intake_draft.html",
+        {
+            "project": project,
+            "receipt": receipt,
+            "source": receipt.source_json or {},
+        },
     )
 
 
