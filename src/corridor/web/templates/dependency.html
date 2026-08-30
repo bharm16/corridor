@@ -179,7 +179,36 @@
       <button type="submit">Undo the last plan Save</button>
     </form>
   {% endif %}
+  {% if deferral_decision %}
+    <p class="muted" style="margin-top:.7rem">
+      Deferred ({{ deferral_decision.deferral_reason.replace('_', ' ') }}) —
+      returns {{ deferral_decision.deferral_return_date }}. Saving a Follow-up
+      Plan resumes immediate work.
+    </p>
+  {% endif %}
   {% if view.dependency.next_action %}
+    {% macro successor_fields() %}
+      <select name="successor_action">
+        <option value="">successor Next Action? (or choose a no-follow-up reason)</option>
+        {% for choice in plan_next_action_choices %}
+          <option value="{{ choice }}">{{ choice }}</option>
+        {% endfor %}
+      </select>
+      <input name="successor_due_date" type="date">
+      <select name="successor_due_date_unknown_reason">
+        <option value="">if successor has no date, why?</option>
+        {% for reason in plan_unknown_date_reasons %}
+          <option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>
+        {% endfor %}
+      </select>
+      <select name="no_follow_up_reason">
+        <option value="">or: why no immediate follow-up?</option>
+        {% for reason in plan_no_follow_up_reasons %}
+          <option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>
+        {% endfor %}
+      </select>
+      <input name="note" type="text" placeholder="optional note">
+    {% endmacro %}
     <form class="inline" method="post"
           action="/dependencies/{{ view.dependency.id }}/action/complete">
     {{ csrf_field() }}
@@ -187,12 +216,9 @@
       {% if return_to %}
         <input type="hidden" name="redirect_to" value="{{ return_to }}">
       {% endif %}
-      <select name="no_follow_up_reason" required>
-        <option value="">why no immediate follow-up?</option>
-        <option value="awaiting_external_information">awaiting external information</option>
-        <option value="no_immediate_follow_up">no immediate follow-up</option>
-        <option value="return_condition_recorded">return condition recorded</option>
-      </select>
+      <input type="hidden" name="expected_next_action_decision_id"
+             value="{{ action_decision.id if action_decision else '' }}">
+      {{ successor_fields() }}
       <button type="submit">completed</button>
     </form>
     <form class="inline" method="post"
@@ -202,19 +228,34 @@
       {% if return_to %}
         <input type="hidden" name="redirect_to" value="{{ return_to }}">
       {% endif %}
-      <select name="no_follow_up_reason" required>
-        <option value="">why no immediate follow-up?</option>
-        <option value="awaiting_external_information">awaiting external information</option>
-        <option value="no_immediate_follow_up">no immediate follow-up</option>
-        <option value="return_condition_recorded">return condition recorded</option>
-      </select>
+      <input type="hidden" name="expected_next_action_decision_id"
+             value="{{ action_decision.id if action_decision else '' }}">
+      {{ successor_fields() }}
       <select name="cancellation_reason" required>
         <option value="">why cancel?</option>
-        <option value="no_longer_needed">no longer needed</option>
-        <option value="superseded">superseded</option>
-        <option value="recorded_in_error">recorded in error</option>
+        {% for reason in plan_cancellation_reasons %}
+          <option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>
+        {% endfor %}
       </select>
       <button type="submit">cancel action</button>
+    </form>
+    <form class="inline" method="post"
+          action="/dependencies/{{ view.dependency.id }}/defer">
+    {{ csrf_field() }}
+      <input type="hidden" name="slug" value="{{ project.slug }}">
+      {% if return_to %}
+        <input type="hidden" name="redirect_to" value="{{ return_to }}">
+      {% endif %}
+      <input type="hidden" name="expected_next_action_decision_id"
+             value="{{ action_decision.id if action_decision else '' }}">
+      <select name="deferral_reason" required>
+        <option value="">defer — why can this wait?</option>
+        {% for reason in plan_deferral_reasons %}
+          <option value="{{ reason }}">{{ reason.replace('_', ' ') }}</option>
+        {% endfor %}
+      </select>
+      <input name="return_date" type="date" required>
+      <button type="submit">defer</button>
     </form>
   {% endif %}
 
