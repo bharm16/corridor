@@ -43,6 +43,7 @@ HANDLER_LOCATION_DISCOVERY = "location_discovery"
 # the runtime depends on that module, never the reverse.
 HANDLER_ASSIGNMENT_NOTIFICATION = ASSIGNMENT_NOTIFICATION_HANDLER
 HANDLER_EVENT_ADMISSION_REPROOF = "event_admission_reproof"
+HANDLER_EVIDENCE_OUTCOME_CAPTURE = "evidence_outcome_capture"
 # The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
 # notification schedule must declare a positive request budget within this.
 _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
@@ -55,6 +56,7 @@ _REPROOF_CLONE_BUDGET_CEILING = 8
 _CONFIGURATION_VERSION = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _EXTRACTOR_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _POLICY_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+_COHORT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 _LOCATION_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 # A location host is a bare DNS name; the adapter reaches only these and follows
 # no redirect off them (#350). No scheme, port, path, or wildcard is accepted.
@@ -450,6 +452,70 @@ class EventAdmissionReproofDeclaration:
 
 
 @dataclass(frozen=True)
+class EvidenceOutcomeCaptureDeclaration:
+    """One validated gate-7 declaration that enables cutoff-correct capture.
+
+    The domain half of the contract — the exact frozen cohort, the sealed model
+    and prompt identities, the observation window, cutoff, protection end, and
+    retained-history coverage — is declared and validated in
+    ``evidence_investigator_capture`` and content-addressed by
+    ``observation_contract_sha256``. This schedule carries only the operational
+    envelope plus that pointer, so the occurrence identity binds the project,
+    cohort, and observation contract (and therefore its intended cutoff and
+    membership). Capture reads no model, so ``model_token_budget`` must be a
+    declared zero; it commits only its own association records, so authorized
+    destinations stay empty and concurrency stays one.
+    """
+
+    project_id: int
+    configuration_version: str
+    cohort_id: str
+    observation_contract_sha256: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        cohort_id: str,
+        observation_contract_sha256: str,
+        starts_at: datetime,
+    ) -> "EvidenceOutcomeCaptureDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            cohort_id=cohort_id,
+            observation_contract_sha256=observation_contract_sha256,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=600,
+            deadline_seconds=300,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+
+@dataclass(frozen=True)
 class DueWorkClaim:
     occurrence_id: int
     occurrence_public_id: str
@@ -759,6 +825,36 @@ def _event_admission_reproof_effectful(context: EffectfulContext) -> dict[str, A
     return execute_scheduled_reproof(context)
 
 
+def _evidence_outcome_capture_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Run the bounded cutoff-correct outcome capture for a claimed occurrence.
+
+    The pass commits its per-case association records durably through the session
+    factory before the runtime finalizes the claim, so recovering and re-running
+    this occurrence only re-derives associations that are already durable and
+    idempotent. It adapts the runtime's claim into a ``run_outcome_capture`` call
+    over the schedule's declared contract and summarizes the pass into a bounded
+    receipt. It reads no model and releases no protection.
+    """
+
+    from corridor.evidence_investigator_capture import run_outcome_capture
+
+    with context.session_factory() as reading:
+        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
+        if schedule is None:
+            raise DueWorkRefusal("Due Work schedule disappeared")
+        project_id = schedule.project_id
+        configuration_version = schedule.configuration_version
+        contract_sha256 = schedule.scope_json.get("observation_contract_sha256", "")
+
+    return run_outcome_capture(
+        context.session_factory,
+        project_id=project_id,
+        contract_sha256=contract_sha256,
+        configuration_version=configuration_version,
+        clock=context.clock,
+    )
+
+
 HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
     {
         HANDLER_PROCESSING_HEALTH: HandlerContract(
@@ -814,6 +910,15 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
             model_token_budget=0,
             notification_budget=0,
             run_effectful=_event_admission_reproof_effectful,
+        ),
+        HANDLER_EVIDENCE_OUTCOME_CAPTURE: HandlerContract(
+            key=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+            scope_kind="one_declared_capture_cohort",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            run_effectful=_evidence_outcome_capture_effectful,
         ),
     }
 )
@@ -1299,6 +1404,96 @@ def configure_event_admission_reproof(
             "policy_version": declaration.policy_version,
             "reason_version": declaration.reason_version,
             "selection_rule": declaration.selection_rule,
+        },
+        configuration_json=configuration,
+        configuration_sha256=configuration_sha256,
+        input_identity_sha256=input_identity_sha256,
+        starts_at=declaration.starts_at,
+        cadence=declaration.cadence,
+        timezone_name=declaration.timezone_name,
+        missed_run_policy=declaration.missed_run_policy,
+        retention_days=declaration.retention_days,
+        max_attempts=declaration.max_attempts,
+        backoff_seconds=declaration.backoff_seconds,
+        claim_ttl_seconds=declaration.claim_ttl_seconds,
+        deadline_seconds=declaration.deadline_seconds,
+        concurrency_limit=declaration.concurrency_limit,
+        model_token_budget=declaration.model_token_budget,
+        notification_budget=declaration.notification_budget,
+        enabled_at=now,
+    )
+    session.add(schedule)
+    session.flush([schedule])
+    return schedule
+
+
+def configure_evidence_outcome_capture(
+    session: Session,
+    declaration: EvidenceOutcomeCaptureDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 outcome-capture declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written; an elapsed interval or the mere existence of frozen cases never
+    enables capture. The referenced observation contract is declared and
+    validated separately in ``evidence_investigator_capture``; this seam only
+    binds the operational envelope to the project, cohort, and contract identity.
+    Enabling a new configuration disables the cohort's prior capture schedule
+    while retaining it for audit.
+    """
+
+    now = _aware_utc(now)
+    configuration = _validated_evidence_outcome_capture_declaration(declaration)
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    configuration_sha256 = _sha256(configuration)
+    input_identity_sha256 = _sha256(
+        {
+            "handler": HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+            "project_id": declaration.project_id,
+            "cohort_id": declaration.cohort_id,
+            "observation_contract_sha256": declaration.observation_contract_sha256,
+        }
+    )
+    existing = session.scalar(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+            DueWorkSchedule.configuration_version
+            == declaration.configuration_version,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+        )
+    )
+    if existing is not None:
+        if existing.configuration_sha256 != configuration_sha256:
+            raise DueWorkRefusal(
+                "configuration version already names different Due Work rules"
+            )
+        return existing
+
+    active = session.scalars(
+        select(DueWorkSchedule).where(
+            DueWorkSchedule.project_id == declaration.project_id,
+            DueWorkSchedule.handler_key == HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+            DueWorkSchedule.input_identity_sha256 == input_identity_sha256,
+            DueWorkSchedule.disabled_at.is_(None),
+        )
+    ).all()
+    for prior in active:
+        prior.disabled_at = now
+
+    public_id = f"due-job:{configuration_sha256[:24]}"
+    schedule = DueWorkSchedule(
+        public_id=public_id,
+        project_id=declaration.project_id,
+        handler_key=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+        configuration_version=declaration.configuration_version,
+        scope_json={
+            "project_id": declaration.project_id,
+            "cohort_id": declaration.cohort_id,
+            "observation_contract_sha256": declaration.observation_contract_sha256,
         },
         configuration_json=configuration,
         configuration_sha256=configuration_sha256,
@@ -2232,6 +2427,77 @@ def _validated_event_admission_reproof_declaration(
     }
 
 
+def _validated_evidence_outcome_capture_declaration(
+    declaration: EvidenceOutcomeCaptureDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("outcome-capture starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if not _COHORT_IDENTITY.fullmatch(declaration.cohort_id):
+        raise DueWorkRefusal("outcome-capture cohort identity is invalid")
+    if not _SHA256.fullmatch(declaration.observation_contract_sha256):
+        raise DueWorkRefusal("outcome-capture observation contract must be SHA-256")
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "outcome-capture supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal("outcome-capture gate-7 resource declaration is invalid")
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "cohort_id": declaration.cohort_id,
+            "observation_contract_sha256": declaration.observation_contract_sha256,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "declared_capture_cohort-v1",
+            "project_id": declaration.project_id,
+            "cohort_id": declaration.cohort_id,
+            "observation_contract_sha256": declaration.observation_contract_sha256,
+        },
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
     if schedule.handler_key not in HANDLER_REGISTRY:
         raise DueWorkRefusal("persisted Due Work handler is not server-owned")
@@ -2428,6 +2694,44 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
                 "selection_rule": selection_rule,
             }
         )
+    elif schedule.handler_key == HANDLER_EVIDENCE_OUTCOME_CAPTURE:
+        cohort_id = schedule.scope_json.get("cohort_id", "")
+        observation_contract_sha256 = schedule.scope_json.get(
+            "observation_contract_sha256", ""
+        )
+        expected_config = _validated_evidence_outcome_capture_declaration(
+            EvidenceOutcomeCaptureDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                cohort_id=cohort_id,
+                observation_contract_sha256=observation_contract_sha256,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = {
+            "project_id": schedule.project_id,
+            "cohort_id": cohort_id,
+            "observation_contract_sha256": observation_contract_sha256,
+        }
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "cohort_id": cohort_id,
+                "observation_contract_sha256": observation_contract_sha256,
+            }
+        )
     else:
         expected_config = _validated_health_declaration(
             ProcessingHealthDeclaration(
@@ -2492,6 +2796,8 @@ def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -
         return "inspect_notification_delivery"
     if contract.key == HANDLER_EVENT_ADMISSION_REPROOF:
         return "inspect_event_admission_reproof_attention"
+    if contract.key == HANDLER_EVIDENCE_OUTCOME_CAPTURE:
+        return "inspect_capture_attention"
     return "inspect_failed_document_processing"
 
 
@@ -2628,6 +2934,26 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         or result.get("proof_outcome") not in {"passed", "failed", "not_run"}
     ):
         raise DueWorkRefusal("event-admission-reproof handler result is invalid")
+    if contract.key == HANDLER_EVIDENCE_OUTCOME_CAPTURE and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "contract_sha256",
+            "cutoff_at",
+            "observed_at",
+            "health",
+            "cases_in_scope",
+            "captured_complete",
+            "captured_incomplete",
+            "before_cutoff_pending",
+            "excluded",
+            "already_captured",
+        }
+        or result.get("health") not in {"healthy", "capture_attention_required"}
+    ):
+        raise DueWorkRefusal("outcome-capture handler result is invalid")
 
 
 def _locked_live_claim(
