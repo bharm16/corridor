@@ -50,7 +50,12 @@ from corridor.verify import normalize
 
 
 _STATEMENT_SCOPE_POLICY_ACTORS = frozenset(
-    {"corridor:event-admission", "corridor:statement-migration-v1"}
+    {
+        "corridor:event-admission",
+        "corridor:statement-migration-v1",
+        # ADR-0054's identifying-language exact tier (#370).
+        "corridor:statement-scope-matcher",
+    }
 )
 
 
