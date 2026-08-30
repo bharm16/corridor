@@ -42,7 +42,7 @@ from corridor.product_proving_database import (
 
 
 REVISION = "a" * 40
-MIGRATION_HEAD = "b4d1e2f3a5c6"
+MIGRATION_HEAD = "c355a7d9e2f1"
 SOURCE_URL = "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
 ADMIN_URL = SOURCE_URL
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -179,8 +179,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         engine.dispose()
 
     assert transaction_read_only == "on"
-    assert fingerprint.table_count == 77
-    assert fingerprint.sequence_count == 66
+    # #372 adds five retained intake tables: exact project identifiers, raw
+    # message/thread provenance, thread reading outcomes, and the one
+    # route-triage residue, each with its own BigInteger identity sequence.
+    assert fingerprint.table_count == 84
+    assert fingerprint.sequence_count == 73
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

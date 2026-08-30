@@ -17,12 +17,13 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import secrets
 from datetime import date
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -38,6 +39,8 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from corridor import audit
+from corridor import email_intake
+from corridor.config import settings
 from corridor.adjudicate import (
     AlreadyAdjudicated,
     AlreadyDismissed,
@@ -99,6 +102,7 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventEvidence,
     DependencyEventScope,
+    InboundMessage,
     DependencyEventScopeDecision,
     DocPage,
     Document,
@@ -110,6 +114,14 @@ from corridor.models import (
     ProjectRosterEntry,
     StatementCoordinationReceipt,
     StatementCoordinationReversal,
+    CoordinationSummaryRequest,
+)
+from corridor.coordination_summary import (
+    ConfigurationRequired,
+    InvalidSummaryConfiguration,
+    current_configuration as current_summary_configuration,
+    declare_configuration as declare_summary_configuration,
+    request_summary as request_coordination_summary,
 )
 from corridor.milestones import (
     MalformedMilestoneCsv,
@@ -322,6 +334,20 @@ _WORK_REASON_COPY = {
 def get_session():
     with SessionFactory() as session:
         yield session
+
+
+def get_coordination_summary_client_factory():
+    """Build an adapter only after the route found declared spend authority."""
+    from corridor.llm import OpenAIClient
+
+    def build(configuration):
+        return OpenAIClient(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+        )
+
+    return build
 
 
 async def get_human_principal(
@@ -2593,6 +2619,7 @@ def internal_report(
             "summary": report.summary,
             "coverage_note": report.coverage_note,
             "facets": facets,
+            "summary_configuration": current_summary_configuration(session, project.id),
         },
     )
     record_frontend_request(
@@ -2604,6 +2631,88 @@ def internal_report(
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
+@app.post("/operations/{slug}/coordination-summary/configuration")
+async def declare_coordination_summary_configuration(
+    slug: str,
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Declare bounded summary authority; this is technical operations, not a draft."""
+    project = _project(session, slug, principal, designation=access.TECHNICAL_OPERATIONS)
+    form = await request.form()
+    try:
+        declare_summary_configuration(
+            session, project_id=project.id, principal=principal,
+            model=str(form.get("model", "")), prompt_version=str(form.get("prompt_version", "")),
+            source_scope=str(form.get("source_scope", "")),
+            max_input_tokens=int(str(form.get("max_input_tokens", ""))),
+            max_output_tokens=int(str(form.get("max_output_tokens", ""))),
+            timeout_seconds=int(str(form.get("timeout_seconds", ""))),
+            max_requests=int(str(form.get("max_requests", ""))),
+            retry_policy=str(form.get("retry_policy", "")),
+            retention_policy=str(form.get("retention_policy", "")),
+            observation_context=str(form.get("observation_context", "")),
+        )
+    except (ValueError, InvalidSummaryConfiguration) as exc:
+        raise HTTPException(400, f"Coordination Summary configuration refused: {exc}") from exc
+    session.commit()
+    return RedirectResponse(f"/internal-report/{project.slug}", status_code=303)
+
+
+@app.post("/internal-report/{slug}/coordination-summary")
+def request_internal_coordination_summary(
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    client_factory=Depends(get_coordination_summary_client_factory),
+):
+    """The single ordinary action that may spend the declared bounded budget."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        receipt = request_coordination_summary(
+            session, project_id=project.id, principal=principal, client_factory=client_factory,
+        )
+    except ConfigurationRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(
+        f"/internal-report/{project.slug}/coordination-summary/{receipt.public_id}",
+        status_code=303,
+    )
+
+
+@app.get("/internal-report/{slug}/coordination-summary/{public_id}", response_class=HTMLResponse)
+def read_internal_coordination_summary(
+    request: Request,
+    slug: str,
+    public_id: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read one retained receipt; a GET never invokes a model."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    receipt = session.scalars(
+        select(CoordinationSummaryRequest).where(
+            CoordinationSummaryRequest.public_id == public_id,
+            CoordinationSummaryRequest.project_id == project.id,
+        )
+    ).first()
+    if receipt is None:
+        raise HTTPException(404, "no Coordination Summary receipt for this project")
+    response = TEMPLATES.TemplateResponse(
+        request, "coordination_summary.html", {"project": project, "receipt": receipt},
+    )
+    record_frontend_request(
+        session, principal=principal, route_name="coordination_summary_receipt",
+        route_template="/internal-report/{slug}/coordination-summary/{public_id}",
+        method="GET", response=response,
+        subject=FrontendRequestSubject(project_id=project.id), request_fields=request.path_params,
     )
     session.commit()
     return response
@@ -4796,3 +4905,93 @@ _UPLOAD_STATUS_LABELS = {
     "processing_failed": "Processing failed — a later pass will retry",
     "held_unmodeled": "Held — its content is deliberately not read",
 }
+
+
+@app.post("/intake/inbound")
+async def receive_inbound_mail(
+    request: Request,
+    inbound_token: str | None = Header(default=None, alias="X-Corridor-Inbound-Token"),
+    session: Session = Depends(get_session),
+):
+    """Server-to-server receipt boundary for the one configured intake address.
+
+    This is not an ordinary customer route: it refuses unless deployment supplied
+    both server-owned configuration values and the sender authentication secret.
+    It does not accept a project id, actor, or route from a client.
+    """
+    if (
+        not settings.inbound_service_address
+        or not settings.inbound_webhook_secret
+        or inbound_token is None
+        or not secrets.compare_digest(inbound_token, settings.inbound_webhook_secret)
+    ):
+        raise HTTPException(401, "inbound sender is not authorized")
+    try:
+        received = email_intake.receive_message(
+            session,
+            raw_bytes=await request.body(),
+            service_address=settings.inbound_service_address,
+        )
+    except email_intake.InboundMailRefused as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.commit()
+    return {
+        "message_id": received.message_id,
+        "thread_id": received.thread_id,
+        "project_id": received.project_id,
+        "route_status": received.route_status,
+        "created": received.created,
+    }
+
+
+@app.get("/projects/{slug}/inbound")
+def inbound_mail_readback(
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read a member's project's retained inbound-message receipt metadata."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    messages = session.scalars(
+        select(InboundMessage)
+        .where(InboundMessage.project_id == project.id)
+        .order_by(InboundMessage.received_at.desc(), InboundMessage.id.desc())
+    ).all()
+    return {
+        "project": project.slug,
+        "messages": [
+            {
+                "id": message.id,
+                "thread_id": message.thread_id,
+                "sender": message.sender,
+                "subject": message.subject,
+                "route_evidence": message.route_evidence_json,
+                "document_id": message.document_id,
+                "attachments": message.attachments_json,
+                "received_at": message.received_at.isoformat(),
+            }
+            for message in messages
+        ],
+    }
+
+
+@app.post("/projects/{slug}/inbound/{thread_id}/route")
+def resolve_inbound_route(
+    slug: str,
+    thread_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Attribute the one pending routing choice to an authorized project member."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        email_intake.resolve_route_triage(
+            session,
+            thread_id=thread_id,
+            project_id=project.id,
+            principal=principal,
+        )
+    except email_intake.InboundRouteConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return {"thread_id": thread_id, "project": project.slug, "route_status": "routed"}
