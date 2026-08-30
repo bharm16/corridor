@@ -16,12 +16,13 @@ as unavailable rather than faked.
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import date
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -37,6 +38,8 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from corridor import audit
+from corridor import email_intake
+from corridor.config import settings
 from corridor.adjudicate import (
     AlreadyAdjudicated,
     AlreadyDismissed,
@@ -98,6 +101,7 @@ from corridor.models import (
     DependencyEvent,
     DependencyEventEvidence,
     DependencyEventScope,
+    InboundMessage,
     DependencyEventScopeDecision,
     DocPage,
     Document,
@@ -4452,3 +4456,93 @@ _UPLOAD_STATUS_LABELS = {
     "processing_failed": "Processing failed — a later pass will retry",
     "held_unmodeled": "Held — its content is deliberately not read",
 }
+
+
+@app.post("/intake/inbound")
+async def receive_inbound_mail(
+    request: Request,
+    inbound_token: str | None = Header(default=None, alias="X-Corridor-Inbound-Token"),
+    session: Session = Depends(get_session),
+):
+    """Server-to-server receipt boundary for the one configured intake address.
+
+    This is not an ordinary customer route: it refuses unless deployment supplied
+    both server-owned configuration values and the sender authentication secret.
+    It does not accept a project id, actor, or route from a client.
+    """
+    if (
+        not settings.inbound_service_address
+        or not settings.inbound_webhook_secret
+        or inbound_token is None
+        or not secrets.compare_digest(inbound_token, settings.inbound_webhook_secret)
+    ):
+        raise HTTPException(401, "inbound sender is not authorized")
+    try:
+        received = email_intake.receive_message(
+            session,
+            raw_bytes=await request.body(),
+            service_address=settings.inbound_service_address,
+        )
+    except email_intake.InboundMailRefused as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.commit()
+    return {
+        "message_id": received.message_id,
+        "thread_id": received.thread_id,
+        "project_id": received.project_id,
+        "route_status": received.route_status,
+        "created": received.created,
+    }
+
+
+@app.get("/projects/{slug}/inbound")
+def inbound_mail_readback(
+    slug: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Read a member's project's retained inbound-message receipt metadata."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    messages = session.scalars(
+        select(InboundMessage)
+        .where(InboundMessage.project_id == project.id)
+        .order_by(InboundMessage.received_at.desc(), InboundMessage.id.desc())
+    ).all()
+    return {
+        "project": project.slug,
+        "messages": [
+            {
+                "id": message.id,
+                "thread_id": message.thread_id,
+                "sender": message.sender,
+                "subject": message.subject,
+                "route_evidence": message.route_evidence_json,
+                "document_id": message.document_id,
+                "attachments": message.attachments_json,
+                "received_at": message.received_at.isoformat(),
+            }
+            for message in messages
+        ],
+    }
+
+
+@app.post("/projects/{slug}/inbound/{thread_id}/route")
+def resolve_inbound_route(
+    slug: str,
+    thread_id: int,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Attribute the one pending routing choice to an authorized project member."""
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    try:
+        email_intake.resolve_route_triage(
+            session,
+            thread_id=thread_id,
+            project_id=project.id,
+            principal=principal,
+        )
+    except email_intake.InboundRouteConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return {"thread_id": thread_id, "project": project.slug, "route_status": "routed"}
