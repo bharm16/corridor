@@ -1,0 +1,286 @@
+"""Public standard-documentation checklist behavior (#347, ADR-0052)."""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+from sqlalchemy import select
+
+from corridor.db import Session, engine
+from corridor.documentation_checklist import (
+    DocumentationConfirmationRefusal,
+    confirm_interpretation,
+    read_checklist,
+)
+from corridor.ledger import mark_satisfies
+from corridor.models import (
+    AuditLog,
+    Dependency,
+    DocumentationFieldConfirmation,
+    DocPage,
+    Document,
+    EvidenceLink,
+    Project,
+)
+from corridor.principals import HumanPrincipal
+
+
+REVIEWER = HumanPrincipal("local:checklist-reviewer")
+
+
+@pytest.fixture
+def session():
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    yield db
+    db.close()
+    transaction.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def project(session):
+    project = Project(slug="checklist", name="Checklist", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    return project
+
+
+def _document(session, project, *, name: str, text: str) -> Document:
+    document = Document(
+        project_id=project.id,
+        sha256=(name * 64)[:64],
+        filename=f"{name}.pdf",
+        doc_type="agreement",
+        parse_status="parsed",
+        doc_date=date(2026, 8, 29),
+    )
+    session.add(document)
+    session.flush()
+    session.add(DocPage(document_id=document.id, page_no=1, text=text))
+    session.flush()
+    return document
+
+
+def _support(session, dependency, document, quote: str, *, verified: bool = True):
+    link = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote=quote,
+        verified=verified,
+    )
+    session.add(link)
+    session.flush()
+    return link
+
+
+def test_relocation_checklist_derives_machine_field_and_requires_cited_confirmation(
+    session, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-1",
+        dep_type="utility_relocation",
+        title="Gas crossing",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="approval",
+        text="The as-built package is on file. The relocation is approved.",
+    )
+    as_built = _support(
+        session, dependency, document, "The as-built package is on file.")
+    approval = _support(session, dependency, document, "The relocation is approved.")
+
+    before = read_checklist(session, dependency.id)
+
+    assert before.uses_standard_checklist is True
+    assert before.is_ready is False
+    assert before.field("as_built").complete is True
+    assert before.field("as_built").evidence_link_ids == (as_built.id,)
+    interpretation = before.field("approval_interpretation")
+    assert interpretation.complete is False
+    assert interpretation.candidate_evidence_link_ids == (approval.id,)
+    assert interpretation.candidate_conclusion == "approved"
+
+    confirmation = confirm_interpretation(
+        session,
+        dependency.id,
+        approval.id,
+        principal=REVIEWER,
+    )
+
+    after = read_checklist(session, dependency.id)
+    assert confirmation.field_name == "approval_interpretation"
+    assert after.is_ready is True
+    assert after.field("approval_interpretation").complete is True
+    persisted = session.scalars(select(DocumentationFieldConfirmation)).one()
+    assert (persisted.confirmed_by, persisted.conclusion, persisted.evidence_link_id) == (
+        REVIEWER.subject,
+        "approved",
+        approval.id,
+    )
+    audit = session.scalars(select(AuditLog).order_by(AuditLog.id.desc())).first()
+    assert audit is not None
+    assert audit.action == "confirm_documentation_interpretation"
+    assert audit.actor == REVIEWER.subject
+    assert audit.after_json["evidence_link_id"] == approval.id
+
+
+def test_legacy_sufficiency_stays_effective_until_a_structured_confirmation_replaces_it(
+    session, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-2",
+        dep_type="utility_relocation",
+        title="Legacy Gas crossing",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="legacy",
+        text="The as-built package is on file. The relocation is approved.",
+    )
+    legacy = _support(session, dependency, document, "The as-built package is on file.")
+    approval = _support(session, dependency, document, "The relocation is approved.")
+    mark_satisfies(session, dependency.id, legacy.id, principal=REVIEWER)
+
+    before = read_checklist(session, dependency.id)
+    assert before.uses_standard_checklist is False
+    assert before.legacy_mark_remains_effective is True
+    assert before.is_ready is True
+
+    confirm_interpretation(session, dependency.id, approval.id, principal=REVIEWER)
+    after = read_checklist(session, dependency.id)
+    assert after.uses_standard_checklist is True
+    assert after.legacy_mark_remains_effective is False
+    assert after.is_ready is True
+
+
+def test_reimbursable_work_requires_an_executed_agreement_reference(session, project):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-3",
+        dep_type="utility_relocation",
+        title="Reimbursable relocation",
+        cost_responsibility="reimbursable",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="agreement",
+        text="The utility agreement is fully executed by all parties.",
+    )
+    evidence = _support(
+        session,
+        dependency,
+        document,
+        "The utility agreement is fully executed by all parties.",
+    )
+
+    checklist = read_checklist(session, dependency.id)
+
+    assert checklist.is_ready is True
+    field = checklist.field("executed_agreement_reference")
+    assert field.complete is True
+    assert field.evidence_link_ids == (evidence.id,)
+
+
+def test_unverified_or_conditional_letters_cannot_be_confirmed_as_approval(session, project):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-4",
+        dep_type="utility_relocation",
+        title="Conditional approval",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    document = _document(
+        session,
+        project,
+        name="conditional",
+        text="The relocation is approved pending final inspection.",
+    )
+    conditional = _support(
+        session,
+        dependency,
+        document,
+        "The relocation is approved pending final inspection.",
+    )
+    unverified = _support(
+        session,
+        dependency,
+        document,
+        "The relocation is approved.",
+        verified=False,
+    )
+
+    with pytest.raises(DocumentationConfirmationRefusal, match="conditional"):
+        confirm_interpretation(session, dependency.id, conditional.id, principal=REVIEWER)
+    with pytest.raises(DocumentationConfirmationRefusal, match="verified"):
+        confirm_interpretation(session, dependency.id, unverified.id, principal=REVIEWER)
+    assert read_checklist(session, dependency.id).is_ready is False
+
+
+def test_confirmation_stops_binding_when_its_exact_document_is_superseded(
+    session, project
+):
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DOC-5",
+        dep_type="utility_relocation",
+        title="Superseded approval",
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    approved = _document(
+        session,
+        project,
+        name="approved",
+        text="The as-built package is on file. The relocation is approved.",
+    )
+    _support(session, dependency, approved, "The as-built package is on file.")
+    approval = _support(session, dependency, approved, "The relocation is approved.")
+    confirm_interpretation(session, dependency.id, approval.id, principal=REVIEWER)
+    assert read_checklist(session, dependency.id).is_ready is True
+
+    successor = _document(
+        session,
+        project,
+        name="approval-revision",
+        text="Replacement approval package.",
+    )
+    index = _document(
+        session,
+        project,
+        name="approval-index",
+        text="APPROVED-1 is superseded by APPROVED-2 on 2026-08-30.",
+    )
+    approved.registry_id = "APPROVED-1"
+    successor.registry_id = "APPROVED-2"
+    index.registry_id = "APPROVAL-INDEX"
+    session.flush()
+    approved.superseded_by = successor.id
+    approved.superseded_on = date(2026, 8, 30)
+    approved.supersession_source_document_id = index.id
+    approved.supersession_source_page = 1
+    session.flush()
+
+    current = read_checklist(session, dependency.id)
+    assert current.is_ready is False
+    assert current.field("approval_interpretation").complete is False

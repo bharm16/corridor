@@ -88,6 +88,11 @@ from corridor.ledger import (
     load_dependency,
     mark_satisfies,
 )
+from corridor.documentation_checklist import (
+    DocumentationConfirmationRefusal,
+    confirm_interpretation,
+    read_checklist,
+)
 from corridor.models import (
     RESOLUTION_STRATEGIES,
     AuditLog,
@@ -3512,6 +3517,9 @@ def dependency_detail(
     owner_decision = current_internal_owner_decision(session, dependency_id)
     action_decision = current_next_action_decision(session, dependency_id)
     support = resolve_operative_support(session, (dependency_id,))[dependency_id]
+    checklist = read_checklist(
+        session, dependency_id, legacy_ready=support.current_readiness != ()
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
@@ -3523,6 +3531,7 @@ def dependency_detail(
             "sufficient_evidence_ids": {
                 item.evidence_link_id for item in support.readiness
             },
+            "checklist": checklist,
             "return_to": safe_return,
             "disputes": {
                 d.field_name: d
@@ -3769,6 +3778,12 @@ def mark_evidence_satisfies(
     project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
     dependency = _project_dependency(session, project, dependency_id)
     _project_evidence(session, dependency, link_id)
+    if read_checklist(session, dependency_id).uses_standard_checklist:
+        raise HTTPException(
+            409,
+            "this constraint uses the standard documentation checklist; "
+            "a legacy sufficiency mark cannot bypass it",
+        )
     try:
         mark_satisfies(session, dependency_id, link_id, principal=principal)
     except NoSuchEvidence as exc:
@@ -3779,6 +3794,55 @@ def mark_evidence_satisfies(
         raise HTTPException(409, str(exc))
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+
+
+@app.post("/dependencies/{dependency_id}/documentation/confirm-approval")
+def confirm_documentation_approval(
+    dependency_id: int,
+    slug: str = Form(...),
+    evidence_link_id: int = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Append a Documentation Reviewer's cited clean-letter confirmation.
+
+    The route intentionally accepts no conclusion.  The checklist recomputes
+    the displayed classification from the cited current source under the
+    project lock, and only a Documentation Reviewer may make that thin human
+    confirmation (#347, ADR-0052/0056).
+    """
+
+    project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
+    _project_dependency(session, project, dependency_id)
+    try:
+        confirmation = confirm_interpretation(
+            session,
+            dependency_id,
+            evidence_link_id,
+            principal=principal,
+        )
+    except DocumentationConfirmationRefusal as exc:
+        raise HTTPException(409, str(exc)) from exc
+    response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="confirm_documentation_approval",
+        route_template="/dependencies/{dependency_id}/documentation/confirm-approval",
+        method="POST",
+        response=response,
+        subject=FrontendRequestSubject(
+            project_id=project.id,
+            dependency_id=dependency_id,
+        ),
+        request_fields={
+            "slug": slug,
+            "evidence_link_id": evidence_link_id,
+            "documentation_confirmation_id": confirmation.id,
+        },
+    )
+    session.commit()
+    return response
 
 
 @app.get("/page-image/{document_id}/{page_no}")
