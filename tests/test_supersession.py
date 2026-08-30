@@ -11,7 +11,12 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from corridor.db import Session, engine
-from corridor.models import DocPage, Document, Project
+from corridor.models import (
+    DocPage,
+    Document,
+    Project,
+    RevisionReconciliationRequest,
+)
 
 
 def _supersession():
@@ -115,6 +120,14 @@ def _delete_committed_project(project_id):
         document_ids = select(Document.id).where(Document.project_id == project_id)
         cleanup.execute(delete(DocPage).where(DocPage.document_id.in_(document_ids)))
         cleanup.execute(delete(Document).where(Document.project_id == project_id))
+        # Registering a supersession bumps the durable revision-reconciliation
+        # watermark (#343), so the committed row must be cleared before the
+        # project it references can be deleted.
+        cleanup.execute(
+            delete(RevisionReconciliationRequest).where(
+                RevisionReconciliationRequest.project_id == project_id
+            )
+        )
         cleanup.execute(delete(Project).where(Project.id == project_id))
         cleanup.commit()
 

@@ -1,10 +1,10 @@
-"""Fresh and predecessor rehearsals for the Record Inclusion watermark.
+"""Fresh and predecessor rehearsals for the revision-reconciliation watermark.
 
-Trusting a stamped development database was rejected because a missing check or
-a wrongly-added immutability trigger can still report the expected Alembic head.
+Trusting a stamped development database was rejected because a missing check or a
+wrongly-added immutability trigger can still report the expected Alembic head.
 These tests prove the fresh schema object, its check constraints, its deliberate
 mutability (unlike the append-only receipt tables), and that a populated
-predecessor database upgrades without losing rows.
+predecessor database upgrades and downgrades without losing project rows.
 """
 
 from __future__ import annotations
@@ -16,21 +16,20 @@ import subprocess
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
-from corridor.models import RecordInclusionRequest
-from corridor.admission import reconcile_record_inclusion
-from corridor.record_inclusion import request_record_inclusion
+from corridor.models import RevisionReconciliationRequest
+from corridor.revision_reconciliation_request import request_revision_reconciliation
 
 
 pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[1]
-PREDECESSOR = "a364b7c9e2f1"
+PREDECESSOR = "86edb31fd81a"
 HEAD = "b7f3a1c9d2e4"
 
 
@@ -52,7 +51,7 @@ def _database_url(database) -> str:
     )
 
 
-def test_record_inclusion_schema_is_one_fresh_linear_head():
+def test_revision_reconciliation_schema_is_one_fresh_linear_head():
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     assert scripts.get_heads() == [HEAD]
 
@@ -60,7 +59,7 @@ def test_record_inclusion_schema_is_one_fresh_linear_head():
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="record_inclusion_fresh_",
+        database_prefix="revision_reconciliation_fresh_",
     ) as database:
         engine = create_engine(_database_url(database))
         try:
@@ -71,7 +70,7 @@ def test_record_inclusion_schema_is_one_fresh_linear_head():
                 )
                 assert connection.scalar(
                     text(
-                        "select to_regclass('public.record_inclusion_requests') "
+                        "select to_regclass('public.revision_reconciliation_requests') "
                         "is not null"
                     )
                 )
@@ -79,14 +78,15 @@ def test_record_inclusion_schema_is_one_fresh_linear_head():
                     connection.scalars(
                         text(
                             "select conname from pg_constraint "
-                            "where conrelid = 'record_inclusion_requests'::regclass "
+                            "where conrelid = "
+                            "'revision_reconciliation_requests'::regclass "
                             "and contype = 'c'"
                         )
                     ).all()
                 )
                 assert {
-                    "ck_record_inclusion_requests_non_negative",
-                    "ck_record_inclusion_requests_watermark_order",
+                    "ck_revision_reconciliation_requests_non_negative",
+                    "ck_revision_reconciliation_requests_watermark_order",
                 }.issubset(checks)
                 # The watermark is mutable state, so it must carry no immutability
                 # trigger like the append-only receipt tables do.
@@ -94,7 +94,8 @@ def test_record_inclusion_schema_is_one_fresh_linear_head():
                     connection.scalars(
                         text(
                             "select tgname from pg_trigger where not tgisinternal "
-                            "and tgrelid = 'record_inclusion_requests'::regclass"
+                            "and tgrelid = "
+                            "'revision_reconciliation_requests'::regclass"
                         )
                     ).all()
                 )
@@ -108,7 +109,7 @@ def test_predecessor_upgrade_preserves_rows_and_watermark_stays_mutable():
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="record_inclusion_predecessor_",
+        database_prefix="revision_reconciliation_predecessor_",
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _database_url(database)
@@ -116,12 +117,15 @@ def test_predecessor_upgrade_preserves_rows_and_watermark_stays_mutable():
         try:
             with engine.begin() as connection:
                 assert connection.scalar(
-                    text("select to_regclass('public.record_inclusion_requests')")
+                    text(
+                        "select to_regclass("
+                        "'public.revision_reconciliation_requests')"
+                    )
                 ) is None
                 project_id = connection.scalar(
                     text(
                         "insert into projects (slug, name, is_synthetic) "
-                        "values ('record-inclusion-predecessor', 'RI predecessor', true) "
+                        "values ('revision-predecessor', 'Rev predecessor', true) "
                         "returning id"
                     )
                 )
@@ -142,15 +146,22 @@ def test_predecessor_upgrade_preserves_rows_and_watermark_stays_mutable():
                     {"id": project_id},
                 ) == 1
                 assert session.scalar(
-                    text("select count(*) from record_inclusion_requests")
+                    text("select count(*) from revision_reconciliation_requests")
                 ) == 0
-                # A producer bump then a reconcile UPDATEs the same row — which a
-                # wrongly-added immutability trigger would have blocked.
-                request_record_inclusion(session, project_id, "extraction_completed")
-                request_record_inclusion(session, project_id, "extraction_completed")
-                result = reconcile_record_inclusion(session, project_id)
-                assert result.did_load is True
-                row = session.get(RecordInclusionRequest, project_id)
+                # Two producer bumps then a direct reconciled-seq advance UPDATE the
+                # same row — which a wrongly-added immutability trigger would block.
+                request_revision_reconciliation(
+                    session, project_id, "supersession_registered"
+                )
+                request_revision_reconciliation(
+                    session, project_id, "active_run_declared"
+                )
+                session.execute(
+                    update(RevisionReconciliationRequest)
+                    .where(RevisionReconciliationRequest.project_id == project_id)
+                    .values(reconciled_seq=2)
+                )
+                row = session.get(RevisionReconciliationRequest, project_id)
                 assert (row.dirty_seq, row.reconciled_seq) == (2, 2)
                 session.commit()
         finally:
@@ -163,7 +174,10 @@ def test_predecessor_upgrade_preserves_rows_and_watermark_stays_mutable():
         try:
             with engine.connect() as connection:
                 assert connection.scalar(
-                    text("select to_regclass('public.record_inclusion_requests')")
+                    text(
+                        "select to_regclass("
+                        "'public.revision_reconciliation_requests')"
+                    )
                 ) is None
                 assert connection.scalar(
                     text("select count(*) from projects where id=:id"),
