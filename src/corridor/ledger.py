@@ -109,6 +109,10 @@ class DependencyView:
     is_ready: bool
     last_evidenced_at: date | None
     events: list[DependencyEvent] = field(default_factory=list)
+    # The active Constraints for this record's External Party, so a verbal can
+    # be scoped to several of them or to all currently active without leaving
+    # the page. Scope stays an explicit human choice, never inferred.
+    org_constraints: list[Dependency] = field(default_factory=list)
     audit: list[AuditLog] = field(default_factory=list)
     exceptions: list = field(default_factory=list)
     # The reading these exceptions came from, so the page can stamp the
@@ -457,6 +461,19 @@ def load_dependency(
             )
             .order_by(DependencyEvent.event_date, DependencyEvent.id)
         ).all(),
+        org_constraints=(
+            session.scalars(
+                select(Dependency)
+                .where(
+                    Dependency.project_id == dependency.project_id,
+                    Dependency.external_org_id == dependency.external_org_id,
+                    Dependency.dismissed_at.is_(None),
+                )
+                .order_by(Dependency.ref_code, Dependency.id)
+            ).all()
+            if dependency.external_org_id is not None
+            else []
+        ),
         exceptions=evaluation.for_dependency(dependency_id),
         evaluation=evaluation,
         current_statement=current_statement,
