@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
-from fastapi import Depends, FastAPI, Form, HTTPException
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -141,7 +141,17 @@ from corridor.frontend_request_receipts import (
 )
 from corridor.verbal import VerbalRefusal, record_verbal
 from corridor.identity import document_numbering_schemes, party_canonical_names
-from corridor.principals import HumanPrincipal
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+from corridor.source_intake import (
+    ACCEPTED_DOC_TYPES,
+    MAX_UPLOAD_BYTES,
+    IntakeConflict,
+    IntakeRefused,
+    confirm_intake,
+    list_confirmed_uploads,
+    preview_intake,
+    validate_and_stage,
+)
 from corridor.presentation import (
     documentation_review_label,
     field_label,
@@ -4060,3 +4070,128 @@ def _project_evidence(
     if link is None or (link.dependency_id != dependency.id and not scoped_event):
         raise HTTPException(404, "no such cited passage")
     return link
+
+
+# --- Source document intake (#349) -------------------------------------------
+# The rare upload fallback (ADR-0058). A person hands Corridor one source file,
+# sees read-only what registering it would do, and confirms it attributably. The
+# bounded limits, preview, and durable handoff live in `corridor.source_intake`
+# so the email front door (#372) reuses them; these routes only carry the HTTP.
+
+_DOC_TYPE_CHOICES = tuple(sorted(ACCEPTED_DOC_TYPES))
+
+
+@app.get("/projects/{slug}/sources/upload", response_class=HTMLResponse)
+def source_upload_form(
+    request: Request,
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """Offer the upload fallback: no filesystem path, no command."""
+    project = _project(session, slug)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "source_upload.html",
+        {
+            "project": project,
+            "doc_types": _DOC_TYPE_CHOICES,
+            "max_mib": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "error": None,
+            "selected_doc_type": None,
+        },
+    )
+
+
+@app.post("/projects/{slug}/sources/upload", response_class=HTMLResponse)
+def source_upload_preview(
+    request: Request,
+    slug: str,
+    doc_type: str = Form(...),
+    upload: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    """Stage the bytes and show what confirming would create or change."""
+    project = _project(session, slug)
+    # Read one byte past the limit so an unbounded upload is refused without
+    # buffering all of it; the shared validator re-checks the true bound.
+    body = upload.file.read(MAX_UPLOAD_BYTES + 1)
+    try:
+        staged = validate_and_stage(body, upload.filename or "")
+        preview = preview_intake(session, project, staged, doc_type)
+    except IntakeRefused as exc:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "source_upload.html",
+            {
+                "project": project,
+                "doc_types": _DOC_TYPE_CHOICES,
+                "max_mib": MAX_UPLOAD_BYTES // (1024 * 1024),
+                "error": str(exc),
+                "selected_doc_type": doc_type,
+            },
+            status_code=400,
+        )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "source_preview.html",
+        {"project": project, "preview": preview},
+    )
+
+
+@app.post("/projects/{slug}/sources/confirm")
+def source_confirm(
+    slug: str,
+    sha256: str = Form(...),
+    filename: str = Form(...),
+    doc_type: str = Form(...),
+    binding_fingerprint: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """Bind the previewed source to the acting person and register it."""
+    project = _project(session, slug)
+    try:
+        confirm_intake(
+            session,
+            project=project,
+            sha256=sha256,
+            filename=filename,
+            doc_type=doc_type,
+            binding_fingerprint=binding_fingerprint,
+            principal=principal,
+        )
+    except IntakeRefused as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except IntakeConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    session.commit()
+    return RedirectResponse(f"/projects/{slug}/sources", status_code=303)
+
+
+@app.get("/projects/{slug}/sources", response_class=HTMLResponse)
+def source_uploads(
+    request: Request,
+    slug: str,
+    session: Session = Depends(get_session),
+):
+    """The confirmed uploads and their honest processing outcomes."""
+    project = _project(session, slug)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "source_uploads.html",
+        {
+            "project": project,
+            "uploads": list_confirmed_uploads(session, project.id),
+            "status_labels": _UPLOAD_STATUS_LABELS,
+        },
+    )
+
+
+_UPLOAD_STATUS_LABELS = {
+    "pending": "Pending — waiting for the processing pass",
+    "processed": "Processed",
+    "unreadable": "Unreadable — the reader could not use it",
+    "parse_failed": "Failed to parse — the file could not be read",
+    "processing_failed": "Processing failed — a later pass will retry",
+    "held_unmodeled": "Held — its content is deliberately not read",
+}

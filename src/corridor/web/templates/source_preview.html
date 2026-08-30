@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Confirm registration — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; --warn:#b54708; --ok:#067647; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; color:#111;
+         background:#fff; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header b { font-size:1rem; }
+  header a { color:#111; }
+  main { max-width: 46rem; margin: 2.5rem auto; padding: 0 1.2rem; }
+  h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+  .lead { color:var(--muted); margin:0 0 1.6rem; font-size:.95rem; }
+  h2 { font-size:1rem; margin:1.6rem 0 .5rem; }
+  dl { display:grid; grid-template-columns: 12rem 1fr; gap:.3rem .8rem;
+       margin:0; border:1px solid var(--line); border-radius:6px;
+       padding:.9rem 1rem; }
+  dt { color:var(--muted); }
+  dd { margin:0; }
+  dd.mono { font-family:ui-monospace, monospace; font-size:.82rem;
+            word-break:break-all; }
+  .unresolved { border:1px dashed var(--line); border-radius:6px;
+                padding:.8rem 1rem; margin:.6rem 0 0; }
+  .unresolved div { margin-bottom:.5rem; }
+  .unresolved .field { font-weight:600; }
+  .unresolved .note { color:var(--muted); font-size:.86rem; }
+  .flag { border:1px solid var(--warn); background:#fff7ed; color:var(--warn);
+          border-radius:6px; padding:.6rem .8rem; margin:1.2rem 0 0;
+          font-size:.9rem; }
+  .known { border:1px solid var(--ok); background:#ecfdf3; color:var(--ok);
+           border-radius:6px; padding:.6rem .8rem; margin:1.2rem 0 0;
+           font-size:.9rem; }
+  .actions { display:flex; gap:.6rem; align-items:center; margin-top:1.6rem; }
+  button { font:inherit; padding:.4rem 1rem; border:1px solid #111;
+           background:#111; color:#fff; border-radius:4px; cursor:pointer; }
+  a.cancel { color:var(--muted); }
+</style>
+
+<header>
+  <b>{{ project.name }}</b>
+  <span>
+    <a href="/projects/{{ project.slug }}/sources">uploaded documents</a>
+  </span>
+</header>
+
+<main>
+  <h1>Confirm registration</h1>
+  <p class="lead">
+    This is what registering the file would record. Nothing is on the record yet.
+  </p>
+
+  <h2>Known facts</h2>
+  <dl>
+    <dt>Project</dt><dd>{{ project.name }}</dd>
+    <dt>Filename</dt><dd>{{ preview.filename }}</dd>
+    <dt>Kind (you declared)</dt><dd>{{ preview.doc_type }}</dd>
+    <dt>Format</dt><dd>{{ preview.format_label }}</dd>
+    <dt>Size</dt><dd>{{ preview.size_bytes }} bytes</dd>
+    <dt>Content fingerprint</dt><dd class="mono">{{ preview.sha256 }}</dd>
+  </dl>
+
+  <h2>Left unresolved</h2>
+  <div class="unresolved">
+    {% for item in preview.unresolved %}
+      <div>
+        <span class="field">{{ item.field }}:</span>
+        <span class="note">{{ item.note }}</span>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if preview.type_conflict %}
+    <p class="flag">
+      These exact bytes are already registered in this project as
+      “{{ preview.existing_doc_type }}” (document #{{ preview.existing_document_id }}).
+      Identical content does not create a second document or change an existing
+      one’s kind, so this cannot be confirmed as “{{ preview.doc_type }}”.
+    </p>
+  {% elif preview.already_registered %}
+    <p class="known">
+      These exact bytes are already registered here as document
+      #{{ preview.existing_document_id }} ({{ preview.existing_doc_type }},
+      {{ preview.existing_parse_status }}). Confirming again changes nothing and
+      creates nothing new.
+    </p>
+  {% endif %}
+
+  <form method="post" action="/projects/{{ project.slug }}/sources/confirm">
+    <input type="hidden" name="sha256" value="{{ preview.sha256 }}">
+    <input type="hidden" name="filename" value="{{ preview.filename }}">
+    <input type="hidden" name="doc_type" value="{{ preview.doc_type }}">
+    <input type="hidden" name="binding_fingerprint"
+           value="{{ preview.binding_fingerprint }}">
+    <div class="actions">
+      {% if not preview.type_conflict %}
+        <button type="submit">Confirm registration</button>
+      {% endif %}
+      <a class="cancel" href="/projects/{{ project.slug }}/sources/upload">
+        Cancel
+      </a>
+    </div>
+  </form>
+</main>
