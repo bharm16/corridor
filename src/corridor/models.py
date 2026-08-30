@@ -1639,6 +1639,67 @@ class ReportRun(Base):
     )
 
 
+class ProjectCheckConfiguration(Base):
+    """One declared, retained per-project configuration of the check thresholds.
+
+    The exception engine's thresholds — how many days of document silence is
+    STALE, how near a Need Date is DUE_SOON, how near a Next Action is
+    ACTION_DUE_SOON — were fixed module constants, varied only by a test
+    passing a ``Thresholds`` into ``evaluate*``.  A project that runs on a
+    different cadence had no supported way to declare its own horizons.
+
+    Each save is a new identity, never an edit: the effective configuration
+    is the newest row for the project, and every earlier row — with the
+    person who declared it and when — stays readable so a report published
+    under it remains explainable.  No row means the supported module
+    defaults, unchanged.  The values only parameterize the existing rules;
+    this table introduces no new rule, urgency, or model behavior.  The
+    append-only guarantee is enforced by a trigger, matching the other
+    provenance tables (ADR-0044 keeps the reading derived — nothing here
+    rewrites a past Evaluation).
+    """
+
+    __tablename__ = "project_check_configurations"
+    __table_args__ = (
+        CheckConstraint(
+            "stale_days between 1 and 3650",
+            name="ck_project_check_configurations_stale_days",
+        ),
+        CheckConstraint(
+            "due_soon_days between 1 and 3650",
+            name="ck_project_check_configurations_due_soon_days",
+        ),
+        CheckConstraint(
+            "action_due_soon_days between 1 and 3650",
+            name="ck_project_check_configurations_action_due_soon_days",
+        ),
+        CheckConstraint(
+            "length(trim(ruleset_version)) > 0",
+            name="ck_project_check_configurations_ruleset_version",
+        ),
+        CheckConstraint(
+            "length(trim(created_by)) > 0",
+            name="ck_project_check_configurations_created_by",
+        ),
+        Index("ix_project_check_configurations_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    # The ruleset the declared thresholds parameterize, recorded so a later
+    # reader never reads these day-counts against a different rule meaning.
+    ruleset_version: Mapped[str] = mapped_column(String(32))
+    stale_days: Mapped[int] = mapped_column(Integer)
+    due_soon_days: Mapped[int] = mapped_column(Integer)
+    action_due_soon_days: Mapped[int] = mapped_column(Integer)
+    # The stable human subject who declared it, from the deployment identity
+    # seam — never a form-supplied author (M8; production auth is #331).
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ExternalReportArtifact(Base):
     """One immutable, already-rendered External Report PDF.
 

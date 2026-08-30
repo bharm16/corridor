@@ -15,6 +15,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.check_configuration import effective_thresholds
 from corridor.dependency_events import (
     StatementPublication,
     published_dependency_statements,
@@ -117,10 +118,14 @@ def freeze_project_reading(
             project_id=project_id,
             document_only=document_only,
         )
+        # Every publication surface reads through here, so the project's own
+        # declared check thresholds are resolved once and bound to the shared
+        # Evaluation. No declaration returns the supported defaults, unchanged.
         evaluation = evaluate_project(
             session,
             project_id,
             today=today,
+            thresholds=effective_thresholds(session, project_id),
             statement_publication=statement_publication,
         )
     assert evaluation is not None
