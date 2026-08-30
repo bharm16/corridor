@@ -1786,6 +1786,82 @@ class ProjectCheckConfiguration(Base):
     )
 
 
+class CoordinationSummaryConfiguration(Base):
+    """One explicit, server-owned authorization for bounded summary drafting.
+
+    Unlike ordinary report reading, a Coordination Summary can spend model
+    budget.  Therefore no supported default exists: an attributable project
+    declaration names every input, model, time, retry, retention, and
+    observation bound before a request is allowed.  Rows are append-only so a
+    retained draft always names the rules under which it was obtained.
+    """
+
+    __tablename__ = "coordination_summary_configurations"
+    __table_args__ = (
+        CheckConstraint("source_scope in ('all_sources', 'documents_only')", name="ck_summary_config_source_scope"),
+        CheckConstraint("max_input_tokens between 1 and 200000", name="ck_summary_config_input_budget"),
+        CheckConstraint("max_output_tokens between 1 and 20000", name="ck_summary_config_output_budget"),
+        CheckConstraint("timeout_seconds between 1 and 600", name="ck_summary_config_timeout"),
+        CheckConstraint("max_requests = 1", name="ck_summary_config_one_request"),
+        CheckConstraint("retry_policy = 'none'", name="ck_summary_config_no_retry"),
+        CheckConstraint("retention_policy = 'retained_indefinitely'", name="ck_summary_config_retention"),
+        CheckConstraint("length(trim(model)) > 0", name="ck_summary_config_model"),
+        CheckConstraint("length(trim(prompt_version)) > 0", name="ck_summary_config_prompt"),
+        CheckConstraint("length(trim(observation_context)) > 0", name="ck_summary_config_context"),
+        CheckConstraint("length(trim(created_by)) > 0", name="ck_summary_config_actor"),
+        Index("ix_coordination_summary_configurations_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    source_scope: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(128))
+    max_input_tokens: Mapped[int] = mapped_column(Integer)
+    max_output_tokens: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    max_requests: Mapped[int] = mapped_column(Integer)
+    retry_policy: Mapped[str] = mapped_column(String(32))
+    retention_policy: Mapped[str] = mapped_column(String(64))
+    observation_context: Mapped[str] = mapped_column(String(128))
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CoordinationSummaryRequest(Base):
+    """Immutable receipt for one bounded, non-authoritative draft attempt."""
+
+    __tablename__ = "coordination_summary_requests"
+    __table_args__ = (
+        UniqueConstraint("configuration_id", "reading_sha256", name="uq_summary_request_reading"),
+        CheckConstraint(
+            "status in ('completed', 'empty_input', 'budget_exhausted', 'timeout', "
+            "'transport_failure', 'validation_refused')",
+            name="ck_summary_request_status",
+        ),
+        CheckConstraint("reading_sha256 ~ '^[0-9a-f]{64}$'", name="ck_summary_request_reading_sha"),
+        CheckConstraint("length(trim(requested_by)) > 0", name="ck_summary_request_actor"),
+        Index("ix_coordination_summary_requests_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    configuration_id: Mapped[int] = mapped_column(ForeignKey("coordination_summary_configurations.id"))
+    requested_by: Mapped[str] = mapped_column(String(128))
+    reading_sha256: Mapped[str] = mapped_column(String(64))
+    project_reading_json: Mapped[dict] = mapped_column(JSONB)
+    evaluated_on: Mapped[date] = mapped_column(Date)
+    ruleset_version: Mapped[str] = mapped_column(String(32))
+    statement_publication_fingerprint: Mapped[str] = mapped_column(String(64))
+    provenance_mode: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    summary_markdown: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ExternalReportArtifact(Base):
     """One immutable, already-rendered External Report PDF.
 
