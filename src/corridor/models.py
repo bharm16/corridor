@@ -3971,6 +3971,40 @@ class PageProcessingFailure(Base):
     )
 
 
+class PageRenderDerivative(Base):
+    """One regenerable, profile-bound page or region render (ADR-0072 Class B)."""
+
+    __tablename__ = "page_render_derivatives"
+    __table_args__ = (
+        UniqueConstraint("derivative_key"),
+        CheckConstraint("page_number > 0"),
+        CheckConstraint("length(profile_name) > 0"),
+        CheckConstraint("length(profile_id) > 0"),
+        CheckConstraint("source_sha256 ~ '^[0-9a-f]{64}$'"),
+        CheckConstraint("artifact_sha256 ~ '^[0-9a-f]{64}$'"),
+        CheckConstraint("artifact_bytes > 0"),
+        CheckConstraint("retention_class = 'intermediary_processing'"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    page_number: Mapped[int] = mapped_column(Integer)
+    derivative_key: Mapped[str] = mapped_column(String(64))
+    profile_name: Mapped[str] = mapped_column(String(32))
+    profile_id: Mapped[str] = mapped_column(String(64))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    artifact_path: Mapped[str] = mapped_column(Text)
+    artifact_sha256: Mapped[str] = mapped_column(String(64))
+    artifact_bytes: Mapped[int] = mapped_column(BigInteger)
+    manifest_json: Mapped[dict] = mapped_column(JSONB)
+    retention_class: Mapped[str] = mapped_column(
+        String(32), server_default="intermediary_processing"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Dependency(Base):
     __tablename__ = "dependencies"
     __table_args__ = (

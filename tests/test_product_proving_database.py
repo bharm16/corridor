@@ -191,10 +191,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # capture (#356), scheduled reproof (#358), conditions (#373), and the
     # operations assists (#359-#362), and the spreadsheet Source Segment
     # evidence spine (#431-#435), the structured Fact satellites (#449), PDF
-    # page Processing Failures (#440), and the exact subject registry,
-    # attempts, candidates, decisions, and rankings (#453).
-    assert fingerprint.table_count == 143
-    assert fingerprint.sequence_count == 132
+    # page Processing Failures (#440), the exact subject registry, attempts,
+    # candidates, decisions, and rankings (#453), and purpose-specific render
+    # derivatives (#441).
+    assert fingerprint.table_count == 144
+    assert fingerprint.sequence_count == 133
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
@@ -229,12 +230,18 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "subject_resolution_decisions",
         "subject_candidate_suggestions",
         "page_processing_failures",
+        "page_render_derivatives",
         "statement_coordination_receipts",
     }
     assert "source_segments_id_seq" in {
         item.name for item in fingerprint.sequences
     }
-    assert {"facts_id_seq", "fact_sources_id_seq"} <= {
+    assert {
+        "facts_id_seq",
+        "fact_sources_id_seq",
+        "page_processing_failures_id_seq",
+        "page_render_derivatives_id_seq",
+    } <= {
         item.name for item in fingerprint.sequences
     }
     assert "source_fact_append_receipts_id_seq" in {

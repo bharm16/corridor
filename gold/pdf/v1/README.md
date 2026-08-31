@@ -30,3 +30,21 @@ rule misses the mixed page, for a 50% false "OCR not needed" rate over the two
 positive pages. Synthetic tests exercise both error directions but contribute
 to no quality claim. FDOT holdout access for this predeclared measurement is
 recorded in `holdout-access.jsonl`.
+
+## Render profile selection
+
+`render-profile-measurement.json` records the five real Stage 1 pages and every
+candidate DPI measurement used by #441. Its predeclared minimum-sufficient
+rules select the values in `render-profiles.json`; the application refuses a
+bundle whose measurement digest or replayed selection does not match. Review is
+an unprocessed 200-DPI derivative, OCR/layout and deterministic table CV use
+separately identified 300-DPI derivatives, and the 600-DPI profile is limited to
+bounded cell crops. OpenCV is absent from the application lock and lives only in
+`workers/render/uv.lock`.
+
+Every derivative manifest records its source digest, page, profile identity,
+library versions, parameters, artifact digest, Class B retention label, and the
+forward/inverse affine chain from PDF user space through page rotation, clip,
+raster scale, and any deskew. The source bytes plus that manifest are sufficient
+to regenerate the artifact; reviewer pixels are never overwritten by a
+preprocessed derivative.

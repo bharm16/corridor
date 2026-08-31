@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from hashlib import sha256
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -34,10 +33,11 @@ DECISION_HEAD = "20c7d970be63"
 CURRENT_RECORD_HEAD = "8fc4c747b2d9"
 STRUCTURED_FACT_HEAD = "7e1b2c3d4f50"
 SUBJECT_RESOLUTION_HEAD = "453a1b2c3d4e"
-PREDECESSOR_HEAD = SUBJECT_RESOLUTION_HEAD
-CURRENT_HEAD = "452c7d8e9f10"
+PROSE_ACCOUNTING_HEAD = "452c7d8e9f10"
+PREDECESSOR_HEAD = PROSE_ACCOUNTING_HEAD
+CURRENT_HEAD = "2e3f4a5b6c7d"
 EXPECTED_SCHEMA_SHA256 = (
-    "31a6296b9907b2b033917cef2a5a534cda514496285419d7ae6c47ec290303f2"
+    "8ff55d3c800af7e9be2bdda4024b544727b505398eb18eaf4d46c635133e1b70"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -58,7 +58,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{CURRENT_RECORD_HEAD}_add_current_project_record_view.py",
         f"{STRUCTURED_FACT_HEAD}_add_structured_cell_facts.py",
         f"{SUBJECT_RESOLUTION_HEAD}_add_subject_resolution_registry.py",
-        f"{CURRENT_HEAD}_add_prose_completeness_accounting.py",
+        f"{PROSE_ACCOUNTING_HEAD}_add_prose_completeness_accounting.py",
+        f"{CURRENT_HEAD}_add_page_render_derivatives.py",
     }
 
 
@@ -98,7 +99,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_prose_head_preserves_spine_and_adds_completeness_accounting():
+def test_predecessor_preserves_prior_contracts_and_adds_empty_render_state():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -117,12 +118,13 @@ def test_prose_head_preserves_spine_and_adds_completeness_accounting():
                 )
             )
             assert project_id is not None
+            _seed_artifact_reference_release(session, int(project_id))
             document_id = session.scalar(
                 text(
                     "insert into documents "
                     "(project_id, sha256, filename, doc_type, numbering_scheme, "
                     "pages, parse_status) values "
-                    "(:project_id, :sha256, 'minutes.pdf', 'minutes', "
+                    "(:project_id, :sha256, 'matrix.pdf', 'matrix', "
                     "'project-unique', 1, 'parsed') returning id"
                 ),
                 {"project_id": project_id, "sha256": "a" * 64},
@@ -130,14 +132,18 @@ def test_prose_head_preserves_spine_and_adds_completeness_accounting():
             page_id = session.scalar(
                 text(
                     "insert into doc_pages "
-                    "(document_id, page_no, text, text_source, inventory_json, "
-                    "routing_json) values "
-                    "(:document_id, 1, 'Equistar will submit the exhibit.', "
-                    "'text_layer', '{}'::jsonb, '{}'::jsonb) returning id"
+                    "(document_id, page_no, text, text_source, inventory_json, routing_json) "
+                    "values (:document_id, 1, '', 'ocr', cast(:inventory as jsonb), "
+                    "cast(:routing as jsonb)) returning id"
                 ),
-                {"document_id": document_id},
+                {
+                    "document_id": document_id,
+                    "inventory": '{"schema_version":"corridor.pdf-page-inventory.v1"}',
+                    "routing": '{"schema_version":"corridor.pdf-page-routing.v1"}',
+                },
             )
         before = _project_row(database.session_factory)
+        release_before = _artifact_release_row(database.session_factory)
 
         completed = _alembic(database_url, "upgrade", "head")
 
@@ -146,6 +152,9 @@ def test_prose_head_preserves_spine_and_adds_completeness_accounting():
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
+        assert _artifact_release_row(database.session_factory) == release_before
+        _assert_artifact_release_reader(database.session_factory, int(project_id))
+        _insert_artifact_reference_release(database.session_factory)
         with database.session_factory() as session:
             assert session.execute(
                 text(
@@ -155,26 +164,25 @@ def test_prose_head_preserves_spine_and_adds_completeness_accounting():
                 {"page_id": page_id},
             ).one() == (
                 page_id,
-                "Equistar will submit the exhibit.",
-                {},
-                {},
+                "",
+                {"schema_version": "corridor.pdf-page-inventory.v1"},
+                {"schema_version": "corridor.pdf-page-routing.v1"},
             )
             assert session.scalar(
                 text("select count(*) from page_processing_failures")
             ) == 0
-        _insert_pending_statement_fact(
-            database.session_factory,
-            project_id=int(project_id),
-            document_id=int(document_id),
-        )
-        _insert_prose_accounting_run(
-            database.session_factory,
-            document_id=int(document_id),
-            subject_id=int(project_id),
-        )
+            assert session.scalar(
+                text("select count(*) from page_render_derivatives")
+            ) == 0
+        assert _fact_rows(database.session_factory) == []
+        with database.session_factory() as session:
+            assert session.scalar(
+                text("select count(*) from source_fact_append_receipts")
+            ) == 0
+            assert session.scalar(text("select count(*) from extracted_proposals")) == 0
 
 
-def test_supported_predecessor_creates_immutable_scoped_append_receipt():
+def test_supported_predecessor_creates_regenerable_render_manifest():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -201,6 +209,19 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
                 ),
                 {"project_id": project_id, "sha256": "a" * 64},
             )
+            page_id = session.scalar(
+                text(
+                    "insert into doc_pages "
+                    "(document_id, page_no, text, text_source, inventory_json, routing_json) "
+                    "values (:document_id, 1, '', 'ocr', cast(:inventory as jsonb), "
+                    "cast(:routing as jsonb)) returning id"
+                ),
+                {
+                    "document_id": document_id,
+                    "inventory": '{"schema_version":"corridor.pdf-page-inventory.v1"}',
+                    "routing": '{"schema_version":"corridor.pdf-page-routing.v1"}',
+                },
+            )
 
         with database.session_factory.begin() as session:
             segment_id = session.scalar(
@@ -217,10 +238,6 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
                     "digest": "1c4fc7e2bdaf4b219c00ce662b927dc5d7e17091e467df61b9582d7fb359a39e",
                 },
             )
-
-        database_url = configured.set(database=database.name)
-        completed = _alembic(database_url, "upgrade", "head")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
 
         with database.session_factory.begin() as session:
             candidate_id = session.scalar(
@@ -321,21 +338,128 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         assert _source_segment_rows(database.session_factory) == [
             (segment_id, project_id, document_id, "spreadsheet_cell", "UC-1", "A2")
         ]
-        assert _fact_rows(database.session_factory) == [
-            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
-        ]
+        fact_rows_before = _fact_rows(database.session_factory)
+        database_url = configured.set(database=database.name)
+        completed = _alembic(database_url, "upgrade", "head")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+        assert _fact_rows(database.session_factory) == fact_rows_before
+
+        with database.session_factory.begin() as session:
+            session.execute(
+                text(
+                    "update doc_pages set inventory_json = cast(:inventory as jsonb), "
+                    "routing_json = cast(:routing as jsonb) where id = :page_id"
+                ),
+                {
+                    "page_id": page_id,
+                    "inventory": '{"schema_version":"inventory-v1"}',
+                    "routing": '{"schema_version":"routing-v1"}',
+                },
+            )
+            failure_id = session.scalar(
+                text(
+                    "insert into page_processing_failures "
+                    "(document_id, page_number, engine, configuration_json, region_id, "
+                    "scope_json, error_type, error_message) values "
+                    "(:document_id, 1, 'tesseract', cast(:configuration as jsonb), "
+                    "'image-1', cast(:scope as jsonb), 'RuntimeError', 'unavailable') "
+                    "returning id"
+                ),
+                {
+                    "document_id": document_id,
+                    "configuration": "{}",
+                    "scope": '{"page_number":1}',
+                },
+            )
+            derivative_id = session.scalar(
+                text(
+                    "insert into page_render_derivatives "
+                    "(document_id, page_number, derivative_key, profile_name, "
+                    "profile_id, source_sha256, artifact_path, artifact_sha256, "
+                    "artifact_bytes, manifest_json, retention_class) values "
+                    "(:document_id, 1, :key, 'review', :profile_id, :source_sha, "
+                    "'/renders/review.png', :artifact_sha, 128, "
+                    "cast(:manifest as jsonb), 'intermediary_processing') returning id"
+                ),
+                {
+                    "document_id": document_id,
+                    "key": "d" * 64,
+                    "profile_id": "e" * 64,
+                    "source_sha": "a" * 64,
+                    "artifact_sha": "f" * 64,
+                    "manifest": '{"schema_version":"corridor.render-derivative.v1"}',
+                },
+            )
+
+        with database.session_factory() as session:
+            assert session.execute(
+                text(
+                    "select id, document_id, page_number, engine, region_id, error_type, "
+                    "error_message from page_processing_failures"
+                )
+            ).one() == (
+                failure_id,
+                document_id,
+                1,
+                "tesseract",
+                "image-1",
+                "RuntimeError",
+                "unavailable",
+            )
+            assert session.execute(
+                text(
+                    "select id, document_id, page_number, profile_name, "
+                    "retention_class from page_render_derivatives"
+                )
+            ).one() == (
+                derivative_id,
+                document_id,
+                1,
+                "review",
+                "intermediary_processing",
+            )
+        with pytest.raises(DBAPIError, match="ck_doc_pages_inventory_routing_pair"):
+            with database.session_factory.begin() as session:
+                session.execute(
+                    text(
+                        "update doc_pages set routing_json = null where id = :page_id"
+                    ),
+                    {"page_id": page_id},
+                )
         with pytest.raises(DBAPIError, match="Extracted Proposal spine is immutable"):
             with database.session_factory.begin() as session:
                 session.execute(
                     text("update extracted_proposals set subject_key = 'x' where id = :id"),
                     {"id": proposal_id},
                 )
-        assert _fact_rows(database.session_factory) == [
-            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
-        ]
+        with pytest.raises(DBAPIError, match="source Fact append receipts are immutable"):
+            with database.session_factory.begin() as session:
+                session.execute(
+                    text("update source_fact_append_receipts set idempotency_key = 'x' where id = :id"),
+                    {"id": receipt_id},
+                )
+        with pytest.raises(DBAPIError, match="facts are append-only"):
+            with database.session_factory.begin() as session:
+                session.execute(
+                    text(
+                        "update facts set text_value = 'rewritten' where id = :fact_id"
+                    ),
+                    {"fact_id": fact_id},
+                )
+        with pytest.raises(DBAPIError, match="retention_class"):
+            with database.session_factory.begin() as session:
+                session.execute(
+                    text(
+                        "update page_render_derivatives "
+                        "set retention_class = 'permanent' where id = :id"
+                    ),
+                    {"id": derivative_id},
+                )
+        assert _fact_rows(database.session_factory) == fact_rows_before
 
 
-def test_downgrade_that_would_delete_prose_completeness_is_unsupported():
+def test_downgrade_that_would_delete_render_manifests_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -347,7 +471,7 @@ def test_downgrade_that_would_delete_prose_completeness_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "prose completeness migration downgrade is unsupported" in completed.stderr
+    assert "page render derivative migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
@@ -360,8 +484,8 @@ def _project_row(session_factory):
         ).one()
 
 
-def _seed_legacy_release_and_artifact(session, project_id: int) -> None:
-    pdf_bytes = b"%PDF-1.7\nlegacy release\n%%EOF"
+def _seed_artifact_reference_release(session, project_id: int) -> None:
+    pdf_bytes = b"%PDF-1.7\nartifact release\n%%EOF"
     digest = sha256(pdf_bytes).hexdigest()
     artifact_id = session.scalar(
         text(
@@ -381,47 +505,46 @@ def _seed_legacy_release_and_artifact(session, project_id: int) -> None:
     session.execute(
         text(
             "insert into external_report_releases ("
-            "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
-            "evaluated_on, ruleset_version, evaluation_context_json, "
-            "provenance_mode, record_context_json, released_by, released_by_display"
+            "project_id, artifact_id, artifact_name, format, pdf_sha256, "
+            "evaluated_on, ruleset_version, provenance_mode, "
+            "released_by, released_by_display"
             ") values ("
-            ":project_id, 'legacy-release.pdf', 'pdf', :pdf_bytes, :digest, "
-            "date '2026-08-31', 'v0.4', '{}'::jsonb, "
-            "'all-supported-sources', '{\"dependencies\": []}'::jsonb, "
-            "'local:legacy', 'Legacy Releaser'"
+            ":project_id, :artifact_id, 'artifact-backed.pdf', 'pdf', :digest, "
+            "date '2026-08-31', 'v0.4', 'all-supported-sources', "
+            "'local:artifact', 'Artifact Releaser'"
             ")"
         ),
-        {"project_id": project_id, "pdf_bytes": pdf_bytes, "digest": digest},
+        {"project_id": project_id, "artifact_id": artifact_id, "digest": digest},
     )
 
 
-def _legacy_release_row(session_factory):
+def _artifact_release_row(session_factory):
     with session_factory() as session:
         return session.execute(
             text(
                 "select artifact_id, artifact_name, pdf_bytes, pdf_sha256, "
                 "evaluation_context_json, record_context_json, released_by "
                 "from external_report_releases "
-                "where artifact_name = 'legacy-release.pdf'"
+                "where artifact_name = 'artifact-backed.pdf'"
             )
         ).one()
 
 
-def _assert_legacy_release_reader(session_factory, project_id: int) -> None:
+def _assert_artifact_release_reader(session_factory, project_id: int) -> None:
     with session_factory() as session:
         release_id = session.scalar(
             text(
                 "select id from external_report_releases "
-                "where artifact_name = 'legacy-release.pdf'"
+                "where artifact_name = 'artifact-backed.pdf'"
             )
         )
         release = retrieve_released_external_report(
             session, project_id, int(release_id)
         )
-        assert release.content_storage == "legacy"
-        assert release.artifact_id is None
-        assert release.pdf_bytes == b"%PDF-1.7\nlegacy release\n%%EOF"
-        assert release.record_context_json == {"dependencies": []}
+        assert release.content_storage == "artifact"
+        assert release.artifact_id is not None
+        assert release.pdf_bytes == b"%PDF-1.7\nartifact release\n%%EOF"
+        assert release.record_context_json == {}
         assert release.digest_is_valid is True
 
 
@@ -430,11 +553,24 @@ def _insert_artifact_reference_release(session_factory) -> None:
         project_id = session.scalar(
             text("select id from projects where slug = 'baseline-bridge'")
         )
-        artifact_id = session.scalar(
+        source_artifact_id = session.scalar(
             text(
                 "select id from external_report_artifacts "
                 "where artifact_name = 'artifact-backed.pdf'"
             )
+        )
+        artifact_id = session.scalar(
+            text(
+                "insert into external_report_artifacts ("
+                "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+                "evaluated_on, ruleset_version, evaluation_context_json, "
+                "provenance_mode, record_context_json"
+                ") select project_id, 'post-upgrade.pdf', format, pdf_bytes, "
+                "pdf_sha256, evaluated_on, ruleset_version, evaluation_context_json, "
+                "provenance_mode, record_context_json "
+                "from external_report_artifacts where id = :artifact_id returning id"
+            ),
+            {"artifact_id": source_artifact_id},
         )
         artifact_digest = session.scalar(
             text(
@@ -449,7 +585,7 @@ def _insert_artifact_reference_release(session_factory) -> None:
                 "evaluated_on, ruleset_version, provenance_mode, "
                 "released_by, released_by_display"
                 ") values ("
-                ":project_id, :artifact_id, 'artifact-backed.pdf', 'pdf', :digest, "
+                ":project_id, :artifact_id, 'post-upgrade.pdf', 'pdf', :digest, "
                 "date '2026-08-31', 'v0.4', 'all-supported-sources', "
                 "'local:new', 'New Releaser'"
                 ") returning id"
@@ -517,188 +653,6 @@ def _insert_artifact_reference_release(session_factory) -> None:
                         ")"
                     ),
                     {"project_id": project_id, "digest": artifact_digest},
-                )
-
-
-def _insert_pending_statement_fact(
-    session_factory, *, project_id: int, document_id: int
-) -> None:
-    statement = "Equistar will submit the exhibit."
-    with session_factory.begin() as session:
-        segment_id = session.scalar(
-            text(
-                "insert into source_segments ("
-                "project_id, document_id, kind, exact_text, content_sha256, "
-                "ordinal, page_no, start_offset, end_offset"
-                ") values ("
-                ":project_id, :document_id, 'prose_span', :statement, :digest, "
-                "1, 1, 0, :end_offset"
-                ") returning id"
-            ),
-            {
-                "project_id": project_id,
-                "document_id": document_id,
-                "statement": statement,
-                "digest": sha256(statement.encode()).hexdigest(),
-                "end_offset": len(statement),
-            },
-        )
-        run_id = session.scalar(
-            text(
-                "insert into extraction_runs "
-                "(document_id, prompt_version, outcome, candidate_count, page_errors) "
-                "values (:document_id, 'minutes_v5', 'completed', 1, 0) returning id"
-            ),
-            {"document_id": document_id},
-        )
-        fact_id = session.scalar(
-            text(
-                "insert into facts ("
-                "project_id, document_id, extraction_run_id, fact_type, "
-                "subject_kind, subject_key, text_value, transformation, recorded_by, "
-                "content_sha256"
-                ") values ("
-                ":project_id, :document_id, :run_id, 'statement_wording', "
-                "'statement_candidate', 'candidate:1', :statement, "
-                "'exact_prose_span_v1', 'extractor:minutes_v5', :fact_digest"
-                ") returning id"
-            ),
-            {
-                "project_id": project_id,
-                "document_id": document_id,
-                "run_id": run_id,
-                "statement": statement,
-                "fact_digest": "d" * 64,
-            },
-        )
-        for role in ("value_source", "attribution_source"):
-            session.execute(
-                text(
-                    "insert into fact_sources ("
-                    "project_id, document_id, fact_id, source_segment_id, role, ordinal"
-                    ") values ("
-                    ":project_id, :document_id, :fact_id, :segment_id, :role, 1"
-                    ")"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "fact_id": fact_id,
-                    "segment_id": segment_id,
-                    "role": role,
-                },
-            )
-        session.execute(
-            text(
-                "insert into source_fact_append_receipts ("
-                "project_id, document_id, extraction_run_id, idempotency_key, "
-                "content_sha256"
-                ") values ("
-                ":project_id, :document_id, :run_id, 'migration:prose', :digest"
-                ")"
-            ),
-            {
-                "project_id": project_id,
-                "document_id": document_id,
-                "run_id": run_id,
-                "digest": "e" * 64,
-            },
-        )
-        assert session.execute(
-            text(
-                "select fact_type, subject_kind, subject_key, text_value, transformation "
-                "from facts where id = :fact_id"
-            ),
-            {"fact_id": fact_id},
-        ).one() == (
-            "statement_wording",
-            "statement_candidate",
-            "candidate:1",
-            statement,
-            "exact_prose_span_v1",
-        )
-        assert session.execute(
-            text(
-                "select role, source_segment_id from fact_sources "
-                "where fact_id = :fact_id order by role"
-            ),
-            {"fact_id": fact_id},
-        ).all() == [
-            ("attribution_source", segment_id),
-            ("value_source", segment_id),
-        ]
-        assert session.scalar(
-            text(
-                "select count(*) from dependency_events where project_id = :project_id"
-            ),
-            {"project_id": project_id},
-        ) == 0
-        with pytest.raises(DBAPIError, match="prose source segments cannot overlap"):
-            with session.begin_nested():
-                session.execute(
-                    text(
-                        "insert into source_segments ("
-                        "project_id, document_id, kind, exact_text, content_sha256, "
-                        "ordinal, page_no, start_offset, end_offset"
-                        ") values ("
-                        ":project_id, :document_id, 'prose_span', 'overlap', :digest, "
-                        "2, 1, 1, 4"
-                        ")"
-                    ),
-                    {
-                        "project_id": project_id,
-                        "document_id": document_id,
-                        "digest": sha256(b"overlap").hexdigest(),
-                    },
-                )
-
-
-def _insert_prose_accounting_run(
-    session_factory, *, document_id: int, subject_id: int
-) -> None:
-    receipt = {
-        "schema_version": "prose-segment-accounting-v1",
-        "reader_version": "prose_interpretation_v1",
-        "reader_path": "prose_interpretation",
-        "document_id": document_id,
-        "detected_segment_count": 1,
-        "read_segment_count": 1,
-        "proposed_fact_count": 1,
-        "unread_segment_ids": [],
-        "proposed_subject_candidate_ids": [subject_id],
-        "unproposed_subject_candidate_ids": [],
-    }
-    with session_factory.begin() as session:
-        run_id = session.scalar(
-            text(
-                "insert into extraction_runs ("
-                "document_id, prompt_version, outcome, candidate_count, page_errors, "
-                "row_accounting_json"
-                ") values ("
-                ":document_id, 'prose_interpretation_v1', 'completed', 1, 0, "
-                "cast(:receipt as jsonb)"
-                ") returning id"
-            ),
-            {"document_id": document_id, "receipt": json.dumps(receipt)},
-        )
-        assert session.scalar(
-            text(
-                "select row_accounting_json from extraction_runs where id = :run_id"
-            ),
-            {"run_id": run_id},
-        ) == receipt
-        with pytest.raises(DBAPIError, match="completed_row_accounting"):
-            with session.begin_nested():
-                session.execute(
-                    text(
-                        "insert into extraction_runs ("
-                        "document_id, prompt_version, outcome, candidate_count, "
-                        "page_errors"
-                        ") values ("
-                        ":document_id, 'prose_interpretation_v1', 'completed', 1, 0"
-                        ")"
-                    ),
-                    {"document_id": document_id},
                 )
 
 

@@ -43,6 +43,8 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.render_profiles import ensure_render_derivative, render_path_for_page
+
 from corridor.candidates import propose
 from corridor.geometry import (
     MatrixRow,
@@ -313,6 +315,32 @@ def extract_document(
             f"no page image for {document.filename}; the extractor has nothing "
             "to read. Re-ingest before treating this as an empty matrix."
         )
+    source_pdf = stored_pdf(document)
+    vision_paths = {}
+    for page in pages:
+        path = render_path_for_page(
+            session,
+            document_id=document.id,
+            page_number=page.page_no,
+            purpose="model_vision",
+            legacy_image_path=page.image_path,
+        )
+        if path is None:
+            if source_pdf is None:
+                raise NoMatrixFound(
+                    f"no pinned PDF bytes for the model-vision derivative of "
+                    f"{document.filename} page {page.page_no}"
+                )
+            stored = ensure_render_derivative(
+                session,
+                document=document,
+                page_number=page.page_no,
+                profile_name="ocr_layout",
+                pdf_path=source_pdf,
+                output_dir=Path(page.image_path).parent,
+            )
+            path = stored.artifact_path
+        vision_paths[page.id] = path
 
     grids = _read_geometry(document, pages)
     structure_pages = [p for p in pages if grids.get(p.page_no)]
@@ -338,7 +366,7 @@ def extract_document(
             system=structure_system,
             schema=structure_schema,
             users=[_structure_user(document, p, grids[p.page_no]) for p in structure_pages],
-            images=[[p.image_path] for p in structure_pages],
+            images=[[vision_paths[p.id]] for p in structure_pages],
         )
         # One header, one mapping. The model is asked per page, so pages
         # reprinting an identical header were each answered independently —
@@ -371,7 +399,7 @@ def extract_document(
             system=transcribe_system,
             schema=transcribe_schema,
             users=[_transcribe_user(document, p) for p in transcribe_pages],
-            images=[[p.image_path] for p in transcribe_pages],
+            images=[[vision_paths[p.id]] for p in transcribe_pages],
             # Only this tier writes values, so only this tier needs a
             # measured signal about how sure the model was of each digit.
             logprobs=True,
