@@ -1,4 +1,4 @@
-"""Typed Stationing Record Inclusion decisions and revision history."""
+"""Typed structured-cell Record Inclusion decisions and revision history."""
 
 from hashlib import sha256
 
@@ -8,11 +8,13 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from corridor.db import Session, engine
 from corridor.fact_decisions import (
-    STATIONING_INCLUSION_POLICY,
+    FactDecisionRefused,
+    STRUCTURED_CELL_INCLUSION_POLICY,
     current_fact_decisions,
     fact_decisions_as_of_revision,
+    include_structured_cell_fact_by_policy,
+    include_current_structured_cell_facts,
     include_current_stationing_facts,
-    include_stationing_fact_by_policy,
 )
 from corridor.models import (
     ActiveExtractionRun,
@@ -73,8 +75,14 @@ def decision_case(session):
     )
     segments = []
     facts = []
-    for ordinal, (cell, value) in enumerate(
-        (("D3", "1149+00"), ("E3", "1150+00")), start=1
+    for ordinal, (cell, value, fact_type) in enumerate(
+        (
+            ("D3", "1149+00", "station_from"),
+            ("E3", "1150+00", "station_from"),
+            ("A3", "UC-1", "utility_id"),
+            ("B3", "Unknown Utility", "external_org"),
+        ),
+        start=1,
     ):
         segment = SourceSegment(
             project_id=project.id,
@@ -92,7 +100,7 @@ def decision_case(session):
             project_id=project.id,
             document_id=document.id,
             extraction_run_id=run.id,
-            fact_type="station_from",
+            fact_type=fact_type,
             subject_kind="source_row",
             subject_key="Utility Conflicts!3",
             text_value=value,
@@ -103,7 +111,7 @@ def decision_case(session):
             document_value_id=None,
             transformation="trim_cell_text_v1",
             recorded_by="extractor:decision_fixture_v1",
-            content_sha256=("b" if ordinal == 1 else "c") * 64,
+            content_sha256=chr(ord("a") + ordinal) * 64,
         )
         session.add(fact)
         session.flush()
@@ -169,32 +177,88 @@ def decision_case(session):
 def test_policy_inclusion_writes_one_typed_decision_and_revision(session, decision_case):
     project, _document, _run, facts = decision_case
 
-    result = include_stationing_fact_by_policy(
+    result = include_structured_cell_fact_by_policy(
         session, facts[0], idempotency_key="include:station:1"
     )
 
     assert result.created is True
     assert result.decision.fact_id == facts[0].id
     assert result.decision.revision_id == result.revision.id
-    assert result.revision.released_policy == STATIONING_INCLUSION_POLICY
+    assert result.revision.released_policy == STRUCTURED_CELL_INCLUSION_POLICY
     assert result.revision.human_principal is None
     assert result.revision.predecessor_revision_id is None
     assert current_fact_decisions(session, project.id) == (result.decision,)
-    replay = include_stationing_fact_by_policy(
+    replay = include_structured_cell_fact_by_policy(
         session, facts[0], idempotency_key="include:station:1"
     )
     assert replay.created is False
     assert replay.decision.id == result.decision.id
 
 
+def test_released_structured_cell_policy_includes_a_non_stationing_fact(
+    session, decision_case
+):
+    project, _document, _run, facts = decision_case
+
+    result = include_structured_cell_fact_by_policy(
+        session, facts[2], idempotency_key="include:utility-id:1"
+    )
+
+    assert result.decision.fact_type == "utility_id"
+    assert result.revision.released_policy == STRUCTURED_CELL_INCLUSION_POLICY
+    assert current_fact_decisions(session, project.id) == (result.decision,)
+
+
+def test_stationing_compatibility_seam_does_not_silently_include_other_types(
+    session, decision_case
+):
+    project, _document, _run, _facts = decision_case
+
+    results = include_current_stationing_facts(session, project.id)
+
+    assert len(results) == 2
+    assert {result.decision.fact_type for result in results} == {"station_from"}
+
+
+def test_unresolved_external_org_wording_remains_pending_without_a_revision(
+    session, decision_case
+):
+    project, _document, _run, facts = decision_case
+
+    with pytest.raises(FactDecisionRefused, match="exact registered alias"):
+        include_structured_cell_fact_by_policy(
+            session, facts[3], idempotency_key="include:unknown-org"
+        )
+    with pytest.raises(DBAPIError, match="not eligible"):
+        with session.begin_nested():
+            session.scalar(
+                select(
+                    func.include_structured_cell_fact_decision(
+                        project.id,
+                        facts[3].id,
+                        facts[3].subject_key,
+                        facts[3].fact_type,
+                        "include:unknown-org:direct",
+                        STRUCTURED_CELL_INCLUSION_POLICY,
+                    )
+                )
+            )
+
+    assert session.scalars(
+        select(ProjectRecordRevision).where(
+            ProjectRecordRevision.project_id == project.id
+        )
+    ).all() == []
+
+
 def test_correction_supersedes_effective_decision_and_as_of_reads_both_sides(
     session, decision_case
 ):
     project, _document, _run, facts = decision_case
-    first = include_stationing_fact_by_policy(
+    first = include_structured_cell_fact_by_policy(
         session, facts[0], idempotency_key="include:station:first"
     )
-    second = include_stationing_fact_by_policy(
+    second = include_structured_cell_fact_by_policy(
         session, facts[1], idempotency_key="include:station:second"
     )
 
@@ -210,7 +274,7 @@ def test_correction_supersedes_effective_decision_and_as_of_reads_both_sides(
 
 def test_partial_unique_index_rejects_second_effective_value(session, decision_case):
     project, _document, _run, facts = decision_case
-    first = include_stationing_fact_by_policy(
+    first = include_structured_cell_fact_by_policy(
         session, facts[0], idempotency_key="include:station:index"
     )
     project_id = project.id
@@ -222,9 +286,9 @@ def test_partial_unique_index_rejects_second_effective_value(session, decision_c
     revision = ProjectRecordRevision(
         project_id=project_id,
         predecessor_revision_id=predecessor_revision_id,
-        command_type="include_stationing_fact",
+        command_type="include_structured_cell_fact",
         human_principal=None,
-        released_policy=STATIONING_INCLUSION_POLICY,
+        released_policy=STRUCTURED_CELL_INCLUSION_POLICY,
         idempotency_key="include:station:invalid-second",
     )
     session.add(revision)
@@ -249,7 +313,7 @@ def test_direct_revision_and_decision_writes_are_database_guarded(session, decis
         predecessor_revision_id=None,
         command_type="bypass",
         human_principal=None,
-        released_policy=STATIONING_INCLUSION_POLICY,
+        released_policy=STRUCTURED_CELL_INCLUSION_POLICY,
         idempotency_key="bypass",
     )
     session.add(revision)
@@ -257,24 +321,24 @@ def test_direct_revision_and_decision_writes_are_database_guarded(session, decis
         session.flush()
 
 
-def test_abstained_proposal_cannot_create_stationing_decision(session, decision_case):
+def test_abstained_proposal_cannot_create_structured_cell_decision(session, decision_case):
     project, document, run, facts = decision_case
     candidate = session.scalar(select(Candidate))
     candidate.state = "pending"
     candidate.merged_into = None
     session.flush()
 
-    assert include_current_stationing_facts(session, project.id) == ()
+    assert include_current_structured_cell_facts(session, project.id) == ()
     with pytest.raises(DBAPIError, match="not eligible"):
         session.scalar(
             select(
-                func.include_stationing_fact_decision(
+                func.include_structured_cell_fact_decision(
                     project.id,
                     facts[0].id,
                     facts[0].subject_key,
                     facts[0].fact_type,
                     "direct:abstained",
-                    STATIONING_INCLUSION_POLICY,
+                    STRUCTURED_CELL_INCLUSION_POLICY,
                 )
             )
         )

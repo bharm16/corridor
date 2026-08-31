@@ -1,7 +1,7 @@
 """Typed Record Inclusion decisions and Project Record revisions.
 
 Source Facts remain observations.  This module is the authority boundary that
-projects one eligible Stationing Fact into the Project Record under one released
+projects one eligible structured-cell Fact into the Project Record under one released
 policy, records one atomic revision, and moves effectiveness without rewriting
 either Fact or predecessor decision (ADR-0070, ADR-0071).
 """
@@ -10,13 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from corridor.facts import FACT_TYPE_CONTRACTS
+from corridor.fact_types import FACT_TYPE_CONTRACTS
 from corridor.models import (
     ActiveExtractionRun,
     Fact,
+    FactAppliesTo,
+    FactClosureResult,
     FactDecision,
     FactDisposition,
     Candidate,
@@ -29,7 +31,11 @@ from corridor.models import (
 from corridor.project_lock import lock_project
 
 
-STATIONING_INCLUSION_POLICY = "stationing-record-inclusion-v1"
+STRUCTURED_CELL_INCLUSION_POLICY = "structured-cell-record-inclusion-v1"
+# Kept until the final Project Record cutover so already-merged #435/#436
+# callers retain their public name while the implementation is no longer
+# Stationing-only.
+STATIONING_INCLUSION_POLICY = STRUCTURED_CELL_INCLUSION_POLICY
 
 
 class FactDecisionRefused(ValueError):
@@ -43,19 +49,39 @@ class InclusionDecisionResult:
     created: bool
 
 
-def include_stationing_fact_by_policy(
+def include_structured_cell_fact_by_policy(
     session: Session,
     fact: Fact,
     *,
     idempotency_key: str,
 ) -> InclusionDecisionResult:
-    """Atomically include one eligible Current Production Run Stationing Fact."""
+    """Atomically include one eligible Current Production Run cell Fact."""
 
     if not idempotency_key.strip():
         raise FactDecisionRefused("Record Inclusion idempotency key is required")
     contract = FACT_TYPE_CONTRACTS.get(fact.fact_type)
     if contract is None:
         raise FactDecisionRefused("Fact type has no released inclusion contract")
+    if fact.fact_type == "external_org" and fact.external_org_value_id is None:
+        raise FactDecisionRefused(
+            "External Organization wording needs one exact registered alias"
+        )
+    if fact.fact_type == "applies_to" and session.scalar(
+        select(func.count()).select_from(FactAppliesTo).where(
+            FactAppliesTo.fact_id == fact.id
+        )
+    ) == 0:
+        raise FactDecisionRefused("Applies To Fact has no scoped reference members")
+    if fact.fact_type == "closure_result":
+        closure_kind = session.scalar(
+            select(FactClosureResult.closure_kind).where(
+                FactClosureResult.fact_id == fact.id
+            )
+        )
+        if closure_kind != "source_marked_resolved":
+            raise FactDecisionRefused(
+                "only a source marked-resolution result is policy eligible"
+            )
     active_run = session.scalar(
         select(ActiveExtractionRun.extraction_run_id).where(
             ActiveExtractionRun.document_id == fact.document_id
@@ -104,13 +130,13 @@ def include_stationing_fact_by_policy(
 
     outcome = session.scalar(
         select(
-            func.include_stationing_fact_decision(
+            func.include_structured_cell_fact_decision(
                 fact.project_id,
                 fact.id,
                 fact.subject_key,
                 fact.fact_type,
                 idempotency_key,
-                STATIONING_INCLUSION_POLICY,
+                STRUCTURED_CELL_INCLUSION_POLICY,
             )
         )
     )
@@ -120,11 +146,23 @@ def include_stationing_fact_by_policy(
     return InclusionDecisionResult(revision, decision, bool(outcome["created"]))
 
 
-def include_current_stationing_facts(
+def include_current_structured_cell_facts(
     session: Session, project_id: int
 ) -> tuple[InclusionDecisionResult, ...]:
-    """Run released Stationing inclusion over current, undisposed source Facts."""
+    """Run released structured-cell inclusion over current source Facts."""
 
+    automatic_types = tuple(
+        name
+        for name, contract in FACT_TYPE_CONTRACTS.items()
+        if "spreadsheet_cell" in contract.automatic_segment_kinds
+    )
+
+    return _include_current_facts(session, project_id, automatic_types)
+
+
+def _include_current_facts(
+    session: Session, project_id: int, fact_types: tuple[str, ...]
+) -> tuple[InclusionDecisionResult, ...]:
     facts = session.scalars(
         select(Fact)
         .join(
@@ -144,7 +182,11 @@ def include_current_stationing_facts(
         )
         .where(
             Fact.project_id == project_id,
-            Fact.fact_type.in_(tuple(FACT_TYPE_CONTRACTS)),
+            Fact.fact_type.in_(fact_types),
+            or_(
+                Fact.fact_type != "external_org",
+                Fact.external_org_value_id.is_not(None),
+            ),
             FactDisposition.id.is_(None),
             Candidate.state.in_(("accepted", "merged")),
             Candidate.merged_into.is_not(None),
@@ -152,13 +194,39 @@ def include_current_stationing_facts(
         .order_by(Fact.id)
     ).all()
     return tuple(
-        include_stationing_fact_by_policy(
+        include_structured_cell_fact_by_policy(
             session,
             fact,
-            idempotency_key=f"{STATIONING_INCLUSION_POLICY}:{fact.content_sha256}",
+            idempotency_key=(
+                f"{STRUCTURED_CELL_INCLUSION_POLICY}:{fact.content_sha256}"
+            ),
         )
         for fact in facts
     )
+
+
+def include_stationing_fact_by_policy(
+    session: Session,
+    fact: Fact,
+    *,
+    idempotency_key: str,
+) -> InclusionDecisionResult:
+    """Compatibility seam for the Stationing slice merged before #449."""
+
+    return include_structured_cell_fact_by_policy(
+        session, fact, idempotency_key=idempotency_key
+    )
+
+
+def include_current_stationing_facts(
+    session: Session, project_id: int
+) -> tuple[InclusionDecisionResult, ...]:
+    """Compatibility seam preserving the original Stationing-only behavior."""
+
+    return _include_current_facts(
+        session, project_id, ("station_from", "station_to")
+    )
+
 
 def current_fact_decisions(session: Session, project_id: int) -> tuple[FactDecision, ...]:
     return tuple(

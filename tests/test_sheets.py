@@ -410,7 +410,7 @@ UCM_LIST_HEADINGS = [
     "Comments",
 ]
 
-# The 15 columns the vocabulary rules on, mapped by this form's exact names.
+# The 16 columns the vocabulary rules on, mapped by this form's exact names.
 UCM_LIST_MAPPING = {
     0: "external_org",
     1: "external_org_contact",
@@ -426,6 +426,7 @@ UCM_LIST_MAPPING = {
     16: "offset_to",
     17: "sue_level",
     20: "resolution_strategy",
+    22: "marked_resolution",
     23: "notes",
 }
 
@@ -476,11 +477,9 @@ def test_the_ucm_conflict_list_form_headings_map_to_canonical_fields(tmp_path):
 
 
 def test_the_ucm_conflict_list_extra_columns_stay_unmapped(tmp_path):
-    """Nine columns this form carries have no canonical field, and are
-    reported rather than guessed — including the two the vocabulary
-    deliberately declines: a document's `Resolution Status` (workflow state,
-    ADR-0002) and its `Estimated Resolution Date` (the project's own
-    estimate, not a committed date)."""
+    """Uncontrolled columns remain reported rather than guessed. Resolution
+    Status is now retained as source wording, not imported as record closure;
+    Estimated Resolution Date remains distinct from every controlled date."""
     path = write_workbook(tmp_path / "ucm.xlsx", {"UCM-Conflict List": ucm_list_rows()})
     conflicts = read_workbook(path)[0]
     header = conflicts.rows[header_row(conflicts)]
@@ -501,7 +500,6 @@ def test_the_ucm_conflict_list_extra_columns_stay_unmapped(tmp_path):
         "Test Hole No.",
         "Test Hole Depth",
         "Estimated Resolution Date",
-        "Resolution Status",
     ]
 
 

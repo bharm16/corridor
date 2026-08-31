@@ -46,6 +46,14 @@ from sqlalchemy.orm import (
     relationship,
 )
 
+from corridor.fact_types import (
+    EFFECTIVE_SINGLE_VALUE_FACT_TYPES,
+    SINGLE_VALUED_FACT_TYPES,
+    STRUCTURED_DATE_FACT_TYPES,
+    STRUCTURED_SATELLITE_FACT_TYPES,
+    STRUCTURED_TEXT_FACT_TYPES,
+)
+
 DOC_TYPES = (
     "matrix",
     "minutes",
@@ -741,6 +749,23 @@ class SourceSegment(Base):
     )
 
 
+_STRUCTURED_TEXT_FACT_TYPES_SQL = ", ".join(
+    f"'{value}'" for value in STRUCTURED_TEXT_FACT_TYPES
+)
+_STRUCTURED_DATE_FACT_TYPES_SQL = ", ".join(
+    f"'{value}'" for value in STRUCTURED_DATE_FACT_TYPES
+)
+_SINGLE_VALUED_FACT_TYPES_SQL = ", ".join(
+    f"'{value}'" for value in SINGLE_VALUED_FACT_TYPES
+)
+_EFFECTIVE_SINGLE_VALUE_FACT_TYPES_SQL = ", ".join(
+    f"'{value}'" for value in EFFECTIVE_SINGLE_VALUE_FACT_TYPES
+)
+_STRUCTURED_SATELLITE_FACT_TYPES_SQL = ", ".join(
+    f"'{value}'" for value in STRUCTURED_SATELLITE_FACT_TYPES
+)
+
+
 class Fact(Base):
     """One typed source observation, pending any Project Record decision."""
 
@@ -749,6 +774,7 @@ class Fact(Base):
         UniqueConstraint(
             "project_id", "document_id", "id", name="uq_facts_scope_id"
         ),
+        UniqueConstraint("project_id", "id", name="uq_facts_project_id"),
         UniqueConstraint(
             "project_id",
             "document_id",
@@ -767,11 +793,14 @@ class Fact(Base):
             name="fk_facts_extraction_run_document",
         ),
         CheckConstraint(
-            "fact_type in ('station_from', 'station_to', 'statement_wording')",
+            f"fact_type in ({_SINGLE_VALUED_FACT_TYPES_SQL}, "
+            f"{_STRUCTURED_SATELLITE_FACT_TYPES_SQL}, 'statement_wording')",
             name="ck_facts_type",
         ),
         CheckConstraint(
-            "(fact_type in ('station_from', 'station_to') "
+            f"(fact_type in ({_SINGLE_VALUED_FACT_TYPES_SQL}) "
+            "and subject_kind = 'source_row' and length(trim(subject_key)) > 0) "
+            f"or (fact_type in ({_STRUCTURED_SATELLITE_FACT_TYPES_SQL}) "
             "and subject_kind = 'source_row' and length(trim(subject_key)) > 0) "
             "or (fact_type = 'statement_wording' "
             "and subject_kind = 'statement_candidate' "
@@ -779,11 +808,26 @@ class Fact(Base):
             name="ck_facts_subject",
         ),
         CheckConstraint(
-            "(fact_type in ('station_from', 'station_to') and text_value is not null "
+            f"(fact_type in ({_STRUCTURED_TEXT_FACT_TYPES_SQL}) and text_value is not null "
             "and length(trim(text_value)) > 0 and date_value is null "
             "and date_range_start is null and date_range_end is null "
-            "and external_org_value_id is null and document_value_id is null "
+            "and (fact_type = 'external_org' or external_org_value_id is null) "
+            "and document_value_id is null "
             "and transformation = 'trim_cell_text_v1') or "
+            f"(fact_type in ({_STRUCTURED_DATE_FACT_TYPES_SQL}) and text_value is null "
+            "and date_value is not null and date_range_start is null "
+            "and date_range_end is null and external_org_value_id is null "
+            "and document_value_id is null and transformation = 'iso_date_cell_v1') or "
+            "(fact_type = 'applies_to' and text_value is null "
+            "and date_value is null and date_range_start is null "
+            "and date_range_end is null and external_org_value_id is null "
+            "and document_value_id is null "
+            "and transformation = 'structured_reference_set_v1') or "
+            "(fact_type = 'closure_result' and text_value is null "
+            "and date_value is null and date_range_start is null "
+            "and date_range_end is null and external_org_value_id is null "
+            "and document_value_id is null "
+            "and transformation = 'typed_closure_result_v1') or "
             "(fact_type = 'statement_wording' and text_value is not null "
             "and length(trim(text_value)) > 0 and date_value is null "
             "and date_range_start is null and date_range_end is null "
@@ -867,6 +911,97 @@ class FactSource(Base):
     fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
     source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
     role: Mapped[str] = mapped_column(String(32))
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class FactAppliesTo(Base):
+    """One exact Constraint member of a structured Applies To Fact."""
+
+    __tablename__ = "fact_applies_to"
+    __table_args__ = (
+        UniqueConstraint("fact_id", "dependency_id", name="uq_fact_applies_to_member"),
+        UniqueConstraint("fact_id", "ordinal", name="uq_fact_applies_to_ordinal"),
+        ForeignKeyConstraint(
+            ["project_id", "fact_id"],
+            ["facts.project_id", "facts.id"],
+            name="fk_fact_applies_to_fact_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "dependency_id"],
+            ["dependencies.project_id", "dependencies.id"],
+            name="fk_fact_applies_to_dependency_scope",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_fact_applies_to_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    dependency_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class FactClosureResult(Base):
+    """The typed result attached to one interpretation-bearing closure Fact."""
+
+    __tablename__ = "fact_closure_results"
+    __table_args__ = (
+        UniqueConstraint("fact_id", name="uq_fact_closure_result_fact"),
+        ForeignKeyConstraint(
+            ["project_id", "fact_id"],
+            ["facts.project_id", "facts.id"],
+            name="fk_fact_closure_result_fact_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "successor_dependency_id"],
+            ["dependencies.project_id", "dependencies.id"],
+            name="fk_fact_closure_result_successor_scope",
+        ),
+        CheckConstraint(
+            "closure_kind in ('source_marked_resolved', 'constraint_closed', "
+            "'constraint_remains_open')",
+            name="ck_fact_closure_result_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    closure_kind: Mapped[str] = mapped_column(String(48))
+    successor_dependency_id: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class FactClosureSource(Base):
+    """One governing source segment for a typed closure result."""
+
+    __tablename__ = "fact_closure_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "fact_id", "source_segment_id", name="uq_fact_closure_source_segment"
+        ),
+        UniqueConstraint("fact_id", "ordinal", name="uq_fact_closure_source_ordinal"),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "fact_id"],
+            ["facts.project_id", "facts.document_id", "facts.id"],
+            name="fk_fact_closure_source_fact_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_fact_closure_source_segment_scope",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_fact_closure_source_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
     ordinal: Mapped[int] = mapped_column(Integer)
 
 
@@ -1061,7 +1196,8 @@ class FactDecision(Base):
             "fact_type",
             unique=True,
             postgresql_where=text(
-                "superseded_by is null and fact_type in ('station_from', 'station_to')"
+                "superseded_by is null and fact_type in "
+                f"({_EFFECTIVE_SINGLE_VALUE_FACT_TYPES_SQL})"
             ),
         ),
     )
@@ -3787,7 +3923,10 @@ class PageProcessingFailure(Base):
 
 class Dependency(Base):
     __tablename__ = "dependencies"
-    __table_args__ = (UniqueConstraint("project_id", "ref_code"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "ref_code"),
+        UniqueConstraint("project_id", "id", name="uq_dependencies_project_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))

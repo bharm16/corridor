@@ -30,10 +30,11 @@ PAGE_INVENTORY_HEAD = "1d2e3f4a5b6c"
 PROPOSAL_HEAD = "961bd259310f"
 PROSE_HEAD = "437e8c9a0b1d"
 DECISION_HEAD = "20c7d970be63"
-PREDECESSOR_HEAD = DECISION_HEAD
-CURRENT_HEAD = "8fc4c747b2d9"
+VIEW_HEAD = "8fc4c747b2d9"
+PREDECESSOR_HEAD = VIEW_HEAD
+CURRENT_HEAD = "7e1b2c3d4f50"
 EXPECTED_SCHEMA_SHA256 = (
-    "a8c5f6bd4e00ec6ed3678b0e6e6685cac592a8f134703b3352e8e596ff5cd116"
+    "31bfa668526246419841b445d771a577e2de1262a1c33012a89627e4507401f3"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -51,7 +52,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{PROPOSAL_HEAD}_add_immutable_proposals.py",
         f"{PROSE_HEAD}_add_prose_spans_and_statement_facts.py",
         f"{DECISION_HEAD}_add_fact_decisions.py",
-        f"{CURRENT_HEAD}_add_current_project_record_view.py",
+        f"{VIEW_HEAD}_add_current_project_record_view.py",
+        f"{CURRENT_HEAD}_add_structured_cell_facts.py",
     }
 
 
@@ -91,7 +93,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_released_head_preserves_page_inventory_and_adds_empty_prose_state():
+def test_released_head_preserves_existing_state_and_adds_structured_fact_tables():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -323,7 +325,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_current_record_view_is_unsupported():
+def test_downgrade_that_would_delete_structured_facts_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -335,7 +337,7 @@ def test_downgrade_that_would_delete_current_record_view_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "current Project Record view downgrade is unsupported" in completed.stderr
+    assert "structured-cell Fact migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):

@@ -26,7 +26,7 @@ from corridor.extractor_lineage import (
 from corridor.facts import (
     append_extracted_proposals,
     append_statement_wording_facts,
-    append_stationing_facts,
+    append_structured_cell_facts,
 )
 from corridor.models import (
     EXTRACTION_OUTCOMES,
@@ -372,7 +372,7 @@ def _record_extraction_run(
         for candidate in candidates:
             candidate.extraction_run_id = run.id
     if outcome == "completed":
-        append_stationing_facts(session, document, run, tuple(candidates))
+        append_structured_cell_facts(session, document, run, tuple(candidates))
         has_prose_segments = session.scalar(
             select(SourceSegment.id)
             .where(
