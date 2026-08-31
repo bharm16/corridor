@@ -62,7 +62,6 @@ from corridor.work_decisions import (
     current_internal_owner_decision,
     current_next_action_decision,
 )
-from corridor.models import ProjectRosterEntry
 from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
