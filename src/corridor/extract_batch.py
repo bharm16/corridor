@@ -25,7 +25,11 @@ from sqlalchemy.orm import Session
 from dataclasses import dataclass
 
 from corridor.admission import load_and_report
-from corridor.extraction_runs import completed_document_ids, record_extraction_run
+from corridor.extraction_runs import (
+    append_source_facts,
+    completed_document_ids,
+    record_extraction_run,
+)
 from corridor.extractor_lineage import (
     ExtractorConfig,
     deployed_extractor_config,
@@ -34,7 +38,9 @@ from corridor.extractor_lineage import (
     validate_runtime_config,
 )
 from corridor.llm import DEFAULT_WORKERS, complete_many
+from corridor.facts import carries_source_facts
 from corridor.models import Candidate, DocPage, Document
+from corridor.storage import stored_file
 
 
 @dataclass(frozen=True)
@@ -166,21 +172,38 @@ def extract_documents(
 
         for doc, _ in group:
             batch = per_document[doc.id] if errors[doc.id] == 0 else []
-            for candidate in batch:
-                session.add(candidate)
-            record_extraction_run(
+            outcome = (
+                "unreadable"
+                if doc.id in unreadable
+                else "failed"
+                if errors[doc.id]
+                else "completed"
+            )
+            source_path = getattr(doc, "_stored_path", None) or stored_file(doc)
+            carries_facts = outcome == "completed" and carries_source_facts(
+                tuple(batch)
+            )
+            if carries_facts and source_path is None:
+                raise ValueError(
+                    "source Fact extraction requires registered original bytes"
+                )
+            command = (
+                append_source_facts
+                if carries_facts
+                else record_extraction_run
+            )
+            result = command(
                 session,
                 doc,
+                **(
+                    {"idempotency_key": None, "source_path": source_path}
+                    if command is append_source_facts
+                    else {}
+                ),
                 prompt_version=prompt_version,
                 candidate_count=len(batch),
                 page_errors=errors[doc.id],
-                outcome=(
-                    "unreadable"
-                    if doc.id in unreadable
-                    else "failed"
-                    if errors[doc.id]
-                    else "completed"
-                ),
+                outcome=outcome,
                 candidates=tuple(batch),
                 model=model,
                 schema_version=(
@@ -199,6 +222,8 @@ def extract_documents(
                 token_usage=token_usage,
                 allow_unsealed_legacy=allow_unsealed_legacy,
             )
+            if command is append_source_facts:
+                assert result.run.document_id == doc.id
         session.flush()
         if commit:
             session.commit()

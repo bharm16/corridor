@@ -1,4 +1,4 @@
-"""Spreadsheet Source Segments through the public ingest and replay seams.
+"""Spreadsheet and Minutes Source Segments through ingest and replay seams.
 
 The workbooks are written at test time so CI exercises real XLSX bytes without
 depending on the separately fetched corpus.  The release rehearsal also reads a
@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 from openpyxl import Workbook
+import pymupdf
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -35,10 +36,26 @@ REAL_WORKBOOK = (
     / REAL_WORKBOOK_SHA256[:2]
     / f"{REAL_WORKBOOK_SHA256}.xlsx"
 )
+REAL_MINUTES_SHA256 = (
+    "ada13da24574950264d974f8a352fd07a3dba042ac2b37e825f8409730182eaf"
+)
+REAL_MINUTES = (
+    CORPUS_STORE / REAL_MINUTES_SHA256[:2] / f"{REAL_MINUTES_SHA256}.pdf"
+)
+REAL_MINUTES_STATEMENT = (
+    "Equistar to provide a chain of title on the ROW agreement that is in DOW’s name "
+    "(Due \ndate of 01/2025)."
+)
 needs_corpus = pytest.mark.skipif(
     not REAL_WORKBOOK.exists(),
     reason="run `make corpus` to fetch the I-35 NEX South workbook",
 )
+needs_minutes_corpus = pytest.mark.skipif(
+    not REAL_MINUTES.exists(),
+    reason="run `make corpus` to fetch the SH99 Equistar meeting notes",
+)
+
+MINUTES_STATEMENT = "Equistar will submit the signed exhibit by March 2025."
 
 
 @pytest.fixture
@@ -86,6 +103,21 @@ def _ingest(session, project, workbook, tmp_path):
         doc_type="matrix",
         images_dir=tmp_path / "images",
     )
+
+
+def _minutes_pdf(tmp_path):
+    path = tmp_path / "coordination-minutes.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text(
+            (72, 72),
+            "Meeting notes and attendance.\n"
+            "Action Items:\n"
+            f"1. {MINUTES_STATEMENT}\n"
+            "Meeting Notes",
+        )
+        pdf.save(path)
+    return path
 
 
 def test_workbook_ingest_appends_one_exact_segment_per_populated_cell(
@@ -179,6 +211,81 @@ def test_every_segment_replays_from_the_original_workbook_bytes(
     ] == [segment.exact_text for segment in segments]
 
 
+def test_minutes_pdf_ingest_appends_non_overlapping_replayable_prose_spans(
+    session, project, tmp_path
+):
+    path = _minutes_pdf(tmp_path)
+
+    document = ingest_document(
+        session,
+        project_id=project.id,
+        path=path,
+        doc_type="minutes",
+        images_dir=tmp_path / "images",
+    )
+    segments = session.scalars(
+        select(SourceSegment)
+        .where(SourceSegment.document_id == document.id)
+        .order_by(SourceSegment.ordinal)
+    ).all()
+
+    assert MINUTES_STATEMENT in [segment.exact_text for segment in segments]
+    assert all(segment.kind == "prose_span" for segment in segments)
+    assert all(
+        segment.sheet_name is None
+        and segment.cell_range is None
+        and segment.page_no == 1
+        and segment.start_offset is not None
+        and segment.end_offset is not None
+        and segment.start_offset < segment.end_offset
+        for segment in segments
+    )
+    ordered_ranges = [
+        (segment.start_offset, segment.end_offset) for segment in segments
+    ]
+    assert all(
+        previous_end <= next_start
+        for (_previous_start, previous_end), (next_start, _next_end) in zip(
+            ordered_ranges, ordered_ranges[1:]
+        )
+    )
+    assert [
+        dereference_source_segment(document, segment, path) for segment in segments
+    ] == [segment.exact_text for segment in segments]
+
+
+@needs_minutes_corpus
+def test_real_dev_corpus_minutes_replay_exact_statement_spans(
+    session, project, tmp_path
+):
+    document = ingest_document(
+        session,
+        project_id=project.id,
+        path=REAL_MINUTES,
+        filename="Meeting Notes/Equistar/2025.02.12 GPB1 Equistar notes final.pdf",
+        doc_type="minutes",
+        images_dir=tmp_path / "images",
+        expected_sha256=REAL_MINUTES_SHA256,
+    )
+    segments = session.scalars(
+        select(SourceSegment)
+        .where(
+            SourceSegment.document_id == document.id,
+            SourceSegment.kind == "prose_span",
+        )
+        .order_by(SourceSegment.ordinal)
+    ).all()
+    statement = next(
+        segment for segment in segments if segment.exact_text == REAL_MINUTES_STATEMENT
+    )
+
+    assert len(segments) == 135
+    assert statement.page_no == 2
+    assert dereference_source_segment(document, statement, REAL_MINUTES) == (
+        REAL_MINUTES_STATEMENT
+    )
+
+
 def test_replay_fails_closed_when_a_segment_digest_is_tampered(
     session, project, workbook, tmp_path
 ):
@@ -227,6 +334,48 @@ def test_database_refuses_overlapping_spreadsheet_cell_locators(
     )
 
     with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_database_refuses_overlapping_prose_span_locators(
+    session, project, tmp_path
+):
+    path = _minutes_pdf(tmp_path)
+    document = ingest_document(
+        session,
+        project_id=project.id,
+        path=path,
+        doc_type="minutes",
+        images_dir=tmp_path / "images",
+    )
+    first = session.scalars(
+        select(SourceSegment)
+        .where(
+            SourceSegment.document_id == document.id,
+            SourceSegment.kind == "prose_span",
+        )
+        .order_by(SourceSegment.ordinal)
+    ).first()
+    assert first.start_offset is not None
+    assert first.end_offset is not None
+    overlapping_text = first.exact_text[1:]
+    session.add(
+        SourceSegment(
+            project_id=project.id,
+            document_id=document.id,
+            kind="prose_span",
+            exact_text=overlapping_text,
+            content_sha256=sha256(overlapping_text.encode()).hexdigest(),
+            ordinal=100,
+            sheet_name=None,
+            cell_range=None,
+            page_no=first.page_no,
+            start_offset=first.start_offset + 1,
+            end_offset=first.end_offset,
+        )
+    )
+
+    with pytest.raises(DBAPIError, match="prose source segments cannot overlap"):
         session.flush()
 
 

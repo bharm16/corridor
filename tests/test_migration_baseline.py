@@ -27,10 +27,11 @@ FACT_HEAD = "444758f7b4a7"
 RELEASE_HEAD = "d430a1b2c3d4"
 APPEND_HEAD = "1142da5be661"
 PAGE_INVENTORY_HEAD = "1d2e3f4a5b6c"
-PREDECESSOR_HEAD = PAGE_INVENTORY_HEAD
-CURRENT_HEAD = "961bd259310f"
+PROPOSAL_HEAD = "961bd259310f"
+PREDECESSOR_HEAD = PROPOSAL_HEAD
+CURRENT_HEAD = "437e8c9a0b1d"
 EXPECTED_SCHEMA_SHA256 = (
-    "87d3d2b904379c924c866e0638bacd2ce5ffb4ae0a11abf0fa0eef3b032e5ee8"
+    "4925db6f69e3c1d3fc4399267e59452b4d07fe7b7513eec74d5ef6a83532b40d"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -45,7 +46,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{RELEASE_HEAD}_release_references_artifact.py",
         f"{APPEND_HEAD}_add_scoped_source_fact_append.py",
         f"{PAGE_INVENTORY_HEAD}_add_pdf_page_inventory.py",
-        f"{CURRENT_HEAD}_add_immutable_proposals.py",
+        f"{PROPOSAL_HEAD}_add_immutable_proposals.py",
+        f"{CURRENT_HEAD}_add_prose_spans_and_statement_facts.py",
     }
 
 
@@ -85,7 +87,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows():
+def test_released_head_preserves_page_inventory_and_adds_empty_prose_state():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -104,6 +106,26 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
                 )
             )
             assert project_id is not None
+            document_id = session.scalar(
+                text(
+                    "insert into documents "
+                    "(project_id, sha256, filename, doc_type, numbering_scheme, "
+                    "pages, parse_status) values "
+                    "(:project_id, :sha256, 'minutes.pdf', 'minutes', "
+                    "'project-unique', 1, 'parsed') returning id"
+                ),
+                {"project_id": project_id, "sha256": "a" * 64},
+            )
+            page_id = session.scalar(
+                text(
+                    "insert into doc_pages "
+                    "(document_id, page_no, text, text_source, inventory_json, "
+                    "routing_json) values "
+                    "(:document_id, 1, 'Equistar will submit the exhibit.', "
+                    "'text_layer', '{}'::jsonb, '{}'::jsonb) returning id"
+                ),
+                {"document_id": document_id},
+            )
         before = _project_row(database.session_factory)
 
         completed = _alembic(database_url, "upgrade", "head")
@@ -113,6 +135,27 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
+        with database.session_factory() as session:
+            assert session.execute(
+                text(
+                    "select id, text, inventory_json, routing_json from doc_pages "
+                    "where id = :page_id"
+                ),
+                {"page_id": page_id},
+            ).one() == (
+                page_id,
+                "Equistar will submit the exhibit.",
+                {},
+                {},
+            )
+            assert session.scalar(
+                text("select count(*) from page_processing_failures")
+            ) == 0
+        _insert_pending_statement_fact(
+            database.session_factory,
+            project_id=int(project_id),
+            document_id=int(document_id),
+        )
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -276,7 +319,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_immutable_proposals_is_unsupported():
+def test_downgrade_that_would_delete_prose_spans_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -288,7 +331,7 @@ def test_downgrade_that_would_delete_immutable_proposals_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "immutable proposal migration downgrade is unsupported" in completed.stderr
+    assert "prose span migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
@@ -458,6 +501,139 @@ def _insert_artifact_reference_release(session_factory) -> None:
                         ")"
                     ),
                     {"project_id": project_id, "digest": artifact_digest},
+                )
+
+
+def _insert_pending_statement_fact(
+    session_factory, *, project_id: int, document_id: int
+) -> None:
+    statement = "Equistar will submit the exhibit."
+    with session_factory.begin() as session:
+        segment_id = session.scalar(
+            text(
+                "insert into source_segments ("
+                "project_id, document_id, kind, exact_text, content_sha256, "
+                "ordinal, page_no, start_offset, end_offset"
+                ") values ("
+                ":project_id, :document_id, 'prose_span', :statement, :digest, "
+                "1, 1, 0, :end_offset"
+                ") returning id"
+            ),
+            {
+                "project_id": project_id,
+                "document_id": document_id,
+                "statement": statement,
+                "digest": sha256(statement.encode()).hexdigest(),
+                "end_offset": len(statement),
+            },
+        )
+        run_id = session.scalar(
+            text(
+                "insert into extraction_runs "
+                "(document_id, prompt_version, outcome, candidate_count, page_errors) "
+                "values (:document_id, 'minutes_v5', 'completed', 1, 0) returning id"
+            ),
+            {"document_id": document_id},
+        )
+        fact_id = session.scalar(
+            text(
+                "insert into facts ("
+                "project_id, document_id, extraction_run_id, fact_type, "
+                "subject_kind, subject_key, text_value, transformation, recorded_by, "
+                "content_sha256"
+                ") values ("
+                ":project_id, :document_id, :run_id, 'statement_wording', "
+                "'statement_candidate', 'candidate:1', :statement, "
+                "'exact_prose_span_v1', 'extractor:minutes_v5', :fact_digest"
+                ") returning id"
+            ),
+            {
+                "project_id": project_id,
+                "document_id": document_id,
+                "run_id": run_id,
+                "statement": statement,
+                "fact_digest": "d" * 64,
+            },
+        )
+        for role in ("value_source", "attribution_source"):
+            session.execute(
+                text(
+                    "insert into fact_sources ("
+                    "project_id, document_id, fact_id, source_segment_id, role, ordinal"
+                    ") values ("
+                    ":project_id, :document_id, :fact_id, :segment_id, :role, 1"
+                    ")"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "fact_id": fact_id,
+                    "segment_id": segment_id,
+                    "role": role,
+                },
+            )
+        session.execute(
+            text(
+                "insert into source_fact_append_receipts ("
+                "project_id, document_id, extraction_run_id, idempotency_key, "
+                "content_sha256"
+                ") values ("
+                ":project_id, :document_id, :run_id, 'migration:prose', :digest"
+                ")"
+            ),
+            {
+                "project_id": project_id,
+                "document_id": document_id,
+                "run_id": run_id,
+                "digest": "e" * 64,
+            },
+        )
+        assert session.execute(
+            text(
+                "select fact_type, subject_kind, subject_key, text_value, transformation "
+                "from facts where id = :fact_id"
+            ),
+            {"fact_id": fact_id},
+        ).one() == (
+            "statement_wording",
+            "statement_candidate",
+            "candidate:1",
+            statement,
+            "exact_prose_span_v1",
+        )
+        assert session.execute(
+            text(
+                "select role, source_segment_id from fact_sources "
+                "where fact_id = :fact_id order by role"
+            ),
+            {"fact_id": fact_id},
+        ).all() == [
+            ("attribution_source", segment_id),
+            ("value_source", segment_id),
+        ]
+        assert session.scalar(
+            text(
+                "select count(*) from dependency_events where project_id = :project_id"
+            ),
+            {"project_id": project_id},
+        ) == 0
+        with pytest.raises(DBAPIError, match="prose source segments cannot overlap"):
+            with session.begin_nested():
+                session.execute(
+                    text(
+                        "insert into source_segments ("
+                        "project_id, document_id, kind, exact_text, content_sha256, "
+                        "ordinal, page_no, start_offset, end_offset"
+                        ") values ("
+                        ":project_id, :document_id, 'prose_span', 'overlap', :digest, "
+                        "2, 1, 1, 4"
+                        ")"
+                    ),
+                    {
+                        "project_id": project_id,
+                        "document_id": document_id,
+                        "digest": sha256(b"overlap").hexdigest(),
+                    },
                 )
 
 

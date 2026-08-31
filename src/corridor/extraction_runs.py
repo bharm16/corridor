@@ -23,7 +23,11 @@ from corridor.extractor_lineage import (
     canonical_json_bytes,
     validate_config_json_shape,
 )
-from corridor.facts import append_extracted_proposals, append_stationing_facts
+from corridor.facts import (
+    append_extracted_proposals,
+    append_statement_wording_facts,
+    append_stationing_facts,
+)
 from corridor.models import (
     EXTRACTION_OUTCOMES,
     ActiveExtractionRun,
@@ -41,7 +45,10 @@ from corridor.project_lock import lock_project
 from corridor.record_inclusion import request_record_inclusion
 from corridor.revision_reconciliation_request import request_revision_reconciliation
 from corridor.row_accounting import validate_row_accounting
-from corridor.source_segments import append_ingested_source_segments
+from corridor.source_segments import (
+    append_ingested_source_segments,
+    dereference_source_segment,
+)
 
 
 def completion_predicate():
@@ -194,13 +201,15 @@ def append_source_facts(
         )
         return SourceFactAppendResult(run, facts, False)
 
+    if source_path is None:
+        raise ValueError("new source Fact append requires original source bytes")
+
     allowed_stages = {None, "segments", "run", "facts", "receipt"}
     if fail_after_stage not in allowed_stages:
         raise ValueError("unknown source Fact append failure stage")
     with session.begin_nested():
-        if source_path is not None:
-            append_ingested_source_segments(session, document, source_path)
-            session.flush()
+        append_ingested_source_segments(session, document, source_path)
+        session.flush()
         segments = tuple(
             session.scalars(
                 select(SourceSegment)
@@ -215,9 +224,14 @@ def append_source_facts(
                 raise ValueError("source segment crosses project scope")
             if sha256(segment.exact_text.encode()).hexdigest() != segment.content_sha256:
                 raise ValueError("source segment digest is invalid")
+            dereference_source_segment(document, segment, source_path)
         _fail_after(fail_after_stage, "segments")
         run = _record_extraction_run(
-            session, document, _capture_candidate_inputs=False, **run_values
+            session,
+            document,
+            _capture_candidate_inputs=False,
+            scoped_fact_append=True,
+            **run_values,
         )
         _fail_after(fail_after_stage, "run")
         facts = tuple(
@@ -275,6 +289,7 @@ def _record_extraction_run(
     row_accounting_json: dict | None = None,
     allow_unsealed_legacy: bool = False,
     _capture_candidate_inputs: bool = True,
+    scoped_fact_append: bool = False,
 ) -> ExtractionRun:
     """Append one terminal attempt and attach every Candidate it produced."""
     if not prompt_version:
@@ -358,6 +373,16 @@ def _record_extraction_run(
             candidate.extraction_run_id = run.id
     if outcome == "completed":
         append_stationing_facts(session, document, run, tuple(candidates))
+        has_prose_segments = session.scalar(
+            select(SourceSegment.id)
+            .where(
+                SourceSegment.document_id == document.id,
+                SourceSegment.kind == "prose_span",
+            )
+            .limit(1)
+        )
+        if scoped_fact_append and has_prose_segments is not None:
+            append_statement_wording_facts(session, document, run, tuple(candidates))
         # The one producer #342 owns: a completed reading leaves the project's
         # Record Inclusion needing reconciliation. Bumping the durable watermark
         # in this same transaction is what makes a crash after the extraction

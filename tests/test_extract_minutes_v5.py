@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
 
+import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -19,7 +21,15 @@ from corridor.extract_minutes_v5 import (
     to_candidate,
 )
 from corridor.extractor_lineage import deployed_extractor_config
-from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
+from corridor.models import (
+    Candidate,
+    DocPage,
+    Document,
+    ExtractionRun,
+    Fact,
+    Project,
+    SourceFactAppendReceipt,
+)
 
 
 CHAIN = (
@@ -368,8 +378,24 @@ def test_trailing_prose_is_not_absorbed_into_last_numbered_action_item(
 
 
 def test_production_batch_seam_emits_action_items_when_model_returns_none(
-    session, document
+    session, document, tmp_path
 ):
+    source_path = tmp_path / "minutes-v5-production.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page()
+        page = pdf.new_page(width=1200, height=1600)
+        page.insert_textbox(
+            pymupdf.Rect(72, 72, 1128, 1528),
+            PAGE_1438,
+            fontsize=10,
+        )
+        pdf.save(source_path)
+    with pymupdf.open(source_path) as pdf:
+        source_text = pdf[1].get_text()
+    _replace_page(session, document, source_text)
+    document.sha256 = sha256(source_path.read_bytes()).hexdigest()
+    document.pages = 2
+    document._stored_path = str(source_path)
     client = StubClient([])
     config = deployed_extractor_config("minutes", client=client)
 
@@ -400,3 +426,5 @@ def test_production_batch_seam_emits_action_items_when_model_returns_none(
         .where(Candidate.source_document_id == document.id)
         .order_by(Candidate.id)
     ).all() == created
+    assert len(session.scalars(select(Fact)).all()) == 2
+    assert len(session.scalars(select(SourceFactAppendReceipt)).all()) == 1

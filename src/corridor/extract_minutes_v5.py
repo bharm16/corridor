@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from corridor import extract_minutes_v4 as v4
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
+from corridor.source_segments import NumberedActionSpan, numbered_action_spans
 from corridor.verify import literal_quote_on_page
 
 
@@ -35,13 +36,6 @@ EXTERNAL_PARTY_STATEMENT_TYPES = v4.EXTERNAL_PARTY_STATEMENT_TYPES
 TIMING_SCHEMA = v4.TIMING_SCHEMA
 SCHEMA = v4.SCHEMA
 
-_ACTION_ITEMS_HEADING = re.compile(
-    r"^[ \t]*Action Items(?:[ \t]*[:\-\u2013\u2014])?[ \t]*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_NUMBERED_ITEM = re.compile(r"^[ \t]*(\d+)\.[ \t]*", re.MULTILINE)
-_PAGE_FOOTER = re.compile(r"^[ \t]*Meeting Notes[ \t]*$", re.MULTILINE)
-_BLANK_BLOCK_BOUNDARY = re.compile(r"\r?\n[ \t]*\r?\n")
 _DATE_CHANGE_SIGNAL = re.compile(
     r"\b(?:changed?|changes?|moved?|moves?|shifted?|shifts?|revised?|revises?|"
     r"rescheduled?|reschedules?|updated?|updates?|extended?|extends?|"
@@ -80,16 +74,6 @@ _NAMED_DATE = re.compile(
     r"(\d{4})\b",
     re.IGNORECASE,
 )
-
-
-@dataclass(frozen=True)
-class ActionItem:
-    """One numbered exact source span under an Action Items heading."""
-
-    number: int
-    quote: str
-    start: int
-    end: int
 
 
 @dataclass(frozen=True)
@@ -157,7 +141,7 @@ def extract_page_candidates(
         candidate = _action_item_candidate(
             document,
             page,
-            action_item.quote,
+            action_item.exact_text,
             model,
         )
         if candidate is not None:
@@ -187,48 +171,15 @@ def to_candidate(
     return candidate
 
 
-def _action_items(text: str) -> tuple[ActionItem, ...]:
+def _action_items(text: str) -> tuple[NumberedActionSpan, ...]:
     """Enumerate numbered action rows as contiguous, exact source quotes."""
 
-    headings = tuple(_ACTION_ITEMS_HEADING.finditer(text))
-    items: list[ActionItem] = []
-    for heading_index, heading in enumerate(headings):
-        section_end = (
-            headings[heading_index + 1].start()
-            if heading_index + 1 < len(headings)
-            else len(text)
-        )
-        footer = _PAGE_FOOTER.search(text, heading.end(), section_end)
-        if footer is not None:
-            section_end = footer.start()
-        starts = tuple(_NUMBERED_ITEM.finditer(text, heading.end(), section_end))
-        for index, marker in enumerate(starts):
-            raw_start = marker.end()
-            raw_end = starts[index + 1].start() if index + 1 < len(starts) else section_end
-            blank_boundary = _BLANK_BLOCK_BOUNDARY.search(text, raw_start, raw_end)
-            if blank_boundary is not None:
-                raw_end = blank_boundary.start()
-            raw = text[raw_start:raw_end]
-            leading = len(raw) - len(raw.lstrip(" \t\r\n"))
-            trailing = len(raw) - len(raw.rstrip(" \t\r\n"))
-            start = raw_start + leading
-            end = raw_end - trailing if trailing else raw_end
-            if start >= end:
-                continue
-            items.append(
-                ActionItem(
-                    number=int(marker.group(1)),
-                    quote=text[start:end],
-                    start=start,
-                    end=end,
-                )
-            )
-    return tuple(items)
+    return numbered_action_spans(text)
 
 
 def _item_drawn_from_action_items(
     item: dict,
-    action_items: tuple[ActionItem, ...],
+    action_items: tuple[NumberedActionSpan, ...],
     page_text: str,
 ) -> bool:
     """Recognize exact model spans wholly or partly drawn from Action Items."""
