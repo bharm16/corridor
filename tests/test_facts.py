@@ -340,6 +340,7 @@ def test_concurrent_identical_retries_return_one_original_result(
                 model=None,
                 row_accounting_json=accounted.row_accounting,
                 allow_unsealed_legacy=True,
+                source_path=path,
             )
             return result.run.id, result.created
 

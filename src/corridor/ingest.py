@@ -283,6 +283,7 @@ def reparse_document(
     session.flush()
 
     _persist_pages(session, document, pages)
+    append_ingested_source_segments(session, document, path)
     document.pages = len(pages)
     document.parse_status = (
         "failed" if any(page.failures for page in pages) else "parsed"

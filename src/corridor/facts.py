@@ -1,14 +1,16 @@
 """Append and replay typed source Facts over exact Source Segments.
 
 Facts answer what one Document rendition said; they do not settle what the
-Project Record says.  This first contract covers structured stationing cells.
-The materialized value is reproducible through a named transformation, and the
-role-tagged support link is constrained to the Fact's own rendition (ADR-0067,
-ADR-0069).
+Project Record says. Structured stationing cells qualify for automatic Record
+Inclusion; Minutes statement wording stays pending for a human decision. Both
+materialized values reproduce through named transformations, and role-tagged
+support stays constrained to the Fact's own rendition (ADR-0067, ADR-0069,
+ADR-0070).
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -50,31 +52,49 @@ class FactTypeContract:
     value_class: str
     subject_kind: str
     transformation: str
+    accepted_segment_kinds: frozenset[str]
     automatic_segment_kinds: frozenset[str]
+    required_roles: frozenset[str]
 
 
 FACT_TYPE_CONTRACTS = {
-    name: FactTypeContract(
+    **{
+        name: FactTypeContract(
+            value_class="text",
+            subject_kind="source_row",
+            transformation="trim_cell_text_v1",
+            accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
+            automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
+            required_roles=frozenset({"value_source"}),
+        )
+        for name in ("station_from", "station_to")
+    },
+    "statement_wording": FactTypeContract(
         value_class="text",
-        subject_kind="source_row",
-        transformation="trim_cell_text_v1",
-        automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
-    )
-    for name in ("station_from", "station_to")
+        subject_kind="statement_candidate",
+        transformation="exact_prose_span_v1",
+        accepted_segment_kinds=frozenset({"prose_span"}),
+        automatic_segment_kinds=frozenset(),
+        required_roles=frozenset({"value_source", "attribution_source"}),
+    ),
 }
+STATIONING_FACT_TYPES = ("station_from", "station_to")
 
 
 def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
     """Whether this extraction output belongs at the scoped Fact command."""
 
-    return any(
+    carries_stationing = any(
         candidate.payload_json.get("tier") == "native"
         and candidate.kind == "dependency"
         and any(
             candidate.payload_json.get("fields", {}).get(name)
-            for name in FACT_TYPE_CONTRACTS
+            for name in STATIONING_FACT_TYPES
         )
         for candidate in candidates
+    )
+    return carries_stationing or any(
+        _is_statement_wording_candidate(candidate) for candidate in candidates
     )
 
 
@@ -93,14 +113,12 @@ def append_stationing_facts(
         and candidate.kind == "dependency"
         and any(
             candidate.payload_json.get("fields", {}).get(name)
-            for name in FACT_TYPE_CONTRACTS
+            for name in STATIONING_FACT_TYPES
         )
     ]
     if not native:
         return ()
-    accepted_segment_kinds = frozenset().union(
-        *(contract.automatic_segment_kinds for contract in FACT_TYPE_CONTRACTS.values())
-    )
+    accepted_segment_kinds = frozenset({"spreadsheet_cell"})
     segments = tuple(
         session.scalars(
             select(SourceSegment)
@@ -141,7 +159,7 @@ def append_stationing_facts(
                 raise FactValidationError(
                     f"stationing source cell is absent: {sheet_name}!{cell_range}"
                 )
-            if segment.kind not in contract.automatic_segment_kinds:
+            if segment.kind not in contract.accepted_segment_kinds:
                 raise FactValidationError(
                     f"{fact_type} does not accept {segment.kind} support"
                 )
@@ -174,9 +192,10 @@ def append_stationing_facts(
                         "extractor_config_sha256": run.extractor_config_sha256,
                     },
                     fact_type=fact_type,
+                    subject_kind=contract.subject_kind,
                     subject_key=f"{sheet_name}!{source_row}",
                     text_value=value,
-                    source_segment_ids=(segment.id,),
+                    source_links=(("value_source", segment.id),),
                 ),
             )
             session.add(fact)
@@ -196,6 +215,153 @@ def append_stationing_facts(
     return tuple(appended)
 
 
+def append_statement_wording_facts(
+    session: Session,
+    document: Document,
+    run: ExtractionRun,
+    candidates: tuple[Candidate, ...],
+) -> tuple[Fact, ...]:
+    """Append human-gated statement wording supported by exact Minutes spans."""
+
+    statements = tuple(
+        candidate
+        for candidate in candidates
+        if _is_statement_wording_candidate(candidate)
+    )
+    if not statements:
+        return ()
+    segments = tuple(
+        session.scalars(
+            select(SourceSegment)
+            .where(
+                SourceSegment.document_id == document.id,
+                SourceSegment.kind == "prose_span",
+            )
+            .order_by(SourceSegment.ordinal)
+        ).all()
+    )
+    by_page_and_text: dict[tuple[int, str], list[SourceSegment]] = {}
+    for segment in segments:
+        if segment.page_no is not None:
+            by_page_and_text.setdefault(
+                (segment.page_no, segment.exact_text), []
+            ).append(segment)
+
+    contract = FACT_TYPE_CONTRACTS["statement_wording"]
+    appended: list[Fact] = []
+    for candidate in statements:
+        fields = candidate.payload_json.get("fields") or {}
+        description = fields.get("description")
+        citations = candidate.payload_json.get("citations") or []
+        if not isinstance(description, str) or not description.strip():
+            raise FactValidationError("statement Candidate needs exact wording")
+        if len(citations) != 1:
+            raise FactValidationError("statement wording needs one exact page citation")
+        citation = citations[0]
+        page_no = citation.get("page")
+        quote = citation.get("quote")
+        if (
+            citation.get("verified") is not True
+            or citation.get("document_id") != document.id
+            or isinstance(page_no, bool)
+            or not isinstance(page_no, int)
+            or quote != description
+        ):
+            raise FactValidationError("statement wording citation is not exact")
+        matching = by_page_and_text.get((page_no, description), [])
+        if len(matching) != 1:
+            raise FactValidationError(
+                "statement wording must resolve to one exact prose span"
+            )
+        segment = matching[0]
+        if segment.kind not in contract.accepted_segment_kinds:
+            raise FactValidationError("statement wording requires prose span support")
+        attribution = fields.get("stated_party") or fields.get("external_org")
+        if not isinstance(attribution, str) or attribution not in description:
+            raise FactValidationError(
+                "statement wording needs exact attribution in its source span"
+            )
+        if candidate.id is None:
+            raise FactValidationError("statement Candidate needs an immutable identity")
+        subject_key = f"candidate:{candidate.id}"
+        links = (
+            ("value_source", segment.id),
+            ("attribution_source", segment.id),
+        )
+        fact = Fact(
+            project_id=document.project_id,
+            document_id=document.id,
+            extraction_run_id=run.id,
+            fact_type="statement_wording",
+            subject_kind=contract.subject_kind,
+            subject_key=subject_key,
+            text_value=description,
+            date_value=None,
+            date_range_start=None,
+            date_range_end=None,
+            external_org_value_id=None,
+            document_value_id=None,
+            transformation=contract.transformation,
+            recorded_by=f"extractor:{run.prompt_version}",
+            content_sha256=_fact_digest(
+                run_identity={
+                    "document_id": document.id,
+                    "prompt_version": run.prompt_version,
+                    "schema_version": run.schema_version,
+                    "model": run.model,
+                    "extractor_config_sha256": run.extractor_config_sha256,
+                },
+                fact_type="statement_wording",
+                subject_kind=contract.subject_kind,
+                subject_key=subject_key,
+                text_value=description,
+                source_links=links,
+            ),
+        )
+        session.add(fact)
+        session.flush([fact])
+        session.add_all(
+            FactSource(
+                project_id=document.project_id,
+                document_id=document.id,
+                fact_id=fact.id,
+                source_segment_id=segment_id,
+                role=role,
+                ordinal=1,
+            )
+            for role, segment_id in links
+        )
+        appended.append(fact)
+    session.flush()
+    return tuple(appended)
+
+
+def _is_statement_wording_candidate(candidate: Candidate) -> bool:
+    if candidate.kind != "event":
+        return False
+    fields = candidate.payload_json.get("fields") or {}
+    description = fields.get("description")
+    attribution = fields.get("stated_party") or fields.get("external_org")
+    citations = candidate.payload_json.get("citations") or []
+    if (
+        not isinstance(description, str)
+        or not description.strip()
+        or not isinstance(attribution, str)
+        or attribution not in description
+        or len(citations) != 1
+    ):
+        return False
+    citation = citations[0]
+    page_no = citation.get("page")
+    return (
+        citation.get("verified") is True
+        and citation.get("document_id") == candidate.source_document_id
+        and isinstance(page_no, int)
+        and not isinstance(page_no, bool)
+        and citation.get("quote") == description
+    )
+
+
 def append_extracted_proposals(
     session: Session,
     document: Document,
@@ -210,6 +376,9 @@ def append_extracted_proposals(
         by_subject.setdefault(fact.subject_key, []).append(fact)
     candidates_by_subject = {}
     for candidate in candidates:
+        if _is_statement_wording_candidate(candidate) and candidate.id is not None:
+            candidates_by_subject[f"candidate:{candidate.id}"] = candidate
+            continue
         citation = (candidate.payload_json.get("citations") or [{}])[0]
         sheet_name = citation.get("sheet_name")
         table_row = citation.get("table_row")
@@ -271,7 +440,11 @@ def correct_fact(
     segment = session.get(SourceSegment, source_segment_id)
     if segment is None or segment.document_id != predecessor.document_id:
         raise FactValidationError("corrected Fact source belongs to another rendition")
+    contract = FACT_TYPE_CONTRACTS.get(predecessor.fact_type)
+    if contract is None or segment.kind not in contract.accepted_segment_kinds:
+        raise FactValidationError("corrected Fact source kind violates its contract")
     value = _transform(predecessor.transformation, segment.exact_text)
+    links = tuple((role, segment.id) for role in sorted(contract.required_roles))
     successor = Fact(
         project_id=predecessor.project_id,
         document_id=predecessor.document_id,
@@ -294,22 +467,24 @@ def correct_fact(
                 "correction_of": predecessor.id,
             },
             fact_type=predecessor.fact_type,
+            subject_kind=predecessor.subject_kind,
             subject_key=predecessor.subject_key,
             text_value=value,
-            source_segment_ids=(segment.id,),
+            source_links=links,
         ),
     )
     session.add(successor)
     session.flush([successor])
-    session.add(
+    session.add_all(
         FactSource(
             project_id=successor.project_id,
             document_id=successor.document_id,
             fact_id=successor.id,
-            source_segment_id=segment.id,
-            role="value_source",
+            source_segment_id=linked_segment_id,
+            role=role,
             ordinal=1,
         )
+        for role, linked_segment_id in links
     )
     disposition = FactDisposition(
         project_id=successor.project_id,
@@ -339,11 +514,17 @@ def proposal_input_snapshots(session: Session, run: ExtractionRun) -> list[dict]
             .where(ExtractedProposalFact.proposal_id == proposal.id)
             .order_by(ExtractedProposalFact.ordinal)
         ).all()
-        fields = {
-            fact.fact_type: fact.text_value
-            for link in links
-            if (fact := session.get(Fact, link.fact_id)) is not None
-        }
+        fields = deepcopy(metadata.get("event_fields") or {})
+        for link in links:
+            fact = session.get(Fact, link.fact_id)
+            if fact is None:
+                continue
+            field_name = (
+                "description"
+                if fact.fact_type == "statement_wording"
+                else fact.fact_type
+            )
+            fields[field_name] = fact.text_value
         payload = dict(metadata.get("payload_json") or {})
         payload["fields"] = fields
         snapshots.append(
@@ -368,6 +549,8 @@ def _proposal_candidate_metadata(candidate: Candidate) -> dict:
     """Seal mutable metadata without copying source field or quote values."""
 
     payload = candidate.payload_json or {}
+    event_fields = deepcopy(payload.get("fields") or {})
+    event_fields.pop("description", None)
     citations = [
         {
             key: citation.get(key)
@@ -390,6 +573,7 @@ def _proposal_candidate_metadata(candidate: Candidate) -> dict:
         "model": candidate.model,
         "citations_verified": candidate.citations_verified,
         "state": candidate.state,
+        "event_fields": event_fields if candidate.kind == "event" else {},
         "payload_json": {
             "kind": payload.get("kind"),
             "citations": citations,
@@ -411,15 +595,26 @@ def replay_fact(
         sources = tuple(
             session.scalars(
                 select(FactSource)
-                .where(FactSource.fact_id == fact.id, FactSource.role == "value_source")
-                .order_by(FactSource.ordinal)
+                .where(FactSource.fact_id == fact.id)
+                .order_by(FactSource.role, FactSource.ordinal)
             ).all()
         )
-        if len(sources) != 1:
-            raise FactValidationError("stationing Fact needs one value source")
-        segment = session.get(SourceSegment, sources[0].source_segment_id)
+        contract = FACT_TYPE_CONTRACTS.get(fact.fact_type)
+        if contract is None:
+            raise FactValidationError(f"unknown Fact type {fact.fact_type!r}")
+        roles = {source.role for source in sources}
+        if roles != contract.required_roles:
+            raise FactValidationError("Fact support roles do not match its contract")
+        value_sources = tuple(
+            source for source in sources if source.role == "value_source"
+        )
+        if len(value_sources) != 1:
+            raise FactValidationError("Fact needs one value source")
+        segment = session.get(SourceSegment, value_sources[0].source_segment_id)
     if segment is None or segment.document_id != fact.document_id:
         raise FactValidationError("Fact source belongs to another rendition")
+    if segment.kind not in contract.accepted_segment_kinds:
+        raise FactValidationError("Fact source kind does not match its contract")
     exact = dereference_source_segment(document, segment, path)
     replayed = _transform(fact.transformation, exact)
     if replayed != fact.text_value:
@@ -455,6 +650,8 @@ def _cell_range(column_number: int, row_number: int) -> str:
 def _transform(name: str, exact_text: str) -> str:
     if name == "trim_cell_text_v1":
         return exact_text.strip()
+    if name == "exact_prose_span_v1":
+        return exact_text
     raise FactValidationError(f"unknown Fact transformation {name!r}")
 
 
@@ -462,17 +659,21 @@ def _fact_digest(
     *,
     run_identity: dict[str, object],
     fact_type: str,
+    subject_kind: str,
     subject_key: str,
     text_value: str,
-    source_segment_ids: tuple[int, ...],
+    source_links: tuple[tuple[str, int], ...],
 ) -> str:
     value = {
         "run": run_identity,
         "fact_type": fact_type,
-        "subject_kind": "source_row",
+        "subject_kind": subject_kind,
         "subject_key": subject_key,
         "text_value": text_value,
-        "source_segment_ids": list(source_segment_ids),
+        "source_links": [
+            {"role": role, "source_segment_id": segment_id}
+            for role, segment_id in source_links
+        ],
     }
     return sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()

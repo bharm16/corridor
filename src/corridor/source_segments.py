@@ -2,12 +2,13 @@
 
 Copied quotations made the old evidence path shallow: every consumer owned a
 slightly different text copy.  Source Segments give those consumers one durable
-address instead.  This first slice handles structured workbook cells, where the
-original bytes already expose both the value and its exact locator without model
-interpretation (ADR-0068).
+address instead. Structured workbook cells and Minutes prose spans are the first
+two locator shapes. Both come directly from original bytes: native cell
+coordinates for a workbook, and page-local character bounds for a PDF text
+layer (ADR-0068).
 
 The module deliberately owns both directions of the contract.  Segmentation
-turns workbook bytes into ordered append-only rows; dereference follows a row's
+turns source bytes into ordered append-only rows; dereference follows a row's
 typed locator back through the same native reader and checks the registered
 Document digest, stored text digest, and recovered value before returning text.
 """
@@ -20,6 +21,7 @@ from pathlib import Path
 import re
 
 from openpyxl import load_workbook
+import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -55,6 +57,39 @@ class SpreadsheetSegment:
     content_sha256: str
 
 
+@dataclass(frozen=True)
+class ProseSegment:
+    """One non-overlapping exact prose span in deterministic page order."""
+
+    ordinal: int
+    page_no: int
+    start_offset: int
+    end_offset: int
+    exact_text: str
+    content_sha256: str
+
+
+@dataclass(frozen=True)
+class NumberedActionSpan:
+    """One numbered Action Item with the marker excluded from exact wording."""
+
+    number: int
+    exact_text: str
+    start: int
+    end: int
+
+
+_ACTION_ITEMS_HEADING = re.compile(
+    r"^[ \t]*Action Items(?:[ \t]*[:\-\u2013\u2014])?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_NUMBERED_ITEM = re.compile(r"^[ \t]*(\d+)\.[ \t]*", re.MULTILINE)
+_PAGE_FOOTER = re.compile(r"^[ \t]*Meeting Notes[ \t]*$", re.MULTILINE)
+_BLANK_BLOCK_BOUNDARY = re.compile(r"\r?\n[ \t]*\r?\n")
+_TEXT_LINE = re.compile(r"[^\r\n]+")
+_SENTENCE_BOUNDARY = re.compile(r"[.!?](?=[ \t]+[A-Z0-9])")
+
+
 def spreadsheet_segments(path: Path | str) -> tuple[SpreadsheetSegment, ...]:
     """Read every populated cell once, preserving workbook, row, and column order."""
 
@@ -83,13 +118,78 @@ def spreadsheet_segments(path: Path | str) -> tuple[SpreadsheetSegment, ...]:
     return tuple(segments)
 
 
+def pdf_prose_segments(path: Path | str) -> tuple[ProseSegment, ...]:
+    """Read non-overlapping Minutes spans from each native PDF text layer."""
+
+    segments: list[ProseSegment] = []
+    with pymupdf.open(Path(path)) as pdf:
+        for page_index, page in enumerate(pdf):
+            page_no = page_index + 1
+            text = page.get_text()
+            for start, end in _page_prose_ranges(text):
+                exact_text = text[start:end]
+                segments.append(
+                    ProseSegment(
+                        ordinal=len(segments) + 1,
+                        page_no=page_no,
+                        start_offset=start,
+                        end_offset=end,
+                        exact_text=exact_text,
+                        content_sha256=_text_digest(exact_text),
+                    )
+                )
+    return tuple(segments)
+
+
+def numbered_action_spans(text: str) -> tuple[NumberedActionSpan, ...]:
+    """Enumerate non-overlapping exact Action Item wording from Minutes text."""
+
+    headings = tuple(_ACTION_ITEMS_HEADING.finditer(text))
+    spans: list[NumberedActionSpan] = []
+    for heading_index, heading in enumerate(headings):
+        section_end = (
+            headings[heading_index + 1].start()
+            if heading_index + 1 < len(headings)
+            else len(text)
+        )
+        footer = _PAGE_FOOTER.search(text, heading.end(), section_end)
+        if footer is not None:
+            section_end = footer.start()
+        starts = tuple(_NUMBERED_ITEM.finditer(text, heading.end(), section_end))
+        for index, marker in enumerate(starts):
+            raw_start = marker.end()
+            raw_end = (
+                starts[index + 1].start()
+                if index + 1 < len(starts)
+                else section_end
+            )
+            blank = _BLANK_BLOCK_BOUNDARY.search(text, raw_start, raw_end)
+            if blank is not None:
+                raw_end = blank.start()
+            start, end = _trimmed_bounds(text, raw_start, raw_end)
+            if start < end:
+                spans.append(
+                    NumberedActionSpan(
+                        number=int(marker.group(1)),
+                        exact_text=text[start:end],
+                        start=start,
+                        end=end,
+                    )
+                )
+    return tuple(spans)
+
+
 def append_ingested_source_segments(
     session: Session, document: Document, path: Path | str
 ) -> tuple[SourceSegment, ...]:
     """Append the supported segments for registered source bytes, at most once."""
 
     original = Path(path)
-    if not original.exists() or original.suffix.lower() not in SPREADSHEET_SUFFIXES:
+    is_spreadsheet = original.suffix.lower() in SPREADSHEET_SUFFIXES
+    is_minutes_pdf = (
+        document.doc_type == "minutes" and original.suffix.lower() == ".pdf"
+    )
+    if not original.exists() or not (is_spreadsheet or is_minutes_pdf):
         return ()
     _require_registered_bytes(document, original)
     existing = tuple(
@@ -102,19 +202,40 @@ def append_ingested_source_segments(
     if existing:
         return existing
 
-    rows = tuple(
-        SourceSegment(
-            project_id=document.project_id,
-            document_id=document.id,
-            kind="spreadsheet_cell",
-            exact_text=segment.exact_text,
-            content_sha256=segment.content_sha256,
-            ordinal=segment.ordinal,
-            sheet_name=segment.sheet_name,
-            cell_range=segment.cell_range,
+    if is_spreadsheet:
+        rows = tuple(
+            SourceSegment(
+                project_id=document.project_id,
+                document_id=document.id,
+                kind="spreadsheet_cell",
+                exact_text=segment.exact_text,
+                content_sha256=segment.content_sha256,
+                ordinal=segment.ordinal,
+                sheet_name=segment.sheet_name,
+                cell_range=segment.cell_range,
+                page_no=None,
+                start_offset=None,
+                end_offset=None,
+            )
+            for segment in spreadsheet_segments(original)
         )
-        for segment in spreadsheet_segments(original)
-    )
+    else:
+        rows = tuple(
+            SourceSegment(
+                project_id=document.project_id,
+                document_id=document.id,
+                kind="prose_span",
+                exact_text=segment.exact_text,
+                content_sha256=segment.content_sha256,
+                ordinal=segment.ordinal,
+                sheet_name=None,
+                cell_range=None,
+                page_no=segment.page_no,
+                start_offset=segment.start_offset,
+                end_offset=segment.end_offset,
+            )
+            for segment in pdf_prose_segments(original)
+        )
     session.add_all(rows)
     return rows
 
@@ -132,14 +253,18 @@ def dereference_source_segment(
     _require_registered_bytes(document, original)
     if _text_digest(segment.exact_text) != segment.content_sha256:
         raise SourceSegmentDigestMismatch("stored segment digest does not match its text")
-    if segment.kind != "spreadsheet_cell":
+    if segment.kind == "spreadsheet_cell":
+        if segment.sheet_name is None or segment.cell_range is None:
+            raise SourceSegmentLocatorMismatch("spreadsheet segment locator is incomplete")
+        recovered = _dereference_spreadsheet_cell(
+            original, sheet_name=segment.sheet_name, cell_range=segment.cell_range
+        )
+    elif segment.kind == "prose_span":
+        recovered = _dereference_pdf_prose_span(original, segment)
+    else:
         raise SourceSegmentLocatorMismatch(
             f"unsupported source segment kind {segment.kind!r}"
         )
-
-    recovered = _dereference_spreadsheet_cell(
-        original, sheet_name=segment.sheet_name, cell_range=segment.cell_range
-    )
     if recovered != segment.exact_text:
         raise SourceSegmentLocatorMismatch(
             "source segment locator does not recover its stored text"
@@ -180,6 +305,67 @@ def _dereference_spreadsheet_cell(
         return _exact_cell_text(value)
     finally:
         workbook.close()
+
+
+def _dereference_pdf_prose_span(path: Path, segment: SourceSegment) -> str:
+    if path.suffix.lower() != ".pdf":
+        raise SourceSegmentLocatorMismatch("prose span requires registered PDF bytes")
+    if (
+        not isinstance(segment.page_no, int)
+        or not isinstance(segment.start_offset, int)
+        or not isinstance(segment.end_offset, int)
+        or segment.page_no < 1
+        or segment.start_offset < 0
+        or segment.end_offset <= segment.start_offset
+    ):
+        raise SourceSegmentLocatorMismatch("prose span locator is incomplete")
+    with pymupdf.open(path) as pdf:
+        if segment.page_no > pdf.page_count:
+            raise SourceSegmentLocatorMismatch("prose span page does not exist")
+        page_text = pdf[segment.page_no - 1].get_text()
+    if segment.end_offset > len(page_text):
+        raise SourceSegmentLocatorMismatch("prose span bounds exceed the page text")
+    return page_text[segment.start_offset : segment.end_offset]
+
+
+def _page_prose_ranges(text: str) -> tuple[tuple[int, int], ...]:
+    action_ranges = tuple((item.start, item.end) for item in numbered_action_spans(text))
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for start, end in action_ranges:
+        spans.extend(_plain_prose_ranges(text, cursor, start))
+        spans.append((start, end))
+        cursor = end
+    spans.extend(_plain_prose_ranges(text, cursor, len(text)))
+    return tuple(sorted(spans))
+
+
+def _plain_prose_ranges(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for line in _TEXT_LINE.finditer(text, start, end):
+        line_start, line_end = _trimmed_bounds(text, line.start(), line.end())
+        if line_start >= line_end:
+            continue
+        cursor = line_start
+        for boundary in _SENTENCE_BOUNDARY.finditer(text, line_start, line_end):
+            sentence_start, sentence_end = _trimmed_bounds(
+                text, cursor, boundary.end()
+            )
+            if sentence_start < sentence_end:
+                ranges.append((sentence_start, sentence_end))
+            cursor = boundary.end()
+        sentence_start, sentence_end = _trimmed_bounds(text, cursor, line_end)
+        if sentence_start < sentence_end:
+            ranges.append((sentence_start, sentence_end))
+    return ranges
+
+
+def _trimmed_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
 
 
 def _exact_cell_text(value: object) -> str:

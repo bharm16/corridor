@@ -666,8 +666,9 @@ class SourceSegment(Base):
     """One immutable, addressable piece of an exact Document rendition.
 
     A populated workbook cell carries mandatory ``sheet_name`` and
-    ``cell_range`` columns.  ``kind`` identifies that enforced locator shape;
-    callers never interpret an untyped JSON object.
+    ``cell_range`` columns.  A prose span carries a page and exact character
+    bounds. ``kind`` identifies the enforced locator shape; callers never
+    interpret an untyped JSON object.
     """
 
     __tablename__ = "source_segments"
@@ -688,13 +689,22 @@ class SourceSegment(Base):
             "cell_range",
             name="uq_source_segments_spreadsheet_locator",
         ),
+        UniqueConstraint(
+            "document_id",
+            "kind",
+            "page_no",
+            "start_offset",
+            "end_offset",
+            name="uq_source_segments_prose_locator",
+        ),
         ForeignKeyConstraint(
             ["project_id", "document_id"],
             ["documents.project_id", "documents.id"],
             name="fk_source_segments_document_scope",
         ),
         CheckConstraint(
-            "kind = 'spreadsheet_cell'", name="ck_source_segments_kind"
+            "kind in ('spreadsheet_cell', 'prose_span')",
+            name="ck_source_segments_kind",
         ),
         CheckConstraint(
             "length(exact_text) > 0", name="ck_source_segments_exact_text"
@@ -705,9 +715,12 @@ class SourceSegment(Base):
         ),
         CheckConstraint("ordinal > 0", name="ck_source_segments_ordinal"),
         CheckConstraint(
-            "length(sheet_name) > 0 and "
-            "cell_range ~ '^[A-Z]+[1-9][0-9]*$'",
-            name="ck_source_segments_spreadsheet_locator",
+            "(kind = 'spreadsheet_cell' and length(sheet_name) > 0 and "
+            "cell_range ~ '^[A-Z]+[1-9][0-9]*$' and page_no is null and "
+            "start_offset is null and end_offset is null) or "
+            "(kind = 'prose_span' and sheet_name is null and cell_range is null "
+            "and page_no > 0 and start_offset >= 0 and end_offset > start_offset)",
+            name="ck_source_segments_locator",
         ),
     )
 
@@ -718,15 +731,18 @@ class SourceSegment(Base):
     exact_text: Mapped[str] = mapped_column(Text)
     content_sha256: Mapped[str] = mapped_column(String(64))
     ordinal: Mapped[int] = mapped_column(Integer)
-    sheet_name: Mapped[str] = mapped_column(Text)
-    cell_range: Mapped[str] = mapped_column(String(32))
+    sheet_name: Mapped[str | None] = mapped_column(Text)
+    cell_range: Mapped[str | None] = mapped_column(String(32))
+    page_no: Mapped[int | None] = mapped_column(Integer)
+    start_offset: Mapped[int | None] = mapped_column(Integer)
+    end_offset: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
 
 class Fact(Base):
-    """One typed source observation, separate from any Project Record decision."""
+    """One typed source observation, pending any Project Record decision."""
 
     __tablename__ = "facts"
     __table_args__ = (
@@ -751,20 +767,28 @@ class Fact(Base):
             name="fk_facts_extraction_run_document",
         ),
         CheckConstraint(
-            "fact_type in ('station_from', 'station_to')",
+            "fact_type in ('station_from', 'station_to', 'statement_wording')",
             name="ck_facts_type",
         ),
         CheckConstraint(
-            "subject_kind = 'source_row' and length(trim(subject_key)) > 0",
+            "(fact_type in ('station_from', 'station_to') "
+            "and subject_kind = 'source_row' and length(trim(subject_key)) > 0) "
+            "or (fact_type = 'statement_wording' "
+            "and subject_kind = 'statement_candidate' "
+            "and length(trim(subject_key)) > 0)",
             name="ck_facts_subject",
         ),
         CheckConstraint(
-            "fact_type not in ('station_from', 'station_to') or ("
-            "text_value is not null and length(trim(text_value)) > 0 "
-            "and date_value is null and date_range_start is null "
-            "and date_range_end is null and external_org_value_id is null "
-            "and document_value_id is null "
-            "and transformation = 'trim_cell_text_v1')",
+            "(fact_type in ('station_from', 'station_to') and text_value is not null "
+            "and length(trim(text_value)) > 0 and date_value is null "
+            "and date_range_start is null and date_range_end is null "
+            "and external_org_value_id is null and document_value_id is null "
+            "and transformation = 'trim_cell_text_v1') or "
+            "(fact_type = 'statement_wording' and text_value is not null "
+            "and length(trim(text_value)) > 0 and date_value is null "
+            "and date_range_start is null and date_range_end is null "
+            "and external_org_value_id is null and document_value_id is null "
+            "and transformation = 'exact_prose_span_v1')",
             name="ck_facts_typed_value",
         ),
         CheckConstraint(
