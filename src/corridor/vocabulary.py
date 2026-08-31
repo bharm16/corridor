@@ -221,6 +221,18 @@ UCM_CONFLICT_LIST_HEADINGS = {
     "Comments": "notes",
 }
 
+# Exact structured headings added by the source-to-Project-Record program.
+# These are record inputs rather than aliases for one another: each date answers
+# a different coordination question, and a source's resolution mark remains a
+# source fact rather than writing record-level closure (ADRs 0067 and 0070).
+STRUCTURED_RECORD_HEADINGS = {
+    "Promised For": "committed_date",
+    "Action Due Date": "action_due_date",
+    "Required By": "need_date",
+    "Resolution Status": "marked_resolution",
+    "Resolved Status": "marked_resolution",
+}
+
 
 # The vocabulary the model may name, and the code enforces. Anything outside
 # the set is treated as unmapped rather than stored, because a new field is

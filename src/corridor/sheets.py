@@ -32,7 +32,12 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from corridor.geometry import NoMatrixFound
-from corridor.vocabulary import REQUIRED, TEMPLATE_FIELDS, UCM_CONFLICT_LIST_HEADINGS
+from corridor.vocabulary import (
+    REQUIRED,
+    STRUCTURED_RECORD_HEADINGS,
+    TEMPLATE_FIELDS,
+    UCM_CONFLICT_LIST_HEADINGS,
+)
 
 # How deep a header can sit. The published template puts a merged title
 # band on row 1 and the real headings on row 2. I-35 NEX South's "UCM -
@@ -65,6 +70,12 @@ _BY_HEADING.update(
     {
         " ".join(heading.split()).casefold(): field
         for heading, field in UCM_CONFLICT_LIST_HEADINGS.items()
+    }
+)
+_BY_HEADING.update(
+    {
+        " ".join(heading.split()).casefold(): field
+        for heading, field in STRUCTURED_RECORD_HEADINGS.items()
     }
 )
 

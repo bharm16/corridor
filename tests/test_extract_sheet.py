@@ -745,7 +745,9 @@ def test_the_ucm_conflict_list_form_becomes_a_cited_dependency_proposal(
     """The structured original read on its own exact terms (ADR-0005, #365):
     the form's own column names become canonical fields, the values are the
     cells, and the citation quotes the whole row and verifies exactly."""
-    document = ingest_ucm_list(session, project, tmp_path)
+    row = [*UCM_LIST_ROW]
+    row[22] = "Resolved"
+    document = ingest_ucm_list(session, project, tmp_path, data_rows=(row,))
 
     [proposal] = extract_document(session, document)
 
@@ -765,6 +767,7 @@ def test_the_ucm_conflict_list_form_becomes_a_cited_dependency_proposal(
         "offset_to": "-",
         "sue_level": "QLC",
         "resolution_strategy": "Accommodate - Relocation",
+        "marked_resolution": "Resolved",
         "notes": "IH 35 E ROW",
     }
     assert proposal.payload_json["tier"] == TIER_NATIVE
@@ -781,11 +784,11 @@ def test_the_ucm_conflict_list_form_becomes_a_cited_dependency_proposal(
 def test_the_ucm_conflict_list_form_reports_its_extra_columns_unmapped(
     session, project, tmp_path
 ):
-    """Nine of the form's columns have no canonical field — including the
-    two the vocabulary declines, `Resolution Status` (workflow state,
-    ADR-0002) and `Estimated Resolution Date` (the project's own estimate).
-    Every one is reported, never guessed into a field."""
-    document = ingest_ucm_list(session, project, tmp_path)
+    """Uncontrolled columns remain visible while a source resolution mark is
+    retained only as wording, never imported as record-level closure."""
+    row = [*UCM_LIST_ROW]
+    row[22] = "Resolved"
+    document = ingest_ucm_list(session, project, tmp_path, data_rows=(row,))
 
     payload = extract_document(session, document)[0].payload_json
 
@@ -798,8 +801,8 @@ def test_the_ucm_conflict_list_form_reports_its_extra_columns_unmapped(
         "Test Hole No.",
         "Test Hole Depth",
         "Estimated Resolution Date",
-        "Resolution Status",
     ]
+    assert payload["fields"]["marked_resolution"] == "Resolved"
     # The unmapped cell values are not smuggled into a canonical field.
     assert "N/A" not in payload["fields"].values()
     assert "Accommodate - Relocation" in payload["fields"].values()

@@ -1,7 +1,7 @@
 """Typed Record Inclusion decisions and Project Record revisions.
 
 Source Facts remain observations.  This module is the authority boundary that
-projects one eligible Stationing Fact into the Project Record under one released
+projects one eligible structured-cell Fact into the Project Record under one released
 policy, records one atomic revision, and moves effectiveness without rewriting
 either Fact or predecessor decision (ADR-0070, ADR-0071).
 """
@@ -29,7 +29,11 @@ from corridor.models import (
 from corridor.project_lock import lock_project
 
 
-STATIONING_INCLUSION_POLICY = "stationing-record-inclusion-v1"
+STRUCTURED_CELL_INCLUSION_POLICY = "structured-cell-record-inclusion-v1"
+# Kept until the final Project Record cutover so already-merged #435/#436
+# callers retain their public name while the implementation is no longer
+# Stationing-only.
+STATIONING_INCLUSION_POLICY = STRUCTURED_CELL_INCLUSION_POLICY
 
 
 class FactDecisionRefused(ValueError):
@@ -43,13 +47,13 @@ class InclusionDecisionResult:
     created: bool
 
 
-def include_stationing_fact_by_policy(
+def include_structured_cell_fact_by_policy(
     session: Session,
     fact: Fact,
     *,
     idempotency_key: str,
 ) -> InclusionDecisionResult:
-    """Atomically include one eligible Current Production Run Stationing Fact."""
+    """Atomically include one eligible Current Production Run cell Fact."""
 
     if not idempotency_key.strip():
         raise FactDecisionRefused("Record Inclusion idempotency key is required")
@@ -104,13 +108,13 @@ def include_stationing_fact_by_policy(
 
     outcome = session.scalar(
         select(
-            func.include_stationing_fact_decision(
+            func.include_structured_cell_fact_decision(
                 fact.project_id,
                 fact.id,
                 fact.subject_key,
                 fact.fact_type,
                 idempotency_key,
-                STATIONING_INCLUSION_POLICY,
+                STRUCTURED_CELL_INCLUSION_POLICY,
             )
         )
     )
@@ -120,10 +124,16 @@ def include_stationing_fact_by_policy(
     return InclusionDecisionResult(revision, decision, bool(outcome["created"]))
 
 
-def include_current_stationing_facts(
+def include_current_structured_cell_facts(
     session: Session, project_id: int
 ) -> tuple[InclusionDecisionResult, ...]:
-    """Run released Stationing inclusion over current, undisposed source Facts."""
+    """Run released structured-cell inclusion over current source Facts."""
+
+    automatic_types = tuple(
+        name
+        for name, contract in FACT_TYPE_CONTRACTS.items()
+        if "spreadsheet_cell" in contract.automatic_segment_kinds
+    )
 
     facts = session.scalars(
         select(Fact)
@@ -144,7 +154,7 @@ def include_current_stationing_facts(
         )
         .where(
             Fact.project_id == project_id,
-            Fact.fact_type.in_(tuple(FACT_TYPE_CONTRACTS)),
+            Fact.fact_type.in_(automatic_types),
             FactDisposition.id.is_(None),
             Candidate.state.in_(("accepted", "merged")),
             Candidate.merged_into.is_not(None),
@@ -152,13 +162,37 @@ def include_current_stationing_facts(
         .order_by(Fact.id)
     ).all()
     return tuple(
-        include_stationing_fact_by_policy(
+        include_structured_cell_fact_by_policy(
             session,
             fact,
-            idempotency_key=f"{STATIONING_INCLUSION_POLICY}:{fact.content_sha256}",
+            idempotency_key=(
+                f"{STRUCTURED_CELL_INCLUSION_POLICY}:{fact.content_sha256}"
+            ),
         )
         for fact in facts
     )
+
+
+def include_stationing_fact_by_policy(
+    session: Session,
+    fact: Fact,
+    *,
+    idempotency_key: str,
+) -> InclusionDecisionResult:
+    """Compatibility seam for the Stationing slice merged before #449."""
+
+    return include_structured_cell_fact_by_policy(
+        session, fact, idempotency_key=idempotency_key
+    )
+
+
+def include_current_stationing_facts(
+    session: Session, project_id: int
+) -> tuple[InclusionDecisionResult, ...]:
+    """Compatibility seam returning the completed structured-cell policy."""
+
+    return include_current_structured_cell_facts(session, project_id)
+
 
 def current_fact_decisions(session: Session, project_id: int) -> tuple[FactDecision, ...]:
     return tuple(
