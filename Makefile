@@ -44,7 +44,7 @@ test-slow:
 
 # Database upgrade tests. Run for migration-sensitive changes, not ordinary PRs.
 test-migrations:
-	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m migration
+	uv run pytest -n 1 --dist loadfile -m migration
 
 # Single-process fallback for debugger use and scheduler diagnosis.
 test-serial:
@@ -223,7 +223,7 @@ event-admission-acceptance:
 # prior Record Inclusion bundle first, separates shared operations/backfill time from the
 # timed coordinator flow, upgrades only the clone between explicit migration pins,
 # and records assistance or failure honestly:
-#   make sh99-coordinator-rehearsal ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-source-migration-head=e255a7c4d9e2 --expected-target-migration-head=f255b7c4d9e3 --shared-admission-receipt-path=<validation-passed.json> --expected-shared-admission-receipt-sha256=<sha> --approved-shared-state-receipt=<immutable-url> --shared-backfill-elapsed-seconds=291 --output-dir=<new-dir>"
+#   make sh99-coordinator-rehearsal ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --postgres-admin-url=<url> --expected-clean-git-revision=<sha> --expected-source-migration-head=<released-head> --expected-target-migration-head=<direct-successor-head> --shared-admission-receipt-path=<validation-passed.json> --expected-shared-admission-receipt-sha256=<sha> --approved-shared-state-receipt=<immutable-url> --shared-backfill-elapsed-seconds=291 --output-dir=<new-dir>"
 #   make sh99-coordinator-rehearsal ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
 sh99-coordinator-rehearsal:
 	uv run python -m corridor.sh99_coordinator_rehearsal_cli $(ARGS)

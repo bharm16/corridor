@@ -1252,15 +1252,15 @@ def test_clone_upgrade_pins_the_direct_predecessor_and_current_head():
 
     _require_direct_migration_successor(
         repo_root,
-        source_revision="e255a7c4d9e2",
-        target_revision="f255b7c4d9e3",
+        source_revision="b7d3f9a1c2e5",
+        target_revision="c0a1d0b5e11e",
     )
 
     with pytest.raises(ValueError, match="direct predecessor"):
         _require_direct_migration_successor(
             repo_root,
-            source_revision="d255a7c4d9e2",
-            target_revision="f255b7c4d9e3",
+            source_revision="c0a1d0b5e11e",
+            target_revision="b7d3f9a1c2e5",
         )
 
 

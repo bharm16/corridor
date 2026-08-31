@@ -1,1 +1,15 @@
-Generic single-database configuration.
+Corridor supports one released database head and its immediate successor.
+
+`b7d3f9a1c2e5` builds the consolidated August 2026 schema. Existing databases
+already stamped at that released head do not rerun it. `c0a1d0b5e11e` is the
+current baseline marker and canonicalizes equivalent check expressions so fresh
+and upgraded databases have one exact schema fingerprint.
+
+Executable revisions live in `baseline_versions`. `versions` is not configured
+as an Alembic version location; it retains only inert bytes required by released
+policy fingerprints.
+
+Add one linear successor for a schema change. Test a fresh baseline and the
+released-head-to-successor path with representative rows. Retire that transition
+test after all supported databases advance and the released head moves forward.
+Downgrade across a consolidated baseline is unsupported.
