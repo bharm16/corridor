@@ -51,7 +51,7 @@ class InvalidSummaryConfiguration(ValueError):
 
 _SOURCE_SCOPES = frozenset({"all_sources", "documents_only"})
 _RETRY_POLICY = "none"
-_RETENTION_POLICY = "retained_indefinitely"
+_RETENTION_POLICY = "class_b_30_days"
 _OBSERVATION_CONTEXT = "internal_working_view"
 
 
@@ -60,7 +60,10 @@ def _latest_configuration(
 ) -> CoordinationSummaryConfiguration | None:
     return session.scalars(
         select(CoordinationSummaryConfiguration)
-        .where(CoordinationSummaryConfiguration.project_id == project_id)
+        .where(
+            CoordinationSummaryConfiguration.project_id == project_id,
+            CoordinationSummaryConfiguration.retention_policy == _RETENTION_POLICY,
+        )
         .order_by(CoordinationSummaryConfiguration.id.desc())
     ).first()
 
@@ -117,7 +120,7 @@ def declare_configuration(
         )
     if retention_policy != _RETENTION_POLICY:
         raise InvalidSummaryConfiguration(
-            "retention must be declared as retained_indefinitely"
+            "retention must be declared as class_b_30_days"
         )
     if observation_context != _OBSERVATION_CONTEXT:
         raise InvalidSummaryConfiguration(

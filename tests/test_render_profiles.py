@@ -10,7 +10,13 @@ import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
-from corridor.models import DocPage, Document, PageRenderDerivative, Project
+from corridor.models import (
+    DocPage,
+    Document,
+    PageRenderDerivative,
+    ProcessingArtifact,
+    Project,
+)
 from corridor.render_profiles import (
     PageBox,
     RenderProfileMeasurement,
@@ -310,3 +316,14 @@ def test_unreadable_cell_path_persists_a_bounded_high_resolution_crop(
         "y1": 160_000,
     }
     assert stored.manifest_json["dpi"] == 600
+    # A region crop passes through the same persistence seam, so it is Class B
+    # by construction — no render path is exempt from TTL.
+    crop_artifact = session.scalar(
+        select(ProcessingArtifact).where(
+            ProcessingArtifact.storage_path == stored.artifact_path
+        )
+    )
+    assert crop_artifact is not None
+    assert crop_artifact.kind == "page_render"
+    assert crop_artifact.retention_class == "class_b"
+    assert crop_artifact.content_sha256 == stored.artifact_sha256

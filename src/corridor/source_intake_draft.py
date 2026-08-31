@@ -79,7 +79,7 @@ TOOL_CONTRACT_VERSION = "source-intake-draft-input-v1"
 VALIDATOR_VERSION = "source-intake-draft-validator-v1"
 
 _RETRY_POLICY = "none"
-_RETENTION_POLICY = "retained_indefinitely"
+_RETENTION_POLICY = "class_b_30_days"
 _OBSERVATION_CONTEXT = "internal_working_view"
 
 _MAX_TEXT = 2_000
@@ -301,7 +301,7 @@ def declare_configuration(
         )
     if retention_policy != _RETENTION_POLICY:
         raise InvalidDraftConfiguration(
-            "retention must be declared as retained_indefinitely"
+            "retention must be declared as class_b_30_days"
         )
     if observation_context != _OBSERVATION_CONTEXT:
         raise InvalidDraftConfiguration(
@@ -343,7 +343,10 @@ def current_configuration(
     """Read the latest declared authority; absence is deliberately not a default."""
     return session.scalars(
         select(SourceIntakeDraftConfiguration)
-        .where(SourceIntakeDraftConfiguration.project_id == project_id)
+        .where(
+            SourceIntakeDraftConfiguration.project_id == project_id,
+            SourceIntakeDraftConfiguration.retention_policy == _RETENTION_POLICY,
+        )
         .order_by(SourceIntakeDraftConfiguration.id.desc())
     ).first()
 

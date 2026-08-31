@@ -25,8 +25,9 @@ exception becomes a scoped Processing Failure and fails the document attempt.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pymupdf
@@ -39,6 +40,7 @@ from corridor.models import (
     Document,
     DocumentQuarantine,
     PageProcessingFailure,
+    ProcessingArtifact,
 )
 from corridor.page_inventory import (
     OCR_CONFIGURATION,
@@ -54,6 +56,7 @@ from corridor.render_profiles import (
     persist_render_derivative,
     render_page_derivative,
 )
+from corridor.retention import open_reference, register_processing_artifact
 from corridor.source_segments import (
     SPREADSHEET_SUFFIXES,
     append_ingested_source_segments,
@@ -77,6 +80,21 @@ class PageFailure:
 
 
 @dataclass(frozen=True)
+class OcrAttempt:
+    """One region's raw OCR output, kept as a Class B intermediary (ADR-0072).
+
+    The recovered text folds into the page's Class A text; this receipt keeps
+    the exact engine attempt — configuration, outcome, and output or error —
+    as a regenerable, TTL-eligible file so a later failure review can read
+    what OCR actually produced without the record depending on it.
+    """
+
+    region_id: str
+    outcome: str
+    receipt_path: Path
+
+
+@dataclass(frozen=True)
 class ExtractedPage:
     page_no: int
     text: str
@@ -86,6 +104,7 @@ class ExtractedPage:
     routing: PageRoutingDecision | None = None
     failures: tuple[PageFailure, ...] = ()
     derivatives: tuple[RenderDerivative, ...] = ()
+    ocr_attempts: tuple[OcrAttempt, ...] = ()
 
 
 def ingest_document(
@@ -297,6 +316,9 @@ def reparse_document(
 def _persist_pages(
     session: Session, document: Document, pages: list[ExtractedPage]
 ) -> None:
+    # A render or receipt is terminal the moment ingest finishes producing it;
+    # the 30-day Class B clock starts here.
+    terminal_at = datetime.now(timezone.utc)
     for extracted in pages:
         page = DocPage(
             document_id=document.id,
@@ -318,21 +340,69 @@ def _persist_pages(
         )
         session.add(page)
         session.flush()
-        for failure in extracted.failures:
-            session.add(
-                PageProcessingFailure(
-                    document_id=document.id,
-                    page_number=extracted.page_no,
-                    engine=failure.engine,
-                    configuration_json=failure.configuration,
-                    region_id=failure.region_id,
-                    scope_json=failure.scope,
-                    error_type=failure.error_type,
-                    error_message=failure.error_message,
-                )
-            )
+        # Every render — review, OCR-layout, table-CV, and any region crop —
+        # is Class B by construction: the persistence seam classifies it, so
+        # no current or future render path can escape TTL.
         for derivative in extracted.derivatives:
             persist_render_derivative(session, document.id, derivative)
+        # Raw OCR output is its own Class B intermediary; register each receipt
+        # and key it by region so an open failure can hold it reachable.
+        raw_ocr_by_region: dict[str, ProcessingArtifact] = {}
+        for attempt in extracted.ocr_attempts:
+            raw_ocr_by_region[attempt.region_id] = register_processing_artifact(
+                session,
+                project_id=document.project_id,
+                kind="raw_ocr",
+                path=attempt.receipt_path,
+                terminal_at=terminal_at,
+            )
+        ocr_layout_artifact = _ocr_layout_artifact(session, extracted)
+        for failure in extracted.failures:
+            failure_row = PageProcessingFailure(
+                document_id=document.id,
+                page_number=extracted.page_no,
+                engine=failure.engine,
+                configuration_json=failure.configuration,
+                region_id=failure.region_id,
+                scope_json=failure.scope,
+                error_type=failure.error_type,
+                error_message=failure.error_message,
+            )
+            session.add(failure_row)
+            session.flush()
+            referenced_by = f"page_processing_failure:{failure_row.id}"
+            # An open failure keeps its own render and raw-OCR intermediaries
+            # reachable (90 days), so the evidence survives while it is unresolved.
+            for artifact in (
+                raw_ocr_by_region.get(failure.region_id),
+                ocr_layout_artifact,
+            ):
+                if artifact is None:
+                    continue
+                open_reference(
+                    session,
+                    project_id=document.project_id,
+                    family="processing_artifact",
+                    source_row_id=artifact.id,
+                    kind="processing_failure",
+                    referenced_by=referenced_by,
+                )
+
+
+def _ocr_layout_artifact(
+    session: Session, extracted: ExtractedPage
+) -> ProcessingArtifact | None:
+    """The registered OCR-layout render for this page, if any — the artifact an
+    open OCR failure holds reachable alongside its raw-OCR receipt."""
+
+    for derivative in extracted.derivatives:
+        if derivative.profile_name == "ocr_layout":
+            return session.scalar(
+                select(ProcessingArtifact).where(
+                    ProcessingArtifact.storage_path == str(derivative.artifact_path)
+                )
+            )
+    return None
 
 
 def _extract(path: Path, images_dir: Path) -> list[ExtractedPage]:
@@ -427,41 +497,66 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
             derivatives = [review_derivative, ocr_derivative, table_derivative]
             ocr_text: list[str] = []
             failures: list[PageFailure] = []
+            ocr_attempts: list[OcrAttempt] = []
             for region in routing.regions:
                 if region.mode not in {"ocr", "both"}:
                     continue
+                scope = {
+                    "page_number": page_no,
+                    "region_id": region.region_id,
+                    "box": region.box.model_dump(mode="json"),
+                }
+                configuration = {
+                    **OCR_CONFIGURATION,
+                    "render_profile_id": ocr_derivative.profile_id,
+                    "render_dpi": ocr_derivative.dpi,
+                }
                 try:
                     recovered = _ocr_region(
-                        (
-                            ocr_derivative.artifact_path
-                        ),
+                        ocr_derivative.artifact_path,
                         region.box,
                         inventory.boxes.crop,
                     )
                 except Exception as exc:
+                    outcome = "failed"
+                    receipt = _write_raw_ocr_receipt(
+                        images_dir,
+                        page_no=page_no,
+                        region_id=region.region_id,
+                        configuration=configuration,
+                        scope=scope,
+                        outcome=outcome,
+                        text=None,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                    ocr_attempts.append(
+                        OcrAttempt(region.region_id, outcome, receipt)
+                    )
                     failures.append(
                         PageFailure(
                             engine=OCR_ENGINE,
-                            configuration={
-                                **OCR_CONFIGURATION,
-                                "render_profile_id": (
-                                    ocr_derivative.profile_id
-                                ),
-                                "render_dpi": (
-                                    ocr_derivative.dpi
-                                ),
-                            },
+                            configuration=configuration,
                             region_id=region.region_id,
-                            scope={
-                                "page_number": page_no,
-                                "region_id": region.region_id,
-                                "box": region.box.model_dump(mode="json"),
-                            },
+                            scope=scope,
                             error_type=type(exc).__name__,
                             error_message=str(exc),
                         )
                     )
                     continue
+                outcome = "recovered" if recovered.strip() else "empty"
+                receipt = _write_raw_ocr_receipt(
+                    images_dir,
+                    page_no=page_no,
+                    region_id=region.region_id,
+                    configuration=configuration,
+                    scope=scope,
+                    outcome=outcome,
+                    text=recovered,
+                    error_type=None,
+                    error_message=None,
+                )
+                ocr_attempts.append(OcrAttempt(region.region_id, outcome, receipt))
                 if recovered.strip():
                     ocr_text.append(recovered.strip())
             parts = []
@@ -489,10 +584,61 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
                     routing=routing,
                     failures=tuple(failures),
                     derivatives=tuple(derivatives),
+                    ocr_attempts=tuple(ocr_attempts),
                 )
             )
 
     return out
+
+
+def _write_raw_ocr_receipt(
+    images_dir: Path,
+    *,
+    page_no: int,
+    region_id: str,
+    configuration: dict,
+    scope: dict,
+    outcome: str,
+    text: str | None,
+    error_type: str | None,
+    error_message: str | None,
+) -> Path:
+    """Write one OCR attempt's exact output to a content-addressed Class B file.
+
+    Content-addressed so a re-render of the same page reuses the identical
+    receipt rather than colliding; the persistence seam registers it for
+    retention. No session here: extraction stays pure, persistence classifies.
+    """
+
+    payload = {
+        "configuration": dict(configuration),
+        "engine": OCR_ENGINE,
+        "error_message": error_message,
+        "error_type": error_type,
+        "outcome": outcome,
+        "page_number": page_no,
+        "region_id": region_id,
+        "scope": scope,
+        "text": text,
+    }
+    content = (
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+    digest = hashlib.sha256(content).hexdigest()
+    safe_region_id = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "_"
+        for character in region_id
+    )
+    destination = (
+        images_dir / f"{page_no:04d}-{safe_region_id}-raw-ocr-{digest}.json"
+    )
+    if destination.exists():
+        if destination.read_bytes() != content:
+            raise ValueError(f"raw OCR receipt content-address collision at {destination}")
+    else:
+        destination.write_bytes(content)
+    return destination.resolve()
 
 
 def _ocr_region(image_path: Path, region: PdfRect, page_box: PdfRect) -> str:

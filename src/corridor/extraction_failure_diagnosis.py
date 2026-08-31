@@ -68,7 +68,7 @@ TOOL_CONTRACT_VERSION = "extraction-failure-diagnosis-input-v1"
 VALIDATOR_VERSION = "extraction-failure-diagnosis-validator-v1"
 
 _RETRY_POLICY = "none"
-_RETENTION_POLICY = "retained_indefinitely"
+_RETENTION_POLICY = "class_b_30_days"
 _OBSERVATION_CONTEXT = "internal_working_view"
 
 _MAX_TEXT = 2_000
@@ -291,7 +291,7 @@ def declare_configuration(
         )
     if retention_policy != _RETENTION_POLICY:
         raise InvalidDiagnosisConfiguration(
-            "retention must be declared as retained_indefinitely"
+            "retention must be declared as class_b_30_days"
         )
     if observation_context != _OBSERVATION_CONTEXT:
         raise InvalidDiagnosisConfiguration(
@@ -333,7 +333,10 @@ def current_configuration(
     """Read the latest declared authority; absence is deliberately not a default."""
     return session.scalars(
         select(ExtractionFailureDiagnosisConfiguration)
-        .where(ExtractionFailureDiagnosisConfiguration.project_id == project_id)
+        .where(
+            ExtractionFailureDiagnosisConfiguration.project_id == project_id,
+            ExtractionFailureDiagnosisConfiguration.retention_policy == _RETENTION_POLICY,
+        )
         .order_by(ExtractionFailureDiagnosisConfiguration.id.desc())
     ).first()
 

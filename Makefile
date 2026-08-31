@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -155,6 +155,11 @@ gold:
 # development database has no retained Report Run or Report Approved for Release.
 storage-baseline:
 	uv run python -m corridor.storage_baseline_cli $(ARGS)
+
+# Plan first; execute requires the exact manifest digest. Holds and lifts are
+# separate attributable commands through CORRIDOR_HUMAN_PRINCIPAL.
+retention:
+	uv run python -m corridor.retention_cli $(ARGS)
 
 # One-time retirement of legacy development constraint records. Always run `plan`
 # first; `retire` requires the exact digest and constraint count (counts.dependencies):
