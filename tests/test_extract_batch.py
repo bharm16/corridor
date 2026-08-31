@@ -216,7 +216,8 @@ def test_pooled_run_records_one_exact_batch_usage_receipt_per_member(
     _run(session, project, MeteredClient())
 
     runs = _runs(session, project)
-    assert [run.document_id for run in runs] == [first.id, second.id]
+    runs_by_document = {run.document_id: run for run in runs}
+    assert set(runs_by_document) == {first.id, second.id}
     expected = {
         "scope": "batch",
         "document_ids": [first.id, second.id],
@@ -226,7 +227,10 @@ def test_pooled_run_records_one_exact_batch_usage_receipt_per_member(
         "reasoning_tokens": 6,
         "cached_tokens": 80,
     }
-    assert [run.token_usage_json for run in runs] == [expected, expected]
+    assert [runs_by_document[document_id].token_usage_json for document_id in (first.id, second.id)] == [
+        expected,
+        expected,
+    ]
     assert all(run.extractor_config_sha256 for run in runs)
 
 

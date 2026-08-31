@@ -190,9 +190,9 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # notifications (#351-#353), scheduled publication (#354), outcome
     # capture (#356), scheduled reproof (#358), conditions (#373), and the
     # operations assists (#359-#362), and the spreadsheet Source Segment
-    # evidence spine (#431-#434) and PDF page Processing Failures (#440).
-    assert fingerprint.table_count == 133
-    assert fingerprint.sequence_count == 122
+    # evidence spine (#431-#435) and PDF page Processing Failures (#440).
+    assert fingerprint.table_count == 135
+    assert fingerprint.sequence_count == 124
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
@@ -216,6 +216,8 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "extracted_proposal_facts",
         "extraction_run_candidates",
         "fact_dispositions",
+        "project_record_revisions",
+        "fact_decisions",
         "page_processing_failures",
         "statement_coordination_receipts",
     }
@@ -233,6 +235,8 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "extracted_proposal_facts_id_seq",
         "fact_dispositions_id_seq",
         "extraction_run_candidates_id_seq",
+        "project_record_revisions_id_seq",
+        "fact_decisions_id_seq",
     } <= {item.name for item in fingerprint.sequences}
     assert {item.kind for item in fingerprint.schema_objects} == {
         "column",

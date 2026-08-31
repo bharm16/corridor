@@ -28,10 +28,11 @@ RELEASE_HEAD = "d430a1b2c3d4"
 APPEND_HEAD = "1142da5be661"
 PAGE_INVENTORY_HEAD = "1d2e3f4a5b6c"
 PROPOSAL_HEAD = "961bd259310f"
-PREDECESSOR_HEAD = PROPOSAL_HEAD
-CURRENT_HEAD = "437e8c9a0b1d"
+PROSE_HEAD = "437e8c9a0b1d"
+PREDECESSOR_HEAD = PROSE_HEAD
+CURRENT_HEAD = "20c7d970be63"
 EXPECTED_SCHEMA_SHA256 = (
-    "4925db6f69e3c1d3fc4399267e59452b4d07fe7b7513eec74d5ef6a83532b40d"
+    "a8c5f6bd4e00ec6ed3678b0e6e6685cac592a8f134703b3352e8e596ff5cd116"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -47,7 +48,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{APPEND_HEAD}_add_scoped_source_fact_append.py",
         f"{PAGE_INVENTORY_HEAD}_add_pdf_page_inventory.py",
         f"{PROPOSAL_HEAD}_add_immutable_proposals.py",
-        f"{CURRENT_HEAD}_add_prose_spans_and_statement_facts.py",
+        f"{PROSE_HEAD}_add_prose_spans_and_statement_facts.py",
+        f"{CURRENT_HEAD}_add_fact_decisions.py",
     }
 
 
@@ -319,7 +321,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_prose_spans_is_unsupported():
+def test_downgrade_that_would_delete_fact_decisions_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -331,7 +333,7 @@ def test_downgrade_that_would_delete_prose_spans_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "prose span migration downgrade is unsupported" in completed.stderr
+    assert "Fact decision migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
