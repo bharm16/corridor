@@ -55,3 +55,10 @@ def test_migration_ci_is_path_scoped_and_full_history_is_scheduled():
     commands = _run_commands(workflow)
     assert "make test-migrations" in commands
     assert "make test-full" in commands
+
+
+def test_pr_workflows_cancel_obsolete_revisions():
+    for name in ("test.yml", "migration-test.yml"):
+        concurrency = _workflow(name)["concurrency"]
+        assert concurrency["cancel-in-progress"] == "true"
+        assert "github.event.pull_request.number" in concurrency["group"]
