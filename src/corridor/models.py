@@ -1020,6 +1020,66 @@ class FactDisposition(Base):
     )
 
 
+class ProjectRecordRevision(Base):
+    """One atomic Project Record change with exactly one authority."""
+
+    __tablename__ = "project_record_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_project_record_revision_key"
+        ),
+        CheckConstraint(
+            "(human_principal is null) <> (released_policy is null)",
+            name="ck_project_record_revision_authority_xor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    predecessor_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_record_revisions.id")
+    )
+    command_type: Mapped[str] = mapped_column(String(64))
+    human_principal: Mapped[str | None] = mapped_column(String(128))
+    released_policy: Mapped[str | None] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class FactDecision(Base):
+    """One typed Record Inclusion decision whose effectiveness may be superseded."""
+
+    __tablename__ = "fact_decisions"
+    __table_args__ = (
+        UniqueConstraint("fact_id", name="uq_fact_decision_fact"),
+        Index(
+            "uq_fact_decision_effective",
+            "project_id",
+            "subject_key",
+            "fact_type",
+            unique=True,
+            postgresql_where=text(
+                "superseded_by is null and fact_type in ('station_from', 'station_to')"
+            ),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    fact_id: Mapped[int] = mapped_column(ForeignKey("facts.id"))
+    subject_key: Mapped[str] = mapped_column(Text)
+    fact_type: Mapped[str] = mapped_column(String(64))
+    revision_id: Mapped[int] = mapped_column(ForeignKey("project_record_revisions.id"))
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("fact_decisions.id", deferrable=True, initially="DEFERRED")
+    )
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DocumentRenditionDerivation(Base):
     """One retained format conversion, without equivalence or Supersession."""
 

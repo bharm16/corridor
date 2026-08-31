@@ -30,6 +30,7 @@ from corridor.dependency_admission import (
     run_dependency_admission,
 )
 from corridor.event_admission import EventAdmissionResult, run_event_admission
+from corridor.fact_decisions import include_current_stationing_facts
 from corridor.extraction_runs import declare_single_run_documents_by_policy
 from corridor.models import Project, RecordInclusionRequest
 from corridor.record_inclusion import ReconcileResult
@@ -47,6 +48,7 @@ class LoadResult:
     ambiguous_documents: list[str]
     dependencies: DependencyAdmissionResult
     events: EventAdmissionResult
+    stationing_decisions: tuple[object, ...]
 
     @property
     def admitted_count(self) -> int:
@@ -68,6 +70,7 @@ def load_project(session: Session, project_id: int) -> LoadResult:
     """
     declarations = declare_single_run_documents_by_policy(session, project_id)
     dependencies = run_dependency_admission(session, project_id)
+    stationing_decisions = include_current_stationing_facts(session, project_id)
     events = run_event_admission(session, project_id)
     # A corroborating document landing is exactly what upgrades an unconfirmed
     # unreadable-cell reading to corroborated (ADR-0064), and — only when the
@@ -79,6 +82,7 @@ def load_project(session: Session, project_id: int) -> LoadResult:
         ambiguous_documents=declarations.ambiguous,
         dependencies=dependencies,
         events=events,
+        stationing_decisions=stationing_decisions,
     )
 
 
