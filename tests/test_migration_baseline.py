@@ -35,10 +35,11 @@ STRUCTURED_FACT_HEAD = "7e1b2c3d4f50"
 SUBJECT_RESOLUTION_HEAD = "453a1b2c3d4e"
 PROSE_ACCOUNTING_HEAD = "452c7d8e9f10"
 RENDER_HEAD = "2e3f4a5b6c7d"
-PREDECESSOR_HEAD = RENDER_HEAD
-CURRENT_HEAD = "7a3e91c4d8b2"
+CLASS_B_RETENTION_HEAD = "7a3e91c4d8b2"
+PREDECESSOR_HEAD = CLASS_B_RETENTION_HEAD
+CURRENT_HEAD = "3f4a5b6c7d8e"
 EXPECTED_SCHEMA_SHA256 = (
-    "d0847f3d9ecad18bb1f2106cbce26a2f6df15b2a999abac33a7c7d60f78d266f"
+    "098829a9727153fd3b5f2fa6c962ba07ef2747bcaabcd4171f66bd84b1871075"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -61,7 +62,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{SUBJECT_RESOLUTION_HEAD}_add_subject_resolution_registry.py",
         f"{PROSE_ACCOUNTING_HEAD}_add_prose_completeness_accounting.py",
         f"{RENDER_HEAD}_add_page_render_derivatives.py",
-        f"{CURRENT_HEAD}_add_class_b_retention.py",
+        f"{CLASS_B_RETENTION_HEAD}_add_class_b_retention.py",
+        f"{CURRENT_HEAD}_add_token_layers.py",
     }
 
 
@@ -129,6 +131,19 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
+        # The token-layers migration adds an empty manifest table and widens the
+        # processing-artifact kinds to accept a token layer.
+        with database.session_factory.begin() as session:
+            assert session.scalar(text("select count(*) from token_layers")) == 0
+            session.execute(
+                text(
+                    "insert into processing_artifacts (project_id, kind, "
+                    "retention_class, storage_path, content_sha256, terminal_at) "
+                    "values (:project_id, 'token_layer', 'class_b', "
+                    "'/tmp/token-layer.json', :digest, now())"
+                ),
+                {"project_id": project_id, "digest": "a" * 64},
+            )
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -292,7 +307,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_retention_history_is_unsupported():
+def test_downgrade_that_would_delete_token_layers_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -304,7 +319,7 @@ def test_downgrade_that_would_delete_retention_history_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "Class B retention migration downgrade is unsupported" in completed.stderr
+    assert "token layer migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):

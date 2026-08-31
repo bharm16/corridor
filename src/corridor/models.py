@@ -4094,6 +4094,48 @@ class PageRenderDerivative(Base):
     )
 
 
+class TokenLayerManifest(Base):
+    """One native or OCR token layer's manifest (ADR-0073, Class B).
+
+    The positioned tokens live in a content-addressed JSON artifact; this row
+    records the engine identity, page, origin, token count, quality summary,
+    and artifact digest. The artifact is registered as a Class B
+    ProcessingArtifact, so the retention TTL, reachability check, and holds
+    apply to token layers unchanged — and never to a promoted citation.
+    """
+
+    __tablename__ = "token_layers"
+    __table_args__ = (
+        UniqueConstraint("layer_key"),
+        CheckConstraint("page_no > 0"),
+        CheckConstraint("origin in ('native', 'ocr')"),
+        CheckConstraint("source_sha256 ~ '^[0-9a-f]{64}$'"),
+        CheckConstraint("artifact_sha256 ~ '^[0-9a-f]{64}$'"),
+        CheckConstraint("artifact_bytes > 0"),
+        CheckConstraint("token_count >= 0"),
+        CheckConstraint("retention_class = 'intermediary_processing'"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    page_no: Mapped[int] = mapped_column(Integer)
+    origin: Mapped[str] = mapped_column(String(8))
+    layer_key: Mapped[str] = mapped_column(String(64))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    engine_json: Mapped[dict] = mapped_column(JSONB)
+    token_count: Mapped[int] = mapped_column(Integer)
+    quality_json: Mapped[dict] = mapped_column(JSONB)
+    artifact_path: Mapped[str] = mapped_column(Text)
+    artifact_sha256: Mapped[str] = mapped_column(String(64))
+    artifact_bytes: Mapped[int] = mapped_column(BigInteger)
+    retention_class: Mapped[str] = mapped_column(
+        String(32), server_default="intermediary_processing"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Dependency(Base):
     __tablename__ = "dependencies"
     __table_args__ = (

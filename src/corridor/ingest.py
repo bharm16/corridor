@@ -61,6 +61,13 @@ from corridor.source_segments import (
     SPREADSHEET_SUFFIXES,
     append_ingested_source_segments,
 )
+from corridor.token_layers import (
+    OcrRequest,
+    TesseractEngine,
+    TokenLayer,
+    extract_native_token_layer,
+    persist_token_layer,
+)
 
 # Suffixes read as a workbook rather than a page image. `.xlsm` alongside
 # `.xlsx` because TxDOT's own form ships macros in some revisions and the
@@ -105,6 +112,7 @@ class ExtractedPage:
     failures: tuple[PageFailure, ...] = ()
     derivatives: tuple[RenderDerivative, ...] = ()
     ocr_attempts: tuple[OcrAttempt, ...] = ()
+    token_layers: tuple[TokenLayer, ...] = ()
 
 
 def ingest_document(
@@ -238,7 +246,8 @@ def ingest_document(
         return document
 
     try:
-        pages = _extract(path, Path(images_dir) / sha256)
+        token_dir = Path(images_dir) / sha256
+        pages = _extract(path, token_dir, sha256)
     except Exception:
         # Registered and visibly failed rather than silently absent. A
         # document missing from the ledger looks the same as one that was
@@ -248,7 +257,7 @@ def ingest_document(
         session.flush()
         return document
 
-    _persist_pages(session, document, pages)
+    _persist_pages(session, document, pages, token_dir)
 
     append_ingested_source_segments(session, document, path)
 
@@ -287,7 +296,8 @@ def reparse_document(
         raise ValueError("a successfully parsed document is never re-parsed as a retry")
     path = Path(path)
     try:
-        pages = _extract(path, Path(images_dir) / document.sha256)
+        token_dir = Path(images_dir) / document.sha256
+        pages = _extract(path, token_dir, document.sha256)
     except Exception:
         document.parse_status = "failed"
         document.pages = 0
@@ -303,7 +313,7 @@ def reparse_document(
         session.delete(page)
     session.flush()
 
-    _persist_pages(session, document, pages)
+    _persist_pages(session, document, pages, token_dir)
     append_ingested_source_segments(session, document, path)
     document.pages = len(pages)
     document.parse_status = (
@@ -314,7 +324,10 @@ def reparse_document(
 
 
 def _persist_pages(
-    session: Session, document: Document, pages: list[ExtractedPage]
+    session: Session,
+    document: Document,
+    pages: list[ExtractedPage],
+    token_dir: Path,
 ) -> None:
     # A render or receipt is terminal the moment ingest finishes producing it;
     # the 30-day Class B clock starts here.
@@ -345,6 +358,11 @@ def _persist_pages(
         # no current or future render path can escape TTL.
         for derivative in extracted.derivatives:
             persist_render_derivative(session, document.id, derivative)
+        # Native and OCR token layers persist as Class B artifacts with
+        # PostgreSQL manifests (ADR-0073); deleting them later leaves every
+        # promoted source segment verifiable.
+        for layer in extracted.token_layers:
+            persist_token_layer(session, document.id, layer, output_dir=token_dir)
         # Raw OCR output is its own Class B intermediary; register each receipt
         # and key it by region so an open failure can hold it reachable.
         raw_ocr_by_region: dict[str, ProcessingArtifact] = {}
@@ -405,12 +423,12 @@ def _ocr_layout_artifact(
     return None
 
 
-def _extract(path: Path, images_dir: Path) -> list[ExtractedPage]:
+def _extract(path: Path, images_dir: Path, source_sha256: str) -> list[ExtractedPage]:
     if path.suffix.lower() in SPREADSHEET_SUFFIXES:
         return _extract_sheets(path)
     if path.suffix.lower() == ".eml":
         return _extract_message(path)
-    return _extract_pages(path, images_dir)
+    return _extract_pages(path, images_dir, source_sha256)
 
 
 def _extract_message(path: Path) -> list[ExtractedPage]:
@@ -459,9 +477,12 @@ def _extract_sheets(path: Path) -> list[ExtractedPage]:
     ]
 
 
-def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
+def _extract_pages(
+    path: Path, images_dir: Path, source_sha256: str
+) -> list[ExtractedPage]:
     images_dir.mkdir(parents=True, exist_ok=True)
     out: list[ExtractedPage] = []
+    ocr_engine = TesseractEngine()
 
     with pymupdf.open(path) as pdf:
         if pdf.page_count == 0:
@@ -574,6 +595,28 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
                 "ocr" if routing.page_mode in {"ocr", "both"} else "text_layer"
             )
 
+            # Two coordinate-bearing token layers, kept separately (ADR-0073):
+            # the native reading always, plus an OCR layer when the page routes
+            # through OCR. Nothing picks a page-wide winner here — DocPage.text
+            # above is a rebuildable projection, and geometry-consuming
+            # extraction reads these tokens, not the page string.
+            token_layers: list[TokenLayer] = [
+                extract_native_token_layer(
+                    page, page_no=page_no, source_sha256=source_sha256
+                )
+            ]
+            if routing.page_mode in {"ocr", "both"}:
+                token_layers.append(
+                    ocr_engine.recognize(
+                        OcrRequest(
+                            page_no=page_no,
+                            source_sha256=source_sha256,
+                            image_path=ocr_derivative.artifact_path,
+                            derivative=ocr_derivative,
+                        )
+                    )
+                )
+
             out.append(
                 ExtractedPage(
                     page_no=page_no,
@@ -585,6 +628,7 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
                     failures=tuple(failures),
                     derivatives=tuple(derivatives),
                     ocr_attempts=tuple(ocr_attempts),
+                    token_layers=tuple(token_layers),
                 )
             )
 
