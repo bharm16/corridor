@@ -4124,6 +4124,310 @@ class PersonIdentity(Base):
     )
 
 
+class StatedByPerson(Base):
+    """One project-scoped individual who may be the person in Stated By.
+
+    This is Project Record identity, not authentication. A registered person
+    may be an external speaker with no Corridor account; conversely a signed-in
+    PersonIdentity gains no statement attribution merely by existing.
+    """
+
+    __tablename__ = "stated_by_people"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(display_name)) > 0",
+            name="ck_stated_by_people_display_name",
+        ),
+        CheckConstraint(
+            "email_normalized is null or "
+            "(length(trim(email_normalized)) > 0 and "
+            "email_normalized = lower(trim(email_normalized)))",
+            name="ck_stated_by_people_email",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    display_name: Mapped[str] = mapped_column(Text)
+    aliases: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default="{}"
+    )
+    email_normalized: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SubjectResolutionAttempt(Base):
+    """One provenance-bound exact lookup of a source reference.
+
+    The row is an observation of what the released exact-alias rule saw.  It
+    never doubles as the Human Record Decision that may later register an
+    alias, and unresolved outcomes remain durable even after that decision.
+    """
+
+    __tablename__ = "subject_resolution_attempts"
+    __table_args__ = (
+        UniqueConstraint("content_sha256", name="uq_subject_resolution_content"),
+        ForeignKeyConstraint(
+            ["project_id", "source_document_id", "source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_subject_resolution_segment_scope",
+        ),
+        CheckConstraint(
+            "reference_kind in ('organization_name', 'email_sender', "
+            "'email_domain', 'person_name', 'person_email', "
+            "'source_identifier', 'activity_identifier', 'document_identifier')",
+            name="ck_subject_resolution_reference_kind",
+        ),
+        CheckConstraint(
+            "expected_subject_type in ('external_org', 'person', 'constraint', 'document')",
+            name="ck_subject_resolution_expected_type",
+        ),
+        CheckConstraint(
+            "usage in ('identity', 'statement_speaker', 'affected_subject')",
+            name="ck_subject_resolution_usage",
+        ),
+        CheckConstraint(
+            "state in ('resolved', 'unresolved', 'conflict', 'stale', 'actor_boundary')",
+            name="ck_subject_resolution_state",
+        ),
+        CheckConstraint(
+            "length(trim(raw_reference)) > 0 and length(trim(normalized_reference)) > 0",
+            name="ck_subject_resolution_reference",
+        ),
+        CheckConstraint(
+            "rule_identity = 'exact-registered-alias-v1'",
+            name="ck_subject_resolution_rule",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_subject_resolution_sha256",
+        ),
+        CheckConstraint(
+            "(state = 'resolved' and "
+            "num_nonnulls(resolved_external_org_id, resolved_stated_by_person_id, "
+            "resolved_dependency_id, resolved_document_id) = 1 and "
+            "((expected_subject_type = 'external_org' and resolved_external_org_id is not null) or "
+            "(expected_subject_type = 'person' and resolved_stated_by_person_id is not null) or "
+            "(expected_subject_type = 'constraint' and resolved_dependency_id is not null) or "
+            "(expected_subject_type = 'document' and resolved_document_id is not null))) or "
+            "(state <> 'resolved' and "
+            "num_nonnulls(resolved_external_org_id, resolved_stated_by_person_id, "
+            "resolved_dependency_id, resolved_document_id) = 0)",
+            name="ck_subject_resolution_target",
+        ),
+        CheckConstraint(
+            "(state = 'resolved' and attention_reason is null) or "
+            "(state <> 'resolved' and length(trim(attention_reason)) > 0)",
+            name="ck_subject_resolution_attention",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    source_document_id: Mapped[int] = mapped_column(BigInteger)
+    source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    reference_kind: Mapped[str] = mapped_column(String(48))
+    raw_reference: Mapped[str] = mapped_column(Text)
+    normalized_reference: Mapped[str] = mapped_column(Text)
+    expected_subject_type: Mapped[str] = mapped_column(String(32))
+    usage: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(24))
+    attention_reason: Mapped[str | None] = mapped_column(String(64))
+    rule_identity: Mapped[str] = mapped_column(String(64))
+    resolved_external_org_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_orgs.id")
+    )
+    resolved_stated_by_person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stated_by_people.id")
+    )
+    resolved_dependency_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependencies.id")
+    )
+    resolved_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id")
+    )
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SubjectResolutionCandidate(Base):
+    """One typed candidate retained on an unresolved exact lookup."""
+
+    __tablename__ = "subject_resolution_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "attempt_id", "id", name="uq_subject_resolution_candidate_scope"
+        ),
+        UniqueConstraint(
+            "attempt_id", "subject_key", name="uq_subject_resolution_candidate"
+        ),
+        CheckConstraint(
+            "subject_type in ('external_org', 'person', 'constraint', 'document')",
+            name="ck_subject_resolution_candidate_type",
+        ),
+        CheckConstraint(
+            "candidate_state in ('active', 'stale')",
+            name="ck_subject_resolution_candidate_state",
+        ),
+        CheckConstraint(
+            "num_nonnulls(external_org_id, stated_by_person_id, dependency_id, document_id) = 1 and "
+            "((subject_type = 'external_org' and external_org_id is not null) or "
+            "(subject_type = 'person' and stated_by_person_id is not null) or "
+            "(subject_type = 'constraint' and dependency_id is not null) or "
+            "(subject_type = 'document' and document_id is not null))",
+            name="ck_subject_resolution_candidate_target",
+        ),
+        CheckConstraint(
+            "match_source in ('registered_alias', 'human_alias_decision')",
+            name="ck_subject_resolution_candidate_match_source",
+        ),
+        CheckConstraint(
+            "length(trim(subject_key)) > 0 and length(trim(display_name)) > 0",
+            name="ck_subject_resolution_candidate_text",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    attempt_id: Mapped[int] = mapped_column(
+        ForeignKey("subject_resolution_attempts.id"), index=True
+    )
+    subject_type: Mapped[str] = mapped_column(String(32))
+    subject_key: Mapped[str] = mapped_column(String(96))
+    external_org_id: Mapped[int | None] = mapped_column(ForeignKey("external_orgs.id"))
+    stated_by_person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stated_by_people.id")
+    )
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    display_name: Mapped[str] = mapped_column(Text)
+    candidate_state: Mapped[str] = mapped_column(String(16))
+    match_source: Mapped[str] = mapped_column(String(64))
+
+
+class SubjectResolutionDecision(Base):
+    """One attributable Human Record Decision registering an exact alias."""
+
+    __tablename__ = "subject_resolution_decisions"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", name="uq_subject_resolution_decision_attempt"),
+        UniqueConstraint("revision_id", name="uq_subject_resolution_decision_revision"),
+        UniqueConstraint(
+            "project_id",
+            "reference_kind",
+            "normalized_reference",
+            name="uq_subject_resolution_registered_alias",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "source_document_id", "source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_subject_resolution_decision_segment_scope",
+        ),
+        CheckConstraint(
+            "decision_kind = 'human_alias_registration'",
+            name="ck_subject_resolution_decision_kind",
+        ),
+        CheckConstraint(
+            "reference_kind in ('organization_name', 'email_sender', "
+            "'email_domain', 'person_name', 'person_email', "
+            "'source_identifier', 'activity_identifier', 'document_identifier')",
+            name="ck_subject_resolution_decision_reference_kind",
+        ),
+        CheckConstraint(
+            "subject_type in ('external_org', 'person', 'constraint', 'document')",
+            name="ck_subject_resolution_decision_type",
+        ),
+        CheckConstraint(
+            "num_nonnulls(external_org_id, stated_by_person_id, dependency_id, document_id) = 1 and "
+            "((subject_type = 'external_org' and external_org_id is not null) or "
+            "(subject_type = 'person' and stated_by_person_id is not null) or "
+            "(subject_type = 'constraint' and dependency_id is not null) or "
+            "(subject_type = 'document' and document_id is not null))",
+            name="ck_subject_resolution_decision_target",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0 and length(trim(normalized_reference)) > 0",
+            name="ck_subject_resolution_decision_actor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    attempt_id: Mapped[int] = mapped_column(
+        ForeignKey("subject_resolution_attempts.id"), index=True
+    )
+    revision_id: Mapped[int] = mapped_column(
+        ForeignKey("project_record_revisions.id"), index=True
+    )
+    source_document_id: Mapped[int] = mapped_column(BigInteger)
+    source_segment_id: Mapped[int] = mapped_column(BigInteger)
+    reference_kind: Mapped[str] = mapped_column(String(48))
+    raw_reference: Mapped[str] = mapped_column(Text)
+    normalized_reference: Mapped[str] = mapped_column(Text)
+    decision_kind: Mapped[str] = mapped_column(String(48))
+    subject_type: Mapped[str] = mapped_column(String(32))
+    external_org_id: Mapped[int | None] = mapped_column(ForeignKey("external_orgs.id"))
+    stated_by_person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stated_by_people.id")
+    )
+    dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SubjectCandidateSuggestion(Base):
+    """One read-only model ranking over already-retained candidates."""
+
+    __tablename__ = "subject_candidate_suggestions"
+    __table_args__ = (
+        UniqueConstraint(
+            "attempt_id", "rank", name="uq_subject_candidate_suggestion_rank"
+        ),
+        UniqueConstraint(
+            "attempt_id", "candidate_id", name="uq_subject_candidate_suggestion_candidate"
+        ),
+        CheckConstraint("rank > 0", name="ck_subject_candidate_suggestion_rank"),
+        CheckConstraint(
+            "length(trim(model)) > 0 and length(trim(prompt_version)) > 0",
+            name="ck_subject_candidate_suggestion_model",
+        ),
+        ForeignKeyConstraint(
+            ["attempt_id", "candidate_id"],
+            [
+                "subject_resolution_candidates.attempt_id",
+                "subject_resolution_candidates.id",
+            ],
+            name="fk_subject_candidate_suggestion_scope",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    attempt_id: Mapped[int] = mapped_column(
+        ForeignKey("subject_resolution_attempts.id"), index=True
+    )
+    candidate_id: Mapped[int] = mapped_column(BigInteger)
+    rank: Mapped[int] = mapped_column(Integer)
+    model: Mapped[str] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class SignInToken(Base):
     """One expiring, single-use magic-link secret, stored only as a hash.
 

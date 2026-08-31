@@ -30,17 +30,18 @@ PAGE_INVENTORY_HEAD = "1d2e3f4a5b6c"
 PROPOSAL_HEAD = "961bd259310f"
 PROSE_HEAD = "437e8c9a0b1d"
 DECISION_HEAD = "20c7d970be63"
-VIEW_HEAD = "8fc4c747b2d9"
-PREDECESSOR_HEAD = VIEW_HEAD
-CURRENT_HEAD = "7e1b2c3d4f50"
+CURRENT_RECORD_HEAD = "8fc4c747b2d9"
+STRUCTURED_FACT_HEAD = "7e1b2c3d4f50"
+PREDECESSOR_HEAD = STRUCTURED_FACT_HEAD
+CURRENT_HEAD = "453a1b2c3d4e"
 EXPECTED_SCHEMA_SHA256 = (
-    "31bfa668526246419841b445d771a577e2de1262a1c33012a89627e4507401f3"
+    "0000000000000000000000000000000000000000000000000000000000000000"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
-def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
+def test_migration_inventory_is_the_declared_linear_chain():
     assert {path.name for path in VERSIONS.glob("*.py")} == {
         f"{SCHEMA_BUILDER}_current_schema_baseline.py",
         f"{BASELINE_MARKER}_establish_current_baseline.py",
@@ -52,8 +53,9 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{PROPOSAL_HEAD}_add_immutable_proposals.py",
         f"{PROSE_HEAD}_add_prose_spans_and_statement_facts.py",
         f"{DECISION_HEAD}_add_fact_decisions.py",
-        f"{VIEW_HEAD}_add_current_project_record_view.py",
-        f"{CURRENT_HEAD}_add_structured_cell_facts.py",
+        f"{CURRENT_RECORD_HEAD}_add_current_project_record_view.py",
+        f"{STRUCTURED_FACT_HEAD}_add_structured_cell_facts.py",
+        f"{CURRENT_HEAD}_add_subject_resolution_registry.py",
     }
 
 
@@ -93,7 +95,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_released_head_preserves_existing_state_and_adds_structured_fact_tables():
+def test_released_head_preserves_prose_state_and_adds_empty_subject_resolution():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -132,6 +134,23 @@ def test_released_head_preserves_existing_state_and_adds_structured_fact_tables(
                 ),
                 {"document_id": document_id},
             )
+            segment_id = session.scalar(
+                text(
+                    "insert into source_segments "
+                    "(project_id, document_id, kind, exact_text, content_sha256, "
+                    "ordinal, page_no, start_offset, end_offset) values "
+                    "(:project_id, :document_id, 'prose_span', "
+                    "'Equistar will submit the exhibit.', :digest, 1, 1, 0, 35) "
+                    "returning id"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "digest": sha256(
+                        b"Equistar will submit the exhibit."
+                    ).hexdigest(),
+                },
+            )
         before = _project_row(database.session_factory)
 
         completed = _alembic(database_url, "upgrade", "head")
@@ -139,8 +158,18 @@ def test_released_head_preserves_existing_state_and_adds_structured_fact_tables(
         assert completed.returncode == 0, completed.stdout + completed.stderr
         assert _migration_head(database.session_factory) == CURRENT_HEAD
         assert _project_row(database.session_factory) == before
-        assert _source_segment_rows(database.session_factory) == []
+        assert _source_segment_rows(database.session_factory) == [
+            (
+                segment_id,
+                project_id,
+                document_id,
+                "prose_span",
+                "Equistar will submit the exhibit.",
+                None,
+            )
+        ]
         assert _fact_rows(database.session_factory) == []
+        assert _subject_resolution_rows(database.session_factory) == []
         with database.session_factory() as session:
             assert session.execute(
                 text(
@@ -157,11 +186,58 @@ def test_released_head_preserves_existing_state_and_adds_structured_fact_tables(
             assert session.scalar(
                 text("select count(*) from page_processing_failures")
             ) == 0
-        _insert_pending_statement_fact(
-            database.session_factory,
-            project_id=int(project_id),
-            document_id=int(document_id),
-        )
+        with database.session_factory.begin() as session:
+            attempt_id = session.scalar(
+                text(
+                    "insert into subject_resolution_attempts "
+                    "(project_id, source_document_id, source_segment_id, "
+                    "reference_kind, raw_reference, normalized_reference, "
+                    "expected_subject_type, usage, state, attention_reason, "
+                    "rule_identity, content_sha256) values "
+                    "(:project_id, :document_id, :segment_id, "
+                    "'organization_name', 'Equistar', 'equistar', "
+                    "'external_org', 'identity', 'unresolved', "
+                    "'unregistered_subject_reference', "
+                    "'exact-registered-alias-v1', :digest) returning id"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "segment_id": segment_id,
+                    "digest": "b" * 64,
+                },
+            )
+        assert _subject_resolution_rows(database.session_factory) == [
+            (attempt_id, project_id, segment_id, "unresolved")
+        ]
+        with pytest.raises(DBAPIError, match="fk_subject_resolution_segment_scope"):
+            with database.session_factory.begin() as session:
+                other_project_id = session.scalar(
+                    text(
+                        "insert into projects (slug, name, is_synthetic) values "
+                        "('baseline-other', 'Baseline Other', true) returning id"
+                    )
+                )
+                session.execute(
+                    text(
+                        "insert into subject_resolution_attempts "
+                        "(project_id, source_document_id, source_segment_id, "
+                        "reference_kind, raw_reference, normalized_reference, "
+                        "expected_subject_type, usage, state, attention_reason, "
+                        "rule_identity, content_sha256) values "
+                        "(:project_id, :document_id, :segment_id, "
+                        "'organization_name', 'Equistar', 'equistar', "
+                        "'external_org', 'identity', 'unresolved', "
+                        "'unregistered_subject_reference', "
+                        "'exact-registered-alias-v1', :digest)"
+                    ),
+                    {
+                        "project_id": other_project_id,
+                        "document_id": document_id,
+                        "segment_id": segment_id,
+                        "digest": "c" * 64,
+                    },
+                )
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -325,7 +401,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_structured_facts_is_unsupported():
+def test_downgrade_that_would_delete_subject_decisions_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -337,7 +413,7 @@ def test_downgrade_that_would_delete_structured_facts_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "structured-cell Fact migration downgrade is unsupported" in completed.stderr
+    assert "subject resolution migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
@@ -348,6 +424,16 @@ def _project_row(session_factory):
                 "where slug = 'baseline-bridge'"
             )
         ).one()
+
+
+def _subject_resolution_rows(session_factory):
+    with session_factory() as session:
+        return session.execute(
+            text(
+                "select id, project_id, source_segment_id, state "
+                "from subject_resolution_attempts order by id"
+            )
+        ).all()
 
 
 def _seed_legacy_release_and_artifact(session, project_id: int) -> None:
