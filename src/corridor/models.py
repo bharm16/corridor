@@ -769,6 +769,16 @@ class Fact(Base):
         CheckConstraint(
             "length(trim(recorded_by)) > 0", name="ck_facts_recorded_by"
         ),
+        CheckConstraint(
+            "content_sha256 is null or content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_facts_content_sha256",
+        ),
+        Index(
+            "uq_facts_content_sha256",
+            "content_sha256",
+            unique=True,
+            postgresql_where=text("content_sha256 is not null"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -788,6 +798,7 @@ class Fact(Base):
     document_value_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
     transformation: Mapped[str] = mapped_column(String(64))
     recorded_by: Mapped[str] = mapped_column(String(128))
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -832,6 +843,43 @@ class FactSource(Base):
     source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
     role: Mapped[str] = mapped_column(String(32))
     ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class SourceFactAppendReceipt(Base):
+    """One immutable idempotency binding for the scoped spine append command."""
+
+    __tablename__ = "source_fact_append_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_source_fact_append_key"
+        ),
+        UniqueConstraint(
+            "project_id", "content_sha256", name="uq_source_fact_append_content"
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+            name="fk_source_fact_append_run_document",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_source_fact_append_content_sha256",
+        ),
+        CheckConstraint(
+            "length(trim(idempotency_key)) > 0",
+            name="ck_source_fact_append_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    extraction_run_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class DocumentRenditionDerivation(Base):

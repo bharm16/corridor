@@ -2,6 +2,9 @@
 
 import os
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from hashlib import sha256
 
 from openpyxl import Workbook
 import pytest
@@ -9,20 +12,29 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from corridor.db import Session, engine
+from corridor.candidates import propose
 from corridor.config import settings
 from corridor.extract_sheet import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
     extract_document,
 )
-from corridor.extraction_runs import record_extraction_run
+from corridor.extraction_runs import (
+    SourceFactAppendConflict,
+    append_source_facts,
+    record_extraction_run,
+)
 from corridor.facts import FactReplayMismatch, replay_fact
 from corridor.ingest import ingest_document
+from corridor.row_accounting import RowAccounting
 from corridor.models import (
     Fact,
     FactSource,
+    ExtractionRun,
+    Document,
     Project,
     SourceSegment,
+    SourceFactAppendReceipt,
 )
 
 
@@ -116,6 +128,226 @@ def _complete_extraction(session, document, monkeypatch):
         allow_unsealed_legacy=True,
     )
     return run, candidates
+
+
+def _append_request(session, document, candidates, **overrides):
+    values = {
+        "idempotency_key": "extract:stationing:test",
+        "prompt_version": PROMPT_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "candidate_count": len(candidates),
+        "page_errors": 0,
+        "candidates": candidates,
+        "model": None,
+        "row_accounting_json": candidates.row_accounting,
+        "allow_unsealed_legacy": True,
+        "source_path": getattr(document, "_stored_path", None),
+    }
+    values.update(overrides)
+    return append_source_facts(session, document, **values)
+
+
+@pytest.mark.parametrize("stage", ["segments", "run", "facts", "receipt"])
+def test_scoped_append_failure_after_each_stage_leaves_no_partial_spine_rows(
+    session, project, tmp_path, monkeypatch, stage
+):
+    path = _workbook(
+        tmp_path,
+        f"failure-{stage}.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    document = Document(
+        project_id=project.id,
+        sha256=sha256(path.read_bytes()).hexdigest(),
+        filename=path.name,
+        doc_type="matrix",
+        numbering_scheme="project-unique",
+        pages=1,
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    document._stored_path = str(path)
+    candidate = propose(
+        document,
+        kind="dependency",
+        fields={"station_from": "1149+00", "station_to": "1150+00"},
+        page_no=1,
+        quote="UC-1 CenterPoint Electric 1149+00 1150+00 Pole",
+        quote_verified=True,
+        whole_row=True,
+        confidence=None,
+        prompt_version=PROMPT_VERSION,
+        dedupe="UC-1",
+        text_source="cells",
+        tier="native",
+    )
+    candidate.payload_json["citations"][0].update(
+        {"table_row": 1, "sheet_name": "Utility Conflicts"}
+    )
+    accounting = RowAccounting(
+        reader_version=PROMPT_VERSION, reader_path="spreadsheet_cells"
+    )
+    accounting.detect("sheet:1:row:1", page=1, row_number=1)
+    accounting.account(
+        "sheet:1:row:1", disposition="extracted", reason="candidate_recorded"
+    )
+    candidates = accounting.finish([candidate])
+    segment_count = len(
+        session.scalars(
+            select(SourceSegment).where(SourceSegment.document_id == document.id)
+        ).all()
+    )
+
+    with pytest.raises(RuntimeError, match=f"failure after {stage}"):
+        _append_request(
+            session,
+            document,
+            candidates,
+            idempotency_key=f"failure:{stage}",
+            fail_after_stage=stage,
+        )
+
+    assert len(
+        session.scalars(
+            select(SourceSegment).where(SourceSegment.document_id == document.id)
+        ).all()
+    ) == 0
+    assert session.scalars(select(Fact)).all() == []
+    assert session.scalars(select(SourceFactAppendReceipt)).all() == []
+    assert session.scalars(select(ExtractionRun)).all() == []
+
+
+def test_scoped_append_replay_returns_original_rows_and_key_conflict_fails(
+    session, project, tmp_path, monkeypatch
+):
+    path = _workbook(
+        tmp_path,
+        "idempotent.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    document = _ingest(session, project, path, tmp_path)
+    import corridor.extract_sheet as extract_sheet
+
+    monkeypatch.setattr(extract_sheet, "stored_file", lambda _value: path)
+    candidates = extract_document(session, document)
+
+    first = _append_request(session, document, candidates)
+    replayed = _append_request(session, document, candidates)
+    replayed_with_other_key = _append_request(
+        session, document, candidates, idempotency_key="extract:stationing:other"
+    )
+
+    assert first.created is True
+    assert replayed.created is False
+    assert replayed.run.id == first.run.id
+    assert replayed_with_other_key.created is False
+    assert replayed_with_other_key.run.id == first.run.id
+    assert [fact.id for fact in replayed.facts] == [fact.id for fact in first.facts]
+    assert len(session.scalars(select(ExtractionRun)).all()) == 1
+    assert len(session.scalars(select(Fact)).all()) == 2
+    assert len(session.scalars(select(SourceFactAppendReceipt)).all()) == 1
+
+    with pytest.raises(SourceFactAppendConflict, match="different content"):
+        _append_request(session, document, candidates, model="different-model")
+
+    second_candidates = extract_document(session, document)
+    second = _append_request(
+        session,
+        document,
+        second_candidates,
+        idempotency_key="extract:stationing:second-content",
+        schema_version="sheet_candidate_shape_variant",
+    )
+    assert second.created is True
+    with pytest.raises(SourceFactAppendConflict, match="different content"):
+        _append_request(
+            session,
+            document,
+            second_candidates,
+            idempotency_key="extract:stationing:test",
+            schema_version="sheet_candidate_shape_variant",
+        )
+
+
+def test_concurrent_identical_retries_return_one_original_result(
+    runtime_database, tmp_path
+):
+    path = _workbook(
+        tmp_path,
+        "concurrent.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    factory = runtime_database.session_factory
+    with factory.begin() as session:
+        project = Project(slug="concurrent-facts", name="Concurrent Facts", is_synthetic=True)
+        session.add(project)
+        session.flush()
+        document = ingest_document(
+            session,
+            project_id=project.id,
+            path=path,
+            doc_type="matrix",
+            images_dir=tmp_path / "images",
+        )
+        document_id = document.id
+
+    barrier = Barrier(2)
+
+    def run_retry():
+        with factory.begin() as session:
+            document = session.get(Document, document_id)
+            candidate = propose(
+                document,
+                kind="dependency",
+                fields={"station_from": "1149+00", "station_to": "1150+00"},
+                page_no=1,
+                quote="UC-1 CenterPoint Electric 1149+00 1150+00 Pole",
+                quote_verified=True,
+                whole_row=True,
+                confidence=None,
+                prompt_version=PROMPT_VERSION,
+                dedupe="UC-1",
+                text_source="cells",
+                tier="native",
+            )
+            candidate.payload_json["citations"][0].update(
+                {"table_row": 1, "sheet_name": "Utility Conflicts"}
+            )
+            accounting = RowAccounting(
+                reader_version=PROMPT_VERSION,
+                reader_path="spreadsheet_cells",
+            )
+            accounting.detect("sheet:1:row:1", page=1, row_number=1)
+            accounting.account(
+                "sheet:1:row:1", disposition="extracted", reason="candidate_recorded"
+            )
+            accounted = accounting.finish([candidate])
+            barrier.wait()
+            result = append_source_facts(
+                session,
+                document,
+                idempotency_key="concurrent:same",
+                prompt_version=PROMPT_VERSION,
+                schema_version=SCHEMA_VERSION,
+                candidate_count=1,
+                page_errors=0,
+                candidates=accounted,
+                model=None,
+                row_accounting_json=accounted.row_accounting,
+                allow_unsealed_legacy=True,
+            )
+            return result.run.id, result.created
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: run_retry(), range(2)))
+
+    assert len({run_id for run_id, _created in results}) == 1
+    assert sorted(created for _run_id, created in results) == [False, True]
+    with factory() as session:
+        assert len(session.scalars(select(ExtractionRun)).all()) == 1
+        assert len(session.scalars(select(Fact)).all()) == 2
+        assert len(session.scalars(select(SourceFactAppendReceipt)).all()) == 1
 
 
 def test_completed_native_extraction_appends_typed_stationing_facts(

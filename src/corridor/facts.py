@@ -10,6 +10,8 @@ ADR-0069).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from pathlib import Path
 
 from openpyxl.utils import get_column_letter
@@ -49,6 +51,20 @@ FACT_TYPE_CONTRACTS = {
     )
     for name in ("station_from", "station_to")
 }
+
+
+def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
+    """Whether this extraction output belongs at the scoped Fact command."""
+
+    return any(
+        candidate.payload_json.get("tier") == "native"
+        and candidate.kind == "dependency"
+        and any(
+            candidate.payload_json.get("fields", {}).get(name)
+            for name in FACT_TYPE_CONTRACTS
+        )
+        for candidate in candidates
+    )
 
 
 def append_stationing_facts(
@@ -138,6 +154,19 @@ def append_stationing_facts(
                 document_value_id=None,
                 transformation=contract.transformation,
                 recorded_by=f"extractor:{run.prompt_version}",
+                content_sha256=_fact_digest(
+                    run_identity={
+                        "document_id": document.id,
+                        "prompt_version": run.prompt_version,
+                        "schema_version": run.schema_version,
+                        "model": run.model,
+                        "extractor_config_sha256": run.extractor_config_sha256,
+                    },
+                    fact_type=fact_type,
+                    subject_key=f"{sheet_name}!{source_row}",
+                    text_value=value,
+                    source_segment_ids=(segment.id,),
+                ),
             )
             session.add(fact)
             session.flush([fact])
@@ -210,3 +239,24 @@ def _transform(name: str, exact_text: str) -> str:
     if name == "trim_cell_text_v1":
         return exact_text.strip()
     raise FactValidationError(f"unknown Fact transformation {name!r}")
+
+
+def _fact_digest(
+    *,
+    run_identity: dict[str, object],
+    fact_type: str,
+    subject_key: str,
+    text_value: str,
+    source_segment_ids: tuple[int, ...],
+) -> str:
+    value = {
+        "run": run_identity,
+        "fact_type": fact_type,
+        "subject_kind": "source_row",
+        "subject_key": subject_key,
+        "text_value": text_value,
+        "source_segment_ids": list(source_segment_ids),
+    }
+    return sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()

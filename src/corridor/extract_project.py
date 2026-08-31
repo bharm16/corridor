@@ -36,7 +36,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
-from corridor.extraction_runs import record_extraction_run
+from corridor.extraction_runs import append_source_facts, record_extraction_run
+from corridor.facts import carries_source_facts
 from corridor.extractor_lineage import (
     token_usage_delta,
     usage_snapshot,
@@ -58,6 +59,7 @@ from corridor.models import (
 )
 from corridor.pipeline import ExtractionRoute, extraction_route
 from corridor.row_accounting import RowAccountingFailure
+from corridor.storage import stored_file
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
@@ -431,9 +433,24 @@ def _record_routed_run(
             usage_snapshot(route.usage_client),
             document_ids=[document.id],
         )
-    return record_extraction_run(
+    command = (
+        append_source_facts
+        if values.get("outcome", "completed") == "completed"
+        and carries_source_facts(tuple(values.get("candidates", ())))
+        else record_extraction_run
+    )
+    result = command(
         session,
         document,
+        **(
+            {
+                "idempotency_key": None,
+                "source_path": getattr(document, "_stored_path", None)
+                or stored_file(document),
+            }
+            if command is append_source_facts
+            else {}
+        ),
         prompt_version=route.effective_prompt_version,
         schema_version=route.schema_version,
         extractor_config=route.extractor_config,
@@ -441,6 +458,7 @@ def _record_routed_run(
         allow_unsealed_legacy=route.allow_unsealed_legacy,
         **values,
     )
+    return result.run if command is append_source_facts else result
 
 
 def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> str:

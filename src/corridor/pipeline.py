@@ -17,7 +17,8 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.extraction_runs import record_extraction_run
+from corridor.extraction_runs import append_source_facts, record_extraction_run
+from corridor.facts import carries_source_facts
 from corridor.extractor_lineage import (
     ExtractorConfig,
     deployed_extractor_config,
@@ -502,15 +503,31 @@ def _record_route_run(
             document_ids=[document.id],
         )
     )
-    return record_extraction_run(
+    command = (
+        append_source_facts
+        if values.get("outcome", "completed") == "completed"
+        and carries_source_facts(tuple(values.get("candidates", ())))
+        else record_extraction_run
+    )
+    result = command(
         session,
         document,
+        **(
+            {
+                "idempotency_key": None,
+                "source_path": getattr(document, "_stored_path", None)
+                or stored_file(document),
+            }
+            if command is append_source_facts
+            else {}
+        ),
         prompt_version=route.effective_prompt_version,
         schema_version=route.schema_version,
         extractor_config=route.extractor_config,
         token_usage=token_usage,
         **values,
     )
+    return result.run if command is append_source_facts else result
 
 
 def _basename(url: str) -> str:
