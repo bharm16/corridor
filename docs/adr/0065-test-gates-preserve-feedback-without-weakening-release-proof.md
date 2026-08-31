@@ -27,7 +27,7 @@ Tests that need independent committed transactions keep a fresh database per tes
 
 ## Considered options
 
-**Delete tests until the suite is fast.** Rejected: the audit found no exact duplicate bodies and no test whose behavioral contract was proven unnecessary. The measured waste was repeated execution and database setup.
+**Delete tests only because they are slow.** Rejected: retirement follows the supported upgrade window, not elapsed time. The 74 removed tests started from revisions that no supported database can hold; current behavior remains in ordinary tests and the four-test baseline contract.
 
 **Replace PostgreSQL with SQLite or mocked persistence.** Rejected: those substitutes cannot prove PostgreSQL constraints, isolation, locking, durable commits, or Alembic behavior.
 
