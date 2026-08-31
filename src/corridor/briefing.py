@@ -52,7 +52,7 @@ from corridor.models import (
     DocPage,
     EvidenceLink,
 )
-from corridor.project_reading import freeze_project_reading
+from corridor.project_reading import FrozenProjectReading, freeze_project_reading
 from corridor.presentation import label, provenance_label
 from corridor.verify import quote_appears_on, threshold_for
 
@@ -178,6 +178,7 @@ def brief_project(
     *,
     client,
     today: date | None = None,
+    frozen_reading: FrozenProjectReading | None = None,
 ) -> Briefing:
     """One narrative over every record in the project (#119).
 
@@ -187,10 +188,8 @@ def brief_project(
     stays one read and one model call per invocation; there is no per-record
     fan-out and no batch path.
     """
-    reading = freeze_project_reading(
-        session,
-        project_id,
-        today=today,
+    reading = frozen_reading or freeze_project_reading(
+        session, project_id, today=today
     )
     dependencies = [row.dependency for row in reading.rows]
     publication = reading.statement_publication

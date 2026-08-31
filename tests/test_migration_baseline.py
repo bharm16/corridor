@@ -29,8 +29,9 @@ APPEND_HEAD = "1142da5be661"
 PAGE_INVENTORY_HEAD = "1d2e3f4a5b6c"
 PROPOSAL_HEAD = "961bd259310f"
 PROSE_HEAD = "437e8c9a0b1d"
-PREDECESSOR_HEAD = PROSE_HEAD
-CURRENT_HEAD = "20c7d970be63"
+DECISION_HEAD = "20c7d970be63"
+PREDECESSOR_HEAD = DECISION_HEAD
+CURRENT_HEAD = "8fc4c747b2d9"
 EXPECTED_SCHEMA_SHA256 = (
     "a8c5f6bd4e00ec6ed3678b0e6e6685cac592a8f134703b3352e8e596ff5cd116"
 )
@@ -49,7 +50,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{PAGE_INVENTORY_HEAD}_add_pdf_page_inventory.py",
         f"{PROPOSAL_HEAD}_add_immutable_proposals.py",
         f"{PROSE_HEAD}_add_prose_spans_and_statement_facts.py",
-        f"{CURRENT_HEAD}_add_fact_decisions.py",
+        f"{DECISION_HEAD}_add_fact_decisions.py",
+        f"{CURRENT_HEAD}_add_current_project_record_view.py",
     }
 
 
@@ -321,7 +323,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_fact_decisions_is_unsupported():
+def test_downgrade_that_would_delete_current_record_view_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -333,7 +335,7 @@ def test_downgrade_that_would_delete_fact_decisions_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "Fact decision migration downgrade is unsupported" in completed.stderr
+    assert "current Project Record view downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):

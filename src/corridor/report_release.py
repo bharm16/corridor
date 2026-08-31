@@ -35,6 +35,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_reading import validate_frozen_reading
+from corridor.project_reading import FrozenProjectReading
 from corridor.presentation import label, provenance_label
 from corridor.report import Report, assert_no_bare_cells, build_report, render
 
@@ -133,6 +134,7 @@ def render_external_report_pdf(
     *,
     today: date | None = None,
     document_only: bool = False,
+    frozen_reading: FrozenProjectReading | None = None,
 ) -> RenderedExternalReport:
     """Prepare one PDF and its one frozen Report reading for a release control.
 
@@ -144,7 +146,11 @@ def render_external_report_pdf(
     if project is None:
         raise NoSuchReleasedReport(f"no project {project_id}")
     report = build_report(
-        session, project_id, today=today, document_only=document_only
+        session,
+        project_id,
+        today=today,
+        document_only=document_only,
+        frozen_reading=frozen_reading,
     )
     evaluated_on = report.evaluation.today if report.evaluation is not None else None
     if evaluated_on is None:
