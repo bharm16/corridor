@@ -3551,6 +3551,40 @@ class DocPage(Base):
         default="text_layer",
         server_default="text_layer",
     )
+    # Rebuildable Class B processing evidence (ADRs 0068/0072). Existing
+    # pages predate the inventory and remain readable through text_source;
+    # every production PDF ingest now writes both fields together.
+    inventory_json: Mapped[dict | None] = mapped_column(JSONB)
+    routing_json: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class PageProcessingFailure(Base):
+    """A retained OCR attempt that did not complete its page-region contract."""
+
+    __tablename__ = "page_processing_failures"
+    __table_args__ = (
+        CheckConstraint("page_number > 0"),
+        CheckConstraint("length(engine) > 0"),
+        CheckConstraint("length(region_id) > 0"),
+        CheckConstraint("length(error_type) > 0"),
+        CheckConstraint("length(error_message) > 0"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # The Document and human page number survive a reparse; DocPage rows are
+    # rebuildable and replaced during recovery. Stable ownership preserves a
+    # failed attempt after a later successful retry.
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    page_number: Mapped[int] = mapped_column(Integer)
+    engine: Mapped[str] = mapped_column(String(64))
+    configuration_json: Mapped[dict] = mapped_column(JSONB)
+    region_id: Mapped[str] = mapped_column(String(64))
+    scope_json: Mapped[dict] = mapped_column(JSONB)
+    error_type: Mapped[str] = mapped_column(String(160))
+    error_message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class Dependency(Base):

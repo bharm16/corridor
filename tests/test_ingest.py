@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.ingest import ingest_document
-from corridor.models import DocPage, Document, Project
+from corridor.models import DocPage, Document, PageProcessingFailure, Project
 
 
 @pytest.fixture
@@ -271,6 +271,180 @@ def test_a_scanned_page_falls_back_to_ocr(session, project, scanned_pdf, tmp_pat
     assert page.text_source == "ocr"
     assert "UTILITY" in page.text.upper()
     assert "CENTERPOINT" in page.text.upper()
+
+
+def test_every_pdf_page_persists_its_inventory_and_routing_decision(
+    session, project, pdf, tmp_path
+):
+    doc = ingest(session, project, pdf, tmp_path / "images")
+    pages = session.scalars(
+        select(DocPage).where(DocPage.document_id == doc.id).order_by(DocPage.page_no)
+    ).all()
+
+    assert len(pages) == 2
+    assert all(
+        page.inventory_json["schema_version"]
+        == "corridor.pdf-page-inventory.v1"
+        for page in pages
+    )
+    assert all(
+        page.routing_json["schema_version"] == "corridor.pdf-page-routing.v1"
+        for page in pages
+    )
+    assert {page.routing_json["page_mode"] for page in pages} == {"native"}
+
+
+def test_a_short_clean_native_page_never_calls_ocr(
+    session, project, tmp_path, monkeypatch
+):
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72, 100), "OK")
+    path = tmp_path / "short.pdf"
+    document.save(path)
+    document.close()
+
+    def unexpected_ocr(*_args, **_kwargs):
+        raise AssertionError("short native text must not route by character count")
+
+    monkeypatch.setattr("corridor.ingest._ocr_region", unexpected_ocr)
+    stored = ingest_document(
+        session,
+        project_id=project.id,
+        path=path,
+        doc_type="other",
+        images_dir=tmp_path / "images",
+    )
+    [stored_page] = session.scalars(
+        select(DocPage).where(DocPage.document_id == stored.id)
+    ).all()
+    assert stored_page.text == "OK\n"
+    assert stored_page.text_source == "text_layer"
+    assert stored_page.routing_json["reason"] == "clean_native_text"
+
+
+def test_a_mixed_page_routes_native_and_image_regions_independently(
+    session, project, tmp_path, monkeypatch
+):
+    source = pymupdf.open()
+    source_page = source.new_page(width=200, height=100)
+    source_page.insert_text((20, 50), "SCANNED TABLE")
+    pixmap = source_page.get_pixmap(dpi=150)
+    source.close()
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=300)
+    page.insert_text((20, 30), "Native heading")
+    page.insert_image(pymupdf.Rect(20, 70, 380, 270), pixmap=pixmap)
+    path = tmp_path / "mixed.pdf"
+    document.save(path)
+    document.close()
+    monkeypatch.setattr(
+        "corridor.ingest._ocr_region", lambda *_args, **_kwargs: "OCR TABLE"
+    )
+
+    stored = ingest_document(
+        session,
+        project_id=project.id,
+        path=path,
+        doc_type="matrix",
+        images_dir=tmp_path / "images",
+    )
+    [stored_page] = session.scalars(
+        select(DocPage).where(DocPage.document_id == stored.id)
+    ).all()
+
+    assert stored_page.routing_json["page_mode"] == "both"
+    assert {region["mode"] for region in stored_page.routing_json["regions"]} == {
+        "native",
+        "ocr",
+    }
+    assert "Native heading" in stored_page.text
+    assert "OCR TABLE" in stored_page.text
+    assert stored_page.text_source == "ocr"
+
+
+def test_ocr_exception_persists_a_visible_processing_failure(
+    session, project, scanned_pdf, tmp_path, monkeypatch
+):
+    def failed_ocr(*_args, **_kwargs):
+        raise RuntimeError("tesseract unavailable")
+
+    monkeypatch.setattr("corridor.ingest._ocr_region", failed_ocr)
+    stored = ingest_document(
+        session,
+        project_id=project.id,
+        path=scanned_pdf,
+        doc_type="agreement",
+        images_dir=tmp_path / "images",
+    )
+    [stored_page] = session.scalars(
+        select(DocPage).where(DocPage.document_id == stored.id)
+    ).all()
+    [failure] = session.scalars(
+        select(PageProcessingFailure).where(
+            PageProcessingFailure.document_id == stored.id,
+            PageProcessingFailure.page_number == 1,
+        )
+    ).all()
+
+    assert stored.parse_status == "failed"
+    assert stored.pages == 1
+    assert stored_page.text_source == "ocr"
+    assert stored_page.routing_json["page_mode"] == "ocr"
+    assert failure.engine == "tesseract"
+    assert failure.configuration_json == {
+        "language": "eng",
+        "page_segmentation_mode": 6,
+    }
+    assert failure.scope_json["page_number"] == 1
+    assert failure.scope_json["region_id"].startswith("image-")
+    assert failure.error_type == "RuntimeError"
+    assert failure.error_message == "tesseract unavailable"
+    from corridor.docs import list_documents
+
+    [summary] = list_documents(session, project.id)
+    assert summary.ocr_pages == 1
+
+
+def test_successful_reparse_preserves_the_prior_processing_failure(
+    session, project, scanned_pdf, tmp_path, monkeypatch
+):
+    def failed_ocr(*_args, **_kwargs):
+        raise RuntimeError("tesseract unavailable")
+
+    monkeypatch.setattr("corridor.ingest._ocr_region", failed_ocr)
+    stored = ingest_document(
+        session,
+        project_id=project.id,
+        path=scanned_pdf,
+        doc_type="agreement",
+        images_dir=tmp_path / "images",
+    )
+    failure_id = session.scalar(
+        select(PageProcessingFailure.id).where(
+            PageProcessingFailure.document_id == stored.id
+        )
+    )
+    monkeypatch.setattr(
+        "corridor.ingest._ocr_region", lambda *_args, **_kwargs: "RECOVERED TEXT"
+    )
+
+    from corridor.ingest import reparse_document
+
+    assert reparse_document(
+        session,
+        document=stored,
+        path=scanned_pdf,
+        images_dir=tmp_path / "images",
+    ) is True
+
+    assert stored.parse_status == "parsed"
+    assert session.get(PageProcessingFailure, failure_id) is not None
+    assert session.scalar(
+        select(PageProcessingFailure.error_message).where(
+            PageProcessingFailure.id == failure_id
+        )
+    ) == "tesseract unavailable"
 
 
 def test_ocr_text_is_citable(session, project, scanned_pdf, tmp_path):

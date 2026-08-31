@@ -16,3 +16,17 @@ The cells here are a representative evaluation sample, not a request to
 transcribe the corpus. Unreadable and unresolved cases remain labelled as such.
 The acceptance ceilings live in `dataset.json` and were frozen with the labels,
 before any challenger configuration is measured.
+
+## Stage 1 routing receipt
+
+`stage1-routing-gold.json` binds independently checked OCR-needed labels to the
+exact v1 document/page identities. `stage1-routing-run.json` records the native
+text length and inventory-router decision observed from the locked PDF bytes;
+`stage1-routing-evaluation.json` is the deterministic comparison with the
+retired character-count rule. The five-page slice contains three native matrix
+pages, one image-only agreement page, and one mixed native/scanned agreement
+page. The inventory router records no misses and no unnecessary OCR; the retired
+rule misses the mixed page, for a 50% false "OCR not needed" rate over the two
+positive pages. Synthetic tests exercise both error directions but contribute
+to no quality claim. FDOT holdout access for this predeclared measurement is
+recorded in `holdout-access.jsonl`.

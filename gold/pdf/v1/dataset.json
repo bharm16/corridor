@@ -1,7 +1,7 @@
 {
   "schema_version": "corridor.pdf-gold.v1",
-  "dataset_version": "2026-08-31.1",
-  "frozen_at": "2026-08-31T00:00:00Z",
+  "dataset_version": "2026-08-31.2",
+  "frozen_at": "2026-08-31T06:55:00Z",
   "frozen_by": "Bryce Harmon",
   "checked_by": "independent-check-2026-08-31",
   "thresholds": {
@@ -221,6 +221,48 @@
           "page_scoped_values": {},
           "tables": [],
           "proposal_cases": [{"case_id": "wsdot-r210-ambiguous", "expected_value": null, "allowed_source_cell_ids": [], "must_abstain": true}]
+        }
+      ]
+    },
+    {
+      "document_sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+      "document_family": "coh-municipal-maintenance-agreement-1969",
+      "split": "development",
+      "source_title": "City of Houston Municipal Maintenance Agreement (1969)",
+      "author": "stage1-labeler-2026-08-31",
+      "checker": "stage1-checker-2026-08-31",
+      "pages": [
+        {
+          "page_number": 1,
+          "page_class": "image-only-agreement",
+          "width_points": 612000,
+          "height_points": 792000,
+          "rotation_degrees": 0,
+          "features": ["scanned_page", "image_only", "ocr_required"],
+          "page_scoped_values": {},
+          "tables": [],
+          "proposal_cases": []
+        }
+      ]
+    },
+    {
+      "document_sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2",
+      "document_family": "coh-parking-agreement-amendment-2012",
+      "split": "development",
+      "source_title": "City of Houston Parking Agreement Amendment (2012)",
+      "author": "stage1-labeler-2026-08-31",
+      "checker": "stage1-checker-2026-08-31",
+      "pages": [
+        {
+          "page_number": 1,
+          "page_class": "mixed-native-scanned-agreement",
+          "width_points": 610560,
+          "height_points": 791640,
+          "rotation_degrees": 0,
+          "features": ["mixed_page", "native_text", "embedded_scan", "ocr_required"],
+          "page_scoped_values": {},
+          "tables": [],
+          "proposal_cases": []
         }
       ]
     }

@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -277,6 +277,12 @@ evidence-shadow-eval:
 #   make pdf-eval ARGS="evaluate --gold gold/pdf/v1/dataset.json --predictions=<run.json> --output-json=<metrics.json> --output-report=<metrics.md>"
 pdf-eval:
 	uv run python -m corridor.pdf_evaluation_cli $(ARGS)
+
+# Record Stage 1 page-routing confusion and OCR error rates against the frozen
+# gold membership, alongside the retired character-count comparator:
+#   make page-inventory-eval ARGS="--gold=<stage1-gold.json> --run=<routing-run.json> --output=<receipt.json>"
+page-inventory-eval:
+	uv run python -m corridor.page_inventory_evaluation_cli $(ARGS)
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 # Bound a run to exact registered notes by repeating --document-id; --redo

@@ -14,11 +14,18 @@ printout cannot.
 
 Originals are never modified. The file on disk is read and hashed; nothing
 is written back to it.
+
+The discarded PDF router treated fewer than fifty native characters as a scan
+and swallowed every OCR exception into an empty string. That made short pages,
+mixed pages, and failed OCR indistinguishable. PDF ingest now persists the page
+inventory and region decision before it uses any recovered text; an engine
+exception becomes a scoped Processing Failure and fails the document attempt.
 """
 
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -26,7 +33,22 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import NUMBERING_SCHEMES, DocPage, Document, DocumentQuarantine
+from corridor.models import (
+    NUMBERING_SCHEMES,
+    DocPage,
+    Document,
+    DocumentQuarantine,
+    PageProcessingFailure,
+)
+from corridor.page_inventory import (
+    OCR_CONFIGURATION,
+    OCR_ENGINE,
+    PageInventory,
+    PageRoutingDecision,
+    PdfRect,
+    inventory_page,
+    route_page,
+)
 from corridor.source_segments import (
     SPREADSHEET_SUFFIXES,
     append_ingested_source_segments,
@@ -36,17 +58,34 @@ from corridor.source_segments import (
 # 700-row matrix does not turn into a gigabyte of PNGs.
 RENDER_DPI = 150
 
-# Below this, the page has no usable text layer and is almost certainly a
-# scan. Scanner-output PDFs return roughly 30 characters per page, which
-# reads as an empty page rather than as a scan — a first-pass extraction
-# returning little means "scan", not "blank".
-MIN_TEXT_CHARS = 50
-
 # Suffixes read as a workbook rather than a page image. `.xlsm` alongside
 # `.xlsx` because TxDOT's own form ships macros in some revisions and the
 # cells are identical either way; `.xls` is deliberately absent, since
 # openpyxl cannot read the old binary format and a file that silently
 # failed would look like a document nobody collected.
+
+
+@dataclass(frozen=True)
+class PageFailure:
+    engine: str
+    configuration: dict
+    region_id: str
+    scope: dict
+    error_type: str
+    error_message: str
+
+
+@dataclass(frozen=True)
+class ExtractedPage:
+    page_no: int
+    text: str
+    image_path: Path | None
+    text_source: str
+    inventory: PageInventory | None = None
+    routing: PageRoutingDecision | None = None
+    failures: tuple[PageFailure, ...] = ()
+
+
 def ingest_document(
     session: Session,
     *,
@@ -188,22 +227,14 @@ def ingest_document(
         session.flush()
         return document
 
-    for page_no, text, image_path, text_source in pages:
-        session.add(
-            DocPage(
-                document_id=document.id,
-                page_no=page_no,
-                text=text,
-                # None for a worksheet, which has no rendering to point at.
-                image_path=str(image_path) if image_path else None,
-                text_source=text_source,
-            )
-        )
+    _persist_pages(session, document, pages)
 
     append_ingested_source_segments(session, document, path)
 
     document.pages = len(pages)
-    document.parse_status = "parsed"
+    document.parse_status = (
+        "failed" if any(page.failures for page in pages) else "parsed"
+    )
     session.flush()
     return document
 
@@ -251,23 +282,55 @@ def reparse_document(
         session.delete(page)
     session.flush()
 
-    for page_no, text, image_path, text_source in pages:
-        session.add(
-            DocPage(
-                document_id=document.id,
-                page_no=page_no,
-                text=text,
-                image_path=str(image_path) if image_path else None,
-                text_source=text_source,
-            )
-        )
+    _persist_pages(session, document, pages)
     document.pages = len(pages)
-    document.parse_status = "parsed"
+    document.parse_status = (
+        "failed" if any(page.failures for page in pages) else "parsed"
+    )
     session.flush()
-    return True
+    return document.parse_status == "parsed"
 
 
-def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path | None, str]]:
+def _persist_pages(
+    session: Session, document: Document, pages: list[ExtractedPage]
+) -> None:
+    for extracted in pages:
+        page = DocPage(
+            document_id=document.id,
+            page_no=extracted.page_no,
+            text=extracted.text,
+            # None for a worksheet, which has no rendering to point at.
+            image_path=str(extracted.image_path) if extracted.image_path else None,
+            text_source=extracted.text_source,
+            inventory_json=(
+                extracted.inventory.model_dump(mode="json")
+                if extracted.inventory
+                else None
+            ),
+            routing_json=(
+                extracted.routing.model_dump(mode="json")
+                if extracted.routing
+                else None
+            ),
+        )
+        session.add(page)
+        session.flush()
+        for failure in extracted.failures:
+            session.add(
+                PageProcessingFailure(
+                    document_id=document.id,
+                    page_number=extracted.page_no,
+                    engine=failure.engine,
+                    configuration_json=failure.configuration,
+                    region_id=failure.region_id,
+                    scope_json=failure.scope,
+                    error_type=failure.error_type,
+                    error_message=failure.error_message,
+                )
+            )
+
+
+def _extract(path: Path, images_dir: Path) -> list[ExtractedPage]:
     if path.suffix.lower() in SPREADSHEET_SUFFIXES:
         return _extract_sheets(path)
     if path.suffix.lower() == ".eml":
@@ -275,7 +338,7 @@ def _extract(path: Path, images_dir: Path) -> list[tuple[int, str, Path | None, 
     return _extract_pages(path, images_dir)
 
 
-def _extract_message(path: Path) -> list[tuple[int, str, None, str]]:
+def _extract_message(path: Path) -> list[ExtractedPage]:
     """One page holding a stored raw message's plain-text body.
 
     Email intake (#372, ADR-0058) stores the complete original message
@@ -298,10 +361,10 @@ def _extract_message(path: Path) -> list[tuple[int, str, None, str]]:
         body = str(message.get_content() or "")
     if not body.strip():
         raise ValueError(f"{path.name}: no plain-text body")
-    return [(1, body, None, "text_layer")]
+    return [ExtractedPage(1, body, None, "text_layer")]
 
 
-def _extract_sheets(path: Path) -> list[tuple[int, str, None, str]]:
+def _extract_sheets(path: Path) -> list[ExtractedPage]:
     """One page per worksheet, its text generated from its cells.
 
     Sheet order is the file's own, and the page number is its position —
@@ -316,14 +379,14 @@ def _extract_sheets(path: Path) -> list[tuple[int, str, None, str]]:
     if not sheets:
         raise ValueError(f"{path.name}: no worksheets")
     return [
-        (index, sheet_text(sheet), None, "cells")
+        ExtractedPage(index, sheet_text(sheet), None, "cells")
         for index, sheet in enumerate(sheets, start=1)
     ]
 
 
-def _extract_pages(path: Path, images_dir: Path) -> list[tuple[int, str, Path, str]]:
+def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
     images_dir.mkdir(parents=True, exist_ok=True)
-    out: list[tuple[int, str, Path, str]] = []
+    out: list[ExtractedPage] = []
 
     with pymupdf.open(path) as pdf:
         if pdf.page_count == 0:
@@ -335,36 +398,104 @@ def _extract_pages(path: Path, images_dir: Path) -> list[tuple[int, str, Path, s
             image_path = images_dir / f"{page_no:04d}.png"
             page.get_pixmap(dpi=RENDER_DPI).save(image_path)
 
-            text = page.get_text()
-            source = "text_layer"
-            if len(text.strip()) < MIN_TEXT_CHARS:
-                ocr = _ocr(image_path)
-                if len(ocr.strip()) > len(text.strip()):
-                    text, source = ocr, "ocr"
+            native_text = page.get_text()
+            inventory = inventory_page(page, native_text=native_text)
+            routing = route_page(inventory)
+            ocr_text: list[str] = []
+            failures: list[PageFailure] = []
+            for region in routing.regions:
+                if region.mode not in {"ocr", "both"}:
+                    continue
+                try:
+                    recovered = _ocr_region(
+                        image_path,
+                        region.box,
+                        inventory.boxes.crop,
+                    )
+                except Exception as exc:
+                    failures.append(
+                        PageFailure(
+                            engine=OCR_ENGINE,
+                            configuration=dict(OCR_CONFIGURATION),
+                            region_id=region.region_id,
+                            scope={
+                                "page_number": page_no,
+                                "region_id": region.region_id,
+                                "box": region.box.model_dump(mode="json"),
+                            },
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                        )
+                    )
+                    continue
+                if recovered.strip():
+                    ocr_text.append(recovered.strip())
+            parts = []
+            if routing.page_mode in {"native", "both"} or not ocr_text:
+                if native_text:
+                    parts.append(native_text.rstrip())
+            parts.extend(text for text in ocr_text if text not in parts)
+            text = "\n".join(parts)
+            if text:
+                text += "\n"
+            # Compatibility readers keep every page that required OCR on the
+            # less-trusted OCR path, including failed attempts. Calling an
+            # image-only failure `text_layer` would recreate the retired lie.
+            source = (
+                "ocr" if routing.page_mode in {"ocr", "both"} else "text_layer"
+            )
 
-            out.append((page_no, text, image_path, source))
+            out.append(
+                ExtractedPage(
+                    page_no=page_no,
+                    text=text,
+                    image_path=image_path,
+                    text_source=source,
+                    inventory=inventory,
+                    routing=routing,
+                    failures=tuple(failures),
+                )
+            )
 
     return out
 
 
-def _ocr(image_path: Path) -> str:
-    """OCR the page image we already rendered.
+def _ocr_region(image_path: Path, region: PdfRect, page_box: PdfRect) -> str:
+    """OCR one recorded page region from the compatibility render.
 
     The spec names `ocrmypdf`, whose value is producing a searchable PDF.
     v0 stores page text and never mutates originals, so that second PDF
     pipeline (and its ghostscript dependency chain) buys nothing here —
     the 150 dpi PNG is already on disk.
-    """
-    try:
-        import pytesseract
-        from PIL import Image
 
-        with Image.open(image_path) as image:
-            return pytesseract.image_to_string(image)
-    except Exception:
-        # A missing tesseract binary must not fail the whole ingest. The
-        # page keeps its thin text layer and is visibly not OCR'd.
-        return ""
+    Exceptions deliberately escape this adapter. The page loop turns each one
+    into a scoped Processing Failure; an empty-string fallback would make a
+    failed engine indistinguishable from a genuinely blank region.
+    """
+    import pytesseract
+    from PIL import Image
+
+    with Image.open(image_path) as image:
+        page_width = max(1, page_box.width)
+        page_height = max(1, page_box.height)
+        crop = (
+            round((region.x0 - page_box.x0) * image.width / page_width),
+            round((region.y0 - page_box.y0) * image.height / page_height),
+            round((region.x1 - page_box.x0) * image.width / page_width),
+            round((region.y1 - page_box.y0) * image.height / page_height),
+        )
+        bounded = (
+            max(0, crop[0]),
+            max(0, crop[1]),
+            min(image.width, crop[2]),
+            min(image.height, crop[3]),
+        )
+        region_image = image.crop(bounded)
+        return pytesseract.image_to_string(
+            region_image,
+            lang=str(OCR_CONFIGURATION["language"]),
+            config=f"--psm {OCR_CONFIGURATION['page_segmentation_mode']}",
+        )
 
 
 def _as_datetime(value: str | datetime | None) -> datetime | None:

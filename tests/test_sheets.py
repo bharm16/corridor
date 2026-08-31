@@ -371,7 +371,7 @@ def test_the_page_number_is_the_one_ingest_gave_the_same_sheet(tmp_path):
     })
 
     chosen = conflict_sheet(read_workbook(path))
-    ingested = {page_no for page_no, *_ in _extract_sheets(path)}
+    ingested = {page.page_no for page in _extract_sheets(path)}
 
     assert chosen.page_no == 3
     assert chosen.page_no in ingested
