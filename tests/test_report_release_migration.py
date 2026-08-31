@@ -18,7 +18,7 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.report_release import external_report_release_history
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,6 +104,7 @@ def test_release_schema_is_one_linear_head_on_a_fresh_database():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue255_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
         engine = create_engine(database_url)
@@ -170,6 +171,7 @@ def test_release_successors_upgrade_the_immediate_predecessor_without_rewriting_
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue255_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -223,6 +225,7 @@ def test_release_actor_successor_preserves_an_existing_receipt_as_legacy():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue255_existing_release_",
+        reuse_migrated_template=True,
         migration_revision=RELEASE_PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -334,6 +337,7 @@ def test_idempotence_migration_refuses_duplicate_d255_release_history_atomically
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue255_duplicate_d255_",
+        reuse_migrated_template=True,
         migration_revision="d255a7c4d9e2",
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)

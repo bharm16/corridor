@@ -21,7 +21,7 @@ from sqlalchemy.exc import ProgrammingError
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +83,7 @@ def test_dependency_abstention_inputs_are_on_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue314_dependency_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         with database.session_factory().connection() as connection:
             assert connection.scalar(text("select version_num from alembic_version")) == HEAD
@@ -106,6 +107,7 @@ def test_predecessor_upgrade_preserves_historical_dependency_abstention():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue314_dependency_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)

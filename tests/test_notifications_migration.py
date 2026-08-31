@@ -31,7 +31,7 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f1c0d17e0a2b"
@@ -75,6 +75,7 @@ def test_fresh_head_has_the_notification_schema_and_triggers():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="notif_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         engine = create_engine(_database_url(database))
         try:
@@ -112,6 +113,7 @@ def test_predecessor_upgrade_preserves_assignments_and_protects_history():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="notif_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _database_url(database)

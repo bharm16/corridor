@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test-focused test test-full test-slow test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -34,14 +34,17 @@ test-focused:
 test:
 	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "not slow"
 
-# One complete release/CI gate for behavior, corpus, acceptance, and migrations.
-# This includes test; use it instead of test, never immediately after it.
+# Complete manual/scheduled gate. PR workflows use the scoped gates below.
 test-full:
 	uv run pytest -n $(TEST_WORKERS) --dist loadfile
 
-# Exhaustive complement to test. Use after test only when the revision is unchanged.
+# Exhaustive non-migration complement to test.
 test-slow:
-	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m slow
+	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration"
+
+# Database upgrade tests. Run for migration-sensitive changes, not ordinary PRs.
+test-migrations:
+	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m migration
 
 # Single-process fallback for debugger use and scheduler diagnosis.
 test-serial:

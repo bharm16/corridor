@@ -1,14 +1,29 @@
-name: test
+name: migration-test
 
 on:
   pull_request:
+    paths:
+      - "src/corridor/migrations/**"
+      - "src/corridor/models.py"
+      - "src/corridor/db.py"
+      - "src/corridor/m8_acceptance_database.py"
+      - "tests/conftest.py"
+      - "tests/test_*migration.py"
+      - "tests/test_m8_acceptance_integrity.py"
+      - "alembic.ini"
+      - "pyproject.toml"
+      - "Makefile"
+      - ".github/workflows/**"
+  schedule:
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  pytest:
+  migration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -36,35 +51,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
       - run: uv sync --locked
       - run: uv run alembic upgrade head
-      - run: make check
-      - run: make test
-
-  slow:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: corridor
-          POSTGRES_PASSWORD: corridor
-          POSTGRES_DB: corridor
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U corridor -d corridor"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
-      CORRIDOR_HUMAN_PRINCIPAL: local:ci
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
-      - run: uv sync --locked
-      - run: uv run alembic upgrade head
-      - run: make test-slow
+      - if: github.event_name == 'pull_request'
+        run: make test-migrations
+      - if: github.event_name != 'pull_request'
+        run: make test-full

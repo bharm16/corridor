@@ -14,7 +14,7 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b4d1e2f3a5c6"
@@ -38,6 +38,7 @@ def test_predecessor_upgrade_preserves_legacy_marks_and_guards_new_confirmations
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue347_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -175,6 +176,7 @@ def test_downgrade_refuses_to_erase_documentation_confirmation_history():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue347_downgrade_",
+        reuse_migrated_template=True,
         migration_revision=HEAD,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)

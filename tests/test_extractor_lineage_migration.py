@@ -18,7 +18,7 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "a316c5d7e9f1"
@@ -56,6 +56,7 @@ def test_extractor_lineage_is_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="extractor_lineage_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         with database.session_factory().connection() as connection:
             inspector = inspect(connection)
@@ -89,6 +90,7 @@ def test_predecessor_upgrade_preserves_null_history_and_guards_new_shapes():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="extractor_lineage_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -294,6 +296,7 @@ def test_head_downgrades_cleanly_and_reupgrade_preserves_unsealed_history():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="extractor_lineage_downgrade_",
+        reuse_migrated_template=True,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
         rendered = database_url.render_as_string(hide_password=False)

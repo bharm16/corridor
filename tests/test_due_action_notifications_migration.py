@@ -26,7 +26,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.models import DueActionNotification
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f362a1b2c3d4"
@@ -68,6 +68,7 @@ def test_fresh_head_has_the_due_action_schema_and_triggers():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="due_action_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         engine = create_engine(_database_url(database))
         try:
@@ -105,6 +106,7 @@ def test_predecessor_upgrade_records_and_protects_due_action_history():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="due_action_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _database_url(database)

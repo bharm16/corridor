@@ -23,7 +23,7 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "f367a8c1d2e4"
 HEAD = "b7d3f9a1c2e5"
@@ -53,6 +53,7 @@ def test_structured_sue_schema_is_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="sue_rendition_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         engine = create_engine(_url(database))
         try:
@@ -73,6 +74,7 @@ def test_predecessor_upgrade_enforces_evidence_kind_and_append_only_derivation()
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="sue_rendition_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _url(database)

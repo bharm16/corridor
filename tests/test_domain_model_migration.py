@@ -16,7 +16,7 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "e314a3d8c6f2"
@@ -43,6 +43,7 @@ def test_domain_model_schema_is_on_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="domain_model_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         with database.session_factory().connection() as connection:
             inspector = inspect(connection)
@@ -73,6 +74,7 @@ def test_predecessor_upgrade_preserves_retired_status_and_policy_activation():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="domain_model_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)

@@ -14,7 +14,7 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b4d1e2f3a5c6"
@@ -38,6 +38,7 @@ def test_predecessor_upgrade_adds_email_intake_without_rewriting_existing_projec
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue372_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         url = make_url(settings.database_url).set(database=database.name)

@@ -26,7 +26,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.models import DueWorkSchedule
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "c318d6e8f0a3"
@@ -58,6 +58,7 @@ def test_due_work_schema_is_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="due_work_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         engine = create_engine(_database_url(database))
         try:
@@ -99,6 +100,7 @@ def test_predecessor_upgrade_preserves_domain_rows_and_protects_runtime_history(
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="due_work_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _database_url(database)

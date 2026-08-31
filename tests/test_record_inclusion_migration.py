@@ -27,7 +27,7 @@ from corridor.admission import reconcile_record_inclusion
 from corridor.record_inclusion import request_record_inclusion
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "a364b7c9e2f1"
@@ -61,6 +61,7 @@ def test_record_inclusion_schema_is_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="record_inclusion_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         engine = create_engine(_database_url(database))
         try:
@@ -109,6 +110,7 @@ def test_predecessor_upgrade_preserves_rows_and_watermark_stays_mutable():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="record_inclusion_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _database_url(database)

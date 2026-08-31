@@ -15,7 +15,7 @@ from sqlalchemy.engine import make_url
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +74,7 @@ def test_evidence_investigator_schema_is_one_linear_head_on_a_fresh_database():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue295_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
         engine = create_engine(database_url)
@@ -238,6 +239,7 @@ def test_evidence_investigator_v2_seal_preserves_legacy_receipt_rows():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue295_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
