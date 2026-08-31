@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +58,7 @@ def test_verbal_precision_relaxation_is_one_linear_head_on_a_fresh_database():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue335_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
         engine = create_engine(database_url)
@@ -102,6 +103,7 @@ def test_migration_preserves_existing_verbal_and_documentary_statements():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue335_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         predecessor_url = make_url(settings.database_url).set(database=database.name)

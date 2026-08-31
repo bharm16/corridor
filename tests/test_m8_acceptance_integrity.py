@@ -106,6 +106,122 @@ def test_reusable_template_lifecycle_uses_the_stable_maintenance_database(
     assert seen_databases == ["postgres"]
 
 
+def test_reusable_template_honors_a_historical_revision(monkeypatch):
+    seen_revisions = []
+
+    def stop_after_observing_revision(
+        _engine,
+        _admin_url,
+        *,
+        migration_revision,
+        **_kwargs,
+    ):
+        seen_revisions.append(migration_revision)
+        raise AcceptanceError("observed historical template revision")
+
+    monkeypatch.setattr(
+        acceptance_database,
+        "_ensure_migrated_template",
+        stop_after_observing_revision,
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "_apply_schema_migrations",
+        lambda *_args, **_kwargs: pytest.fail(
+            "historical reusable provisioning replayed migrations per copy"
+        ),
+    )
+
+    with pytest.raises(
+        AcceptanceError,
+        match="observed historical template revision",
+    ):
+        with acceptance_database.provision_disposable_postgres(
+            settings.database_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+            database_prefix="corridor_migration_test_",
+            migration_revision="b4d1e2f3a5c6",
+            reuse_migrated_template=True,
+        ):
+            raise AssertionError("template setup must precede yield")
+
+    assert seen_revisions == ["b4d1e2f3a5c6"]
+
+
+def test_reusable_template_cache_separates_migration_revisions(monkeypatch):
+    migrated = []
+    reclaimed_prefixes = []
+    admin_engine = _TemplateAdminEngine()
+    admin_url = make_url(settings.database_url).set(database="postgres")
+    acceptance_database._migrated_templates.clear()
+    monkeypatch.setattr(
+        acceptance_database,
+        "_drop_abandoned_templates",
+        lambda _connection: None,
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "reclaim_abandoned_database_copies",
+        lambda _connection, prefix: reclaimed_prefixes.append(prefix),
+    )
+    monkeypatch.setattr(
+        acceptance_database,
+        "_apply_schema_migrations",
+        lambda _url, *, revision, **_kwargs: migrated.append(revision),
+    )
+    monkeypatch.setattr(acceptance_database.atexit, "register", lambda *_args: None)
+
+    try:
+        head_template = acceptance_database._ensure_migrated_template(
+            admin_engine,
+            admin_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+            database_prefix="migration_",
+            migration_revision="head",
+        )
+        predecessor_template = acceptance_database._ensure_migrated_template(
+            admin_engine,
+            admin_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+            database_prefix="historical_",
+            migration_revision="b4d1e2f3a5c6",
+        )
+        repeated_head_template = acceptance_database._ensure_migrated_template(
+            admin_engine,
+            admin_url,
+            repo_root=REPO_ROOT,
+            error_cls=AcceptanceError,
+            database_prefix="migration_",
+            migration_revision="head",
+        )
+    finally:
+        acceptance_database._migrated_templates.clear()
+
+    assert migrated == ["head", "b4d1e2f3a5c6"]
+    assert reclaimed_prefixes == ["migration_", "historical_", "migration_"]
+    assert head_template != predecessor_template
+    assert repeated_head_template == head_template
+
+
+class _TemplateAdminEngine:
+    def connect(self):
+        return _TemplateAdminConnection()
+
+
+class _TemplateAdminConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, _statement, _parameters=None):
+        return None
+
+
 def test_disposable_database_is_dropped_when_migration_fails(monkeypatch):
     database_name = f"{DATABASE_PREFIX}{uuid4().hex}"
     monkeypatch.setattr(

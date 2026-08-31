@@ -17,7 +17,7 @@ from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.product_proving_database import _fingerprint_public_schema
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "b317c5d7e9f2"
@@ -256,6 +256,7 @@ def test_schema_reconciliation_is_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="schema_reconciliation_fresh_",
+        reuse_migrated_template=True,
         migration_revision=HEAD,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -269,6 +270,7 @@ def test_historical_predecessor_converges_and_rehearses_downgrade_reupgrade():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="schema_reconciliation_predecessor_reference_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as predecessor:
         predecessor_url = make_url(settings.database_url).set(
@@ -283,6 +285,7 @@ def test_historical_predecessor_converges_and_rehearses_downgrade_reupgrade():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="schema_reconciliation_head_reference_",
+        reuse_migrated_template=True,
         migration_revision=HEAD,
     ) as fresh:
         fresh_url = make_url(settings.database_url).set(database=fresh.name)
@@ -293,6 +296,7 @@ def test_historical_predecessor_converges_and_rehearses_downgrade_reupgrade():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="schema_reconciliation_historical_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as historical:
         historical_url = make_url(settings.database_url).set(database=historical.name)

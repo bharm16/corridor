@@ -24,13 +24,16 @@ Use non-overlapping gates appropriate to the exact revision
   for the changed seam. Do not run the broad suite after every edit.
 - Use `make test` after a broad change or before pushing when local broad
   feedback is useful.
-- `make test-full` includes every test selected by `make test`. Run the full
-  gate once for a release revision, normally in PR CI; never precede it with
-  `make test` on the unchanged revision.
-- If `make test` already passed and the revision is unchanged, `make test-slow`
-  supplies the exhaustive complement without rerunning the normal tests.
+- Normal PR CI runs `make check`, `make test`, and the non-migration
+  `make test-slow` selection. A merge to `main` does not repeat that suite.
+- Deliver changes to `main` through a PR; direct pushes have no duplicate
+  post-merge test workflow.
+- A change to migrations, schema models, or the database test harness also runs
+  `make test-migrations`. Ordinary application changes do not.
+- `make test-full` is the complete manual and weekly scheduled gate. It is not
+  part of ordinary PR or post-merge CI.
 - Any source or test change invalidates an earlier result. Rerun the smallest
-  affected seam, then whichever single final gate the revised change requires.
+  affected seam, then the scoped gate for the revised change.
 
 ## Architecture
 
@@ -60,7 +63,8 @@ saying why it exists and what was tried before — read it before changing one.
   `runtime_database` fixture in `tests/conftest.py`. Ordinary database tests
   remain rollback-scoped; test modules do not provision their own databases.
   The harness copies these databases from one migrated per-process template;
-  migration rehearsal tests still provision and migrate their exact revisions.
+  database upgrade tests build one real template per requested revision, clone
+  it, seed historical rows, and then test the requested upgrade path.
 - `llm_model` and the prompt version in `prompts/` are recorded on every
   Extracted Proposal. Changing either without an eval run makes the numbers
   incomparable.

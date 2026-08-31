@@ -1,7 +1,22 @@
-name: test
+name: migration-test
 
 on:
   pull_request:
+    paths:
+      - "src/corridor/migrations/**"
+      - "src/corridor/models.py"
+      - "src/corridor/db.py"
+      - "src/corridor/m8_acceptance_database.py"
+      - "tests/conftest.py"
+      - "tests/test_*migration.py"
+      - "tests/test_m8_acceptance_integrity.py"
+      - "alembic.ini"
+      - "pyproject.toml"
+      - "Makefile"
+      - ".github/workflows/**"
+  schedule:
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
 
 jobs:
   pytest:
@@ -32,6 +47,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
       - run: uv sync --locked
       - run: uv run alembic upgrade head
-      - run: make check
-      - run: make test
-      - run: make test-slow
+      - if: github.event_name == 'pull_request'
+        run: make test-migrations
+      - if: github.event_name != 'pull_request'
+        run: make test-full

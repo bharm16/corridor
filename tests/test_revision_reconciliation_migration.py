@@ -26,7 +26,7 @@ from corridor.models import RevisionReconciliationRequest
 from corridor.revision_reconciliation_request import request_revision_reconciliation
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "86edb31fd81a"
@@ -60,6 +60,7 @@ def test_revision_reconciliation_schema_is_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="revision_reconciliation_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         engine = create_engine(_database_url(database))
         try:
@@ -110,6 +111,7 @@ def test_predecessor_upgrade_preserves_rows_and_watermark_stays_mutable():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="revision_reconciliation_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _database_url(database)

@@ -45,7 +45,7 @@ from corridor.models import (
 import corridor.adjudicate as adjudicate_module
 import corridor.models as models_module
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -1454,6 +1454,7 @@ def test_statement_rehearsal_starts_at_completed_216_schema():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a222_statement_",
+        reuse_migrated_template=True,
         migration_revision=_PRE_STATEMENT_REVISION,
     ) as database:
         assert database.postgres_version.startswith("16.")
@@ -1467,6 +1468,7 @@ def test_contract_head_removes_legacy_statement_authority_but_keeps_projection()
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a230_contract_",
+        reuse_migrated_template=True,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
         engine = create_engine(database_url)
@@ -1506,6 +1508,7 @@ def test_populated_216_fixture_records_every_historical_statement_case():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a222_statement_",
+        reuse_migrated_template=True,
         migration_revision=_PRE_STATEMENT_REVISION,
     ) as database:
         engine = create_engine(
@@ -1548,6 +1551,7 @@ def test_populated_rehearsal_checks_receipts_round_trip_and_atomic_refusal():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a222_statement_",
+        reuse_migrated_template=True,
         migration_revision=_PRE_STATEMENT_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -1617,6 +1621,7 @@ def test_attributable_storage_repairs_a217_applied_before_late_guards():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a223_historical_a217_",
+        reuse_migrated_template=True,
         migration_revision=_PRE_STATEMENT_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -1662,6 +1667,7 @@ def test_event_role_migration_refuses_ambiguous_preexisting_scope_history():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a227_ambiguous_scope_",
+        reuse_migrated_template=True,
         migration_revision=_SCOPE_DECISION_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(
@@ -1832,6 +1838,7 @@ def test_representable_216_history_round_trips_each_revision_exactly():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a222_statement_",
+        reuse_migrated_template=True,
         migration_revision=_PRE_STATEMENT_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -1880,6 +1887,7 @@ def test_contracted_statements_refuse_legacy_downgrade_and_seal_cited_rows():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a217_statement_",
+        reuse_migrated_template=True,
         migration_revision=_STATEMENT_LIFECYCLE_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(
@@ -2088,6 +2096,7 @@ def test_contract_downgrade_refuses_multiscope_before_legacy_ddl():
         repo_root=_ROOT,
         error_cls=RuntimeError,
         database_prefix="a230_multiscope_",
+        reuse_migrated_template=True,
         migration_revision=_STATEMENT_LIFECYCLE_REVISION,
     ) as database:
         database_url = make_url(settings.database_url).set(

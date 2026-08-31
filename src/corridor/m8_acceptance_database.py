@@ -70,9 +70,8 @@ def provision_disposable_postgres(
     """Create, migrate to one revision, and destroy a guarded PostgreSQL database.
 
     ``reuse_migrated_template`` copies a per-process template that this module
-    already migrated, instead of replaying the Alembic chain per database. It
-    applies only to ``head``; an exact historical pin always replays the chain,
-    because rehearsing the chain is the point of a pinned revision.
+    migrated to the requested revision, instead of replaying the same Alembic
+    path for every database. Each revision gets a distinct template.
     """
 
     parsed = make_url(admin_url)
@@ -86,7 +85,7 @@ def provision_disposable_postgres(
         poolclass=NullPool,
         future=True,
     )
-    uses_template = reuse_migrated_template and migration_revision == "head"
+    uses_template = reuse_migrated_template
     database_name = (
         process_owned_database_name(database_prefix)
         if uses_template
@@ -107,6 +106,7 @@ def provision_disposable_postgres(
                 repo_root=repo_root,
                 error_cls=error_cls,
                 database_prefix=database_prefix,
+                migration_revision=migration_revision,
             )
         with admin_engine.connect() as connection:
             if template_name is None:
@@ -238,7 +238,7 @@ def read_migration_head(
 
 
 _TEMPLATE_PREFIX = "corridor_migrated_template_"
-_migrated_templates: dict[str, str] = {}
+_migrated_templates: dict[tuple[str, str], str] = {}
 
 
 def _ensure_migrated_template(
@@ -248,24 +248,23 @@ def _ensure_migrated_template(
     repo_root: Path,
     error_cls: type[Exception],
     database_prefix: str,
+    migration_revision: str,
 ) -> str:
-    """Migrate one reusable template per process and reuse it for every copy.
+    """Migrate one template per process and requested revision.
 
-    Replaying the whole chain per disposable database dominated the runtime
-    suite. PostgreSQL copies an already-migrated template without replaying the
-    chain, and the template is still built by the real chain, so a copied
-    database is indistinguishable from a migrated one.
+    The first request still runs the real Alembic path. Later tests clone that
+    exact schema and can seed their own historical rows before upgrading it.
     """
 
-    cache_key = admin_url.render_as_string(hide_password=False)
-    cached = _migrated_templates.get(cache_key)
-    if cached is not None:
-        return cached
-
-    template_name = f"{_TEMPLATE_PREFIX}{os.getpid()}_{uuid4().hex[:8]}"
+    admin_url_text = admin_url.render_as_string(hide_password=False)
+    cache_key = (admin_url_text, migration_revision)
     with admin_engine.connect() as connection:
-        _drop_abandoned_templates(connection)
         reclaim_abandoned_database_copies(connection, database_prefix)
+        cached = _migrated_templates.get(cache_key)
+        if cached is not None:
+            return cached
+        _drop_abandoned_templates(connection)
+        template_name = f"{_TEMPLATE_PREFIX}{os.getpid()}_{uuid4().hex[:8]}"
         connection.execute(text(f'drop database if exists "{template_name}"'))
         connection.execute(text(f'create database "{template_name}"'))
     try:
@@ -273,13 +272,13 @@ def _ensure_migrated_template(
             admin_url.set(database=template_name),
             repo_root=repo_root,
             error_cls=error_cls,
-            revision="head",
+            revision=migration_revision,
         )
     except BaseException:
-        _drop_template(cache_key, template_name)
+        _drop_template(cache_key, admin_url_text, template_name)
         raise
     _migrated_templates[cache_key] = template_name
-    atexit.register(_drop_template, cache_key, template_name)
+    atexit.register(_drop_template, cache_key, admin_url_text, template_name)
     return template_name
 
 
@@ -359,10 +358,14 @@ def process_is_running(pid: int) -> bool:
     return True
 
 
-def _drop_template(admin_url_text: str, template_name: str) -> None:
+def _drop_template(
+    cache_key: tuple[str, str],
+    admin_url_text: str,
+    template_name: str,
+) -> None:
     """Destroy a process template, tolerating an already-torn-down server."""
 
-    _migrated_templates.pop(admin_url_text, None)
+    _migrated_templates.pop(cache_key, None)
     try:
         engine = create_engine(
             make_url(admin_url_text),

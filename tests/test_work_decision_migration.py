@@ -15,7 +15,7 @@ from sqlalchemy.engine import make_url
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +45,7 @@ def test_work_decision_expansion_is_one_linear_head_on_a_fresh_database():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue249_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
         engine = create_engine(database_url)
@@ -107,6 +108,7 @@ def test_work_decision_expansion_preserves_exact_predecessor_receipts():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue249_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -194,6 +196,7 @@ def test_reason_projection_backfills_an_undated_dependency_action_tail():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue249_reason_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=REASON_PROJECTION_PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -250,6 +253,7 @@ def test_work_list_successors_upgrade_the_immediate_predecessor_exactly():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue253_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=WORK_LIST_PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)

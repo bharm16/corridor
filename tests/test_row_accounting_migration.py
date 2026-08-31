@@ -24,7 +24,7 @@ from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "d319e7f9a1b4"
@@ -56,6 +56,7 @@ def test_row_accounting_schema_is_one_fresh_linear_head():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="row_accounting_fresh_",
+        reuse_migrated_template=True,
     ) as database:
         engine = create_engine(_url(database))
         try:
@@ -90,6 +91,7 @@ def test_predecessor_upgrade_preserves_historical_null_and_guards_new_reader():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="row_accounting_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = _url(database)

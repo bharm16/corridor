@@ -130,3 +130,38 @@ def test_every_adr_declares_machine_readable_status():
             missing.append(path.name)
 
     assert missing == []
+
+
+def test_database_upgrade_tests_are_marked_and_reuse_revision_templates():
+    missing = [
+        path.name
+        for path in sorted((REPO_ROOT / "tests").glob("test_*migration.py"))
+        if "pytest.mark.migration" not in path.read_text()
+    ]
+    unreused = []
+    for path in sorted((REPO_ROOT / "tests").glob("test_*migration.py")):
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if function_name != "provision_disposable_postgres":
+                continue
+            reuse = next(
+                (
+                    keyword.value
+                    for keyword in node.keywords
+                    if keyword.arg == "reuse_migrated_template"
+                ),
+                None,
+            )
+            if not isinstance(reuse, ast.Constant) or reuse.value is not True:
+                unreused.append(f"{path.name}:{node.lineno}")
+
+    assert missing == []
+    assert unreused == []

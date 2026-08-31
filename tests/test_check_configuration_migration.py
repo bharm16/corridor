@@ -17,7 +17,7 @@ from sqlalchemy.engine import make_url
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "a364b7c9e2f1"
@@ -41,6 +41,7 @@ def test_predecessor_upgrade_adds_the_table_and_preserves_legacy_report_runs():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue339_predecessor_",
+        reuse_migrated_template=True,
         migration_revision=PREDECESSOR,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
@@ -152,6 +153,7 @@ def test_downgrade_refuses_to_erase_declared_history():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="issue339_downgrade_",
+        reuse_migrated_template=True,
         migration_revision=HEAD,
     ) as database:
         database_url = make_url(settings.database_url).set(database=database.name)
