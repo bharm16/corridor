@@ -1,0 +1,36 @@
+{
+  "schema_version": "corridor.current-record-view-performance.v1",
+  "measured_revision": "8fc4c747b2d9",
+  "phase0_baseline_artifact": "artifacts/storage-baseline/dev-corpus.json",
+  "phase0_baseline_sha256": "8b4fb89113d47b188897f5eed2c70b24ab5899e2ab745cd5c50169d0db3fd3ef",
+  "scale_basis": "Retained SH 99 dev-corpus database cloned and migrated in isolation",
+  "source_database": "corridor_ui_verify_20260823",
+  "source_migration_head": "a257c9e6f204",
+  "project_slug": "sh99-grand-parkway",
+  "legacy_dependency_count": 515,
+  "frozen_phase0_dependency_count": 516,
+  "compatibility_columns_added_on_disposable_clone": 24,
+  "measurement_fixture": "Current decisions matching every non-null legacy station_from/station_to value",
+  "view_row_count": 1009,
+  "planning_time_ms": 0.291,
+  "execution_time_ms": 23.408,
+  "slow_threshold_ms": 50.0,
+  "materialized_view_needed": false,
+  "escalation": "none; retain the plain PostgreSQL view",
+  "limitations": [
+    "The retained dev database has 515 SH 99 Dependencies while the immutable Phase 0 report records 516; byte-level comparison to that PDF is therefore explained rather than claimed identical.",
+    "The retained schema predates 24 nullable mapped columns/tables needed by current readers; those compatibility shapes were added only on the disposable clone.",
+    "The source database was never migrated or written; matching spine decisions existed only inside the rolled-back disposable measurement transaction."
+  ],
+  "reader_equivalence": {
+    "fixture": "real retained SH 99 dev-corpus project with matching view decisions for 1009 legacy Stationing values",
+    "coordination_report_identical": true,
+    "briefing_identical": true,
+    "workbook_cells_identical": true,
+    "release_pdf_text_identical": true,
+    "normalizations": [
+      "XLSX package timestamps excluded; every workbook cell compared.",
+      "PDF container metadata excluded; normalized rendered page text compared."
+    ]
+  }
+}

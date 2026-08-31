@@ -15,7 +15,7 @@ from corridor.dependency_events import StatementPublication
 from corridor.exceptions import Evaluation, format_exception_label
 from corridor.ledger import primary_evidence
 from corridor.models import Project
-from corridor.project_reading import freeze_project_reading
+from corridor.project_reading import FrozenProjectReading, freeze_project_reading
 from corridor.presentation import (
     documentation_review_label,
     label,
@@ -80,6 +80,7 @@ def to_xlsx(
     evaluation: Evaluation,
     statement_publication: StatementPublication,
     internal_working_copy: bool = False,
+    frozen_reading: FrozenProjectReading | None = None,
 ) -> Path:
     """The ledger as a workbook, at the evaluation the report published.
 
@@ -98,7 +99,7 @@ def to_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
-    reading = freeze_project_reading(
+    reading = frozen_reading or freeze_project_reading(
         session,
         project_id,
         document_only=statement_publication.document_only,

@@ -43,7 +43,7 @@ from corridor.models import (
     is_critical,
 )
 from corridor.dependency_events import current_scope_decision_filter
-from corridor.project_reading import freeze_project_reading
+from corridor.project_reading import FrozenProjectReading, freeze_project_reading
 from corridor.presentation import (
     documentation_review_label,
     input_reference_label,
@@ -265,13 +265,11 @@ def build_report(
     *,
     today: date | None = None,
     document_only: bool = False,
+    frozen_reading: FrozenProjectReading | None = None,
 ) -> Report:
     today = today or datetime.now(timezone.utc).date()
-    reading = freeze_project_reading(
-        session,
-        project_id,
-        today=today,
-        document_only=document_only,
+    reading = frozen_reading or freeze_project_reading(
+        session, project_id, today=today, document_only=document_only
     )
     publication = reading.statement_publication
     committed_dates = publication.committed_dates
