@@ -257,6 +257,18 @@ class Base(DeclarativeBase):
     pass
 
 
+class ClassBRetentionMixin:
+    """Explicit TTL state shared only by intermediary assistant receipts."""
+
+    retention_class: Mapped[str] = mapped_column(
+        String(16), default="class_b", server_default="class_b"
+    )
+    retention_content_sha256: Mapped[str | None] = mapped_column(String(64))
+    retention_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -2836,7 +2848,7 @@ class CoordinationSummaryConfiguration(Base):
         CheckConstraint("timeout_seconds between 1 and 600", name="ck_summary_config_timeout"),
         CheckConstraint("max_requests = 1", name="ck_summary_config_one_request"),
         CheckConstraint("retry_policy = 'none'", name="ck_summary_config_no_retry"),
-        CheckConstraint("retention_policy = 'retained_indefinitely'", name="ck_summary_config_retention"),
+        CheckConstraint("retention_policy = 'class_b_30_days'", name="ck_summary_config_retention"),
         CheckConstraint("length(trim(model)) > 0", name="ck_summary_config_model"),
         CheckConstraint("length(trim(prompt_version)) > 0", name="ck_summary_config_prompt"),
         CheckConstraint("length(trim(observation_context)) > 0", name="ck_summary_config_context"),
@@ -2860,7 +2872,7 @@ class CoordinationSummaryConfiguration(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class CoordinationSummaryRequest(Base):
+class CoordinationSummaryRequest(ClassBRetentionMixin, Base):
     """Immutable receipt for one bounded, non-authoritative draft attempt."""
 
     __tablename__ = "coordination_summary_requests"
@@ -2921,7 +2933,7 @@ class ProductionRunExplanationConfiguration(Base):
         CheckConstraint("max_requests = 1", name="ck_run_explanation_config_one_request"),
         CheckConstraint("retry_policy = 'none'", name="ck_run_explanation_config_no_retry"),
         CheckConstraint(
-            "retention_policy = 'retained_indefinitely'",
+            "retention_policy = 'class_b_30_days'",
             name="ck_run_explanation_config_retention",
         ),
         CheckConstraint("length(trim(model)) > 0", name="ck_run_explanation_config_model"),
@@ -2955,7 +2967,7 @@ class ProductionRunExplanationConfiguration(Base):
     )
 
 
-class ProductionRunExplanationRequest(Base):
+class ProductionRunExplanationRequest(ClassBRetentionMixin, Base):
     """Immutable receipt for one bounded, non-authoritative run explanation.
 
     The receipt binds the exact competing run identities it explained, retains
@@ -3069,7 +3081,7 @@ class ExtractionFailureDiagnosisConfiguration(Base):
             "retry_policy = 'none'", name="ck_failure_diagnosis_config_no_retry"
         ),
         CheckConstraint(
-            "retention_policy = 'retained_indefinitely'",
+            "retention_policy = 'class_b_30_days'",
             name="ck_failure_diagnosis_config_retention",
         ),
         CheckConstraint(
@@ -3106,7 +3118,7 @@ class ExtractionFailureDiagnosisConfiguration(Base):
     )
 
 
-class ExtractionFailureDiagnosisRequest(Base):
+class ExtractionFailureDiagnosisRequest(ClassBRetentionMixin, Base):
     """Immutable receipt for one bounded, non-authoritative failure diagnosis.
 
     The receipt binds the exact failed Extraction Run it diagnosed, retains the
@@ -3221,7 +3233,7 @@ class RevisionChangeExplanationConfiguration(Base):
         CheckConstraint("max_requests = 1", name="ck_rev_change_expl_cfg_one_request"),
         CheckConstraint("retry_policy = 'none'", name="ck_rev_change_expl_cfg_no_retry"),
         CheckConstraint(
-            "retention_policy = 'retained_indefinitely'",
+            "retention_policy = 'class_b_30_days'",
             name="ck_rev_change_expl_cfg_retention",
         ),
         CheckConstraint("length(trim(model)) > 0", name="ck_rev_change_expl_cfg_model"),
@@ -3255,7 +3267,7 @@ class RevisionChangeExplanationConfiguration(Base):
     )
 
 
-class RevisionChangeExplanationRequest(Base):
+class RevisionChangeExplanationRequest(ClassBRetentionMixin, Base):
     """Immutable receipt for one bounded, non-authoritative revision-change
     explanation (#360).
 
@@ -3372,7 +3384,7 @@ class SourceIntakeDraftConfiguration(Base):
         CheckConstraint("max_requests = 1", name="ck_intake_draft_config_one_request"),
         CheckConstraint("retry_policy = 'none'", name="ck_intake_draft_config_no_retry"),
         CheckConstraint(
-            "retention_policy = 'retained_indefinitely'",
+            "retention_policy = 'class_b_30_days'",
             name="ck_intake_draft_config_retention",
         ),
         CheckConstraint("length(trim(model)) > 0", name="ck_intake_draft_config_model"),
@@ -3406,7 +3418,7 @@ class SourceIntakeDraftConfiguration(Base):
     )
 
 
-class SourceIntakeDraftRequest(Base):
+class SourceIntakeDraftRequest(ClassBRetentionMixin, Base):
     """Immutable receipt for one bounded, non-authoritative intake draft (#362).
 
     The receipt binds the exact staged bytes it read (by their own hash, never a
@@ -3497,6 +3509,83 @@ class SourceIntakeDraftRequest(Base):
     completed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ProcessingArtifact(Base):
+    """One classified file-backed intermediary with a digest remainder."""
+
+    __tablename__ = "processing_artifacts"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    retention_class: Mapped[str] = mapped_column(String(16), server_default="class_b")
+    storage_path: Mapped[str] = mapped_column(Text, unique=True)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    terminal_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetentionHold(Base):
+    """One attributable project hold that suspends every Class B delete path."""
+
+    __tablename__ = "retention_holds"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    placed_by: Mapped[str] = mapped_column(String(128))
+    placed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    lifted_by: Mapped[str | None] = mapped_column(String(128))
+    lifted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetentionReference(Base):
+    """A durable or open reference that makes intermediary content unreachable."""
+
+    __tablename__ = "retention_references"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    family: Mapped[str] = mapped_column(String(64))
+    source_row_id: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(32))
+    referenced_by: Mapped[str] = mapped_column(Text)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetentionManifest(Base):
+    """Immutable dry-run identity for one exact set of eligible Class B values."""
+
+    __tablename__ = "retention_manifests"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), unique=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetentionManifestItem(Base):
+    """One digest-pinned intermediary value named before deletion."""
+
+    __tablename__ = "retention_manifest_items"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    manifest_id: Mapped[int] = mapped_column(
+        ForeignKey("retention_manifests.id"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    family: Mapped[str] = mapped_column(String(64))
+    source_row_id: Mapped[int] = mapped_column(BigInteger)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    terminal_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    delete_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ExternalReportArtifact(Base):

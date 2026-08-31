@@ -71,7 +71,7 @@ def _declare(session, project):
         timeout_seconds=30,
         max_requests=1,
         retry_policy="none",
-        retention_policy="retained_indefinitely",
+        retention_policy="class_b_30_days",
         observation_context="internal_working_view",
     )
 
@@ -296,7 +296,7 @@ def test_incomplete_configuration_bounds_are_refused(session, project):
         timeout_seconds=30,
         max_requests=1,
         retry_policy="none",
-        retention_policy="retained_indefinitely",
+        retention_policy="class_b_30_days",
         observation_context="internal_working_view",
     )
     for overrides in (
@@ -329,7 +329,7 @@ def test_input_over_the_declared_budget_is_refused_without_a_model_call(
         timeout_seconds=30,
         max_requests=1,
         retry_policy="none",
-        retention_policy="retained_indefinitely",
+        retention_policy="class_b_30_days",
         observation_context="internal_working_view",
     )
     client = StubClient({"sentences": []})

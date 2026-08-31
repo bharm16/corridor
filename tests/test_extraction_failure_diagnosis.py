@@ -189,7 +189,7 @@ def _declare_config(client, project, **overrides):
         "timeout_seconds": "30",
         "max_requests": "1",
         "retry_policy": "none",
-        "retention_policy": "retained_indefinitely",
+        "retention_policy": "class_b_30_days",
         "observation_context": "internal_working_view",
     }
     data.update(overrides)
