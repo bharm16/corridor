@@ -21,6 +21,7 @@ class FactTypeContract:
     accepted_segment_kinds: frozenset[str]
     automatic_segment_kinds: frozenset[str]
     required_roles: frozenset[str]
+    validation_rule: str
     current_value_rule: str
     inclusion_rule: str
 
@@ -70,6 +71,11 @@ FACT_TYPE_CONTRACTS = {
             accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
             automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
             required_roles=frozenset({"value_source"}),
+            validation_rule=(
+                "non_empty_replay_exact_optional_registered_alias"
+                if name == "external_org"
+                else "non_empty_replay_exact"
+            ),
             current_value_rule="latest_effective_single_value",
             inclusion_rule="verified_mapping_cell_policy",
         )
@@ -83,6 +89,7 @@ FACT_TYPE_CONTRACTS = {
             accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
             automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
             required_roles=frozenset({"value_source"}),
+            validation_rule="iso_calendar_date_replay_exact",
             current_value_rule="latest_effective_single_value",
             inclusion_rule="verified_mapping_cell_policy",
         )
@@ -95,6 +102,7 @@ FACT_TYPE_CONTRACTS = {
         accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
         automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
         required_roles=frozenset({"value_source"}),
+        validation_rule="non_empty_scoped_reference_set",
         current_value_rule="effective_reference_set",
         inclusion_rule="verified_mapping_cell_policy",
     ),
@@ -105,6 +113,7 @@ FACT_TYPE_CONTRACTS = {
         accepted_segment_kinds=frozenset({"spreadsheet_cell", "prose_span"}),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source"}),
+        validation_rule="typed_closure_with_governing_sources",
         current_value_rule="human_decision_effectiveness",
         inclusion_rule="human_record_decision",
     ),
@@ -115,6 +124,7 @@ FACT_TYPE_CONTRACTS = {
         accepted_segment_kinds=frozenset({"prose_span"}),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source", "attribution_source"}),
+        validation_rule="exact_attributed_prose_span",
         current_value_rule="human_decision_effectiveness",
         inclusion_rule="human_record_decision",
     ),

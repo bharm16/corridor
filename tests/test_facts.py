@@ -542,6 +542,7 @@ def test_every_controlled_structured_cell_type_has_a_complete_contract():
         assert contract.value_class
         assert contract.transformation
         assert contract.required_roles == frozenset({"value_source"})
+        assert contract.validation_rule
         assert contract.current_value_rule
         assert contract.inclusion_rule
 

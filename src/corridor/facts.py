@@ -134,7 +134,7 @@ def append_structured_cell_facts(
                 raise FactValidationError(
                     f"{fact_type} does not accept {segment.kind} support"
                 )
-            value = _transform(contract.transformation, segment.exact_text)
+            value = _validated_scalar_value(contract, segment.exact_text)
             if value != fields[fact_type]:
                 candidate_value = _candidate_typed_value(contract, fields[fact_type])
                 if value != candidate_value:
@@ -423,7 +423,7 @@ def correct_fact(
     contract = FACT_TYPE_CONTRACTS.get(predecessor.fact_type)
     if contract is None or segment.kind not in contract.accepted_segment_kinds:
         raise FactValidationError("corrected Fact source kind violates its contract")
-    value = _transform(predecessor.transformation, segment.exact_text)
+    value = _validated_scalar_value(contract, segment.exact_text)
     text_value = value if isinstance(value, str) else None
     date_value = value if isinstance(value, date) else None
     external_org_value_id = (
@@ -609,7 +609,7 @@ def replay_fact(
     if segment.kind not in contract.accepted_segment_kinds:
         raise FactValidationError("Fact source kind does not match its contract")
     exact = dereference_source_segment(document, segment, path)
-    replayed = _transform(fact.transformation, exact)
+    replayed = _validated_scalar_value(contract, exact)
     materialized = fact.date_value if fact.date_value is not None else fact.text_value
     if replayed != materialized:
         raise FactReplayMismatch("materialized Fact value does not reproduce")
@@ -658,8 +658,28 @@ def _transform(name: str, exact_text: str) -> str | date:
 
 def _candidate_typed_value(contract: FactTypeContract, value: object) -> str | date:
     if contract.value_class == "date":
-        return _transform(contract.transformation, str(value))
+        return _validated_scalar_value(contract, str(value))
     return str(value).strip()
+
+
+def _validated_scalar_value(
+    contract: FactTypeContract, exact_text: str
+) -> str | date:
+    value = _transform(contract.transformation, exact_text)
+    if contract.validation_rule in {
+        "non_empty_replay_exact",
+        "non_empty_replay_exact_optional_registered_alias",
+    }:
+        if not isinstance(value, str) or not value.strip():
+            raise FactValidationError("structured text Fact cannot be empty")
+    elif contract.validation_rule == "iso_calendar_date_replay_exact":
+        if not isinstance(value, date):
+            raise FactValidationError("structured date Fact must be a calendar date")
+    elif contract.validation_rule != "exact_attributed_prose_span":
+        raise FactValidationError(
+            f"Fact validation rule is not scalar: {contract.validation_rule!r}"
+        )
+    return value
 
 
 def _exact_registered_external_org_id(session: Session, wording: str) -> int | None:
