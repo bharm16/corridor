@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from corridor import dependency_admission, event_admission, policy
 from corridor.extractor_lineage import canonical_json_bytes, validate_config_json_shape
+from corridor.facts import proposal_input_snapshots
 from corridor.models import (
     ActiveExtractionRun,
     ActiveRunDeclaration,
@@ -516,11 +517,18 @@ def load_extraction_run_candidate_set(
         raise ValueError(f"Extraction Run {run_id} does not exist")
     if run.outcome != "completed" or run.page_errors != 0:
         raise ValueError(f"Extraction Run {run_id} is not complete without errors")
-    if not isinstance(run.candidate_inputs_json, list):
+    snapshot_values = (
+        run.candidate_inputs_json
+        if isinstance(run.candidate_inputs_json, list)
+        else proposal_input_snapshots(session, run)
+    )
+    if not isinstance(snapshot_values, list) or (
+        run.candidate_count and not snapshot_values
+    ):
         raise ValueError(
             f"Extraction Run {run_id} has no immutable Candidate input snapshot"
         )
-    if run.candidate_count != len(run.candidate_inputs_json):
+    if run.candidate_count != len(snapshot_values):
         raise ValueError(
             f"Extraction Run {run_id} Candidate input count does not match its receipt"
         )
@@ -530,7 +538,7 @@ def load_extraction_run_candidate_set(
         )
     candidates: tuple[Mapping[str, Any], ...] = tuple(
         _require_candidate_input(run, value)
-        for value in run.candidate_inputs_json
+        for value in snapshot_values
     )
     config_json = run.extractor_config_json
     if (

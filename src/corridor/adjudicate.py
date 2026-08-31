@@ -28,6 +28,7 @@ from corridor.models import (
     Document,
     DocPage,
     EvidenceLink,
+    ExtractedProposal,
     ExternalOrg,
     LegacyLedgerArchive,
     OperativeSupport,
@@ -45,6 +46,10 @@ from corridor.verify import (
 
 class OrganizationIdentityUnresolved(ValueError):
     """A named source party has no exact registered identity yet (ADR-0051)."""
+
+
+class ImmutableExtractedProposal(ValueError):
+    """New spine-backed proposals are corrected by appending Facts."""
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.operative_support import designate_publication_support
 from corridor.measurement_cases import (
@@ -508,6 +513,12 @@ def edit_candidate(
     historical_document_id: int | None = None,
 ) -> Candidate:
     principal = require_human_principal(principal)
+    if session.scalar(
+        select(ExtractedProposal.id).where(ExtractedProposal.candidate_id == candidate.id)
+    ) is not None:
+        raise ImmutableExtractedProposal(
+            "spine-backed Extracted Proposals cannot be edited; append a Fact correction"
+        )
     require_candidate_action_scope(
         session,
         candidate,

@@ -31,6 +31,7 @@ from corridor.extractor_lineage import (
     deployed_extractor_config,
     validate_config_json_shape,
 )
+from corridor.facts import proposal_input_snapshots
 from corridor.models import Candidate, Document, ExtractionRun, Project
 
 
@@ -260,12 +261,20 @@ def _validate_run(
         )
 
     _validate_token_usage(run.token_usage_json, document.id)
-    candidate_count = session.scalar(
-        select(func.count())
-        .select_from(Candidate)
-        .where(Candidate.extraction_run_id == run.id)
+    candidate_count = (
+        len(proposal_input_snapshots(session, run))
+        if run.candidate_inputs_json is None
+        else session.scalar(
+            select(func.count())
+            .select_from(Candidate)
+            .where(Candidate.extraction_run_id == run.id)
+        )
     )
-    snapshots = run.candidate_inputs_json
+    snapshots = (
+        run.candidate_inputs_json
+        if run.candidate_inputs_json is not None
+        else proposal_input_snapshots(session, run)
+    )
     if (
         candidate_count != run.candidate_count
         or not isinstance(snapshots, list)

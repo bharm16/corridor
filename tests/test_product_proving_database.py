@@ -190,10 +190,9 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # notifications (#351-#353), scheduled publication (#354), outcome
     # capture (#356), scheduled reproof (#358), conditions (#373), and the
     # operations assists (#359-#362), and the spreadsheet Source Segment
-    # evidence-spine slice (#431), typed Facts (#432), scoped append (#433),
-    # and PDF page Processing Failures (#440).
-    assert fingerprint.table_count == 129
-    assert fingerprint.sequence_count == 118
+    # evidence spine (#431-#434) and PDF page Processing Failures (#440).
+    assert fingerprint.table_count == 133
+    assert fingerprint.sequence_count == 122
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
@@ -213,22 +212,28 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "fact_sources",
         "source_segments",
         "source_fact_append_receipts",
+        "extracted_proposals",
+        "extracted_proposal_facts",
+        "extraction_run_candidates",
+        "fact_dispositions",
         "page_processing_failures",
         "statement_coordination_receipts",
     }
     assert "source_segments_id_seq" in {
         item.name for item in fingerprint.sequences
     }
-    assert {
-        "facts_id_seq",
-        "fact_sources_id_seq",
-        "page_processing_failures_id_seq",
-    } <= {
+    assert {"facts_id_seq", "fact_sources_id_seq"} <= {
         item.name for item in fingerprint.sequences
     }
     assert "source_fact_append_receipts_id_seq" in {
         item.name for item in fingerprint.sequences
     }
+    assert {
+        "extracted_proposals_id_seq",
+        "extracted_proposal_facts_id_seq",
+        "fact_dispositions_id_seq",
+        "extraction_run_candidates_id_seq",
+    } <= {item.name for item in fingerprint.sequences}
     assert {item.kind for item in fingerprint.schema_objects} == {
         "column",
         "constraint",
