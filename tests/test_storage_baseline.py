@@ -7,6 +7,7 @@ from hashlib import sha256
 
 import pymupdf
 import pytest
+from sqlalchemy import text
 
 from corridor.db import Session, engine
 from corridor.models import (
@@ -34,7 +35,14 @@ def session():
     connection.close()
 
 
-def _seed_representative_state(session):
+def _pdf_bytes(text: str) -> bytes:
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), text)
+        return pdf.tobytes()
+
+
+def _seed_representative_state(session, tmp_path):
     project = Project(
         slug="storage-baseline-test",
         name="Storage Baseline Test",
@@ -140,7 +148,7 @@ def _seed_representative_state(session):
     )
     session.add(report_run)
     session.flush()
-    pdf = b"%PDF-1.7\nbaseline release\n%%EOF"
+    pdf = _pdf_bytes("Baseline release")
     digest = sha256(pdf).hexdigest()
     artifact = ExternalReportArtifact(
         project_id=project.id,
@@ -156,35 +164,64 @@ def _seed_representative_state(session):
     )
     session.add(artifact)
     session.flush()
-    release = ExternalReportRelease(
-        project_id=project.id,
-        artifact_id=artifact.id,
-        artifact_name=artifact.artifact_name,
-        format="pdf",
-        pdf_bytes=pdf,
-        pdf_sha256=digest,
-        evaluated_on=artifact.evaluated_on,
-        ruleset_version=artifact.ruleset_version,
-        evaluation_context_json=artifact.evaluation_context_json,
-        provenance_mode=artifact.provenance_mode,
-        record_context_json=artifact.record_context_json,
-        released_by="local:baseline-reviewer",
-        released_by_display="Baseline Reviewer",
+    release_path = tmp_path / "baseline-released-report.pdf"
+    release_path.write_bytes(pdf)
+    has_single_store_release = bool(
+        session.scalar(
+            text(
+                """
+                select exists (
+                    select 1 from information_schema.columns
+                    where table_schema = 'public'
+                      and table_name = 'external_report_releases'
+                      and column_name = 'content_storage'
+                )
+                """
+            )
+        )
     )
-    session.add(release)
-    session.flush()
-    return report_run, release, run
+    release = None
+    if has_single_store_release:
+        # #430's release receipt references artifact-owned bytes and context.
+        # This branch executes in the combined compatibility gate; pre-#430
+        # main uses the already-sealed file fallback until that schema lands.
+        release = ExternalReportRelease(
+            project_id=project.id,
+            artifact_id=artifact.id,
+            artifact_name=artifact.artifact_name,
+            format="pdf",
+            pdf_sha256=artifact.pdf_sha256,
+            evaluated_on=artifact.evaluated_on,
+            ruleset_version=artifact.ruleset_version,
+            provenance_mode=artifact.provenance_mode,
+            released_by="local:baseline-reviewer",
+            released_by_display="Baseline Reviewer",
+        )
+        session.add(release)
+        session.flush()
+    return report_run, artifact, release, run, release_path
 
 
-def test_baseline_measures_known_copy_families_by_table_and_column(session):
-    report_run, release, run = _seed_representative_state(session)
+def _single_store_selection(release, release_path):
+    return {
+        "release_id": release.id if release is not None else 9_999_999_990,
+        "release_path": None if release is not None else release_path,
+    }
+
+
+def test_baseline_measures_known_copy_families_by_table_and_column(
+    session, tmp_path
+):
+    report_run, artifact, release, run, release_path = _seed_representative_state(
+        session, tmp_path
+    )
 
     baseline = build_storage_baseline(
         session,
         selection=BaselineSelection(
             report_run_id=report_run.id,
-            release_id=release.id,
             extraction_run_id=run.id,
+            **_single_store_selection(release, release_path),
         ),
     )
 
@@ -216,7 +253,26 @@ def test_baseline_measures_known_copy_families_by_table_and_column(session):
     )
     pdf_members = families["released_pdf_copies"]["members"]
     assert {member["column"] for member in pdf_members} == {"pdf_bytes"}
-    assert sum(member["bytes"] for member in pdf_members) >= len(release.pdf_bytes) * 2
+    pdf_by_table = {member["table"]: member for member in pdf_members}
+    assert pdf_by_table["external_report_artifacts"]["bytes"] >= len(
+        artifact.pdf_bytes
+    )
+    assert pdf_by_table["external_report_releases"]["bytes"] == 0
+    assert pdf_by_table["external_report_artifacts"]["target_included"] is False
+    assert pdf_by_table["external_report_releases"]["target_included"] is True
+    assert families["released_pdf_copies"]["target_bytes"] == 0
+    if release is not None:
+        stored = session.execute(
+            text(
+                "select artifact_id, pdf_bytes, evaluation_context_json, "
+                "record_context_json from external_report_releases where id = :id"
+            ),
+            {"id": release.id},
+        ).one()
+        assert stored.artifact_id == artifact.id
+        assert stored.pdf_bytes is None
+        assert stored.evaluation_context_json is None
+        assert stored.record_context_json is None
     assert all(
         {"table", "column", "path", "rows", "bytes", "present"} <= set(member)
         for family in families.values()
@@ -224,12 +280,16 @@ def test_baseline_measures_known_copy_families_by_table_and_column(session):
     )
 
 
-def test_baseline_freezes_representative_semantics_and_numeric_target(session):
-    report_run, release, run = _seed_representative_state(session)
+def test_baseline_freezes_representative_semantics_and_numeric_target(
+    session, tmp_path
+):
+    report_run, artifact, release, run, release_path = _seed_representative_state(
+        session, tmp_path
+    )
     selection = BaselineSelection(
         report_run_id=report_run.id,
-        release_id=release.id,
         extraction_run_id=run.id,
+        **_single_store_selection(release, release_path),
     )
 
     first = build_storage_baseline(session, selection=selection)
@@ -238,7 +298,18 @@ def test_baseline_freezes_representative_semantics_and_numeric_target(session):
     assert first == second
     frozen = first["representative_outputs"]
     assert frozen["coordination_report"]["source_id"] == report_run.id
-    assert frozen["release"]["source_id"] == release.id
+    if release is None:
+        assert frozen["release"]["source_path"] == str(release_path)
+    else:
+        assert frozen["release"]["source_id"] == release.id
+        assert frozen["release"]["content"]["artifact_id"] == artifact.id
+        assert frozen["release"]["content"]["pdf_sha256"] == artifact.pdf_sha256
+        assert frozen["release"]["content"]["evaluation_context"] == (
+            artifact.evaluation_context_json
+        )
+        assert frozen["release"]["content"]["record_context"] == (
+            artifact.record_context_json
+        )
     assert frozen["extraction_run"]["source_id"] == run.id
     assert all(len(item["sha256"]) == 64 for item in frozen.values())
     assert first["target"] == {
@@ -247,23 +318,18 @@ def test_baseline_freezes_representative_semantics_and_numeric_target(session):
         "baseline_bytes": first["known_duplication_bytes"],
         "maximum_cutover_bytes": first["known_duplication_bytes"] // 2,
     }
+    assert "artifact-owned PDF bytes" in first["metric_definition"]
     assert len(first["sha256"]) == 64
 
 
 def test_baseline_can_pin_already_sealed_outputs_when_rows_are_not_in_dev_database(
     session, tmp_path
 ):
-    _, _, run = _seed_representative_state(session)
+    _, _, _, run, _ = _seed_representative_state(session, tmp_path)
     report_path = tmp_path / "coordination-report.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text((72, 72), "Representative coordination report")
-        report_path.write_bytes(pdf.tobytes())
+    report_path.write_bytes(_pdf_bytes("Representative coordination report"))
     release_path = tmp_path / "released-report.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text((72, 72), "Representative released report")
-        release_path.write_bytes(pdf.tobytes())
+    release_path.write_bytes(_pdf_bytes("Representative released report"))
 
     baseline = build_storage_baseline(
         session,
