@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
+.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -145,6 +145,15 @@ exceptions:
 #   make gold ARGS="wsdot-9424 --author"
 gold:
 	uv run python -m corridor.gold $(ARGS)
+
+# Measure the known permanent copy chains on the current development corpus and
+# freeze representative Report, release, and Extraction Run semantics. Optional
+# exact row identities keep a rerun pinned as the database grows:
+#   make storage-baseline ARGS="--report-run-id=1 --release-id=1 --extraction-run-id=1"
+# Already-sealed representative outputs may be pinned by file when the current
+# development database has no retained Report Run or Report Approved for Release.
+storage-baseline:
+	uv run python -m corridor.storage_baseline_cli $(ARGS)
 
 # One-time retirement of legacy development constraint records. Always run `plan`
 # first; `retire` requires the exact digest and constraint count (counts.dependencies):
