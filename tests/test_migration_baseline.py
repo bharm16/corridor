@@ -23,10 +23,11 @@ VERSIONS = ROOT / "src" / "corridor" / "migrations" / "baseline_versions"
 SCHEMA_BUILDER = "b7d3f9a1c2e5"
 BASELINE_MARKER = "c0a1d0b5e11e"
 SPREADSHEET_HEAD = "0ca809014df7"
-RELEASED_HEAD = "444758f7b4a7"
-CURRENT_HEAD = "d430a1b2c3d4"
+FACT_HEAD = "444758f7b4a7"
+PREDECESSOR_HEAD = "d430a1b2c3d4"
+CURRENT_HEAD = "1142da5be661"
 EXPECTED_SCHEMA_SHA256 = (
-    "dc25cd6f2dc1f44a2660926b462359ef129aed44e503735f4871e8fa7b97cdff"
+    "275138eb53d4cd2880213b8e267244ca6d51cb473b2e57ec70e40d573d4cee6a"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -37,8 +38,9 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{SCHEMA_BUILDER}_current_schema_baseline.py",
         f"{BASELINE_MARKER}_establish_current_baseline.py",
         f"{SPREADSHEET_HEAD}_add_spreadsheet_source_segments.py",
-        f"{RELEASED_HEAD}_add_typed_facts.py",
-        f"{CURRENT_HEAD}_release_references_artifact.py",
+        f"{FACT_HEAD}_add_typed_facts.py",
+        f"{PREDECESSOR_HEAD}_release_references_artifact.py",
+        f"{CURRENT_HEAD}_add_scoped_source_fact_append.py",
     }
 
 
@@ -78,14 +80,14 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_released_head_adds_reference_storage_without_changing_record_rows():
+def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_bridge_",
-        migration_revision=RELEASED_HEAD,
+        migration_revision=PREDECESSOR_HEAD,
     ) as database:
         database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
@@ -97,9 +99,7 @@ def test_released_head_adds_reference_storage_without_changing_record_rows():
                 )
             )
             assert project_id is not None
-            _seed_legacy_release_and_artifact(session, int(project_id))
         before = _project_row(database.session_factory)
-        release_before = _legacy_release_row(database.session_factory)
 
         completed = _alembic(database_url, "upgrade", "head")
 
@@ -108,17 +108,16 @@ def test_released_head_adds_reference_storage_without_changing_record_rows():
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        assert _legacy_release_row(database.session_factory) == release_before
-        _assert_legacy_release_reader(database.session_factory, int(project_id))
-        _insert_artifact_reference_release(database.session_factory)
 
 
-def test_current_head_has_same_rendition_append_only_facts():
+def test_supported_predecessor_creates_immutable_scoped_append_receipt():
+    configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_segment_bridge_",
+        migration_revision=PREDECESSOR_HEAD,
     ) as database:
         with database.session_factory.begin() as session:
             project_id = session.scalar(
@@ -155,6 +154,10 @@ def test_current_head_has_same_rendition_append_only_facts():
                 },
             )
 
+        database_url = configured.set(database=database.name)
+        completed = _alembic(database_url, "upgrade", "head")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
         with database.session_factory.begin() as session:
             run_id = session.scalar(
                 text(
@@ -169,12 +172,32 @@ def test_current_head_has_same_rendition_append_only_facts():
                 text(
                     "insert into facts "
                     "(project_id, document_id, extraction_run_id, fact_type, "
-                    "subject_kind, subject_key, text_value, transformation, recorded_by) "
+                    "subject_kind, subject_key, text_value, transformation, recorded_by, "
+                    "content_sha256) "
                     "values (:project_id, :document_id, :run_id, 'station_from', "
                     "'source_row', 'Conflicts!2', 'UC-1', 'trim_cell_text_v1', "
-                    "'extractor:migration_fixture_v1') returning id"
+                    "'extractor:migration_fixture_v1', :content_sha256) returning id"
                 ),
-                {"project_id": project_id, "document_id": document_id, "run_id": run_id},
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "run_id": run_id,
+                    "content_sha256": "b" * 64,
+                },
+            )
+            receipt_id = session.scalar(
+                text(
+                    "insert into source_fact_append_receipts "
+                    "(project_id, document_id, extraction_run_id, idempotency_key, "
+                    "content_sha256) values (:project_id, :document_id, :run_id, "
+                    "'migration:fixture', :content_sha256) returning id"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "run_id": run_id,
+                    "content_sha256": "c" * 64,
+                },
             )
             session.execute(
                 text(
@@ -197,20 +220,18 @@ def test_current_head_has_same_rendition_append_only_facts():
         assert _fact_rows(database.session_factory) == [
             (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
         ]
-        with pytest.raises(DBAPIError, match="facts are append-only"):
+        with pytest.raises(DBAPIError, match="source Fact append receipts are immutable"):
             with database.session_factory.begin() as session:
                 session.execute(
-                    text(
-                        "update facts set text_value = 'rewritten' where id = :fact_id"
-                    ),
-                    {"fact_id": fact_id},
+                    text("update source_fact_append_receipts set idempotency_key = 'x' where id = :id"),
+                    {"id": receipt_id},
                 )
         assert _fact_rows(database.session_factory) == [
             (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
         ]
 
 
-def test_downgrade_across_release_reference_successor_is_unsupported():
+def test_downgrade_that_would_delete_append_receipts_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -219,12 +240,10 @@ def test_downgrade_across_release_reference_successor_is_unsupported():
         database_prefix="corridor_baseline_downgrade_",
     ) as database:
         database_url = configured.set(database=database.name)
-        completed = _alembic(database_url, "downgrade", RELEASED_HEAD)
+        completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "released-report artifact-reference downgrade is unsupported" in (
-        completed.stderr
-    )
+    assert "scoped Source Fact append downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):

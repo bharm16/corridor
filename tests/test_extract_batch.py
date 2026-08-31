@@ -167,6 +167,14 @@ def _runs(session, project):
     ).all()
 
 
+def _run_outcomes_by_document(runs):
+    """Batch outcomes are identified by Document, never completion/id order."""
+
+    return {
+        run.document_id: (run.candidate_count, run.page_errors) for run in runs
+    }
+
+
 def test_the_runner_extracts_and_closes_its_client(session, project, capsys):
     add_note(session, project, "notes-a.pdf", "a" * 64)
     client = StubClient()
@@ -400,12 +408,12 @@ def test_a_document_with_any_failed_page_persists_no_partial_candidates_and_retr
 
     assert [c.source_document_id for c in _candidates(session, project)] == [clean.id]
     first_runs = _runs(session, project)
-    assert [
-        (run.document_id, run.candidate_count, run.page_errors) for run in first_runs
-    ] == [
-        (failed.id, 0, 1),
-        (clean.id, 1, 0),
-    ]
+    # Reverse the observed completion order explicitly: no public batch seam
+    # promises which concurrent document receives the first sequence value.
+    assert _run_outcomes_by_document(reversed(first_runs)) == {
+        failed.id: (0, 1),
+        clean.id: (1, 0),
+    }
     assert already_extracted(session, project.id, PROMPT_VERSION) == {clean.id}
     assert extracted_documents(session, project.id, prompt_version=PROMPT_VERSION) == {
         clean.id
@@ -661,16 +669,21 @@ def test_a_failed_document_does_not_block_clean_siblings(
     session, project, capsys
 ):
     """A failed document retries later, but clean siblings still commit now."""
-    add_note(session, project, "notes-a.pdf", "a" * 64, text="page one about AT&T")
-    add_note(session, project, "notes-b.pdf", "b" * 64, text="page two about PSE")
+    failed = add_note(
+        session, project, "notes-a.pdf", "a" * 64, text="page one about AT&T"
+    )
+    clean = add_note(
+        session, project, "notes-b.pdf", "b" * 64, text="page two about PSE"
+    )
     client = StubClient(fail_on="page one")
 
     assert _run(session, project, client) == 0
 
     assert len(_candidates(session, project)) == 1
-    [failed_run, clean_run] = _runs(session, project)
-    assert (failed_run.candidate_count, failed_run.page_errors) == (0, 1)
-    assert (clean_run.candidate_count, clean_run.page_errors) == (1, 0)
+    assert _run_outcomes_by_document(reversed(_runs(session, project))) == {
+        failed.id: (0, 1),
+        clean.id: (1, 0),
+    }
     out = capsys.readouterr().out
     assert "1 page errors" in out
     assert "1 pages failed" in out

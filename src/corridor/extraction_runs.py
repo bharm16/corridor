@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 import sys
 
 from sqlalchemy import and_, func, select, update
@@ -30,12 +31,16 @@ from corridor.models import (
     Candidate,
     Document,
     ExtractionRun,
+    Fact,
+    SourceFactAppendReceipt,
+    SourceSegment,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 from corridor.record_inclusion import request_record_inclusion
 from corridor.revision_reconciliation_request import request_revision_reconciliation
 from corridor.row_accounting import validate_row_accounting
+from corridor.source_segments import append_ingested_source_segments
 
 
 def completion_predicate():
@@ -70,7 +75,176 @@ def completed_document_ids(
     return set(session.scalars(query.distinct()).all())
 
 
+class SourceFactAppendConflict(ValueError):
+    """An idempotency key was reused for different scoped append content."""
+
+
+@dataclass(frozen=True)
+class SourceFactAppendResult:
+    """The original or newly created rows for one scoped append command."""
+
+    run: ExtractionRun
+    facts: tuple[Fact, ...]
+    created: bool
+
+
 def record_extraction_run(
+    session: Session,
+    document: Document,
+    **values,
+) -> ExtractionRun:
+    """Append one run receipt; callers with spine Facts use ``append_source_facts``."""
+
+    return _record_extraction_run(session, document, **values)
+
+
+def append_source_facts(
+    session: Session,
+    document: Document,
+    *,
+    idempotency_key: str | None,
+    prompt_version: str,
+    candidate_count: int,
+    page_errors: int,
+    candidates: Sequence[Candidate],
+    outcome: str = "completed",
+    model: str | None = None,
+    schema_version: str | None = None,
+    error_detail: str | None = None,
+    extractor_config: ExtractorConfig | None = None,
+    token_usage: Mapping[str, object] | None = None,
+    row_accounting_json: dict | None = None,
+    allow_unsealed_legacy: bool = False,
+    source_path: str | Path | None = None,
+    fail_after_stage: str | None = None,
+) -> SourceFactAppendResult:
+    """Atomically validate and append one rendition's run, segments, and Facts."""
+
+    candidates = tuple(candidates)
+    run_values = {
+        "prompt_version": prompt_version,
+        "candidate_count": candidate_count,
+        "page_errors": page_errors,
+        "candidates": candidates,
+        "outcome": outcome,
+        "model": model,
+        "schema_version": schema_version,
+        "error_detail": error_detail,
+        "extractor_config": extractor_config,
+        "token_usage": token_usage,
+        "row_accounting_json": row_accounting_json,
+        "allow_unsealed_legacy": allow_unsealed_legacy,
+    }
+    content = {
+        "document_sha256": document.sha256,
+        "prompt_version": run_values.get("prompt_version"),
+        "schema_version": run_values.get("schema_version"),
+        "model": run_values.get("model"),
+        "extractor_config_sha256": (
+            extractor_config.config_sha256 if extractor_config is not None else None
+        ),
+        "token_usage": deepcopy(token_usage),
+        "candidate_count": run_values.get("candidate_count"),
+        "page_errors": run_values.get("page_errors"),
+        "row_accounting_json": run_values.get("row_accounting_json"),
+        "candidates": [
+            {
+                "kind": candidate.kind,
+                "payload_json": deepcopy(candidate.payload_json),
+                "source_pages": list(candidate.source_pages or []),
+                "confidence": candidate.confidence,
+                "prompt_version": candidate.prompt_version,
+                "model": candidate.model,
+            }
+            for candidate in candidates
+        ],
+    }
+    content_sha256 = sha256(canonical_json_bytes(content)).hexdigest()
+    key = idempotency_key or f"content:{content_sha256}"
+    lock_project(session, document.project_id)
+    existing = session.scalar(
+        select(SourceFactAppendReceipt).where(
+            SourceFactAppendReceipt.project_id == document.project_id,
+            SourceFactAppendReceipt.idempotency_key == key,
+        )
+    )
+    if existing is not None:
+        if existing.content_sha256 != content_sha256:
+            raise SourceFactAppendConflict(
+                "source Fact append key is already bound to different content"
+            )
+    else:
+        existing = session.scalar(
+            select(SourceFactAppendReceipt).where(
+                SourceFactAppendReceipt.project_id == document.project_id,
+                SourceFactAppendReceipt.content_sha256 == content_sha256,
+            )
+        )
+    if existing is not None:
+        run = session.get(ExtractionRun, existing.extraction_run_id)
+        if run is None:
+            raise SourceFactAppendConflict("source Fact append receipt lost its run")
+        facts = tuple(
+            session.scalars(
+                select(Fact)
+                .where(Fact.extraction_run_id == run.id)
+                .order_by(Fact.id)
+            ).all()
+        )
+        return SourceFactAppendResult(run, facts, False)
+
+    allowed_stages = {None, "segments", "run", "facts", "receipt"}
+    if fail_after_stage not in allowed_stages:
+        raise ValueError("unknown source Fact append failure stage")
+    with session.begin_nested():
+        if source_path is not None:
+            append_ingested_source_segments(session, document, source_path)
+            session.flush()
+        segments = tuple(
+            session.scalars(
+                select(SourceSegment)
+                .where(SourceSegment.document_id == document.id)
+                .order_by(SourceSegment.ordinal)
+            ).all()
+        )
+        if not segments:
+            raise ValueError("source Fact append requires rendition segments")
+        for segment in segments:
+            if segment.project_id != document.project_id:
+                raise ValueError("source segment crosses project scope")
+            if sha256(segment.exact_text.encode()).hexdigest() != segment.content_sha256:
+                raise ValueError("source segment digest is invalid")
+        _fail_after(fail_after_stage, "segments")
+        run = _record_extraction_run(session, document, **run_values)
+        _fail_after(fail_after_stage, "run")
+        facts = tuple(
+            session.scalars(
+                select(Fact)
+                .where(Fact.extraction_run_id == run.id)
+                .order_by(Fact.id)
+            ).all()
+        )
+        _fail_after(fail_after_stage, "facts")
+        session.add(
+            SourceFactAppendReceipt(
+                project_id=document.project_id,
+                document_id=document.id,
+                extraction_run_id=run.id,
+                idempotency_key=key,
+                content_sha256=content_sha256,
+            )
+        )
+        session.flush()
+        _fail_after(fail_after_stage, "receipt")
+    return SourceFactAppendResult(run, facts, True)
+
+
+def _fail_after(requested: str | None, stage: str) -> None:
+    if requested == stage:
+        raise RuntimeError(f"injected source Fact append failure after {stage}")
+
+
+def _record_extraction_run(
     session: Session,
     document: Document,
     *,
