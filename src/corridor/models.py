@@ -661,6 +661,69 @@ class Document(Base):
     )
 
 
+class SourceSegment(Base):
+    """One immutable, addressable piece of an exact Document rendition.
+
+    A populated workbook cell carries mandatory ``sheet_name`` and
+    ``cell_range`` columns.  ``kind`` identifies that enforced locator shape;
+    callers never interpret an untyped JSON object.
+    """
+
+    __tablename__ = "source_segments"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "document_id", "id", name="uq_source_segments_scope_id"
+        ),
+        UniqueConstraint(
+            "document_id",
+            "kind",
+            "ordinal",
+            name="uq_source_segments_document_kind_ordinal",
+        ),
+        UniqueConstraint(
+            "document_id",
+            "kind",
+            "sheet_name",
+            "cell_range",
+            name="uq_source_segments_spreadsheet_locator",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_source_segments_document_scope",
+        ),
+        CheckConstraint(
+            "kind = 'spreadsheet_cell'", name="ck_source_segments_kind"
+        ),
+        CheckConstraint(
+            "length(exact_text) > 0", name="ck_source_segments_exact_text"
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_source_segments_content_sha256",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_source_segments_ordinal"),
+        CheckConstraint(
+            "length(sheet_name) > 0 and "
+            "cell_range ~ '^[A-Z]+[1-9][0-9]*$'",
+            name="ck_source_segments_spreadsheet_locator",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    exact_text: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    sheet_name: Mapped[str] = mapped_column(Text)
+    cell_range: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DocumentRenditionDerivation(Base):
     """One retained format conversion, without equivalence or Supersession."""
 

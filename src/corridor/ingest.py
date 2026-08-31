@@ -27,6 +27,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import NUMBERING_SCHEMES, DocPage, Document, DocumentQuarantine
+from corridor.source_segments import (
+    SPREADSHEET_SUFFIXES,
+    append_ingested_source_segments,
+)
 
 # 150 dpi: legible for reading a quote in context, and small enough that a
 # 700-row matrix does not turn into a gigabyte of PNGs.
@@ -43,9 +47,6 @@ MIN_TEXT_CHARS = 50
 # cells are identical either way; `.xls` is deliberately absent, since
 # openpyxl cannot read the old binary format and a file that silently
 # failed would look like a document nobody collected.
-SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
-
-
 def ingest_document(
     session: Session,
     *,
@@ -140,6 +141,7 @@ def ingest_document(
         # (ADR-0030).
         if numbering_scheme is not None:
             existing.numbering_scheme = numbering_scheme
+        append_ingested_source_segments(session, existing, path)
         _quarantine_unmodeled_semantics(session, existing)
         session.flush()
         return existing
@@ -197,6 +199,8 @@ def ingest_document(
                 text_source=text_source,
             )
         )
+
+    append_ingested_source_segments(session, document, path)
 
     document.pages = len(pages)
     document.parse_status = "parsed"

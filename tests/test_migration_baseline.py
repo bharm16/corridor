@@ -9,6 +9,7 @@ import subprocess
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
@@ -17,19 +18,21 @@ from corridor.product_proving_database import fingerprint_database_url
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS = ROOT / "src" / "corridor" / "migrations" / "baseline_versions"
-RELEASED_HEAD = "b7d3f9a1c2e5"
-BASELINE_HEAD = "c0a1d0b5e11e"
+SCHEMA_BUILDER = "b7d3f9a1c2e5"
+PREDECESSOR_HEAD = "c0a1d0b5e11e"
+CURRENT_HEAD = "0ca809014df7"
 EXPECTED_SCHEMA_SHA256 = (
-    "72c7ffac9606259affaf705075b6daa53c4279724a48811e926cc7076e7f6703"
+    "b1079aec0f827a78dd3e41b84549f58b4d134f75488fa0d7eec6d1cd5fb3409b"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
-def test_migration_inventory_is_one_schema_builder_and_one_baseline_marker():
+def test_migration_inventory_is_one_builder_marker_and_linear_successor():
     assert {path.name for path in VERSIONS.glob("*.py")} == {
-        f"{RELEASED_HEAD}_current_schema_baseline.py",
-        f"{BASELINE_HEAD}_establish_current_baseline.py",
+        f"{SCHEMA_BUILDER}_current_schema_baseline.py",
+        f"{PREDECESSOR_HEAD}_establish_current_baseline.py",
+        f"{CURRENT_HEAD}_add_spreadsheet_source_segments.py",
     }
 
 
@@ -47,7 +50,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
         fingerprint = fingerprint_database_url(database_url)
         security = _statement_retirement_security(database.session_factory)
 
-    assert database.migration_head == BASELINE_HEAD
+    assert database.migration_head == CURRENT_HEAD
     assert fingerprint.schema_sha256 == EXPECTED_SCHEMA_SHA256
     assert security == {
         "can_login": False,
@@ -69,14 +72,14 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_released_head_advances_without_changing_project_record_rows():
+def test_supported_predecessor_adds_empty_spine_without_changing_record_rows():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_bridge_",
-        migration_revision=RELEASED_HEAD,
+        migration_revision=PREDECESSOR_HEAD,
     ) as database:
         database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
@@ -91,11 +94,77 @@ def test_released_head_advances_without_changing_project_record_rows():
         completed = _alembic(database_url, "upgrade", "head")
 
         assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert _migration_head(database.session_factory) == BASELINE_HEAD
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
         assert _project_row(database.session_factory) == before
+        assert _source_segment_rows(database.session_factory) == []
 
 
-def test_downgrade_across_the_baseline_is_unsupported():
+def test_supported_predecessor_creates_strict_append_only_source_segments():
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_segment_bridge_",
+        migration_revision=PREDECESSOR_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        with database.session_factory.begin() as session:
+            project_id = session.scalar(
+                text(
+                    "insert into projects (slug, name, is_synthetic) "
+                    "values ('segment-bridge', 'Segment Bridge', true) "
+                    "returning id"
+                )
+            )
+            document_id = session.scalar(
+                text(
+                    "insert into documents "
+                    "(project_id, sha256, filename, doc_type, numbering_scheme, "
+                    "pages, parse_status) values "
+                    "(:project_id, :sha256, 'matrix.xlsx', 'matrix', "
+                    "'project-unique', 1, 'parsed') returning id"
+                ),
+                {"project_id": project_id, "sha256": "a" * 64},
+            )
+
+        completed = _alembic(database_url, "upgrade", "head")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+        with database.session_factory.begin() as session:
+            segment_id = session.scalar(
+                text(
+                    "insert into source_segments "
+                    "(project_id, document_id, kind, exact_text, content_sha256, "
+                    "ordinal, sheet_name, cell_range) values "
+                    "(:project_id, :document_id, 'spreadsheet_cell', 'UC-1', "
+                    ":digest, 1, 'Conflicts', 'A2') returning id"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "digest": "1c4fc7e2bdaf4b219c00ce662b927dc5d7e17091e467df61b9582d7fb359a39e",
+                },
+            )
+
+        assert _source_segment_rows(database.session_factory) == [
+            (segment_id, project_id, document_id, "spreadsheet_cell", "UC-1", "A2")
+        ]
+        with pytest.raises(DBAPIError, match="source segments are append-only"):
+            with database.session_factory.begin() as session:
+                session.execute(
+                    text(
+                        "update source_segments set exact_text = 'rewritten' "
+                        "where id = :segment_id"
+                    ),
+                    {"segment_id": segment_id},
+                )
+        assert _source_segment_rows(database.session_factory) == [
+            (segment_id, project_id, document_id, "spreadsheet_cell", "UC-1", "A2")
+        ]
+
+
+def test_downgrade_that_would_delete_source_segments_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -104,10 +173,10 @@ def test_downgrade_across_the_baseline_is_unsupported():
         database_prefix="corridor_baseline_downgrade_",
     ) as database:
         database_url = configured.set(database=database.name)
-        completed = _alembic(database_url, "downgrade", RELEASED_HEAD)
+        completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "baseline downgrade is unsupported" in completed.stderr
+    assert "source segment migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
@@ -123,6 +192,18 @@ def _project_row(session_factory):
 def _migration_head(session_factory) -> str:
     with session_factory() as session:
         return str(session.scalar(text("select version_num from alembic_version")))
+
+
+def _source_segment_rows(session_factory) -> list[tuple]:
+    with session_factory() as session:
+        return list(
+            session.execute(
+                text(
+                    "select id, project_id, document_id, kind, exact_text, cell_range "
+                    "from source_segments order by id"
+                )
+            ).all()
+        )
 
 
 def _statement_retirement_security(session_factory) -> dict:
