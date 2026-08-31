@@ -28,6 +28,7 @@ def test_normal_pr_ci_runs_non_overlapping_behavior_gates_once():
     workflow = _workflow("test.yml")
 
     assert set(workflow["on"]) == {"pull_request"}
+    assert set(workflow["jobs"]) == {"pytest", "slow"}
     commands = _run_commands(workflow)
     assert "make check" in commands
     assert "make test" in commands

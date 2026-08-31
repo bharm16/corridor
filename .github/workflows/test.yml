@@ -38,4 +38,33 @@ jobs:
       - run: uv run alembic upgrade head
       - run: make check
       - run: make test
+
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: corridor
+          POSTGRES_PASSWORD: corridor
+          POSTGRES_DB: corridor
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U corridor -d corridor"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_HUMAN_PRINCIPAL: local:ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
+      - run: uv sync --locked
+      - run: uv run alembic upgrade head
       - run: make test-slow
