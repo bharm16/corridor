@@ -193,9 +193,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # evidence spine (#431-#435), the structured Fact satellites (#449), PDF
     # page Processing Failures (#440), the exact subject registry, attempts,
     # candidates, decisions, and rankings (#453), purpose-specific render
-    # derivatives (#441), and Class B retention (#438).
-    assert fingerprint.table_count == 149
-    assert fingerprint.sequence_count == 138
+    # derivatives (#441), Class B retention (#438), and token-layer manifests
+    # (#442).
+    assert fingerprint.table_count == 150
+    assert fingerprint.sequence_count == 139
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

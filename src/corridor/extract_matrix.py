@@ -57,7 +57,13 @@ from corridor.geometry import (
     row_to_fields,
 )
 from corridor.llm import OpenAIClient, StructuredClient, complete_many
-from corridor.models import ANSWER_SEPARATOR, Candidate, DocPage, Document
+from corridor.models import (
+    ANSWER_SEPARATOR,
+    Candidate,
+    DocPage,
+    Document,
+    TokenLayerManifest,
+)
 from corridor.row_accounting import RowAccounting
 from corridor.storage import stored_pdf
 from corridor.verify import quote_appears_on, unverified_fields
@@ -342,7 +348,7 @@ def extract_document(
             path = stored.artifact_path
         vision_paths[page.id] = path
 
-    grids = _read_geometry(document, pages)
+    grids = _read_geometry(session, document, pages)
     structure_pages = [p for p in pages if grids.get(p.page_no)]
     transcribe_pages = [p for p in pages if not grids.get(p.page_no)]
 
@@ -475,19 +481,37 @@ def extract_document(
 
 
 def _read_geometry(
-    document: Document, pages: list[DocPage]
+    session: Session, document: Document, pages: list[DocPage]
 ) -> dict[int, list[list[list[str]]]]:
-    """Table cells per page, read from word boxes.
+    """Table cells per page, read from native word-box tokens.
 
-    A page with no text layer has no word boxes to read, and a page whose
-    tables geometry cannot find has nothing to map — both fall to the
-    transcription tier by returning nothing here.
+    Geometry runs on any page with a non-empty native token layer, not on the
+    page-text verdict (ADR-0073, #442): a mixed page whose OCR reading is longer
+    still carries native word boxes, and gating on `text_source == "text_layer"`
+    discarded them. A page with no native tokens — an image-only scan — has
+    nothing to reconstruct here and falls to the transcription tier.
     """
     path = stored_pdf(document)
     if path is None:
         return {}
 
-    wanted = {page.page_no for page in pages if page.text_source == "text_layer"}
+    page_numbers = {page.page_no for page in pages}
+    native = session.scalars(
+        select(TokenLayerManifest).where(
+            TokenLayerManifest.document_id == document.id,
+            TokenLayerManifest.origin == "native",
+        )
+    ).all()
+    if native:
+        wanted = {
+            manifest.page_no
+            for manifest in native
+            if manifest.token_count > 0 and manifest.page_no in page_numbers
+        }
+    else:
+        # A document ingested before token layers existed carries no manifest;
+        # fall back to the recorded page verdict for those.
+        wanted = {page.page_no for page in pages if page.text_source == "text_layer"}
     grids: dict[int, list[list[list[str]]]] = {}
     with pymupdf.open(path) as pdf:
         for index, page in enumerate(pdf):
