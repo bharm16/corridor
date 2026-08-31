@@ -17,11 +17,12 @@ import re
 
 import pymupdf
 from openpyxl import load_workbook
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from corridor.briefing import brief_project, render as render_briefing
 from corridor.export import to_xlsx
+from corridor.models import FactAppliesTo, FactClosureResult, FactClosureSource
 from corridor.project_reading import FrozenProjectReading, freeze_project_reading
 from corridor.report import build_report, render as render_report
 from corridor.report_release import render_external_report_pdf
@@ -42,6 +43,10 @@ class CurrentRecordValue:
     decision_id: int
     fact_id: int
     revision_id: int
+    applies_to_dependency_ids: tuple[int, ...] = ()
+    closure_kind: str | None = None
+    closure_successor_dependency_id: int | None = None
+    closure_governing_source_segment_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,7 +91,9 @@ def read_current_project_record(
         ),
         {"project_id": project_id},
     ).all()
-    return tuple(CurrentRecordValue(*row) for row in rows)
+    return _attach_structured_values(
+        session, tuple(CurrentRecordValue(*row) for row in rows)
+    )
 
 
 def read_project_record_as_of_revision(
@@ -115,7 +122,57 @@ def read_project_record_as_of_revision(
         ),
         {"project_id": project_id, "revision_id": revision_id},
     ).all()
-    return tuple(CurrentRecordValue(*row) for row in rows)
+    return _attach_structured_values(
+        session, tuple(CurrentRecordValue(*row) for row in rows)
+    )
+
+
+def _attach_structured_values(
+    session: Session, values: tuple[CurrentRecordValue, ...]
+) -> tuple[CurrentRecordValue, ...]:
+    fact_ids = tuple(value.fact_id for value in values)
+    if not fact_ids:
+        return values
+    applies_to: dict[int, list[int]] = {}
+    for fact_id, dependency_id in session.execute(
+        select(FactAppliesTo.fact_id, FactAppliesTo.dependency_id)
+        .where(FactAppliesTo.fact_id.in_(fact_ids))
+        .order_by(FactAppliesTo.fact_id, FactAppliesTo.ordinal)
+    ):
+        applies_to.setdefault(fact_id, []).append(dependency_id)
+    closures = {
+        row.fact_id: row
+        for row in session.scalars(
+            select(FactClosureResult).where(FactClosureResult.fact_id.in_(fact_ids))
+        )
+    }
+    closure_sources: dict[int, list[int]] = {}
+    for fact_id, source_segment_id in session.execute(
+        select(FactClosureSource.fact_id, FactClosureSource.source_segment_id)
+        .where(FactClosureSource.fact_id.in_(fact_ids))
+        .order_by(FactClosureSource.fact_id, FactClosureSource.ordinal)
+    ):
+        closure_sources.setdefault(fact_id, []).append(source_segment_id)
+    return tuple(
+        replace(
+            value,
+            applies_to_dependency_ids=tuple(applies_to.get(value.fact_id, ())),
+            closure_kind=(
+                closures[value.fact_id].closure_kind
+                if value.fact_id in closures
+                else None
+            ),
+            closure_successor_dependency_id=(
+                closures[value.fact_id].successor_dependency_id
+                if value.fact_id in closures
+                else None
+            ),
+            closure_governing_source_segment_ids=tuple(
+                closure_sources.get(value.fact_id, ())
+            ),
+        )
+        for value in values
+    )
 
 
 def freeze_project_reading_from_current_view(

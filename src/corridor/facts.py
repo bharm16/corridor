@@ -11,6 +11,7 @@ ADR-0070).
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
 import json
@@ -23,11 +24,15 @@ from sqlalchemy.orm import Session
 
 from corridor.models import (
     Candidate,
+    Dependency,
     Document,
     ExtractedProposal,
     ExtractedProposalFact,
     ExtractionRun,
     Fact,
+    FactAppliesTo,
+    FactClosureResult,
+    FactClosureSource,
     FactDisposition,
     FactSource,
     ExternalOrg,
@@ -50,6 +55,22 @@ class FactValidationError(ValueError):
 
 class FactReplayMismatch(FactValidationError):
     """A materialized Fact value differs from its replayed transformation."""
+
+
+@dataclass(frozen=True)
+class AppliesToFactValue:
+    """One replayed, FK-backed Applies To reference set."""
+
+    dependency_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class ClosureFactValue:
+    """One replayed typed closure source result."""
+
+    closure_kind: str
+    successor_dependency_id: int | None
+    governing_source_segment_ids: tuple[int, ...]
 
 
 def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
@@ -134,6 +155,36 @@ def append_structured_cell_facts(
                 raise FactValidationError(
                     f"{fact_type} does not accept {segment.kind} support"
                 )
+            if fact_type == "applies_to":
+                if segment.exact_text.strip() != str(fields[fact_type]).strip():
+                    raise FactReplayMismatch(
+                        f"Candidate {fact_type} does not reproduce from {cell_range}"
+                    )
+                dependency_ids = _resolve_applies_to_dependencies(
+                    session, document.project_id, segment.exact_text
+                )
+                fact = _append_fact_envelope(
+                    session,
+                    document,
+                    run,
+                    fact_type=fact_type,
+                    subject_kind=contract.subject_kind,
+                    subject_key=f"{sheet_name}!{source_row}",
+                    transformation=contract.transformation,
+                    segment=segment,
+                    structured_value={"dependency_ids": dependency_ids},
+                )
+                session.add_all(
+                    FactAppliesTo(
+                        project_id=document.project_id,
+                        fact_id=fact.id,
+                        dependency_id=dependency_id,
+                        ordinal=ordinal,
+                    )
+                    for ordinal, dependency_id in enumerate(dependency_ids, 1)
+                )
+                appended.append(fact)
+                continue
             value = _validated_scalar_value(contract, segment.exact_text)
             if value != fields[fact_type]:
                 candidate_value = _candidate_typed_value(contract, fields[fact_type])
@@ -191,6 +242,40 @@ def append_structured_cell_facts(
                 )
             )
             appended.append(fact)
+            if fact_type == "marked_resolution":
+                closure_contract = FACT_TYPE_CONTRACTS["closure_result"]
+                closure = _append_fact_envelope(
+                    session,
+                    document,
+                    run,
+                    fact_type="closure_result",
+                    subject_kind=closure_contract.subject_kind,
+                    subject_key=f"{sheet_name}!{source_row}",
+                    transformation=closure_contract.transformation,
+                    segment=segment,
+                    structured_value={
+                        "closure_kind": "source_marked_resolved",
+                        "successor_dependency_id": None,
+                    },
+                )
+                session.add(
+                    FactClosureResult(
+                        project_id=document.project_id,
+                        fact_id=closure.id,
+                        closure_kind="source_marked_resolved",
+                        successor_dependency_id=None,
+                    )
+                )
+                session.add(
+                    FactClosureSource(
+                        project_id=document.project_id,
+                        document_id=document.id,
+                        fact_id=closure.id,
+                        source_segment_id=segment.id,
+                        ordinal=1,
+                    )
+                )
+                appended.append(closure)
     session.flush()
     return tuple(appended)
 
@@ -508,16 +593,29 @@ def proposal_input_snapshots(session: Session, run: ExtractionRun) -> list[dict]
             fact = session.get(Fact, link.fact_id)
             if fact is None:
                 continue
+            if fact.fact_type == "closure_result":
+                continue
             field_name = (
                 "description"
                 if fact.fact_type == "statement_wording"
                 else fact.fact_type
             )
-            fields[field_name] = (
-                fact.date_value.isoformat()
-                if fact.date_value is not None
-                else fact.text_value
-            )
+            if fact.fact_type == "applies_to":
+                source = session.scalar(
+                    select(SourceSegment)
+                    .join(FactSource, FactSource.source_segment_id == SourceSegment.id)
+                    .where(
+                        FactSource.fact_id == fact.id,
+                        FactSource.role == "value_source",
+                    )
+                )
+                fields[field_name] = source.exact_text if source is not None else None
+            else:
+                fields[field_name] = (
+                    fact.date_value.isoformat()
+                    if fact.date_value is not None
+                    else fact.text_value
+                )
         payload = dict(metadata.get("payload_json") or {})
         payload["fields"] = fields
         snapshots.append(
@@ -581,7 +679,7 @@ def _proposal_candidate_metadata(candidate: Candidate) -> dict:
 
 def replay_fact(
     session: Session, document: Document, fact: Fact, path: Path | str
-) -> str | date:
+) -> str | date | AppliesToFactValue | ClosureFactValue:
     """Replay one typed Fact from original bytes through its named transform."""
 
     with session.no_autoflush:
@@ -609,6 +707,45 @@ def replay_fact(
     if segment.kind not in contract.accepted_segment_kinds:
         raise FactValidationError("Fact source kind does not match its contract")
     exact = dereference_source_segment(document, segment, path)
+    if fact.fact_type == "applies_to":
+        expected_ids = _resolve_applies_to_dependencies(
+            session, fact.project_id, exact
+        )
+        stored_ids = tuple(
+            session.scalars(
+                select(FactAppliesTo.dependency_id)
+                .where(FactAppliesTo.fact_id == fact.id)
+                .order_by(FactAppliesTo.ordinal)
+            ).all()
+        )
+        if stored_ids != expected_ids:
+            raise FactReplayMismatch("Applies To members do not reproduce")
+        return AppliesToFactValue(stored_ids)
+    if fact.fact_type == "closure_result":
+        result = session.scalar(
+            select(FactClosureResult).where(FactClosureResult.fact_id == fact.id)
+        )
+        governing = tuple(
+            session.scalars(
+                select(FactClosureSource.source_segment_id)
+                .where(FactClosureSource.fact_id == fact.id)
+                .order_by(FactClosureSource.ordinal)
+            ).all()
+        )
+        if result is None or not governing:
+            raise FactValidationError("closure Fact is missing its typed satellites")
+        for source_segment_id in governing:
+            governing_segment = session.get(SourceSegment, source_segment_id)
+            if governing_segment is None or governing_segment.document_id != document.id:
+                raise FactValidationError("closure governing source crosses rendition")
+            dereference_source_segment(document, governing_segment, path)
+        if result.closure_kind == "source_marked_resolved" and not exact.strip():
+            raise FactReplayMismatch("source closure mark is empty")
+        return ClosureFactValue(
+            closure_kind=result.closure_kind,
+            successor_dependency_id=result.successor_dependency_id,
+            governing_source_segment_ids=governing,
+        )
     replayed = _validated_scalar_value(contract, exact)
     materialized = fact.date_value if fact.date_value is not None else fact.text_value
     if replayed != materialized:
@@ -696,6 +833,86 @@ def _exact_registered_external_org_id(session: Session, wording: str) -> int | N
     return next(iter(matches)) if len(matches) == 1 else None
 
 
+def _resolve_applies_to_dependencies(
+    session: Session, project_id: int, exact_text: str
+) -> tuple[int, ...]:
+    references = tuple(
+        value.strip() for value in exact_text.split(",") if value.strip()
+    )
+    if not references or len(set(references)) != len(references):
+        raise FactValidationError("Applies To needs a non-empty unique reference set")
+    rows = session.execute(
+        select(Dependency.ref_code, Dependency.id).where(
+            Dependency.project_id == project_id,
+            Dependency.ref_code.in_(references),
+        )
+    ).all()
+    by_reference = {reference: dependency_id for reference, dependency_id in rows}
+    if set(by_reference) != set(references):
+        raise FactValidationError(
+            "Applies To references must exactly name registered project Constraints"
+        )
+    return tuple(by_reference[reference] for reference in references)
+
+
+def _append_fact_envelope(
+    session: Session,
+    document: Document,
+    run: ExtractionRun,
+    *,
+    fact_type: str,
+    subject_kind: str,
+    subject_key: str,
+    transformation: str,
+    segment: SourceSegment,
+    structured_value: object,
+) -> Fact:
+    fact = Fact(
+        project_id=document.project_id,
+        document_id=document.id,
+        extraction_run_id=run.id,
+        fact_type=fact_type,
+        subject_kind=subject_kind,
+        subject_key=subject_key,
+        text_value=None,
+        date_value=None,
+        date_range_start=None,
+        date_range_end=None,
+        external_org_value_id=None,
+        document_value_id=None,
+        transformation=transformation,
+        recorded_by=f"extractor:{run.prompt_version}",
+        content_sha256=_fact_digest(
+            run_identity={
+                "document_id": document.id,
+                "prompt_version": run.prompt_version,
+                "schema_version": run.schema_version,
+                "model": run.model,
+                "extractor_config_sha256": run.extractor_config_sha256,
+            },
+            fact_type=fact_type,
+            subject_kind=subject_kind,
+            subject_key=subject_key,
+            text_value=None,
+            source_links=(("value_source", segment.id),),
+            structured_value=structured_value,
+        ),
+    )
+    session.add(fact)
+    session.flush([fact])
+    session.add(
+        FactSource(
+            project_id=document.project_id,
+            document_id=document.id,
+            fact_id=fact.id,
+            source_segment_id=segment.id,
+            role="value_source",
+            ordinal=1,
+        )
+    )
+    return fact
+
+
 def _fact_digest(
     *,
     run_identity: dict[str, object],
@@ -706,6 +923,7 @@ def _fact_digest(
     source_links: tuple[tuple[str, int], ...],
     date_value: date | None = None,
     external_org_value_id: int | None = None,
+    structured_value: object | None = None,
 ) -> str:
     value = {
         "run": run_identity,
@@ -715,6 +933,7 @@ def _fact_digest(
         "text_value": text_value,
         "date_value": date_value.isoformat() if date_value is not None else None,
         "external_org_value_id": external_org_value_id,
+        "structured_value": structured_value,
         "source_links": [
             {"role": role, "source_segment_id": segment_id}
             for role, segment_id in source_links

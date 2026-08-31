@@ -47,6 +47,7 @@ from sqlalchemy.orm import (
 )
 
 from corridor.fact_types import (
+    EFFECTIVE_SINGLE_VALUE_FACT_TYPES,
     SINGLE_VALUED_FACT_TYPES,
     STRUCTURED_DATE_FACT_TYPES,
     STRUCTURED_SATELLITE_FACT_TYPES,
@@ -757,6 +758,9 @@ _STRUCTURED_DATE_FACT_TYPES_SQL = ", ".join(
 _SINGLE_VALUED_FACT_TYPES_SQL = ", ".join(
     f"'{value}'" for value in SINGLE_VALUED_FACT_TYPES
 )
+_EFFECTIVE_SINGLE_VALUE_FACT_TYPES_SQL = ", ".join(
+    f"'{value}'" for value in EFFECTIVE_SINGLE_VALUE_FACT_TYPES
+)
 _STRUCTURED_SATELLITE_FACT_TYPES_SQL = ", ".join(
     f"'{value}'" for value in STRUCTURED_SATELLITE_FACT_TYPES
 )
@@ -1192,7 +1196,8 @@ class FactDecision(Base):
             "fact_type",
             unique=True,
             postgresql_where=text(
-                f"superseded_by is null and fact_type in ({_SINGLE_VALUED_FACT_TYPES_SQL})"
+                "superseded_by is null and fact_type in "
+                f"({_EFFECTIVE_SINGLE_VALUE_FACT_TYPES_SQL})"
             ),
         ),
     )

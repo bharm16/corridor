@@ -231,6 +231,7 @@ STRUCTURED_RECORD_HEADINGS = {
     "Required By": "need_date",
     "Resolution Status": "marked_resolution",
     "Resolved Status": "marked_resolution",
+    "Applies To": "applies_to",
 }
 
 

@@ -8,6 +8,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from corridor.db import Session, engine
 from corridor.fact_decisions import (
+    FactDecisionRefused,
     STRUCTURED_CELL_INCLUSION_POLICY,
     current_fact_decisions,
     fact_decisions_as_of_revision,
@@ -79,6 +80,7 @@ def decision_case(session):
             ("D3", "1149+00", "station_from"),
             ("E3", "1150+00", "station_from"),
             ("A3", "UC-1", "utility_id"),
+            ("B3", "Unknown Utility", "external_org"),
         ),
         start=1,
     ):
@@ -216,6 +218,37 @@ def test_stationing_compatibility_seam_does_not_silently_include_other_types(
 
     assert len(results) == 2
     assert {result.decision.fact_type for result in results} == {"station_from"}
+
+
+def test_unresolved_external_org_wording_remains_pending_without_a_revision(
+    session, decision_case
+):
+    project, _document, _run, facts = decision_case
+
+    with pytest.raises(FactDecisionRefused, match="exact registered alias"):
+        include_structured_cell_fact_by_policy(
+            session, facts[3], idempotency_key="include:unknown-org"
+        )
+    with pytest.raises(DBAPIError, match="not eligible"):
+        with session.begin_nested():
+            session.scalar(
+                select(
+                    func.include_structured_cell_fact_decision(
+                        project.id,
+                        facts[3].id,
+                        facts[3].subject_key,
+                        facts[3].fact_type,
+                        "include:unknown-org:direct",
+                        STRUCTURED_CELL_INCLUSION_POLICY,
+                    )
+                )
+            )
+
+    assert session.scalars(
+        select(ProjectRecordRevision).where(
+            ProjectRecordRevision.project_id == project.id
+        )
+    ).all() == []
 
 
 def test_correction_supersedes_effective_decision_and_as_of_reads_both_sides(

@@ -59,7 +59,12 @@ STRUCTURED_TEXT_FACT_TYPES = (
 STRUCTURED_DATE_FACT_TYPES = ("committed_date", "action_due_date", "need_date")
 STRUCTURED_SATELLITE_FACT_TYPES = ("applies_to", "closure_result")
 SINGLE_VALUED_FACT_TYPES = (*STRUCTURED_TEXT_FACT_TYPES, *STRUCTURED_DATE_FACT_TYPES)
-STRUCTURED_CELL_FACT_TYPES = (*STRUCTURED_TEXT_FACT_TYPES, *STRUCTURED_DATE_FACT_TYPES)
+EFFECTIVE_SINGLE_VALUE_FACT_TYPES = (*SINGLE_VALUED_FACT_TYPES, "closure_result")
+STRUCTURED_CELL_FACT_TYPES = (
+    *STRUCTURED_TEXT_FACT_TYPES,
+    *STRUCTURED_DATE_FACT_TYPES,
+    "applies_to",
+)
 
 
 FACT_TYPE_CONTRACTS = {
@@ -111,11 +116,11 @@ FACT_TYPE_CONTRACTS = {
         subject_kind="source_row",
         transformation="typed_closure_result_v1",
         accepted_segment_kinds=frozenset({"spreadsheet_cell", "prose_span"}),
-        automatic_segment_kinds=frozenset(),
+        automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
         required_roles=frozenset({"value_source"}),
         validation_rule="typed_closure_with_governing_sources",
         current_value_rule="human_decision_effectiveness",
-        inclusion_rule="human_record_decision",
+        inclusion_rule="source_marked_cell_policy_else_human_record_decision",
     ),
     "statement_wording": FactTypeContract(
         value_class="text",

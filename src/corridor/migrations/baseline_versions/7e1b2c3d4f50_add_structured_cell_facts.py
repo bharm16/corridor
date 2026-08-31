@@ -66,7 +66,12 @@ def upgrade() -> None:
     date_types = _sql_values(DATE_FACT_TYPES)
     single_types = _sql_values((*TEXT_FACT_TYPES, *DATE_FACT_TYPES))
     satellite_types = _sql_values(SATELLITE_FACT_TYPES)
-    automatic_types = _sql_values((*TEXT_FACT_TYPES, *DATE_FACT_TYPES, "applies_to"))
+    automatic_types = _sql_values(
+        (*TEXT_FACT_TYPES, *DATE_FACT_TYPES, "applies_to", "closure_result")
+    )
+    effective_types = _sql_values(
+        (*TEXT_FACT_TYPES, *DATE_FACT_TYPES, "closure_result")
+    )
     op.execute(
         f"""
         alter table facts drop constraint ck_facts_type;
@@ -212,7 +217,7 @@ def upgrade() -> None:
         drop index uq_fact_decision_effective;
         create unique index uq_fact_decision_effective
             on fact_decisions(project_id, subject_key, fact_type)
-            where superseded_by is null and fact_type in ({single_types});
+            where superseded_by is null and fact_type in ({effective_types});
 
         create function include_structured_cell_fact_decision(
             p_project_id bigint,
@@ -253,6 +258,32 @@ def upgrade() -> None:
                   and facts.fact_type = p_fact_type
                   and candidates.state in ('accepted', 'merged')
                   and candidates.merged_into is not null
+                  and (
+                      facts.fact_type <> 'external_org'
+                      or facts.external_org_value_id is not null
+                  )
+                  and (
+                      facts.fact_type <> 'applies_to'
+                      or exists (
+                          select 1 from fact_applies_to
+                          where fact_applies_to.fact_id = facts.id
+                      )
+                  )
+                  and (
+                      facts.fact_type <> 'closure_result'
+                      or (
+                          exists (
+                              select 1 from fact_closure_results
+                              where fact_closure_results.fact_id = facts.id
+                                and fact_closure_results.closure_kind =
+                                    'source_marked_resolved'
+                          )
+                          and exists (
+                              select 1 from fact_closure_sources
+                              where fact_closure_sources.fact_id = facts.id
+                          )
+                      )
+                  )
                   and exists (
                       select 1 from fact_sources
                       join source_segments
@@ -331,6 +362,8 @@ def upgrade() -> None:
         alter function include_structured_cell_fact_decision(
             bigint,bigint,text,varchar,varchar,varchar
         ) owner to corridor_fact_decision_writer;
+        grant select on fact_applies_to, fact_closure_results,
+            fact_closure_sources to corridor_fact_decision_writer;
         grant execute on function include_structured_cell_fact_decision(
             bigint,bigint,text,varchar,varchar,varchar
         ) to public;

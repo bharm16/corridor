@@ -10,13 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from corridor.facts import FACT_TYPE_CONTRACTS
 from corridor.models import (
     ActiveExtractionRun,
     Fact,
+    FactAppliesTo,
+    FactClosureResult,
     FactDecision,
     FactDisposition,
     Candidate,
@@ -60,6 +62,26 @@ def include_structured_cell_fact_by_policy(
     contract = FACT_TYPE_CONTRACTS.get(fact.fact_type)
     if contract is None:
         raise FactDecisionRefused("Fact type has no released inclusion contract")
+    if fact.fact_type == "external_org" and fact.external_org_value_id is None:
+        raise FactDecisionRefused(
+            "External Organization wording needs one exact registered alias"
+        )
+    if fact.fact_type == "applies_to" and session.scalar(
+        select(func.count()).select_from(FactAppliesTo).where(
+            FactAppliesTo.fact_id == fact.id
+        )
+    ) == 0:
+        raise FactDecisionRefused("Applies To Fact has no scoped reference members")
+    if fact.fact_type == "closure_result":
+        closure_kind = session.scalar(
+            select(FactClosureResult.closure_kind).where(
+                FactClosureResult.fact_id == fact.id
+            )
+        )
+        if closure_kind != "source_marked_resolved":
+            raise FactDecisionRefused(
+                "only a source marked-resolution result is policy eligible"
+            )
     active_run = session.scalar(
         select(ActiveExtractionRun.extraction_run_id).where(
             ActiveExtractionRun.document_id == fact.document_id
@@ -161,6 +183,10 @@ def _include_current_facts(
         .where(
             Fact.project_id == project_id,
             Fact.fact_type.in_(fact_types),
+            or_(
+                Fact.fact_type != "external_org",
+                Fact.external_org_value_id.is_not(None),
+            ),
             FactDisposition.id.is_(None),
             Candidate.state.in_(("accepted", "merged")),
             Candidate.merged_into.is_not(None),

@@ -31,6 +31,8 @@ from corridor.extraction_runs import (
 )
 from corridor.fact_decisions import include_current_structured_cell_facts
 from corridor.facts import (
+    AppliesToFactValue,
+    ClosureFactValue,
     FACT_TYPE_CONTRACTS,
     FactReplayMismatch,
     correct_fact,
@@ -58,6 +60,7 @@ from corridor.models import (
     SourceFactAppendReceipt,
 )
 from corridor.principals import HumanPrincipal
+from corridor.sheets import conflict_sheet, read_workbook
 
 
 HEADINGS = [
@@ -71,6 +74,7 @@ HEADINGS = [
     "Action Due Date",
     "Required By",
     "Resolution Status",
+    "Applies To",
 ]
 REAL_WORKBOOK_SHA256 = (
     "3cd94fea058a3e61ac95ab1efd566e684e146f64ce6f25048d93cf9db55f83ba"
@@ -730,6 +734,81 @@ def test_applies_to_and_closure_satellites_round_trip_with_typed_foreign_keys(
     ) == segment.id
 
 
+def test_structured_satellites_extract_replay_include_and_project_current_and_as_of(
+    session, project, tmp_path, monkeypatch
+):
+    targets = [
+        Dependency(
+            project_id=project.id,
+            ref_code=f"DEP-{ordinal:05d}",
+            dep_type="utility_relocation",
+            title=f"Target {ordinal}",
+        )
+        for ordinal in (1, 2)
+    ]
+    subject = Dependency(
+        project_id=project.id,
+        ref_code="DEP-00003",
+        dep_type="utility_relocation",
+        title="Subject constraint",
+    )
+    session.add_all((*targets, subject))
+    session.flush()
+    path = _workbook(
+        tmp_path,
+        "structured-satellites.xlsx",
+        [[
+            "UC-1", "Unknown Utility", "Electric", "1149+00", "1150+00",
+            "Pole", "", "", "", "Resolved", "DEP-00001, DEP-00002",
+        ]],
+    )
+    document = _ingest(session, project, path, tmp_path)
+
+    run, candidates = _complete_extraction(session, document, monkeypatch)
+
+    applies_to = session.scalar(select(Fact).where(Fact.fact_type == "applies_to"))
+    closure = session.scalar(select(Fact).where(Fact.fact_type == "closure_result"))
+    assert replay_fact(session, document, applies_to, path) == AppliesToFactValue(
+        dependency_ids=(targets[0].id, targets[1].id)
+    )
+    closure_value = replay_fact(session, document, closure, path)
+    assert isinstance(closure_value, ClosureFactValue)
+    assert closure_value.closure_kind == "source_marked_resolved"
+    assert closure_value.successor_dependency_id is None
+    assert closure_value.governing_source_segment_ids
+
+    [candidate] = candidates
+    candidate.state = "accepted"
+    candidate.merged_into = subject.id
+    session.add(
+        ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id)
+    )
+    session.flush()
+    decisions = include_current_structured_cell_facts(session, project.id)
+    current = {
+        value.fact_type: value
+        for value in read_current_project_record(session, project.id)
+    }
+    as_of = {
+        value.fact_type: value
+        for value in read_project_record_as_of_revision(
+            session, project.id, decisions[-1].revision.id
+        )
+    }
+
+    assert current["applies_to"].applies_to_dependency_ids == (
+        targets[0].id,
+        targets[1].id,
+    )
+    assert as_of["applies_to"].applies_to_dependency_ids == (
+        targets[0].id,
+        targets[1].id,
+    )
+    assert current["closure_result"].closure_kind == "source_marked_resolved"
+    assert as_of["closure_result"].closure_governing_source_segment_ids
+    assert "external_org" not in current
+
+
 def test_source_reading_correction_appends_successor_and_disposition(
     session, project, tmp_path, monkeypatch
 ):
@@ -870,6 +949,21 @@ def test_every_structured_cell_fact_replays_from_its_exact_cell(
 def test_real_dev_corpus_matrix_yields_every_queryable_replayable_cell_fact(
     session, project, tmp_path, monkeypatch
 ):
+    sheet = conflict_sheet(read_workbook(REAL_WORKBOOK))
+    external_org_column = next(
+        index for index, field in sheet.mapping.items() if field == "external_org"
+    )
+    names = sorted(
+        {
+            row[external_org_column]
+            for row in sheet.rows
+            if row[external_org_column].strip()
+        }
+    )
+    session.add_all(
+        ExternalOrg(name=name, org_type="utility", aliases=[]) for name in names
+    )
+    session.flush()
     document = _ingest(session, project, REAL_WORKBOOK, tmp_path)
     run, candidates = _complete_extraction(session, document, monkeypatch)
     facts = session.scalars(select(Fact).order_by(Fact.id)).all()
