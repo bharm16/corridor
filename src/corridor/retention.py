@@ -96,15 +96,40 @@ def register_processing_artifact(
     path: str | Path,
     terminal_at: datetime,
 ) -> ProcessingArtifact:
-    """Classify one page render, raw response, trace, or working artifact."""
+    """Classify one page render, raw response, trace, or working artifact.
+
+    Idempotent on `storage_path` so the persistence seam can register without
+    the caller first checking: re-ingesting the same document, or persisting a
+    derivative twice, returns the existing classification rather than colliding
+    on the unique path. A registration that names a live path with a different
+    project, kind, or content digest is drift and is refused.
+    """
 
     source = Path(path)
+    storage_path = str(source)
+    digest = sha256(source.read_bytes()).hexdigest()
+    existing = session.scalar(
+        select(ProcessingArtifact).where(
+            ProcessingArtifact.storage_path == storage_path
+        )
+    )
+    if existing is not None:
+        if (
+            existing.project_id != project_id
+            or existing.kind != kind
+            or existing.content_sha256 != digest
+            or existing.deleted_at is not None
+        ):
+            raise RetentionRefused(
+                f"processing artifact registration conflicts at {storage_path}"
+            )
+        return existing
     artifact = ProcessingArtifact(
         project_id=project_id,
         kind=kind,
         retention_class="class_b",
-        storage_path=str(source),
-        content_sha256=sha256(source.read_bytes()).hexdigest(),
+        storage_path=storage_path,
+        content_sha256=digest,
         terminal_at=terminal_at,
     )
     session.add(artifact)

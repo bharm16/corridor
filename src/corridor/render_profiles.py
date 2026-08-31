@@ -9,6 +9,7 @@ derivative manifests.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -21,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import Document, PageRenderDerivative
+from corridor.retention import register_processing_artifact
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -331,6 +333,7 @@ def persist_render_derivative(
             existing.artifact_bytes = derivative.artifact_bytes
             existing.manifest_json = manifest
             session.flush()
+        _classify_derivative_for_retention(session, document, existing.artifact_path)
         return existing
     stored = PageRenderDerivative(
         document_id=document_id,
@@ -347,7 +350,26 @@ def persist_render_derivative(
     )
     session.add(stored)
     session.flush()
+    _classify_derivative_for_retention(session, document, stored.artifact_path)
     return stored
+
+
+def _classify_derivative_for_retention(
+    session: Session, document: Document, artifact_path: str
+) -> None:
+    """Class B by construction: every retained render — any profile, region crop
+    included — is retention-classified here, at the one seam every render path
+    passes through, so no call site can persist a render that TTL cannot see.
+    The manifest keeps the digest; the render itself is a regenerable
+    intermediary (ADR-0072), never a citation anchor (ADR-0068)."""
+
+    register_processing_artifact(
+        session,
+        project_id=document.project_id,
+        kind="page_render",
+        path=artifact_path,
+        terminal_at=datetime.now(timezone.utc),
+    )
 
 
 def regenerate_render_derivative(
