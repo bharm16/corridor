@@ -708,6 +708,12 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
         cleanup.execute(delete(DocPage).where(DocPage.document_id.in_(document_ids)))
         cleanup.execute(delete(Document).where(Document.project_id == project_id))
         cleanup.execute(delete(Project).where(Project.id == project_id))
+        # The External Organization registry is global, not project-scoped, so
+        # deleting the project leaves the "AT&T" row _seed_transition committed
+        # behind. Left orphaned in the shared per-worker database it collides
+        # with any later test that inserts the same name (e.g. the real-corpus
+        # matrix test), so this committed scenario removes it too.
+        cleanup.execute(delete(ExternalOrg).where(ExternalOrg.name == "AT&T"))
         cleanup.commit()
 
 
