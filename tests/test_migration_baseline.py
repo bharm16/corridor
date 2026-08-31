@@ -19,10 +19,11 @@ from corridor.product_proving_database import fingerprint_database_url
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS = ROOT / "src" / "corridor" / "migrations" / "baseline_versions"
 SCHEMA_BUILDER = "b7d3f9a1c2e5"
-PREDECESSOR_HEAD = "c0a1d0b5e11e"
-CURRENT_HEAD = "0ca809014df7"
+BASELINE_MARKER = "c0a1d0b5e11e"
+PREDECESSOR_HEAD = "0ca809014df7"
+CURRENT_HEAD = "444758f7b4a7"
 EXPECTED_SCHEMA_SHA256 = (
-    "b1079aec0f827a78dd3e41b84549f58b4d134f75488fa0d7eec6d1cd5fb3409b"
+    "d625b60573a0bf3124e4dd9c36907c7738392cfa7d72b106b052cd84f0b54909"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -31,8 +32,9 @@ pytestmark = [pytest.mark.slow, pytest.mark.migration]
 def test_migration_inventory_is_one_builder_marker_and_linear_successor():
     assert {path.name for path in VERSIONS.glob("*.py")} == {
         f"{SCHEMA_BUILDER}_current_schema_baseline.py",
-        f"{PREDECESSOR_HEAD}_establish_current_baseline.py",
-        f"{CURRENT_HEAD}_add_spreadsheet_source_segments.py",
+        f"{BASELINE_MARKER}_establish_current_baseline.py",
+        f"{PREDECESSOR_HEAD}_add_spreadsheet_source_segments.py",
+        f"{CURRENT_HEAD}_add_typed_facts.py",
     }
 
 
@@ -72,7 +74,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_supported_predecessor_adds_empty_spine_without_changing_record_rows():
+def test_supported_predecessor_adds_empty_facts_without_changing_record_rows():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -97,9 +99,10 @@ def test_supported_predecessor_adds_empty_spine_without_changing_record_rows():
         assert _migration_head(database.session_factory) == CURRENT_HEAD
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
+        assert _fact_rows(database.session_factory) == []
 
 
-def test_supported_predecessor_creates_strict_append_only_source_segments():
+def test_supported_predecessor_creates_same_rendition_append_only_facts():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -128,9 +131,6 @@ def test_supported_predecessor_creates_strict_append_only_source_segments():
                 {"project_id": project_id, "sha256": "a" * 64},
             )
 
-        completed = _alembic(database_url, "upgrade", "head")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-
         with database.session_factory.begin() as session:
             segment_id = session.scalar(
                 text(
@@ -147,24 +147,65 @@ def test_supported_predecessor_creates_strict_append_only_source_segments():
                 },
             )
 
+        completed = _alembic(database_url, "upgrade", "head")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+        with database.session_factory.begin() as session:
+            run_id = session.scalar(
+                text(
+                    "insert into extraction_runs "
+                    "(document_id, prompt_version, outcome, candidate_count, page_errors) "
+                    "values (:document_id, 'migration_fixture_v1', 'completed', 0, 0) "
+                    "returning id"
+                ),
+                {"document_id": document_id},
+            )
+            fact_id = session.scalar(
+                text(
+                    "insert into facts "
+                    "(project_id, document_id, extraction_run_id, fact_type, "
+                    "subject_kind, subject_key, text_value, transformation, recorded_by) "
+                    "values (:project_id, :document_id, :run_id, 'station_from', "
+                    "'source_row', 'Conflicts!2', 'UC-1', 'trim_cell_text_v1', "
+                    "'extractor:migration_fixture_v1') returning id"
+                ),
+                {"project_id": project_id, "document_id": document_id, "run_id": run_id},
+            )
+            session.execute(
+                text(
+                    "insert into fact_sources "
+                    "(project_id, document_id, fact_id, source_segment_id, role, ordinal) "
+                    "values (:project_id, :document_id, :fact_id, :segment_id, "
+                    "'value_source', 1)"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "fact_id": fact_id,
+                    "segment_id": segment_id,
+                },
+            )
+
         assert _source_segment_rows(database.session_factory) == [
             (segment_id, project_id, document_id, "spreadsheet_cell", "UC-1", "A2")
         ]
-        with pytest.raises(DBAPIError, match="source segments are append-only"):
+        assert _fact_rows(database.session_factory) == [
+            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
+        ]
+        with pytest.raises(DBAPIError, match="facts are append-only"):
             with database.session_factory.begin() as session:
                 session.execute(
                     text(
-                        "update source_segments set exact_text = 'rewritten' "
-                        "where id = :segment_id"
+                        "update facts set text_value = 'rewritten' where id = :fact_id"
                     ),
-                    {"segment_id": segment_id},
+                    {"fact_id": fact_id},
                 )
-        assert _source_segment_rows(database.session_factory) == [
-            (segment_id, project_id, document_id, "spreadsheet_cell", "UC-1", "A2")
+        assert _fact_rows(database.session_factory) == [
+            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
         ]
 
 
-def test_downgrade_that_would_delete_source_segments_is_unsupported():
+def test_downgrade_that_would_delete_facts_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -176,7 +217,7 @@ def test_downgrade_that_would_delete_source_segments_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "source segment migration downgrade is unsupported" in completed.stderr
+    assert "typed Fact migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
@@ -201,6 +242,18 @@ def _source_segment_rows(session_factory) -> list[tuple]:
                 text(
                     "select id, project_id, document_id, kind, exact_text, cell_range "
                     "from source_segments order by id"
+                )
+            ).all()
+        )
+
+
+def _fact_rows(session_factory) -> list[tuple]:
+    with session_factory() as session:
+        return list(
+            session.execute(
+                text(
+                    "select id, document_id, extraction_run_id, fact_type, "
+                    "subject_key, text_value from facts order by id"
                 )
             ).all()
         )

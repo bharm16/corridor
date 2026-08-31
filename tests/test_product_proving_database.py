@@ -165,10 +165,13 @@ def _capture_fake_baseline(tmp_path: Path):
     return summary, expected, environment
 
 
-def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only():
+def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only(
+    runtime_database,
+):
     """The baseline follows PostgreSQL, not the ORM's necessarily partial metadata."""
 
-    engine = create_engine(settings.database_url, poolclass=NullPool)
+    database_url = make_url(settings.database_url).set(database=runtime_database.name)
+    engine = create_engine(database_url, poolclass=NullPool)
     try:
         with engine.connect() as connection:
             fingerprint = fingerprint_public_database(connection)
@@ -187,9 +190,9 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # notifications (#351-#353), scheduled publication (#354), outcome
     # capture (#356), scheduled reproof (#358), conditions (#373), and the
     # operations assists (#359-#362), and the spreadsheet Source Segment
-    # evidence-spine slice (#431).
-    assert fingerprint.table_count == 125
-    assert fingerprint.sequence_count == 114
+    # evidence-spine slice (#431), and typed Facts with their sources (#432).
+    assert fingerprint.table_count == 127
+    assert fingerprint.sequence_count == 116
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
@@ -205,10 +208,15 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "due_work_occurrences",
         "due_work_receipts",
         "due_work_schedules",
+        "facts",
+        "fact_sources",
         "source_segments",
         "statement_coordination_receipts",
     }
     assert "source_segments_id_seq" in {
+        item.name for item in fingerprint.sequences
+    }
+    assert {"facts_id_seq", "fact_sources_id_seq"} <= {
         item.name for item in fingerprint.sequences
     }
     assert {item.kind for item in fingerprint.schema_objects} == {

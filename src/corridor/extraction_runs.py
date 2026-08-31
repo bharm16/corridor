@@ -22,6 +22,7 @@ from corridor.extractor_lineage import (
     canonical_json_bytes,
     validate_config_json_shape,
 )
+from corridor.facts import append_stationing_facts
 from corridor.models import (
     EXTRACTION_OUTCOMES,
     ActiveExtractionRun,
@@ -164,6 +165,7 @@ def record_extraction_run(
     for candidate in candidates:
         candidate.extraction_run_id = run.id
     if outcome == "completed":
+        append_stationing_facts(session, document, run, tuple(candidates))
         # The one producer #342 owns: a completed reading leaves the project's
         # Record Inclusion needing reconciliation. Bumping the durable watermark
         # in this same transaction is what makes a crash after the extraction
