@@ -36,12 +36,14 @@ from access_support import seed_membership
 from corridor.report import Cell, build_report
 from corridor.report_release import (
     ExternalReportRelease,
+    ReleasedArtifactIntegrityError,
     ReleaseRefusal,
     RenderedExternalReport,
     external_report_release_history,
     prepare_external_report,
     review_prepared_external_report,
     release_external_report,
+    render_and_prepare_external_report,
     render_external_report_pdf,
     retrieve_released_external_report,
 )
@@ -280,6 +282,42 @@ def test_release_seals_exact_pdf_bytes_and_the_frozen_report_context(session, pr
     assert len(release.record_context_json["report_cells"]) == len(
         rendered.report.cells
     )
+
+
+def test_new_release_receipt_references_artifact_without_copying_bytes_or_context(
+    session, project
+):
+    artifact = _prepare(session, project)
+
+    release = _release(session, project, artifact=artifact)
+    stored = session.execute(
+        text(
+            "select pdf_bytes, evaluation_context_json, record_context_json "
+            "from external_report_releases where id = :release_id"
+        ),
+        {"release_id": release.id},
+    ).one()
+
+    assert stored.pdf_bytes is None
+    assert stored.evaluation_context_json is None
+    assert stored.record_context_json is None
+    assert release.pdf_bytes == artifact.pdf_bytes
+    assert release.evaluation_context_json == artifact.evaluation_context_json
+    assert release.record_context_json == artifact.record_context_json
+
+
+def test_release_context_reads_cannot_mutate_the_artifact_owned_context(
+    session, project
+):
+    artifact = _prepare(session, project)
+    release = _release(session, project, artifact=artifact)
+
+    exposed_context = release.record_context_json
+    exposed_context["dependencies"].clear()
+
+    stored = retrieve_released_external_report(session, project.id, release.id)
+    assert stored.record_context_json == artifact.record_context_json
+    assert len(stored.record_context_json["dependencies"]) == 1
 
 
 def test_prepared_report_review_uses_only_the_fixed_artifact_context(session, project):
@@ -620,6 +658,39 @@ def test_released_pdf_is_retrievable_and_digest_verified_after_the_ledger_change
     assert stored.pdf_bytes == historical_bytes
     assert stored.digest_is_valid is True
     assert stored.record_context_json == release.record_context_json
+
+
+def test_released_pdf_remains_retrievable_after_render_run_cleanup(session, project):
+    rendered, report_run, artifact = render_and_prepare_external_report(
+        session, project_id=project.id
+    )
+    release = _release(session, project, artifact=artifact)
+
+    session.delete(report_run)
+    session.flush()
+    session.expunge_all()
+    stored = retrieve_released_external_report(session, project.id, release.id)
+
+    assert stored.pdf_bytes == rendered.pdf_bytes
+    assert stored.pdf_sha256 == artifact.pdf_sha256
+    assert stored.digest_is_valid is True
+
+
+def test_release_refuses_an_artifact_whose_bytes_do_not_match_its_digest(
+    session, project
+):
+    artifact = _prepare(session, project)
+    artifact.pdf_bytes = PDF_B
+
+    with pytest.raises(ReleasedArtifactIntegrityError, match="SHA-256 digest"):
+        _release(session, project, artifact=artifact)
+
+    with session.no_autoflush:
+        assert session.scalars(
+            select(ExternalReportRelease).where(
+                ExternalReportRelease.project_id == project.id
+            )
+        ).all() == []
 
 
 def test_release_uses_the_prepared_artifact_after_the_ledger_changes(session, project):

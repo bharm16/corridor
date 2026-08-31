@@ -123,7 +123,7 @@ def _seed_project(session, *, slug: str) -> int:
 
 def _seed_release(session, project_id: int, *, evaluated_on: date, provenance_mode: str):
     pdf = b"%PDF-1.7\nprior release\n%%EOF"
-    release = ExternalReportRelease(
+    artifact = ExternalReportArtifact(
         project_id=project_id,
         artifact_name=f"prior-{evaluated_on.isoformat()}.pdf",
         format="pdf",
@@ -131,8 +131,21 @@ def _seed_release(session, project_id: int, *, evaluated_on: date, provenance_mo
         pdf_sha256=sha256(pdf).hexdigest(),
         evaluated_on=evaluated_on,
         ruleset_version="v0.4",
+        evaluation_context_json={},
         provenance_mode=provenance_mode,
         record_context_json={"dependencies": [], "party_statements": []},
+    )
+    session.add(artifact)
+    session.flush()
+    release = ExternalReportRelease(
+        project_id=project_id,
+        artifact_id=artifact.id,
+        artifact_name=artifact.artifact_name,
+        format="pdf",
+        pdf_sha256=artifact.pdf_sha256,
+        evaluated_on=evaluated_on,
+        ruleset_version="v0.4",
+        provenance_mode=provenance_mode,
         released_by="local:prior-releaser",
         released_by_display="Prior Releaser",
     )
