@@ -30,7 +30,10 @@ from corridor.dependency_admission import (
     run_dependency_admission,
 )
 from corridor.event_admission import EventAdmissionResult, run_event_admission
-from corridor.fact_decisions import include_current_structured_cell_facts
+from corridor.fact_decisions import (
+    InclusionDecisionResult,
+    include_current_structured_cell_facts,
+)
 from corridor.extraction_runs import declare_single_run_documents_by_policy
 from corridor.models import Project, RecordInclusionRequest
 from corridor.record_inclusion import ReconcileResult
@@ -48,7 +51,7 @@ class LoadResult:
     ambiguous_documents: list[str]
     dependencies: DependencyAdmissionResult
     events: EventAdmissionResult
-    structured_cell_decisions: tuple[object, ...]
+    structured_cell_decisions: tuple[InclusionDecisionResult, ...]
 
     @property
     def admitted_count(self) -> int:

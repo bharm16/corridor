@@ -135,6 +135,12 @@ def include_current_structured_cell_facts(
         if "spreadsheet_cell" in contract.automatic_segment_kinds
     )
 
+    return _include_current_facts(session, project_id, automatic_types)
+
+
+def _include_current_facts(
+    session: Session, project_id: int, fact_types: tuple[str, ...]
+) -> tuple[InclusionDecisionResult, ...]:
     facts = session.scalars(
         select(Fact)
         .join(
@@ -154,7 +160,7 @@ def include_current_structured_cell_facts(
         )
         .where(
             Fact.project_id == project_id,
-            Fact.fact_type.in_(automatic_types),
+            Fact.fact_type.in_(fact_types),
             FactDisposition.id.is_(None),
             Candidate.state.in_(("accepted", "merged")),
             Candidate.merged_into.is_not(None),
@@ -189,9 +195,11 @@ def include_stationing_fact_by_policy(
 def include_current_stationing_facts(
     session: Session, project_id: int
 ) -> tuple[InclusionDecisionResult, ...]:
-    """Compatibility seam returning the completed structured-cell policy."""
+    """Compatibility seam preserving the original Stationing-only behavior."""
 
-    return include_current_structured_cell_facts(session, project_id)
+    return _include_current_facts(
+        session, project_id, ("station_from", "station_to")
+    )
 
 
 def current_fact_decisions(session: Session, project_id: int) -> tuple[FactDecision, ...]:

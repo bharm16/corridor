@@ -1,5 +1,13 @@
 """Add the complete controlled structured-cell Fact vocabulary.
 
+The Stationing slice proved the envelope but left every other verified matrix
+cell in mutable Candidate JSON, so current/as-of readers still saw only two
+fields and downstream code kept copying the rest.  This linear successor keeps
+the one-envelope design, expands its exact per-type checks, and adds satellites
+only for the two values that are genuinely structured rather than scalar.  A
+generic JSON value or a table per type were rejected by ADR-0067 because they
+would respectively lose reference integrity or multiply the append/query seam.
+
 Revision ID: 7e1b2c3d4f50
 Revises: 8fc4c747b2d9
 """
