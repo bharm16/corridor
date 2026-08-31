@@ -1,4 +1,4 @@
-"""Prove that every detected matrix row reached an explicit disposition.
+"""Prove detected source units reached an explicit completeness disposition.
 
 Previously, readers exposed only their Candidate count. That approach was
 rejected because it cannot distinguish a truly blank matrix from a reader that
@@ -12,7 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-ACCOUNTING_REQUIRED_READERS = frozenset({"sheet_native_v2", "matrix_tiered_v4"})
+ACCOUNTING_REQUIRED_READERS = frozenset(
+    {"sheet_native_v2", "matrix_tiered_v4", "prose_interpretation_v1"}
+)
 _RECEIPT_KEYS = frozenset(
     {
         "schema_version",
@@ -25,6 +27,20 @@ _RECEIPT_KEYS = frozenset(
         "skipped_row_count",
         "unaccounted_rows",
         "rows",
+    }
+)
+_PROSE_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "reader_version",
+        "reader_path",
+        "document_id",
+        "detected_segment_count",
+        "read_segment_count",
+        "proposed_fact_count",
+        "unread_segment_ids",
+        "proposed_subject_candidate_ids",
+        "unproposed_subject_candidate_ids",
     }
 )
 
@@ -147,6 +163,15 @@ def validate_row_accounting(
                 f"completed {prompt_version} Extraction Run requires row accounting"
             )
         return None
+    if isinstance(receipt, dict) and receipt.get("schema_version") == (
+        "prose-segment-accounting-v1"
+    ):
+        return _validate_prose_accounting(
+            receipt,
+            prompt_version=prompt_version,
+            outcome=outcome,
+            candidate_count=candidate_count,
+        )
     if not isinstance(receipt, dict) or set(receipt) != _RECEIPT_KEYS:
         raise ValueError("matrix row accounting receipt shape is invalid")
     if (
@@ -224,4 +249,66 @@ def validate_row_accounting(
         raise ValueError(
             "failed accounted matrix run must retain its row discrepancy"
         )
+    return receipt
+
+
+def _validate_prose_accounting(
+    receipt: dict[str, Any],
+    *,
+    prompt_version: str,
+    outcome: str,
+    candidate_count: int,
+) -> dict[str, Any]:
+    if set(receipt) != _PROSE_RECEIPT_KEYS:
+        raise ValueError("prose segment accounting receipt shape is invalid")
+    if (
+        receipt.get("reader_version") != prompt_version
+        or receipt.get("reader_path") != "prose_interpretation"
+        or outcome != "completed"
+    ):
+        raise ValueError("prose segment accounting reader identity is invalid")
+    document_id = receipt.get("document_id")
+    count_names = (
+        "detected_segment_count",
+        "read_segment_count",
+        "proposed_fact_count",
+    )
+    if (
+        isinstance(document_id, bool)
+        or not isinstance(document_id, int)
+        or document_id <= 0
+        or any(
+            isinstance(receipt.get(name), bool)
+            or not isinstance(receipt.get(name), int)
+            or receipt[name] < 0
+            for name in count_names
+        )
+    ):
+        raise ValueError("prose segment accounting counts are invalid")
+    id_lists = (
+        "unread_segment_ids",
+        "proposed_subject_candidate_ids",
+        "unproposed_subject_candidate_ids",
+    )
+    for name in id_lists:
+        values = receipt.get(name)
+        if (
+            not isinstance(values, list)
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+                for value in values
+            )
+            or values != sorted(set(values))
+        ):
+            raise ValueError("prose segment accounting identities are invalid")
+    if (
+        receipt["read_segment_count"] + len(receipt["unread_segment_ids"])
+        != receipt["detected_segment_count"]
+        or receipt["proposed_fact_count"] != candidate_count
+        or set(receipt["proposed_subject_candidate_ids"])
+        & set(receipt["unproposed_subject_candidate_ids"])
+    ):
+        raise ValueError("prose segment accounting completeness is inconsistent")
     return receipt

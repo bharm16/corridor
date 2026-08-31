@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -32,16 +33,17 @@ PROSE_HEAD = "437e8c9a0b1d"
 DECISION_HEAD = "20c7d970be63"
 CURRENT_RECORD_HEAD = "8fc4c747b2d9"
 STRUCTURED_FACT_HEAD = "7e1b2c3d4f50"
-PREDECESSOR_HEAD = STRUCTURED_FACT_HEAD
-CURRENT_HEAD = "453a1b2c3d4e"
+SUBJECT_RESOLUTION_HEAD = "453a1b2c3d4e"
+PREDECESSOR_HEAD = SUBJECT_RESOLUTION_HEAD
+CURRENT_HEAD = "452c7d8e9f10"
 EXPECTED_SCHEMA_SHA256 = (
-    "a62cd22f1db6cc2f10a495574e18a9e7de054c843c78ead1ea0d38ebd6bc50d4"
+    "31a6296b9907b2b033917cef2a5a534cda514496285419d7ae6c47ec290303f2"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
-def test_migration_inventory_is_the_declared_linear_chain():
+def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
     assert {path.name for path in VERSIONS.glob("*.py")} == {
         f"{SCHEMA_BUILDER}_current_schema_baseline.py",
         f"{BASELINE_MARKER}_establish_current_baseline.py",
@@ -55,7 +57,8 @@ def test_migration_inventory_is_the_declared_linear_chain():
         f"{DECISION_HEAD}_add_fact_decisions.py",
         f"{CURRENT_RECORD_HEAD}_add_current_project_record_view.py",
         f"{STRUCTURED_FACT_HEAD}_add_structured_cell_facts.py",
-        f"{CURRENT_HEAD}_add_subject_resolution_registry.py",
+        f"{SUBJECT_RESOLUTION_HEAD}_add_subject_resolution_registry.py",
+        f"{CURRENT_HEAD}_add_prose_completeness_accounting.py",
     }
 
 
@@ -95,7 +98,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_released_head_preserves_prose_state_and_adds_empty_subject_resolution():
+def test_prose_head_preserves_spine_and_adds_completeness_accounting():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -134,23 +137,6 @@ def test_released_head_preserves_prose_state_and_adds_empty_subject_resolution()
                 ),
                 {"document_id": document_id},
             )
-            segment_id = session.scalar(
-                text(
-                    "insert into source_segments "
-                    "(project_id, document_id, kind, exact_text, content_sha256, "
-                    "ordinal, page_no, start_offset, end_offset) values "
-                    "(:project_id, :document_id, 'prose_span', "
-                    "'Equistar will submit the exhibit.', :digest, 1, 1, 0, 35) "
-                    "returning id"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "digest": sha256(
-                        b"Equistar will submit the exhibit."
-                    ).hexdigest(),
-                },
-            )
         before = _project_row(database.session_factory)
 
         completed = _alembic(database_url, "upgrade", "head")
@@ -158,18 +144,8 @@ def test_released_head_preserves_prose_state_and_adds_empty_subject_resolution()
         assert completed.returncode == 0, completed.stdout + completed.stderr
         assert _migration_head(database.session_factory) == CURRENT_HEAD
         assert _project_row(database.session_factory) == before
-        assert _source_segment_rows(database.session_factory) == [
-            (
-                segment_id,
-                project_id,
-                document_id,
-                "prose_span",
-                "Equistar will submit the exhibit.",
-                None,
-            )
-        ]
+        assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        assert _subject_resolution_rows(database.session_factory) == []
         with database.session_factory() as session:
             assert session.execute(
                 text(
@@ -186,58 +162,16 @@ def test_released_head_preserves_prose_state_and_adds_empty_subject_resolution()
             assert session.scalar(
                 text("select count(*) from page_processing_failures")
             ) == 0
-        with database.session_factory.begin() as session:
-            attempt_id = session.scalar(
-                text(
-                    "insert into subject_resolution_attempts "
-                    "(project_id, source_document_id, source_segment_id, "
-                    "reference_kind, raw_reference, normalized_reference, "
-                    "expected_subject_type, usage, state, attention_reason, "
-                    "rule_identity, content_sha256) values "
-                    "(:project_id, :document_id, :segment_id, "
-                    "'organization_name', 'Equistar', 'equistar', "
-                    "'external_org', 'identity', 'unresolved', "
-                    "'unregistered_subject_reference', "
-                    "'exact-registered-alias-v1', :digest) returning id"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "segment_id": segment_id,
-                    "digest": "b" * 64,
-                },
-            )
-        assert _subject_resolution_rows(database.session_factory) == [
-            (attempt_id, project_id, segment_id, "unresolved")
-        ]
-        with pytest.raises(DBAPIError, match="fk_subject_resolution_segment_scope"):
-            with database.session_factory.begin() as session:
-                other_project_id = session.scalar(
-                    text(
-                        "insert into projects (slug, name, is_synthetic) values "
-                        "('baseline-other', 'Baseline Other', true) returning id"
-                    )
-                )
-                session.execute(
-                    text(
-                        "insert into subject_resolution_attempts "
-                        "(project_id, source_document_id, source_segment_id, "
-                        "reference_kind, raw_reference, normalized_reference, "
-                        "expected_subject_type, usage, state, attention_reason, "
-                        "rule_identity, content_sha256) values "
-                        "(:project_id, :document_id, :segment_id, "
-                        "'organization_name', 'Equistar', 'equistar', "
-                        "'external_org', 'identity', 'unresolved', "
-                        "'unregistered_subject_reference', "
-                        "'exact-registered-alias-v1', :digest)"
-                    ),
-                    {
-                        "project_id": other_project_id,
-                        "document_id": document_id,
-                        "segment_id": segment_id,
-                        "digest": "c" * 64,
-                    },
-                )
+        _insert_pending_statement_fact(
+            database.session_factory,
+            project_id=int(project_id),
+            document_id=int(document_id),
+        )
+        _insert_prose_accounting_run(
+            database.session_factory,
+            document_id=int(document_id),
+            subject_id=int(project_id),
+        )
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -401,7 +335,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_subject_decisions_is_unsupported():
+def test_downgrade_that_would_delete_prose_completeness_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -413,7 +347,7 @@ def test_downgrade_that_would_delete_subject_decisions_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "subject resolution migration downgrade is unsupported" in completed.stderr
+    assert "prose completeness migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
@@ -424,16 +358,6 @@ def _project_row(session_factory):
                 "where slug = 'baseline-bridge'"
             )
         ).one()
-
-
-def _subject_resolution_rows(session_factory):
-    with session_factory() as session:
-        return session.execute(
-            text(
-                "select id, project_id, source_segment_id, state "
-                "from subject_resolution_attempts order by id"
-            )
-        ).all()
 
 
 def _seed_legacy_release_and_artifact(session, project_id: int) -> None:
@@ -726,6 +650,55 @@ def _insert_pending_statement_fact(
                         "document_id": document_id,
                         "digest": sha256(b"overlap").hexdigest(),
                     },
+                )
+
+
+def _insert_prose_accounting_run(
+    session_factory, *, document_id: int, subject_id: int
+) -> None:
+    receipt = {
+        "schema_version": "prose-segment-accounting-v1",
+        "reader_version": "prose_interpretation_v1",
+        "reader_path": "prose_interpretation",
+        "document_id": document_id,
+        "detected_segment_count": 1,
+        "read_segment_count": 1,
+        "proposed_fact_count": 1,
+        "unread_segment_ids": [],
+        "proposed_subject_candidate_ids": [subject_id],
+        "unproposed_subject_candidate_ids": [],
+    }
+    with session_factory.begin() as session:
+        run_id = session.scalar(
+            text(
+                "insert into extraction_runs ("
+                "document_id, prompt_version, outcome, candidate_count, page_errors, "
+                "row_accounting_json"
+                ") values ("
+                ":document_id, 'prose_interpretation_v1', 'completed', 1, 0, "
+                "cast(:receipt as jsonb)"
+                ") returning id"
+            ),
+            {"document_id": document_id, "receipt": json.dumps(receipt)},
+        )
+        assert session.scalar(
+            text(
+                "select row_accounting_json from extraction_runs where id = :run_id"
+            ),
+            {"run_id": run_id},
+        ) == receipt
+        with pytest.raises(DBAPIError, match="completed_row_accounting"):
+            with session.begin_nested():
+                session.execute(
+                    text(
+                        "insert into extraction_runs ("
+                        "document_id, prompt_version, outcome, candidate_count, "
+                        "page_errors"
+                        ") values ("
+                        ":document_id, 'prose_interpretation_v1', 'completed', 1, 0"
+                        ")"
+                    ),
+                    {"document_id": document_id},
                 )
 
 

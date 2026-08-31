@@ -306,6 +306,7 @@ def append_statement_wording_facts(
         ).all()
     )
     by_page_and_text: dict[tuple[int, str], list[SourceSegment]] = {}
+    segment_by_id = {segment.id: segment for segment in segments}
     for segment in segments:
         if segment.page_no is not None:
             by_page_and_text.setdefault(
@@ -333,26 +334,84 @@ def append_statement_wording_facts(
             or quote != description
         ):
             raise FactValidationError("statement wording citation is not exact")
-        matching = by_page_and_text.get((page_no, description), [])
-        if len(matching) != 1:
-            raise FactValidationError(
-                "statement wording must resolve to one exact prose span"
-            )
-        segment = matching[0]
-        if segment.kind not in contract.accepted_segment_kinds:
-            raise FactValidationError("statement wording requires prose span support")
         attribution = fields.get("stated_party") or fields.get("external_org")
-        if not isinstance(attribution, str) or attribution not in description:
-            raise FactValidationError(
-                "statement wording needs exact attribution in its source span"
+        if not isinstance(attribution, str):
+            raise FactValidationError("statement wording needs exact attribution")
+        declared_links = candidate.payload_json.get("fact_sources")
+        if declared_links is not None:
+            if not isinstance(declared_links, list) or any(
+                not isinstance(link, dict)
+                or set(link) != {"segment_id", "role"}
+                or isinstance(link.get("segment_id"), bool)
+                or not isinstance(link.get("segment_id"), int)
+                or not isinstance(link.get("role"), str)
+                for link in declared_links
+            ):
+                raise FactValidationError("statement Fact source references are invalid")
+            links = tuple(
+                (link["role"], link["segment_id"]) for link in declared_links
+            )
+            if (
+                {role for role, _segment_id in links} != contract.required_roles
+                or len(links) != len(contract.required_roles)
+            ):
+                raise FactValidationError(
+                    "statement Fact source roles do not match its contract"
+                )
+            try:
+                value_segment = segment_by_id[
+                    next(
+                        segment_id
+                        for role, segment_id in links
+                        if role == "value_source"
+                    )
+                ]
+                attribution_segment = segment_by_id[
+                    next(
+                        segment_id
+                        for role, segment_id in links
+                        if role == "attribution_source"
+                    )
+                ]
+            except (KeyError, StopIteration) as exc:
+                raise FactValidationError(
+                    "statement Fact source belongs to another rendition"
+                ) from exc
+            if (
+                value_segment.page_no != page_no
+                or value_segment.exact_text != description
+                or value_segment.kind not in contract.accepted_segment_kinds
+                or attribution_segment.kind not in contract.accepted_segment_kinds
+            ):
+                raise FactValidationError(
+                    "statement wording does not replay from declared sources"
+                )
+            if attribution not in attribution_segment.exact_text:
+                raise FactValidationError(
+                    "statement attribution does not replay from declared source"
+                )
+        else:
+            matching = by_page_and_text.get((page_no, description), [])
+            if len(matching) != 1:
+                raise FactValidationError(
+                    "statement wording must resolve to one exact prose span"
+                )
+            value_segment = attribution_segment = matching[0]
+            if value_segment.kind not in contract.accepted_segment_kinds:
+                raise FactValidationError(
+                    "statement wording requires prose span support"
+                )
+            if attribution not in attribution_segment.exact_text:
+                raise FactValidationError(
+                    "statement wording needs exact attribution in its source span"
+                )
+            links = (
+                ("value_source", value_segment.id),
+                ("attribution_source", attribution_segment.id),
             )
         if candidate.id is None:
             raise FactValidationError("statement Candidate needs an immutable identity")
         subject_key = f"candidate:{candidate.id}"
-        links = (
-            ("value_source", segment.id),
-            ("attribution_source", segment.id),
-        )
         fact = Fact(
             project_id=document.project_id,
             document_id=document.id,
@@ -408,11 +467,24 @@ def _is_statement_wording_candidate(candidate: Candidate) -> bool:
     description = fields.get("description")
     attribution = fields.get("stated_party") or fields.get("external_org")
     citations = candidate.payload_json.get("citations") or []
+    declared_links = candidate.payload_json.get("fact_sources")
+    declared_roles = (
+        {
+            link.get("role")
+            for link in declared_links
+            if isinstance(link, dict)
+        }
+        if isinstance(declared_links, list)
+        else set()
+    )
+    has_declared_sources = declared_roles == FACT_TYPE_CONTRACTS[
+        "statement_wording"
+    ].required_roles
     if (
         not isinstance(description, str)
         or not description.strip()
         or not isinstance(attribution, str)
-        or attribution not in description
+        or (attribution not in description and not has_declared_sources)
         or len(citations) != 1
     ):
         return False
@@ -751,6 +823,19 @@ def replay_fact(
     if replayed != materialized:
         raise FactReplayMismatch("materialized Fact value does not reproduce")
     return replayed
+
+
+def replay_proposed_fact_value(
+    fact_type: str, exact_value_sources: tuple[str, ...]
+) -> str:
+    """Replay a proposed typed value before it reaches the append command."""
+
+    contract = FACT_TYPE_CONTRACTS.get(fact_type)
+    if contract is None:
+        raise FactValidationError(f"unknown Fact type {fact_type!r}")
+    if len(exact_value_sources) != 1:
+        raise FactValidationError("Fact proposal needs one value source")
+    return _transform(contract.transformation, exact_value_sources[0])
 
 
 def _segment_rows(segments: tuple[SourceSegment, ...]) -> dict[str, dict[int, dict[int, str]]]:

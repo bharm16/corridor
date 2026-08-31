@@ -6,9 +6,11 @@ spreadsheet Source Segments. `444758f7b4a7` adds typed Facts, `d430a1b2c3d4`
 makes released Reports reference artifact-owned content, and `1142da5be661`
 adds the scoped append receipt. `1d2e3f4a5b6c` adds PDF page inventory/failure
 history. `961bd259310f` adds immutable Extracted Proposals and is the current
-released head. `437e8c9a0b1d` is its one supported
-successor: it adds Minutes prose spans and pending statement wording Facts.
-Fresh and upgraded databases have one exact schema fingerprint.
+released predecessor. `437e8c9a0b1d` adds Minutes prose spans and pending
+statement wording Facts. `20c7d970be63` adds typed inclusion decisions and is
+the current released head. `452c7d8e9f10` is its one supported successor: it
+adds durable prose completeness accounting. Fresh and upgraded databases have
+one exact schema fingerprint.
 
 Executable revisions live in `baseline_versions`. `versions` is not configured
 as an Alembic version location; it retains only inert bytes required by released
