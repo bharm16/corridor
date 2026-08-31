@@ -218,6 +218,7 @@ _FAMILIES: tuple[tuple[str, tuple[_Member, ...]], ...] = (
                        coalesce(sum(octet_length(pdf_bytes)), 0)::bigint as bytes
                 from external_report_artifacts
                 """,
+                False,
             ),
             _Member(
                 "external_report_releases",
@@ -287,12 +288,7 @@ def build_storage_baseline(
     # and field paths. Those paths remain visible in their logical families but
     # are excluded here so the cutover target is a physical-byte metric rather
     # than a gross sum that counts the same JSON bytes twice.
-    known_duplication_bytes = sum(
-        member["bytes"]
-        for family in families
-        for member in family["members"]
-        if member["target_included"]
-    )
+    known_duplication_bytes = sum(family["target_bytes"] for family in families)
     representative_outputs = {
         "coordination_report": _freeze_report_run(
             session,
@@ -314,9 +310,11 @@ def build_storage_baseline(
         "families": families,
         "known_duplication_bytes": known_duplication_bytes,
         "metric_definition": (
-            "Sum of measured duplicate-bearing values, excluding nested "
-            "Extraction Run quote and field paths already counted by the "
-            "whole candidate_inputs_json snapshot member."
+            "Sum of measured removable duplicate-bearing values. Excludes "
+            "nested Extraction Run quote and field paths already counted by "
+            "the whole candidate_inputs_json snapshot member, and excludes "
+            "artifact-owned PDF bytes because the artifact is the one durable "
+            "content owner retained by the single-store release design."
         ),
         "representative_outputs": representative_outputs,
         "target": {
@@ -338,6 +336,9 @@ def _measure_family(
         "family": name,
         "rows": sum(member["rows"] for member in measured),
         "bytes": sum(member["bytes"] for member in measured),
+        "target_bytes": sum(
+            member["bytes"] for member in measured if member["target_included"]
+        ),
         "members": measured,
     }
 
