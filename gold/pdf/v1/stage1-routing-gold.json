@@ -1,0 +1,39 @@
+{
+  "schema_version": "corridor.pdf-stage1-gold.v1",
+  "dataset_version": "2026-08-31.2",
+  "pdf_gold_dataset_version": "2026-08-31.2",
+  "author": "stage1-labeler-2026-08-31",
+  "checker": "stage1-checker-2026-08-31",
+  "cases": [
+    {
+      "document_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+      "page_number": 2,
+      "page_class": "page-scoped-owner-matrix",
+      "expected_ocr_needed": false
+    },
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "page_number": 5,
+      "page_class": "marked-resolution-matrix",
+      "expected_ocr_needed": false
+    },
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "page_number": 9,
+      "page_class": "ambiguous-retirement-matrix",
+      "expected_ocr_needed": false
+    },
+    {
+      "document_sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+      "page_number": 1,
+      "page_class": "image-only-agreement",
+      "expected_ocr_needed": true
+    },
+    {
+      "document_sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2",
+      "page_number": 1,
+      "page_class": "mixed-native-scanned-agreement",
+      "expected_ocr_needed": true
+    }
+  ]
+}

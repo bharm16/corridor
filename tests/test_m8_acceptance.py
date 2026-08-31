@@ -24,7 +24,7 @@ import corridor.m8_acceptance as m8_acceptance_module
 import corridor.m8_acceptance_controlled as m8_acceptance_controlled_module
 from corridor.config import settings
 from corridor.db import engine
-from corridor.ingest import MIN_TEXT_CHARS
+from corridor.page_inventory import inventory_page, route_page
 from corridor.m8_acceptance import (
     AcceptanceCaptureConfig,
     AcceptanceError,
@@ -376,7 +376,7 @@ def test_synthetic_matrix_pages_do_not_fall_through_to_ocr(tmp_path):
         if source["doc_type"] != "matrix":
             continue
         with pymupdf.open(source["local_path"]) as document:
-            assert len(document[0].get_text().strip()) >= MIN_TEXT_CHARS
+            assert route_page(inventory_page(document[0])).page_mode == "native"
 
 
 def test_equivalent_model_free_replays_have_one_normalized_identity(
