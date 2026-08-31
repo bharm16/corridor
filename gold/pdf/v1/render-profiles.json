@@ -1,0 +1,39 @@
+{
+  "schema_version": "corridor.render-profiles.v1",
+  "pdf_gold_dataset_version": "2026-08-31.2",
+  "measurement_sha256": "d952c12ae74126387eae71c5d94549c44e2ad6d174483f0249f063c08ff99e6d",
+  "profiles": {
+    "review": {
+      "name": "review",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "dpi": 200,
+      "preprocessing": [],
+      "requires_clip": false,
+      "parameters": {"format": "png", "color": "rgb", "alpha": false}
+    },
+    "ocr_layout": {
+      "name": "ocr_layout",
+      "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+      "dpi": 300,
+      "preprocessing": ["grayscale", "denoise"],
+      "requires_clip": false,
+      "parameters": {"format": "png", "denoise_kernel": [3, 3]}
+    },
+    "table_cv": {
+      "name": "table_cv",
+      "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+      "dpi": 300,
+      "preprocessing": ["grayscale", "denoise", "adaptive_threshold", "line_morphology"],
+      "requires_clip": false,
+      "parameters": {"format": "png", "threshold_block_size": 31, "threshold_c": 9, "line_kernel_pixels": 25}
+    },
+    "cell_detail": {
+      "name": "cell_detail",
+      "profile_id": "c76f537dc0c6311304d95b4592d735be4d8ebba3e736336227cd0e841d926b8f",
+      "dpi": 600,
+      "preprocessing": [],
+      "requires_clip": true,
+      "parameters": {"format": "png", "color": "rgb", "alpha": false}
+    }
+  }
+}

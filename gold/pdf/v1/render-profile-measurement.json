@@ -1,0 +1,31 @@
+{
+  "schema_version": "corridor.render-profile-measurement.v1",
+  "pdf_gold_dataset_version": "2026-08-31.2",
+  "measured_at": "2026-08-31T07:20:00Z",
+  "tool_versions": {"pymupdf": "1.28.0"},
+  "cases": [
+    {"document_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be", "page_number": 2, "page_class": "page-scoped-owner-matrix"},
+    {"document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a", "page_number": 5, "page_class": "marked-resolution-matrix"},
+    {"document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a", "page_number": 9, "page_class": "ambiguous-retirement-matrix"},
+    {"document_sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611", "page_number": 1, "page_class": "image-only-agreement"},
+    {"document_sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2", "page_number": 1, "page_class": "mixed-native-scanned-agreement"}
+  ],
+  "candidate_dpis": [
+    {"dpi": 150, "glyph_height_p10_pixels": 16.039, "table_stroke_p10_pixels": 0.390, "minimum_scanned_long_edge_pixels": 1649, "total_megapixels": 17.753},
+    {"dpi": 200, "glyph_height_p10_pixels": 21.385, "table_stroke_p10_pixels": 0.519, "minimum_scanned_long_edge_pixels": 2199, "total_megapixels": 31.560},
+    {"dpi": 300, "glyph_height_p10_pixels": 32.078, "table_stroke_p10_pixels": 0.779, "minimum_scanned_long_edge_pixels": 3299, "total_megapixels": 71.011},
+    {"dpi": 400, "glyph_height_p10_pixels": 42.770, "table_stroke_p10_pixels": 1.039, "minimum_scanned_long_edge_pixels": 4398, "total_megapixels": 126.241},
+    {"dpi": 600, "glyph_height_p10_pixels": 64.155, "table_stroke_p10_pixels": 1.558, "minimum_scanned_long_edge_pixels": 6597, "total_megapixels": 284.043}
+  ],
+  "selection_rules": {
+    "review": "lowest DPI with scanned long edge at least 2000 pixels",
+    "ocr_layout": "lowest DPI with scanned long edge at least 3000 pixels",
+    "table_cv": "lowest DPI with p10 table stroke at least 0.75 pixels",
+    "cell_detail": "highest measured DPI, used only for bounded region crops"
+  },
+  "selected_dpis": {"review": 200, "ocr_layout": 300, "table_cv": 300, "cell_detail": 600},
+  "limitations": [
+    "The five-page Stage 1 slice fixes profile selection; it is not a vendor OCR or table-accuracy claim.",
+    "Cell detail is a bounded crop profile, so its full-page megapixel total is reported only as a cost ceiling comparison."
+  ]
+}

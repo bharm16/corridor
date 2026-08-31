@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 import pymupdf
 import pytest
@@ -6,7 +7,13 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.ingest import ingest_document
-from corridor.models import DocPage, Document, PageProcessingFailure, Project
+from corridor.models import (
+    DocPage,
+    Document,
+    PageProcessingFailure,
+    PageRenderDerivative,
+    Project,
+)
 
 
 @pytest.fixture
@@ -133,8 +140,26 @@ def test_every_page_gets_text_and_an_image(session, project, pdf, tmp_path):
     assert "1149+00" in pages[1].text
     for page in pages:
         assert page.image_path
-        image = tmp_path / "images" / f"{doc.sha256}" / f"{page.page_no:04d}.png"
+        image = Path(page.image_path)
         assert image.exists() and image.stat().st_size > 0
+    derivatives = session.scalars(
+        select(PageRenderDerivative).where(
+            PageRenderDerivative.document_id == doc.id
+        )
+    ).all()
+    assert {(item.page_number, item.profile_name) for item in derivatives} == {
+        (1, "review"),
+        (1, "ocr_layout"),
+        (1, "table_cv"),
+        (2, "review"),
+        (2, "ocr_layout"),
+        (2, "table_cv"),
+    }
+    assert all(
+        item.manifest_json["preprocessing"] == []
+        for item in derivatives
+        if item.profile_name == "review"
+    )
 
 
 def test_filename_can_override_the_content_addressed_path(
@@ -271,6 +296,22 @@ def test_a_scanned_page_falls_back_to_ocr(session, project, scanned_pdf, tmp_pat
     assert page.text_source == "ocr"
     assert "UTILITY" in page.text.upper()
     assert "CENTERPOINT" in page.text.upper()
+    derivatives = session.scalars(
+        select(PageRenderDerivative).where(
+            PageRenderDerivative.document_id == doc.id
+        )
+    ).all()
+    assert {item.profile_name for item in derivatives} == {
+        "review",
+        "ocr_layout",
+        "table_cv",
+    }
+    review = next(item for item in derivatives if item.profile_name == "review")
+    ocr = next(item for item in derivatives if item.profile_name == "ocr_layout")
+    assert review.artifact_path == page.image_path
+    assert review.manifest_json["preprocessing"] == []
+    assert ocr.manifest_json["preprocessing"] == ["grayscale", "denoise"]
+    assert ocr.artifact_path != review.artifact_path
 
 
 def test_every_pdf_page_persists_its_inventory_and_routing_decision(
@@ -395,6 +436,8 @@ def test_ocr_exception_persists_a_visible_processing_failure(
     assert failure.configuration_json == {
         "language": "eng",
         "page_segmentation_mode": 6,
+        "render_profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "render_dpi": 300,
     }
     assert failure.scope_json["page_number"] == 1
     assert failure.scope_json["region_id"].startswith("image-")

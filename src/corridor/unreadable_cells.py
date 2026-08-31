@@ -52,6 +52,8 @@ from corridor.models import (
     UnreadableCellResolution,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.render_profiles import PageBox, ensure_render_derivative
+from corridor.storage import stored_pdf
 from corridor.verify import literal_quote_on_page, normalize
 
 PROFILE_VERSION = "unreadable-cell-reading-profile-v1"
@@ -298,7 +300,8 @@ def rescue_page(
     and the ordinary single-read-plus-citation path applies to the new text. A
     page still short of the readable minimum stays in the class for the harness.
     """
-    pinned = _pin_bytes(page)
+    page_input_pin = _pin_bytes(page)
+    pinned = page_input_pin
     ops = tuple(profile.image_op_identities_json or ())
     try:
         recovered = preprocessor.rescue(
@@ -790,6 +793,7 @@ async def read_unreadable_cell(
     runtime: CellReadingRuntime,
     image_reader: CellImageReader,
     budget: CellBudget | None = None,
+    cell_page_box: PageBox | None = None,
 ) -> UnreadableCellReadingRun:
     """Run one bounded cell reading and record exactly one terminal receipt.
 
@@ -826,7 +830,16 @@ async def read_unreadable_cell(
         raise CellReadingRefused("cell_key_required", "a cell key is required")
 
     budget = budget or CellBudget.from_profile(profile)
-    pinned = _pin_bytes(page)
+    page_input_pin = _pin_bytes(page)
+    pinned = page_input_pin
+    if cell_page_box is not None:
+        detail = prepare_cell_detail_render(
+            session,
+            document=document,
+            page=page,
+            cell_page_box=cell_page_box,
+        )
+        pinned = detail.artifact_sha256
     # Per-page budget: the profile caps how many distinct cells one page may
     # consume. Exhaustion is a recorded honest outcome, never a silent pass.
     processed_cells = session.scalar(
@@ -930,7 +943,7 @@ async def read_unreadable_cell(
     if validation_error:
         return _store("validation_refused", validation_error, None, "refused")
 
-    if _pin_bytes(page) != pinned:
+    if _pin_bytes(page) != page_input_pin:
         return _store(
             "stale_input",
             "the pinned page image changed during the reading",
@@ -959,6 +972,38 @@ async def read_unreadable_cell(
     # the distinct 'absent' state, but the attempt's terminal state is failure.
     run_state = "failure" if resolution.state == "absent" else resolution.state
     return _store(run_state, None, outcome, "valid", resolution=resolution)
+
+
+def prepare_cell_detail_render(
+    session: Session,
+    *,
+    document: Document,
+    page: DocPage,
+    cell_page_box: PageBox,
+    source_path: Path | str | None = None,
+):
+    """Persist the bounded 600-DPI derivative used for one degraded cell."""
+
+    source = Path(source_path) if source_path is not None else stored_pdf(document)
+    if source is None:
+        raise CellReadingRefused(
+            "source_bytes_required",
+            "a cell-detail derivative requires the pinned source PDF bytes",
+        )
+    output_dir = (
+        Path(page.image_path).parent / "cell-detail"
+        if page.image_path
+        else source.parent / "cell-detail"
+    )
+    return ensure_render_derivative(
+        session,
+        document=document,
+        page_number=page.page_no,
+        profile_name="cell_detail",
+        pdf_path=source,
+        output_dir=output_dir,
+        clip_page_box=cell_page_box,
+    )
 
 
 def _finish(

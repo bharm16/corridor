@@ -14,6 +14,7 @@ at test time, so `find_tables()` and the word-box reader do their actual
 work without depending on a fetched corpus.
 """
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -36,7 +37,14 @@ from corridor.extract_matrix import (
     TIER_TRANSCRIBE,
     extract_document,
 )
-from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
+from corridor.models import (
+    Candidate,
+    DocPage,
+    Document,
+    ExtractionRun,
+    PageRenderDerivative,
+    Project,
+)
 from corridor.row_accounting import RowAccounting, RowAccountingFailure
 
 # A TxDOT-shaped page: the owner is a column, every row states its own.
@@ -170,6 +178,7 @@ def make_document(session, project, tmp_path, rows, *, banner=None, sha="a", pag
             image_path=str(image), text_source="text_layer",
         )
     )
+    _add_layout_derivative(session, doc, 1, image)
     session.flush()
     doc._pdf_path = str(pdf)
     return doc
@@ -213,9 +222,31 @@ def make_multipage_document(session, project, tmp_path, pages_rows, *, sha="m"):
                     text_source="text_layer",
                 )
             )
+            _add_layout_derivative(session, doc, index + 1, image)
     session.flush()
     doc._pdf_path = str(path)
     return doc
+
+
+def _add_layout_derivative(session, document, page_number, image):
+    image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    session.add(
+        PageRenderDerivative(
+            document_id=document.id,
+            page_number=page_number,
+            derivative_key=hashlib.sha256(
+                f"{document.id}:{page_number}:ocr-layout".encode()
+            ).hexdigest(),
+            profile_name="ocr_layout",
+            profile_id="27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+            source_sha256=hashlib.sha256(document.sha256.encode()).hexdigest(),
+            artifact_path=str(image),
+            artifact_sha256=image_digest,
+            artifact_bytes=image.stat().st_size,
+            manifest_json={"schema_version": "corridor.render-derivative.v1"},
+            retention_class="intermediary_processing",
+        )
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -537,6 +568,21 @@ def test_the_model_is_shown_the_page_image_and_the_cells_geometry_read(
     assert "Utility ID" in call["user"] and "[0]" in call["user"]
 
 
+def test_model_vision_uses_the_layout_profile_not_the_review_rendition(
+    session, project, tmp_path, monkeypatch
+):
+    doc = make_document(session, project, tmp_path, TXDOT_ROWS)
+    client = StubClient([structure()])
+    monkeypatch.setattr(
+        "corridor.extract_matrix.render_path_for_page",
+        lambda *_args, **_kwargs: "/tmp/ocr-layout-profile.png",
+    )
+
+    extract_document(session, doc, client=client)
+
+    assert client.calls[0]["images"] == ["/tmp/ocr-layout-profile.png"]
+
+
 def test_the_model_is_never_asked_for_a_value(session, project, tmp_path):
     """The schema has no place to put one. That is the design."""
     doc = make_document(session, project, tmp_path, TXDOT_ROWS)
@@ -612,6 +658,7 @@ def test_a_continuation_page_reuses_the_header_printed_earlier(
         DocPage(document_id=doc.id, page_no=2, text=text,
                 image_path=str(image), text_source="text_layer")
     )
+    _add_layout_derivative(session, doc, 2, image)
     session.flush()
 
     # Page 2 has no header, and the model mis-infers the owner column.
@@ -837,6 +884,7 @@ def test_a_mixed_document_produces_candidates_from_both_tiers(
         DocPage(document_id=doc.id, page_no=2, text=text,
                 image_path=str(image), text_source="ocr")
     )
+    _add_layout_derivative(session, doc, 2, image)
     session.flush()
 
     candidates = extract_document(

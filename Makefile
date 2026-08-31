@@ -5,6 +5,7 @@ TEST_WORKERS ?= 4
 # One command from a clean clone.
 boot:
 	uv sync
+	uv sync --project workers/render --frozen
 	docker compose up -d --wait
 	uv run alembic upgrade head
 

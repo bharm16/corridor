@@ -49,14 +49,15 @@ from corridor.page_inventory import (
     inventory_page,
     route_page,
 )
+from corridor.render_profiles import (
+    RenderDerivative,
+    persist_render_derivative,
+    render_page_derivative,
+)
 from corridor.source_segments import (
     SPREADSHEET_SUFFIXES,
     append_ingested_source_segments,
 )
-
-# 150 dpi: legible for reading a quote in context, and small enough that a
-# 700-row matrix does not turn into a gigabyte of PNGs.
-RENDER_DPI = 150
 
 # Suffixes read as a workbook rather than a page image. `.xlsm` alongside
 # `.xlsx` because TxDOT's own form ships macros in some revisions and the
@@ -84,6 +85,7 @@ class ExtractedPage:
     inventory: PageInventory | None = None
     routing: PageRoutingDecision | None = None
     failures: tuple[PageFailure, ...] = ()
+    derivatives: tuple[RenderDerivative, ...] = ()
 
 
 def ingest_document(
@@ -329,6 +331,8 @@ def _persist_pages(
                     error_message=failure.error_message,
                 )
             )
+        for derivative in extracted.derivatives:
+            persist_render_derivative(session, document.id, derivative)
 
 
 def _extract(path: Path, images_dir: Path) -> list[ExtractedPage]:
@@ -396,12 +400,31 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
             # 1-based: citations are written for humans, and [D12 p.4] must
             # mean the page a reader sees.
             page_no = index + 1
-            image_path = images_dir / f"{page_no:04d}.png"
-            page.get_pixmap(dpi=RENDER_DPI).save(image_path)
-
             native_text = page.get_text()
             inventory = inventory_page(page, native_text=native_text)
             routing = route_page(inventory)
+            review_derivative = render_page_derivative(
+                pdf_path=path,
+                page_number=page_no,
+                profile_name="review",
+                output_dir=images_dir,
+            )
+            image_path = review_derivative.artifact_path
+            # The layout/model derivative is purpose-specific even when OCR is
+            # not needed; vision consumers never borrow reviewer pixels.
+            ocr_derivative = render_page_derivative(
+                pdf_path=path,
+                page_number=page_no,
+                profile_name="ocr_layout",
+                output_dir=images_dir,
+            )
+            table_derivative = render_page_derivative(
+                pdf_path=path,
+                page_number=page_no,
+                profile_name="table_cv",
+                output_dir=images_dir,
+            )
+            derivatives = [review_derivative, ocr_derivative, table_derivative]
             ocr_text: list[str] = []
             failures: list[PageFailure] = []
             for region in routing.regions:
@@ -409,7 +432,9 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
                     continue
                 try:
                     recovered = _ocr_region(
-                        image_path,
+                        (
+                            ocr_derivative.artifact_path
+                        ),
                         region.box,
                         inventory.boxes.crop,
                     )
@@ -417,7 +442,15 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
                     failures.append(
                         PageFailure(
                             engine=OCR_ENGINE,
-                            configuration=dict(OCR_CONFIGURATION),
+                            configuration={
+                                **OCR_CONFIGURATION,
+                                "render_profile_id": (
+                                    ocr_derivative.profile_id
+                                ),
+                                "render_dpi": (
+                                    ocr_derivative.dpi
+                                ),
+                            },
                             region_id=region.region_id,
                             scope={
                                 "page_number": page_no,
@@ -455,6 +488,7 @@ def _extract_pages(path: Path, images_dir: Path) -> list[ExtractedPage]:
                     inventory=inventory,
                     routing=routing,
                     failures=tuple(failures),
+                    derivatives=tuple(derivatives),
                 )
             )
 
