@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import os
 from pathlib import Path
 import subprocess
@@ -14,27 +15,30 @@ from sqlalchemy.exc import DBAPIError
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.product_proving_database import fingerprint_database_url
+from corridor.report_release import retrieve_released_external_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS = ROOT / "src" / "corridor" / "migrations" / "baseline_versions"
 SCHEMA_BUILDER = "b7d3f9a1c2e5"
 BASELINE_MARKER = "c0a1d0b5e11e"
-PREDECESSOR_HEAD = "0ca809014df7"
-CURRENT_HEAD = "444758f7b4a7"
+SPREADSHEET_HEAD = "0ca809014df7"
+RELEASED_HEAD = "444758f7b4a7"
+CURRENT_HEAD = "d430a1b2c3d4"
 EXPECTED_SCHEMA_SHA256 = (
-    "d625b60573a0bf3124e4dd9c36907c7738392cfa7d72b106b052cd84f0b54909"
+    "dc25cd6f2dc1f44a2660926b462359ef129aed44e503735f4871e8fa7b97cdff"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
-def test_migration_inventory_is_one_builder_marker_and_linear_successor():
+def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
     assert {path.name for path in VERSIONS.glob("*.py")} == {
         f"{SCHEMA_BUILDER}_current_schema_baseline.py",
         f"{BASELINE_MARKER}_establish_current_baseline.py",
-        f"{PREDECESSOR_HEAD}_add_spreadsheet_source_segments.py",
-        f"{CURRENT_HEAD}_add_typed_facts.py",
+        f"{SPREADSHEET_HEAD}_add_spreadsheet_source_segments.py",
+        f"{RELEASED_HEAD}_add_typed_facts.py",
+        f"{CURRENT_HEAD}_release_references_artifact.py",
     }
 
 
@@ -74,24 +78,28 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_supported_predecessor_adds_empty_facts_without_changing_record_rows():
+def test_released_head_adds_reference_storage_without_changing_record_rows():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_bridge_",
-        migration_revision=PREDECESSOR_HEAD,
+        migration_revision=RELEASED_HEAD,
     ) as database:
         database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
-            session.execute(
+            project_id = session.scalar(
                 text(
                     "insert into projects (slug, name, is_synthetic) "
-                    "values ('baseline-bridge', 'Baseline Bridge', true)"
+                    "values ('baseline-bridge', 'Baseline Bridge', true) "
+                    "returning id"
                 )
             )
+            assert project_id is not None
+            _seed_legacy_release_and_artifact(session, int(project_id))
         before = _project_row(database.session_factory)
+        release_before = _legacy_release_row(database.session_factory)
 
         completed = _alembic(database_url, "upgrade", "head")
 
@@ -100,18 +108,18 @@ def test_supported_predecessor_adds_empty_facts_without_changing_record_rows():
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
+        assert _legacy_release_row(database.session_factory) == release_before
+        _assert_legacy_release_reader(database.session_factory, int(project_id))
+        _insert_artifact_reference_release(database.session_factory)
 
 
-def test_supported_predecessor_creates_same_rendition_append_only_facts():
-    configured = make_url(settings.database_url)
+def test_current_head_has_same_rendition_append_only_facts():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_segment_bridge_",
-        migration_revision=PREDECESSOR_HEAD,
     ) as database:
-        database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
             project_id = session.scalar(
                 text(
@@ -146,9 +154,6 @@ def test_supported_predecessor_creates_same_rendition_append_only_facts():
                     "digest": "1c4fc7e2bdaf4b219c00ce662b927dc5d7e17091e467df61b9582d7fb359a39e",
                 },
             )
-
-        completed = _alembic(database_url, "upgrade", "head")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
 
         with database.session_factory.begin() as session:
             run_id = session.scalar(
@@ -205,7 +210,7 @@ def test_supported_predecessor_creates_same_rendition_append_only_facts():
         ]
 
 
-def test_downgrade_that_would_delete_facts_is_unsupported():
+def test_downgrade_across_release_reference_successor_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -214,10 +219,12 @@ def test_downgrade_that_would_delete_facts_is_unsupported():
         database_prefix="corridor_baseline_downgrade_",
     ) as database:
         database_url = configured.set(database=database.name)
-        completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
+        completed = _alembic(database_url, "downgrade", RELEASED_HEAD)
 
     assert completed.returncode != 0
-    assert "typed Fact migration downgrade is unsupported" in completed.stderr
+    assert "released-report artifact-reference downgrade is unsupported" in (
+        completed.stderr
+    )
 
 
 def _project_row(session_factory):
@@ -228,6 +235,166 @@ def _project_row(session_factory):
                 "where slug = 'baseline-bridge'"
             )
         ).one()
+
+
+def _seed_legacy_release_and_artifact(session, project_id: int) -> None:
+    pdf_bytes = b"%PDF-1.7\nlegacy release\n%%EOF"
+    digest = sha256(pdf_bytes).hexdigest()
+    artifact_id = session.scalar(
+        text(
+            "insert into external_report_artifacts ("
+            "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+            "evaluated_on, ruleset_version, evaluation_context_json, "
+            "provenance_mode, record_context_json"
+            ") values ("
+            ":project_id, 'artifact-backed.pdf', 'pdf', :pdf_bytes, :digest, "
+            "date '2026-08-31', 'v0.4', '{}'::jsonb, "
+            "'all-supported-sources', '{}'::jsonb"
+            ") returning id"
+        ),
+        {"project_id": project_id, "pdf_bytes": pdf_bytes, "digest": digest},
+    )
+    assert artifact_id is not None
+    session.execute(
+        text(
+            "insert into external_report_releases ("
+            "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+            "evaluated_on, ruleset_version, evaluation_context_json, "
+            "provenance_mode, record_context_json, released_by, released_by_display"
+            ") values ("
+            ":project_id, 'legacy-release.pdf', 'pdf', :pdf_bytes, :digest, "
+            "date '2026-08-31', 'v0.4', '{}'::jsonb, "
+            "'all-supported-sources', '{\"dependencies\": []}'::jsonb, "
+            "'local:legacy', 'Legacy Releaser'"
+            ")"
+        ),
+        {"project_id": project_id, "pdf_bytes": pdf_bytes, "digest": digest},
+    )
+
+
+def _legacy_release_row(session_factory):
+    with session_factory() as session:
+        return session.execute(
+            text(
+                "select artifact_id, artifact_name, pdf_bytes, pdf_sha256, "
+                "evaluation_context_json, record_context_json, released_by "
+                "from external_report_releases "
+                "where artifact_name = 'legacy-release.pdf'"
+            )
+        ).one()
+
+
+def _assert_legacy_release_reader(session_factory, project_id: int) -> None:
+    with session_factory() as session:
+        release_id = session.scalar(
+            text(
+                "select id from external_report_releases "
+                "where artifact_name = 'legacy-release.pdf'"
+            )
+        )
+        release = retrieve_released_external_report(
+            session, project_id, int(release_id)
+        )
+        assert release.content_storage == "legacy"
+        assert release.artifact_id is None
+        assert release.pdf_bytes == b"%PDF-1.7\nlegacy release\n%%EOF"
+        assert release.record_context_json == {"dependencies": []}
+        assert release.digest_is_valid is True
+
+
+def _insert_artifact_reference_release(session_factory) -> None:
+    with session_factory.begin() as session:
+        project_id = session.scalar(
+            text("select id from projects where slug = 'baseline-bridge'")
+        )
+        artifact_id = session.scalar(
+            text(
+                "select id from external_report_artifacts "
+                "where artifact_name = 'artifact-backed.pdf'"
+            )
+        )
+        artifact_digest = session.scalar(
+            text(
+                "select pdf_sha256 from external_report_artifacts where id = :artifact_id"
+            ),
+            {"artifact_id": artifact_id},
+        )
+        release_id = session.scalar(
+            text(
+                "insert into external_report_releases ("
+                "project_id, artifact_id, artifact_name, format, pdf_sha256, "
+                "evaluated_on, ruleset_version, provenance_mode, "
+                "released_by, released_by_display"
+                ") values ("
+                ":project_id, :artifact_id, 'artifact-backed.pdf', 'pdf', :digest, "
+                "date '2026-08-31', 'v0.4', 'all-supported-sources', "
+                "'local:new', 'New Releaser'"
+                ") returning id"
+            ),
+            {
+                "project_id": project_id,
+                "artifact_id": artifact_id,
+                "digest": artifact_digest,
+            },
+        )
+        stored = session.execute(
+            text(
+                "select pdf_bytes, evaluation_context_json, record_context_json "
+                "from external_report_releases where id = :release_id"
+            ),
+            {"release_id": release_id},
+        ).one()
+        assert tuple(stored) == (None, None, None)
+        duplicated_artifact_id = session.scalar(
+            text(
+                "insert into external_report_artifacts ("
+                "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+                "evaluated_on, ruleset_version, evaluation_context_json, "
+                "provenance_mode, record_context_json"
+                ") select project_id, 'duplicate-owner.pdf', format, pdf_bytes, "
+                "pdf_sha256, evaluated_on, ruleset_version, evaluation_context_json, "
+                "provenance_mode, record_context_json "
+                "from external_report_artifacts where id = :artifact_id "
+                "returning id"
+            ),
+            {"artifact_id": artifact_id},
+        )
+        with pytest.raises(Exception, match="content owner"):
+            with session.begin_nested():
+                session.execute(
+                    text(
+                        "insert into external_report_releases ("
+                        "project_id, artifact_id, artifact_name, format, pdf_bytes, "
+                        "pdf_sha256, evaluated_on, ruleset_version, "
+                        "evaluation_context_json, provenance_mode, "
+                        "record_context_json, released_by, released_by_display"
+                        ") select :project_id, :artifact_id, 'duplicate-owner.pdf', "
+                        "format, pdf_bytes, pdf_sha256, evaluated_on, ruleset_version, "
+                        "evaluation_context_json, provenance_mode, record_context_json, "
+                        "'local:invalid-copy', 'Invalid Copy' "
+                        "from external_report_artifacts where id = :artifact_id"
+                    ),
+                    {
+                        "project_id": project_id,
+                        "artifact_id": duplicated_artifact_id,
+                    },
+                )
+        with pytest.raises(Exception, match="content_owner"):
+            with session.begin_nested():
+                session.execute(
+                    text(
+                        "insert into external_report_releases ("
+                        "project_id, artifact_name, format, pdf_sha256, "
+                        "evaluated_on, ruleset_version, provenance_mode, "
+                        "released_by, released_by_display"
+                        ") values ("
+                        ":project_id, 'missing-content-owner.pdf', 'pdf', :digest, "
+                        "date '2026-08-31', 'v0.4', 'all-supported-sources', "
+                        "'local:invalid', 'Invalid Releaser'"
+                        ")"
+                    ),
+                    {"project_id": project_id, "digest": artifact_digest},
+                )
 
 
 def _migration_head(session_factory) -> str:

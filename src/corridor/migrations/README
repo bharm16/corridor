@@ -1,9 +1,12 @@
 Corridor supports one released database head and its immediate successor.
 
-`b7d3f9a1c2e5` builds the consolidated August 2026 schema. Existing databases
-already stamped at that released head do not rerun it. `c0a1d0b5e11e` is the
-current baseline marker and canonicalizes equivalent check expressions so fresh
-and upgraded databases have one exact schema fingerprint.
+`b7d3f9a1c2e5` builds the consolidated August 2026 schema. `c0a1d0b5e11e`
+canonicalizes equivalent check expressions. `0ca809014df7` adds immutable
+spreadsheet Source Segments. `444758f7b4a7` is the current released head and
+adds typed Facts. `d430a1b2c3d4` is its one supported successor: it lets new
+External Report releases reference artifact-owned bytes and context without
+rewriting legacy receipts. Fresh and upgraded databases have one exact schema
+fingerprint.
 
 Executable revisions live in `baseline_versions`. `versions` is not configured
 as an Alembic version location; it retains only inert bytes required by released

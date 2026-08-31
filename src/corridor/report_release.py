@@ -10,7 +10,6 @@ but none may substitute a Report URL, output path, or regenerating callback.
 from __future__ import annotations
 
 from collections import Counter
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
@@ -19,7 +18,7 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING
 
 import pymupdf
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -329,13 +328,10 @@ def release_external_report(
         artifact_id=artifact.id,
         artifact_name=artifact.artifact_name,
         format=artifact.format,
-        pdf_bytes=bytes(artifact.pdf_bytes),
         pdf_sha256=artifact.pdf_sha256,
         evaluated_on=artifact.evaluated_on,
         ruleset_version=artifact.ruleset_version,
-        evaluation_context_json=deepcopy(artifact.evaluation_context_json),
         provenance_mode=artifact.provenance_mode,
-        record_context_json=deepcopy(artifact.record_context_json),
         released_by=principal.subject,
         released_by_display=released_by_display or _UNRECORDED_ACTOR_DISPLAY,
     )
@@ -385,8 +381,15 @@ def external_report_release_history(
             ExternalReportRelease.evaluated_on,
             ExternalReportRelease.ruleset_version,
             ExternalReportRelease.provenance_mode,
-            ExternalReportRelease.record_context_json,
+            func.coalesce(
+                ExternalReportRelease._legacy_record_context_json,
+                ExternalReportArtifact.record_context_json,
+            ).label("record_context_json"),
             ExternalReportRelease.pdf_sha256,
+        )
+        .outerjoin(
+            ExternalReportArtifact,
+            ExternalReportArtifact.id == ExternalReportRelease.artifact_id,
         )
         .where(ExternalReportRelease.project_id == project_id)
         .order_by(ExternalReportRelease.released_at.desc(), ExternalReportRelease.id.desc())

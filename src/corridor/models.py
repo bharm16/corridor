@@ -13,6 +13,7 @@ wrong, so they are called out here as well as in the ADRs:
   the cited page. It says nothing about whether the claim is true.
 """
 
+from copy import deepcopy
 from datetime import date, datetime
 from hashlib import sha256
 
@@ -3071,8 +3072,9 @@ class ExternalReportArtifact(Base):
 
     Rendering is deliberately separate from human release.  This table owns
     the exact PDF and frozen Report context a project person can later choose;
-    a release receipt copies those bytes so its retention never depends on an
-    artifact URL, path, or regenerating ReportRun.
+    a new release receipt references this immutable owner so retention never
+    depends on an artifact URL, path, or regenerating ReportRun.  Legacy
+    receipts may still retain their historical copies.
     """
 
     __tablename__ = "external_report_artifacts"
@@ -3126,13 +3128,14 @@ class ExternalReportArtifact(Base):
 
 
 class ExternalReportRelease(Base):
-    """One immutable authorization of one fixed External Report PDF.
+    """One immutable authorization of one fixed External Report artifact.
 
     A working ``ReportRun`` lets the next internal report describe change;
     it is deliberately not an artifact authority.  This receipt instead
-    owns the exact PDF bytes and every context identity that was released,
-    so later Ledger, Evaluation, or rendering changes cannot alter the
-    recipient's record (ADR-0040).
+    references the immutable artifact that owns the PDF and frozen context.
+    Legacy receipts may still own their copied bytes and context directly;
+    the read properties below preserve that history without copying new
+    releases (ADR-0040, ADR-0072).
     """
 
     __tablename__ = "external_report_releases"
@@ -3143,7 +3146,7 @@ class ExternalReportRelease(Base):
             name="ck_external_report_releases_pdf_sha256",
         ),
         CheckConstraint(
-            "octet_length(pdf_bytes) > 5",
+            "pdf_bytes is null or octet_length(pdf_bytes) > 5",
             name="ck_external_report_releases_nonempty_pdf",
         ),
         CheckConstraint(
@@ -3151,7 +3154,7 @@ class ExternalReportRelease(Base):
             name="ck_external_report_releases_provenance_mode",
         ),
         CheckConstraint(
-            "jsonb_typeof(record_context_json) = 'object'",
+            "record_context_json is null or jsonb_typeof(record_context_json) = 'object'",
             name="ck_external_report_releases_context_object",
         ),
         CheckConstraint(
@@ -3171,6 +3174,14 @@ class ExternalReportRelease(Base):
             "released_by_display is not null and length(trim(released_by_display)) > 0",
             name="ck_external_report_releases_released_by_display",
         ),
+        CheckConstraint(
+            "(content_storage = 'legacy' and pdf_bytes is not null "
+            "and record_context_json is not null) or "
+            "(content_storage = 'artifact' and artifact_id is not null "
+            "and pdf_bytes is null and evaluation_context_json is null "
+            "and record_context_json is null)",
+            name="ck_external_report_releases_content_owner",
+        ),
         UniqueConstraint("artifact_id", name="uq_external_report_releases_artifact_id"),
     )
 
@@ -3181,23 +3192,79 @@ class ExternalReportRelease(Base):
     )
     artifact_name: Mapped[str] = mapped_column(Text)
     format: Mapped[str] = mapped_column(String(16), server_default="pdf")
-    pdf_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    content_storage: Mapped[str] = mapped_column(
+        String(16), server_default="artifact"
+    )
+    _legacy_pdf_bytes: Mapped[bytes | None] = mapped_column("pdf_bytes", LargeBinary)
     pdf_sha256: Mapped[str] = mapped_column(String(64))
     evaluated_on: Mapped[date] = mapped_column(Date)
     ruleset_version: Mapped[str] = mapped_column(String(64))
-    evaluation_context_json: Mapped[dict | None] = mapped_column(JSONB)
+    _legacy_evaluation_context_json: Mapped[dict | None] = mapped_column(
+        "evaluation_context_json", JSONB
+    )
     provenance_mode: Mapped[str] = mapped_column(String(32))
-    record_context_json: Mapped[dict] = mapped_column(JSONB)
+    _legacy_record_context_json: Mapped[dict | None] = mapped_column(
+        "record_context_json", JSONB
+    )
     released_by: Mapped[str] = mapped_column(String(128))
     released_by_display: Mapped[str | None] = mapped_column(Text)
     released_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    _artifact: Mapped[ExternalReportArtifact | None] = relationship(lazy="joined")
+
+    @property
+    def pdf_bytes(self) -> bytes:
+        """Read new artifact bytes or the retained bytes of a legacy release."""
+        if self._legacy_pdf_bytes is not None:
+            return self._legacy_pdf_bytes
+        if self._artifact is None:
+            raise ValueError("released External Report has no retained artifact")
+        return self._artifact.pdf_bytes
+
+    @pdf_bytes.setter
+    def pdf_bytes(self, value: bytes | None) -> None:
+        """Accept legacy-row construction without making new services copy bytes."""
+        self._legacy_pdf_bytes = value
+
+    @property
+    def evaluation_context_json(self) -> dict | None:
+        """Read frozen Evaluation context from its one durable owner."""
+        if self._legacy_evaluation_context_json is not None:
+            return deepcopy(self._legacy_evaluation_context_json)
+        if self._artifact is None:
+            return None
+        return deepcopy(self._artifact.evaluation_context_json)
+
+    @evaluation_context_json.setter
+    def evaluation_context_json(self, value: dict | None) -> None:
+        """Accept legacy-row construction without copying new release context."""
+        self._legacy_evaluation_context_json = deepcopy(value)
+
+    @property
+    def record_context_json(self) -> dict:
+        """Read frozen Project Record context from its one durable owner."""
+        if self._legacy_record_context_json is not None:
+            return deepcopy(self._legacy_record_context_json)
+        if self._artifact is None:
+            raise ValueError("released External Report has no retained record context")
+        return deepcopy(self._artifact.record_context_json)
+
+    @record_context_json.setter
+    def record_context_json(self, value: dict | None) -> None:
+        """Accept legacy-row construction without copying new release context."""
+        self._legacy_record_context_json = deepcopy(value)
 
     @property
     def digest_is_valid(self) -> bool:
-        """Whether the bytes retrieved from the sealed store match the receipt."""
-        return sha256(self.pdf_bytes).hexdigest() == self.pdf_sha256
+        """Whether the receipt and its one retained byte owner share a digest."""
+        if self._legacy_pdf_bytes is not None:
+            return sha256(self._legacy_pdf_bytes).hexdigest() == self.pdf_sha256
+        return (
+            self._artifact is not None
+            and self._artifact.pdf_sha256 == self.pdf_sha256
+            and self._artifact.digest_is_valid
+        )
 
 
 class ScheduledReportPublication(Base):
