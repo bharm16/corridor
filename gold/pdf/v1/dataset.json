@@ -1,0 +1,227 @@
+{
+  "schema_version": "corridor.pdf-gold.v1",
+  "dataset_version": "2026-08-31.1",
+  "frozen_at": "2026-08-31T00:00:00Z",
+  "frozen_by": "Bryce Harmon",
+  "checked_by": "independent-check-2026-08-31",
+  "thresholds": {
+    "page_class_accuracy_min": 0.98,
+    "table_f1_min": 0.95,
+    "row_f1_min": 0.95,
+    "cell_f1_min": 0.95,
+    "cell_text_exact_min": 0.98,
+    "wrong_source_cited_proposals_max": 0,
+    "failure_rate_max": 0.01,
+    "abstention_rate_max": 0.10,
+    "latency_ms_per_document_max": 120000,
+    "peak_memory_bytes_per_document_max": 2147483648
+  },
+  "documents": [
+    {
+      "document_sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+      "document_family": "txdot-nhhip-ucm-2026",
+      "split": "development",
+      "source_title": "Project A Utility Conflict Matrix (2/13/2026)",
+      "author": "labeler-a",
+      "checker": "checker-a",
+      "pages": [
+        {
+          "page_number": 1,
+          "page_class": "matrix-cover",
+          "width_points": 792000,
+          "height_points": 612000,
+          "rotation_degrees": 90,
+          "features": ["digital_text", "rotated_page", "negative_page"],
+          "page_scoped_values": {},
+          "tables": [],
+          "proposal_cases": []
+        },
+        {
+          "page_number": 2,
+          "page_class": "matrix-body",
+          "width_points": 792000,
+          "height_points": 612000,
+          "rotation_degrees": 90,
+          "features": ["digital_text", "merged_header", "multiline_header", "blank_row"],
+          "page_scoped_values": {},
+          "tables": [
+            {
+              "table_id": "nhhip-p2-matrix",
+              "polygon": {"points": [{"x": 24000, "y": 62000}, {"x": 768000, "y": 62000}, {"x": 768000, "y": 570000}, {"x": 24000, "y": 570000}]},
+              "row_ids": ["nhhip-header", "nhhip-row-1", "nhhip-row-blank"],
+              "column_ids": ["nhhip-id", "nhhip-owner", "nhhip-from", "nhhip-to"],
+              "row_polygons": [
+                {"points": [{"x": 24000, "y": 62000}, {"x": 768000, "y": 62000}, {"x": 768000, "y": 112000}, {"x": 24000, "y": 112000}]},
+                {"points": [{"x": 24000, "y": 112000}, {"x": 768000, "y": 112000}, {"x": 768000, "y": 146000}, {"x": 24000, "y": 146000}]},
+                {"points": [{"x": 24000, "y": 146000}, {"x": 768000, "y": 146000}, {"x": 768000, "y": 180000}, {"x": 24000, "y": 180000}]}
+              ],
+              "column_polygons": [
+                {"points": [{"x": 24000, "y": 62000}, {"x": 120000, "y": 62000}, {"x": 120000, "y": 570000}, {"x": 24000, "y": 570000}]},
+                {"points": [{"x": 120000, "y": 62000}, {"x": 310000, "y": 62000}, {"x": 310000, "y": 570000}, {"x": 120000, "y": 570000}]},
+                {"points": [{"x": 310000, "y": 62000}, {"x": 500000, "y": 62000}, {"x": 500000, "y": 570000}, {"x": 310000, "y": 570000}]},
+                {"points": [{"x": 500000, "y": 62000}, {"x": 768000, "y": 62000}, {"x": 768000, "y": 570000}, {"x": 500000, "y": 570000}]}
+              ],
+              "cells": [
+                {"cell_id": "nhhip-h-id", "row_id": "nhhip-header", "column_id": "nhhip-id", "polygon": {"points": [{"x": 24000, "y": 62000}, {"x": 120000, "y": 62000}, {"x": 120000, "y": 112000}, {"x": 24000, "y": 112000}]}, "visible_text": "Utility ID", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "nhhip-h-owner", "row_id": "nhhip-header", "column_id": "nhhip-owner", "polygon": {"points": [{"x": 120000, "y": 62000}, {"x": 310000, "y": 62000}, {"x": 310000, "y": 112000}, {"x": 120000, "y": 112000}]}, "visible_text": "Utility Owner", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "external_org", "state": "confirmed"},
+                {"cell_id": "nhhip-h-location", "row_id": "nhhip-header", "column_id": "nhhip-from", "polygon": {"points": [{"x": 310000, "y": 62000}, {"x": 768000, "y": 62000}, {"x": 768000, "y": 86000}, {"x": 310000, "y": 86000}]}, "visible_text": "Stationing", "row_span": 1, "column_span": 2, "header_cell_ids": [], "canonical_mapping": null, "state": "confirmed"},
+                {"cell_id": "nhhip-h-from", "row_id": "nhhip-header", "column_id": "nhhip-from", "polygon": {"points": [{"x": 310000, "y": 86000}, {"x": 500000, "y": 86000}, {"x": 500000, "y": 112000}, {"x": 310000, "y": 112000}]}, "visible_text": "Begin Station", "row_span": 1, "column_span": 1, "header_cell_ids": ["nhhip-h-location"], "canonical_mapping": "station_begin", "state": "confirmed"},
+                {"cell_id": "nhhip-h-to", "row_id": "nhhip-header", "column_id": "nhhip-to", "polygon": {"points": [{"x": 500000, "y": 86000}, {"x": 768000, "y": 86000}, {"x": 768000, "y": 112000}, {"x": 500000, "y": 112000}]}, "visible_text": "End Station", "row_span": 1, "column_span": 1, "header_cell_ids": ["nhhip-h-location"], "canonical_mapping": "station_end", "state": "confirmed"},
+                {"cell_id": "nhhip-r1-id", "row_id": "nhhip-row-1", "column_id": "nhhip-id", "polygon": {"points": [{"x": 24000, "y": 112000}, {"x": 120000, "y": 112000}, {"x": 120000, "y": 146000}, {"x": 24000, "y": 146000}]}, "visible_text": "FOC1-200", "row_span": 1, "column_span": 1, "header_cell_ids": ["nhhip-h-id"], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "nhhip-r1-owner", "row_id": "nhhip-row-1", "column_id": "nhhip-owner", "polygon": {"points": [{"x": 120000, "y": 112000}, {"x": 310000, "y": 112000}, {"x": 310000, "y": 146000}, {"x": 120000, "y": 146000}]}, "visible_text": "AT&T Texas (SWBT)", "row_span": 1, "column_span": 1, "header_cell_ids": ["nhhip-h-owner"], "canonical_mapping": "external_org", "state": "confirmed"},
+                {"cell_id": "nhhip-r1-from", "row_id": "nhhip-row-1", "column_id": "nhhip-from", "polygon": {"points": [{"x": 310000, "y": 112000}, {"x": 500000, "y": 112000}, {"x": 500000, "y": 146000}, {"x": 310000, "y": 146000}]}, "visible_text": "1149+00", "row_span": 1, "column_span": 1, "header_cell_ids": ["nhhip-h-location", "nhhip-h-from"], "canonical_mapping": "station_begin", "state": "confirmed"},
+                {"cell_id": "nhhip-r1-to", "row_id": "nhhip-row-1", "column_id": "nhhip-to", "polygon": {"points": [{"x": 500000, "y": 112000}, {"x": 768000, "y": 112000}, {"x": 768000, "y": 146000}, {"x": 500000, "y": 146000}]}, "visible_text": "1153+17", "row_span": 1, "column_span": 1, "header_cell_ids": ["nhhip-h-location", "nhhip-h-to"], "canonical_mapping": "station_end", "state": "confirmed"}
+              ]
+            }
+          ],
+          "proposal_cases": [
+            {"case_id": "nhhip-r1-station-begin", "expected_value": "1149+00", "allowed_source_cell_ids": ["nhhip-r1-from"], "must_abstain": false},
+            {"case_id": "nhhip-blank-row", "expected_value": null, "allowed_source_cell_ids": [], "must_abstain": true}
+          ]
+        }
+      ]
+    },
+    {
+      "document_sha256": "8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30",
+      "document_family": "txdot-sh99-ucm-2025",
+      "split": "regression",
+      "source_title": "SH 99 Utility Conflict Matrix (5/5/2025)",
+      "author": "labeler-b",
+      "checker": "checker-b",
+      "pages": [
+        {
+          "page_number": 2,
+          "page_class": "matrix-continuation",
+          "width_points": 792000,
+          "height_points": 612000,
+          "rotation_degrees": 0,
+          "features": ["digital_text", "continuation_page", "repeated_header"],
+          "page_scoped_values": {},
+          "tables": [
+            {
+              "table_id": "sh99-p2-matrix",
+              "polygon": {"points": [{"x": 30000, "y": 40000}, {"x": 760000, "y": 40000}, {"x": 760000, "y": 560000}, {"x": 30000, "y": 560000}]},
+              "row_ids": ["sh99-header", "sh99-row-1"],
+              "column_ids": ["sh99-id", "sh99-owner"],
+              "row_polygons": [{"points": [{"x": 30000, "y": 40000}, {"x": 760000, "y": 40000}, {"x": 760000, "y": 80000}, {"x": 30000, "y": 80000}]}, {"points": [{"x": 30000, "y": 80000}, {"x": 760000, "y": 80000}, {"x": 760000, "y": 118000}, {"x": 30000, "y": 118000}]}],
+              "column_polygons": [{"points": [{"x": 30000, "y": 40000}, {"x": 250000, "y": 40000}, {"x": 250000, "y": 560000}, {"x": 30000, "y": 560000}]}, {"points": [{"x": 250000, "y": 40000}, {"x": 760000, "y": 40000}, {"x": 760000, "y": 560000}, {"x": 250000, "y": 560000}]}],
+              "cells": [
+                {"cell_id": "sh99-h-id", "row_id": "sh99-header", "column_id": "sh99-id", "polygon": {"points": [{"x": 30000, "y": 40000}, {"x": 250000, "y": 40000}, {"x": 250000, "y": 80000}, {"x": 30000, "y": 80000}]}, "visible_text": "Utility ID", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "sh99-h-owner", "row_id": "sh99-header", "column_id": "sh99-owner", "polygon": {"points": [{"x": 250000, "y": 40000}, {"x": 760000, "y": 40000}, {"x": 760000, "y": 80000}, {"x": 250000, "y": 80000}]}, "visible_text": "Utility Owner", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "external_org", "state": "confirmed"},
+                {"cell_id": "sh99-r1-id", "row_id": "sh99-row-1", "column_id": "sh99-id", "polygon": {"points": [{"x": 30000, "y": 80000}, {"x": 250000, "y": 80000}, {"x": 250000, "y": 118000}, {"x": 30000, "y": 118000}]}, "visible_text": "P1673-1", "row_span": 1, "column_span": 1, "header_cell_ids": ["sh99-h-id"], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "sh99-r1-owner", "row_id": "sh99-row-1", "column_id": "sh99-owner", "polygon": {"points": [{"x": 250000, "y": 80000}, {"x": 760000, "y": 80000}, {"x": 760000, "y": 118000}, {"x": 250000, "y": 118000}]}, "visible_text": "CenterPoint Energy", "row_span": 1, "column_span": 1, "header_cell_ids": ["sh99-h-owner"], "canonical_mapping": "external_org", "state": "confirmed"}
+              ]
+            }
+          ],
+          "proposal_cases": [{"case_id": "sh99-r1-owner", "expected_value": "CenterPoint Energy", "allowed_source_cell_ids": ["sh99-r1-owner"], "must_abstain": false}]
+        }
+      ]
+    },
+    {
+      "document_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+      "document_family": "fdot-sr789-roundabout-ucm",
+      "split": "holdout",
+      "source_title": "FDOT SR 789 Utility Conflict Matrix",
+      "author": "labeler-c",
+      "checker": "checker-c",
+      "pages": [
+        {
+          "page_number": 2,
+          "page_class": "page-scoped-owner-matrix",
+          "width_points": 792000,
+          "height_points": 612000,
+          "rotation_degrees": 0,
+          "features": ["digital_text", "page_scoped_owner", "unfamiliar_headers", "group_band"],
+          "page_scoped_values": {"external_org": "AT&T TCA"},
+          "tables": [
+            {
+              "table_id": "fdot-p2-matrix",
+              "polygon": {"points": [{"x": 35000, "y": 100000}, {"x": 755000, "y": 100000}, {"x": 755000, "y": 560000}, {"x": 35000, "y": 560000}]},
+              "row_ids": ["fdot-header", "fdot-band", "fdot-row-1"],
+              "column_ids": ["fdot-conflict", "fdot-station"],
+              "row_polygons": [{"points": [{"x": 35000, "y": 100000}, {"x": 755000, "y": 100000}, {"x": 755000, "y": 140000}, {"x": 35000, "y": 140000}]}, {"points": [{"x": 35000, "y": 140000}, {"x": 755000, "y": 140000}, {"x": 755000, "y": 175000}, {"x": 35000, "y": 175000}]}, {"points": [{"x": 35000, "y": 175000}, {"x": 755000, "y": 175000}, {"x": 755000, "y": 215000}, {"x": 35000, "y": 215000}]}],
+              "column_polygons": [{"points": [{"x": 35000, "y": 100000}, {"x": 230000, "y": 100000}, {"x": 230000, "y": 560000}, {"x": 35000, "y": 560000}]}, {"points": [{"x": 230000, "y": 100000}, {"x": 755000, "y": 100000}, {"x": 755000, "y": 560000}, {"x": 230000, "y": 560000}]}],
+              "cells": [
+                {"cell_id": "fdot-h-conflict", "row_id": "fdot-header", "column_id": "fdot-conflict", "polygon": {"points": [{"x": 35000, "y": 100000}, {"x": 230000, "y": 100000}, {"x": 230000, "y": 140000}, {"x": 35000, "y": 140000}]}, "visible_text": "Conflict #", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "fdot-h-station", "row_id": "fdot-header", "column_id": "fdot-station", "polygon": {"points": [{"x": 230000, "y": 100000}, {"x": 755000, "y": 100000}, {"x": 755000, "y": 140000}, {"x": 230000, "y": 140000}]}, "visible_text": "Station Begin (From C/L Const)", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "station_begin", "state": "confirmed"},
+                {"cell_id": "fdot-band", "row_id": "fdot-band", "column_id": "fdot-conflict", "polygon": {"points": [{"x": 35000, "y": 140000}, {"x": 755000, "y": 140000}, {"x": 755000, "y": 175000}, {"x": 35000, "y": 175000}]}, "visible_text": "FROM C/L CONST GULF OF MEXICO DR.", "row_span": 1, "column_span": 2, "header_cell_ids": [], "canonical_mapping": null, "state": "confirmed"},
+                {"cell_id": "fdot-r1-conflict", "row_id": "fdot-row-1", "column_id": "fdot-conflict", "polygon": {"points": [{"x": 35000, "y": 175000}, {"x": 230000, "y": 175000}, {"x": 230000, "y": 215000}, {"x": 35000, "y": 215000}]}, "visible_text": "1", "row_span": 1, "column_span": 1, "header_cell_ids": ["fdot-h-conflict"], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "fdot-r1-station", "row_id": "fdot-row-1", "column_id": "fdot-station", "polygon": {"points": [{"x": 230000, "y": 175000}, {"x": 755000, "y": 175000}, {"x": 755000, "y": 215000}, {"x": 230000, "y": 215000}]}, "visible_text": "203+40.00", "row_span": 1, "column_span": 1, "header_cell_ids": ["fdot-h-station"], "canonical_mapping": "station_begin", "state": "confirmed"}
+              ]
+            }
+          ],
+          "proposal_cases": [{"case_id": "fdot-r1-station", "expected_value": "203+40.00", "allowed_source_cell_ids": ["fdot-r1-station"], "must_abstain": false}]
+        }
+      ]
+    },
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "document_family": "wsdot-9424-appendix-u2",
+      "split": "development",
+      "source_title": "WSDOT 9424 Appendix U2 Existing Utility Listing",
+      "author": "labeler-d",
+      "checker": "checker-d",
+      "pages": [
+        {
+          "page_number": 5,
+          "page_class": "marked-resolution-matrix",
+          "width_points": 792000,
+          "height_points": 612000,
+          "rotation_degrees": 0,
+          "features": ["digital_text", "group_band", "merged_header", "marked_resolution", "retired_row"],
+          "page_scoped_values": {},
+          "tables": [
+            {
+              "table_id": "wsdot-p5-matrix",
+              "polygon": {"points": [{"x": 25000, "y": 45000}, {"x": 767000, "y": 45000}, {"x": 767000, "y": 575000}, {"x": 25000, "y": 575000}]},
+              "row_ids": ["wsdot-band", "wsdot-header", "wsdot-row-71", "wsdot-row-72"],
+              "column_ids": ["wsdot-id", "wsdot-owner", "wsdot-relocate", "wsdot-protect", "wsdot-notes"],
+              "row_polygons": [{"points": [{"x": 25000, "y": 45000}, {"x": 767000, "y": 45000}, {"x": 767000, "y": 70000}, {"x": 25000, "y": 70000}]}, {"points": [{"x": 25000, "y": 70000}, {"x": 767000, "y": 70000}, {"x": 767000, "y": 110000}, {"x": 25000, "y": 110000}]}, {"points": [{"x": 25000, "y": 110000}, {"x": 767000, "y": 110000}, {"x": 767000, "y": 145000}, {"x": 25000, "y": 145000}]}, {"points": [{"x": 25000, "y": 145000}, {"x": 767000, "y": 145000}, {"x": 767000, "y": 180000}, {"x": 25000, "y": 180000}]}],
+              "column_polygons": [{"points": [{"x": 25000, "y": 45000}, {"x": 115000, "y": 45000}, {"x": 115000, "y": 575000}, {"x": 25000, "y": 575000}]}, {"points": [{"x": 115000, "y": 45000}, {"x": 260000, "y": 45000}, {"x": 260000, "y": 575000}, {"x": 115000, "y": 575000}]}, {"points": [{"x": 260000, "y": 45000}, {"x": 410000, "y": 45000}, {"x": 410000, "y": 575000}, {"x": 260000, "y": 575000}]}, {"points": [{"x": 410000, "y": 45000}, {"x": 560000, "y": 45000}, {"x": 560000, "y": 575000}, {"x": 410000, "y": 575000}]}, {"points": [{"x": 560000, "y": 45000}, {"x": 767000, "y": 45000}, {"x": 767000, "y": 575000}, {"x": 560000, "y": 575000}]}],
+              "cells": [
+                {"cell_id": "wsdot-band-resolution", "row_id": "wsdot-band", "column_id": "wsdot-relocate", "polygon": {"points": [{"x": 260000, "y": 45000}, {"x": 560000, "y": 45000}, {"x": 560000, "y": 70000}, {"x": 260000, "y": 70000}]}, "visible_text": "RECOMMENDED RESOLUTION", "row_span": 1, "column_span": 2, "header_cell_ids": [], "canonical_mapping": null, "state": "confirmed"},
+                {"cell_id": "wsdot-h-id", "row_id": "wsdot-header", "column_id": "wsdot-id", "polygon": {"points": [{"x": 25000, "y": 70000}, {"x": 115000, "y": 70000}, {"x": 115000, "y": 110000}, {"x": 25000, "y": 110000}]}, "visible_text": "ID Conflict", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "wsdot-h-owner", "row_id": "wsdot-header", "column_id": "wsdot-owner", "polygon": {"points": [{"x": 115000, "y": 70000}, {"x": 260000, "y": 70000}, {"x": 260000, "y": 110000}, {"x": 115000, "y": 110000}]}, "visible_text": "Owner", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "external_org", "state": "confirmed"},
+                {"cell_id": "wsdot-h-relocate", "row_id": "wsdot-header", "column_id": "wsdot-relocate", "polygon": {"points": [{"x": 260000, "y": 70000}, {"x": 410000, "y": 70000}, {"x": 410000, "y": 110000}, {"x": 260000, "y": 110000}]}, "visible_text": "509 Relocation Needed", "row_span": 1, "column_span": 1, "header_cell_ids": ["wsdot-band-resolution"], "canonical_mapping": "resolution_strategy", "state": "confirmed"},
+                {"cell_id": "wsdot-h-protect", "row_id": "wsdot-header", "column_id": "wsdot-protect", "polygon": {"points": [{"x": 410000, "y": 70000}, {"x": 560000, "y": 70000}, {"x": 560000, "y": 110000}, {"x": 410000, "y": 110000}]}, "visible_text": "Retain and Protect", "row_span": 1, "column_span": 1, "header_cell_ids": ["wsdot-band-resolution"], "canonical_mapping": "resolution_strategy", "state": "confirmed"},
+                {"cell_id": "wsdot-h-notes", "row_id": "wsdot-header", "column_id": "wsdot-notes", "polygon": {"points": [{"x": 560000, "y": 70000}, {"x": 767000, "y": 70000}, {"x": 767000, "y": 110000}, {"x": 560000, "y": 110000}]}, "visible_text": "Notes", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "notes", "state": "confirmed"},
+                {"cell_id": "wsdot-r71-id", "row_id": "wsdot-row-71", "column_id": "wsdot-id", "polygon": {"points": [{"x": 25000, "y": 110000}, {"x": 115000, "y": 110000}, {"x": 115000, "y": 145000}, {"x": 25000, "y": 145000}]}, "visible_text": "71", "row_span": 1, "column_span": 1, "header_cell_ids": ["wsdot-h-id"], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "wsdot-r71-owner", "row_id": "wsdot-row-71", "column_id": "wsdot-owner", "polygon": {"points": [{"x": 115000, "y": 110000}, {"x": 260000, "y": 110000}, {"x": 260000, "y": 145000}, {"x": 115000, "y": 145000}]}, "visible_text": "HWD", "row_span": 1, "column_span": 1, "header_cell_ids": ["wsdot-h-owner"], "canonical_mapping": "external_org", "state": "confirmed"},
+                {"cell_id": "wsdot-r71-mark", "row_id": "wsdot-row-71", "column_id": "wsdot-relocate", "polygon": {"points": [{"x": 260000, "y": 110000}, {"x": 410000, "y": 110000}, {"x": 410000, "y": 145000}, {"x": 260000, "y": 145000}]}, "visible_text": "X", "row_span": 1, "column_span": 1, "header_cell_ids": ["wsdot-band-resolution", "wsdot-h-relocate"], "canonical_mapping": "resolution_strategy", "state": "confirmed"},
+                {"cell_id": "wsdot-r72-id", "row_id": "wsdot-row-72", "column_id": "wsdot-id", "polygon": {"points": [{"x": 25000, "y": 145000}, {"x": 115000, "y": 145000}, {"x": 115000, "y": 180000}, {"x": 25000, "y": 180000}]}, "visible_text": "72", "row_span": 1, "column_span": 1, "header_cell_ids": ["wsdot-h-id"], "canonical_mapping": "utility_id", "state": "confirmed"},
+                {"cell_id": "wsdot-r72-notes", "row_id": "wsdot-row-72", "column_id": "wsdot-notes", "polygon": {"points": [{"x": 560000, "y": 145000}, {"x": 767000, "y": 145000}, {"x": 767000, "y": 180000}, {"x": 560000, "y": 180000}]}, "visible_text": "Not Used", "row_span": 1, "column_span": 1, "header_cell_ids": ["wsdot-h-notes"], "canonical_mapping": "notes", "state": "confirmed"}
+              ]
+            }
+          ],
+          "proposal_cases": [
+            {"case_id": "wsdot-r71-resolution", "expected_value": "509 Relocation Needed", "allowed_source_cell_ids": ["wsdot-r71-mark", "wsdot-h-relocate"], "must_abstain": false},
+            {"case_id": "wsdot-r72-retired", "expected_value": null, "allowed_source_cell_ids": [], "must_abstain": true}
+          ]
+        },
+        {
+          "page_number": 9,
+          "page_class": "ambiguous-retirement-matrix",
+          "width_points": 792000,
+          "height_points": 612000,
+          "rotation_degrees": 0,
+          "features": ["digital_text", "repeated_header", "retired_row", "unreadable_cell"],
+          "page_scoped_values": {},
+          "tables": [],
+          "proposal_cases": [{"case_id": "wsdot-r210-ambiguous", "expected_value": null, "allowed_source_cell_ids": [], "must_abstain": true}]
+        }
+      ]
+    }
+  ],
+  "adjudications": [
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "page_number": 9,
+      "layer": "row_disposition",
+      "item_id": "wsdot-r210-ambiguous",
+      "first_labeler": "labeler-d",
+      "second_labeler": "labeler-e",
+      "adjudicator": "checker-d",
+      "resolution": "unconfirmed: populated row 210 says Not used and must not emit automatically"
+    }
+  ]
+}
