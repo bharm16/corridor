@@ -3,7 +3,8 @@
 The browser, Event Admission, guided coordination, and Evidence Investigator
 used to parse the same Candidate payload independently.  That let one reader
 accept a timing shape or party wording that another reader refused.  This
-module owns the read-only preparation of Candidate facts; it never admits a
+module owns Candidate fact preparation and records the released exact subject
+resolution result against immutable prose support.  It never admits a
 statement or makes a human decision.
 """
 
@@ -17,8 +18,24 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import Candidate, DocPage, Document, ExternalOrg
+from corridor.models import (
+    Candidate,
+    DocPage,
+    Document,
+    ExtractedProposal,
+    ExtractedProposalFact,
+    Fact,
+    FactSource,
+    SourceSegment,
+)
 from corridor.statement_values import CitedStatementEvidence, StatementTiming
+from corridor.subject_resolution import (
+    RegisteredSubjectCandidate,
+    SubjectResolutionRefusal,
+    normalize_subject_reference,
+    registered_subject_candidates,
+    resolve_subject_reference,
+)
 from corridor.verify import normalize
 
 
@@ -51,6 +68,10 @@ class CandidatePartyFact:
     registered_external_org_ids: tuple[int, ...]
     is_supported: bool
     is_visible: bool
+    resolution_state: str | None = None
+    attention_reason: str | None = None
+    rule_identity: str | None = None
+    resolution_attempt_id: int | None = None
 
     @property
     def external_org_id(self) -> int | None:
@@ -121,8 +142,13 @@ def prepare_candidate_statement_facts(
     )
     cited_text = _cited_evidence_text(evidence)
     visible_text = _visible_evidence_text(evidence)
-    organizations = tuple(
-        session.scalars(select(ExternalOrg).order_by(ExternalOrg.id)).all()
+    attribution_segment, requires_attribution_segment = _statement_attribution_segment(
+        session, candidate
+    )
+    subject_candidates = (
+        registered_subject_candidates(session, candidate.project_id)
+        if attribution_segment is None and not requires_attribution_segment
+        else ()
     )
 
     affected_wording = str(fields.get("external_org") or "").strip()
@@ -143,10 +169,26 @@ def prepare_candidate_statement_facts(
         evidence=evidence,
         evidence_is_complete=evidence_is_complete,
         affected_party=_party_fact(
-            organizations, affected_wording, cited_text, visible_text
+            session,
+            project_id=candidate.project_id,
+            subject_candidates=subject_candidates,
+            source_segment=attribution_segment,
+            requires_source_segment=requires_attribution_segment,
+            wording=affected_wording,
+            cited_text=cited_text,
+            visible_text=visible_text,
+            usage="affected_subject",
         ),
         stated_party=_party_fact(
-            organizations, stated_wording, cited_text, visible_text
+            session,
+            project_id=candidate.project_id,
+            subject_candidates=subject_candidates,
+            source_segment=attribution_segment,
+            requires_source_segment=requires_attribution_segment,
+            wording=stated_wording,
+            cited_text=cited_text,
+            visible_text=visible_text,
+            usage="statement_speaker",
         ),
         source_stated_party_wording=source_stated_party_wording,
         description=description,
@@ -216,30 +258,137 @@ def _candidate_evidence(
     return tuple(evidence)
 
 
+def _statement_attribution_segment(
+    session: Session, candidate: Candidate
+) -> tuple[SourceSegment | None, bool]:
+    """Return the proposal's exact role-tagged prose source, never page text."""
+
+    if candidate.id is None:
+        return None, False
+    has_proposal = session.scalar(
+        select(ExtractedProposal.id)
+        .where(ExtractedProposal.candidate_id == candidate.id)
+        .limit(1)
+    )
+    if has_proposal is None:
+        return None, False
+    segments = tuple(
+        session.scalars(
+            select(SourceSegment)
+            .join(FactSource, FactSource.source_segment_id == SourceSegment.id)
+            .join(Fact, Fact.id == FactSource.fact_id)
+            .join(ExtractedProposalFact, ExtractedProposalFact.fact_id == Fact.id)
+            .join(
+                ExtractedProposal,
+                ExtractedProposal.id == ExtractedProposalFact.proposal_id,
+            )
+            .where(
+                ExtractedProposal.candidate_id == candidate.id,
+                ExtractedProposal.project_id == candidate.project_id,
+                ExtractedProposal.document_id == candidate.source_document_id,
+                Fact.fact_type == "statement_wording",
+                FactSource.role == "attribution_source",
+                SourceSegment.kind == "prose_span",
+            )
+            .order_by(SourceSegment.id)
+        ).all()
+    )
+    return (segments[0] if len(segments) == 1 else None), True
+
+
 def _party_fact(
-    organizations: tuple[ExternalOrg, ...],
+    session: Session,
+    *,
+    project_id: int,
+    subject_candidates: tuple[RegisteredSubjectCandidate, ...],
+    source_segment: SourceSegment | None,
+    requires_source_segment: bool,
     wording: str,
     cited_text: str,
     visible_text: str,
+    usage: str,
 ) -> CandidatePartyFact:
     wanted = normalize(wording)
     if not wanted:
         return CandidatePartyFact("", (), False, False)
-    matches = tuple(
-        organization.id
-        for organization in organizations
-        if wanted
-        in {
-            normalize(value)
-            for value in (organization.name, *(organization.aliases or ()))
-            if value
-        }
+    if requires_source_segment and source_segment is None:
+        return CandidatePartyFact(
+            wording=wording,
+            registered_external_org_ids=(),
+            is_supported=False,
+            is_visible=wanted in visible_text,
+            resolution_state="unresolved",
+            attention_reason="statement_attribution_source_unavailable",
+        )
+    supported_text = (
+        normalize(source_segment.exact_text)
+        if source_segment is not None
+        else cited_text
     )
+    if source_segment is not None:
+        try:
+            result = resolve_subject_reference(
+                session,
+                project_id=project_id,
+                source_segment_id=source_segment.id,
+                reference_kind="organization_name",
+                raw_reference=wording,
+                expected_subject_type="external_org",
+                usage=usage,
+            )
+        except SubjectResolutionRefusal:
+            return CandidatePartyFact(
+                wording=wording,
+                registered_external_org_ids=(),
+                is_supported=False,
+                is_visible=wanted in visible_text,
+                resolution_state="unresolved",
+                attention_reason="subject_reference_not_in_prose_segment",
+            )
+        matches = (
+            (result.subject_id,)
+            if result.subject_type == "external_org" and result.subject_id is not None
+            else tuple(
+                candidate.subject_id
+                for candidate in result.candidates
+                if candidate.subject_type == "external_org"
+            )
+        )
+        return CandidatePartyFact(
+            wording=wording,
+            registered_external_org_ids=matches,
+            is_supported=wanted in supported_text,
+            is_visible=wanted in visible_text,
+            resolution_state=result.state,
+            attention_reason=result.attention_reason,
+            rule_identity=result.rule_identity,
+            resolution_attempt_id=result.attempt_id,
+        )
+
+    matches = _registered_external_org_ids(subject_candidates, wording)
     return CandidatePartyFact(
         wording=wording,
         registered_external_org_ids=matches,
-        is_supported=wanted in cited_text,
+        is_supported=wanted in supported_text,
         is_visible=wanted in visible_text,
+    )
+
+
+def _registered_external_org_ids(
+    subject_candidates: tuple[RegisteredSubjectCandidate, ...], wording: str
+) -> tuple[int, ...]:
+    """Preserve legacy reads through the canonical exact registry only."""
+
+    wanted = normalize_subject_reference("organization_name", wording)
+    return tuple(
+        candidate.subject_id
+        for candidate in subject_candidates
+        if candidate.subject_type == "external_org"
+        and wanted
+        in {
+            normalize_subject_reference("organization_name", value)
+            for value in (candidate.display_name, *candidate.aliases)
+        }
     )
 
 
