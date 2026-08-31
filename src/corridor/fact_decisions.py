@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from corridor.facts import FACT_TYPE_CONTRACTS
+from corridor.fact_types import FACT_TYPE_CONTRACTS
 from corridor.models import (
     ActiveExtractionRun,
     Fact,
