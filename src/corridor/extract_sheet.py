@@ -154,6 +154,7 @@ def extract_document(session: Session, document: Document) -> list[Candidate]:
             document,
             page_no,
             row_number,
+            chosen.sheet.name,
             fields,
             raw,
             page_text,
@@ -257,6 +258,7 @@ def _extract_evidence_table(session: Session, document: Document, chosen):
             unmapped=chosen.unmapped_headings,
         )
         candidate.payload_json["citations"][0]["table_row"] = row_number
+        candidate.payload_json["citations"][0]["sheet_name"] = chosen.sheet.name
         candidates.append(candidate)
         accounting.account(
             row_id,
@@ -275,6 +277,7 @@ def _candidate(
     document: Document,
     page_no: int,
     row_number: int,
+    sheet_name: str,
     fields: dict[str, str],
     raw,
     page_text: str,
@@ -308,4 +311,5 @@ def _candidate(
         unmapped=unmapped,
     )
     candidate.payload_json["citations"][0]["table_row"] = row_number
+    candidate.payload_json["citations"][0]["sheet_name"] = sheet_name
     return candidate

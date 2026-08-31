@@ -724,6 +724,115 @@ class SourceSegment(Base):
     )
 
 
+class Fact(Base):
+    """One typed source observation, separate from any Project Record decision."""
+
+    __tablename__ = "facts"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "document_id", "id", name="uq_facts_scope_id"
+        ),
+        UniqueConstraint(
+            "extraction_run_id",
+            "fact_type",
+            "subject_key",
+            name="uq_facts_run_type_subject",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id"],
+            ["documents.project_id", "documents.id"],
+            name="fk_facts_document_scope",
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+            name="fk_facts_extraction_run_document",
+        ),
+        CheckConstraint(
+            "fact_type in ('station_from', 'station_to')",
+            name="ck_facts_type",
+        ),
+        CheckConstraint(
+            "subject_kind = 'source_row' and length(trim(subject_key)) > 0",
+            name="ck_facts_subject",
+        ),
+        CheckConstraint(
+            "fact_type not in ('station_from', 'station_to') or ("
+            "text_value is not null and length(trim(text_value)) > 0 "
+            "and date_value is null and date_range_start is null "
+            "and date_range_end is null and external_org_value_id is null "
+            "and document_value_id is null "
+            "and transformation = 'trim_cell_text_v1')",
+            name="ck_facts_typed_value",
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0", name="ck_facts_recorded_by"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    extraction_run_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    fact_type: Mapped[str] = mapped_column(String(64))
+    subject_kind: Mapped[str] = mapped_column(String(32))
+    subject_key: Mapped[str] = mapped_column(Text)
+    text_value: Mapped[str | None] = mapped_column(Text)
+    date_value: Mapped[date | None] = mapped_column(Date)
+    date_range_start: Mapped[date | None] = mapped_column(Date)
+    date_range_end: Mapped[date | None] = mapped_column(Date)
+    external_org_value_id: Mapped[int | None] = mapped_column(
+        ForeignKey("external_orgs.id")
+    )
+    document_value_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    transformation: Mapped[str] = mapped_column(String(64))
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class FactSource(Base):
+    """One role-tagged segment supporting a Fact in the same rendition."""
+
+    __tablename__ = "fact_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "fact_id", "role", "ordinal", name="uq_fact_sources_role_ordinal"
+        ),
+        UniqueConstraint(
+            "fact_id", "source_segment_id", "role", name="uq_fact_sources_link"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "fact_id"],
+            ["facts.project_id", "facts.document_id", "facts.id"],
+            name="fk_fact_sources_fact_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_fact_sources_segment_scope",
+        ),
+        CheckConstraint(
+            "role in ('value_source', 'context', 'attribution_source')",
+            name="ck_fact_sources_role",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_fact_sources_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    role: Mapped[str] = mapped_column(String(32))
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
 class DocumentRenditionDerivation(Base):
     """One retained format conversion, without equivalence or Supersession."""
 

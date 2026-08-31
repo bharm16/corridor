@@ -168,9 +168,10 @@ def test_sue_probe_rows_become_cited_evidence_proposals_without_heading_guesses(
                 "21.02 3.92 4.1 17.1 retained"
             ),
             "verified": True,
-            "whole_row": True,
-            "table_row": 1,
-        }
+                "whole_row": True,
+                "table_row": 1,
+                "sheet_name": "PROBES (WITH COORD)",
+            }
     ]
     assert proposal.citations_verified is True
     assert proposals.row_accounting["detected_row_count"] == 1
