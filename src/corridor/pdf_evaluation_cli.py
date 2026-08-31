@@ -4,6 +4,10 @@ Pytest protects the contract; this CLI is the experiment runner.  It reads an
 engine-produced JSON artifact and never invokes an engine itself, which keeps
 holdout access explicit and leaves challenger dependencies outside Corridor's
 application environment.
+
+The discarded shape was a pytest target that both ran and judged an engine.
+That hid experiment inputs in test fixtures and could not record intentional
+holdout access.  This command consumes an immutable engine-run artifact instead.
 """
 
 from __future__ import annotations
@@ -19,9 +23,8 @@ from corridor.pdf_evaluation import (
     evaluate,
     load_engine_run,
     load_gold_set,
-    report_json,
-    report_markdown,
 )
+from corridor.pdf_evaluation_report import report_json, report_markdown
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -89,4 +92,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

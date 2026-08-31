@@ -81,6 +81,9 @@ def document(
                         polygon=box(0, 0, 100, 100),
                         row_ids=("row-1",),
                         column_ids=("column-1",),
+                        row_polygons=(box(0, 0, 100, 50),),
+                        column_polygons=(box(0, 0, 100, 100),),
+                        row_dispositions={"row-1": "active"},
                         cells=(cell,),
                     ),
                 ),
@@ -129,13 +132,19 @@ def prediction(
                     TablePrediction(
                         table_id="predicted-table",
                         polygon=table_polygon or page.tables[0].polygon,
+                        row_ids=("predicted-row",),
+                        column_ids=("predicted-column",),
                         row_polygons=(box(0, 0, 100, 50),),
                         column_polygons=(box(0, 0, 100, 100),),
+                        row_dispositions={"predicted-row": "active"},
                         cells=(
                             CellPrediction(
                                 cell_id="predicted-cell",
+                                row_id="predicted-row",
+                                column_id="predicted-column",
                                 polygon=page.tables[0].cells[0].polygon,
                                 visible_text=cell_text,
+                                canonical_mapping="station_begin",
                             ),
                         ),
                     ),
@@ -145,7 +154,7 @@ def prediction(
                     or ProposalPrediction(
                         case_id="proposal-1",
                         value="1149+00",
-                        source_cell_id="cell-1",
+                        source_cell_id="predicted-cell",
                     ),
                 ),
             ),
@@ -221,6 +230,13 @@ def test_assignment_matching_reports_each_layer_and_does_not_match_by_order():
     assert result.overall.tables.true_positive == 1
     assert result.overall.cells.true_positive == 1
     assert result.overall.cell_text_exact.accuracy == 1
+    assert result.overall.row_disposition_exact.accuracy == 1
+    assert result.overall.cell_span_exact.accuracy == 1
+    assert result.overall.cell_topology_exact.accuracy == 1
+    assert result.overall.header_relationships_exact.accuracy == 1
+    assert result.overall.canonical_mapping_exact.accuracy == 1
+    assert result.overall.cell_state_exact.accuracy == 1
+    assert result.overall.page_scoped_values.f1 == 1
     assert result.by_document[gold.documents[0].document_sha256].pages == 1
     assert result.by_page_class[page.page_class].pages == 1
 
@@ -236,7 +252,7 @@ def test_wrong_source_cited_proposals_are_counted_not_hidden_in_vendor_scores():
     wrong = ProposalPrediction(
         case_id="proposal-1",
         value="invented",
-        source_cell_id="cell-that-did-not-say-it",
+        source_cell_id="predicted-cell",
     )
     abstained = ProposalPrediction(case_id="proposal-1", abstained=True)
 
@@ -253,6 +269,95 @@ def test_wrong_source_cited_proposals_are_counted_not_hidden_in_vendor_scores():
     assert result.key_metric.avoided == 1
     assert result.key_metric.emitted == 1
     assert result.key_metric.rate == 0.5
+
+
+def test_semantic_layers_have_independent_scores_and_frozen_ceilings():
+    gold_document = document("a" * 64, "project-a", Split.development)
+    gold_document = gold_document.model_copy(
+        update={
+            "pages": (
+                gold_document.pages[0].model_copy(
+                    update={"page_scoped_values": {"external_org": "Owner A"}}
+                ),
+            )
+        }
+    )
+    run_document = prediction(gold_document)
+    predicted_table = run_document.pages[0].tables[0]
+    wrong_table = predicted_table.model_copy(
+        update={
+            "row_dispositions": {"predicted-row": "retired"},
+            "cells": (
+                predicted_table.cells[0].model_copy(
+                    update={
+                        "row_span": 2,
+                        "header_cell_ids": ("predicted-cell",),
+                        "canonical_mapping": "station_end",
+                        "state": "unconfirmed",
+                    }
+                ),
+            ),
+        }
+    )
+    run_document = run_document.model_copy(
+        update={
+            "pages": (
+                run_document.pages[0].model_copy(update={"tables": (wrong_table,)}),
+            )
+        }
+    )
+    run_document = run_document.model_copy(
+        update={
+            "pages": (
+                run_document.pages[0].model_copy(
+                    update={"page_scoped_values": {"external_org": "Owner B"}}
+                ),
+            )
+        }
+    )
+
+    result = evaluate(gold_set(gold_document), engine_run(run_document))
+
+    assert result.overall.row_disposition_exact.accuracy == 0
+    assert result.overall.cell_span_exact.accuracy == 0
+    assert result.overall.header_relationships_exact.accuracy == 0
+    assert result.overall.canonical_mapping_exact.accuracy == 0
+    assert result.overall.cell_state_exact.accuracy == 0
+    assert result.overall.page_scoped_values.f1 == 0
+    assert result.thresholds_met["row_disposition_exact"] is False
+    assert result.thresholds_met["cell_span_exact"] is False
+    assert result.thresholds_met["header_relationships_exact"] is False
+    assert result.thresholds_met["canonical_mapping_exact"] is False
+    assert result.thresholds_met["cell_state_exact"] is False
+    assert result.thresholds_met["page_scoped_values"] is False
+    assert result.passed is False
+
+
+def test_extra_predicted_pages_and_their_tables_are_false_positives():
+    gold_document = document("a" * 64, "project-a", Split.development)
+    run_document = prediction(gold_document)
+    extra_page = PagePrediction(
+        page_number=99,
+        page_class="matrix",
+        abstained=False,
+        tables=(
+            TablePrediction(
+                table_id="phantom-table",
+                polygon=box(0, 0, 100, 100),
+            ),
+        ),
+    )
+    run_document = run_document.model_copy(
+        update={"pages": (*run_document.pages, extra_page)}
+    )
+
+    result = evaluate(gold_set(gold_document), engine_run(run_document))
+
+    assert result.overall.page_coverage.false_positive == 1
+    assert result.overall.tables.false_positive == 1
+    assert result.overall.page_classification.accuracy == 0.5
+    assert result.thresholds_met["page_coverage"] is False
+    assert result.passed is False
 
 
 def test_cli_requires_and_records_holdout_access(tmp_path, capsys):

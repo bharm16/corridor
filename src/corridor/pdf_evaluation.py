@@ -5,11 +5,15 @@ document-family splits, PDF-coordinate geometry, and comparable measurements.  I
 does not ingest documents, run an extraction engine, or append anything to the
 Project Record.  Keeping that boundary here prevents a challenger engine from
 quietly redefining the denominator it is supposed to meet.
+
+The earlier evaluator scored final Candidate rows and a machine-authored CSV.
+That approach could not isolate page, table, cell, or citation failures and it
+shared extraction machinery with its reference.  This contract replaces that
+coupled ceiling with independently checked layers in document coordinates.
 """
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from datetime import datetime
 from enum import StrEnum
@@ -104,12 +108,21 @@ class TableGold(ContractModel):
     column_ids: tuple[str, ...]
     row_polygons: tuple[Polygon, ...] = ()
     column_polygons: tuple[Polygon, ...] = ()
+    row_dispositions: dict[
+        str, Literal["header", "active", "retired", "blank", "unreadable"]
+    ] = Field(default_factory=dict)
     cells: tuple[CellGold, ...] = ()
 
     @model_validator(mode="after")
     def cell_topology_is_closed(self) -> "TableGold":
         row_ids = set(self.row_ids)
         column_ids = set(self.column_ids)
+        if self.row_polygons and len(self.row_polygons) != len(self.row_ids):
+            raise ValueError("row polygons must align one-to-one with row ids")
+        if self.column_polygons and len(self.column_polygons) != len(self.column_ids):
+            raise ValueError("column polygons must align one-to-one with column ids")
+        if set(self.row_dispositions) != row_ids:
+            raise ValueError("every declared row needs exactly one disposition")
         cell_ids = {cell.cell_id for cell in self.cells}
         if len(cell_ids) != len(self.cells):
             raise ValueError("cell ids must be unique within a table")
@@ -202,11 +215,20 @@ class Adjudication(ContractModel):
 
 
 class AcceptanceThresholds(ContractModel):
+    page_coverage_f1_min: float = Field(default=1.0, ge=0, le=1)
     page_class_accuracy_min: float = Field(default=0.98, ge=0, le=1)
     table_f1_min: float = Field(default=0.95, ge=0, le=1)
     row_f1_min: float = Field(default=0.95, ge=0, le=1)
+    column_f1_min: float = Field(default=0.95, ge=0, le=1)
     cell_f1_min: float = Field(default=0.95, ge=0, le=1)
     cell_text_exact_min: float = Field(default=0.98, ge=0, le=1)
+    row_disposition_exact_min: float = Field(default=0.98, ge=0, le=1)
+    cell_span_exact_min: float = Field(default=0.98, ge=0, le=1)
+    cell_topology_exact_min: float = Field(default=0.98, ge=0, le=1)
+    header_relationships_exact_min: float = Field(default=0.98, ge=0, le=1)
+    canonical_mapping_exact_min: float = Field(default=0.98, ge=0, le=1)
+    cell_state_exact_min: float = Field(default=0.98, ge=0, le=1)
+    page_scoped_values_f1_min: float = Field(default=0.98, ge=0, le=1)
     wrong_source_cited_proposals_max: int = Field(default=0, ge=0)
     failure_rate_max: float = Field(default=0.01, ge=0, le=1)
     abstention_rate_max: float = Field(default=0.10, ge=0, le=1)
@@ -214,7 +236,6 @@ class AcceptanceThresholds(ContractModel):
     peak_memory_bytes_per_document_max: int = Field(
         default=2_147_483_648, gt=0
     )
-
 
 class GoldSet(ContractModel):
     schema_version: Literal["corridor.pdf-gold.v1"]
@@ -251,8 +272,15 @@ class GoldSet(ContractModel):
 
 class CellPrediction(ContractModel):
     cell_id: NonEmpty
+    row_id: NonEmpty
+    column_id: NonEmpty
     polygon: Polygon
     visible_text: str
+    row_span: int = Field(default=1, ge=1)
+    column_span: int = Field(default=1, ge=1)
+    header_cell_ids: tuple[str, ...] = ()
+    canonical_mapping: str | None = None
+    state: Literal["confirmed", "unreadable", "unconfirmed"] = "confirmed"
 
 
 class TablePrediction(ContractModel):
@@ -260,7 +288,30 @@ class TablePrediction(ContractModel):
     polygon: Polygon
     row_polygons: tuple[Polygon, ...] = ()
     column_polygons: tuple[Polygon, ...] = ()
+    row_ids: tuple[str, ...] = ()
+    column_ids: tuple[str, ...] = ()
+    row_dispositions: dict[
+        str, Literal["header", "active", "retired", "blank", "unreadable"]
+    ] = Field(default_factory=dict)
     cells: tuple[CellPrediction, ...] = ()
+
+    @model_validator(mode="after")
+    def topology_is_closed(self) -> "TablePrediction":
+        if len(self.row_ids) != len(self.row_polygons):
+            raise ValueError("predicted row ids and polygons must align")
+        if len(self.column_ids) != len(self.column_polygons):
+            raise ValueError("predicted column ids and polygons must align")
+        if set(self.row_dispositions) != set(self.row_ids):
+            raise ValueError("every predicted row needs exactly one disposition")
+        cell_ids = {cell.cell_id for cell in self.cells}
+        if len(cell_ids) != len(self.cells):
+            raise ValueError("predicted cell ids must be unique within a table")
+        for cell in self.cells:
+            if cell.row_id not in self.row_ids or cell.column_id not in self.column_ids:
+                raise ValueError("predicted cells must name declared rows and columns")
+            if set(cell.header_cell_ids) - cell_ids:
+                raise ValueError("predicted cells must name declared header cells")
+        return self
 
 
 class ProposalPrediction(ContractModel):
@@ -282,8 +333,22 @@ class PagePrediction(ContractModel):
     page_number: int = Field(ge=1)
     page_class: NonEmpty
     abstained: bool
+    page_scoped_values: dict[str, str] = Field(default_factory=dict)
     tables: tuple[TablePrediction, ...] = ()
     proposals: tuple[ProposalPrediction, ...] = ()
+
+    @model_validator(mode="after")
+    def ids_are_page_local(self) -> "PagePrediction":
+        table_ids = [table.table_id for table in self.tables]
+        if len(table_ids) != len(set(table_ids)):
+            raise ValueError("predicted table ids must be unique within a page")
+        cell_ids = [cell.cell_id for table in self.tables for cell in table.cells]
+        if len(cell_ids) != len(set(cell_ids)):
+            raise ValueError("predicted cell ids must be unique within a page")
+        proposal_ids = [proposal.case_id for proposal in self.proposals]
+        if len(proposal_ids) != len(set(proposal_ids)):
+            raise ValueError("predicted proposal case ids must be unique within a page")
+        return self
 
 
 class DocumentPrediction(ContractModel):
@@ -298,6 +363,9 @@ class DocumentPrediction(ContractModel):
     def failure_is_explained(self) -> "DocumentPrediction":
         if self.failed and not self.failure_reason:
             raise ValueError("a failed document needs a failure reason")
+        page_numbers = [page.page_number for page in self.pages]
+        if len(page_numbers) != len(set(page_numbers)):
+            raise ValueError("predicted page numbers must be unique within a document")
         return self
 
 
@@ -353,12 +421,20 @@ class Accuracy(ContractModel):
 class AggregateMetrics(ContractModel):
     pages: int = 0
     documents: int = 0
+    page_coverage: BinaryCounts = Field(default_factory=BinaryCounts)
     page_classification: Accuracy = Field(default_factory=Accuracy)
     tables: BinaryCounts = Field(default_factory=BinaryCounts)
     rows: BinaryCounts = Field(default_factory=BinaryCounts)
     columns: BinaryCounts = Field(default_factory=BinaryCounts)
     cells: BinaryCounts = Field(default_factory=BinaryCounts)
     cell_text_exact: Accuracy = Field(default_factory=Accuracy)
+    row_disposition_exact: Accuracy = Field(default_factory=Accuracy)
+    cell_span_exact: Accuracy = Field(default_factory=Accuracy)
+    cell_topology_exact: Accuracy = Field(default_factory=Accuracy)
+    header_relationships_exact: Accuracy = Field(default_factory=Accuracy)
+    canonical_mapping_exact: Accuracy = Field(default_factory=Accuracy)
+    cell_state_exact: Accuracy = Field(default_factory=Accuracy)
+    page_scoped_values: BinaryCounts = Field(default_factory=BinaryCounts)
     failed_documents: int = 0
     abstained_pages: int = 0
     latency_ms: int = 0
@@ -517,10 +593,21 @@ def _plus_counts(left: BinaryCounts, right: BinaryCounts) -> BinaryCounts:
     )
 
 
+def _mapping_counts(gold: dict[str, str], predicted: dict[str, str]) -> BinaryCounts:
+    gold_items = set(gold.items())
+    predicted_items = set(predicted.items())
+    return BinaryCounts(
+        true_positive=len(gold_items & predicted_items),
+        false_positive=len(predicted_items - gold_items),
+        false_negative=len(gold_items - predicted_items),
+    )
+
+
 class _MutableAggregate:
     def __init__(self) -> None:
         self.pages = 0
         self.document_digests: set[str] = set()
+        self.page_coverage = BinaryCounts()
         self.page_class_correct = 0
         self.page_class_total = 0
         self.tables = BinaryCounts()
@@ -529,6 +616,19 @@ class _MutableAggregate:
         self.cells = BinaryCounts()
         self.cell_text_correct = 0
         self.cell_text_total = 0
+        self.row_disposition_correct = 0
+        self.row_disposition_total = 0
+        self.cell_span_correct = 0
+        self.cell_span_total = 0
+        self.cell_topology_correct = 0
+        self.cell_topology_total = 0
+        self.header_relationships_correct = 0
+        self.header_relationships_total = 0
+        self.canonical_mapping_correct = 0
+        self.canonical_mapping_total = 0
+        self.cell_state_correct = 0
+        self.cell_state_total = 0
+        self.page_scoped_values = BinaryCounts()
         self.failed_documents: set[str] = set()
         self.abstained_pages = 0
         self.latency_by_document: dict[str, int] = {}
@@ -546,6 +646,7 @@ class _MutableAggregate:
         return AggregateMetrics(
             pages=self.pages,
             documents=len(self.document_digests),
+            page_coverage=self.page_coverage,
             page_classification=Accuracy(
                 correct=self.page_class_correct, total=self.page_class_total
             ),
@@ -556,6 +657,29 @@ class _MutableAggregate:
             cell_text_exact=Accuracy(
                 correct=self.cell_text_correct, total=self.cell_text_total
             ),
+            row_disposition_exact=Accuracy(
+                correct=self.row_disposition_correct,
+                total=self.row_disposition_total,
+            ),
+            cell_span_exact=Accuracy(
+                correct=self.cell_span_correct, total=self.cell_span_total
+            ),
+            cell_topology_exact=Accuracy(
+                correct=self.cell_topology_correct,
+                total=self.cell_topology_total,
+            ),
+            header_relationships_exact=Accuracy(
+                correct=self.header_relationships_correct,
+                total=self.header_relationships_total,
+            ),
+            canonical_mapping_exact=Accuracy(
+                correct=self.canonical_mapping_correct,
+                total=self.canonical_mapping_total,
+            ),
+            cell_state_exact=Accuracy(
+                correct=self.cell_state_correct, total=self.cell_state_total
+            ),
+            page_scoped_values=self.page_scoped_values,
             failed_documents=len(self.failed_documents),
             abstained_pages=self.abstained_pages,
             latency_ms=sum(self.latency_by_document.values()),
@@ -569,11 +693,25 @@ def _add_page(
     predicted_page: PagePrediction | None,
 ) -> None:
     aggregate.pages += 1
+    aggregate.page_coverage = _plus_counts(
+        aggregate.page_coverage,
+        BinaryCounts(
+            true_positive=1 if predicted_page is not None else 0,
+            false_negative=1 if predicted_page is None else 0,
+        ),
+    )
     aggregate.page_class_total += 1
     if predicted_page is not None and predicted_page.page_class == gold_page.page_class:
         aggregate.page_class_correct += 1
     if predicted_page is None or predicted_page.abstained:
         aggregate.abstained_pages += 1
+    aggregate.page_scoped_values = _plus_counts(
+        aggregate.page_scoped_values,
+        _mapping_counts(
+            gold_page.page_scoped_values,
+            predicted_page.page_scoped_values if predicted_page else {},
+        ),
+    )
     predicted_tables = list(predicted_page.tables) if predicted_page else []
     table_counts, table_matches = _match_polygons(
         [table.polygon for table in gold_page.tables],
@@ -583,26 +721,75 @@ def _add_page(
     for gold_index, predicted_index in table_matches:
         gold_table = gold_page.tables[gold_index]
         predicted_table = predicted_tables[predicted_index]
-        row_counts, _ = _match_polygons(
+        row_counts, row_matches = _match_polygons(
             list(gold_table.row_polygons), list(predicted_table.row_polygons)
         )
         aggregate.rows = _plus_counts(aggregate.rows, row_counts)
-        column_counts, _ = _match_polygons(
+        row_id_map = {
+            predicted_table.row_ids[predicted_row]: gold_table.row_ids[gold_row]
+            for gold_row, predicted_row in row_matches
+        }
+        for gold_row, predicted_row in row_matches:
+            aggregate.row_disposition_total += 1
+            if (
+                gold_table.row_dispositions[gold_table.row_ids[gold_row]]
+                == predicted_table.row_dispositions[
+                    predicted_table.row_ids[predicted_row]
+                ]
+            ):
+                aggregate.row_disposition_correct += 1
+        column_counts, column_matches = _match_polygons(
             list(gold_table.column_polygons), list(predicted_table.column_polygons)
         )
         aggregate.columns = _plus_counts(aggregate.columns, column_counts)
+        column_id_map = {
+            predicted_table.column_ids[predicted_column]: (
+                gold_table.column_ids[gold_column]
+            )
+            for gold_column, predicted_column in column_matches
+        }
         cell_counts, cell_matches = _match_polygons(
             [cell.polygon for cell in gold_table.cells],
             [cell.polygon for cell in predicted_table.cells],
         )
         aggregate.cells = _plus_counts(aggregate.cells, cell_counts)
+        cell_id_map = {
+            predicted_table.cells[predicted_cell].cell_id: (
+                gold_table.cells[gold_cell].cell_id
+            )
+            for gold_cell, predicted_cell in cell_matches
+        }
         for gold_cell_index, predicted_cell_index in cell_matches:
+            gold_cell = gold_table.cells[gold_cell_index]
+            predicted_cell = predicted_table.cells[predicted_cell_index]
             aggregate.cell_text_total += 1
-            if (
-                gold_table.cells[gold_cell_index].visible_text
-                == predicted_table.cells[predicted_cell_index].visible_text
-            ):
+            if gold_cell.visible_text == predicted_cell.visible_text:
                 aggregate.cell_text_correct += 1
+            aggregate.cell_span_total += 1
+            if (gold_cell.row_span, gold_cell.column_span) == (
+                predicted_cell.row_span,
+                predicted_cell.column_span,
+            ):
+                aggregate.cell_span_correct += 1
+            aggregate.cell_topology_total += 1
+            if (
+                row_id_map.get(predicted_cell.row_id) == gold_cell.row_id
+                and column_id_map.get(predicted_cell.column_id)
+                == gold_cell.column_id
+            ):
+                aggregate.cell_topology_correct += 1
+            aggregate.header_relationships_total += 1
+            translated_headers = {
+                cell_id_map.get(header_id) for header_id in predicted_cell.header_cell_ids
+            }
+            if translated_headers == set(gold_cell.header_cell_ids):
+                aggregate.header_relationships_correct += 1
+            aggregate.canonical_mapping_total += 1
+            if gold_cell.canonical_mapping == predicted_cell.canonical_mapping:
+                aggregate.canonical_mapping_correct += 1
+            aggregate.cell_state_total += 1
+            if gold_cell.state == predicted_cell.state:
+                aggregate.cell_state_correct += 1
     matched_gold = {gold_index for gold_index, _ in table_matches}
     matched_predicted = {predicted_index for _, predicted_index in table_matches}
     for index, table in enumerate(gold_page.tables):
@@ -637,6 +824,55 @@ def _add_page(
         )
 
 
+def _add_extra_page(
+    aggregate: _MutableAggregate, predicted_page: PagePrediction
+) -> None:
+    aggregate.pages += 1
+    aggregate.page_coverage = _plus_counts(
+        aggregate.page_coverage, BinaryCounts(false_positive=1)
+    )
+    aggregate.page_class_total += 1
+    if predicted_page.abstained:
+        aggregate.abstained_pages += 1
+    aggregate.page_scoped_values = _plus_counts(
+        aggregate.page_scoped_values,
+        BinaryCounts(false_positive=len(predicted_page.page_scoped_values)),
+    )
+    aggregate.tables = _plus_counts(
+        aggregate.tables, BinaryCounts(false_positive=len(predicted_page.tables))
+    )
+    for table in predicted_page.tables:
+        aggregate.rows = _plus_counts(
+            aggregate.rows, BinaryCounts(false_positive=len(table.row_polygons))
+        )
+        aggregate.columns = _plus_counts(
+            aggregate.columns,
+            BinaryCounts(false_positive=len(table.column_polygons)),
+        )
+        aggregate.cells = _plus_counts(
+            aggregate.cells, BinaryCounts(false_positive=len(table.cells))
+        )
+
+
+def _predicted_to_gold_cell_ids(
+    gold_page: PageGold, predicted_page: PagePrediction | None
+) -> dict[str, str]:
+    if predicted_page is None:
+        return {}
+    gold_cells = [cell for table in gold_page.tables for cell in table.cells]
+    predicted_cells = [
+        cell for table in predicted_page.tables for cell in table.cells
+    ]
+    _, matches = _match_polygons(
+        [cell.polygon for cell in gold_cells],
+        [cell.polygon for cell in predicted_cells],
+    )
+    return {
+        predicted_cells[predicted_index].cell_id: gold_cells[gold_index].cell_id
+        for gold_index, predicted_index in matches
+    }
+
+
 def _source_citation_metric(
     gold: GoldSet, predictions: dict[str, DocumentPrediction]
 ) -> SourceCitationSafetyMetric:
@@ -649,6 +885,7 @@ def _source_citation_metric(
         } if predicted_document else {}
         for page in document.pages:
             predicted_page = predicted_pages.get(page.page_number)
+            cell_id_map = _predicted_to_gold_cell_ids(page, predicted_page)
             cases = {
                 proposal.case_id: proposal
                 for proposal in predicted_page.proposals
@@ -662,7 +899,8 @@ def _source_citation_metric(
                     and (
                         case.must_abstain
                         or proposal.value != case.expected_value
-                        or proposal.source_cell_id not in case.allowed_source_cell_ids
+                        or cell_id_map.get(proposal.source_cell_id)
+                        not in case.allowed_source_cell_ids
                     )
                 )
                 if wrong:
@@ -705,6 +943,16 @@ def evaluate(gold: GoldSet, run: EngineRun) -> EvaluationReport:
             _add_page(overall, page, predicted_page)
             _add_page(page_class_aggregate, page, predicted_page)
             _add_page(by_document[document.document_sha256], page, predicted_page)
+        gold_page_numbers = {page.page_number for page in document.pages}
+        for extra_page_number in sorted(set(predicted_pages) - gold_page_numbers):
+            extra_page = predicted_pages[extra_page_number]
+            page_class_aggregate = by_class[extra_page.page_class]
+            page_class_aggregate.add_document(
+                document.document_sha256, predicted_document
+            )
+            _add_extra_page(overall, extra_page)
+            _add_extra_page(page_class_aggregate, extra_page)
+            _add_extra_page(by_document[document.document_sha256], extra_page)
     frozen_overall = overall.freeze()
     key_metric = _source_citation_metric(gold, predictions)
     thresholds = gold.thresholds
@@ -713,16 +961,48 @@ def evaluate(gold: GoldSet, run: EngineRun) -> EvaluationReport:
         if frozen_overall.documents else 0
     )
     thresholds_met = {
+        "page_coverage": (
+            frozen_overall.page_coverage.f1 >= thresholds.page_coverage_f1_min
+        ),
         "page_class_accuracy": (
             frozen_overall.page_classification.accuracy
             >= thresholds.page_class_accuracy_min
         ),
         "table_f1": frozen_overall.tables.f1 >= thresholds.table_f1_min,
         "row_f1": frozen_overall.rows.f1 >= thresholds.row_f1_min,
+        "column_f1": frozen_overall.columns.f1 >= thresholds.column_f1_min,
         "cell_f1": frozen_overall.cells.f1 >= thresholds.cell_f1_min,
         "cell_text_exact": (
             frozen_overall.cell_text_exact.accuracy
             >= thresholds.cell_text_exact_min
+        ),
+        "row_disposition_exact": (
+            frozen_overall.row_disposition_exact.accuracy
+            >= thresholds.row_disposition_exact_min
+        ),
+        "cell_span_exact": (
+            frozen_overall.cell_span_exact.accuracy
+            >= thresholds.cell_span_exact_min
+        ),
+        "cell_topology_exact": (
+            frozen_overall.cell_topology_exact.accuracy
+            >= thresholds.cell_topology_exact_min
+        ),
+        "header_relationships_exact": (
+            frozen_overall.header_relationships_exact.accuracy
+            >= thresholds.header_relationships_exact_min
+        ),
+        "canonical_mapping_exact": (
+            frozen_overall.canonical_mapping_exact.accuracy
+            >= thresholds.canonical_mapping_exact_min
+        ),
+        "cell_state_exact": (
+            frozen_overall.cell_state_exact.accuracy
+            >= thresholds.cell_state_exact_min
+        ),
+        "page_scoped_values": (
+            frozen_overall.page_scoped_values.f1
+            >= thresholds.page_scoped_values_f1_min
         ),
         "wrong_source_cited_proposals": (
             key_metric.emitted <= thresholds.wrong_source_cited_proposals_max
@@ -751,63 +1031,3 @@ def evaluate(gold: GoldSet, run: EngineRun) -> EvaluationReport:
         thresholds_met=thresholds_met,
         passed=all(thresholds_met.values()),
     )
-
-
-def report_json(report: EvaluationReport) -> str:
-    return json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-
-
-def report_markdown(report: EvaluationReport) -> str:
-    """Render a compact human receipt from the same machine report."""
-
-    lines = [
-        f"# PDF extraction evaluation — {report.engine} {report.engine_version}",
-        "",
-        f"Dataset: `{report.dataset_version}`",
-        f"Configuration: `{report.configuration_sha256}`",
-        f"Result: **{'PASS' if report.passed else 'FAIL'}**",
-        "",
-        "## Source-citation safety",
-        "",
-        (
-            f"Wrong source-cited Extracted Proposals avoided: "
-            f"{report.key_metric.avoided}/{report.key_metric.opportunities}; "
-            f"wrong proposals emitted: {report.key_metric.emitted}."
-        ),
-        "",
-        "## Per page class",
-        "",
-        "| Page class | Pages | Class accuracy | Table F1 | Row F1 | Column F1 | Cell F1 | Exact text | Abstention | Failure | Latency ms | Peak memory bytes |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-    ]
-    for name, metrics in report.by_page_class.items():
-        lines.append(
-            f"| {name} | {metrics.pages} | "
-            f"{metrics.page_classification.accuracy:.3f} | "
-            f"{metrics.tables.f1:.3f} | {metrics.rows.f1:.3f} | "
-            f"{metrics.columns.f1:.3f} | {metrics.cells.f1:.3f} | "
-            f"{metrics.cell_text_exact.accuracy:.3f} | "
-            f"{metrics.abstention_rate:.3f} | {metrics.failure_rate:.3f} | "
-            f"{metrics.latency_ms} | {metrics.peak_memory_bytes} |"
-        )
-    lines.extend([
-        "",
-        "## Per document",
-        "",
-        "| SHA-256 | Pages | Class accuracy | Table F1 | Row F1 | Column F1 | Cell F1 | Exact text | Abstention | Failure | Latency ms | Peak memory bytes |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-    ])
-    for digest, metrics in report.by_document.items():
-        lines.append(
-            f"| `{digest}` | {metrics.pages} | "
-            f"{metrics.page_classification.accuracy:.3f} | "
-            f"{metrics.tables.f1:.3f} | {metrics.rows.f1:.3f} | "
-            f"{metrics.columns.f1:.3f} | {metrics.cells.f1:.3f} | "
-            f"{metrics.cell_text_exact.accuracy:.3f} | "
-            f"{metrics.abstention_rate:.3f} | {metrics.failure_rate:.3f} | "
-            f"{metrics.latency_ms} | {metrics.peak_memory_bytes} |"
-        )
-    lines.extend(["", "## Acceptance ceilings", ""])
-    for name, met in report.thresholds_met.items():
-        lines.append(f"- [{'x' if met else ' '}] {name}")
-    return "\n".join(lines) + "\n"

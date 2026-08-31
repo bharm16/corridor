@@ -5,11 +5,20 @@
   "frozen_by": "Bryce Harmon",
   "checked_by": "independent-check-2026-08-31",
   "thresholds": {
+    "page_coverage_f1_min": 1.0,
     "page_class_accuracy_min": 0.98,
     "table_f1_min": 0.95,
     "row_f1_min": 0.95,
+    "column_f1_min": 0.95,
     "cell_f1_min": 0.95,
     "cell_text_exact_min": 0.98,
+    "row_disposition_exact_min": 0.98,
+    "cell_span_exact_min": 0.98,
+    "cell_topology_exact_min": 0.98,
+    "header_relationships_exact_min": 0.98,
+    "canonical_mapping_exact_min": 0.98,
+    "cell_state_exact_min": 0.98,
+    "page_scoped_values_f1_min": 0.98,
     "wrong_source_cited_proposals_max": 0,
     "failure_rate_max": 0.01,
     "abstention_rate_max": 0.10,
@@ -61,6 +70,7 @@
                 {"points": [{"x": 310000, "y": 62000}, {"x": 500000, "y": 62000}, {"x": 500000, "y": 570000}, {"x": 310000, "y": 570000}]},
                 {"points": [{"x": 500000, "y": 62000}, {"x": 768000, "y": 62000}, {"x": 768000, "y": 570000}, {"x": 500000, "y": 570000}]}
               ],
+              "row_dispositions": {"nhhip-header": "header", "nhhip-row-1": "active", "nhhip-row-blank": "blank"},
               "cells": [
                 {"cell_id": "nhhip-h-id", "row_id": "nhhip-header", "column_id": "nhhip-id", "polygon": {"points": [{"x": 24000, "y": 62000}, {"x": 120000, "y": 62000}, {"x": 120000, "y": 112000}, {"x": 24000, "y": 112000}]}, "visible_text": "Utility ID", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
                 {"cell_id": "nhhip-h-owner", "row_id": "nhhip-header", "column_id": "nhhip-owner", "polygon": {"points": [{"x": 120000, "y": 62000}, {"x": 310000, "y": 62000}, {"x": 310000, "y": 112000}, {"x": 120000, "y": 112000}]}, "visible_text": "Utility Owner", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "external_org", "state": "confirmed"},
@@ -105,6 +115,7 @@
               "column_ids": ["sh99-id", "sh99-owner"],
               "row_polygons": [{"points": [{"x": 30000, "y": 40000}, {"x": 760000, "y": 40000}, {"x": 760000, "y": 80000}, {"x": 30000, "y": 80000}]}, {"points": [{"x": 30000, "y": 80000}, {"x": 760000, "y": 80000}, {"x": 760000, "y": 118000}, {"x": 30000, "y": 118000}]}],
               "column_polygons": [{"points": [{"x": 30000, "y": 40000}, {"x": 250000, "y": 40000}, {"x": 250000, "y": 560000}, {"x": 30000, "y": 560000}]}, {"points": [{"x": 250000, "y": 40000}, {"x": 760000, "y": 40000}, {"x": 760000, "y": 560000}, {"x": 250000, "y": 560000}]}],
+              "row_dispositions": {"sh99-header": "header", "sh99-row-1": "active"},
               "cells": [
                 {"cell_id": "sh99-h-id", "row_id": "sh99-header", "column_id": "sh99-id", "polygon": {"points": [{"x": 30000, "y": 40000}, {"x": 250000, "y": 40000}, {"x": 250000, "y": 80000}, {"x": 30000, "y": 80000}]}, "visible_text": "Utility ID", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
                 {"cell_id": "sh99-h-owner", "row_id": "sh99-header", "column_id": "sh99-owner", "polygon": {"points": [{"x": 250000, "y": 40000}, {"x": 760000, "y": 40000}, {"x": 760000, "y": 80000}, {"x": 250000, "y": 80000}]}, "visible_text": "Utility Owner", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "external_org", "state": "confirmed"},
@@ -141,6 +152,7 @@
               "column_ids": ["fdot-conflict", "fdot-station"],
               "row_polygons": [{"points": [{"x": 35000, "y": 100000}, {"x": 755000, "y": 100000}, {"x": 755000, "y": 140000}, {"x": 35000, "y": 140000}]}, {"points": [{"x": 35000, "y": 140000}, {"x": 755000, "y": 140000}, {"x": 755000, "y": 175000}, {"x": 35000, "y": 175000}]}, {"points": [{"x": 35000, "y": 175000}, {"x": 755000, "y": 175000}, {"x": 755000, "y": 215000}, {"x": 35000, "y": 215000}]}],
               "column_polygons": [{"points": [{"x": 35000, "y": 100000}, {"x": 230000, "y": 100000}, {"x": 230000, "y": 560000}, {"x": 35000, "y": 560000}]}, {"points": [{"x": 230000, "y": 100000}, {"x": 755000, "y": 100000}, {"x": 755000, "y": 560000}, {"x": 230000, "y": 560000}]}],
+              "row_dispositions": {"fdot-header": "header", "fdot-band": "header", "fdot-row-1": "active"},
               "cells": [
                 {"cell_id": "fdot-h-conflict", "row_id": "fdot-header", "column_id": "fdot-conflict", "polygon": {"points": [{"x": 35000, "y": 100000}, {"x": 230000, "y": 100000}, {"x": 230000, "y": 140000}, {"x": 35000, "y": 140000}]}, "visible_text": "Conflict #", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
                 {"cell_id": "fdot-h-station", "row_id": "fdot-header", "column_id": "fdot-station", "polygon": {"points": [{"x": 230000, "y": 100000}, {"x": 755000, "y": 100000}, {"x": 755000, "y": 140000}, {"x": 230000, "y": 140000}]}, "visible_text": "Station Begin (From C/L Const)", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "station_begin", "state": "confirmed"},
@@ -178,6 +190,7 @@
               "column_ids": ["wsdot-id", "wsdot-owner", "wsdot-relocate", "wsdot-protect", "wsdot-notes"],
               "row_polygons": [{"points": [{"x": 25000, "y": 45000}, {"x": 767000, "y": 45000}, {"x": 767000, "y": 70000}, {"x": 25000, "y": 70000}]}, {"points": [{"x": 25000, "y": 70000}, {"x": 767000, "y": 70000}, {"x": 767000, "y": 110000}, {"x": 25000, "y": 110000}]}, {"points": [{"x": 25000, "y": 110000}, {"x": 767000, "y": 110000}, {"x": 767000, "y": 145000}, {"x": 25000, "y": 145000}]}, {"points": [{"x": 25000, "y": 145000}, {"x": 767000, "y": 145000}, {"x": 767000, "y": 180000}, {"x": 25000, "y": 180000}]}],
               "column_polygons": [{"points": [{"x": 25000, "y": 45000}, {"x": 115000, "y": 45000}, {"x": 115000, "y": 575000}, {"x": 25000, "y": 575000}]}, {"points": [{"x": 115000, "y": 45000}, {"x": 260000, "y": 45000}, {"x": 260000, "y": 575000}, {"x": 115000, "y": 575000}]}, {"points": [{"x": 260000, "y": 45000}, {"x": 410000, "y": 45000}, {"x": 410000, "y": 575000}, {"x": 260000, "y": 575000}]}, {"points": [{"x": 410000, "y": 45000}, {"x": 560000, "y": 45000}, {"x": 560000, "y": 575000}, {"x": 410000, "y": 575000}]}, {"points": [{"x": 560000, "y": 45000}, {"x": 767000, "y": 45000}, {"x": 767000, "y": 575000}, {"x": 560000, "y": 575000}]}],
+              "row_dispositions": {"wsdot-band": "header", "wsdot-header": "header", "wsdot-row-71": "active", "wsdot-row-72": "retired"},
               "cells": [
                 {"cell_id": "wsdot-band-resolution", "row_id": "wsdot-band", "column_id": "wsdot-relocate", "polygon": {"points": [{"x": 260000, "y": 45000}, {"x": 560000, "y": 45000}, {"x": 560000, "y": 70000}, {"x": 260000, "y": 70000}]}, "visible_text": "RECOMMENDED RESOLUTION", "row_span": 1, "column_span": 2, "header_cell_ids": [], "canonical_mapping": null, "state": "confirmed"},
                 {"cell_id": "wsdot-h-id", "row_id": "wsdot-header", "column_id": "wsdot-id", "polygon": {"points": [{"x": 25000, "y": 70000}, {"x": 115000, "y": 70000}, {"x": 115000, "y": 110000}, {"x": 25000, "y": 110000}]}, "visible_text": "ID Conflict", "row_span": 1, "column_span": 1, "header_cell_ids": [], "canonical_mapping": "utility_id", "state": "confirmed"},
