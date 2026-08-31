@@ -8,7 +8,7 @@ on:
       - "src/corridor/db.py"
       - "src/corridor/m8_acceptance_database.py"
       - "tests/conftest.py"
-      - "tests/test_*migration.py"
+      - "tests/test_*migration*.py"
       - "tests/test_m8_acceptance_integrity.py"
       - "alembic.ini"
       - "pyproject.toml"

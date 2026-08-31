@@ -63,8 +63,17 @@ saying why it exists and what was tried before — read it before changing one.
   `runtime_database` fixture in `tests/conftest.py`. Ordinary database tests
   remain rollback-scoped; test modules do not provision their own databases.
   The harness copies these databases from one migrated per-process template;
-  database upgrade tests build one real template per requested revision, clone
-  it, seed historical rows, and then test the requested upgrade path.
+  database upgrade tests cover one fresh baseline and the single supported
+  released-head-to-current transition. A migration test expires after every
+  supported database has advanced past its starting revision; current behavior
+  stays in ordinary tests.
+- The supported migration window is the current released head and its immediate
+  successor only. Add one linear successor, test exact transformed rows, and
+  retire the predecessor test when that window advances. Do not add another
+  feature-specific blank-database history test; the baseline test owns that.
+- Executable revisions live in `src/corridor/migrations/baseline_versions`.
+  `migrations/versions` contains inert source bytes retained only for released
+  policy fingerprints; Alembic does not load that directory.
 - `llm_model` and the prompt version in `prompts/` are recorded on every
   Extracted Proposal. Changing either without an eval run makes the numbers
   incomparable.

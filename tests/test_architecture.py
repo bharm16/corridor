@@ -132,36 +132,25 @@ def test_every_adr_declares_machine_readable_status():
     assert missing == []
 
 
-def test_database_upgrade_tests_are_marked_and_reuse_revision_templates():
+def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():
+    paths = sorted((REPO_ROOT / "tests").glob("test_*migration*.py"))
+
+    assert [path.name for path in paths] == ["test_migration_baseline.py"]
     missing = [
         path.name
-        for path in sorted((REPO_ROOT / "tests").glob("test_*migration.py"))
+        for path in paths
         if "pytest.mark.migration" not in path.read_text()
     ]
-    unreused = []
-    for path in sorted((REPO_ROOT / "tests").glob("test_*migration.py")):
-        for node in ast.walk(_tree(path)):
-            if not isinstance(node, ast.Call):
-                continue
-            function_name = (
-                node.func.id
-                if isinstance(node.func, ast.Name)
-                else node.func.attr
-                if isinstance(node.func, ast.Attribute)
-                else None
-            )
-            if function_name != "provision_disposable_postgres":
-                continue
-            reuse = next(
-                (
-                    keyword.value
-                    for keyword in node.keywords
-                    if keyword.arg == "reuse_migrated_template"
-                ),
-                None,
-            )
-            if not isinstance(reuse, ast.Constant) or reuse.value is not True:
-                unreused.append(f"{path.name}:{node.lineno}")
 
     assert missing == []
-    assert unreused == []
+
+
+def test_released_policy_sources_are_outside_executable_migration_history():
+    config = (REPO_ROOT / "alembic.ini").read_text()
+    assert (
+        "version_locations = %(here)s/src/corridor/migrations/baseline_versions"
+        in config
+    )
+    assert len(
+        tuple((SOURCE_ROOT / "migrations" / "versions").glob("*.py"))
+    ) == 13

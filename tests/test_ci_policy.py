@@ -49,7 +49,7 @@ def test_migration_ci_is_path_scoped_and_full_history_is_scheduled():
     assert {
         "src/corridor/migrations/**",
         "src/corridor/models.py",
-        "tests/test_*migration.py",
+        "tests/test_*migration*.py",
         "src/corridor/m8_acceptance_database.py",
         "tests/conftest.py",
     } <= migration_paths
