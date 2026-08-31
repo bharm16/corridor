@@ -271,6 +271,13 @@ evidence-shadow:
 evidence-shadow-eval:
 	uv run python -m corridor.evidence_investigator_evaluation_cli $(ARGS)
 
+# Compare a PDF engine JSON artifact with the frozen page/cell gold contract.
+# Holdout runs also require an explicit access log, actor, and reason; see
+# gold/pdf/v1/README.md. This is the experiment runner, not a pytest alias:
+#   make pdf-eval ARGS="evaluate --gold gold/pdf/v1/dataset.json --predictions=<run.json> --output-json=<metrics.json> --output-report=<metrics.md>"
+pdf-eval:
+	uv run python -m corridor.pdf_evaluation_cli $(ARGS)
+
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 # Bound a run to exact registered notes by repeating --document-id; --redo
 # appends a fresh attempt without changing the declared Current Production Run:

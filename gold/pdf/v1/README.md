@@ -1,0 +1,18 @@
+# PDF gold set v1
+
+This directory is the frozen Stage 0 evaluation asset for #439. Geometry is
+stored as integer thousandths of a PDF point, not render pixels. Each document
+is bound to the SHA-256 in its checked-in corpus lock. Labels are deliberately
+layered: a table engine may be scored on geometry without being scored on text,
+and a text engine may be scored without being granted permission to produce an
+Extracted Proposal.
+
+Document families, not individual copies, are assigned to development,
+regression, or holdout. Any run that includes the holdout is refused unless the
+CLI appends an actor and reason to `holdout-access.jsonl`. Do not inspect the
+holdout for tuning; a holdout buys one predeclared measurement.
+
+The cells here are a representative evaluation sample, not a request to
+transcribe the corpus. Unreadable and unresolved cases remain labelled as such.
+The acceptance ceilings live in `dataset.json` and were frozen with the labels,
+before any challenger configuration is measured.
