@@ -186,9 +186,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # runtime and its occurrences (#332), assignment/due-action/document
     # notifications (#351-#353), scheduled publication (#354), outcome
     # capture (#356), scheduled reproof (#358), conditions (#373), and the
-    # operations assists (#359-#362).
-    assert fingerprint.table_count == 124
-    assert fingerprint.sequence_count == 113
+    # operations assists (#359-#362), and the spreadsheet Source Segment
+    # evidence-spine slice (#431).
+    assert fingerprint.table_count == 125
+    assert fingerprint.sequence_count == 114
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
@@ -204,7 +205,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "due_work_occurrences",
         "due_work_receipts",
         "due_work_schedules",
+        "source_segments",
         "statement_coordination_receipts",
+    }
+    assert "source_segments_id_seq" in {
+        item.name for item in fingerprint.sequences
     }
     assert {item.kind for item in fingerprint.schema_objects} == {
         "column",
