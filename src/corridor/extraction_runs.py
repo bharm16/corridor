@@ -23,7 +23,7 @@ from corridor.extractor_lineage import (
     canonical_json_bytes,
     validate_config_json_shape,
 )
-from corridor.facts import append_stationing_facts
+from corridor.facts import append_extracted_proposals, append_stationing_facts
 from corridor.models import (
     EXTRACTION_OUTCOMES,
     ActiveExtractionRun,
@@ -31,6 +31,7 @@ from corridor.models import (
     Candidate,
     Document,
     ExtractionRun,
+    ExtractionRunCandidate,
     Fact,
     SourceFactAppendReceipt,
     SourceSegment,
@@ -215,7 +216,9 @@ def append_source_facts(
             if sha256(segment.exact_text.encode()).hexdigest() != segment.content_sha256:
                 raise ValueError("source segment digest is invalid")
         _fail_after(fail_after_stage, "segments")
-        run = _record_extraction_run(session, document, **run_values)
+        run = _record_extraction_run(
+            session, document, _capture_candidate_inputs=False, **run_values
+        )
         _fail_after(fail_after_stage, "run")
         facts = tuple(
             session.scalars(
@@ -224,6 +227,17 @@ def append_source_facts(
                 .order_by(Fact.id)
             ).all()
         )
+        for candidate in candidates:
+            session.add(
+                ExtractionRunCandidate(
+                    extraction_run_id=run.id, candidate_id=candidate.id
+                )
+            )
+        session.flush()
+        append_extracted_proposals(session, document, run, candidates, facts)
+        for candidate in candidates:
+            candidate.extraction_run_id = run.id
+        session.flush()
         _fail_after(fail_after_stage, "facts")
         session.add(
             SourceFactAppendReceipt(
@@ -260,6 +274,7 @@ def _record_extraction_run(
     token_usage: Mapping[str, object] | None = None,
     row_accounting_json: dict | None = None,
     allow_unsealed_legacy: bool = False,
+    _capture_candidate_inputs: bool = True,
 ) -> ExtractionRun:
     """Append one terminal attempt and attach every Candidate it produced."""
     if not prompt_version:
@@ -317,9 +332,11 @@ def _record_extraction_run(
         candidate_ids = [candidate.id for candidate in candidates]
         if len(set(candidate_ids)) != len(candidate_ids):
             raise ValueError("an Extraction Run cannot repeat a Candidate")
-    candidate_inputs = [
-        candidate_input_snapshot(candidate) for candidate in candidates
-    ]
+    candidate_inputs = (
+        [candidate_input_snapshot(candidate) for candidate in candidates]
+        if _capture_candidate_inputs
+        else None
+    )
 
     run = ExtractionRun(
         document_id=document.id,
@@ -336,8 +353,9 @@ def _record_extraction_run(
     )
     session.add(run)
     session.flush([run])
-    for candidate in candidates:
-        candidate.extraction_run_id = run.id
+    if _capture_candidate_inputs:
+        for candidate in candidates:
+            candidate.extraction_run_id = run.id
     if outcome == "completed":
         append_stationing_facts(session, document, run, tuple(candidates))
         # The one producer #342 owns: a completed reading leaves the project's

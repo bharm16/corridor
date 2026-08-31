@@ -23,12 +23,14 @@ VERSIONS = ROOT / "src" / "corridor" / "migrations" / "baseline_versions"
 SCHEMA_BUILDER = "b7d3f9a1c2e5"
 BASELINE_MARKER = "c0a1d0b5e11e"
 SPREADSHEET_HEAD = "0ca809014df7"
-FACTS_HEAD = "444758f7b4a7"
+FACT_HEAD = "444758f7b4a7"
 RELEASE_HEAD = "d430a1b2c3d4"
-PREDECESSOR_HEAD = "1142da5be661"
-CURRENT_HEAD = "1d2e3f4a5b6c"
+APPEND_HEAD = "1142da5be661"
+PAGE_INVENTORY_HEAD = "1d2e3f4a5b6c"
+PREDECESSOR_HEAD = PAGE_INVENTORY_HEAD
+CURRENT_HEAD = "961bd259310f"
 EXPECTED_SCHEMA_SHA256 = (
-    "fb5a19f981bfea004db916f1e80bd8c7b3b7572893ac9761c8af766b417d57f0"
+    "87d3d2b904379c924c866e0638bacd2ce5ffb4ae0a11abf0fa0eef3b032e5ee8"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -39,10 +41,11 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{SCHEMA_BUILDER}_current_schema_baseline.py",
         f"{BASELINE_MARKER}_establish_current_baseline.py",
         f"{SPREADSHEET_HEAD}_add_spreadsheet_source_segments.py",
-        f"{FACTS_HEAD}_add_typed_facts.py",
+        f"{FACT_HEAD}_add_typed_facts.py",
         f"{RELEASE_HEAD}_release_references_artifact.py",
-        f"{PREDECESSOR_HEAD}_add_scoped_source_fact_append.py",
-        f"{CURRENT_HEAD}_add_pdf_page_inventory.py",
+        f"{APPEND_HEAD}_add_scoped_source_fact_append.py",
+        f"{PAGE_INVENTORY_HEAD}_add_pdf_page_inventory.py",
+        f"{CURRENT_HEAD}_add_immutable_proposals.py",
     }
 
 
@@ -82,7 +85,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_predecessor_preserves_release_storage_and_adds_empty_inventory_state():
+def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -101,27 +104,7 @@ def test_predecessor_preserves_release_storage_and_adds_empty_inventory_state():
                 )
             )
             assert project_id is not None
-            _seed_artifact_reference_release(session, int(project_id))
-            document_id = session.scalar(
-                text(
-                    "insert into documents "
-                    "(project_id, sha256, filename, doc_type, numbering_scheme, "
-                    "pages, parse_status) values "
-                    "(:project_id, :sha256, 'matrix.pdf', 'matrix', "
-                    "'project-unique', 1, 'parsed') returning id"
-                ),
-                {"project_id": project_id, "sha256": "a" * 64},
-            )
-            page_id = session.scalar(
-                text(
-                    "insert into doc_pages "
-                    "(document_id, page_no, text, text_source) values "
-                    "(:document_id, 1, 'Utility Owner', 'text_layer') returning id"
-                ),
-                {"document_id": document_id},
-            )
         before = _project_row(database.session_factory)
-        release_before = _artifact_release_row(database.session_factory)
 
         completed = _alembic(database_url, "upgrade", "head")
 
@@ -130,42 +113,22 @@ def test_predecessor_preserves_release_storage_and_adds_empty_inventory_state():
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        assert _artifact_release_row(database.session_factory) == release_before
-        _assert_artifact_release_reader(database.session_factory, int(project_id))
-        _insert_artifact_reference_release(database.session_factory)
-        with database.session_factory() as session:
-            assert session.execute(
-                text(
-                    "select id, text, inventory_json, routing_json from doc_pages "
-                    "where id = :page_id"
-                ),
-                {"page_id": page_id},
-            ).one() == (page_id, "Utility Owner", None, None)
-            assert session.scalar(
-                text("select count(*) from page_processing_failures")
-            ) == 0
-        assert _fact_rows(database.session_factory) == []
-        with database.session_factory() as session:
-            assert session.scalar(
-                text("select count(*) from source_fact_append_receipts")
-            ) == 0
 
 
-def test_supported_predecessor_enforces_paired_inventory_and_scoped_failures():
+def test_supported_predecessor_creates_immutable_scoped_append_receipt():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
-        database_prefix="corridor_page_inventory_bridge_",
+        database_prefix="corridor_segment_bridge_",
         migration_revision=PREDECESSOR_HEAD,
     ) as database:
-        database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
             project_id = session.scalar(
                 text(
                     "insert into projects (slug, name, is_synthetic) "
-                    "values ('page-inventory-bridge', 'Page Inventory Bridge', true) "
+                    "values ('segment-bridge', 'Segment Bridge', true) "
                     "returning id"
                 )
             )
@@ -174,19 +137,13 @@ def test_supported_predecessor_enforces_paired_inventory_and_scoped_failures():
                     "insert into documents "
                     "(project_id, sha256, filename, doc_type, numbering_scheme, "
                     "pages, parse_status) values "
-                    "(:project_id, :sha256, 'matrix.pdf', 'matrix', "
+                    "(:project_id, :sha256, 'matrix.xlsx', 'matrix', "
                     "'project-unique', 1, 'parsed') returning id"
                 ),
                 {"project_id": project_id, "sha256": "a" * 64},
             )
-            page_id = session.scalar(
-                text(
-                    "insert into doc_pages "
-                    "(document_id, page_no, text, text_source) values "
-                    "(:document_id, 1, '', 'text_layer') returning id"
-                ),
-                {"document_id": document_id},
-            )
+
+        with database.session_factory.begin() as session:
             segment_id = session.scalar(
                 text(
                     "insert into source_segments "
@@ -201,11 +158,27 @@ def test_supported_predecessor_enforces_paired_inventory_and_scoped_failures():
                     "digest": "1c4fc7e2bdaf4b219c00ce662b927dc5d7e17091e467df61b9582d7fb359a39e",
                 },
             )
+
+        database_url = configured.set(database=database.name)
+        completed = _alembic(database_url, "upgrade", "head")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+        with database.session_factory.begin() as session:
+            candidate_id = session.scalar(
+                text(
+                    "insert into candidates "
+                    "(project_id, kind, payload_json, source_document_id, source_pages, "
+                    "prompt_version, citations_verified) values "
+                    "(:project_id, 'dependency', '{\"fields\": {}}'::jsonb, "
+                    ":document_id, array[1], 'migration_fixture_v1', true) returning id"
+                ),
+                {"project_id": project_id, "document_id": document_id},
+            )
             run_id = session.scalar(
                 text(
                     "insert into extraction_runs "
                     "(document_id, prompt_version, outcome, candidate_count, page_errors) "
-                    "values (:document_id, 'migration_fixture_v1', 'completed', 0, 0) "
+                    "values (:document_id, 'migration_fixture_v1', 'completed', 1, 0) "
                     "returning id"
                 ),
                 {"document_id": document_id},
@@ -255,85 +228,55 @@ def test_supported_predecessor_enforces_paired_inventory_and_scoped_failures():
                     "segment_id": segment_id,
                 },
             )
+            proposal_id = session.scalar(
+                text(
+                    "insert into extracted_proposals "
+                    "(project_id, document_id, extraction_run_id, candidate_id, kind, "
+                    "subject_key, candidate_metadata_json) "
+                    "values (:project_id, :document_id, :run_id, :candidate_id, "
+                    "'dependency', 'Conflicts!2', cast(:metadata as jsonb)) returning id"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "run_id": run_id,
+                    "candidate_id": candidate_id,
+                    "metadata": '{"state":"pending","source_pages":[1]}',
+                },
+            )
+            session.execute(
+                text(
+                    "insert into extracted_proposal_facts "
+                    "(project_id, document_id, extraction_run_id, proposal_id, fact_id, ordinal) "
+                    "values (:project_id, :document_id, :run_id, :proposal_id, :fact_id, 1)"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "run_id": run_id,
+                    "proposal_id": proposal_id,
+                    "fact_id": fact_id,
+                },
+            )
 
         assert _source_segment_rows(database.session_factory) == [
             (segment_id, project_id, document_id, "spreadsheet_cell", "UC-1", "A2")
         ]
-        fact_rows_before = _fact_rows(database.session_factory)
-        completed = _alembic(database_url, "upgrade", "head")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert _migration_head(database.session_factory) == CURRENT_HEAD
-        assert _fact_rows(database.session_factory) == fact_rows_before
-
-        with database.session_factory.begin() as session:
-            session.execute(
-                text(
-                    "update doc_pages set inventory_json = cast(:inventory as jsonb), "
-                    "routing_json = cast(:routing as jsonb) where id = :page_id"
-                ),
-                {
-                    "page_id": page_id,
-                    "inventory": '{"schema_version":"inventory-v1"}',
-                    "routing": '{"schema_version":"routing-v1"}',
-                },
-            )
-            failure_id = session.scalar(
-                text(
-                    "insert into page_processing_failures "
-                    "(document_id, page_number, engine, configuration_json, region_id, "
-                    "scope_json, error_type, error_message) values "
-                    "(:document_id, 1, 'tesseract', cast(:configuration as jsonb), "
-                    "'image-1', cast(:scope as jsonb), 'RuntimeError', 'unavailable') "
-                    "returning id"
-                ),
-                {
-                    "document_id": document_id,
-                    "configuration": "{}",
-                    "scope": '{"page_number":1}',
-                },
-            )
-
-        with database.session_factory() as session:
-            assert session.execute(
-                text(
-                    "select id, document_id, page_number, engine, region_id, error_type, "
-                    "error_message from page_processing_failures"
-                )
-            ).one() == (
-                failure_id,
-                document_id,
-                1,
-                "tesseract",
-                "image-1",
-                "RuntimeError",
-                "unavailable",
-            )
-        with pytest.raises(DBAPIError, match="ck_doc_pages_inventory_routing_pair"):
+        assert _fact_rows(database.session_factory) == [
+            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
+        ]
+        with pytest.raises(DBAPIError, match="Extracted Proposal spine is immutable"):
             with database.session_factory.begin() as session:
                 session.execute(
-                    text(
-                        "update doc_pages set routing_json = null where id = :page_id"
-                    ),
-                    {"page_id": page_id},
+                    text("update extracted_proposals set subject_key = 'x' where id = :id"),
+                    {"id": proposal_id},
                 )
-        with pytest.raises(DBAPIError, match="source Fact append receipts are immutable"):
-            with database.session_factory.begin() as session:
-                session.execute(
-                    text("update source_fact_append_receipts set idempotency_key = 'x' where id = :id"),
-                    {"id": receipt_id},
-                )
-        with pytest.raises(DBAPIError, match="facts are append-only"):
-            with database.session_factory.begin() as session:
-                session.execute(
-                    text(
-                        "update facts set text_value = 'rewritten' where id = :fact_id"
-                    ),
-                    {"fact_id": fact_id},
-                )
-        assert _fact_rows(database.session_factory) == fact_rows_before
+        assert _fact_rows(database.session_factory) == [
+            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
+        ]
 
 
-def test_downgrade_that_would_delete_page_inventory_is_unsupported():
+def test_downgrade_that_would_delete_immutable_proposals_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -345,7 +288,7 @@ def test_downgrade_that_would_delete_page_inventory_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "PDF page inventory migration downgrade is unsupported" in completed.stderr
+    assert "immutable proposal migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
@@ -358,8 +301,8 @@ def _project_row(session_factory):
         ).one()
 
 
-def _seed_artifact_reference_release(session, project_id: int) -> None:
-    pdf_bytes = b"%PDF-1.7\nartifact release\n%%EOF"
+def _seed_legacy_release_and_artifact(session, project_id: int) -> None:
+    pdf_bytes = b"%PDF-1.7\nlegacy release\n%%EOF"
     digest = sha256(pdf_bytes).hexdigest()
     artifact_id = session.scalar(
         text(
@@ -379,46 +322,47 @@ def _seed_artifact_reference_release(session, project_id: int) -> None:
     session.execute(
         text(
             "insert into external_report_releases ("
-            "project_id, artifact_id, artifact_name, format, pdf_sha256, "
-            "evaluated_on, ruleset_version, provenance_mode, "
-            "released_by, released_by_display"
+            "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+            "evaluated_on, ruleset_version, evaluation_context_json, "
+            "provenance_mode, record_context_json, released_by, released_by_display"
             ") values ("
-            ":project_id, :artifact_id, 'artifact-backed.pdf', 'pdf', :digest, "
-            "date '2026-08-31', 'v0.4', 'all-supported-sources', "
-            "'local:artifact', 'Artifact Releaser'"
+            ":project_id, 'legacy-release.pdf', 'pdf', :pdf_bytes, :digest, "
+            "date '2026-08-31', 'v0.4', '{}'::jsonb, "
+            "'all-supported-sources', '{\"dependencies\": []}'::jsonb, "
+            "'local:legacy', 'Legacy Releaser'"
             ")"
         ),
-        {"project_id": project_id, "artifact_id": artifact_id, "digest": digest},
+        {"project_id": project_id, "pdf_bytes": pdf_bytes, "digest": digest},
     )
 
 
-def _artifact_release_row(session_factory):
+def _legacy_release_row(session_factory):
     with session_factory() as session:
         return session.execute(
             text(
                 "select artifact_id, artifact_name, pdf_bytes, pdf_sha256, "
                 "evaluation_context_json, record_context_json, released_by "
                 "from external_report_releases "
-                "where artifact_name = 'artifact-backed.pdf'"
+                "where artifact_name = 'legacy-release.pdf'"
             )
         ).one()
 
 
-def _assert_artifact_release_reader(session_factory, project_id: int) -> None:
+def _assert_legacy_release_reader(session_factory, project_id: int) -> None:
     with session_factory() as session:
         release_id = session.scalar(
             text(
                 "select id from external_report_releases "
-                "where artifact_name = 'artifact-backed.pdf'"
+                "where artifact_name = 'legacy-release.pdf'"
             )
         )
         release = retrieve_released_external_report(
             session, project_id, int(release_id)
         )
-        assert release.content_storage == "artifact"
-        assert release.artifact_id is not None
-        assert release.pdf_bytes == b"%PDF-1.7\nartifact release\n%%EOF"
-        assert release.record_context_json == {}
+        assert release.content_storage == "legacy"
+        assert release.artifact_id is None
+        assert release.pdf_bytes == b"%PDF-1.7\nlegacy release\n%%EOF"
+        assert release.record_context_json == {"dependencies": []}
         assert release.digest_is_valid is True
 
 
@@ -427,24 +371,11 @@ def _insert_artifact_reference_release(session_factory) -> None:
         project_id = session.scalar(
             text("select id from projects where slug = 'baseline-bridge'")
         )
-        source_artifact_id = session.scalar(
+        artifact_id = session.scalar(
             text(
                 "select id from external_report_artifacts "
                 "where artifact_name = 'artifact-backed.pdf'"
             )
-        )
-        artifact_id = session.scalar(
-            text(
-                "insert into external_report_artifacts ("
-                "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
-                "evaluated_on, ruleset_version, evaluation_context_json, "
-                "provenance_mode, record_context_json"
-                ") select project_id, 'post-upgrade.pdf', format, pdf_bytes, "
-                "pdf_sha256, evaluated_on, ruleset_version, evaluation_context_json, "
-                "provenance_mode, record_context_json "
-                "from external_report_artifacts where id = :artifact_id returning id"
-            ),
-            {"artifact_id": source_artifact_id},
         )
         artifact_digest = session.scalar(
             text(
@@ -459,7 +390,7 @@ def _insert_artifact_reference_release(session_factory) -> None:
                 "evaluated_on, ruleset_version, provenance_mode, "
                 "released_by, released_by_display"
                 ") values ("
-                ":project_id, :artifact_id, 'post-upgrade.pdf', 'pdf', :digest, "
+                ":project_id, :artifact_id, 'artifact-backed.pdf', 'pdf', :digest, "
                 "date '2026-08-31', 'v0.4', 'all-supported-sources', "
                 "'local:new', 'New Releaser'"
                 ") returning id"

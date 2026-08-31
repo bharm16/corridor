@@ -734,10 +734,11 @@ class Fact(Base):
             "project_id", "document_id", "id", name="uq_facts_scope_id"
         ),
         UniqueConstraint(
+            "project_id",
+            "document_id",
             "extraction_run_id",
-            "fact_type",
-            "subject_key",
-            name="uq_facts_run_type_subject",
+            "id",
+            name="uq_facts_run_scope_id",
         ),
         ForeignKeyConstraint(
             ["project_id", "document_id"],
@@ -878,6 +879,119 @@ class SourceFactAppendReceipt(Base):
     idempotency_key: Mapped[str] = mapped_column(String(160))
     content_sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExtractedProposal(Base):
+    """One immutable proposal identity grouping spine Facts by reference."""
+
+    __tablename__ = "extracted_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "extraction_run_id", "subject_key", name="uq_extracted_proposal_subject"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "document_id",
+            "extraction_run_id",
+            "id",
+            name="uq_extracted_proposal_scope_id",
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "extraction_run_id"],
+            ["extraction_runs.document_id", "extraction_runs.id"],
+            name="fk_extracted_proposal_run_document",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    extraction_run_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), unique=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    subject_key: Mapped[str] = mapped_column(Text)
+    candidate_metadata_json: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExtractionRunCandidate(Base):
+    """Immutable Candidate membership for a snapshot-free Extraction Run."""
+
+    __tablename__ = "extraction_run_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "extraction_run_id", "candidate_id", name="uq_extraction_run_candidate"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    extraction_run_id: Mapped[int] = mapped_column(
+        ForeignKey("extraction_runs.id"), index=True
+    )
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), unique=True)
+
+
+class ExtractedProposalFact(Base):
+    """One immutable Fact reference within an Extracted Proposal."""
+
+    __tablename__ = "extracted_proposal_facts"
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "fact_id", name="uq_extracted_proposal_fact"),
+        UniqueConstraint("proposal_id", "ordinal", name="uq_extracted_proposal_ordinal"),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "extraction_run_id", "proposal_id"],
+            [
+                "extracted_proposals.project_id",
+                "extracted_proposals.document_id",
+                "extracted_proposals.extraction_run_id",
+                "extracted_proposals.id",
+            ],
+            name="fk_extracted_proposal_fact_proposal_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "extraction_run_id", "fact_id"],
+            [
+                "facts.project_id",
+                "facts.document_id",
+                "facts.extraction_run_id",
+                "facts.id",
+            ],
+            name="fk_extracted_proposal_fact_fact_scope",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(BigInteger)
+    extraction_run_id: Mapped[int] = mapped_column(BigInteger)
+    proposal_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class FactDisposition(Base):
+    """One typed append-only source-reading correction edge."""
+
+    __tablename__ = "fact_dispositions"
+    __table_args__ = (
+        UniqueConstraint("predecessor_fact_id", name="uq_fact_disposition_predecessor"),
+        UniqueConstraint("successor_fact_id", name="uq_fact_disposition_successor"),
+        CheckConstraint(
+            "kind = 'source_reading_correction'", name="ck_fact_disposition_kind"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    predecessor_fact_id: Mapped[int] = mapped_column(ForeignKey("facts.id"))
+    successor_fact_id: Mapped[int] = mapped_column(ForeignKey("facts.id"))
+    kind: Mapped[str] = mapped_column(String(64))
+    recorded_by: Mapped[str] = mapped_column(String(128))
+    recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

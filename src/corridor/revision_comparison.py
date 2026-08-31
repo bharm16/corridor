@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.extraction_runs import is_completed_run
+from corridor.facts import proposal_input_snapshots
 from corridor.merge import parse_station
 from corridor.models import (
     Candidate,
@@ -571,10 +572,10 @@ def _validate_revision_pair(
 def _run_inputs(
     session: Session, document: Document, run: ExtractionRun
 ) -> list[dict[str, Any]]:
+    spine_inputs = run.candidate_inputs_json is None
     if run.candidate_inputs_json is None:
-        if run.candidate_count == 0:
-            snapshots = []
-        else:
+        snapshots = proposal_input_snapshots(session, run)
+        if run.candidate_count and not snapshots:
             raise InexactExtractionInputs(
                 f"Extraction Run {run.id} predates exact Candidate input capture; "
                 "run a fresh extraction before comparing it"
@@ -595,12 +596,16 @@ def _run_inputs(
         raise RevisionComparisonError(
             f"Extraction Run {run.id} repeats a Candidate input"
         )
+    candidate_query = select(Candidate).where(
+        Candidate.source_document_id == document.id
+    )
+    candidate_query = candidate_query.where(
+        Candidate.id.in_(snapshot_ids)
+        if spine_inputs
+        else Candidate.extraction_run_id == run.id
+    )
     candidates = session.scalars(
-        select(Candidate)
-        .where(
-            Candidate.source_document_id == document.id,
-            Candidate.extraction_run_id == run.id,
-        )
+        candidate_query
         .order_by(Candidate.id)
         .execution_options(populate_existing=True)
     ).all()

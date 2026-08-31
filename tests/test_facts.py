@@ -13,6 +13,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from corridor.db import Session, engine
 from corridor.candidates import propose
+from corridor.adjudicate import ImmutableExtractedProposal, edit_candidate
 from corridor.config import settings
 from corridor.extract_sheet import (
     PROMPT_VERSION,
@@ -24,7 +25,12 @@ from corridor.extraction_runs import (
     append_source_facts,
     record_extraction_run,
 )
-from corridor.facts import FactReplayMismatch, replay_fact
+from corridor.facts import (
+    FactReplayMismatch,
+    correct_fact,
+    proposal_input_snapshots,
+    replay_fact,
+)
 from corridor.ingest import ingest_document
 from corridor.row_accounting import RowAccounting
 from corridor.models import (
@@ -32,10 +38,14 @@ from corridor.models import (
     FactSource,
     ExtractionRun,
     Document,
+    ExtractedProposal,
+    ExtractedProposalFact,
+    FactDisposition,
     Project,
     SourceSegment,
     SourceFactAppendReceipt,
 )
+from corridor.principals import HumanPrincipal
 
 
 HEADINGS = [
@@ -115,19 +125,13 @@ def _complete_extraction(session, document, monkeypatch):
         lambda value: getattr(value, "_stored_path", None),
     )
     candidates = extract_document(session, document)
-    run = record_extraction_run(
+    result = _append_request(
         session,
         document,
-        prompt_version=PROMPT_VERSION,
-        schema_version=SCHEMA_VERSION,
-        candidate_count=len(candidates),
-        page_errors=0,
-        candidates=candidates,
-        model=None,
-        row_accounting_json=candidates.row_accounting,
-        allow_unsealed_legacy=True,
+        candidates,
+        idempotency_key=f"test:document:{document.id}",
     )
-    return run, candidates
+    return result.run, candidates
 
 
 def _append_request(session, document, candidates, **overrides):
@@ -423,6 +427,101 @@ def test_completed_native_extraction_appends_typed_stationing_facts(
         ("value_source", 1),
     ]
     assert all(not hasattr(row, "exact_text") for row in sources)
+    assert run.candidate_inputs_json is None
+    assert {candidate.extraction_run_id for candidate in _candidates} == {run.id}
+    proposals = session.scalars(select(ExtractedProposal).order_by(ExtractedProposal.id)).all()
+    assert [(row.subject_key, row.kind) for row in proposals] == [
+        ("Utility Conflicts!3", "dependency"),
+        ("Utility Conflicts!4", "dependency"),
+    ]
+    assert len(session.scalars(select(ExtractedProposalFact)).all()) == 4
+    sealed = [
+        snapshot["payload_json"]["fields"]
+        for snapshot in proposal_input_snapshots(session, run)
+    ]
+    assert sealed == [
+        {"station_from": "1149+00", "station_to": "1150+00"},
+        {"station_from": "1151+00", "station_to": "1152+00"},
+    ]
+    _candidates[0].state = "rejected"
+    _candidates[0].payload_json = {"fields": {"station_from": "drifted"}}
+    session.flush()
+    snapshots_after_live_change = proposal_input_snapshots(session, run)
+    assert snapshots_after_live_change[0]["state"] == "pending"
+    assert snapshots_after_live_change[0]["payload_json"]["fields"] == {
+        "station_from": "1149+00",
+        "station_to": "1150+00",
+    }
+
+
+def test_source_reading_correction_appends_successor_and_disposition(
+    session, project, tmp_path, monkeypatch
+):
+    path = _workbook(
+        tmp_path,
+        "correction.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    document = _ingest(session, project, path, tmp_path)
+    _complete_extraction(session, document, monkeypatch)
+    predecessor = session.scalar(select(Fact).where(Fact.fact_type == "station_from"))
+    replacement_segment = session.scalar(
+        select(SourceSegment).where(
+            SourceSegment.document_id == document.id,
+            SourceSegment.cell_range == "E3",
+        )
+    )
+
+    disposition = correct_fact(
+        session,
+        predecessor,
+        source_segment_id=replacement_segment.id,
+        principal=HumanPrincipal("local:fact-editor"),
+    )
+
+    successor = session.get(Fact, disposition.successor_fact_id)
+    assert predecessor.text_value == "1149+00"
+    assert successor.text_value == "1150+00"
+    assert disposition.predecessor_fact_id == predecessor.id
+    assert disposition.kind == "source_reading_correction"
+    assert session.scalars(select(FactDisposition)).one().id == disposition.id
+
+
+def test_new_proposals_and_correction_edges_have_no_update_path(
+    session, project, tmp_path, monkeypatch
+):
+    path = _workbook(
+        tmp_path,
+        "proposal-immutable.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    document = _ingest(session, project, path, tmp_path)
+    _complete_extraction(session, document, monkeypatch)
+    proposal = session.scalar(select(ExtractedProposal))
+    proposal.subject_key = "rewritten"
+
+    with pytest.raises(DBAPIError, match="Extracted Proposal spine is immutable"):
+        session.flush()
+
+
+def test_legacy_edit_path_refuses_new_spine_backed_proposal(
+    session, project, tmp_path, monkeypatch
+):
+    path = _workbook(
+        tmp_path,
+        "no-edit.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    document = _ingest(session, project, path, tmp_path)
+    _run, candidates = _complete_extraction(session, document, monkeypatch)
+
+    with pytest.raises(ImmutableExtractedProposal, match="append a Fact correction"):
+        edit_candidate(
+            session,
+            candidates[0],
+            {"station_from": "9999+99"},
+            principal=HumanPrincipal("local:fact-editor"),
+        )
 
 
 def test_every_stationing_fact_replays_from_its_exact_cell(
