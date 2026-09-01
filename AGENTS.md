@@ -104,7 +104,7 @@ The five canonical triage roles, each label string equal to its name. See `docs/
 
 ### Domain docs
 
-Multi-context — start with `CONTEXT-MAP.md`, then read the mapped Project Record or Corridor Operations glossary and the relevant `docs/adr/`. [`docs/adr/INDEX.md`](docs/adr/INDEX.md) says which ADR governs each domain today; [`docs/adr/README.md`](docs/adr/README.md) holds the lifecycle rules. See [the domain guide](docs/agents/domain.md).
+Multi-context — start with `CONTEXT-MAP.md`, then read the mapped Project Record or Corridor Operations glossary and the relevant `docs/adr/`. [`docs/adr/INDEX.md`](docs/adr/INDEX.md) lists the accepted decisions in force by domain; [`docs/adr/README.md`](docs/adr/README.md) holds the lifecycle rules. See [the domain guide](docs/agents/domain.md).
 
 ### Research before terminology
 

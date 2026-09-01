@@ -142,40 +142,7 @@ def test_every_adr_declares_machine_readable_status():
         lines = path.read_text().splitlines()
         if len(lines) < 3 or lines[0] != "---" or not lines[1].startswith("status: "):
             problems.append(f"{path.name}: frontmatter must open with status")
-    adrs = adr_index.load_adrs()
-    for adr in adrs.values():
-        if not adr_index.STATUS_PATTERN.match(adr.status):
-            problems.append(f"{adr.ref}: invalid status {adr.status!r}")
-        if adr.scope not in adr_index.SCOPES:
-            problems.append(f"{adr.ref}: invalid scope {adr.scope!r}")
-        if not adr.domain:
-            problems.append(f"{adr.ref}: missing domain")
-        for successor in adr.superseded_by:
-            target = adrs.get(successor[4:])
-            if target is None:
-                problems.append(f"{adr.ref}: superseded by missing {successor}")
-            elif adr.ref not in target.supersedes:
-                problems.append(f"{successor} must list supersedes: {adr.ref}")
-        for predecessor in adr.supersedes:
-            target = adrs.get(predecessor[4:])
-            if target is None:
-                problems.append(f"{adr.ref}: supersedes missing {predecessor}")
-            elif adr.ref not in target.superseded_by:
-                problems.append(f"{predecessor} must carry status superseded by {adr.ref}")
-        for predecessor in adr.amends:
-            target = adrs.get(predecessor[4:])
-            if target is None:
-                problems.append(f"{adr.ref}: amends missing {predecessor}")
-            elif adr.ref not in target.amended_by:
-                problems.append(f"{predecessor} must list amended_by: {adr.ref}")
-        for successor in adr.amended_by:
-            target = adrs.get(successor[4:])
-            if target is None:
-                problems.append(f"{adr.ref}: amended_by missing {successor}")
-            elif adr.ref not in target.amends:
-                problems.append(f"{successor} must list amends: {adr.ref}")
-        if adr.status == "deprecated" and (adr.superseded_by or adr.supersedes):
-            problems.append(f"{adr.ref}: deprecated ADRs name no successor")
+    problems.extend(adr_index.validate(adr_index.load_adrs()))
 
     assert problems == []
 

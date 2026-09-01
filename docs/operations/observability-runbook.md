@@ -12,6 +12,10 @@ application container, staging or production environment, inbound-mail
 provider, or outbound email adapter exists. Every metric name below is the
 name the implementation must use so dashboards and alerts can be written once.
 
+## Label discipline
+
+Metric labels are low-cardinality only: `customer`, `project`, `connector`, `policy`, `field`, `stage`, `role`, `outcome`, `reason`. No per-event, per-document, per-message, or per-actor label is ever a metric label; those belong in the structured log line under the correlation identifiers. Events outside a customer or project context (control-plane, migration, maintenance runs, ADR-0083) carry `customer="control-plane"` and no `project` label.
+
 ## Correlation
 
 Every log line carries `environment`, `customer`, `project`, `request_id` (web)
@@ -32,7 +36,12 @@ or `job_id` (worker), and the ADR-0079 run provenance when inside a run:
 | `corridor_policy_failures_total` | counter | policy | Policy runs that ended in a Processing Failure. |
 | `corridor_delta_outcomes_total` | counter | delta_type, outcome | Resolve Delta outcomes: accepted, edited, rejected, deferred (ADR-0076). |
 | `corridor_delta_open_age_seconds` | histogram | delta_type | Age of unresolved proposed deltas at resolution. |
-| `corridor_false_write_total` | counter | policy, field | Automatic projections later reversed by a human (ADR-0075 false-write rate). |
+| `corridor_false_write_total` | counter | policy, field | Automatic projections a person later reversed **as a confirmed policy error**: the source did not say what the policy wrote. A reversal because newer evidence arrived, or a human correction of a human decision, is not a false write and is counted under `corridor_delta_outcomes_total{outcome="reversed_new_evidence"}` (ADR-0075, ADR-0083). |
+| `corridor_source_to_decision_latency_seconds` | histogram | stage | Elapsed time per stage: arrival→capture, capture→delta, delta→decision (pilot latency thresholds). |
+| `corridor_baseline_adoption_seconds` | histogram | importer | Wall time from upload to adopted revision; `corridor_export_seconds{format}` for the customer-format export. |
+| `corridor_operator_minutes_total` | counter | customer, project, role | Minutes logged by role: coordinator (review, resolution), corridor_operations (setup, triage, connector maintenance). Entered by the person; the pilot's time criteria read this. |
+| `corridor_connector_last_success_age_seconds` | gauge | connector | Seconds since the last successful checkpoint; completeness alarm input. |
+| `corridor_report_coverage_gap` | gauge | customer, project | Sources not read before a released report, by cause; shown on the report itself. |
 | `corridor_report_release_failures_total` | counter | customer, project, reason | Report generation or release that did not seal an artifact (ADR-0040). |
 | `corridor_disposition_holds_active` | gauge | customer | Active legal holds (ADR-0080). |
 

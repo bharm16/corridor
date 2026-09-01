@@ -57,25 +57,43 @@ migration: what is still unresolved, in one sentence
 
 - `status`: exactly one of `proposed`, `accepted`, `deprecated`, or
   `superseded by ADR-NNNN` (several successors joined with ` and `). A
-  superseded ADR cannot also be deprecated; a deprecated one names no
-  successor.
+  superseded ADR cannot also be deprecated. A deprecated ADR names no
+  successor through its status; it may truthfully keep a `supersedes` list
+  as history. A proposed ADR governs nothing and may not list `supersedes`
+  until it is accepted; no ADR may be superseded by a proposed one.
 - `domain`: the decision area the index groups by (`product`,
   `project-record`, `record-inclusion`, `extraction`,
   `supporting-documentation`, `human-work`, `reports`, `operations`,
   `intake`, `retention`, `testing`, `terminology`, `migration`).
 - `scope`: `current product`, `optional module`, `historical`, or `future`.
-  A superseded ADR is `historical`. An accepted ADR whose expansion is
-  frozen (ADR-0075) is `optional module`.
+  A superseded ADR must be `historical`. An accepted ADR whose one-time
+  work is complete may also be `historical`; either way `historical`
+  excludes it from the accepted set in the index. An accepted ADR whose
+  expansion is frozen (ADR-0075) is `optional module`.
 - `supersedes`: reciprocal of a successor's `superseded by` status.
 - `amends` / `amended_by`: a non-total amendment, declared on both sides. The
   successor writes `amends`; the predecessor writes `amended_by`. The body of
   the amended ADR is not rewritten.
 - `migration`: present only while something the ADR requires is unbuilt.
+  It is implementation state, not decision content; if it goes stale
+  routinely it moves to the issue tracker and this key is retired.
 
-The architecture test validates that every ADR has one valid status, every
-superseded ADR names an existing successor that lists it under `supersedes`,
-every `amends` has its reciprocal `amended_by`, the supersession and
-amendment graph has no cycles, and `INDEX.md` matches the frontmatter.
+No other key is permitted. The architecture test (`make check`, a required
+status on every pull request) validates that every ADR has one valid status,
+a known domain and scope, a well-formed filename and a unique number, only
+known keys, well-formed references to existing ADRs, every superseded ADR
+names an existing accepted successor that lists it under `supersedes`, every
+`amends` has its reciprocal `amended_by`, the supersession and amendment
+graph has no cycles, and `INDEX.md` matches the frontmatter.
+
+## Authority
+
+ADR numbers are chronology, not authority. The index never infers that a
+later ADR governs an earlier one. The set of decisions in force is every
+accepted ADR that is neither superseded nor `historical`; where two touch one
+question, the `amends` relation says which clauses moved. A "governs" field
+does not exist; if one is ever needed it is explicit metadata with a defined
+meaning, never a number comparison.
 
 ## Writing one
 

@@ -8,6 +8,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check:
+    # Fast source and architecture checks, including the ADR lifecycle and
+    # index tests; required as a status on every pull request.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: make check
+
   pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 20

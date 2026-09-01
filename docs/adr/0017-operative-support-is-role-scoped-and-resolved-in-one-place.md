@@ -4,6 +4,7 @@ domain: supporting-documentation
 scope: current product
 amended_by:
   - ADR-0077
+  - ADR-0082
 ---
 
 # Supporting documentation in use is selected by purpose and resolved in one place

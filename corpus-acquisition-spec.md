@@ -115,7 +115,7 @@ Per-state mechanics — statutes, portals, timelines, fees, and whether employee
 
 ## 6. Synthetic scaffolding
 
-`phase-1-roadmap.md` rule 2 permits synthetic fixtures to exercise code paths and forbids them from contributing to any quality claim. That boundary is **enforced structurally, not by discipline**:
+`docs/history/phase-1-roadmap-2026-08.md` (historical) rule 2 permits synthetic fixtures to exercise code paths and forbids them from contributing to any quality claim. That boundary is **enforced structurally, not by discipline**:
 
 - Synthetic documents belong to a project with `is_synthetic = true`.
 - `make eval` refuses to run against a synthetic project.

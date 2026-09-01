@@ -1,14 +1,15 @@
 ---
-status: accepted
+status: superseded by ADR-0082
 domain: supporting-documentation
-scope: current product
+scope: historical
 amends:
   - ADR-0003
   - ADR-0017
-migration: locator_validation_status and semantic_support_status do not exist yet; EvidenceLink.verified is still the only field and is still shown to customers as "verified".
 ---
 
 # Locator validation and semantic support are separate evidence layers
+
+> **Superseded by [ADR-0082](0082-provenance-follows-the-value-class-and-support-is-a-relation.md), 2026-09-01.** The four-layer lineage below was required for every value; it fits only source-backed facts, and semantic support belongs on the proposition-to-source relation, not on a passage.
 
 **Amends ADR-0003 and ADR-0017.**
 

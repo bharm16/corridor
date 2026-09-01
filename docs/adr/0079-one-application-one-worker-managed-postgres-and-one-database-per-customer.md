@@ -9,6 +9,8 @@ amends:
   - ADR-0050
   - ADR-0068
   - ADR-0073
+amended_by:
+  - ADR-0083
 migration: no application container, worker container, staging or production environment, object-storage backend, structured logging, or alerting exists yet; runs do not record environment, customer, purpose, or authoritative status.
 ---
 

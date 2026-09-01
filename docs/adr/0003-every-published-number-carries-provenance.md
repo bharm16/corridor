@@ -5,6 +5,7 @@ scope: current product
 amended_by:
   - ADR-0013
   - ADR-0077
+  - ADR-0082
 ---
 
 # Every published number has source or calculation provenance
