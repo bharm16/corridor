@@ -40,10 +40,11 @@ TOKEN_LAYER_HEAD = "3f4a5b6c7d8e"
 HUMAN_DECISION_HEAD = "4a5b6c7d8e9f"
 VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
 STATEMENT_TIMING_HEAD = "6c7d8e9f0a12"
-PREDECESSOR_HEAD = STATEMENT_TIMING_HEAD
-CURRENT_HEAD = "7d8e9f0a1b23"
+COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
+PREDECESSOR_HEAD = COORDINATE_COMMAND_HEAD
+CURRENT_HEAD = "8e9f0a1b2c34"
 EXPECTED_SCHEMA_SHA256 = (
-    "bdcdf08c69d738ff71821a3ca09bc042a0ff65ca591f0820ebf92ae50674d977"
+    "7cc0cdc6719d06fe5f56a924326dbcae09280028f2c8e222c3ed6fcdd41da7aa"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -71,7 +72,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{HUMAN_DECISION_HEAD}_add_human_fact_decision.py",
         f"{VERBAL_SEGMENT_HEAD}_add_recorded_verbal_segment.py",
         f"{STATEMENT_TIMING_HEAD}_add_statement_timing_fact.py",
-        f"{CURRENT_HEAD}_add_coordinate_statement_command.py",
+        f"{COORDINATE_COMMAND_HEAD}_add_coordinate_statement_command.py",
+        f"{CURRENT_HEAD}_add_decision_dispositions_and_support_designation.py",
     }
 
 
@@ -139,8 +141,10 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        # The coordinate_statement migration adds that command to the
-        # record_human_fact_decision allow-list.
+        # The disposition migration adds the decision disposition column, the
+        # partial one-effective-decision-per-fact unique, the compensating
+        # restore_do_not_add command, the relationship fact type, and the
+        # suppression-aware current record view.
         with database.session_factory() as session:
             definition = session.scalar(
                 text(
@@ -148,7 +152,37 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
                     "where proname = 'record_human_fact_decision'"
                 )
             )
-            assert "coordinate_statement" in definition
+            assert "restore_do_not_add" in definition
+            assert "p_disposition" in definition
+            disposition_default = session.scalar(
+                text(
+                    "select column_default from information_schema.columns "
+                    "where table_name = 'fact_decisions' "
+                    "and column_name = 'disposition'"
+                )
+            )
+            assert disposition_default == "'include'::character varying"
+            partial_unique = session.scalar(
+                text(
+                    "select pg_get_indexdef(indexrelid) from pg_index "
+                    "join pg_class on pg_class.oid = indexrelid "
+                    "where relname = 'uq_fact_decision_fact'"
+                )
+            )
+            assert "WHERE (superseded_by IS NULL)" in partial_unique
+            type_check = session.scalar(
+                text(
+                    "select pg_get_constraintdef(oid) from pg_constraint "
+                    "where conname = 'ck_facts_type'"
+                )
+            )
+            assert "supporting_documentation_in_use" in type_check
+            view_definition = session.scalar(
+                text(
+                    "select pg_get_viewdef('current_project_record'::regclass)"
+                )
+            )
+            assert "do_not_add" in view_definition
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -312,7 +346,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_drop_the_coordinate_statement_command_is_unsupported():
+def test_downgrade_that_would_drop_the_decision_dispositions_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -325,7 +359,7 @@ def test_downgrade_that_would_drop_the_coordinate_statement_command_is_unsupport
 
     assert completed.returncode != 0
     assert (
-        "coordinate_statement command migration downgrade is unsupported"
+        "decision disposition migration downgrade is unsupported"
         in completed.stderr
     )
 

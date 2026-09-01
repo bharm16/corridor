@@ -95,7 +95,10 @@ FACT_TYPE_CONTRACTS = {
                 else "non_empty_replay_exact"
             ),
             current_value_rule="latest_effective_single_value",
-            inclusion_rule="verified_mapping_cell_policy",
+            # A cell value is settled by the automatic policy; a Discrepancy
+            # Resolution settles the same field by a Human Record Decision
+            # over an already-observed fact of the matching type (#451).
+            inclusion_rule="verified_mapping_cell_policy_else_human_record_decision",
         )
         for name in STRUCTURED_TEXT_FACT_TYPES
     },
@@ -109,7 +112,7 @@ FACT_TYPE_CONTRACTS = {
             required_roles=frozenset({"value_source"}),
             validation_rule="iso_calendar_date_replay_exact",
             current_value_rule="latest_effective_single_value",
-            inclusion_rule="verified_mapping_cell_policy",
+            inclusion_rule="verified_mapping_cell_policy_else_human_record_decision",
         )
         for name in STRUCTURED_DATE_FACT_TYPES
     },
@@ -162,6 +165,20 @@ FACT_TYPE_CONTRACTS = {
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source"}),
         validation_rule="typed_statement_timing_set",
+        current_value_rule="human_decision_effectiveness",
+        inclusion_rule="human_record_decision",
+    ),
+    # A relationship between one Project Record subject and one immutable
+    # document revision (ADR-0074 stage 3): the identity is the registered
+    # document row itself, so the fact needs no source segment to replay.
+    "supporting_documentation_in_use": FactTypeContract(
+        value_class="document_revision",
+        subject_kind="record_subject",
+        transformation="supporting_document_revision_v1",
+        accepted_segment_kinds=frozenset(),
+        automatic_segment_kinds=frozenset(),
+        required_roles=frozenset(),
+        validation_rule="registered_document_revision",
         current_value_rule="human_decision_effectiveness",
         inclusion_rule="human_record_decision",
     ),

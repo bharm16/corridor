@@ -985,6 +985,67 @@ def _statement_timing_structured(
     }
 
 
+def append_supporting_documentation_fact(
+    session: Session,
+    *,
+    project_id: int,
+    subject_key: str,
+    document_id: int,
+    recorded_by: str,
+) -> Fact:
+    """Append or reuse the relationship Fact for one supporting document.
+
+    Supporting Documentation in Use relates one Project Record subject to one
+    immutable document revision (ADR-0074 stage 3).  The registered document
+    row is the identity — there is no segment to replay — and the digest keeps
+    one relationship Fact per (subject, document): a re-designation after a
+    resolution re-decides the same Fact rather than rewriting a set.
+    """
+
+    if not subject_key.strip():
+        raise FactValidationError("supporting documentation needs a record subject")
+    if not recorded_by.strip():
+        raise FactValidationError("supporting documentation needs a recorder")
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project_id:
+        raise FactValidationError(
+            "supporting documentation needs a registered project document"
+        )
+    digest = _fact_digest(
+        run_identity={"document_value_id": document_id},
+        fact_type="supporting_documentation_in_use",
+        subject_kind="record_subject",
+        subject_key=subject_key,
+        text_value=None,
+        source_links=(),
+    )
+    existing = session.scalar(
+        select(Fact).where(Fact.content_sha256 == digest)
+    )
+    if existing is not None:
+        return existing
+    fact = Fact(
+        project_id=project_id,
+        document_id=None,
+        extraction_run_id=None,
+        fact_type="supporting_documentation_in_use",
+        subject_kind="record_subject",
+        subject_key=subject_key,
+        text_value=None,
+        date_value=None,
+        date_range_start=None,
+        date_range_end=None,
+        external_org_value_id=None,
+        document_value_id=document_id,
+        transformation="supporting_document_revision_v1",
+        recorded_by=recorded_by,
+        content_sha256=digest,
+    )
+    session.add(fact)
+    session.flush([fact])
+    return fact
+
+
 def append_extracted_proposals(
     session: Session,
     document: Document,

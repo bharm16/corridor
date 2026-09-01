@@ -135,6 +135,16 @@ def read_project_record_as_of_revision(
             "where decisions.project_id = :project_id "
             "and decisions.revision_id <= :revision_id "
             "and (successor.id is null or successor.revision_id > :revision_id) "
+            "and decisions.disposition = 'include' "
+            "and not exists ("
+            "  select 1 from fact_decisions suppression "
+            "  left join fact_decisions lifted on lifted.id = suppression.superseded_by "
+            "  where suppression.project_id = decisions.project_id "
+            "  and suppression.subject_key = decisions.subject_key "
+            "  and suppression.fact_type = 'statement_wording' "
+            "  and suppression.disposition = 'do_not_add' "
+            "  and suppression.revision_id <= :revision_id "
+            "  and (lifted.id is null or lifted.revision_id > :revision_id)) "
             "order by candidates.merged_into, decisions.fact_type"
         ),
         {"project_id": project_id, "revision_id": revision_id},

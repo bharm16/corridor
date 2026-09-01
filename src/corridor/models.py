@@ -825,7 +825,8 @@ class Fact(Base):
         CheckConstraint(
             f"fact_type in ({_SINGLE_VALUED_FACT_TYPES_SQL}, "
             f"{_STRUCTURED_SATELLITE_FACT_TYPES_SQL}, "
-            "'statement_wording', 'statement_timing')",
+            "'statement_wording', 'statement_timing', "
+            "'supporting_documentation_in_use')",
             name="ck_facts_type",
         ),
         CheckConstraint(
@@ -836,15 +837,20 @@ class Fact(Base):
             "or (fact_type in "
             "('statement_wording', 'statement_timing', 'applies_to') "
             "and subject_kind = 'statement_candidate' "
+            "and length(trim(subject_key)) > 0) "
+            "or (fact_type = 'supporting_documentation_in_use' "
+            "and subject_kind = 'record_subject' "
             "and length(trim(subject_key)) > 0)",
             name="ck_facts_subject",
         ),
         CheckConstraint(
             "(document_id is not null and extraction_run_id is not null "
-            "and fact_type <> 'statement_timing') "
+            "and fact_type not in "
+            "('statement_timing', 'supporting_documentation_in_use')) "
             "or (document_id is null and extraction_run_id is null "
             "and fact_type in "
-            "('statement_wording', 'statement_timing', 'applies_to'))",
+            "('statement_wording', 'statement_timing', 'applies_to', "
+            "'supporting_documentation_in_use'))",
             name="ck_facts_source_binding",
         ),
         CheckConstraint(
@@ -877,7 +883,13 @@ class Fact(Base):
             "and date_value is null and date_range_start is null "
             "and date_range_end is null and external_org_value_id is null "
             "and document_value_id is null "
-            "and transformation = 'typed_statement_timing_v1')",
+            "and transformation = 'typed_statement_timing_v1') or "
+            "(fact_type = 'supporting_documentation_in_use' "
+            "and text_value is null and date_value is null "
+            "and date_range_start is null and date_range_end is null "
+            "and external_org_value_id is null "
+            "and document_value_id is not null "
+            "and transformation = 'supporting_document_revision_v1')",
             name="ck_facts_typed_value",
         ),
         CheckConstraint(
@@ -1305,7 +1317,19 @@ class FactDecision(Base):
 
     __tablename__ = "fact_decisions"
     __table_args__ = (
-        UniqueConstraint("fact_id", name="uq_fact_decision_fact"),
+        # One EFFECTIVE decision per fact: a compensating Human Record
+        # Decision re-decides the same fact after its predecessor is
+        # superseded (ADR-0074 stage 3), so uniqueness is partial.
+        Index(
+            "uq_fact_decision_fact",
+            "fact_id",
+            unique=True,
+            postgresql_where=text("superseded_by is null"),
+        ),
+        CheckConstraint(
+            "disposition in ('include', 'do_not_add', 'restore')",
+            name="ck_fact_decision_disposition",
+        ),
         Index(
             "uq_fact_decision_effective",
             "project_id",
@@ -1325,6 +1349,13 @@ class FactDecision(Base):
     subject_key: Mapped[str] = mapped_column(Text)
     fact_type: Mapped[str] = mapped_column(String(64))
     revision_id: Mapped[int] = mapped_column(ForeignKey("project_record_revisions.id"))
+    # What the Project Record does with the fact: 'include' projects it,
+    # 'do_not_add' suppresses the statement's facts, 'restore' compensates a
+    # predecessor and contributes nothing itself (ADR-0074 stage 3). Readers
+    # branch on this, never on the revision's command name.
+    disposition: Mapped[str] = mapped_column(
+        String(32), server_default=text("'include'")
+    )
     superseded_by: Mapped[int | None] = mapped_column(
         ForeignKey("fact_decisions.id", deferrable=True, initially="DEFERRED")
     )
