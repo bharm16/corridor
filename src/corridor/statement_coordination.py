@@ -31,7 +31,9 @@ from corridor import audit, notifications
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.statement_spine import (
     correct_statement_scope_on_spine,
+    mark_statement_do_not_add_on_spine,
     record_cited_statement_on_spine,
+    restore_statement_do_not_add_on_spine,
 )
 from corridor.external_statements import (
     CitedStatementEvidence,
@@ -1725,6 +1727,12 @@ def mark_statement_not_relevant(
                 recorded_by=recorder.subject,
             )
             session.flush()
+            mark_statement_do_not_add_on_spine(
+                session,
+                candidate=candidate,
+                recorder=recorder,
+                disposition_id=disposition.id,
+            )
     except StaleStatementCoordination:
         raise
     except (ValueError, IntegrityError) as exc:
@@ -1812,6 +1820,12 @@ def restore_statement_not_relevant(
             candidate.state = "pending"
             candidate.adjudicated_at = None
             session.flush()
+            restore_statement_do_not_add_on_spine(
+                session,
+                candidate=candidate,
+                recorder=recorder,
+                reversal_id=reversal.id,
+            )
     except StaleStatementCoordination:
         raise
     except (ValueError, IntegrityError) as exc:

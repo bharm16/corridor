@@ -24,6 +24,7 @@ from corridor.facts import (
     append_recorded_statement_wording_fact,
 )
 from corridor.models import (
+    Candidate,
     CommitmentScopeMembership,
     DependencyEvent,
     Fact,
@@ -136,6 +137,129 @@ def correct_statement_scope_on_spine(
         command_type=command_type,
         idempotency_key=f"correct-statement-scope:{scope_decision_id}",
         expected_predecessor=predecessor,
+    )
+
+
+def mark_statement_do_not_add_on_spine(
+    session: Session,
+    *,
+    candidate: Candidate,
+    recorder: HumanPrincipal,
+    disposition_id: int,
+) -> None:
+    """Record the Do Not Add disposition for one statement on the spine.
+
+    Do Not Add is a statement-level record disposition: the decision's
+    ``do_not_add`` disposition suppresses the subject's Project Record facts
+    while it stands (ADR-0074 stage 3). The statement's ``statement_wording``
+    fact anchors its Commitment Lineage; a legacy statement without one is
+    materialized as part of this human save when its passage resolves, and
+    stays legacy-only otherwise — never guessed.
+    """
+
+    fact = _candidate_wording_fact(session, candidate)
+    if fact is None:
+        fact = _materialize_candidate_wording_fact(session, candidate, recorder)
+    if fact is None:
+        return
+    predecessor = current_decision_id(
+        session, candidate.project_id, fact.subject_key, "statement_wording"
+    )
+    record_human_fact_decision(
+        session,
+        fact,
+        principal=recorder,
+        command_type="mark_do_not_add",
+        disposition="do_not_add",
+        idempotency_key=f"mark-do-not-add:{disposition_id}",
+        expected_predecessor=predecessor,
+    )
+
+
+def restore_statement_do_not_add_on_spine(
+    session: Session,
+    *,
+    candidate: Candidate,
+    recorder: HumanPrincipal,
+    reversal_id: int,
+) -> None:
+    """Compensate an active Do Not Add decision on the statement's lineage.
+
+    The compensating decision re-decides the same wording anchor with the
+    ``restore`` disposition, restoring the predecessor state without implying
+    inclusion (ADR-0074 stage 3). A statement that never reached the spine
+    stays legacy-only.
+    """
+
+    subject_key = f"candidate:{candidate.id}"
+    current = session.scalar(
+        select(FactDecision).where(
+            FactDecision.project_id == candidate.project_id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == "statement_wording",
+            FactDecision.superseded_by.is_(None),
+        )
+    )
+    if current is None or current.disposition != "do_not_add":
+        return
+    fact = session.get(Fact, current.fact_id)
+    record_human_fact_decision(
+        session,
+        fact,
+        principal=recorder,
+        command_type="restore_do_not_add",
+        disposition="restore",
+        idempotency_key=f"restore-do-not-add:{reversal_id}",
+        expected_predecessor=current.id,
+    )
+
+
+def _candidate_wording_fact(session: Session, candidate: Candidate) -> Fact | None:
+    return session.scalar(
+        select(Fact)
+        .where(
+            Fact.project_id == candidate.project_id,
+            Fact.subject_key == f"candidate:{candidate.id}",
+            Fact.fact_type == "statement_wording",
+        )
+        .order_by(Fact.id.desc())
+        .limit(1)
+    )
+
+
+def _materialize_candidate_wording_fact(
+    session: Session, candidate: Candidate, recorder: HumanPrincipal
+) -> Fact | None:
+    """Forward-write the wording anchor for a legacy statement, if resolvable."""
+
+    fields = (candidate.payload_json or {}).get("fields") or {}
+    description = fields.get("description")
+    if not isinstance(description, str) or not description.strip():
+        return None
+    citations = (candidate.payload_json or {}).get("citations") or []
+    evidence = None
+    if len(citations) == 1 and isinstance(citations[0], dict):
+        citation = citations[0]
+        page_no = citation.get("page")
+        document_id = citation.get("document_id")
+        if (
+            citation.get("verified") is True
+            and isinstance(document_id, int)
+            and not isinstance(page_no, bool)
+            and isinstance(page_no, int)
+        ):
+            evidence = CitedStatementEvidence(document_id, page_no, description)
+    segment = _cited_passage_segment(
+        session, candidate.project_id, candidate.id, description, evidence
+    )
+    if segment is None:
+        return None
+    return append_recorded_statement_wording_fact(
+        session,
+        segment=segment,
+        subject_key=f"candidate:{candidate.id}",
+        description=description,
+        recorded_by=recorder.subject,
     )
 
 

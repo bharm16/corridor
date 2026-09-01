@@ -9,6 +9,7 @@ import hashlib
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy import text as text_sql
 
 from corridor import audit
 from corridor.db import Session, engine
@@ -1850,6 +1851,86 @@ def test_not_relevant_is_reasoned_reversible_and_never_creates_a_statement_or_pl
     assert states[1].predecessor_state_id == states[0].id
     assert states[1].ruling_type == "statement_coordination_reversal"
     assert states[1].ruling_id == reversal.id
+
+
+def test_not_relevant_dual_writes_the_do_not_add_decision_on_the_spine(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan discussed traffic control in the project meeting."
+    document = _document(session, project, "dna-spine.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "mention", "description": quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, quote)
+    subject_key = f"candidate:{candidate.id}"
+
+    disposition = mark_statement_not_relevant(
+        session,
+        candidate.id,
+        reason="outside_project_scope",
+        confirmed=True,
+        principal=RECORDER,
+    )
+
+    marked = session.scalars(
+        select(FactDecision).where(
+            FactDecision.project_id == project.id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == "statement_wording",
+        )
+    ).one()
+    assert marked.disposition == "do_not_add"
+    assert marked.superseded_by is None
+    revision = session.get(ProjectRecordRevision, marked.revision_id)
+    assert revision.command_type == "mark_do_not_add"
+    assert revision.human_principal == RECORDER.subject
+    assert revision.released_policy is None
+    # A do_not_add decision never projects into the current record.
+    assert session.execute(
+        text_sql(
+            "select count(*) from current_project_record "
+            "where project_id = :project_id and subject_key = :subject_key"
+        ),
+        {"project_id": project.id, "subject_key": subject_key},
+    ).scalar() == 0
+
+    reversal = restore_statement_not_relevant(
+        session, disposition.id, principal=RECORDER
+    )
+
+    decisions = session.scalars(
+        select(FactDecision)
+        .where(
+            FactDecision.project_id == project.id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == "statement_wording",
+        )
+        .order_by(FactDecision.id)
+    ).all()
+    assert [decision.disposition for decision in decisions] == [
+        "do_not_add",
+        "restore",
+    ]
+    # The compensating decision re-decides the same wording anchor fact.
+    assert decisions[0].fact_id == decisions[1].fact_id
+    assert decisions[0].superseded_by == decisions[1].id
+    assert decisions[1].superseded_by is None
+    restore_revision = session.get(ProjectRecordRevision, decisions[1].revision_id)
+    assert restore_revision.command_type == "restore_do_not_add"
+    assert restore_revision.human_principal == RECORDER.subject
+    # Restoring lifts the suppression without implying inclusion.
+    assert session.execute(
+        text_sql(
+            "select count(*) from current_project_record "
+            "where project_id = :project_id and subject_key = :subject_key"
+        ),
+        {"project_id": project.id, "subject_key": subject_key},
+    ).scalar() == 0
+    assert reversal.candidate_id == candidate.id
 
 
 def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
