@@ -29,28 +29,32 @@ Done in the ADR-0082/0083 change unless marked open.
 4. #508: glossary entries for Source Fact, Adopt Baseline, Proposed Delta, Resolve Delta.
 5. ADR-0078/0080/0081 corrections recorded in ADR-0083.
 
-**Exit:** the Phase 0 issues (see #459) are closed with this change merged.
+6. Implementation-readiness corrections (the [2026-09-01 readiness review](docs/research/implementation-readiness-review-2026-09-01.md)): main restored to green (#516); amended issues rewritten into single contracts; #510 corrected and split; pilot sampling fixed; contributor docs mark the current pipeline transitional.
+
+**Exit:** #505, #507, #508, #516 closed and this change merged. Server-side status enforcement (#506) stays unavailable on this plan; the manual all-green merge rule in AGENTS.md applies.
 
 ## Phase 1 — secure the design partner and deploy the safe shell
 
 1. #428: validate the consultant-first buyer, budget, sponsor, procurement, and pricing hypotheses with real discovery.
 2. #461: resolve PyMuPDF licensing before any external deployment that uses it.
-3. #487 storage interface and object storage; #490 untrusted-intake hardening; #491 structured logs and metrics; #489 design-partner shadow environment.
+3. #492 authority boundary first (the first substantive code PR: runtime, source-append, and record-decision roles; the database refuses direct application-role writes to accepted authority). Then #487 storage interface and object storage; #490 untrusted-intake hardening (real scanner or a named, time-bounded risk acceptance before external data); #491 structured logs and metrics; #489 design-partner shadow environment, which activates customer data only after the licensing, intake-security, identity, disposition, and customer-data governance gates.
 4. #496 pull connector and normalized SourceEnvelope; #511 project-bound push intake, built only for channels the partner needs.
-5. #503 pilot and enterprise identity, authorization, and deprovisioning; #514 customer-environment disposition, legal hold, and backup-expiration contract before external pilot data.
+5. #503 pilot and enterprise identity, authorization, and deprovisioning; #514 customer-environment disposition, legal hold, and backup-expiration contract; #522 customer-data and model-provider governance gate. All three precede live customer data in #489.
 
 **Exit:** a staging environment with one customer database, backups restored once, intake hardened, and one partner's connector registered.
 
 ## Phase 2 — build the paid vertical slice on the spine
 
-1. #509 Adopt Baseline: preview and atomically import one customer UCM or system export.
-2. #510 Proposed Delta and Resolve Delta: the canonical backend lifecycle.
+1. #509 Adopt Baseline: preview and atomically import one customer UCM or system export (accepted-record writer blocked by #492).
+2. #510 Proposed Delta and Resolve Delta, split into #518 (Proposed Delta identity and lifecycle), #519 (Resolve Delta commands, blocked by #492), and #520 (baseline/delta operating mode: once a project has an adopted baseline, the legacy admission, structured-cell inclusion, event admission, and schedule paths may capture Source Facts and create Proposed Deltas but may not replace accepted values).
 3. #450 schedule source, #455 email source, #456 minutes source, each only for the partner's source classes.
 4. #494 change inbox rebuilt around Proposed Delta.
 5. #495 customer-format UCM export from the adopted native workbook.
 6. #425 pilot chase list from unresolved deltas and current Follow-up Plans.
 
-**Exit:** the slice runs end to end on one partner project with the partner's own workbook and one connected source.
+**Exit:** the slice runs end to end on one partner project with the partner's own workbook and one connected source, and the adopted project runs in baseline/delta operating mode (no legacy automatic accepted-value update).
+
+Recorded Verbal Statements are outside the gated pilot source population until #512 ships; they remain available as legacy-compatible context (pilot criteria, source classes).
 
 ## Phase 3 — run the shadow pilot
 

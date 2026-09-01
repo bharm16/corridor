@@ -20,6 +20,13 @@ expansion areas.
 
 The first paid slice is sequenced in [roadmap.md](roadmap.md); the measures
 it is judged by are in [docs/pilot-success-criteria.md](docs/pilot-success-criteria.md).
+
+**Implementation status.** The baseline-plus-delta target is accepted
+architecture. Adopt Baseline (#509) and Proposed Delta (#510) are not yet
+implemented. The current admission pipeline (`make admission`, structured-cell
+automatic inclusion, one-address email routing) remains transitional and must
+not be used as the authority model for a customer pilot; see the transitional
+section of [AGENTS.md](AGENTS.md).
 The buyer named in ADR-0075 is a provisional design-partner target pending
 discovery ([ADR-0083](docs/adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md)).
 
@@ -66,10 +73,8 @@ establish Contract Acceptance.
 | | |
 |---|---|
 | [`CONTEXT-MAP.md`](CONTEXT-MAP.md) | Domain contexts and their canonical vocabulary. |
-| [`v0-build-spec.md`](v0-build-spec.md) | Implementation detail for M0-M5 |
-| [`corpus-acquisition-spec.md`](corpus-acquisition-spec.md) | Document assembly; runs in parallel from week 0 |
 | [`roadmap.md`](roadmap.md) | Current phases, exits, and the frozen list |
-| [`docs/history/phase-1-roadmap-2026-08.md`](docs/history/phase-1-roadmap-2026-08.md) | Historical Phase 1 (M0–M9) roadmap, closed 2026-09-01 |
-| [`docs/adr/`](docs/adr) | Decisions with lasting consequences; [`docs/adr/INDEX.md`](docs/adr/INDEX.md) lists which govern today |
+| [`docs/history/`](docs/history) | Historical Phase 1 roadmap, v0 build spec, and corpus spec, closed 2026-09-01; not implementation authority |
+| [`docs/adr/`](docs/adr) | Decisions with lasting consequences; [`docs/adr/INDEX.md`](docs/adr/INDEX.md) lists the accepted decisions in force |
 | [`docs/pilot-success-criteria.md`](docs/pilot-success-criteria.md) | Temporary validation gate for the first paid slice |
 | [`docs/operations/observability-runbook.md`](docs/operations/observability-runbook.md) | Metrics, alerts, escalation, runbooks |

@@ -1,4 +1,6 @@
-# Corpus Acquisition Spec
+# Historical corpus acquisition spec — not current sourcing authority
+
+> **Historical document, closed 2026-09-01.** This planned the public-records corpus for the Phase 1 readiness ledger. Public-records acquisition is no longer the critical path (#7 and #151 closed); the first paid slice starts from a design partner's own UCM and connected mailbox or folder (ADR-0075, ADR-0078). The corpus manifest, lock file, and synthetic-fixture rule it describes remain in force for the development corpus and are cited by ADRs; nothing else here governs new work. Original title: Corpus Acquisition Spec
 
 Companion to `v0-build-spec.md`. Covers M0, which runs from week 0 in parallel with the build.
 

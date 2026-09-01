@@ -119,7 +119,7 @@ the txdot.box.com share on the RID page) and read its directory:
 `Utilities/I-35_NEX_SOUTH_UCM_22.02.07.xlsx` and
 `Utilities/I-35 NEX_SOUTH_Potential_Utility_Conflicts.xlsx` are both there, alongside
 PDFs and `.dgn` files. **VERIFIED** — this upgrades the claim in
-`corpus-acquisition-spec.md` §7.2 ("UCMs are XLSX, not PDF") from a recorded sweep result
+`../history/corpus-acquisition-spec-2026-07.md` §7.2 ("UCMs are XLSX, not PDF") from a recorded sweep result
 to a directly re-confirmed fact.
 
 Third, the publication choice is per-project and mostly lands on PDF. NHHIP 3C-2 and SH 99
@@ -132,7 +132,7 @@ The consequence for onboarding: on a TxDOT project the structured rendition almo
 certainly *exists*, but on four of the five agency corpora in this repo it is not what the
 agency *published*. Getting it means asking the project office — which is precisely the
 "request native electronic format — searchable PDF or original XLSX, not scans" line
-already in `corpus-acquisition-spec.md` §5's records-request template, and which an
+already in `../history/corpus-acquisition-spec-2026-07.md` §5's records-request template, and which an
 operator onboarding a live client project (rather than scraping a public portal) is well
 positioned to do, because the client's own utility coordinator maintains the workbook.
 
@@ -233,7 +233,7 @@ Repo files (all paths from the repo root):
 - `corpus/fdot-sr789.yaml` and lock file — FDOT SR 789 matrix PDF.
 - `corpus/cross-agency.yaml` and lock file — the TxDOT template XLSX, the only spreadsheet registered.
 - `corpus/sh99-milestones.csv` — the repo-authored schedule CSV.
-- `corpus-acquisition-spec.md` §5 (native-format request language), §7.2 (RID survey, I-35 NEX XLSX, WSDOT's 392 contracts), §7.4.
+- `../history/corpus-acquisition-spec-2026-07.md` §5 (native-format request language), §7.2 (RID survey, I-35 NEX XLSX, WSDOT's 392 contracts), §7.4.
 - `docs/adr/0005-the-structured-original-is-the-document-of-record.md` — the I-35 NEX workbook internals, "Project A publishes no spreadsheet at all."
 - `docs/research/nhhip-public-status-and-correspondence-gap-2026-08-20.md` — NHHIP utilities archive member list, 2026-08-20.
 - `docs/research/dated-commitment-sources.md` — utility work schedule form family; MD 97 `.xls` provenance.

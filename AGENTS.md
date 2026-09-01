@@ -37,14 +37,58 @@ Use non-overlapping gates appropriate to the exact revision
 
 ## Architecture
 
-`src/corridor/`, one module per stage:
+### Target architecture (ADR-0075, ADR-0076, ADR-0081, ADR-0082, ADR-0083)
+
+```
+SourceEnvelope (one normalized ingress record per delivery)
+→ Source Segment (exact text or value, typed locator, digest)
+→ Source Fact (what the source says, captured; never the record)
+→ Proposed Delta (typed difference from the accepted record; record unchanged while open)
+→ Resolve Delta (human, or narrow released policy; one atomic Project Record Revision)
+→ current and as-of projections
+```
+
+Adopt Baseline is the one bulk human act that establishes the accepted record
+from the customer's own UCM workbook or system export. Accepted authority is
+written only through the record-decision role's `SECURITY DEFINER` commands
+(#492); the application runtime role reads and may append segments, facts,
+proposals, and support assessments, and cannot make anything effective.
+Implementation status is in [roadmap.md](roadmap.md): Adopt Baseline and
+Proposed Delta are **not yet implemented** (#509, #510).
+
+### Transitional legacy path (frozen; ADR-0081)
+
+`src/corridor/`, one module per stage, as built for the readiness ledger:
 
 `corpus` (manifest → files) → `ingest` (pages: text + image) → `extract_*` and
-`geometry` (Extracted Proposals) → `adjudicate` (**the only writer of Constraint Records**) →
-`ledger`, `exceptions`, `report`, `briefing`, `export` (readers).
+`geometry` (Extracted Proposals) → `adjudicate` (the legacy writer of Constraint
+Records) → `ledger`, `exceptions`, `report`, `briefing`, `export` (readers).
+
+`admission.py` (`load_project`), `dependency_admission.py`, `event_admission.py`,
+and structured-cell automatic inclusion (`include_current_structured_cell_facts`)
+still perform ADR-0029-style automatic Record Inclusion. They are **legacy paths,
+frozen against new capability**: no new feature may be implemented solely
+against `dependencies`, `dependency_events`, `work_decisions`,
+`operative_support`, or the dispute tables. New work writes the spine first and
+must not introduce another legacy-only write; a compatibility write may keep a
+legacy reader working during migration. Do not treat the current pipeline as
+the authority model for a customer pilot until the adopted-baseline operating
+mode exists (#510C).
 
 Extractors only ever produce Extracted Proposals. Every module opens with a docstring
 saying why it exists and what was tried before — read it before changing one.
+
+## Merging
+
+Server-side required status checks are unavailable on this private free-plan
+repository (#506). Until that changes, every PR merges only after every job is
+green, verified with:
+
+```bash
+gh pr checks <pr-number> --watch --fail-fast
+```
+
+A merge with a red or still-running job is a regression to file (#516).
 
 ## Gotchas
 

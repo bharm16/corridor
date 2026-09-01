@@ -35,6 +35,6 @@ M7 was blocked on a work-type subset definition per layout and a hand-labeled sl
 
 Each layout's Utility Conflict Resolution Method fields for the work-type subset must be pinned from an **unsealed** document. For 9540 that is sibling contract 9424, which is what it was fetched for.
 
-The corpus needs a successor holdout ready before this one is spent, or the next quality question has nothing honest to measure against. `corpus-acquisition-spec.md` §7.2 records that WSDOT publishes 392 contracts this way, so the supply exists; what does not exist is the habit of sealing the next one early.
+The corpus needs a successor holdout ready before this one is spent, or the next quality question has nothing honest to measure against. `../history/corpus-acquisition-spec-2026-07.md` §7.2 records that WSDOT publishes 392 contracts this way, so the supply exists; what does not exist is the habit of sealing the next one early.
 
 An eval that cannot enumerate a layout must say so rather than report zero (#78). A holdout scored by a broken measurement is a holdout wasted just as surely as one that was tuned against.

@@ -4,7 +4,7 @@
 
 **Goal of Phase 1:** a working, demoable Project Record for utility and External Party readiness, running on 2-3 real highway projects, operable by one person, no external accounts required.
 
-**Companion docs:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec.md` covers document assembly, which runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; `docs/adr/` records decisions with lasting consequences; `docs/adr/INDEX.md` says which govern today. Build nothing past M5 until M5 is done.
+**Companion docs:** `v0-build-spec-2026-07.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec-2026-07.md` covers document assembly, which runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; `docs/adr/` records decisions with lasting consequences; `docs/adr/INDEX.md` says which govern today. Build nothing past M5 until M5 is done.
 
 ---
 
@@ -18,7 +18,7 @@ Phase 1 never includes: CAD/GIS, scheduling engine, document-management or PMIS 
 
 ### M0 — Corpus and environment (from week 0, in parallel)
 
-No documents are in hand. Corpus assembly is the schedule's critical path rather than its warm-up, and is specified in `corpus-acquisition-spec.md`.
+No documents are in hand. Corpus assembly is the schedule's critical path rather than its warm-up, and is specified in `corpus-acquisition-spec-2026-07.md`.
 
 - Assemble document sets for 2-3 real projects from public sources. Each project needs a **spine** (dependency records — filled conflict matrix, utility agreements, special provisions) and a **stream** (dated assertions that change over time — serial status reports, meeting minutes, board packets). Neither role alone exercises the data model. Construct a milestone list per project.
 - File public-records requests in week 0, scoped to the same project as the spine so returns join one Project Record.

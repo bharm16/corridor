@@ -1,4 +1,6 @@
-# v0 Build Spec — Cited Readiness Ledger (build this first)
+# Historical v0 Build Spec — not current implementation authority
+
+> **Historical document, closed 2026-09-01.** This specified the Cited Readiness Ledger (M0–M5) built in July and August 2026 under ADR-0001 through ADR-0072. It is retained for the build history and for the receipts, fixtures, and command names it explains. It governs no new work: the current product is ADR-0075 as corrected by ADR-0083, the current plan is [`roadmap.md`](../../roadmap.md), and the current admission pipeline it describes is a transitional legacy path (ADR-0081). Original title: v0 Build Spec — Cited Readiness Ledger (build this first)
 
 Covers milestones M0-M5 of `docs/history/phase-1-roadmap-2026-08.md` (historical). Target: ~7 focused solo weeks.
 
