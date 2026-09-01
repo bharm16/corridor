@@ -24,13 +24,19 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit, notifications
+from corridor.fact_decisions import record_human_fact_decision
+from corridor.fact_types import FACT_TYPE_CONTRACTS
 from corridor.models import (
     Assertion,
+    Candidate,
     Dependency,
     DisputeHistoryResolution,
     DisputeSettlement,
     Document,
     EvidenceLink,
+    ExtractedProposal,
+    Fact,
+    FactDecision,
     ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
@@ -870,7 +876,104 @@ def settle_dispute(
         },
     )
     session.flush()
+    _record_discrepancy_resolution_on_spine(
+        session,
+        dependency=dependency,
+        field_name=field_name,
+        value=value,
+        settlement=settlement,
+        recorder=settler,
+    )
     return settlement
+
+
+def _record_discrepancy_resolution_on_spine(
+    session: Session,
+    *,
+    dependency: Dependency,
+    field_name: str,
+    value: str | None,
+    settlement: DisputeSettlement,
+    recorder: HumanPrincipal,
+) -> None:
+    """Dual-write the settlement as a resolve_discrepancy spine decision.
+
+    The resolved field belongs to the record's source-row lineage: a settled
+    value that selects an existing fact of the matching type re-decides that
+    fact, superseding the current decision (ADR-0074 stage 3). Forward-only,
+    never guessed: a field with no matching released fact type, a record whose
+    current spine state is absent or ambiguous, a settled-as-nothing value, or
+    a synthesized value no observed fact carries all stay legacy-only until
+    the schema admits document-less human facts of these types (#458).
+    """
+
+    contract = FACT_TYPE_CONTRACTS.get(field_name)
+    if contract is None or value is None:
+        return
+    current = session.execute(
+        select(FactDecision, Fact)
+        .join(Fact, Fact.id == FactDecision.fact_id)
+        .join(
+            ExtractedProposal,
+            (ExtractedProposal.project_id == Fact.project_id)
+            & (ExtractedProposal.document_id == Fact.document_id)
+            & (ExtractedProposal.extraction_run_id == Fact.extraction_run_id)
+            & (ExtractedProposal.subject_key == Fact.subject_key),
+        )
+        .join(Candidate, Candidate.id == ExtractedProposal.candidate_id)
+        .where(
+            Candidate.merged_into == dependency.id,
+            FactDecision.project_id == dependency.project_id,
+            FactDecision.fact_type == field_name,
+            FactDecision.superseded_by.is_(None),
+            FactDecision.disposition == "include",
+        )
+    ).all()
+    if len(current) != 1:
+        return
+    decision, fact = current[0]
+    target = _matching_field_fact(session, fact, field_name, value)
+    if target is None:
+        return
+    record_human_fact_decision(
+        session,
+        target,
+        principal=recorder,
+        command_type="resolve_discrepancy",
+        disposition="include",
+        idempotency_key=f"resolve-discrepancy:{settlement.id}",
+        expected_predecessor=decision.id,
+    )
+
+
+def _matching_field_fact(
+    session: Session, current: Fact, field_name: str, value: str
+) -> Fact | None:
+    """The observed fact on the row's lineage that carries the settled value."""
+
+    if field_name in _DATE_SPINE_FIELDS:
+        try:
+            settled: object = date.fromisoformat(value)
+        except ValueError:
+            return None
+        column = Fact.date_value
+    else:
+        settled = value
+        column = Fact.text_value
+    return session.scalar(
+        select(Fact)
+        .where(
+            Fact.project_id == current.project_id,
+            Fact.subject_key == current.subject_key,
+            Fact.fact_type == field_name,
+            column == settled,
+        )
+        .order_by(Fact.id.desc())
+        .limit(1)
+    )
+
+
+_DATE_SPINE_FIELDS = frozenset({"committed_date", "action_due_date", "need_date"})
 
 
 # The Dependency columns a settled field writes through to. Named rather
