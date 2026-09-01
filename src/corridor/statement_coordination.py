@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from corridor import audit, notifications
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
+from corridor.statement_spine import record_cited_statement_on_spine
 from corridor.external_statements import (
     CitedStatementEvidence,
     EvidenceBoundPartyResolution,
@@ -705,6 +706,19 @@ def coordinate_statement(
                 raise RuntimeError(
                     "the accepted statement did not receive a scope decision"
                 )
+            # Dual-write the accepted statement onto the spine in the same act
+            # (#451, ADR-0074): the legacy event stays the source of truth until
+            # cutover, and the spine gains the attributable inclusion decision.
+            record_cited_statement_on_spine(
+                session,
+                event=event,
+                candidate_id=candidate.id,
+                description=draft.description,
+                new_timing=draft.new_timing,
+                previous_timing=draft.previous_timing,
+                recorder=recorder,
+                command_type="coordinate_statement",
+            )
 
             subject = CoordinationSubject.statement(event.commitment_lineage_id)
             internal_owner_decision = assign_internal_owner(

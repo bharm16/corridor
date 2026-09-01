@@ -23,12 +23,18 @@ from corridor.external_statements import (
     StatementTiming,
 )
 from corridor.models import (
+    ActiveExtractionRun,
     Candidate,
     CandidateDisposition,
     AuditLog,
     CommitmentLineage,
     Dependency,
     DependencyEvent,
+    Fact,
+    FactDecision,
+    FactSource,
+    ProjectRecordRevision,
+    SourceSegment,
     DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
@@ -265,6 +271,101 @@ def _draft(
         milestone_impact=milestone_impact,
         milestone_ids=milestone_ids,
     )
+
+
+def _seed_extraction_wording_passage(session, project, document, candidate, quote):
+    """Mimic the extraction wording Fact + prose span that a Minutes run leaves."""
+    run_id = session.scalar(
+        select(ActiveExtractionRun.extraction_run_id).where(
+            ActiveExtractionRun.document_id == document.id
+        )
+    )
+    segment = SourceSegment(
+        project_id=project.id,
+        document_id=document.id,
+        kind="prose_span",
+        exact_text=quote,
+        content_sha256=hashlib.sha256(quote.encode()).hexdigest(),
+        ordinal=1,
+        page_no=1,
+        start_offset=0,
+        end_offset=len(quote),
+    )
+    session.add(segment)
+    session.flush()
+    fact = Fact(
+        project_id=project.id,
+        document_id=document.id,
+        extraction_run_id=run_id,
+        fact_type="statement_wording",
+        subject_kind="statement_candidate",
+        subject_key=f"candidate:{candidate.id}",
+        text_value=quote,
+        transformation="exact_prose_span_v1",
+        recorded_by="extractor:guided-statement-test",
+        content_sha256=hashlib.sha256(f"wording:{candidate.id}".encode()).hexdigest(),
+    )
+    session.add(fact)
+    session.flush()
+    session.add(
+        FactSource(
+            project_id=project.id,
+            document_id=document.id,
+            fact_id=fact.id,
+            source_segment_id=segment.id,
+            role="value_source",
+            ordinal=1,
+        )
+    )
+    session.flush()
+
+
+def test_coordinate_statement_dual_writes_the_cited_statement_on_the_spine(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete the relocation by May 16, 2026."
+    document = _document(session, project, "km-minutes.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, quote)
+    dependency = _dependency(session, project, party, "KM-9", "KM 30-inch line")
+
+    coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+    session.expire_all()
+
+    decisions = session.scalars(
+        select(FactDecision)
+        .join(ProjectRecordRevision, ProjectRecordRevision.id == FactDecision.revision_id)
+        .where(
+            FactDecision.project_id == project.id,
+            FactDecision.superseded_by.is_(None),
+            ProjectRecordRevision.command_type == "coordinate_statement",
+        )
+    ).all()
+    by_type = {decision.fact_type: decision for decision in decisions}
+    assert set(by_type) == {"statement_wording", "statement_timing", "applies_to"}
+    for decision in decisions:
+        revision = session.get(ProjectRecordRevision, decision.revision_id)
+        assert revision.human_principal == "local:statement-coordinator"
+        assert revision.released_policy is None
+        assert decision.subject_key.startswith("lineage:")
 
 
 def test_command_records_the_7296_shape_with_additional_verified_party_context(

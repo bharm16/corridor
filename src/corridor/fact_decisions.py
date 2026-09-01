@@ -57,6 +57,7 @@ class StaleHumanDecision(FactDecisionRefused):
 HUMAN_DECISION_COMMANDS = frozenset(
     {
         "record_verbal_statement",
+        "coordinate_statement",
         "correct_statement_scope",
         "correct_statement_facts",
         "mark_do_not_add",
