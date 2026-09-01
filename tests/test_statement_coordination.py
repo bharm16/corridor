@@ -368,6 +368,144 @@ def test_coordinate_statement_dual_writes_the_cited_statement_on_the_spine(
         assert decision.subject_key.startswith("lineage:")
 
 
+def _spine_decision(session, project_id, lineage_id, fact_type):
+    return session.scalar(
+        select(FactDecision).where(
+            FactDecision.project_id == project_id,
+            FactDecision.subject_key == f"lineage:{lineage_id}",
+            FactDecision.fact_type == fact_type,
+            FactDecision.superseded_by.is_(None),
+        )
+    )
+
+
+def test_correct_statement_scope_supersedes_only_the_spine_applies_to(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(session, project, "scope-spine.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, quote)
+    dependency = _dependency(session, project, party, "SCOPE-SPINE-1", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.unknown(),
+        ),
+        principal=RECORDER,
+    )
+    lineage_id = result.event.commitment_lineage_id
+    wording_before = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    applies_before = _spine_decision(session, project.id, lineage_id, "applies_to")
+
+    correct_statement_scope(
+        session,
+        StatementScopeCorrection(
+            candidate_id=candidate.id,
+            event_id=result.event.id,
+            expected_scope_decision_id=result.receipt.scope_decision_id,
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+    session.expire_all()
+
+    applies_after = _spine_decision(session, project.id, lineage_id, "applies_to")
+    wording_after = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    assert applies_after.id != applies_before.id  # scope superseded
+    assert wording_after.id == wording_before.id  # wording untouched
+    revision = session.get(ProjectRecordRevision, applies_after.revision_id)
+    assert revision.command_type == "correct_statement_scope"
+
+
+def test_correct_statement_facts_supersedes_wording_and_timing_on_the_spine(
+    session, project, party, roster_entry
+):
+    original_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    corrected_quote = "Kinder Morgan will complete relocation by July 1, 2026."
+    document = _document(
+        session, project, "facts-spine.pdf", f"{original_quote}\n{corrected_quote}"
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=original_quote,
+        fields={"event_type": "commitment", "description": original_quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, original_quote)
+    session.add(
+        SourceSegment(
+            project_id=project.id,
+            document_id=document.id,
+            kind="prose_span",
+            exact_text=corrected_quote,
+            content_sha256=hashlib.sha256(corrected_quote.encode()).hexdigest(),
+            ordinal=2,
+            page_no=1,
+            start_offset=len(original_quote) + 1,
+            end_offset=len(original_quote) + 1 + len(corrected_quote),
+        )
+    )
+    session.flush()
+    dependency = _dependency(session, project, party, "FACTS-SPINE-1", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=original_quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, original_quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+    lineage_id = result.event.commitment_lineage_id
+    wording_before = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    applies_before = _spine_decision(session, project.id, lineage_id, "applies_to")
+
+    correct_statement_facts(
+        session,
+        StatementFactCorrectionDraft(
+            candidate_id=candidate.id,
+            expected_statement_event_id=result.event.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            event_date=date(2025, 1, 17),
+            description=corrected_quote,
+            new_timing=StatementTiming.day("July 1, 2026", date(2026, 7, 1)),
+            previous_timing=None,
+            evidence=(CitedStatementEvidence(document.id, 1, corrected_quote),),
+        ),
+        principal=RECORDER,
+    )
+    session.expire_all()
+
+    wording_after = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    applies_after = _spine_decision(session, project.id, lineage_id, "applies_to")
+    assert wording_after.id != wording_before.id  # wording superseded
+    assert applies_after.id == applies_before.id  # carried-forward scope unchanged
+    corrected_fact = session.get(Fact, wording_after.fact_id)
+    assert corrected_fact.text_value == corrected_quote
+    revision = session.get(ProjectRecordRevision, wording_after.revision_id)
+    assert revision.command_type == "correct_statement_facts"
+
+
 def test_command_records_the_7296_shape_with_additional_verified_party_context(
     session, project, party, roster_entry
 ):

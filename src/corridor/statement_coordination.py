@@ -29,7 +29,10 @@ from sqlalchemy.orm import Session
 
 from corridor import audit, notifications
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
-from corridor.statement_spine import record_cited_statement_on_spine
+from corridor.statement_spine import (
+    correct_statement_scope_on_spine,
+    record_cited_statement_on_spine,
+)
 from corridor.external_statements import (
     CitedStatementEvidence,
     EvidenceBoundPartyResolution,
@@ -718,6 +721,7 @@ def coordinate_statement(
                 previous_timing=draft.previous_timing,
                 recorder=recorder,
                 command_type="coordinate_statement",
+                evidence=all_evidence[0],
             )
 
             subject = CoordinationSubject.statement(event.commitment_lineage_id)
@@ -1174,6 +1178,12 @@ def correct_statement_scope(
                     "scope_decision_id": decision.id,
                 },
             )
+            correct_statement_scope_on_spine(
+                session,
+                event=event,
+                scope_decision_id=decision.id,
+                recorder=recorder,
+            )
             candidate = session.get(Candidate, correction.candidate_id)
             assert candidate is not None  # required by _require_candidate_owns_lineage
             record_statement_scope_correction_case(
@@ -1305,6 +1315,17 @@ def correct_statement_facts(
                     "statement_event_id": successor.id,
                     **_party_resolution_audit(party_resolution),
                 },
+            )
+            record_cited_statement_on_spine(
+                session,
+                event=successor,
+                candidate_id=draft.candidate_id,
+                description=draft.description,
+                new_timing=draft.new_timing,
+                previous_timing=draft.previous_timing,
+                recorder=recorder,
+                command_type="correct_statement_facts",
+                evidence=evidence[0],
             )
             candidate = session.get(Candidate, draft.candidate_id)
             assert candidate is not None  # required by _require_candidate_owns_lineage

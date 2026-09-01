@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.external_statements import StatementTiming
+from corridor.statement_values import CitedStatementEvidence
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.facts import (
     append_recorded_applies_to_fact,
@@ -44,6 +45,7 @@ def record_cited_statement_on_spine(
     previous_timing: StatementTiming | None,
     recorder: HumanPrincipal,
     command_type: str,
+    evidence: CitedStatementEvidence | None = None,
 ) -> None:
     """Append the Cited statement's wording, timing, and scope decisions.
 
@@ -53,7 +55,9 @@ def record_cited_statement_on_spine(
     attributable Applies To no-op when it did not change.
     """
 
-    segment = _cited_passage_segment(session, event.project_id, candidate_id, description)
+    segment = _cited_passage_segment(
+        session, event.project_id, candidate_id, description, evidence
+    )
     if segment is None:
         return
     subject_key = f"lineage:{event.commitment_lineage_id}"
@@ -90,6 +94,49 @@ def record_cited_statement_on_spine(
         _decide(
             session, event.project_id, subject_key, applies, recorder, command_type, operation
         )
+
+
+def correct_statement_scope_on_spine(
+    session: Session,
+    *,
+    event: DependencyEvent,
+    scope_decision_id: int,
+    recorder: HumanPrincipal,
+    command_type: str = "correct_statement_scope",
+) -> None:
+    """Supersede the lineage's spine Applies To with the corrected scope.
+
+    Forward-only: a statement not yet on the spine has no Applies To decision to
+    correct. The wording and timing are untouched; the new Applies To Fact reuses
+    the statement's own passage as its value source, and records no attributable
+    no-op when the scope did not change.
+    """
+
+    subject_key = f"lineage:{event.commitment_lineage_id}"
+    predecessor = current_decision_id(session, event.project_id, subject_key, "applies_to")
+    if predecessor is None:
+        return
+    segment = _decision_value_segment(session, predecessor)
+    if segment is None:
+        return
+    dependency_ids = tuple(sorted(_scope_decision_members(session, scope_decision_id)))
+    if current_applies_to_members(session, event.project_id, subject_key) == dependency_ids:
+        return
+    applies = append_recorded_applies_to_fact(
+        session,
+        segment=segment,
+        subject_key=subject_key,
+        dependency_ids=dependency_ids,
+        recorded_by=recorder.subject,
+    )
+    record_human_fact_decision(
+        session,
+        applies,
+        principal=recorder,
+        command_type=command_type,
+        idempotency_key=f"correct-statement-scope:{scope_decision_id}",
+        expected_predecessor=predecessor,
+    )
 
 
 def _decide(
@@ -171,16 +218,51 @@ def event_scope_dependency_ids(
     )
 
 
+def _decision_value_segment(
+    session: Session, decision_id: int
+) -> SourceSegment | None:
+    decision = session.get(FactDecision, decision_id)
+    if decision is None:
+        return None
+    source = session.scalar(
+        select(FactSource).where(
+            FactSource.fact_id == decision.fact_id,
+            FactSource.role == "value_source",
+        )
+    )
+    if source is None:
+        return None
+    return session.get(SourceSegment, source.source_segment_id)
+
+
+def _scope_decision_members(
+    session: Session, scope_decision_id: int
+) -> tuple[int, ...]:
+    return tuple(
+        session.scalars(
+            select(CommitmentScopeMembership.dependency_id).where(
+                CommitmentScopeMembership.scope_decision_id == scope_decision_id
+            )
+        ).all()
+    )
+
+
 def _cited_passage_segment(
-    session: Session, project_id: int, candidate_id: int, description: str
+    session: Session,
+    project_id: int,
+    candidate_id: int,
+    description: str,
+    evidence: CitedStatementEvidence | None = None,
 ) -> SourceSegment | None:
     """The exact prose span supporting a Cited statement's wording, if resolvable.
 
     The extraction recorded a ``statement_wording`` source Fact for the Candidate
-    over one value-source prose span; that span is the passage. It only serves as
-    the value source when it still contains the recorded description — a corrected
-    wording that no longer appears in that span resolves to no passage rather than
-    to a mismatched one.
+    over one value-source prose span; that span is the passage when it still
+    contains the recorded description (the initial inclusion). A corrected wording
+    no longer appears there, so the cited evidence for the correction resolves the
+    passage instead: the one prose span on the cited page that contains the new
+    description. Anything ambiguous or absent resolves to no passage rather than
+    to a mismatched one — the statement stays legacy-only.
     """
 
     segment = session.scalar(
@@ -198,4 +280,18 @@ def _cited_passage_segment(
     )
     if segment is not None and description in segment.exact_text:
         return segment
-    return None
+    if evidence is None:
+        return None
+    matches = [
+        candidate_segment
+        for candidate_segment in session.scalars(
+            select(SourceSegment).where(
+                SourceSegment.project_id == project_id,
+                SourceSegment.document_id == evidence.document_id,
+                SourceSegment.kind == "prose_span",
+                SourceSegment.page_no == evidence.page_no,
+            )
+        ).all()
+        if description in candidate_segment.exact_text
+    ]
+    return matches[0] if len(matches) == 1 else None
