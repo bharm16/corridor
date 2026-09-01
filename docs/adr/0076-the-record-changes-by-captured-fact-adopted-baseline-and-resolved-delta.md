@@ -16,6 +16,9 @@ amends:
   - ADR-0057
   - ADR-0070
   - ADR-0071
+  - ADR-0034
+amended_by:
+  - ADR-0083
 migration: Adopt Baseline, Propose Delta, and Resolve Delta commands do not exist yet; the record-write boundary is not yet an enforced architecture test.
 ---
 

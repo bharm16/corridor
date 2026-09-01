@@ -9,6 +9,7 @@ amended_by:
   - ADR-0049
   - ADR-0078
   - ADR-0079
+  - ADR-0076
 ---
 
 # Customer work is domain work, and technical operations are managed

@@ -161,6 +161,11 @@ The value one Document states for one Constraint field, retained with its source
 _Customer label_: Source field value
 _Avoid_: External Party Statement, the project's settled conclusion, a verified physical fact
 
+**Source Fact**:
+What one incoming source states: a typed value with its Source Segment, the mapping that produced it, and the identity it resolves to, captured before any decision about the Project Record; generalizes Assertion to every typed fact on the spine ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md); research in [docs/research/baseline-delta-terminology-2026-09-01.md](docs/research/baseline-delta-terminology-2026-09-01.md)).
+_Customer label_: What the source says
+_Avoid_: the project's conclusion, a verified physical fact, an accepted value, an automatic update
+
 **Source Discrepancy**:
 Two or more retained, verified Source Field Values give incompatible answers for the same Constraint field, and no applicable human conclusion resolves them.
 _Customer label_: Sources disagree
@@ -260,6 +265,21 @@ Reviewed documentation supports that the identified Utility Facilities do not in
 _Avoid_: relocation completed, every utility on the project cleared
 
 ### Decisions and signals
+
+**Adopt Baseline**:
+A named person's approval of one exact UCM workbook or existing-system export, identified by digest, as the initial accepted Project Record in one atomic revision; the baseline is adopted from the customer's artifact, not authored ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), [ADR-0083](docs/adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md)).
+_Customer label_: Adopt baseline; Adopt this matrix as the starting record
+_Avoid_: import alone, project approval, sign-off, hundreds of row-level confirmations
+
+**Proposed Delta**:
+The typed difference between a Source Fact and the current accepted record, awaiting a decision: new conflict, field changed, promise moved, organization changed, schedule date changed, existing support superseded, apparent removal, or source contradiction. The accepted record is unchanged while it is open; this is an internal name ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md)).
+_Customer label_: Proposed change, with its type
+_Avoid_: change order, change request, contract modification, an automatic update, an urgency score
+
+**Resolve Delta**:
+A named person's, or a separately released narrow policy's, decision that closes a Proposed Delta by accepting, editing, rejecting, or deferring it, creating the next Project Record revision ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md)).
+_Customer label_: Decide this change
+_Avoid_: approve alone, close, deletion of the incoming value, contract settlement
 
 **Do Not Add**:
 A person's reversible decision that a proposed entry does not belong in the Project Record, with the proposal, reason, actor, and history preserved.

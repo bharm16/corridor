@@ -4,6 +4,8 @@ domain: migration
 scope: current product
 amends:
   - ADR-0074
+amended_by:
+  - ADR-0083
 migration: recorded_verbal_statement segments still reference dependency_events through statement_id; every human flow dual-writes legacy and spine; no reader consumes the spine projection alone; stages 1 through 6 below are all open.
 ---
 

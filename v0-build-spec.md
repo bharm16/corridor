@@ -1,6 +1,6 @@
 # v0 Build Spec — Cited Readiness Ledger (build this first)
 
-Covers milestones M0-M5 of `phase-1-roadmap.md`. Target: ~7 focused solo weeks.
+Covers milestones M0-M5 of `docs/history/phase-1-roadmap-2026-08.md` (historical). Target: ~7 focused solo weeks.
 
 Corpus assembly is specified separately in `corpus-acquisition-spec.md` and runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; use those terms. Decisions with lasting consequences are recorded in `docs/adr/`.
 
@@ -271,4 +271,4 @@ Nights-and-weekends pace roughly doubles the calendar.
 - [ ] First eval run recorded; critical recall measured (gate to hit in M7: ≥95%).
 - [ ] Live demo, raw docs to report, in under 15 minutes.
 
-When every box is checked, return to `phase-1-roadmap.md` at M6.
+When every box is checked, return to `docs/history/phase-1-roadmap-2026-08.md` (historical) at M6.

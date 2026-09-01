@@ -4,6 +4,8 @@ domain: product
 scope: current product
 supersedes:
   - ADR-0066
+amended_by:
+  - ADR-0083
 ---
 
 # Corridor maintains the accepted utility coordination baseline from project evidence

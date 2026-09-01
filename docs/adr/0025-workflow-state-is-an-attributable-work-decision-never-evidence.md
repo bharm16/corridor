@@ -34,4 +34,4 @@ never establish or close an External Organization fact.
 
 ## Consequences
 
-The Phase 1/Phase 2 boundary is redrawn explicitly rather than dissolved: Phase 1 carries single-operator, attributable internal Coordination Decisions; Phase 2 carries multi-user assignment, acknowledgment, approvals, notifications, and external-party response flows (`phase-1-roadmap.md`, amended alongside this ADR). The M5 bar — zero uncited assertions — survives unchanged, because a Coordination Decision is provenance without being a source: nothing about the world is claimed, so nothing about the world needs a quote.
+The Phase 1/Phase 2 boundary is redrawn explicitly rather than dissolved: Phase 1 carries single-operator, attributable internal Coordination Decisions; Phase 2 carries multi-user assignment, acknowledgment, approvals, notifications, and external-party response flows (`../history/phase-1-roadmap-2026-08.md`, amended alongside this ADR). The M5 bar — zero uncited assertions — survives unchanged, because a Coordination Decision is provenance without being a source: nothing about the world is claimed, so nothing about the world needs a quote.

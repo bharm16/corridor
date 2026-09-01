@@ -18,8 +18,10 @@ scheduling systems rather than replacing them. Utilities are the first scope;
 railroads, right-of-way, permits, and environmental commitments are later
 expansion areas.
 
-The first paid slice, and the measures it is judged by, are in
-[docs/pilot-success-criteria.md](docs/pilot-success-criteria.md).
+The first paid slice is sequenced in [roadmap.md](roadmap.md); the measures
+it is judged by are in [docs/pilot-success-criteria.md](docs/pilot-success-criteria.md).
+The buyer named in ADR-0075 is a provisional design-partner target pending
+discovery ([ADR-0083](docs/adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md)).
 
 ## Boot
 
@@ -66,7 +68,8 @@ establish Contract Acceptance.
 | [`CONTEXT-MAP.md`](CONTEXT-MAP.md) | Domain contexts and their canonical vocabulary. |
 | [`v0-build-spec.md`](v0-build-spec.md) | Implementation detail for M0-M5 |
 | [`corpus-acquisition-spec.md`](corpus-acquisition-spec.md) | Document assembly; runs in parallel from week 0 |
-| [`phase-1-roadmap.md`](phase-1-roadmap.md) | Delivery stages and sequencing rules |
+| [`roadmap.md`](roadmap.md) | Current phases, exits, and the frozen list |
+| [`docs/history/phase-1-roadmap-2026-08.md`](docs/history/phase-1-roadmap-2026-08.md) | Historical Phase 1 (M0–M9) roadmap, closed 2026-09-01 |
 | [`docs/adr/`](docs/adr) | Decisions with lasting consequences; [`docs/adr/INDEX.md`](docs/adr/INDEX.md) lists which govern today |
 | [`docs/pilot-success-criteria.md`](docs/pilot-success-criteria.md) | Temporary validation gate for the first paid slice |
 | [`docs/operations/observability-runbook.md`](docs/operations/observability-runbook.md) | Metrics, alerts, escalation, runbooks |

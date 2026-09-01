@@ -8,6 +8,8 @@ amends:
   - ADR-0034
   - ADR-0058
   - ADR-0062
+amended_by:
+  - ADR-0083
 migration: no connector implements the contract yet; no inbound-mail provider is recorded; the schedule import remains the hand-typed CSV path.
 ---
 
