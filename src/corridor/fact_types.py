@@ -118,7 +118,7 @@ FACT_TYPE_CONTRACTS = {
         subject_kind="source_row",
         transformation="structured_reference_set_v1",
         accepted_segment_kinds=frozenset(
-            {"spreadsheet_cell", "recorded_verbal_statement"}
+            {"spreadsheet_cell", "recorded_verbal_statement", "prose_span"}
         ),
         automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
         required_roles=frozenset({"value_source"}),
@@ -156,7 +156,9 @@ FACT_TYPE_CONTRACTS = {
         value_class="statement_timing",
         subject_kind="statement_candidate",
         transformation="typed_statement_timing_v1",
-        accepted_segment_kinds=frozenset({"recorded_verbal_statement"}),
+        accepted_segment_kinds=frozenset(
+            {"recorded_verbal_statement", "prose_span"}
+        ),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source"}),
         validation_rule="typed_statement_timing_set",
