@@ -35,6 +35,7 @@ from corridor.models import (
     FactClosureSource,
     FactDisposition,
     FactSource,
+    FactStatementTiming,
     ExternalOrg,
     SourceSegment,
 )
@@ -46,7 +47,11 @@ from corridor.fact_types import (
 from corridor.identity import normalize_party
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.sheets import column_mapping
-from corridor.source_segments import dereference_source_segment
+from corridor.source_segments import (
+    dereference_source_segment,
+    replay_recorded_verbal_statement,
+)
+from corridor.statement_values import StatementTiming
 
 
 class FactValidationError(ValueError):
@@ -71,6 +76,13 @@ class ClosureFactValue:
     closure_kind: str
     successor_dependency_id: int | None
     governing_source_segment_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class StatementTimingFactValue:
+    """One replayed set of a Recorded Verbal Statement's stated timings."""
+
+    timings: tuple[tuple[str, StatementTiming], ...]
 
 
 def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
@@ -497,6 +509,541 @@ def _is_statement_wording_candidate(candidate: Candidate) -> bool:
         and not isinstance(page_no, bool)
         and citation.get("quote") == description
     )
+
+
+_STATEMENT_SOURCE_KINDS = frozenset({"recorded_verbal_statement", "prose_span"})
+
+
+def _statement_source_run_identity(segment: SourceSegment) -> dict[str, object]:
+    """A stable, reproducible identity for a document-less statement Fact digest.
+
+    A Recorded Verbal Statement identifies by its statement; a Meeting Notes
+    passage has no statement, so it identifies by the exact segment that carries
+    it.  Both are unique per statement and reproduce on replay.
+    """
+
+    if segment.kind == "recorded_verbal_statement":
+        return {"statement_id": segment.statement_id}
+    return {"source_segment_id": segment.id}
+
+
+def _certify_statement_source_segment(segment: SourceSegment) -> None:
+    """Fail closed unless the value-source segment proves its own stored words."""
+
+    if segment.kind == "recorded_verbal_statement":
+        replay_recorded_verbal_statement(segment)
+    elif segment.kind == "prose_span":
+        if sha256(segment.exact_text.encode("utf-8")).hexdigest() != (
+            segment.content_sha256
+        ):
+            raise FactReplayMismatch(
+                "prose segment digest does not match its stored words"
+            )
+    else:
+        raise FactValidationError("statement Fact source is not a supported segment")
+
+
+def append_recorded_statement_timing_fact(
+    session: Session,
+    *,
+    segment: SourceSegment,
+    subject_key: str,
+    timings: tuple[tuple[str, StatementTiming], ...],
+    recorded_by: str,
+) -> Fact:
+    """Append one human-attributed statement_timing Fact over a statement segment.
+
+    A verbal or a Meeting Notes passage may support the timing (ADR-0074): the
+    fact type is source-neutral.  The Fact is document-less and human-attributed;
+    the segment supplies evidence context, and the timing set the party stated is
+    carried in the typed satellite.  Integrity is the digest's self-consistency
+    with that stored set — there are no external bytes to dereference.
+    """
+
+    if segment.kind not in _STATEMENT_SOURCE_KINDS:
+        raise FactValidationError(
+            "statement timing requires a verbal or prose statement segment"
+        )
+    if not subject_key.strip():
+        raise FactValidationError("statement timing needs a statement subject")
+    if not recorded_by.strip():
+        raise FactValidationError("statement timing needs a recorder attribution")
+    ordered = _validated_statement_timings(timings)
+    if segment.id is None:
+        session.add(segment)
+        session.flush([segment])
+    structured = _statement_timing_structured(ordered)
+    fact = Fact(
+        project_id=segment.project_id,
+        document_id=None,
+        extraction_run_id=None,
+        fact_type="statement_timing",
+        subject_kind="statement_candidate",
+        subject_key=subject_key,
+        text_value=None,
+        date_value=None,
+        date_range_start=None,
+        date_range_end=None,
+        external_org_value_id=None,
+        document_value_id=None,
+        transformation="typed_statement_timing_v1",
+        recorded_by=recorded_by,
+        content_sha256=_fact_digest(
+            run_identity=_statement_source_run_identity(segment),
+            fact_type="statement_timing",
+            subject_kind="statement_candidate",
+            subject_key=subject_key,
+            text_value=None,
+            source_links=(("value_source", segment.id),),
+            structured_value=structured,
+        ),
+    )
+    session.add(fact)
+    session.flush([fact])
+    session.add_all(
+        FactStatementTiming(
+            project_id=segment.project_id,
+            fact_id=fact.id,
+            timing_role=role,
+            text=timing.text,
+            precision=timing.precision,
+            start_date=timing.start_date,
+            end_date=timing.end_date,
+        )
+        for role, timing in ordered
+    )
+    session.add(
+        FactSource(
+            project_id=segment.project_id,
+            document_id=None,
+            fact_id=fact.id,
+            source_segment_id=segment.id,
+            role="value_source",
+            ordinal=1,
+        )
+    )
+    session.flush()
+    return fact
+
+
+def replay_recorded_statement_timing_fact(
+    session: Session, fact: Fact
+) -> StatementTimingFactValue:
+    """Replay a statement_timing Fact from its own words and stored timing set.
+
+    There is no Document to dereference (ADR-0033/0068): the value source is the
+    self-certifying verbal segment, and the stored timing members must reproduce
+    the Fact digest exactly.  A tampered word, digest, or timing member fails
+    closed rather than returning a value.
+    """
+
+    if fact.fact_type != "statement_timing":
+        raise FactValidationError("Fact is not a recorded statement timing")
+    sources = tuple(
+        session.scalars(
+            select(FactSource).where(
+                FactSource.fact_id == fact.id,
+                FactSource.role == "value_source",
+            )
+        ).all()
+    )
+    if len(sources) != 1:
+        raise FactValidationError("statement timing Fact needs one value source")
+    segment = session.get(SourceSegment, sources[0].source_segment_id)
+    if segment is None or segment.project_id != fact.project_id:
+        raise FactValidationError("statement timing Fact source is missing")
+    _certify_statement_source_segment(segment)
+    rows = tuple(
+        session.scalars(
+            select(FactStatementTiming)
+            .where(FactStatementTiming.fact_id == fact.id)
+            .order_by(FactStatementTiming.timing_role)
+        ).all()
+    )
+    if not rows:
+        raise FactValidationError("statement timing Fact has no stored timing members")
+    timings = tuple(
+        (
+            row.timing_role,
+            StatementTiming(
+                text=row.text,
+                precision=row.precision,
+                start_date=row.start_date,
+                end_date=row.end_date,
+            ),
+        )
+        for row in rows
+    )
+    expected = _fact_digest(
+        run_identity=_statement_source_run_identity(segment),
+        fact_type="statement_timing",
+        subject_kind="statement_candidate",
+        subject_key=fact.subject_key,
+        text_value=None,
+        source_links=(("value_source", segment.id),),
+        structured_value=_statement_timing_structured(timings),
+    )
+    if expected != fact.content_sha256:
+        raise FactReplayMismatch(
+            "statement timing set does not reproduce the Fact digest"
+        )
+    return StatementTimingFactValue(timings)
+
+
+def append_recorded_statement_wording_fact(
+    session: Session,
+    *,
+    segment: SourceSegment,
+    subject_key: str,
+    description: str,
+    recorded_by: str,
+) -> Fact:
+    """Append one human-attributed statement_wording Fact over a statement segment.
+
+    A Recorded Verbal Statement's own words self-certify; a Meeting Notes passage
+    supports the same wording as evidence (ADR-0074).  Either way the segment
+    carries both roles the wording contract requires, and the Fact is
+    document-less and human-attributed.
+    """
+
+    if segment.kind not in _STATEMENT_SOURCE_KINDS:
+        raise FactValidationError(
+            "statement wording requires a verbal or prose statement segment"
+        )
+    if not subject_key.strip():
+        raise FactValidationError("statement wording needs a statement subject")
+    if not recorded_by.strip():
+        raise FactValidationError("statement wording needs a recorder attribution")
+    if not description.strip():
+        raise FactValidationError("statement wording needs the party's words")
+    if segment.kind == "recorded_verbal_statement":
+        if description != segment.exact_text:
+            raise FactValidationError(
+                "statement wording must be the recorder's exact words"
+            )
+    elif description not in segment.exact_text:
+        raise FactValidationError(
+            "statement wording must appear in its cited passage"
+        )
+    if segment.id is None:
+        session.add(segment)
+        session.flush([segment])
+    links = (
+        ("value_source", segment.id),
+        ("attribution_source", segment.id),
+    )
+    fact = Fact(
+        project_id=segment.project_id,
+        document_id=None,
+        extraction_run_id=None,
+        fact_type="statement_wording",
+        subject_kind="statement_candidate",
+        subject_key=subject_key,
+        text_value=description,
+        date_value=None,
+        date_range_start=None,
+        date_range_end=None,
+        external_org_value_id=None,
+        document_value_id=None,
+        transformation="exact_prose_span_v1",
+        recorded_by=recorded_by,
+        content_sha256=_fact_digest(
+            run_identity=_statement_source_run_identity(segment),
+            fact_type="statement_wording",
+            subject_kind="statement_candidate",
+            subject_key=subject_key,
+            text_value=description,
+            source_links=links,
+        ),
+    )
+    session.add(fact)
+    session.flush([fact])
+    session.add_all(
+        FactSource(
+            project_id=segment.project_id,
+            document_id=None,
+            fact_id=fact.id,
+            source_segment_id=segment_id,
+            role=role,
+            ordinal=1,
+        )
+        for role, segment_id in links
+    )
+    session.flush()
+    return fact
+
+
+def append_recorded_applies_to_fact(
+    session: Session,
+    *,
+    segment: SourceSegment,
+    subject_key: str,
+    dependency_ids: tuple[int, ...],
+    recorded_by: str,
+) -> Fact:
+    """Append one human-attributed Applies To Fact for a statement's scope.
+
+    The scope is the coordinator's decision — one, several, or not yet known —
+    carried in the ``fact_applies_to`` satellite exactly as the spreadsheet path
+    carries it, but sourced from a document-less statement segment (verbal or a
+    Meeting Notes passage).  An unknown scope is an explicit empty member set,
+    never an omitted Fact (ADR-0074).
+    """
+
+    if segment.kind not in _STATEMENT_SOURCE_KINDS:
+        raise FactValidationError(
+            "statement Applies To requires a verbal or prose statement segment"
+        )
+    if not subject_key.strip():
+        raise FactValidationError("statement Applies To needs a statement subject")
+    if not recorded_by.strip():
+        raise FactValidationError("statement Applies To needs a recorder attribution")
+    if len(set(dependency_ids)) != len(dependency_ids):
+        raise FactValidationError("statement Applies To members must be unique")
+    if segment.id is None:
+        session.add(segment)
+        session.flush([segment])
+    structured = {"dependency_ids": list(dependency_ids)}
+    fact = Fact(
+        project_id=segment.project_id,
+        document_id=None,
+        extraction_run_id=None,
+        fact_type="applies_to",
+        subject_kind="statement_candidate",
+        subject_key=subject_key,
+        text_value=None,
+        date_value=None,
+        date_range_start=None,
+        date_range_end=None,
+        external_org_value_id=None,
+        document_value_id=None,
+        transformation="structured_reference_set_v1",
+        recorded_by=recorded_by,
+        content_sha256=_fact_digest(
+            run_identity=_statement_source_run_identity(segment),
+            fact_type="applies_to",
+            subject_kind="statement_candidate",
+            subject_key=subject_key,
+            text_value=None,
+            source_links=(("value_source", segment.id),),
+            structured_value=structured,
+        ),
+    )
+    session.add(fact)
+    session.flush([fact])
+    session.add_all(
+        FactAppliesTo(
+            project_id=segment.project_id,
+            fact_id=fact.id,
+            dependency_id=dependency_id,
+            ordinal=ordinal,
+        )
+        for ordinal, dependency_id in enumerate(dependency_ids, 1)
+    )
+    session.add(
+        FactSource(
+            project_id=segment.project_id,
+            document_id=None,
+            fact_id=fact.id,
+            source_segment_id=segment.id,
+            role="value_source",
+            ordinal=1,
+        )
+    )
+    session.flush()
+    return fact
+
+
+def replay_recorded_statement_wording_fact(
+    session: Session, fact: Fact
+) -> str:
+    """Replay a verbal statement_wording Fact from its own recorded words."""
+
+    if fact.fact_type != "statement_wording":
+        raise FactValidationError("Fact is not a recorded statement wording")
+    segment = _statement_value_segment(session, fact)
+    _certify_statement_source_segment(segment)
+    links = (
+        ("value_source", segment.id),
+        ("attribution_source", segment.id),
+    )
+    expected = _fact_digest(
+        run_identity=_statement_source_run_identity(segment),
+        fact_type="statement_wording",
+        subject_kind="statement_candidate",
+        subject_key=fact.subject_key,
+        text_value=fact.text_value,
+        source_links=links,
+    )
+    words_reproduce = (
+        fact.text_value == segment.exact_text
+        if segment.kind == "recorded_verbal_statement"
+        else bool(fact.text_value) and fact.text_value in segment.exact_text
+    )
+    if expected != fact.content_sha256 or not words_reproduce:
+        raise FactReplayMismatch(
+            "statement wording does not reproduce the Fact digest"
+        )
+    return fact.text_value
+
+
+def replay_recorded_applies_to_fact(
+    session: Session, fact: Fact
+) -> AppliesToFactValue:
+    """Replay a verbal Applies To Fact from its stored scope members."""
+
+    if fact.fact_type != "applies_to":
+        raise FactValidationError("Fact is not an applies_to fact")
+    segment = _statement_value_segment(session, fact)
+    _certify_statement_source_segment(segment)
+    dependency_ids = tuple(
+        session.scalars(
+            select(FactAppliesTo.dependency_id)
+            .where(FactAppliesTo.fact_id == fact.id)
+            .order_by(FactAppliesTo.ordinal)
+        ).all()
+    )
+    expected = _fact_digest(
+        run_identity=_statement_source_run_identity(segment),
+        fact_type="applies_to",
+        subject_kind="statement_candidate",
+        subject_key=fact.subject_key,
+        text_value=None,
+        source_links=(("value_source", segment.id),),
+        structured_value={"dependency_ids": list(dependency_ids)},
+    )
+    if expected != fact.content_sha256:
+        raise FactReplayMismatch("verbal Applies To does not reproduce the Fact digest")
+    return AppliesToFactValue(dependency_ids)
+
+
+def _statement_value_segment(session: Session, fact: Fact) -> SourceSegment:
+    sources = tuple(
+        session.scalars(
+            select(FactSource).where(
+                FactSource.fact_id == fact.id,
+                FactSource.role == "value_source",
+            )
+        ).all()
+    )
+    if len(sources) != 1:
+        raise FactValidationError("statement Fact needs one value source")
+    segment = session.get(SourceSegment, sources[0].source_segment_id)
+    if segment is None or segment.project_id != fact.project_id:
+        raise FactValidationError("statement Fact source is missing")
+    if segment.kind not in _STATEMENT_SOURCE_KINDS:
+        raise FactValidationError("statement Fact source is not a statement segment")
+    return segment
+
+
+def _validated_statement_timings(
+    timings: tuple[tuple[str, StatementTiming], ...],
+) -> tuple[tuple[str, StatementTiming], ...]:
+    if not timings:
+        raise FactValidationError("a statement timing Fact needs at least one timing")
+    roles = [role for role, _timing in timings]
+    if len(set(roles)) != len(roles):
+        raise FactValidationError("statement timing roles must be unique")
+    if any(role not in ("previous", "new") for role in roles):
+        raise FactValidationError("statement timing role must be previous or new")
+    if "previous" in roles and "new" not in roles:
+        raise FactValidationError(
+            "a previous timing only stands beside the new timing it changed"
+        )
+    for _role, timing in timings:
+        if not isinstance(timing, StatementTiming):
+            raise FactValidationError("statement timing must be a stated timing")
+        if not timing.text.strip():
+            raise FactValidationError("a stated timing needs the party's words")
+        if timing.precision not in ("day", "month", "approximate"):
+            raise FactValidationError("stated timing precision is not supported")
+    return tuple(sorted(timings, key=lambda item: item[0]))
+
+
+def _statement_timing_structured(
+    timings: tuple[tuple[str, StatementTiming], ...],
+) -> dict:
+    return {
+        "timings": [
+            {
+                "role": role,
+                "text": timing.text,
+                "precision": timing.precision,
+                "start_date": (
+                    timing.start_date.isoformat()
+                    if timing.start_date is not None
+                    else None
+                ),
+                "end_date": (
+                    timing.end_date.isoformat()
+                    if timing.end_date is not None
+                    else None
+                ),
+            }
+            for role, timing in timings
+        ]
+    }
+
+
+def append_supporting_documentation_fact(
+    session: Session,
+    *,
+    project_id: int,
+    subject_key: str,
+    document_id: int,
+    recorded_by: str,
+) -> Fact:
+    """Append or reuse the relationship Fact for one supporting document.
+
+    Supporting Documentation in Use relates one Project Record subject to one
+    immutable document revision (ADR-0074 stage 3).  The registered document
+    row is the identity — there is no segment to replay — and the digest keeps
+    one relationship Fact per (subject, document): a re-designation after a
+    resolution re-decides the same Fact rather than rewriting a set.
+    """
+
+    if not subject_key.strip():
+        raise FactValidationError("supporting documentation needs a record subject")
+    if not recorded_by.strip():
+        raise FactValidationError("supporting documentation needs a recorder")
+    document = session.get(Document, document_id)
+    if document is None or document.project_id != project_id:
+        raise FactValidationError(
+            "supporting documentation needs a registered project document"
+        )
+    digest = _fact_digest(
+        run_identity={"document_value_id": document_id},
+        fact_type="supporting_documentation_in_use",
+        subject_kind="record_subject",
+        subject_key=subject_key,
+        text_value=None,
+        source_links=(),
+    )
+    existing = session.scalar(
+        select(Fact).where(Fact.content_sha256 == digest)
+    )
+    if existing is not None:
+        return existing
+    fact = Fact(
+        project_id=project_id,
+        document_id=None,
+        extraction_run_id=None,
+        fact_type="supporting_documentation_in_use",
+        subject_kind="record_subject",
+        subject_key=subject_key,
+        text_value=None,
+        date_value=None,
+        date_range_start=None,
+        date_range_end=None,
+        external_org_value_id=None,
+        document_value_id=document_id,
+        transformation="supporting_document_revision_v1",
+        recorded_by=recorded_by,
+        content_sha256=digest,
+    )
+    session.add(fact)
+    session.flush([fact])
+    return fact
 
 
 def append_extracted_proposals(

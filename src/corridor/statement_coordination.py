@@ -29,6 +29,12 @@ from sqlalchemy.orm import Session
 
 from corridor import audit, notifications
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
+from corridor.statement_spine import (
+    correct_statement_scope_on_spine,
+    mark_statement_do_not_add_on_spine,
+    record_cited_statement_on_spine,
+    restore_statement_do_not_add_on_spine,
+)
 from corridor.external_statements import (
     CitedStatementEvidence,
     EvidenceBoundPartyResolution,
@@ -705,6 +711,20 @@ def coordinate_statement(
                 raise RuntimeError(
                     "the accepted statement did not receive a scope decision"
                 )
+            # Dual-write the accepted statement onto the spine in the same act
+            # (#451, ADR-0074): the legacy event stays the source of truth until
+            # cutover, and the spine gains the attributable inclusion decision.
+            record_cited_statement_on_spine(
+                session,
+                event=event,
+                candidate_id=candidate.id,
+                description=draft.description,
+                new_timing=draft.new_timing,
+                previous_timing=draft.previous_timing,
+                recorder=recorder,
+                command_type="coordinate_statement",
+                evidence=all_evidence[0],
+            )
 
             subject = CoordinationSubject.statement(event.commitment_lineage_id)
             internal_owner_decision = assign_internal_owner(
@@ -1160,6 +1180,12 @@ def correct_statement_scope(
                     "scope_decision_id": decision.id,
                 },
             )
+            correct_statement_scope_on_spine(
+                session,
+                event=event,
+                scope_decision_id=decision.id,
+                recorder=recorder,
+            )
             candidate = session.get(Candidate, correction.candidate_id)
             assert candidate is not None  # required by _require_candidate_owns_lineage
             record_statement_scope_correction_case(
@@ -1291,6 +1317,17 @@ def correct_statement_facts(
                     "statement_event_id": successor.id,
                     **_party_resolution_audit(party_resolution),
                 },
+            )
+            record_cited_statement_on_spine(
+                session,
+                event=successor,
+                candidate_id=draft.candidate_id,
+                description=draft.description,
+                new_timing=draft.new_timing,
+                previous_timing=draft.previous_timing,
+                recorder=recorder,
+                command_type="correct_statement_facts",
+                evidence=evidence[0],
             )
             candidate = session.get(Candidate, draft.candidate_id)
             assert candidate is not None  # required by _require_candidate_owns_lineage
@@ -1690,6 +1727,12 @@ def mark_statement_not_relevant(
                 recorded_by=recorder.subject,
             )
             session.flush()
+            mark_statement_do_not_add_on_spine(
+                session,
+                candidate=candidate,
+                recorder=recorder,
+                disposition_id=disposition.id,
+            )
     except StaleStatementCoordination:
         raise
     except (ValueError, IntegrityError) as exc:
@@ -1777,6 +1820,12 @@ def restore_statement_not_relevant(
             candidate.state = "pending"
             candidate.adjudicated_at = None
             session.flush()
+            restore_statement_do_not_add_on_spine(
+                session,
+                candidate=candidate,
+                recorder=recorder,
+                reversal_id=reversal.id,
+            )
     except StaleStatementCoordination:
         raise
     except (ValueError, IntegrityError) as exc:

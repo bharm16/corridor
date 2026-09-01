@@ -342,3 +342,123 @@ def test_abstained_proposal_cannot_create_structured_cell_decision(session, deci
                 )
             )
         )
+
+
+def test_settling_a_discrepancy_re_decides_the_matching_observed_fact(
+    session, decision_case
+):
+    from corridor.disputes import settle_dispute
+    from corridor.models import Assertion, EvidenceLink
+    from corridor.principals import HumanPrincipal
+
+    project, document, _run, facts = decision_case
+    dependency_id = session.scalar(
+        select(Candidate.merged_into).where(Candidate.project_id == project.id)
+    )
+    for value in ("1149+00", "1150+00"):
+        link = EvidenceLink(
+            dependency_id=dependency_id,
+            document_id=document.id,
+            page_no=1,
+            quote=value,
+            verified=True,
+        )
+        session.add(link)
+        session.flush()
+        session.add(
+            Assertion(
+                dependency_id=dependency_id,
+                field_name="station_from",
+                asserted_value=value,
+                evidence_link_id=link.id,
+            )
+        )
+    session.flush()
+    included = include_structured_cell_fact_by_policy(
+        session, facts[0], idempotency_key="include:station:discrepancy"
+    )
+
+    settlement = settle_dispute(
+        session,
+        dependency_id,
+        "station_from",
+        value="1150+00",
+        principal=HumanPrincipal("local:dispute-settler"),
+    )
+
+    decisions = session.scalars(
+        select(FactDecision)
+        .where(
+            FactDecision.project_id == project.id,
+            FactDecision.fact_type == "station_from",
+        )
+        .order_by(FactDecision.id)
+    ).all()
+    assert len(decisions) == 2
+    superseded, resolution = decisions
+    assert superseded.id == included.decision.id
+    assert superseded.superseded_by == resolution.id
+    # The settlement selected the already-observed E3 reading, so the
+    # resolution re-decides that fact rather than synthesizing a value.
+    assert resolution.fact_id == facts[1].id
+    assert resolution.disposition == "include"
+    assert resolution.superseded_by is None
+    revision = session.get(ProjectRecordRevision, resolution.revision_id)
+    assert revision.command_type == "resolve_discrepancy"
+    assert revision.human_principal == "local:dispute-settler"
+    assert revision.released_policy is None
+    assert (
+        revision.idempotency_key == f"resolve-discrepancy:{settlement.id}"
+    )
+
+
+def test_settling_to_a_value_no_fact_carries_stays_legacy_only(
+    session, decision_case
+):
+    from corridor.disputes import settle_dispute
+    from corridor.models import Assertion, EvidenceLink
+    from corridor.principals import HumanPrincipal
+
+    project, document, _run, facts = decision_case
+    dependency_id = session.scalar(
+        select(Candidate.merged_into).where(Candidate.project_id == project.id)
+    )
+    for value in ("1149+00", "1150+00"):
+        link = EvidenceLink(
+            dependency_id=dependency_id,
+            document_id=document.id,
+            page_no=1,
+            quote=value,
+            verified=True,
+        )
+        session.add(link)
+        session.flush()
+        session.add(
+            Assertion(
+                dependency_id=dependency_id,
+                field_name="station_from",
+                asserted_value=value,
+                evidence_link_id=link.id,
+            )
+        )
+    session.flush()
+    included = include_structured_cell_fact_by_policy(
+        session, facts[0], idempotency_key="include:station:synthesized"
+    )
+
+    settle_dispute(
+        session,
+        dependency_id,
+        "station_from",
+        value="1151+50",
+        principal=HumanPrincipal("local:dispute-settler"),
+    )
+
+    decisions = session.scalars(
+        select(FactDecision).where(
+            FactDecision.project_id == project.id,
+            FactDecision.fact_type == "station_from",
+        )
+    ).all()
+    assert [decision.id for decision in decisions] == [included.decision.id]
+    assert decisions[0].superseded_by is None

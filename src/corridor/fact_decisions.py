@@ -14,7 +14,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, aliased
 
-from corridor.fact_types import FACT_TYPE_CONTRACTS
+from corridor.fact_types import (
+    FACT_TYPE_CONTRACTS,
+    inclusion_rule_admits_human_record_decision,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.models import (
     ActiveExtractionRun,
@@ -54,13 +57,21 @@ class StaleHumanDecision(FactDecisionRefused):
 HUMAN_DECISION_COMMANDS = frozenset(
     {
         "record_verbal_statement",
+        "coordinate_statement",
         "correct_statement_scope",
         "correct_statement_facts",
         "mark_do_not_add",
+        "restore_do_not_add",
         "resolve_discrepancy",
         "designate_support",
+        "resolve_support",
     }
 )
+
+# What the Project Record does with the decided fact (ADR-0074 stage 3):
+# 'include' projects it, 'do_not_add' suppresses the statement's facts, and
+# 'restore' compensates a predecessor while contributing nothing itself.
+HUMAN_DECISION_DISPOSITIONS = frozenset({"include", "do_not_add", "restore"})
 
 
 @dataclass(frozen=True)
@@ -85,6 +96,7 @@ def record_human_fact_decision(
     command_type: str,
     idempotency_key: str,
     expected_predecessor: int | None = None,
+    disposition: str = "include",
 ) -> HumanDecisionResult:
     """Record one attributable Human Record Decision on the spine (ADR-0070).
 
@@ -93,7 +105,9 @@ def record_human_fact_decision(
     reversing supersedes the named ``expected_predecessor``; a first decision
     passes ``None``. Because the set-valued human types have no effectiveness
     index, a stale predecessor is refused here rather than by the database
-    unique constraint.
+    unique constraint. The ``disposition`` says what the Project Record does
+    with the fact; a compensating decision may re-decide the same fact its
+    superseded predecessor decided (ADR-0074 stage 3).
     """
 
     if not idempotency_key.strip():
@@ -102,10 +116,14 @@ def record_human_fact_decision(
         raise FactDecisionRefused(
             f"unrecognized human record decision command {command_type!r}"
         )
+    if disposition not in HUMAN_DECISION_DISPOSITIONS:
+        raise FactDecisionRefused(
+            f"unrecognized human record decision disposition {disposition!r}"
+        )
     contract = FACT_TYPE_CONTRACTS.get(fact.fact_type)
     if contract is None:
         raise FactDecisionRefused("Fact type has no released inclusion contract")
-    if contract.inclusion_rule != "human_record_decision":
+    if not inclusion_rule_admits_human_record_decision(contract.inclusion_rule):
         raise FactDecisionRefused(
             "Fact type is not settled by a Human Record Decision"
         )
@@ -121,6 +139,7 @@ def record_human_fact_decision(
                     fact.subject_key,
                     fact.fact_type,
                     command_type,
+                    disposition,
                     actor,
                     idempotency_key,
                     expected_predecessor,

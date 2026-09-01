@@ -11,6 +11,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def inclusion_rule_admits_human_record_decision(inclusion_rule: str) -> bool:
+    """Whether a Fact type may be settled by a Human Record Decision.
+
+    A pure human type is always human-settled; a dual-use type
+    (``..._else_human_record_decision``) is human-settled off its automatic
+    source — a Recorded Verbal Statement's Applies To, not a spreadsheet cell.
+    """
+
+    return inclusion_rule == "human_record_decision" or inclusion_rule.endswith(
+        "_else_human_record_decision"
+    )
+
+
 @dataclass(frozen=True)
 class FactTypeContract:
     """Validation, current-value, and inclusion rules for one Fact type."""
@@ -82,7 +95,10 @@ FACT_TYPE_CONTRACTS = {
                 else "non_empty_replay_exact"
             ),
             current_value_rule="latest_effective_single_value",
-            inclusion_rule="verified_mapping_cell_policy",
+            # A cell value is settled by the automatic policy; a Discrepancy
+            # Resolution settles the same field by a Human Record Decision
+            # over an already-observed fact of the matching type (#451).
+            inclusion_rule="verified_mapping_cell_policy_else_human_record_decision",
         )
         for name in STRUCTURED_TEXT_FACT_TYPES
     },
@@ -96,7 +112,7 @@ FACT_TYPE_CONTRACTS = {
             required_roles=frozenset({"value_source"}),
             validation_rule="iso_calendar_date_replay_exact",
             current_value_rule="latest_effective_single_value",
-            inclusion_rule="verified_mapping_cell_policy",
+            inclusion_rule="verified_mapping_cell_policy_else_human_record_decision",
         )
         for name in STRUCTURED_DATE_FACT_TYPES
     },
@@ -104,12 +120,16 @@ FACT_TYPE_CONTRACTS = {
         value_class="reference_set",
         subject_kind="source_row",
         transformation="structured_reference_set_v1",
-        accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
+        accepted_segment_kinds=frozenset(
+            {"spreadsheet_cell", "recorded_verbal_statement", "prose_span"}
+        ),
         automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
         required_roles=frozenset({"value_source"}),
         validation_rule="non_empty_scoped_reference_set",
         current_value_rule="effective_reference_set",
-        inclusion_rule="verified_mapping_cell_policy",
+        # A spreadsheet Applies To is settled by the automatic cell policy; a
+        # Recorded Verbal Statement's scope is a Human Record Decision (#451).
+        inclusion_rule="verified_mapping_cell_policy_else_human_record_decision",
     ),
     "closure_result": FactTypeContract(
         value_class="closure_result",
@@ -126,10 +146,39 @@ FACT_TYPE_CONTRACTS = {
         value_class="text",
         subject_kind="statement_candidate",
         transformation="exact_prose_span_v1",
-        accepted_segment_kinds=frozenset({"prose_span"}),
+        accepted_segment_kinds=frozenset(
+            {"prose_span", "recorded_verbal_statement"}
+        ),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source", "attribution_source"}),
         validation_rule="exact_attributed_prose_span",
+        current_value_rule="human_decision_effectiveness",
+        inclusion_rule="human_record_decision",
+    ),
+    "statement_timing": FactTypeContract(
+        value_class="statement_timing",
+        subject_kind="statement_candidate",
+        transformation="typed_statement_timing_v1",
+        accepted_segment_kinds=frozenset(
+            {"recorded_verbal_statement", "prose_span"}
+        ),
+        automatic_segment_kinds=frozenset(),
+        required_roles=frozenset({"value_source"}),
+        validation_rule="typed_statement_timing_set",
+        current_value_rule="human_decision_effectiveness",
+        inclusion_rule="human_record_decision",
+    ),
+    # A relationship between one Project Record subject and one immutable
+    # document revision (ADR-0074 stage 3): the identity is the registered
+    # document row itself, so the fact needs no source segment to replay.
+    "supporting_documentation_in_use": FactTypeContract(
+        value_class="document_revision",
+        subject_kind="record_subject",
+        transformation="supporting_document_revision_v1",
+        accepted_segment_kinds=frozenset(),
+        automatic_segment_kinds=frozenset(),
+        required_roles=frozenset(),
+        validation_rule="registered_document_revision",
         current_value_rule="human_decision_effectiveness",
         inclusion_rule="human_record_decision",
     ),

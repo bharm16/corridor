@@ -203,14 +203,19 @@ def test_a_stale_predecessor_is_refused(session, project_document_run):
         )
 
 
-def test_a_non_human_gated_fact_type_is_refused(session, project_document_run):
+def test_a_structured_cell_fact_admits_a_human_discrepancy_decision(
+    session, project_document_run
+):
+    # The cell types are dual-use since #451 stage 3: automatic off their
+    # spreadsheet cells, human-settled by a Discrepancy Resolution.
     project, document, run = project_document_run
     fact = _station_fact(session, project, document, run)
-    with pytest.raises(FactDecisionRefused):
-        record_human_fact_decision(
-            session, fact, principal=RECORDER,
-            command_type="record_verbal_statement", idempotency_key="station-x",
-        )
+    result = record_human_fact_decision(
+        session, fact, principal=RECORDER,
+        command_type="resolve_discrepancy", idempotency_key="station-x",
+    )
+    assert result.created is True
+    assert result.revision.human_principal == RECORDER.subject
 
 
 def test_the_current_view_shows_the_effective_human_decision(

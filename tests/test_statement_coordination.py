@@ -9,6 +9,7 @@ import hashlib
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy import text as text_sql
 
 from corridor import audit
 from corridor.db import Session, engine
@@ -23,12 +24,18 @@ from corridor.external_statements import (
     StatementTiming,
 )
 from corridor.models import (
+    ActiveExtractionRun,
     Candidate,
     CandidateDisposition,
     AuditLog,
     CommitmentLineage,
     Dependency,
     DependencyEvent,
+    Fact,
+    FactDecision,
+    FactSource,
+    ProjectRecordRevision,
+    SourceSegment,
     DependencyEventEvidence,
     DependencyEventScope,
     DependencyEventScopeDecision,
@@ -265,6 +272,239 @@ def _draft(
         milestone_impact=milestone_impact,
         milestone_ids=milestone_ids,
     )
+
+
+def _seed_extraction_wording_passage(session, project, document, candidate, quote):
+    """Mimic the extraction wording Fact + prose span that a Minutes run leaves."""
+    run_id = session.scalar(
+        select(ActiveExtractionRun.extraction_run_id).where(
+            ActiveExtractionRun.document_id == document.id
+        )
+    )
+    segment = SourceSegment(
+        project_id=project.id,
+        document_id=document.id,
+        kind="prose_span",
+        exact_text=quote,
+        content_sha256=hashlib.sha256(quote.encode()).hexdigest(),
+        ordinal=1,
+        page_no=1,
+        start_offset=0,
+        end_offset=len(quote),
+    )
+    session.add(segment)
+    session.flush()
+    fact = Fact(
+        project_id=project.id,
+        document_id=document.id,
+        extraction_run_id=run_id,
+        fact_type="statement_wording",
+        subject_kind="statement_candidate",
+        subject_key=f"candidate:{candidate.id}",
+        text_value=quote,
+        transformation="exact_prose_span_v1",
+        recorded_by="extractor:guided-statement-test",
+        content_sha256=hashlib.sha256(f"wording:{candidate.id}".encode()).hexdigest(),
+    )
+    session.add(fact)
+    session.flush()
+    session.add(
+        FactSource(
+            project_id=project.id,
+            document_id=document.id,
+            fact_id=fact.id,
+            source_segment_id=segment.id,
+            role="value_source",
+            ordinal=1,
+        )
+    )
+    session.flush()
+
+
+def test_coordinate_statement_dual_writes_the_cited_statement_on_the_spine(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete the relocation by May 16, 2026."
+    document = _document(session, project, "km-minutes.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, quote)
+    dependency = _dependency(session, project, party, "KM-9", "KM 30-inch line")
+
+    coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("May 16, 2026", date(2026, 5, 16)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+    session.expire_all()
+
+    decisions = session.scalars(
+        select(FactDecision)
+        .join(ProjectRecordRevision, ProjectRecordRevision.id == FactDecision.revision_id)
+        .where(
+            FactDecision.project_id == project.id,
+            FactDecision.superseded_by.is_(None),
+            ProjectRecordRevision.command_type == "coordinate_statement",
+        )
+    ).all()
+    by_type = {decision.fact_type: decision for decision in decisions}
+    assert set(by_type) == {"statement_wording", "statement_timing", "applies_to"}
+    for decision in decisions:
+        revision = session.get(ProjectRecordRevision, decision.revision_id)
+        assert revision.human_principal == "local:statement-coordinator"
+        assert revision.released_policy is None
+        assert decision.subject_key.startswith("lineage:")
+
+
+def _spine_decision(session, project_id, lineage_id, fact_type):
+    return session.scalar(
+        select(FactDecision).where(
+            FactDecision.project_id == project_id,
+            FactDecision.subject_key == f"lineage:{lineage_id}",
+            FactDecision.fact_type == fact_type,
+            FactDecision.superseded_by.is_(None),
+        )
+    )
+
+
+def test_correct_statement_scope_supersedes_only_the_spine_applies_to(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    document = _document(session, project, "scope-spine.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "commitment", "description": quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, quote)
+    dependency = _dependency(session, project, party, "SCOPE-SPINE-1", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, quote),),
+            scope=StatementScope.unknown(),
+        ),
+        principal=RECORDER,
+    )
+    lineage_id = result.event.commitment_lineage_id
+    wording_before = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    applies_before = _spine_decision(session, project.id, lineage_id, "applies_to")
+
+    correct_statement_scope(
+        session,
+        StatementScopeCorrection(
+            candidate_id=candidate.id,
+            event_id=result.event.id,
+            expected_scope_decision_id=result.receipt.scope_decision_id,
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+    session.expire_all()
+
+    applies_after = _spine_decision(session, project.id, lineage_id, "applies_to")
+    wording_after = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    assert applies_after.id != applies_before.id  # scope superseded
+    assert wording_after.id == wording_before.id  # wording untouched
+    revision = session.get(ProjectRecordRevision, applies_after.revision_id)
+    assert revision.command_type == "correct_statement_scope"
+
+
+def test_correct_statement_facts_supersedes_wording_and_timing_on_the_spine(
+    session, project, party, roster_entry
+):
+    original_quote = "Kinder Morgan will complete relocation by June 1, 2026."
+    corrected_quote = "Kinder Morgan will complete relocation by July 1, 2026."
+    document = _document(
+        session, project, "facts-spine.pdf", f"{original_quote}\n{corrected_quote}"
+    )
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=original_quote,
+        fields={"event_type": "commitment", "description": original_quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, original_quote)
+    session.add(
+        SourceSegment(
+            project_id=project.id,
+            document_id=document.id,
+            kind="prose_span",
+            exact_text=corrected_quote,
+            content_sha256=hashlib.sha256(corrected_quote.encode()).hexdigest(),
+            ordinal=2,
+            page_no=1,
+            start_offset=len(original_quote) + 1,
+            end_offset=len(original_quote) + 1 + len(corrected_quote),
+        )
+    )
+    session.flush()
+    dependency = _dependency(session, project, party, "FACTS-SPINE-1", "KM crossing")
+    result = coordinate_statement(
+        session,
+        _draft(
+            candidate,
+            party,
+            roster_entry,
+            description=original_quote,
+            new_timing=StatementTiming.day("June 1, 2026", date(2026, 6, 1)),
+            evidence=(CitedStatementEvidence(document.id, 1, original_quote),),
+            scope=StatementScope.selected((dependency.id,)),
+        ),
+        principal=RECORDER,
+    )
+    lineage_id = result.event.commitment_lineage_id
+    wording_before = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    applies_before = _spine_decision(session, project.id, lineage_id, "applies_to")
+
+    correct_statement_facts(
+        session,
+        StatementFactCorrectionDraft(
+            candidate_id=candidate.id,
+            expected_statement_event_id=result.event.id,
+            affected_external_org_id=party.id,
+            stated_party=party.name,
+            stated_external_org_id=party.id,
+            event_date=date(2025, 1, 17),
+            description=corrected_quote,
+            new_timing=StatementTiming.day("July 1, 2026", date(2026, 7, 1)),
+            previous_timing=None,
+            evidence=(CitedStatementEvidence(document.id, 1, corrected_quote),),
+        ),
+        principal=RECORDER,
+    )
+    session.expire_all()
+
+    wording_after = _spine_decision(session, project.id, lineage_id, "statement_wording")
+    applies_after = _spine_decision(session, project.id, lineage_id, "applies_to")
+    assert wording_after.id != wording_before.id  # wording superseded
+    assert applies_after.id == applies_before.id  # carried-forward scope unchanged
+    corrected_fact = session.get(Fact, wording_after.fact_id)
+    assert corrected_fact.text_value == corrected_quote
+    revision = session.get(ProjectRecordRevision, wording_after.revision_id)
+    assert revision.command_type == "correct_statement_facts"
 
 
 def test_command_records_the_7296_shape_with_additional_verified_party_context(
@@ -1611,6 +1851,86 @@ def test_not_relevant_is_reasoned_reversible_and_never_creates_a_statement_or_pl
     assert states[1].predecessor_state_id == states[0].id
     assert states[1].ruling_type == "statement_coordination_reversal"
     assert states[1].ruling_id == reversal.id
+
+
+def test_not_relevant_dual_writes_the_do_not_add_decision_on_the_spine(
+    session, project, party, roster_entry
+):
+    quote = "Kinder Morgan discussed traffic control in the project meeting."
+    document = _document(session, project, "dna-spine.pdf", quote)
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={"event_type": "mention", "description": quote},
+    )
+    _seed_extraction_wording_passage(session, project, document, candidate, quote)
+    subject_key = f"candidate:{candidate.id}"
+
+    disposition = mark_statement_not_relevant(
+        session,
+        candidate.id,
+        reason="outside_project_scope",
+        confirmed=True,
+        principal=RECORDER,
+    )
+
+    marked = session.scalars(
+        select(FactDecision).where(
+            FactDecision.project_id == project.id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == "statement_wording",
+        )
+    ).one()
+    assert marked.disposition == "do_not_add"
+    assert marked.superseded_by is None
+    revision = session.get(ProjectRecordRevision, marked.revision_id)
+    assert revision.command_type == "mark_do_not_add"
+    assert revision.human_principal == RECORDER.subject
+    assert revision.released_policy is None
+    # A do_not_add decision never projects into the current record.
+    assert session.execute(
+        text_sql(
+            "select count(*) from current_project_record "
+            "where project_id = :project_id and subject_key = :subject_key"
+        ),
+        {"project_id": project.id, "subject_key": subject_key},
+    ).scalar() == 0
+
+    reversal = restore_statement_not_relevant(
+        session, disposition.id, principal=RECORDER
+    )
+
+    decisions = session.scalars(
+        select(FactDecision)
+        .where(
+            FactDecision.project_id == project.id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == "statement_wording",
+        )
+        .order_by(FactDecision.id)
+    ).all()
+    assert [decision.disposition for decision in decisions] == [
+        "do_not_add",
+        "restore",
+    ]
+    # The compensating decision re-decides the same wording anchor fact.
+    assert decisions[0].fact_id == decisions[1].fact_id
+    assert decisions[0].superseded_by == decisions[1].id
+    assert decisions[1].superseded_by is None
+    restore_revision = session.get(ProjectRecordRevision, decisions[1].revision_id)
+    assert restore_revision.command_type == "restore_do_not_add"
+    assert restore_revision.human_principal == RECORDER.subject
+    # Restoring lifts the suppression without implying inclusion.
+    assert session.execute(
+        text_sql(
+            "select count(*) from current_project_record "
+            "where project_id = :project_id and subject_key = :subject_key"
+        ),
+        {"project_id": project.id, "subject_key": subject_key},
+    ).scalar() == 0
+    assert reversal.candidate_id == candidate.id
 
 
 def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
