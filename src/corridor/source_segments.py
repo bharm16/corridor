@@ -276,6 +276,54 @@ def dereference_source_segment(
     return recovered
 
 
+def recorded_verbal_statement_segment(
+    *, project_id: int, statement_id: int, exact_text: str, ordinal: int = 1
+) -> SourceSegment:
+    """Build the one exact-wording segment for a Recorded Verbal Statement.
+
+    A verbal has no source Document (ADR-0033): the named recorder's words are
+    the source, so the segment points at the statement and self-certifies its
+    words with a digest instead of pointing at document bytes (ADR-0068).
+    """
+
+    if not exact_text.strip():
+        raise SourceSegmentLocatorMismatch(
+            "a recorded verbal statement segment needs exact words"
+        )
+    return SourceSegment(
+        project_id=project_id,
+        document_id=None,
+        statement_id=statement_id,
+        kind="recorded_verbal_statement",
+        exact_text=exact_text,
+        content_sha256=_text_digest(exact_text),
+        ordinal=ordinal,
+    )
+
+
+def replay_recorded_verbal_statement(segment: SourceSegment) -> str:
+    """Replay a recorded verbal statement from its own words.
+
+    There is no Document to dereference against; integrity is the stored
+    digest's self-consistency with the words it certifies. A tampered digest
+    or an incomplete locator fails closed rather than returning text.
+    """
+
+    if segment.kind != "recorded_verbal_statement":
+        raise SourceSegmentLocatorMismatch(
+            "segment is not a recorded verbal statement"
+        )
+    if segment.statement_id is None or segment.document_id is not None:
+        raise SourceSegmentLocatorMismatch(
+            "recorded verbal statement segment locator is incomplete"
+        )
+    if _text_digest(segment.exact_text) != segment.content_sha256:
+        raise SourceSegmentDigestMismatch(
+            "stored segment digest does not match its recorded words"
+        )
+    return segment.exact_text
+
+
 def _require_registered_bytes(document: Document, path: Path) -> None:
     actual = sha256(path.read_bytes()).hexdigest()
     if actual != document.sha256:
