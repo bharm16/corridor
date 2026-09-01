@@ -163,6 +163,38 @@ def test_the_current_record_shows_the_verbal_decisions(session, dependency):
     assert verbal_facts == {"statement_wording", "statement_timing", "applies_to"}
 
 
+def test_the_current_record_hydrates_the_verbal_timing_satellite(session, dependency):
+    event = record_verbal_statement(
+        session,
+        project_id=dependency.project_id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T committed to June.",
+        conversation_date=date(2025, 5, 1),
+        new_timing=StatementTiming.month("June 2025", 2025, 6),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+    subject_key = f"lineage:{event.commitment_lineage_id}"
+    session.expire_all()
+
+    current = read_current_project_record(session, dependency.project_id)
+    timing_value = next(
+        value
+        for value in current
+        if value.subject_key == subject_key and value.fact_type == "statement_timing"
+    )
+    assert [t.timing_role for t in timing_value.statement_timings] == ["new"]
+    assert timing_value.statement_timings[0].precision == "month"
+    assert timing_value.statement_timings[0].start_date == date(2025, 6, 1)
+    scope_value = next(
+        value
+        for value in current
+        if value.subject_key == subject_key and value.fact_type == "applies_to"
+    )
+    assert scope_value.applies_to_dependency_ids == (dependency.id,)
+
+
 def test_a_stated_change_supersedes_wording_and_timing_but_keeps_scope(
     session, dependency
 ):

@@ -22,10 +22,26 @@ from sqlalchemy.orm import Session
 
 from corridor.briefing import brief_project, render as render_briefing
 from corridor.export import to_xlsx
-from corridor.models import FactAppliesTo, FactClosureResult, FactClosureSource
+from corridor.models import (
+    FactAppliesTo,
+    FactClosureResult,
+    FactClosureSource,
+    FactStatementTiming,
+)
 from corridor.project_reading import FrozenProjectReading, freeze_project_reading
 from corridor.report import build_report, render as render_report
 from corridor.report_release import render_external_report_pdf
+
+
+@dataclass(frozen=True)
+class CurrentStatementTiming:
+    """One projected member of a statement_timing decision's satellite."""
+
+    timing_role: str
+    text: str
+    precision: str
+    start_date: date | None
+    end_date: date | None
 
 
 @dataclass(frozen=True)
@@ -47,6 +63,7 @@ class CurrentRecordValue:
     closure_kind: str | None = None
     closure_successor_dependency_id: int | None = None
     closure_governing_source_segment_ids: tuple[int, ...] = ()
+    statement_timings: tuple[CurrentStatementTiming, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +170,21 @@ def _attach_structured_values(
         .order_by(FactClosureSource.fact_id, FactClosureSource.ordinal)
     ):
         closure_sources.setdefault(fact_id, []).append(source_segment_id)
+    timings: dict[int, list[CurrentStatementTiming]] = {}
+    for row in session.scalars(
+        select(FactStatementTiming)
+        .where(FactStatementTiming.fact_id.in_(fact_ids))
+        .order_by(FactStatementTiming.fact_id, FactStatementTiming.timing_role)
+    ):
+        timings.setdefault(row.fact_id, []).append(
+            CurrentStatementTiming(
+                timing_role=row.timing_role,
+                text=row.text,
+                precision=row.precision,
+                start_date=row.start_date,
+                end_date=row.end_date,
+            )
+        )
     return tuple(
         replace(
             value,
@@ -170,6 +202,7 @@ def _attach_structured_values(
             closure_governing_source_segment_ids=tuple(
                 closure_sources.get(value.fact_id, ())
             ),
+            statement_timings=tuple(timings.get(value.fact_id, ())),
         )
         for value in values
     )
