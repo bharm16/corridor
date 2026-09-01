@@ -70,5 +70,5 @@ The [realignment review](../research/adr-code-open-issue-realignment-review-2026
 ## Consequences
 
 - The amended ADRs record `amended_by: ADR-0083`; their bodies are unchanged.
-- Issues #496 (pull connector), the push-intake issue, #489, #458, and the disposition issue are rewritten against these corrections in the same review.
+- Issues #496 (pull connector), #511 (push intake), #489, #458, and #514 (disposition) are written against these corrections in the same review.
 - No implementation of `semantic_support_status`, granular disposition, or change-inbox schema begins before ADR-0082 and this ADR are merged.

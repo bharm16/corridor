@@ -23,10 +23,10 @@ The reasoning is the [2026-09-01 realignment review](docs/research/adr-code-open
 
 Done in the ADR-0082/0083 change unless marked open.
 
-1. ADR-0082 supersedes ADR-0077 (provenance by value class; support as a relation).
-2. ADR index authority semantics and lifecycle validation fixed; `make check` is a required status.
-3. This roadmap and the exact pilot contract published.
-4. Glossary entries for Source Fact, Adopt Baseline, Proposed Delta, Resolve Delta.
+1. #505: ADR-0082 supersedes ADR-0077 (provenance by value class; support as a relation).
+2. #506: ADR index authority semantics and lifecycle validation fixed; `make check` runs as a standalone CI status (server-side enforcement needs a ruleset the private free-plan repository cannot create).
+3. #507: this roadmap and the exact pilot contract published.
+4. #508: glossary entries for Source Fact, Adopt Baseline, Proposed Delta, Resolve Delta.
 5. ADR-0078/0080/0081 corrections recorded in ADR-0083.
 
 **Exit:** the Phase 0 issues (see #459) are closed with this change merged.
@@ -36,15 +36,15 @@ Done in the ADR-0082/0083 change unless marked open.
 1. #428: validate the consultant-first buyer, budget, sponsor, procurement, and pricing hypotheses with real discovery.
 2. #461: resolve PyMuPDF licensing before any external deployment that uses it.
 3. #487 storage interface and object storage; #490 untrusted-intake hardening; #491 structured logs and metrics; #489 design-partner shadow environment.
-4. #496 pull connector and normalized SourceEnvelope; the project-bound push-intake issue, built only for channels the partner needs.
-5. #503 pilot and enterprise identity, authorization, and deprovisioning.
+4. #496 pull connector and normalized SourceEnvelope; #511 project-bound push intake, built only for channels the partner needs.
+5. #503 pilot and enterprise identity, authorization, and deprovisioning; #514 customer-environment disposition, legal hold, and backup-expiration contract before external pilot data.
 
 **Exit:** a staging environment with one customer database, backups restored once, intake hardened, and one partner's connector registered.
 
 ## Phase 2 — build the paid vertical slice on the spine
 
-1. Adopt Baseline: preview and atomically import one customer UCM or system export.
-2. Proposed Delta and Resolve Delta: the canonical backend lifecycle.
+1. #509 Adopt Baseline: preview and atomically import one customer UCM or system export.
+2. #510 Proposed Delta and Resolve Delta: the canonical backend lifecycle.
 3. #450 schedule source, #455 email source, #456 minutes source, each only for the partner's source classes.
 4. #494 change inbox rebuilt around Proposed Delta.
 5. #495 customer-format UCM export from the adopted native workbook.
@@ -63,8 +63,8 @@ Done in the ADR-0082/0083 change unless marked open.
 
 ## Phase 4 — finish the canonical cutover (ADR-0081)
 
-1. Spine-native verbal and source origin (stage 1).
-2. Historical backfill preserving original authorship (stage 2).
+1. #512 spine-native verbal and source origin (stage 1).
+2. #513 historical backfill preserving original authorship (stage 2).
 3. #457 permanent-state dedup as a convergence prerequisite.
 4. Coverage-aware semantic-equivalence gate and reader switch (stages 3 and 4).
 5. #458 writer switch, bounded shadow comparison, rollback decision, and legacy retirement (stages 5 and 6).
