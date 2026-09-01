@@ -723,7 +723,7 @@ class SourceSegment(Base):
             name="fk_source_segments_document_scope",
         ),
         CheckConstraint(
-            "kind in ('spreadsheet_cell', 'prose_span')",
+            "kind in ('spreadsheet_cell', 'prose_span', 'recorded_verbal_statement')",
             name="ck_source_segments_kind",
         ),
         CheckConstraint(
@@ -735,18 +735,33 @@ class SourceSegment(Base):
         ),
         CheckConstraint("ordinal > 0", name="ck_source_segments_ordinal"),
         CheckConstraint(
-            "(kind = 'spreadsheet_cell' and length(sheet_name) > 0 and "
+            "(kind = 'spreadsheet_cell' and document_id is not null "
+            "and statement_id is null and length(sheet_name) > 0 and "
             "cell_range ~ '^[A-Z]+[1-9][0-9]*$' and page_no is null and "
             "start_offset is null and end_offset is null) or "
-            "(kind = 'prose_span' and sheet_name is null and cell_range is null "
-            "and page_no > 0 and start_offset >= 0 and end_offset > start_offset)",
+            "(kind = 'prose_span' and document_id is not null "
+            "and statement_id is null and sheet_name is null and cell_range is null "
+            "and page_no > 0 and start_offset >= 0 and end_offset > start_offset) or "
+            "(kind = 'recorded_verbal_statement' and document_id is null "
+            "and statement_id is not null and sheet_name is null "
+            "and cell_range is null and page_no is null and start_offset is null "
+            "and end_offset is null)",
             name="ck_source_segments_locator",
+        ),
+        Index(
+            "uq_source_segments_statement",
+            "statement_id",
+            unique=True,
+            postgresql_where=text("kind = 'recorded_verbal_statement'"),
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    document_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    statement_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dependency_events.id")
+    )
     kind: Mapped[str] = mapped_column(String(32))
     exact_text: Mapped[str] = mapped_column(Text)
     content_sha256: Mapped[str] = mapped_column(String(64))
