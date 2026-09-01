@@ -623,6 +623,10 @@ def test_designation_dual_writes_the_relationship_fact_on_the_spine(
     assert displaced.superseded_by == compensation.id
     assert compensation.disposition == "restore"
     assert compensation.fact_id == first.fact_id
+    assert (
+        session.get(ProjectRecordRevision, compensation.revision_id).command_type
+        == "resolve_support"
+    )
     assert included.disposition == "include"
     assert session.get(Fact, included.fact_id).document_value_id == other_document.id
 

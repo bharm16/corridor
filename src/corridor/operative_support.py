@@ -252,7 +252,7 @@ def _record_support_designation_on_spine(
             session,
             member,
             principal=recorder,
-            command_type="designate_support",
+            command_type="resolve_support",
             disposition="restore",
             idempotency_key=f"resolve-support:{decision.id}",
             expected_predecessor=decision.id,

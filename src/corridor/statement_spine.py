@@ -103,7 +103,6 @@ def correct_statement_scope_on_spine(
     event: DependencyEvent,
     scope_decision_id: int,
     recorder: HumanPrincipal,
-    command_type: str = "correct_statement_scope",
 ) -> None:
     """Supersede the lineage's spine Applies To with the corrected scope.
 
@@ -134,7 +133,7 @@ def correct_statement_scope_on_spine(
         session,
         applies,
         principal=recorder,
-        command_type=command_type,
+        command_type="correct_statement_scope",
         idempotency_key=f"correct-statement-scope:{scope_decision_id}",
         expected_predecessor=predecessor,
     )
@@ -155,6 +154,12 @@ def mark_statement_do_not_add_on_spine(
     fact anchors its Commitment Lineage; a legacy statement without one is
     materialized as part of this human save when its passage resolves, and
     stays legacy-only otherwise — never guessed.
+
+    The anchor is candidate-keyed (``candidate:{id}``), never lineage-keyed:
+    only a pending statement can be marked Not Relevant, and coordination —
+    which is what creates the ``lineage:`` spine subject — is exactly what a
+    pending statement has not had. The suppression clause therefore always
+    matches the subject the statement's facts actually live under.
     """
 
     fact = _candidate_wording_fact(session, candidate)

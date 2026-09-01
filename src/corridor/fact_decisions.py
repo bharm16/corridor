@@ -64,6 +64,7 @@ HUMAN_DECISION_COMMANDS = frozenset(
         "restore_do_not_add",
         "resolve_discrepancy",
         "designate_support",
+        "resolve_support",
     }
 )
 

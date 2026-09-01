@@ -21,10 +21,12 @@ Stage 3 of #451 puts the remaining Human Record Decisions on the spine
   the registered document row is the identity, so there is no segment to
   replay.
 
-`restore_do_not_add` joins the command allow-list: restoring a Do Not Add is
-a distinct human action from marking one, and reusing `mark_do_not_add`
-would make the Audit Trail falsely claim a second mark (the same reasoning
-that gave Cited inclusion its own `coordinate_statement` command).
+`restore_do_not_add` and `resolve_support` join the command allow-list:
+restoring a Do Not Add is a distinct human action from marking one, and
+resolving a support designation is distinct from designating one — reusing
+the forward command would make the Audit Trail falsely claim a second act of
+the same kind (the reasoning that gave Cited inclusion its own
+`coordinate_statement` command).
 
 Revision ID: 8e9f0a1b2c34
 Revises: 7d8e9f0a1b23
@@ -81,6 +83,7 @@ HUMAN_COMMAND_TYPES = (
     "restore_do_not_add",
     "resolve_discrepancy",
     "designate_support",
+    "resolve_support",
 )
 
 
@@ -185,6 +188,25 @@ def upgrade() -> None:
              and document_value_id is not null
              and transformation = 'supporting_document_revision_v1')
         );
+
+        -- The relationship fact's identity is the registered document row in
+        -- document_value_id; there is no segment to replay, so the deferred
+        -- value-source requirement exempts it (mirroring the released
+        -- contract's empty required_roles).
+        create or replace function require_fact_value_source()
+            returns trigger language plpgsql as $$
+        begin
+            if new.fact_type = 'supporting_documentation_in_use' then
+                return null;
+            end if;
+            if not exists (
+                select 1 from fact_sources
+                where fact_id = new.id and role = 'value_source'
+            ) then
+                raise exception 'source-backed Fact requires a value source';
+            end if;
+            return null;
+        end; $$;
 
         -- The decision says what the Project Record does with its fact.
         alter table fact_decisions
