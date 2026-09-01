@@ -39,10 +39,11 @@ CLASS_B_RETENTION_HEAD = "7a3e91c4d8b2"
 TOKEN_LAYER_HEAD = "3f4a5b6c7d8e"
 HUMAN_DECISION_HEAD = "4a5b6c7d8e9f"
 VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
-PREDECESSOR_HEAD = VERBAL_SEGMENT_HEAD
-CURRENT_HEAD = "6c7d8e9f0a12"
+STATEMENT_TIMING_HEAD = "6c7d8e9f0a12"
+PREDECESSOR_HEAD = STATEMENT_TIMING_HEAD
+CURRENT_HEAD = "7d8e9f0a1b23"
 EXPECTED_SCHEMA_SHA256 = (
-    "71b5872a005204c351f8ad8391da4368b79aa45dde78d1b33ff17b6d85b94744"
+    "bdcdf08c69d738ff71821a3ca09bc042a0ff65ca591f0820ebf92ae50674d977"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -69,7 +70,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{TOKEN_LAYER_HEAD}_add_token_layers.py",
         f"{HUMAN_DECISION_HEAD}_add_human_fact_decision.py",
         f"{VERBAL_SEGMENT_HEAD}_add_recorded_verbal_segment.py",
-        f"{CURRENT_HEAD}_add_statement_timing_fact.py",
+        f"{STATEMENT_TIMING_HEAD}_add_statement_timing_fact.py",
+        f"{CURRENT_HEAD}_add_coordinate_statement_command.py",
     }
 
 
@@ -137,26 +139,16 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        # The statement_timing migration lets a human-gated verbal Fact be
-        # document-less and adds the typed fact_statement_timings satellite.
+        # The coordinate_statement migration adds that command to the
+        # record_human_fact_decision allow-list.
         with database.session_factory() as session:
-            document_id_nullable = session.scalar(
+            definition = session.scalar(
                 text(
-                    "select is_nullable from information_schema.columns "
-                    "where table_name = 'facts' and column_name = 'document_id'"
+                    "select pg_get_functiondef(oid) from pg_proc "
+                    "where proname = 'record_human_fact_decision'"
                 )
             )
-            assert document_id_nullable == "YES"
-            type_check = session.scalar(
-                text(
-                    "select pg_get_constraintdef(oid) from pg_constraint "
-                    "where conname = 'ck_facts_type'"
-                )
-            )
-            assert "statement_timing" in type_check
-            assert session.scalar(
-                text("select to_regclass('public.fact_statement_timings')")
-            )
+            assert "coordinate_statement" in definition
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -320,7 +312,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_drop_the_statement_timing_fact_is_unsupported():
+def test_downgrade_that_would_drop_the_coordinate_statement_command_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -332,7 +324,10 @@ def test_downgrade_that_would_drop_the_statement_timing_fact_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "statement timing fact migration downgrade is unsupported" in completed.stderr
+    assert (
+        "coordinate_statement command migration downgrade is unsupported"
+        in completed.stderr
+    )
 
 
 def _project_row(session_factory):
