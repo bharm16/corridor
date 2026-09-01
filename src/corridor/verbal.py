@@ -33,6 +33,12 @@ from corridor.external_statements import (
     record_external_party_statement,
     record_statement_scope_decision,
 )
+from corridor.facts import (
+    append_recorded_applies_to_fact,
+    append_recorded_statement_timing_fact,
+    append_recorded_statement_wording_fact,
+)
+from corridor.fact_decisions import record_human_fact_decision
 from corridor.identity import is_project_side_party, party_matches
 from corridor.models import (
     CommitmentLineage,
@@ -41,10 +47,14 @@ from corridor.models import (
     Dependency,
     DependencyEvent,
     ExternalParty,
+    Fact,
+    FactAppliesTo,
+    FactDecision,
     Project,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.source_segments import recorded_verbal_statement_segment
 from corridor.statement_lifecycle import observe_current_statement
 
 
@@ -440,9 +450,156 @@ def _append_verbal(
                 after=after,
             )
             session.flush()
+            # Dual-write the same recording onto the spine inside this one
+            # atomic act (#451, ADR-0074): the legacy event stays the source of
+            # truth until cutover, and the spine gains the attributable,
+            # reversible human decision beside it.
+            _record_verbal_on_spine(
+                session,
+                event=event,
+                project=project,
+                recorder=recorder,
+                description=description,
+                new_timing=new_timing,
+                previous_timing=previous_timing,
+            )
     except StatementRefusal as exc:
         raise VerbalRefusal(str(exc)) from exc
     return event
+
+
+def _record_verbal_on_spine(
+    session: Session,
+    *,
+    event: DependencyEvent,
+    project: Project,
+    recorder: HumanPrincipal,
+    description: str,
+    new_timing: StatementTiming,
+    previous_timing: StatementTiming | None,
+) -> None:
+    """Append the verbal's recorder segment, typed facts, and spine decisions.
+
+    The statement's spine subject is its Commitment Lineage, so a stated change
+    supersedes the lineage's prior decisions rather than standing beside them:
+    the current Project Record reflects the newest statement, exactly as the
+    legacy projection does.  Scope that did not change records no attributable
+    Applies To no-op (CLAUDE.md; ADR-0039).
+    """
+
+    subject_key = f"lineage:{event.commitment_lineage_id}"
+    segment = recorded_verbal_statement_segment(
+        project_id=project.id,
+        statement_id=event.id,
+        exact_text=description,
+    )
+    session.add(segment)
+    session.flush([segment])
+    timings = (("new", new_timing),) + (
+        (("previous", previous_timing),) if previous_timing is not None else ()
+    )
+    wording = append_recorded_statement_wording_fact(
+        session,
+        segment=segment,
+        subject_key=subject_key,
+        description=description,
+        recorded_by=recorder.subject,
+    )
+    timing = append_recorded_statement_timing_fact(
+        session,
+        segment=segment,
+        subject_key=subject_key,
+        timings=timings,
+        recorded_by=recorder.subject,
+    )
+    _record_verbal_spine_decision(
+        session, project.id, subject_key, wording, event.id, recorder
+    )
+    _record_verbal_spine_decision(
+        session, project.id, subject_key, timing, event.id, recorder
+    )
+    dependency_ids = tuple(sorted(_verbal_scope_dependency_ids(session, event)))
+    current_scope = _current_applies_to_members(session, project.id, subject_key)
+    if current_scope is None or current_scope != dependency_ids:
+        applies = append_recorded_applies_to_fact(
+            session,
+            segment=segment,
+            subject_key=subject_key,
+            dependency_ids=dependency_ids,
+            recorded_by=recorder.subject,
+        )
+        _record_verbal_spine_decision(
+            session, project.id, subject_key, applies, event.id, recorder
+        )
+
+
+def _record_verbal_spine_decision(
+    session: Session,
+    project_id: int,
+    subject_key: str,
+    fact: Fact,
+    event_id: int,
+    recorder: HumanPrincipal,
+) -> None:
+    predecessor = session.scalar(
+        select(FactDecision.id).where(
+            FactDecision.project_id == project_id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == fact.fact_type,
+            FactDecision.superseded_by.is_(None),
+        )
+    )
+    record_human_fact_decision(
+        session,
+        fact,
+        principal=recorder,
+        command_type="record_verbal_statement",
+        idempotency_key=f"verbal:{event_id}:{fact.fact_type}",
+        expected_predecessor=predecessor,
+    )
+
+
+def _verbal_scope_dependency_ids(
+    session: Session, event: DependencyEvent
+) -> tuple[int, ...]:
+    scope_decision = session.scalar(
+        select(CommitmentScopeDecision).where(
+            CommitmentScopeDecision.event_id == event.id
+        )
+    )
+    if scope_decision is None:
+        return ()
+    return tuple(
+        session.scalars(
+            select(CommitmentScopeMembership.dependency_id).where(
+                CommitmentScopeMembership.scope_decision_id == scope_decision.id
+            )
+        ).all()
+    )
+
+
+def _current_applies_to_members(
+    session: Session, project_id: int, subject_key: str
+) -> tuple[int, ...] | None:
+    current = session.scalar(
+        select(FactDecision).where(
+            FactDecision.project_id == project_id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == "applies_to",
+            FactDecision.superseded_by.is_(None),
+        )
+    )
+    if current is None:
+        return None
+    return tuple(
+        sorted(
+            session.scalars(
+                select(FactAppliesTo.dependency_id).where(
+                    FactAppliesTo.fact_id == current.fact_id
+                )
+            ).all()
+        )
+    )
 
 
 def _scope_is_noop(

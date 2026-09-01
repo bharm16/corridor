@@ -14,7 +14,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, aliased
 
-from corridor.fact_types import FACT_TYPE_CONTRACTS
+from corridor.fact_types import (
+    FACT_TYPE_CONTRACTS,
+    inclusion_rule_admits_human_record_decision,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.models import (
     ActiveExtractionRun,
@@ -105,7 +108,7 @@ def record_human_fact_decision(
     contract = FACT_TYPE_CONTRACTS.get(fact.fact_type)
     if contract is None:
         raise FactDecisionRefused("Fact type has no released inclusion contract")
-    if contract.inclusion_rule != "human_record_decision":
+    if not inclusion_rule_admits_human_record_decision(contract.inclusion_rule):
         raise FactDecisionRefused(
             "Fact type is not settled by a Human Record Decision"
         )

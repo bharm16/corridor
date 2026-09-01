@@ -11,6 +11,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def inclusion_rule_admits_human_record_decision(inclusion_rule: str) -> bool:
+    """Whether a Fact type may be settled by a Human Record Decision.
+
+    A pure human type is always human-settled; a dual-use type
+    (``..._else_human_record_decision``) is human-settled off its automatic
+    source — a Recorded Verbal Statement's Applies To, not a spreadsheet cell.
+    """
+
+    return inclusion_rule == "human_record_decision" or inclusion_rule.endswith(
+        "_else_human_record_decision"
+    )
+
+
 @dataclass(frozen=True)
 class FactTypeContract:
     """Validation, current-value, and inclusion rules for one Fact type."""
@@ -104,12 +117,16 @@ FACT_TYPE_CONTRACTS = {
         value_class="reference_set",
         subject_kind="source_row",
         transformation="structured_reference_set_v1",
-        accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
+        accepted_segment_kinds=frozenset(
+            {"spreadsheet_cell", "recorded_verbal_statement"}
+        ),
         automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
         required_roles=frozenset({"value_source"}),
         validation_rule="non_empty_scoped_reference_set",
         current_value_rule="effective_reference_set",
-        inclusion_rule="verified_mapping_cell_policy",
+        # A spreadsheet Applies To is settled by the automatic cell policy; a
+        # Recorded Verbal Statement's scope is a Human Record Decision (#451).
+        inclusion_rule="verified_mapping_cell_policy_else_human_record_decision",
     ),
     "closure_result": FactTypeContract(
         value_class="closure_result",
@@ -126,7 +143,9 @@ FACT_TYPE_CONTRACTS = {
         value_class="text",
         subject_kind="statement_candidate",
         transformation="exact_prose_span_v1",
-        accepted_segment_kinds=frozenset({"prose_span"}),
+        accepted_segment_kinds=frozenset(
+            {"prose_span", "recorded_verbal_statement"}
+        ),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source", "attribution_source"}),
         validation_rule="exact_attributed_prose_span",
