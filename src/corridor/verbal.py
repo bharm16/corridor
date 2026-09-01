@@ -51,6 +51,7 @@ from corridor.models import (
     FactAppliesTo,
     FactDecision,
     Project,
+    SourceSegment,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
@@ -334,6 +335,9 @@ def correct_verbal_scope(
                     "scope_mode": decision.scope_mode,
                 },
             )
+            _correct_verbal_scope_on_spine(
+                session, event=event, scope_decision=decision, recorder=recorder
+            )
             session.flush()
     except StaleVerbalCorrection:
         raise
@@ -541,13 +545,8 @@ def _record_verbal_spine_decision(
     event_id: int,
     recorder: HumanPrincipal,
 ) -> None:
-    predecessor = session.scalar(
-        select(FactDecision.id).where(
-            FactDecision.project_id == project_id,
-            FactDecision.subject_key == subject_key,
-            FactDecision.fact_type == fact.fact_type,
-            FactDecision.superseded_by.is_(None),
-        )
+    predecessor = _current_decision_id(
+        session, project_id, subject_key, fact.fact_type
     )
     record_human_fact_decision(
         session,
@@ -556,6 +555,85 @@ def _record_verbal_spine_decision(
         command_type="record_verbal_statement",
         idempotency_key=f"verbal:{event_id}:{fact.fact_type}",
         expected_predecessor=predecessor,
+    )
+
+
+def _correct_verbal_scope_on_spine(
+    session: Session,
+    *,
+    event: DependencyEvent,
+    scope_decision: CommitmentScopeDecision,
+    recorder: HumanPrincipal,
+) -> None:
+    """Supersede the lineage's spine Applies To with the corrected scope.
+
+    Forward-only: a verbal recorded before the spine dual-write has no Applies
+    To decision to correct, so nothing is written until it is first recorded on
+    the spine (cutover is #458). The statement wording and timing are untouched;
+    only which Constraints it applies to is superseded, mirroring the legacy
+    scope-correction that leaves the statement fact intact.
+    """
+
+    subject_key = f"lineage:{event.commitment_lineage_id}"
+    predecessor = _current_decision_id(
+        session, event.project_id, subject_key, "applies_to"
+    )
+    segment = _verbal_segment_for_event(session, event.id)
+    if predecessor is None or segment is None:
+        return
+    dependency_ids = tuple(
+        sorted(_scope_decision_dependency_ids(session, scope_decision.id))
+    )
+    applies = append_recorded_applies_to_fact(
+        session,
+        segment=segment,
+        subject_key=subject_key,
+        dependency_ids=dependency_ids,
+        recorded_by=recorder.subject,
+    )
+    record_human_fact_decision(
+        session,
+        applies,
+        principal=recorder,
+        command_type="correct_statement_scope",
+        idempotency_key=f"correct-verbal-scope:{scope_decision.id}",
+        expected_predecessor=predecessor,
+    )
+
+
+def _current_decision_id(
+    session: Session, project_id: int, subject_key: str, fact_type: str
+) -> int | None:
+    return session.scalar(
+        select(FactDecision.id).where(
+            FactDecision.project_id == project_id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == fact_type,
+            FactDecision.superseded_by.is_(None),
+        )
+    )
+
+
+def _verbal_segment_for_event(
+    session: Session, event_id: int
+) -> SourceSegment | None:
+    return session.scalar(
+        select(SourceSegment).where(
+            SourceSegment.statement_id == event_id,
+            SourceSegment.kind == "recorded_verbal_statement",
+        )
+    )
+
+
+def _scope_decision_dependency_ids(
+    session: Session, scope_decision_id: int
+) -> tuple[int, ...]:
+    return tuple(
+        session.scalars(
+            select(CommitmentScopeMembership.dependency_id).where(
+                CommitmentScopeMembership.scope_decision_id == scope_decision_id
+            )
+        ).all()
     )
 
 

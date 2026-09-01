@@ -23,6 +23,7 @@ from corridor.facts import (
     replay_recorded_statement_wording_fact,
 )
 from corridor.models import (
+    CommitmentScopeDecision,
     Dependency,
     ExternalOrg,
     Fact,
@@ -31,7 +32,12 @@ from corridor.models import (
     ProjectRecordRevision,
 )
 from corridor.principals import HumanPrincipal
-from corridor.verbal import record_verbal, record_verbal_change, record_verbal_statement
+from corridor.verbal import (
+    correct_verbal_scope,
+    record_verbal,
+    record_verbal_change,
+    record_verbal_statement,
+)
 
 
 RECORDER = HumanPrincipal("local:phone-coordinator")
@@ -196,6 +202,56 @@ def test_a_stated_change_supersedes_wording_and_timing_but_keeps_scope(
     by_role = {role: value for role, value in replayed.timings}
     assert by_role["new"].start_date == date(2025, 7, 10)
     assert by_role["previous"].precision == "month"
+
+
+def test_correcting_a_verbal_scope_supersedes_only_the_spine_applies_to(
+    session, dependency
+):
+    other = Dependency(
+        project_id=dependency.project_id,
+        ref_code="TEL-2",
+        dep_type="utility_relocation",
+        title="Second telecom conflict",
+        external_org_id=dependency.external_org_id,
+    )
+    session.add(other)
+    session.flush()
+    event = record_verbal_statement(
+        session,
+        project_id=dependency.project_id,
+        external_org_id=dependency.external_org_id,
+        stated_party="AT&T",
+        description="AT&T will relocate by June 15.",
+        conversation_date=date(2025, 5, 1),
+        new_timing=StatementTiming.day("June 15, 2025", date(2025, 6, 15)),
+        scope=StatementScope.selected((dependency.id,)),
+        principal=RECORDER,
+    )
+    subject_key = f"lineage:{event.commitment_lineage_id}"
+    before = _decisions(session, dependency.project_id, subject_key)
+    scope_decision_id = session.scalar(
+        select(CommitmentScopeDecision.id).where(
+            CommitmentScopeDecision.event_id == event.id
+        )
+    )
+
+    correct_verbal_scope(
+        session,
+        event_id=event.id,
+        scope=StatementScope.selected((other.id,)),
+        expected_scope_decision_id=scope_decision_id,
+        principal=RECORDER,
+    )
+    session.expire_all()
+    after = _decisions(session, dependency.project_id, subject_key)
+
+    assert after["applies_to"].id != before["applies_to"].id
+    assert after["statement_wording"].id == before["statement_wording"].id
+    assert after["statement_timing"].id == before["statement_timing"].id
+    applies_fact = session.get(Fact, after["applies_to"].fact_id)
+    assert replay_recorded_applies_to_fact(session, applies_fact).dependency_ids == (
+        other.id,
+    )
 
 
 def test_unknown_scope_records_an_explicit_empty_applies_to(session, dependency):
